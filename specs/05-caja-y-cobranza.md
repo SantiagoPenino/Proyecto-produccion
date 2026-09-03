@@ -128,6 +128,10 @@ contable. Distingue el dinero físico del mostrador (arqueable) del dinero admin
 
 ## 6. Billetera del cliente
 
+> Los **beneficios pactados** (bolsas de billetera con precios pactados a cambio de una carga
+> facturada) se especifican en la Spec 40; esta sección define la billetera sobre la que se
+> apoyan.
+
 ### 6.1 Estructura
 
 - **RN-CAJA.29** La billetera es un conjunto de **Cuentas de Billetera**:

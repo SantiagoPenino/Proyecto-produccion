@@ -735,7 +735,7 @@ exports.crearFacturaManual = async (req, res) => {
             const convertido = MonIdMoneda === 2 ? Totales.total * cotNum : Totales.total;
 
             const tcaRes = await request
-                .input('TcaUsuarioId', sql.Int, req.user?.id || 1)
+                .input('TcaUsuarioId', sql.Int, req.user.id)
                 .input('TcaClienteId', sql.Int, CliIdCliente || 1)
                 .input('TcaTipoDoc', sql.VarChar(20), (config.CodDocumento || DocTipo).substring(0, 20))
                 .input('TcaSerieDoc', sql.VarChar(5), serie)
@@ -771,7 +771,7 @@ exports.crearFacturaManual = async (req, res) => {
                         .input('monto', sql.Decimal(18, 4), pMonto)
                         .input('cot', sql.Decimal(18, 4), pCot)
                         .input('convert', sql.Decimal(18, 4), pConvertido)
-                        .input('usuario', sql.Int, req.user?.id || 1)
+                        .input('usuario', sql.Int, req.user.id)
                         .input('pagFecha', sql.DateTime, fechaDoc)
                         .query(`
                             INSERT INTO dbo.Pagos
@@ -792,7 +792,7 @@ exports.crearFacturaManual = async (req, res) => {
                     .input('monto', sql.Decimal(18, 4), Totales.total)
                     .input('cot', sql.Decimal(18, 4), cotNum)
                     .input('convert', sql.Decimal(18, 4), convertido)
-                    .input('usuario', sql.Int, req.user?.id || 1)
+                    .input('usuario', sql.Int, req.user.id)
                     .input('pagFecha', sql.DateTime, fechaDoc)
                     .query(`
                         INSERT INTO dbo.Pagos
@@ -847,7 +847,7 @@ exports.crearFacturaManual = async (req, res) => {
                 total: Totales.total,
                 estado: 'COBRADO',
                 cfeEstado: (docTipoStr.includes('Pedido') || docTipoStr.includes('PEDIDO') || docTipoStr === 'PedidoCaja') ? 'BORRADOR' : 'PENDIENTE',
-                usuarioId: req.user?.id || 1,
+                usuarioId: req.user.id,
                 tcaIdTransaccion: tcaId,
                 docPagado: isPaid,
                 docCliNombre: DocCliNombre || '',
@@ -871,7 +871,7 @@ exports.crearFacturaManual = async (req, res) => {
             const cueTipo = MonIdMoneda === 2 ? 'DINERO_USD' : 'DINERO_UYU';
             const ctaMonedaId = await contabilidadService.obtenerOCrearCuenta(CliIdCliente, cueTipo, {
                 MonIdMoneda,
-                UsuarioAlta: req.user?.id || 1
+                UsuarioAlta: req.user.id
             }, transaction);
 
             const cicloActivoObj = await contabilidadService.obtenerCicloActivo(ctaMonedaId, transaction);
@@ -884,7 +884,7 @@ exports.crearFacturaManual = async (req, res) => {
                 MovTipo: 'VTA_CAJA',
                 MovConcepto: conceptCargo,
                 MovImporte: -Totales.total,
-                MovUsuarioAlta: req.user?.id || 1,
+                MovUsuarioAlta: req.user.id,
                 DocIdDocumento: docId,
                 CicIdCiclo: cicId,
                 MovFecha: fechaDoc
@@ -898,7 +898,7 @@ exports.crearFacturaManual = async (req, res) => {
                     MovTipo: 'PAGO',
                     MovConcepto: conceptPago,
                     MovImporte: Totales.total,
-                    MovUsuarioAlta: req.user?.id || 1,
+                    MovUsuarioAlta: req.user.id,
                     DocIdDocumento: docId,
                     CicIdCiclo: cicId,
                     MovFecha: fechaDoc
@@ -959,7 +959,7 @@ exports.crearFacturaManual = async (req, res) => {
             const asiId = await generarAsientoCompleto({
                 fecha: fechaDoc || new Date(),
                 concepto: `${config.CodDocumento || DocTipo} Manual M-${docId} - ${CliIdCliente ? 'Cliente ' + CliIdCliente : 'Consumidor'}`,
-                usuarioId: req.user?.id || 1,
+                usuarioId: req.user.id,
                 origen: 'FACTURACION_MANUAL',
                 lineas: lineasContables
             }, transaction);
@@ -1048,7 +1048,7 @@ exports.anularFactura = async (req, res) => {
 
         // Si está pagado, revertir transacciones de caja y liberar las órdenes asociadas
         const tcaId = doc.TcaIdTransaccion || null;
-        const usuarioId = req.user?.id || 70;
+        const usuarioId = req.user.id;
         if (doc.DocPagado && tcaId) {
 
             // 1. Obtener los IDs de las órdenes de retiro antes de borrarlas
@@ -1558,7 +1558,7 @@ exports.editarFactura = async (req, res) => {
         if (isRealClient && (tipoChanged || montoChanged || paidChanged || monedaChanged)) {
           const cueTipoEdit = MonIdMoneda === 2 ? 'DINERO_USD' : 'DINERO_UYU';
           const ctaEditId   = await contabilidadService.obtenerOCrearCuenta(cliIdNum, cueTipoEdit, {
-            MonIdMoneda, UsuarioAlta: req.user?.id || 1
+            MonIdMoneda, UsuarioAlta: req.user.id
           }, transaction);
           const cicloObj = await contabilidadService.obtenerCicloActivo(ctaEditId, transaction);
           const cicId    = cicloObj ? cicloObj.CicIdCiclo : null;
@@ -1791,7 +1791,7 @@ exports.editarFactura = async (req, res) => {
                   MovTipo: 'PAGO',
                   MovConcepto: conceptoPago,
                   MovImporte: Math.abs(p.Importe),
-                  MovUsuarioAlta: req.user?.id || 1,
+                  MovUsuarioAlta: req.user.id,
                   DocIdDocumento: parseInt(id),
                   CicIdCiclo: cicId,
                   MovFecha: fechaEfectiva
@@ -1870,7 +1870,7 @@ exports.editarFactura = async (req, res) => {
                 if (currentTcaId) {
                     await transaction.request()
                         .input('tcaId', sql.Int, currentTcaId)
-                        .input('usuarioId', sql.Int, req.user?.id || 1)
+                        .input('usuarioId', sql.Int, req.user.id)
                         .query(`
                             UPDATE dbo.TransaccionesCaja
                             SET TcaEstado = 'ANULADO',
@@ -1985,7 +1985,7 @@ exports.editarFactura = async (req, res) => {
                                 .input('monto', sql.Decimal(18, 4), pMonto)
                                 .input('cot', sql.Decimal(18, 4), pCot)
                                 .input('convert', sql.Decimal(18, 4), pConvertido)
-                                .input('usuario', sql.Int, req.user?.id || 1)
+                                .input('usuario', sql.Int, req.user.id)
                                 .input('pagFecha', sql.DateTime, fechaEfectiva)
                                 .query(`
                                     INSERT INTO dbo.Pagos
@@ -2006,7 +2006,7 @@ exports.editarFactura = async (req, res) => {
                             .input('monto', sql.Decimal(18, 4), DocTotal)
                             .input('cot', sql.Decimal(18, 4), cotNum)
                             .input('convert', sql.Decimal(18, 4), convertido)
-                            .input('usuario', sql.Int, req.user?.id || 1)
+                            .input('usuario', sql.Int, req.user.id)
                             .input('pagFecha', sql.DateTime, fechaEfectiva)
                             .query(`
                                 INSERT INTO dbo.Pagos
@@ -2053,7 +2053,7 @@ exports.editarFactura = async (req, res) => {
                 const numero = newNumero;
 
                 const tcaRes = await transaction.request()
-                    .input('TcaUsuarioId', sql.Int, req.user?.id || 1)
+                    .input('TcaUsuarioId', sql.Int, req.user.id)
                     .input('TcaClienteId', sql.Int, CliIdCliente || 1)
                     .input('TcaTipoDoc', sql.VarChar(20), (config.CodDocumento || DocTipo).substring(0, 20))
                     .input('TcaSerieDoc', sql.VarChar(5), serie)
@@ -2088,7 +2088,7 @@ exports.editarFactura = async (req, res) => {
                             .input('monto', sql.Decimal(18, 4), pMonto)
                             .input('cot', sql.Decimal(18, 4), pCot)
                             .input('convert', sql.Decimal(18, 4), pConvertido)
-                            .input('usuario', sql.Int, req.user?.id || 1)
+                            .input('usuario', sql.Int, req.user.id)
                             .input('pagFecha', sql.DateTime, fechaEfectiva)
                             .query(`
                                 INSERT INTO dbo.Pagos
@@ -2109,7 +2109,7 @@ exports.editarFactura = async (req, res) => {
                         .input('monto', sql.Decimal(18, 4), DocTotal)
                         .input('cot', sql.Decimal(18, 4), cotNum)
                         .input('convert', sql.Decimal(18, 4), convertido)
-                        .input('usuario', sql.Int, req.user?.id || 1)
+                        .input('usuario', sql.Int, req.user.id)
                         .input('pagFecha', sql.DateTime, fechaEfectiva)
                         .query(`
                             INSERT INTO dbo.Pagos

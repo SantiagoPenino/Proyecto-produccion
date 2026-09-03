@@ -169,12 +169,15 @@ export default function BandejaDocumentosInternos() {
     if (!modal?.doc) return;
     setSubmitting(true);
     try {
-      await api.post('/contabilidad/caja/documentos/anular', {
+      const { data } = await api.post('/contabilidad/caja/documentos/anular', {
         tipoOperacion: modal.doc.TipoOperacion,
         docId: modal.doc.DocId,
         motivo: motivo.trim() || undefined,
       });
-      toast.success('Documento anulado correctamente');
+      // Si el cobro estaba imputado a facturas, esas facturas vuelven a deber: hay que
+      // decirlo, no dejar que el usuario se entere cuando cobranzas las reclame.
+      toast.success(data?.mensaje || 'Documento anulado correctamente',
+        data?.deudasRepuestas ? { duration: 8000 } : undefined);
       setModal(null);
       fetchDocs(page, filtros);
     } catch (err) {

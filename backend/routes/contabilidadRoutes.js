@@ -8,6 +8,28 @@ const upload = require('../middleware/multerConfig');
 
 router.use(verifyToken);
 
+// ─────────────────────────────────────────────────────────────────────────────
+// TODA la contabilidad es SOLO para usuarios internos.
+//
+// `verifyToken` (arriba) valida la FIRMA del JWT, no de quién es: acepta igual el
+// token de un cliente del portal o de un diseñador. Los controllers de acá leían
+// `req.user.id` sin mirar `userType`, así que cuando una empleada entraba con su
+// cuenta de CLIENTE se estampaba su CodCliente en TcaUsuarioId / EgrUsuarioId /
+// MovUsuarioAlta. Ese número no existe en dbo.Usuarios, el LEFT JOIN de la grilla
+// no lo resuelve y el movimiento aparece como "Sistema" (1/9/2026: 31 e-Tickets de
+// la sesión 54 quedaron con el CodCliente 282801 en vez de la usuaria MiaF).
+//
+// Va a nivel de router y no solo en /caja porque cajaController, cfeController y
+// contabilidadController estampan todos el mismo id, y los tres cuelgan de acá.
+// Ningún cliente del portal ni el tótem llaman /api/contabilidad: es pantalla
+// interna de punta a punta.
+//
+// OJO: `verifyToken` renueva los tokens conservando sus claims, así que una sesión
+// interna vieja emitida antes de que existiera `userType` no lo tiene y va a caer
+// en el 403 hasta volver a loguearse una vez.
+// ─────────────────────────────────────────────────────────────────────────────
+router.use(soloInternoConRol());
+
 router.get('/grupos-erp', ctrl.getGruposERP);
 router.get('/unidades', ctrl.getUnidades);
 router.get('/articulos', ctrl.getArticulos);
@@ -54,6 +76,8 @@ router.get('/cuentas/:CueIdCuenta/facturas-para-cargar',         ctrl.getFactura
 // Billetera visible en el portal (flag por cliente, switch del gestor "Cuentas")
 router.get('/clientes/:CliIdCliente/billetera-portal',           ctrl.getBilleteraPortal);
 router.post('/clientes/:CliIdCliente/billetera-portal',          ctrl.setBilleteraPortal);
+// Caja: cubrir TODO un retiro con el saldo prepago de la billetera (consumo, sin documento)
+router.post('/retiros/:OReIdOrdenRetiro/cubrir-con-billetera',   ctrl.cubrirRetiroConBilletera);
 
 router.get('/cuentas/:CueIdCuenta/deudas', ctrl.getDeudas);
 router.get('/ciclos/:CliIdCliente', ctrl.getCiclosCliente);
@@ -134,26 +158,6 @@ router.get('/erp/cuentas/gastos', erp.getCuentasGastos);
 router.get('/erp/libro-mayor',               erp.getLibroMayor);         // paginado: cabeceras + totales
 router.get('/erp/libro-mayor/origenes',      erp.getLibroMayorOrigenes); // combo Origen
 router.get('/erp/libro-mayor/:asiId/lineas', erp.getLibroMayorLineas);   // detalle, al expandir el asiento
-
-// ─────────────────────────────────────────────────────────────────────────────
-// La caja es SOLO para usuarios internos.
-//
-// `verifyToken` (arriba) valida la FIRMA del JWT, no de quién es: acepta igual el
-// token de un cliente del portal o de un diseñador. Los controllers de caja leían
-// `req.user.id` sin mirar `userType`, así que cuando una empleada entraba con su
-// cuenta de CLIENTE se estampaba su CodCliente en TcaUsuarioId / EgrUsuarioId /
-// MovUsuarioAlta. Ese número no existe en dbo.Usuarios, el LEFT JOIN de la grilla
-// no lo resuelve y el movimiento aparece como "Sistema" (1/9/2026: 31 e-Tickets de
-// la sesión 54 quedaron con el CodCliente 282801 en vez de la usuaria MiaF).
-//
-// Con esto un token que no sea INTERNAL no llega al controller: corta en 403 y la
-// persona tiene que entrar con su usuario interno. Va acá y no en cada handler
-// porque TODAS las rutas de cajaController cuelgan del prefijo /caja.
-// OJO: `verifyToken` renueva los tokens conservando sus claims, así que una sesión
-// vieja emitida antes de que existiera `userType` no lo tiene y va a caer en el 403
-// hasta volver a loguearse una vez.
-// ─────────────────────────────────────────────────────────────────────────────
-router.use('/caja', soloInternoConRol());
 
 // Transacciones
 router.post('/caja/transaccion',              caja.procesarTransaccion);
@@ -370,9 +374,17 @@ router.post('/ordenes/editar-metros', async (req, res) => {
           SET PlaCantidadUsada = PlaCantidadUsada + @Delta 
           WHERE PlaIdPlan = @PlanId;
           
-          UPDATE dbo.PlanesMetros
-          SET PlaActivo = CASE WHEN PlaCantidadUsada < PlaCantidadTotal THEN 1 ELSE 0 END
-          WHERE PlaIdPlan = @PlanId;
+          UPDATE pm
+          SET pm.PlaActivo = CASE WHEN pm.PlaCantidadUsada < pm.PlaCantidadTotal THEN 1
+                                  -- ROLLO POR ADELANTADO: el plan nunca se cierra por consumo
+                                  -- (puede quedar en negativo; lo absorbe la próxima recarga)
+                                  WHEN EXISTS (SELECT 1 FROM dbo.Clientes c
+                                               JOIN dbo.TiposClientes tc ON tc.TClIdTipoCliente = c.TClIdTipoCliente
+                                               WHERE c.CliIdCliente = pm.CliIdCliente
+                                                 AND UPPER(tc.TClDescripcion) LIKE '%ROLLO%') THEN 1
+                                  ELSE 0 END
+          FROM dbo.PlanesMetros pm
+          WHERE pm.PlaIdPlan = @PlanId;
         `);
     }
 
@@ -506,9 +518,17 @@ router.post('/ordenes/eliminar-metros', async (req, res) => {
           SET PlaCantidadUsada = CASE WHEN PlaCantidadUsada - @Metros < 0 THEN 0 ELSE PlaCantidadUsada - @Metros END
           WHERE PlaIdPlan = @PlanId;
           
-          UPDATE dbo.PlanesMetros
-          SET PlaActivo = CASE WHEN PlaCantidadUsada < PlaCantidadTotal THEN 1 ELSE 0 END
-          WHERE PlaIdPlan = @PlanId;
+          UPDATE pm
+          SET pm.PlaActivo = CASE WHEN pm.PlaCantidadUsada < pm.PlaCantidadTotal THEN 1
+                                  -- ROLLO POR ADELANTADO: el plan nunca se cierra por consumo
+                                  -- (puede quedar en negativo; lo absorbe la próxima recarga)
+                                  WHEN EXISTS (SELECT 1 FROM dbo.Clientes c
+                                               JOIN dbo.TiposClientes tc ON tc.TClIdTipoCliente = c.TClIdTipoCliente
+                                               WHERE c.CliIdCliente = pm.CliIdCliente
+                                                 AND UPPER(tc.TClDescripcion) LIKE '%ROLLO%') THEN 1
+                                  ELSE 0 END
+          FROM dbo.PlanesMetros pm
+          WHERE pm.PlaIdPlan = @PlanId;
         `);
     }
 
@@ -714,9 +734,17 @@ router.post('/ordenes/insertar-manual', async (req, res) => {
           SET PlaCantidadUsada = PlaCantidadUsada + @Metros
           WHERE PlaIdPlan = @PlanId;
           
-          UPDATE dbo.PlanesMetros
-          SET PlaActivo = CASE WHEN PlaCantidadUsada < PlaCantidadTotal THEN 1 ELSE 0 END
-          WHERE PlaIdPlan = @PlanId;
+          UPDATE pm
+          SET pm.PlaActivo = CASE WHEN pm.PlaCantidadUsada < pm.PlaCantidadTotal THEN 1
+                                  -- ROLLO POR ADELANTADO: el plan nunca se cierra por consumo
+                                  -- (puede quedar en negativo; lo absorbe la próxima recarga)
+                                  WHEN EXISTS (SELECT 1 FROM dbo.Clientes c
+                                               JOIN dbo.TiposClientes tc ON tc.TClIdTipoCliente = c.TClIdTipoCliente
+                                               WHERE c.CliIdCliente = pm.CliIdCliente
+                                                 AND UPPER(tc.TClDescripcion) LIKE '%ROLLO%') THEN 1
+                                  ELSE 0 END
+          FROM dbo.PlanesMetros pm
+          WHERE pm.PlaIdPlan = @PlanId;
         `);
     }
 

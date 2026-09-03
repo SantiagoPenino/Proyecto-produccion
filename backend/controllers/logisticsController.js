@@ -1577,6 +1577,22 @@ if (triggerReversal || triggerForward) {
                                         logger.error(`[DEPOSITO] ${oRow.CodigoOrden}: el cliente no existe (CodCliente ${String(oRow.CodCliente || '').trim()}) — se omiten los asientos contables. ¿Cliente eliminado?`);
                                     }
 
+                                    // ¿Cliente "Rollo por adelantado"? Su plan activo cubre SIEMPRE al ingresar,
+                                    // aunque el saldo esté en 0 o negativo (el hook deja el plan en rojo y la
+                                    // próxima recarga lo absorbe). Se resuelve UNA vez por orden.
+                                    let esClienteRollo = false;
+                                    if (cliPKReal) {
+                                        try {
+                                            const tcCk = await poolLocal.request()
+                                                .input('CliR', require('mssql').Int, cliPKReal)
+                                                .query(`SELECT UPPER(ISNULL(tc.TClDescripcion,'')) AS T
+                                                        FROM dbo.Clientes c WITH(NOLOCK)
+                                                        LEFT JOIN dbo.TiposClientes tc WITH(NOLOCK) ON tc.TClIdTipoCliente = c.TClIdTipoCliente
+                                                        WHERE c.CliIdCliente = @CliR`);
+                                            esClienteRollo = (tcCk.recordset[0]?.T || '').includes('ROLLO');
+                                        } catch (eTc) { /* ante la duda, comportamiento histórico */ }
+                                    }
+
                                     // Para la REVERSA vamos a simular el mismo cargo pero NEGATIVO
                                     if (triggerReversal && mContado !== 0 && cliPKReal) {
                                         console.log(`${logPrefix} -> Reversando orden por diferencia`); // por diferencia en Checking.`);
@@ -1603,7 +1619,7 @@ if (triggerReversal || triggerForward) {
                                          const cRes = await poolLocal.request().query("SELECT TOP 1 CotDolar FROM dbo.Cotizaciones WITH(NOLOCK) ORDER BY CotFecha DESC");
                                          const cotizacionVal = cRes.recordset[0]?.CotDolar || 40;
 
-                                         const details = await poolLocal.request().input('PID', require('mssql').Int, pc.ID).query("SELECT Cantidad, Subtotal as TotalLinea, ProIdProducto as IDProdReact, Moneda, OrdenID FROM PedidosCobranzaDetalle WHERE PedidoCobranzaID = @PID");
+                                         const details = await poolLocal.request().input('PID', require('mssql').Int, pc.ID).query("SELECT Cantidad, Subtotal as TotalLinea, ProIdProducto as IDProdReact, Moneda, OrdenID, PrecioUnitario, PrecioUnitarioOriginal, MonedaOriginal, PerfilAplicado FROM PedidosCobranzaDetalle WHERE PedidoCobranzaID = @PID");
                                            
                                            // --- EN ESTE PUNTO LA ORDEN YA LLAMÓ AL CHECKIN WMS, INSERTAMOS EN ORDENESDEPOSITO SI FALTA ---
                                            // Las fallas (-F) son internas: su material se incorpora a la madre,
@@ -1734,6 +1750,19 @@ if (triggerReversal || triggerForward) {
                                                    }
                                                }
 
+                                               // Línea cotizada en $0 por PREPAGO al crear la orden (perfil "Prepago...").
+                                               // Si al INGRESAR el plan ya no cubre (no-rollo), esos metros se cobran al
+                                               // precio de LISTA original guardado en la línea — si no, salen gratis.
+                                               const esLineaPrepagoCero = (parseFloat(d.PrecioUnitario) || 0) === 0
+                                                   && String(d.PerfilAplicado || '').startsWith('Prepago');
+                                               const puOrigLinea = parseFloat(d.PrecioUnitarioOriginal) || 0;
+                                               const aDocMon = (imp, monDe) => {
+                                                   const m = (monDe || docMon).trim().toUpperCase();
+                                                   if (m === 'UYU' && docMon === 'USD') return parseFloat((imp / cotizacionVal).toFixed(2));
+                                                   if (m === 'USD' && docMon === 'UYU') return parseFloat((imp * cotizacionVal).toFixed(2));
+                                                   return parseFloat(imp.toFixed(2));
+                                               };
+
                                               // Detectar si el cliente tiene un plan activo y cuántos metros disponibles
                                               // (cliPKReal resuelto arriba; con null el plan no matchea y no se asienta nada)
                                               const cliPK = cliPKReal;
@@ -1766,9 +1795,12 @@ if (triggerReversal || triggerForward) {
 
                                               const hayPlanCtb = planIdCtb !== null && planMetrosDisp > 0;
 
-                                              if (hayPlanCtb && lineQty <= planMetrosDisp) {
+                                              // ROLLO: con plan activo (aunque esté en 0 o negativo) la línea entra
+                                              // ENTERA como ENTREGA a $0 — el hook deja el plan en rojo y la próxima
+                                              // recarga lo absorbe. Nunca genera deuda en dinero por el producto.
+                                              if ((esClienteRollo && planIdCtb !== null) || (hayPlanCtb && lineQty <= planMetrosDisp)) {
                                                   // CASO A: Plan cubre todo — 1 evento ENTREGA a $0
-                                                  console.log(`${logPrefix} -> ENTREGA TOTAL por prepago (${lineQty}m, $0, Plan #${planIdCtb})`);
+                                                  console.log(`${logPrefix} -> ENTREGA TOTAL por prepago (${lineQty}m, $0, Plan #${planIdCtb}${esClienteRollo ? ', rollo: puede quedar en negativo' : ''})`);
                                                   await contabilidadService.procesarEventoContable('ENTREGA', {
                                                       OrdIdOrden: L_OrdenID,
                                                       CliIdCliente: cliPK,
@@ -1785,7 +1817,13 @@ if (triggerReversal || triggerForward) {
                                                   // CASO B: Plan cubre PARCIALMENTE — 2 eventos
                                                   const metrosRestCtb = lineQty - planMetrosDisp;
                                                   const proporcionCtb = lineQty > 0 ? metrosRestCtb / lineQty : 1;
-                                                  const importeExcedente = parseFloat((lineImp * proporcionCtb).toFixed(2));
+                                                  let importeExcedente = parseFloat((lineImp * proporcionCtb).toFixed(2));
+                                                  // Línea $0 por prepago al crear, pero HOY el plan no cubre estos
+                                                  // metros: el excedente se cobra a precio de lista original.
+                                                  if (importeExcedente === 0 && esLineaPrepagoCero && puOrigLinea > 0) {
+                                                      importeExcedente = aDocMon(metrosRestCtb * puOrigLinea, d.MonedaOriginal || lineMon);
+                                                      console.log(`${logPrefix} -> Línea $0 por prepago sin cobertura HOY: excedente ${metrosRestCtb}m x lista ${puOrigLinea} = ${importeExcedente}`);
+                                                  }
 
                                                   console.log(`${logPrefix} -> ENTREGA PARCIAL por prepago: ${planMetrosDisp}m a $0 + ${metrosRestCtb}m a $${importeExcedente} (Plan #${planIdCtb})`);
 
@@ -1810,6 +1848,12 @@ if (triggerReversal || triggerForward) {
                                               } else if (lineImp > 0) {
                                                   // CASO C: Sin plan — evento ORDEN normal (Agrupado)
                                                   importeTotalOrden += lineImp;
+                                              } else if (!esClienteRollo && esLineaPrepagoCero && puOrigLinea > 0 && lineQty > 0) {
+                                                  // CASO C-bis: línea $0 por prepago al crear, pero HOY no hay plan
+                                                  // que la cubra (no-rollo): se cobra entera a precio de lista original.
+                                                  const impLista = aDocMon(lineQty * puOrigLinea, d.MonedaOriginal || lineMon);
+                                                  console.log(`${logPrefix} -> Línea $0 por prepago SIN plan al ingresar: cobra ${lineQty}m x lista ${puOrigLinea} = ${impLista}`);
+                                                  importeTotalOrden += impLista;
                                               }
                                           }
 
@@ -1830,6 +1874,38 @@ if (triggerReversal || triggerForward) {
                                               });
                                           }
 
+
+                                        // RE-COTIZACIÓN AL INGRESAR: el costo cobrable de la orden pasa a ser lo
+                                        // que realmente quedó en DINERO tras aplicar la cobertura del plan/rollo
+                                        // de HOY (0 si quedó toda cubierta; el excedente si fue parcial; la lista
+                                        // original si venía en $0 y ya no hay cobertura). Así el retiro y la caja
+                                        // cobran lo mismo que asentó la contabilidad — ni de más ni de menos.
+                                        // Solo si la orden aún no tiene retiro ni pago (nunca pisa cobros hechos).
+                                        if (lineasContab.length > 0) {
+                                            try {
+                                                const costoReal = Math.round((importeTotalOrden + Number.EPSILON) * 100) / 100;
+                                                const stampRes = await poolLocal.request()
+                                                    .input('Costo', require('mssql').Float, costoReal)
+                                                    .input('OID', require('mssql').Int, L_OrdenID)
+                                                    .query(`
+                                                        UPDATE od SET od.OrdCostoFinal = @Costo
+                                                        FROM dbo.OrdenesDeposito od
+                                                        WHERE od.OrdCodigoOrden = (SELECT CodigoOrden FROM dbo.Ordenes WITH(NOLOCK) WHERE OrdenID = @OID)
+                                                          AND od.PagIdPago IS NULL
+                                                          AND od.OReIdOrdenRetiro IS NULL
+                                                          AND ABS(ISNULL(od.OrdCostoFinal, 0) - @Costo) > 0.005;
+                                                        SELECT @@ROWCOUNT AS n;`);
+                                                if ((stampRes.recordset[0]?.n || 0) > 0) {
+                                                    await poolLocal.request()
+                                                        .input('Costo', require('mssql').Float, costoReal)
+                                                        .input('OID', require('mssql').Int, L_OrdenID)
+                                                        .query('UPDATE dbo.Ordenes SET CostoTotal = @Costo WHERE OrdenID = @OID');
+                                                    console.log(`${logPrefix} -> Costo re-estampado al ingresar: ${costoReal} (cobertura real de hoy)`);
+                                                }
+                                            } catch (eStamp) {
+                                                logger.error(`[DEPOSITO] ${oRow.CodigoOrden}: error re-estampando costo al ingresar: ${eStamp.message}`);
+                                            }
+                                        }
 
                                         // Update PedidosCobranza Marca
                                         await poolLocal.request()

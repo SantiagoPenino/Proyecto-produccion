@@ -637,7 +637,8 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
   }
 
   return (
-    <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+    // Sin overflow-hidden: si no, la tarjeta recorta el desplegable "Ver" cuando se abre.
+    <div className="bg-white rounded-xl border border-slate-200">
       {/* Los saldos (pendiente / a favor) se muestran arriba en la barra de filtros (elevados vía onResumen) */}
 
       {/* Billetera: ⚙ configurar cuenta secundaria (nombre, descuento automático, negativo, artículos) */}
@@ -666,9 +667,10 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
           {/* Filtros propios del estado de cuenta: moneda + tipo. Muestra AMBAS monedas
               juntas (no depende del toggle UYU/USD de arriba). */}
           <div className="px-4 py-3 flex flex-wrap items-center gap-2 border-b border-slate-100">
-            {/* Selector "Ver": un solo desplegable agrupado para cuentas de plata Y recursos
-                en metros — reemplaza a la fila de chips por cuenta (se apilaba con muchas). */}
-            {(cuentasDineroEC.length > 1 || recursoCuentas.length > 0) && (() => {
+            {/* Selector "Ver": desplegable SOLO de cuentas de plata (reemplaza a la fila de chips,
+                que se apilaba con muchas). Los recursos en metros NO van acá: se abren desde el
+                chip "Recursos" del encabezado y desde la solapa "Recursos". */}
+            {(cuentasDineroEC.length > 1 || recursoEC != null) && (() => {
               const ctaSel = fCuentaEC !== 'TODAS' ? cuentasDineroEC.find(c => c.CueIdCuenta === Number(fCuentaEC)) : null;
               const recSel = recursoEC != null ? recursoCuentas.find(r => r.CueIdCuenta === recursoEC) : null;
               const labelSel = recSel
@@ -678,13 +680,12 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
                   : 'Todo el cliente';
               const elegirTodo = () => { setFCuentaEC('TODAS'); setRecursoEC(null); setVerOpen(false); };
               const elegirCta  = (c) => { setFCuentaEC(String(c.CueIdCuenta)); setRecursoEC(null); setFMonEC('TODAS'); setVerOpen(false); };
-              const elegirRec  = (r) => { setRecursoEC(r.CueIdCuenta); setFCuentaEC('TODAS'); setVerOpen(false); };
               const filaSel = (activo) => `w-full flex items-center justify-between gap-3 px-3 py-1.5 text-left text-[11px] font-bold transition-colors ${activo ? 'bg-violet-600 text-white' : 'text-slate-600 hover:bg-violet-50'}`;
               return (
                 <div className="relative">
                   <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 mr-2">Ver</span>
                   <button type="button" onClick={() => setVerOpen(v => !v)}
-                    title="Elegí qué mirar: todo el cliente, una cuenta de plata (su libro) o un recurso en metros (su libro)"
+                    title="Elegí qué mirar: todo el cliente junto, o una sola cuenta de plata (su libro)"
                     className="inline-flex items-center gap-1.5 text-[11px] font-bold px-3 py-1.5 rounded-full border border-violet-300 bg-white text-violet-700 hover:border-violet-500 transition-colors">
                     <Wallet size={12} /> {labelSel} <ChevronDown size={12} className={`transition-transform ${verOpen ? 'rotate-180' : ''}`} />
                   </button>
@@ -696,9 +697,6 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
                           <span>Todo el cliente</span>
                           <span className={`text-[10px] font-semibold ${!ctaSel && !recSel ? 'text-white/70' : 'text-slate-400'}`}>estado de cuenta combinado</span>
                         </button>
-                        {cuentasDineroEC.length > 0 && (
-                          <div className="px-3 pt-2 pb-0.5 text-[9px] font-black uppercase tracking-widest text-slate-400 border-t border-slate-100 mt-1">Billetera</div>
-                        )}
                         {cuentasDineroEC.map(c => (
                           <div key={c.CueIdCuenta} className="flex items-stretch">
                             <button type="button" onClick={() => elegirCta(c)}
@@ -717,26 +715,13 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
                             )}
                           </div>
                         ))}
-                        {recursoCuentas.length > 0 && (
-                          <div className="px-3 pt-2 pb-0.5 text-[9px] font-black uppercase tracking-widest text-slate-400 border-t border-slate-100 mt-1">Recursos en metros</div>
-                        )}
-                        {recursoCuentas.map(r => (
-                          <button key={r.CueIdCuenta} type="button" onClick={() => elegirRec(r)}
-                            title="Ver el libro de este recurso (compras, consumos y saldo en metros)"
-                            className={filaSel(recursoEC === r.CueIdCuenta)}>
-                            <span className="truncate"><span className="font-mono text-[9px] opacity-70 mr-1.5">{codigoCuenta(r)}</span>{r.NombreArticulo || r.CueNombre || `Recurso #${r.CueIdCuenta}`}</span>
-                            <span className={`font-mono font-black tabular-nums shrink-0 ${Number(r.CueSaldoActual || 0) < 0 ? 'text-rose-500' : ''}`}>
-                              {Number(r.CueSaldoActual || 0).toLocaleString('es-UY', { minimumFractionDigits: 2 })} {r.MonSimbolo || 'mts'}
-                            </span>
-                          </button>
-                        ))}
                       </div>
                     </>
                   )}
                 </div>
               );
             })()}
-            {(cuentasDineroEC.length > 1 || recursoCuentas.length > 0) && <span className="w-px h-4 bg-slate-200 mx-1" />}
+            {(cuentasDineroEC.length > 1 || recursoEC != null) && <span className="w-px h-4 bg-slate-200 mx-1" />}
             {recursoEC == null && monedasPresentes.length > 1 && (
               <>
                 <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 mr-1">Moneda</span>
@@ -786,6 +771,31 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
               )}
             </div>
             <span className="text-[11px] font-semibold text-slate-400">{movimientos.length} movimiento{movimientos.length !== 1 ? 's' : ''}</span>
+            {/* Imprimir la cuenta elegida cuando NO es billetera (la principal): la billetera
+                ya trae su impresora en el encabezado de LibroCuentaDinero. */}
+            {fCuentaEC !== 'TODAS' && !cuentaLibro && (() => {
+              const cta = cuentasDineroEC.find(c => c.CueIdCuenta === Number(fCuentaEC));
+              if (!cta) return null;
+              return (
+                <button type="button"
+                  title={`Imprimir el estado de cuenta SOLO de "${nombreCuentaEC(cta)}" (PDF del período elegido)`}
+                  onClick={async () => {
+                    const t = toast.loading('Generando PDF del estado de cuenta…');
+                    try {
+                      const p = new URLSearchParams({ top: 500 });
+                      if (desde) p.append('desde', desde);
+                      if (hasta) p.append('hasta', hasta);
+                      const resp = await fetchAPI(`/api/contabilidad/cuentas/${cta.CueIdCuenta}/movimientos?${p}`);
+                      const sec = { [cta.CueIdCuenta]: { cue: cta, movs: resp.data || [], saldoArrastre: Number(resp.saldoArrastre ?? 0) } };
+                      generarPdfEstadoCuenta(cliente || { Nombre: 'Cliente', CliIdCliente: cta.CliIdCliente }, [cta], sec, [], desde, hasta);
+                      toast.success('PDF descargado', { id: t });
+                    } catch (err) { toast.error('Error al generar PDF: ' + err.message, { id: t }); }
+                  }}
+                  className="p-1.5 bg-white border border-slate-200 text-slate-500 hover:text-violet-700 hover:border-violet-300 rounded-lg transition-colors">
+                  <Printer size={13} />
+                </button>
+              );
+            })()}
             </>}
           </div>
           {recursoEC == null && mostrarSaldo && desde && Object.values(arrastreVisible).some(v => Math.abs(v) > 0.01) && (
@@ -809,7 +819,7 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
           /* Billetera: cuenta secundaria elegida → libro propio (como el del rollo) con editar/revertir/eliminar */
           cuentaLibro ? (
             <div className="px-4 pb-4">
-              <LibroCuentaDinero cuenta={cuentaLibro} cliente={cliente} desde={desde} hasta={hasta} onChanged={recargarCuentas} />
+              <LibroCuentaDinero cuenta={cuentaLibro} cliente={cliente} desde={desde} hasta={hasta} onChanged={recargarCuentas} ocultarBotonesCarga />
             </div>
           ) : movimientos.length === 0 ? (
             <p className="text-center text-slate-400 text-sm py-10">Sin movimientos para el período.</p>
@@ -1215,12 +1225,25 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
   );
 }
 
+// Cliente elegido en el Panel 360: se recuerda mientras la pestaña siga abierta, para no
+// perderlo al ir y volver (pre-factura de "Facturar semanales") ni al refrescar con F5.
+const CLIENTE_360_KEY = 'cliente360:seleccion';
+const leerSeleccion360 = () => {
+  try {
+    const guardado = JSON.parse(sessionStorage.getItem(CLIENTE_360_KEY) || 'null');
+    return guardado?.cliente?.CliIdCliente ? guardado : null;
+  } catch { return null; }  // sessionStorage bloqueada: la vista funciona igual, solo no recuerda
+};
+
 export default function ClienteVista360() {
   const location = useLocation();
   const navigate = useNavigate();
 
-  const [busqueda, setBusqueda]                   = useState('');
-  const [filtroTipoCliente, setFiltroTipoCliente] = useState('');
+  // Selección recordada de la pestaña (cliente + búsqueda con la que se llegó a él)
+  const [seleccionGuardada] = useState(leerSeleccion360);
+
+  const [busqueda, setBusqueda]                   = useState(() => seleccionGuardada?.busqueda || '');
+  const [filtroTipoCliente, setFiltroTipoCliente] = useState(() => seleccionGuardada?.filtroTipoCliente || '');
   const [clientesActivos, setClientesActivos]     = useState([]);
   const [clienteSel, setClienteSel]               = useState(null);
   const [cuentas, setCuentas]                     = useState([]);
@@ -1385,6 +1408,25 @@ export default function ClienteVista360() {
       if (found) { setHasAutoSelected(true); seleccionarCliente(found); }
     }
   }, [location.state, clientesActivos, hasAutoSelected]);
+
+  // Al montar: si la pestaña ya venía con un cliente abierto, lo reabre solo.
+  // Cubre volver de la pre-factura ("Facturar semanales") y el refresco con F5.
+  useEffect(() => {
+    if (location.state?.selectedClienteId) return; // la preselección explícita manda
+    const recordado = seleccionGuardada?.cliente;
+    if (!recordado?.CliIdCliente) return;
+    setHasAutoSelected(true);
+    seleccionarCliente(recordado);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Guarda el cliente abierto (y la búsqueda con la que se llegó a él).
+  useEffect(() => {
+    if (!clienteSel?.CliIdCliente) return;
+    try {
+      sessionStorage.setItem(CLIENTE_360_KEY, JSON.stringify({ cliente: clienteSel, busqueda, filtroTipoCliente }));
+    } catch { /* sessionStorage bloqueada: no recuerda, pero no rompe nada */ }
+  }, [clienteSel, busqueda, filtroTipoCliente]);
 
   /* ── KPIs (mismo cálculo que la vista de cuentas) ───────────────────── */
   const saldoTotal        = cuentas.reduce((s, c) => s + Number(c.CueSaldoActual ?? 0), 0);
@@ -1672,33 +1714,12 @@ export default function ClienteVista360() {
 
                   {/* Toolbar de acciones (dinero = próxima fase) */}
                   <div className="px-5 py-3 bg-slate-50 border-t border-slate-100 flex flex-wrap items-center gap-2">
+                    {/* Orden pedido: pago · venta de recursos · venta insumos · venta de saldo ·
+                        facturar semanales · bandeja CFE · factura manual. El resto (cuentas y
+                        saldos, de uso ocasional) vive en el menú "Más" del final. */}
                     <button onClick={() => { setCobroPaso('seleccion'); setOpModal('COBRO'); }}
                       className="flex items-center gap-1.5 px-3.5 py-2 bg-cyan-700 hover:bg-cyan-800 text-white text-xs font-bold rounded-lg shadow-sm transition-colors">
                       <DollarSign size={14} /> Registrar pago
-                    </button>
-                    <button onClick={() => { setAnticipoPaso('operacion'); setOpModal('ANTICIPO'); }}
-                      className="flex items-center gap-1.5 px-3 py-2 bg-white border border-slate-200 hover:border-slate-300 text-slate-700 text-xs font-bold rounded-lg transition-colors">
-                      <Wallet size={14} /> Saldo Anticipado
-                    </button>
-                    <button onClick={() => setShowSaldoInicial(true)}
-                      className="flex items-center gap-1.5 px-3 py-2 bg-white border border-slate-200 hover:border-slate-300 text-slate-700 text-xs font-bold rounded-lg transition-colors">
-                      <PlusCircle size={14} /> Saldo Inicial
-                    </button>
-                    <button onClick={() => setShowNuevaCuenta(true)} title="Cuentas del cliente: ver todas, crear una nueva o editar las existentes (modalidad, automático, negativo, artículos)"
-                      className="flex items-center gap-1.5 px-3 py-2 bg-white border border-violet-200 hover:border-violet-400 text-violet-700 text-xs font-bold rounded-lg transition-colors">
-                      <Wallet size={14} /> Cuentas
-                    </button>
-                    <button onClick={() => setShowTransferir(true)} title="Transferir dinero entre dos cuentas de este cliente"
-                      className="flex items-center gap-1.5 px-3 py-2 bg-white border border-cyan-200 hover:border-cyan-400 text-cyan-700 text-xs font-bold rounded-lg transition-colors">
-                      <RefreshCw size={14} /> Transferir
-                    </button>
-                    <button onClick={() => setShowVentaSaldo(true)} title="Cargar una cuenta prepago con una factura general (como la venta de rollo, pero en plata): cobrando ahora o desde el saldo a favor"
-                      className="flex items-center gap-1.5 px-3 py-2 bg-white border border-emerald-200 hover:border-emerald-400 text-emerald-700 text-xs font-bold rounded-lg transition-colors">
-                      <DollarSign size={14} /> Venta de saldo
-                    </button>
-                    <button onClick={() => setShowAjusteSaldo(true)} title="Corregir el saldo de una cuenta de dinero, con motivo obligatorio"
-                      className="flex items-center gap-1.5 px-3 py-2 bg-white border border-slate-200 hover:border-slate-300 text-slate-700 text-xs font-bold rounded-lg transition-colors">
-                      <Scale size={14} /> Ajustar saldo
                     </button>
                     <button onClick={() => { setVentaTipo('recursos'); setVentaPaso('conceptos'); setOpModal('VENTA'); }}
                       className="flex items-center gap-1.5 px-3 py-2 bg-white border border-slate-200 hover:border-slate-300 text-slate-700 text-xs font-bold rounded-lg transition-colors">
@@ -1707,6 +1728,10 @@ export default function ClienteVista360() {
                     <button onClick={() => { setVentaTipo('libre'); setVentaPaso('conceptos'); setOpModal('VENTA'); }}
                       className="flex items-center gap-1.5 px-3 py-2 bg-white border border-slate-200 hover:border-slate-300 text-slate-700 text-xs font-bold rounded-lg transition-colors">
                       <Tag size={14} /> Venta insumos y productos
+                    </button>
+                    <button onClick={() => setShowVentaSaldo(true)} title="Cargar una cuenta prepago con una factura general (como la venta de rollo, pero en plata): cobrando ahora o desde el saldo a favor"
+                      className="flex items-center gap-1.5 px-3 py-2 bg-white border border-emerald-200 hover:border-emerald-400 text-emerald-700 text-xs font-bold rounded-lg transition-colors">
+                      <DollarSign size={14} /> Venta de saldo
                     </button>
                     <button onClick={handleFacturarOrdenes}
                       className="flex items-center gap-1.5 px-3 py-2 bg-white border border-slate-200 hover:border-slate-300 text-slate-700 text-xs font-bold rounded-lg transition-colors">
@@ -1721,6 +1746,45 @@ export default function ClienteVista360() {
                       className="flex items-center gap-1.5 px-3 py-2 bg-white border border-slate-200 hover:border-slate-300 text-slate-700 text-xs font-bold rounded-lg transition-colors">
                       <FilePlus size={14} /> Nueva Factura Manual
                     </button>
+
+                    {/* "Más" — las mismas acciones de antes, ahora agrupadas (mismo patrón que el selector "Ver") */}
+                    <div className="relative">
+                      <button type="button" onClick={() => setShowMasMenu(v => !v)}
+                        title="Más acciones del cliente: Saldo Anticipado, Saldo Inicial, Cuentas, Transferir y Ajustar saldo"
+                        className="flex items-center gap-1.5 px-3 py-2 bg-white border border-slate-200 hover:border-slate-300 text-slate-700 text-xs font-bold rounded-lg transition-colors">
+                        <MoreHorizontal size={14} /> Más
+                      </button>
+                      {showMasMenu && (
+                        <>
+                          <div className="fixed inset-0 z-30" onClick={() => setShowMasMenu(false)} />
+                          <div className="absolute left-0 top-full mt-1.5 z-40 w-72 bg-white border border-slate-200 rounded-xl shadow-xl overflow-hidden py-1">
+                            <button type="button" onClick={() => { setShowMasMenu(false); setAnticipoPaso('operacion'); setOpModal('ANTICIPO'); }}
+                              className="w-full flex items-center gap-2 px-3 py-2 text-left text-[11px] font-bold text-slate-600 hover:bg-violet-50 hover:text-violet-700 transition-colors">
+                              <Wallet size={14} className="shrink-0 opacity-60" /> Saldo Anticipado
+                            </button>
+                            <button type="button" onClick={() => { setShowMasMenu(false); setShowSaldoInicial(true); }}
+                              className="w-full flex items-center gap-2 px-3 py-2 text-left text-[11px] font-bold text-slate-600 hover:bg-violet-50 hover:text-violet-700 transition-colors">
+                              <PlusCircle size={14} className="shrink-0 opacity-60" /> Saldo Inicial
+                            </button>
+                            <button type="button" onClick={() => { setShowMasMenu(false); setShowNuevaCuenta(true); }}
+                              title="Cuentas del cliente: ver todas, crear una nueva o editar las existentes (modalidad, automático, negativo, artículos)"
+                              className="w-full flex items-center gap-2 px-3 py-2 text-left text-[11px] font-bold text-slate-600 hover:bg-violet-50 hover:text-violet-700 transition-colors">
+                              <Wallet size={14} className="shrink-0 opacity-60" /> Cuentas
+                            </button>
+                            <button type="button" onClick={() => { setShowMasMenu(false); setShowTransferir(true); }}
+                              title="Transferir dinero entre dos cuentas de este cliente"
+                              className="w-full flex items-center gap-2 px-3 py-2 text-left text-[11px] font-bold text-slate-600 hover:bg-violet-50 hover:text-violet-700 transition-colors">
+                              <RefreshCw size={14} className="shrink-0 opacity-60" /> Transferir
+                            </button>
+                            <button type="button" onClick={() => { setShowMasMenu(false); setShowAjusteSaldo(true); }}
+                              title="Corregir el saldo de una cuenta de dinero, con motivo obligatorio"
+                              className="w-full flex items-center gap-2 px-3 py-2 text-left text-[11px] font-bold text-slate-600 hover:bg-violet-50 hover:text-violet-700 transition-colors">
+                              <Scale size={14} className="shrink-0 opacity-60" /> Ajustar saldo
+                            </button>
+                          </div>
+                        </>
+                      )}
+                    </div>
 
                     <div className="flex-1" />
 
@@ -1900,8 +1964,8 @@ export default function ClienteVista360() {
 
       {/* Menú "Más" → Bandeja CFE del cliente (reusa ContabilidadBandejaCFE, fijada al cliente) */}
       {showBandejaCFE && clienteSel && (
-        <div className="fixed inset-0 z-[60] bg-black/50 flex items-start justify-center px-2 sm:px-4 pt-10 pb-4">
-          <div className="bg-white rounded-2xl shadow-2xl w-[97vw] max-w-7xl h-[calc(100vh-4rem)] flex flex-col overflow-hidden">
+        <div className="fixed inset-0 z-[6000] bg-black/50 flex items-start justify-center px-2 pt-4 pb-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-[98vw] max-w-[1800px] h-[calc(100vh-2rem)] flex flex-col overflow-hidden">
             <div className="flex items-center justify-between px-5 py-3 border-b border-slate-200 bg-slate-50 shrink-0">
               <div className="flex items-center gap-2.5">
                 <div className="w-8 h-8 rounded-lg bg-cyan-700 text-white flex items-center justify-center"><FileText size={16} /></div>
@@ -1915,7 +1979,7 @@ export default function ClienteVista360() {
                 <X size={18} />
               </button>
             </div>
-            <div className="flex-1 min-h-0 overflow-y-auto p-4">
+            <div className="flex-1 min-h-0 overflow-y-auto p-3">
               <ContabilidadBandejaCFE initialCliente={clienteSel} embedded />
             </div>
           </div>

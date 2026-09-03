@@ -336,6 +336,19 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
     const [productosTerminadosConf, setProductosTerminadosConf] = useState([]);
     const [productoTerminadoSel, setProductoTerminadoSel] = useState('');
     const [serviciosObligatorios, setServiciosObligatorios] = useState(new Set());
+    // [PRENDAS] Tipo de fabricación (pedido 4/8): TERMINADO = producto del catálogo (con
+    // sus servicios incluidos) / PERSONALIZADO = prenda del cliente sin catálogo, flujo
+    // libre de siempre (sublimación + corte/costura/decoración a mano). Default =
+    // PERSONALIZADO, que es lo que era "— Prenda sin producto de catálogo —".
+    const [tipoFabricacion, setTipoFabricacion] = useState('PERSONALIZADO');
+    // [PRENDAS] Prenda personalizada — el pedido nace con ORDEN MADRE PRO (artículo
+    // genérico PPERS, lo resuelve el backend) y el cobro es UNA de dos:
+    //  · SECTORES: cada área factura su línea con su propia tarifa.
+    //  · ESTABLECIDO: precio único pactado ahora (pisa la línea PRO; las áreas quedan
+    //    como detalle sin sumar). Viaja como marcador en la nota de la orden PRO.
+    const [modoPrecioPers, setModoPrecioPers] = useState('SECTORES');
+    const [precioPersonalizado, setPrecioPersonalizado] = useState('');
+    const [monedaPersonalizada, setMonedaPersonalizada] = useState('UYU');
     // [COMBOS] Separa el picker de "Fabricar a Medida" del de "Combos y Promos" — mismo
     // queDesea='FABRICAR_A_MEDIDA' y misma lista productosTerminadosConf de siempre, filtrada
     // por esCombo (ver botón "Qué desea" más abajo).
@@ -936,6 +949,25 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
             return addToast('Ingresá la Cantidad de Prendas del pedido.', 'error');
         }
 
+        // [PRENDAS] Tipo de fabricación "Producto terminado" exige elegir el producto —
+        // sin esto el pedido salía en silencio como personalizado (sin catálogo).
+        if (queDesea === 'FABRICAR_A_MEDIDA' && !soloCombos && tipoFabricacion === 'TERMINADO' && !productoTerminadoSel) {
+            return addToast('Elegí el Producto Terminado a Fabricar (o pasá a "Producto personalizado").', 'error');
+        }
+
+        // [PRENDAS] Prenda personalizada: nace con orden madre PRO → necesita cantidad
+        // sí o sí (es la Magnitud/cantidad a fabricar de PRO) y, si el cobro es a precio
+        // establecido, el monto pactado.
+        const esPersonalizadoConMadre = queDesea === 'FABRICAR_A_MEDIDA' && !soloCombos && tipoFabricacion === 'PERSONALIZADO';
+        if (esPersonalizadoConMadre) {
+            if (!garmentQuantity || parseFloat(garmentQuantity) <= 0) {
+                return addToast('Ingresá la Cantidad de Prendas del pedido.', 'error');
+            }
+            if (modoPrecioPers === 'ESTABLECIDO' && (!precioPersonalizado || parseFloat(precioPersonalizado) <= 0)) {
+                return addToast('Ingresá el precio establecido del pedido (o elegí "Facturar por cada área").', 'error');
+            }
+        }
+
         // [PRENDAS] "Comprar" sin personalizar: es una venta de stock pura, va por WMS
         // (PedidosCobranza/VEN-xxx) — no crea ninguna Orden de producción. El botón del
         // carrito queda oculto (showOwnCheckout=false); este es el único "Confirmar".
@@ -1474,7 +1506,9 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                     // ser hermana de la nueva orden PRO (más abajo) — es la que lleva el precio
                     // único y avisa al cliente; Sublimación queda como trabajo interno del
                     // material, igual que Bordado/DTF/Corte/Costura.
-                    esPrincipal: !(queDesea === 'FABRICAR_A_MEDIDA' && productoTerminadoSel),
+                    // [PRENDAS] Con orden madre PRO (producto terminado O prenda personalizada),
+                    // esta orden (Sublimación) pasa a ser hermana: PRO lleva precio/aviso.
+                    esPrincipal: !(queDesea === 'FABRICAR_A_MEDIDA' && (productoTerminadoSel || esPersonalizadoConMadre)),
                     areaId: serviceInfo?.areaId || serviceId, // FIX: Send DB-aligned ID (e.g. SB, ECOUV) forcorrect priority mapping
                     cabecera: grp.cabecera,
                     archivos: archivosServicio, // Lista oficial de archivos
@@ -1618,6 +1652,29 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                         notas: '[PRODUCTO FABRICADO A MEDIDA]',
                     });
                 }
+            }
+
+            // [PRENDAS] Prenda PERSONALIZADA (sin catálogo): también nace la orden madre PRO
+            // — mismo pilar que el producto terminado, pero con el artículo genérico PPERS
+            // (lo resuelve el backend vía esPrendaPersonalizada). El modo de cobro viaja como
+            // marcador en la nota y lo aplica erpSyncService al cotizar:
+            //  · [FACTURA POR AREA] → cada área factura su línea con su tarifa.
+            //  · [PRECIO ESTABLECIDO: monto MONEDA] → precio único pactado ahora.
+            if (esPersonalizadoConMadre) {
+                const marcadorPrecio = modoPrecioPers === 'ESTABLECIDO'
+                    ? `[PRECIO ESTABLECIDO: ${parseFloat(precioPersonalizado)} ${monedaPersonalizada}]`
+                    : '[FACTURA POR AREA]';
+                listaServicios.push({
+                    esPrincipal: true,
+                    areaId: 'PRO',
+                    esProductoFabricado: true,
+                    esPrendaPersonalizada: true,
+                    cabecera: { material: 'Prenda Personalizada' },
+                    archivos: [],
+                    items: [{ cantidad: parseFloat(garmentQuantity) || 1 }],
+                    metadata: {},
+                    notas: `[PRENDA PERSONALIZADA] ${marcadorPrecio}`,
+                });
             }
 
             // B) SERVICIOS COMPLEMENTARIOS (Corte, Costura, etc.)
@@ -2134,18 +2191,123 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                                     hasta ahora (servicios sueltos, activados a mano). */}
                                 {queDesea === 'FABRICAR_A_MEDIDA' && (
                                     <div className="md:col-span-2">
+                                        {/* [PRENDAS] Tres tarjetas lado a lado (pedido del 4/9): Tipo de
+                                            fabricación · Cómo se cobra · Cantidad y Precio. Opciones con
+                                            CHECK MARK (radio con ✓), no botones-bloque. */}
+                                        {!soloCombos && (() => {
+                                            const OpcionCheck = ({ activo, onClick, label, desc }) => (
+                                                <button type="button" onClick={onClick}
+                                                    className={`w-full flex items-start gap-2.5 px-3 py-2 rounded-lg text-left transition-all border mb-1.5 ${activo ? 'bg-cyan-400/10 border-cyan-500/30' : 'border-transparent hover:bg-zinc-800/70'}`}>
+                                                    <span className={`mt-0.5 w-[18px] h-[18px] shrink-0 rounded-full border-2 flex items-center justify-center ${activo ? 'bg-cyan-400 border-cyan-400 text-slate-900' : 'border-zinc-600 text-transparent'}`}>
+                                                        <i className="fa-solid fa-check text-[9px]"></i>
+                                                    </span>
+                                                    <span className="min-w-0">
+                                                        <span className={`block text-sm font-semibold leading-tight ${activo ? 'text-cyan-300' : 'text-zinc-300'}`}>{label}</span>
+                                                        <span className="block text-[10px] text-zinc-500 leading-snug mt-0.5">{desc}</span>
+                                                    </span>
+                                                </button>
+                                            );
+                                            const cardCls = 'border border-zinc-700/60 rounded-xl p-4 bg-brand-dark/30';
+                                            return (
+                                                <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 items-stretch mb-4">
+                                                    {/* 1. TIPO DE FABRICACIÓN */}
+                                                    <div className={cardCls}>
+                                                        <p className="text-xs font-bold uppercase text-zinc-400 mb-3">Tipo de fabricación *</p>
+                                                        <OpcionCheck
+                                                            activo={tipoFabricacion === 'TERMINADO'}
+                                                            onClick={() => setTipoFabricacion('TERMINADO')}
+                                                            label="Producto terminado"
+                                                            desc="Del catálogo — trae sus servicios incluidos"
+                                                        />
+                                                        <OpcionCheck
+                                                            activo={tipoFabricacion === 'PERSONALIZADO'}
+                                                            onClick={() => {
+                                                                setTipoFabricacion('PERSONALIZADO');
+                                                                // Personalizado = sin producto de catálogo: limpiar la
+                                                                // selección apaga los servicios obligatorios heredados.
+                                                                setProductoTerminadoSel('');
+                                                            }}
+                                                            label="Producto personalizado (cliente)"
+                                                            desc="Libre — sublimación y todos los servicios a mano"
+                                                        />
+                                                    </div>
+
+                                                    {/* 2. CÓMO SE COBRA (solo personalizado) */}
+                                                    {tipoFabricacion === 'PERSONALIZADO' && (
+                                                        <div className={cardCls}>
+                                                            <p className="text-xs font-bold uppercase text-zinc-400 mb-3">Cómo se cobra *</p>
+                                                            <OpcionCheck
+                                                                activo={modoPrecioPers === 'SECTORES'}
+                                                                onClick={() => setModoPrecioPers('SECTORES')}
+                                                                label="Facturar por cada área"
+                                                                desc="Cada sector cotiza su trabajo con su propia tarifa"
+                                                            />
+                                                            <OpcionCheck
+                                                                activo={modoPrecioPers === 'ESTABLECIDO'}
+                                                                onClick={() => setModoPrecioPers('ESTABLECIDO')}
+                                                                label="Precio establecido"
+                                                                desc="Un precio único pactado ahora — las áreas no suman aparte"
+                                                            />
+                                                        </div>
+                                                    )}
+
+                                                    {/* 3. CANTIDAD Y PRECIO (solo personalizado) */}
+                                                    {tipoFabricacion === 'PERSONALIZADO' && (
+                                                        <div className={cardCls}>
+                                                            <p className="text-xs font-bold uppercase text-zinc-400 mb-3">Cantidad y Precio *</p>
+                                                            <label className="block text-[10px] font-bold uppercase text-zinc-500 mb-1">Cantidad de prendas</label>
+                                                            <input
+                                                                type="number" min="1" step="1"
+                                                                value={garmentQuantity}
+                                                                onChange={(e) => actions.setGarmentQuantity(e.target.value)}
+                                                                placeholder="¿Cuántas prendas?"
+                                                                className="w-full bg-custom-dark border border-zinc-700 rounded-lg px-3 py-2 text-white placeholder-zinc-500 focus:outline-none focus:border-brand-cyan"
+                                                            />
+                                                            {modoPrecioPers === 'ESTABLECIDO' ? (
+                                                                <>
+                                                                    <label className="block text-[10px] font-bold uppercase text-zinc-500 mt-3 mb-1">Precio total del pedido (todo incluido)</label>
+                                                                    <div className="flex gap-2">
+                                                                        <select
+                                                                            value={monedaPersonalizada}
+                                                                            onChange={e => setMonedaPersonalizada(e.target.value)}
+                                                                            className="bg-custom-dark border border-zinc-700 rounded-lg px-2 py-2 text-white text-sm font-bold focus:outline-none focus:border-brand-cyan"
+                                                                        >
+                                                                            <option value="UYU">$ (UYU)</option>
+                                                                            <option value="USD">US$ (USD)</option>
+                                                                        </select>
+                                                                        <input
+                                                                            type="number" min="0.01" step="0.01"
+                                                                            value={precioPersonalizado}
+                                                                            onChange={e => setPrecioPersonalizado(e.target.value)}
+                                                                            placeholder="Precio final"
+                                                                            className="flex-1 min-w-0 bg-custom-dark border border-zinc-700 rounded-lg px-3 py-2 text-white placeholder-zinc-500 focus:outline-none focus:border-brand-cyan"
+                                                                        />
+                                                                    </div>
+                                                                    <p className="mt-1.5 text-[10px] text-zinc-500">Es el precio FINAL del pedido en esa moneda — no se convierte ni se le suma nada.</p>
+                                                                </>
+                                                            ) : (
+                                                                <p className="mt-3 text-[10px] text-zinc-500">El precio lo cotiza cada área con su tarifa al crear el pedido.</p>
+                                                            )}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            );
+                                        })()}
+
+                                        {(soloCombos || tipoFabricacion === 'TERMINADO') && (
+                                            <>
                                         <p className="block text-xs font-bold uppercase text-zinc-400 mb-2">
-                                            {soloCombos ? 'Combo a Pedir *' : 'Producto a Fabricar (opcional)'}
+                                            {soloCombos ? 'Combo a Pedir *' : 'Producto Terminado a Fabricar *'}
                                         </p>
                                         <CustomSelect
                                             name="productoTerminadoConf"
-                                            aria-label={soloCombos ? 'Combo a Pedir' : 'Producto a Fabricar'}
+                                            aria-label={soloCombos ? 'Combo a Pedir' : 'Producto Terminado a Fabricar'}
                                             value={productoTerminadoSel}
                                             onChange={(val) => setProductoTerminadoSel(val)}
                                             options={[
-                                                // Un combo ES su composición: no existe "combo sin producto de
-                                                // catálogo" — acá no se ofrece la opción vacía.
-                                                ...(soloCombos ? [] : [{ value: '', label: '— Prenda sin producto de catálogo —' }]),
+                                                // Sin opción vacía: "sin producto de catálogo" ahora es el botón
+                                                // "Producto personalizado (cliente)" de arriba (y un combo ES su
+                                                // composición — tampoco tiene vacío).
                                                 ...productosTerminadosConf.filter(p => !!p.esCombo === soloCombos).map(p => ({
                                                     value: String(p.ProIdProducto),
                                                     label: `${p.Descripcion}${p.Precio != null ? ` · ${p.MonIdMoneda === 2 ? 'US$' : '$'} ${p.Precio}` : ''}`,
@@ -2166,6 +2328,13 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                                                 Es un combo — los servicios de cada componente (con su propio archivo/boceto) se cargan más abajo, en "Servicios y Procesos".
                                             </p>
                                         )}
+                                            </>
+                                        )}
+                                        {!soloCombos && tipoFabricacion === 'PERSONALIZADO' && (
+                                            <p className="text-[11px] text-zinc-500">
+                                                Prenda personalizada del cliente, sin producto de catálogo: cargá la sublimación en “Producción Principal” y activá corte, costura y decoración (bordado / DTF / TPU) a mano acá abajo. El pedido nace con su <b>orden madre PRO</b> que pilota todo el flujo productivo.
+                                            </p>
+                                        )}
                                     </div>
                                 )}
 
@@ -2177,6 +2346,8 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                                     el envío si queda vacío (ver validación en handleSubmit). Comparte el
                                     mismo estado garmentQuantity que esos paneles — llenarla acá también los
                                     completa a ellos, y viceversa. */}
+                                {/* [PRENDAS] En personalizado la cantidad vive en la tarjeta
+                                    "Cantidad y Precio" de arriba — acá solo terminado/combos. */}
                                 {queDesea === 'FABRICAR_A_MEDIDA' && productoTerminadoSel && (
                                     <div className="md:col-span-2">
                                         <p className="block text-xs font-bold uppercase text-zinc-400 mb-2">{comboActivo ? 'Cantidad de Combos *' : 'Cantidad de Prendas *'}</p>

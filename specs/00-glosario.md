@@ -32,6 +32,10 @@
 | **Tizada** | Archivo de corte vectorial, medido automáticamente (piezas, metros de corte, metros de tela) | 02 |
 | **Falla** | Re-trabajo por error interno; invisible para el cliente; costo 0; con linaje | 02 |
 | **Reposición** | Re-trabajo a pedido del cliente; visible; costo 0; nunca mayor al original | 02 |
+| **Faltante** | Falla reportada sobre un insumo que vino de un área anterior; la reposición nace en el área que lo produce | 39 |
+| **Cadena de reposición** | Órdenes de falla encadenadas en las áreas anteriores a la que reportó un faltante; nada nuevo de ahí en adelante | 39 |
+| **Solicitud de Insumo** | Alerta a Atención al Cliente y Administración cuando el insumo dañado es del cliente o del local y producción no lo puede reponer | 39 |
+| **Parcial aceptado** | Cierre de una Solicitud: el cliente se lleva lo producido; la orden se redimensiona y se recotiza | 39 |
 | **Matriz** | Molde/troquel de un parche: costo de arranque que se cobra una vez y se puede reusar | 02 |
 | **Canasto** | Ubicación lógica de espera al salir de producción (producción, incompletos, falla, reposiciones) | 04 |
 | **Fecha prometida** | La fecha de entrega sellada al cliente al ingresar (área + prioridad + calendario) | 03 |
@@ -46,6 +50,9 @@
 | **Orden en Depósito** | El registro comercial de la orden ya en el depósito central: lo que se cobra, avisa y entrega | 04 |
 | **Check-in** | La recepción en el depósito central: el momento en que la mercadería se convierte en plata | 04 |
 | **Esperando bultos** | Estado de un pedido al que le faltan bultos físicos: no se contabiliza ni se avisa | 04 |
+| **Libro de Entregas** | Por orden: esperado, enviado, recibido y pendiente, con el motivo de cada pendiente | 39 |
+| **Envío parcial** | Remito que lleva parte de una orden con cantidad declarada por orden; nunca hacia Depósito | 39 |
+| **Complemento** | Envío posterior que completa una orden ya enviada en parte; viene de la madre o de una reposición | 39 |
 | **Retiro** | Agrupación de órdenes en depósito de un cliente para un solo acto de entrega | 04 |
 | **Encomienda** | Retiro cuyo destino no es el local: viaja como bulto en un remito a agencias | 04 |
 | **Estante** | Casillero físico donde espera el paquete armado; nunca mezcla clientes | 04 |

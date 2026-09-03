@@ -1582,7 +1582,9 @@ export const ModalVentaSaldo = ({ cliente, cuentaPreset = null, onClose, onSucce
 // Fecha · Tipo · Documento · Concepto · Saldo Ini. · Debe · Haber · Saldo Fn. y, sobre
 // cada CONSUMO de orden: ✏️ editar importe · 🔄 revertir (plata vuelve + orden pendiente)
 // · 🗑 eliminar (plata vuelve, la orden NO cambia).
-export const LibroCuentaDinero = ({ cuenta, cliente, desde, hasta, onChanged }) => {
+// ocultarBotonesCarga: el 360 esconde "Venta de saldo" y "Vincular factura emitida" de este
+// encabezado porque ya ofrece esos accesos en su propia barra de acciones del cliente.
+export const LibroCuentaDinero = ({ cuenta, cliente, desde, hasta, onChanged, ocultarBotonesCarga = false }) => {
   const [movs, setMovs] = useState([]);
   const [arrastre, setArrastre] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -1754,7 +1756,7 @@ export const LibroCuentaDinero = ({ cuenta, cliente, desde, hasta, onChanged }) 
         </div>
         <div className="flex items-center gap-2">
           <span className="text-xs text-slate-500">Saldo: <strong className={`font-mono ${(filas[0]?._fn ?? arrastre) < 0 ? 'text-rose-600' : 'text-violet-700'}`}>{sim} {fmtN(filas[0]?._fn ?? arrastre)}</strong></span>
-          {esPrepago && (
+          {esPrepago && !ocultarBotonesCarga && (
             <>
               <button type="button" onClick={() => setVentaSaldo(true)}
                 title="Cargar saldo a esta cuenta con una factura general (cobrando ahora o desde el saldo a favor de la principal)"

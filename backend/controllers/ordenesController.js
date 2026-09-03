@@ -672,6 +672,25 @@ const createOrden = async (req, res) => {
           MonIdMoneda: finalMonId
         }).catch(e => logger.error(`[CONTABILIDAD] Error en ENTREGA para ${CodigoOrden}: ${e.message}`));
 
+        // RE-COTIZACIÓN AL INGRESAR (vía QR): la orden queda cubierta por el plan
+        // (rollo o prepago) — no debe cobrarse en el retiro. Solo cuando no hubo
+        // cobro previo ni servicios en dinero, y nunca sobre una orden ya
+        // retirada/pagada.
+        if (!yaCobrado && serviciosUSD === 0) {
+          try {
+            const poolS = await require('../config/db.js').getPool();
+            await poolS.request()
+              .input('Cod', sql.VarChar(100), CodigoOrden)
+              .query(`UPDATE dbo.OrdenesDeposito SET OrdCostoFinal = 0
+                      WHERE OrdCodigoOrden = @Cod
+                        AND PagIdPago IS NULL
+                        AND OReIdOrdenRetiro IS NULL
+                        AND ISNULL(OrdCostoFinal, 0) <> 0`);
+          } catch (eStamp) {
+            logger.error(`[CTRL:ORDEN] ${CodigoOrden}: error re-estampando costo 0 (cubierta por plan): ${eStamp.message}`);
+          }
+        }
+
         if (yaCobrado) {
           if (deudaReal > 0) {
             logger.info(`[CTRL:ORDEN] Disparando evento ORDEN para ${CodigoOrden} (servicios pre-calculados)`);
