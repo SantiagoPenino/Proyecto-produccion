@@ -414,6 +414,10 @@ exports.createWebOrder = async (req, res) => {
                     return {
                         fileName: it.fileName,
                         fileBackName: it.fileBackName,
+                        // Clave única por archivo (la manda el portal). Con dos archivos de igual
+                        // nombre, el match de subida por nombre subía el mismo archivo dos veces.
+                        fileKey: it.fileKey || null,
+                        fileBackKey: it.fileBackKey || null,
                         copies: it.cantidad || 1,
                         note: it.nota,
                         width: it.width,
@@ -1648,6 +1652,7 @@ exports.createWebOrder = async (req, res) => {
                             dbId: resFile.recordset[0].ArchivoID,
                             type: 'ORDEN',
                             originalName: item.fileName, // Para que el front sepa cuál es
+                            fileKey: item.fileKey || null, // match exacto en el front; originalName queda de fallback
                             finalName: finalName,
                             area: exec.areaID
                         });
@@ -1814,6 +1819,7 @@ exports.createWebOrder = async (req, res) => {
                             dbId: resFileBack.recordset[0].ArchivoID,
                             type: 'ORDEN',
                             originalName: item.fileBackName, // Nombre real para buscar en upload
+                            fileKey: item.fileBackKey || null,
                             finalName: finalNameBack,
                             area: exec.areaID
                         });
@@ -2506,6 +2512,18 @@ exports.getClientOrders = async (req, res) => {
     const limit = parseInt(req.query.limit) || 20;
     const offset = (page - 1) * limit;
 
+    // Buscador de Mi Fábrica (?q=): se filtra ACÁ, sobre la lista entera del cliente — código,
+    // N° de documento ERP y título — y no en el portal, que solo veía las páginas ya cargadas por
+    // el scroll infinito. Substring sin distinguir mayúsculas (LOWER de los dos lados: no depende
+    // de la collation). Los contadores de las pestañas también respetan la búsqueda.
+    const q = String(req.query.q || '').trim().toLowerCase().slice(0, 100);
+    const qLike = q ? `%${q.replace(/[!%_\[]/g, '!$&')}%` : null;
+    const filtroBusqWeb = qLike ? `AND (LOWER(o.CodigoOrden) LIKE @qLike ESCAPE '!'
+                           OR LOWER(ISNULL(o.NoDocERP, '')) LIKE @qLike ESCAPE '!'
+                           OR LOWER(ISNULL(o.DescripcionTrabajo, '')) LIKE @qLike ESCAPE '!')` : '';
+    const filtroBusqErp = qLike ? `AND (LOWER(o.OrdCodigoOrden) LIKE @qLike ESCAPE '!'
+                           OR LOWER(ISNULL(o.OrdNombreTrabajo, '')) LIKE @qLike ESCAPE '!')` : '';
+
     try {
         const pool = await getPool();
         // El SELECT lee OrdenTexturasTPU (flag TieneTexturas): garantizar el schema TPU primero.
@@ -2521,12 +2539,14 @@ exports.getClientOrders = async (req, res) => {
                 // no puede usar IX_Ordenes_CodCliente y escanea la tabla entera. Como texto,
                 // Ordenes hace seek y Clientes convierte el parámetro (un solo valor, gratis).
                 .input('cod', sql.NVarChar(10), String(codCliente ?? ''))
+                .input('qLike', sql.NVarChar(250), qLike)
                 .query(`
                     SELECT ISNULL(o.NoDocERP, o.CodigoOrden) AS DocID, o.Estado, 'WEB' AS Origen
                     FROM Ordenes o WITH(NOLOCK)
                     WHERE o.CodCliente = @cod
                       AND o.CodigoOrden NOT LIKE '%-F%'   -- las fallas (-F) son internas: no cuentan para el cliente
                       AND ISNULL(o.AreaID,'') <> 'TERMINAC'  -- la hermana de terminaciones es interna: el cliente ve su pedido, no el trabajo interno
+                      ${filtroBusqWeb}
                     UNION ALL
                     SELECT o.OrdCodigoOrden AS DocID, e.EOrNombreEstado AS Estado, 'ERP' AS Origen
                     FROM OrdenesDeposito o WITH(NOLOCK)
@@ -2540,6 +2560,7 @@ exports.getClientOrders = async (req, res) => {
                           WHERE o2.CodCliente = @cod
                             AND LTRIM(RTRIM(o2.CodigoOrden)) = LTRIM(RTRIM(o.OrdCodigoOrden))
                       )
+                      ${filtroBusqErp}
                 `);
             
             const docs = {};
@@ -2590,6 +2611,7 @@ exports.getClientOrders = async (req, res) => {
             .input('cod', sql.NVarChar(10), String(codCliente ?? ''))
             .input('Offset', sql.Int, offset)
             .input('Limit', sql.Int, limit)
+            .input('qLike', sql.NVarChar(250), qLike)
             .query(`
                 SELECT * FROM (
                     SELECT
@@ -2649,6 +2671,7 @@ exports.getClientOrders = async (req, res) => {
                     WHERE o.CodCliente = @cod
                       AND o.CodigoOrden NOT LIKE '%-F%'   -- las fallas (-F) son internas: no se muestran al cliente
                       AND ISNULL(o.AreaID,'') <> 'TERMINAC'  -- ídem la hermana XEUV: es el trabajo de terminación, no una pieza más del pedido
+                      ${filtroBusqWeb}
 
                     UNION ALL
 
@@ -2689,6 +2712,7 @@ exports.getClientOrders = async (req, res) => {
                           WHERE o2.CodCliente = @cod
                             AND LTRIM(RTRIM(o2.CodigoOrden)) = LTRIM(RTRIM(o.OrdCodigoOrden))
                       )
+                      ${filtroBusqErp}
                 ) combined
                 ORDER BY combined.FechaIngreso DESC, combined.OrdenID DESC
                 OFFSET @Offset ROWS FETCH NEXT @Limit ROWS ONLY
@@ -3669,6 +3693,12 @@ exports.deleteIncompleteOrder = async (req, res) => {
             const { devolverMetrosTelaCliente } = require('../utils/telaClienteDevolucion');
             await devolverMetrosTelaCliente(transaction, id, `Devolución por eliminación Orden ${id}`, req.user?.id || 1);
 
+            // ECOUV: la hermana de terminaciones (XEUV-*) se crea DESDE EL INGRESO, así que
+            // una orden todavía en 'Pendiente'/'Cargando...' ya puede tener la suya viva en el
+            // taller. Sin esto quedaba trabajando una terminación cuya impresión ya no existe.
+            const { cancelarHermanaTerminaciones, eliminarHermanaTerminaciones } = require('../utils/hermanaTerminaciones');
+            const ordenIdNum = parseInt(id, 10);
+
             if (estado === 'Pendiente') {
                 // SOFT DELETE (Cancelar) - Queda en historial, vía servicio central
                 const { changeOrderState } = require('../services/stateManagerService');
@@ -3679,9 +3709,18 @@ exports.deleteIncompleteOrder = async (req, res) => {
                     detalle: 'Pedido incompleto cancelado',
                     io     : req.app.get('socketio'),
                 });
+                await cancelarHermanaTerminaciones(transaction, ordenIdNum, {
+                    userObj: req.user || 'Sistema',
+                    motivo : 'Pedido incompleto cancelado por el cliente',
+                    io     : req.app.get('socketio'),
+                });
                 await transaction.commit();
                 return res.json({ success: true, message: "Pedido cancelado correctamente." });
             }
+
+            // Borrado físico: la hermana y su detalle se van con la madre (antes del DELETE de
+            // Ordenes, que es de donde salen el código y el área para encontrarla).
+            await eliminarHermanaTerminaciones(transaction, ordenIdNum);
 
             await reqTx.input('OID', sql.Int, id).query("DELETE FROM ArchivosOrden WHERE OrdenID = @OID");
             await reqTx.input('OID2', sql.Int, id).query("DELETE FROM ArchivosReferencia WHERE OrdenID = @OID2");
@@ -3764,16 +3803,22 @@ exports.deleteOrderBundle = async (req, res) => {
                 await devolverMetrosTelaCliente(transaction, oid, `Devolución por eliminación Orden ${oid}`, req.user?.id || 1);
             }
 
+            // La hermana TERMINAC comparte NoDocERP y CodCliente con su madre, así que ya viene
+            // dentro de `ids` y cae con el resto del bundle. Lo que falta es su DETALLE:
+            // OrdenTerminaciones no lo tocaba nadie ni al cancelar ni al borrar.
+            const { marcarTerminacionesCanceladas } = require('../utils/hermanaTerminaciones');
+
             // Si todas son Pendiente → soft cancel con razón
             const allPendiente = orders.every(o => o.Estado === 'Pendiente');
             if (allPendiente && razon?.trim()) {
                 for (const oid of ids) {
                     if (typeof oid !== 'number') continue;
                     await reqTx.query(
-                        `UPDATE Ordenes 
-                         SET Estado = 'Cancelado', EstadoenArea = 'Cancelado', DetallesCancelacion = '${razon.trim().replace(/'/g, "''")}' 
+                        `UPDATE Ordenes
+                         SET Estado = 'Cancelado', EstadoenArea = 'Cancelado', DetallesCancelacion = '${razon.trim().replace(/'/g, "''")}'
                          WHERE OrdenID = ${oid}`
                     );
+                    await marcarTerminacionesCanceladas(transaction, oid);
                 }
                 await transaction.commit();
                 return res.json({ success: true, message: `Proyecto ${docId} cancelado (${ids.length} órdenes).` });
@@ -3785,6 +3830,7 @@ exports.deleteOrderBundle = async (req, res) => {
                 await reqTx.query(`DELETE FROM ArchivosOrden WHERE OrdenID = ${oid}`);
                 await reqTx.query(`DELETE FROM ArchivosReferencia WHERE OrdenID = ${oid}`);
                 await reqTx.query(`DELETE FROM ServiciosExtraOrden WHERE OrdenID = ${oid}`);
+                await reqTx.query(`DELETE FROM OrdenTerminaciones WHERE OrdenID = ${oid}`);
                 await reqTx.query(`DELETE FROM PedidosCobranzaDetalle WHERE OrdenID = ${oid}`);
                 await reqTx.query(`DELETE FROM Ordenes WHERE OrdenID = ${oid}`);
             }

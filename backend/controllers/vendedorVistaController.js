@@ -143,3 +143,146 @@ exports.getClientesDeVendedor = async (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 };
+
+/**
+ * GET /api/vendedor-360/ventas-mensuales?anio=2026&mes=9
+ *
+ * Ventas del mes por vendedor. Definiciones acordadas con el usuario (02/09/2026):
+ *   - VENTA        = orden en OrdenesDeposito de un cliente de su cartera
+ *                    (Clientes.VendedorID = cédula del trabajador).
+ *   - VENDEDOR     = Trabajadores con Área = 'VENTAS' (incluye al encargado).
+ *   - COBRADA      = OrdenesDeposito.PagIdPago NO nulo. El 0 ("cubierto sin pago":
+ *                    cuenta corriente o plan prepago) cuenta como cobrada.
+ *   - MES          = por OrdFechaIngresoOrden, la fecha en que entró al depósito
+ *                    (no la de entrega: esa se mueve y parte el mes).
+ *   - Se excluyen reposiciones (-R) y fallas (-F): son re-trabajo sin cargo, no ventas.
+ *   - Se excluyen canceladas (10) y perdidas (11).
+ *   - Los importes NO se convierten: cada moneda va por separado.
+ */
+exports.getVentasMensuales = async (req, res) => {
+  try {
+    const hoy = new Date();
+    const anio = parseInt(req.query.anio, 10) || hoy.getFullYear();
+    const mes = parseInt(req.query.mes, 10) || (hoy.getMonth() + 1);
+    if (mes < 1 || mes > 12) {
+      return res.status(400).json({ success: false, error: 'Mes inválido' });
+    }
+    // Rango semiabierto [desde, hasta): evita perder las órdenes del último día por la hora.
+    const desde = new Date(anio, mes - 1, 1);
+    const hasta = new Date(anio, mes, 1);
+
+    const pool = await getPool();
+
+    // 1. Vendedores del área (aunque no tengan ventas en el mes: van con ceros)
+    const vendRes = await pool.request().query(`
+      SELECT CAST(Cedula AS NVARCHAR(50))   AS Cedula,
+             LTRIM(RTRIM(Nombre))           AS Nombre,
+             LTRIM(RTRIM(ISNULL(Puesto,''))) AS Puesto
+      FROM dbo.Trabajadores WITH(NOLOCK)
+      WHERE LTRIM(RTRIM(UPPER(ISNULL([Área], '')))) = 'VENTAS'
+      ORDER BY Nombre
+    `);
+
+    // 2. Totales del mes por vendedor y moneda
+    const totRes = await pool.request()
+      .input('Desde', sql.DateTime, desde)
+      .input('Hasta', sql.DateTime, hasta)
+      .query(`
+        SELECT
+          LTRIM(RTRIM(c.VendedorID))                    AS Cedula,
+          ISNULL(od.MonIdMoneda, 1)                     AS MonIdMoneda,
+          COUNT(*)                                      AS Cant,
+          SUM(ISNULL(od.OrdCostoFinal, 0))              AS Monto,
+          SUM(CASE WHEN od.PagIdPago IS NOT NULL THEN 1 ELSE 0 END)                         AS CantCobrada,
+          SUM(CASE WHEN od.PagIdPago IS NOT NULL THEN ISNULL(od.OrdCostoFinal, 0) ELSE 0 END) AS MontoCobrado
+        FROM dbo.OrdenesDeposito od WITH(NOLOCK)
+        JOIN dbo.Clientes c WITH(NOLOCK) ON c.CliIdCliente = od.CliIdCliente
+        WHERE od.OrdFechaIngresoOrden >= @Desde
+          AND od.OrdFechaIngresoOrden <  @Hasta
+          AND LTRIM(RTRIM(ISNULL(c.VendedorID, ''))) <> ''
+          -- Re-trabajo sin cargo: no son ventas
+          AND od.OrdCodigoOrden NOT LIKE '%-R%'
+          AND od.OrdCodigoOrden NOT LIKE '%-F%'
+          AND (od.OrdEstadoActual IS NULL OR od.OrdEstadoActual NOT IN (10, 11))
+        GROUP BY LTRIM(RTRIM(c.VendedorID)), ISNULL(od.MonIdMoneda, 1)
+      `);
+
+    // 3. ¿Cuál de los vendedores es el usuario logueado? Primero por la cédula
+    //    cargada en su ficha (Usuarios.Cedula); si no la tiene, por nombre — que es
+    //    lo único que había hasta ahora y falla cuando el usuario se llama distinto
+    //    que el trabajador (caso real: la usuaria "Maria Ferreri" es Soledad Ferreri).
+    let miCedula = null;
+    try {
+      const uid = parseInt(req.user?.id, 10);
+      // La columna es opcional: mientras no exista (o esté vacía) se cae al match por nombre.
+      const colRes = await pool.request().query("SELECT COL_LENGTH('dbo.Usuarios', 'Cedula') AS L");
+      if (uid > 0 && colRes.recordset[0]?.L) {
+        const uRes = await pool.request()
+          .input('uid', sql.Int, uid)
+          .query('SELECT CAST(Cedula AS NVARCHAR(50)) AS Cedula FROM dbo.Usuarios WHERE IdUsuario = @uid');
+        miCedula = uRes.recordset[0]?.Cedula || null;
+      }
+    } catch (e) {
+      logger.warn('[VENDEDOR-360] No se pudo leer Usuarios.Cedula: ' + e.message);
+    }
+
+    const yo = normalizarNombre(req.user?.name);
+    const porCedula = {};
+    totRes.recordset.forEach(r => {
+      const ced = String(r.Cedula || '').trim();
+      if (!porCedula[ced]) porCedula[ced] = [];
+      porCedula[ced].push(r);
+    });
+
+    const monedaKey = (monId) => (parseInt(monId, 10) === 2 ? 'USD' : 'UYU');
+    const vacio = () => ({ cant: 0, monto: 0, cantCobrada: 0, montoCobrado: 0 });
+
+    const data = vendRes.recordset.map(v => {
+      const ced = String(v.Cedula || '').trim();
+      const filas = porCedula[ced] || [];
+      const monedas = { UYU: vacio(), USD: vacio() };
+      filas.forEach(f => {
+        const k = monedaKey(f.MonIdMoneda);
+        monedas[k].cant += f.Cant || 0;
+        monedas[k].monto += parseFloat(f.Monto) || 0;
+        monedas[k].cantCobrada += f.CantCobrada || 0;
+        monedas[k].montoCobrado += parseFloat(f.MontoCobrado) || 0;
+      });
+      const cantTotal = monedas.UYU.cant + monedas.USD.cant;
+      const cobradasTotal = monedas.UYU.cantCobrada + monedas.USD.cantCobrada;
+      return {
+        cedula: ced,
+        nombre: v.Nombre,
+        puesto: v.Puesto,
+        esMio: (!!miCedula && miCedula.trim() === ced) || (!miCedula && !!yo && normalizarNombre(v.Nombre) === yo),
+        cantTotal,
+        cobradasTotal,
+        sinCobrarTotal: cantTotal - cobradasTotal,
+        monedas,
+      };
+    });
+
+    // Las ventas de carteras que ya no corresponden a un vendedor del área (alguien que
+    // se fue y cuyos clientes todavía no se reasignaron) no se pierden: van aparte.
+    const cedulasArea = new Set(vendRes.recordset.map(v => String(v.Cedula || '').trim()));
+    const huerfanas = Object.keys(porCedula)
+      .filter(ced => !cedulasArea.has(ced))
+      .reduce((acc, ced) => {
+        porCedula[ced].forEach(f => {
+          acc.cant += f.Cant || 0;
+          acc.cobradas += f.CantCobrada || 0;
+        });
+        return acc;
+      }, { cant: 0, cobradas: 0 });
+
+    res.json({
+      success: true,
+      periodo: { anio, mes },
+      data,
+      sinVendedorDelArea: huerfanas,
+    });
+  } catch (err) {
+    logger.error('[VENDEDOR-360] getVentasMensuales:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+};

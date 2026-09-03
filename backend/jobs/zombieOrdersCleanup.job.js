@@ -98,6 +98,15 @@ async function limpiarOrdenesCargando(io) {
                 io,
             });
 
+            // ECOUV: la hermana de terminaciones se crea DESDE EL INGRESO, así que una orden
+            // zombie en 'Cargando...' ya puede tener la suya viva en el taller. No-op fuera de ECOUV.
+            const { cancelarHermanaTerminaciones } = require('../utils/hermanaTerminaciones');
+            await cancelarHermanaTerminaciones(tx, ord.OrdenID, {
+                userObj: 'Sistema',
+                motivo : razonTecnica,
+                io,
+            });
+
             await tx.commit();
             canceladas++;
             logger.info(`🧹 [ZombieCleanup] Orden ${ord.CodigoOrden} (ID ${ord.OrdenID}) CANCELADA: +${MAX_MIN} min en 'Cargando...' sin actividad.`);

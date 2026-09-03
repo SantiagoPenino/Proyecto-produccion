@@ -146,8 +146,10 @@ const ReceptionView = ({ onClose, areaContext, areaFilter }) => {
             // 4. Update the card
             setRecentScans(prev => prev.map(c => c.id === scanId ? { 
                 ...c, 
-                status: resData.status === 202 ? 'info' : 'wsp_waiting', 
-                message: resData.status === 202 ? 'La orden se reingresó exitosamente al depósito.' : 'Orden guardada. Esperando WhatsApp...',
+                status: (resData.status === 202 || resData.data?.hermanaTerminac) ? 'info' : 'wsp_waiting',
+                message: resData.data?.hermanaTerminac
+                    ? 'Hermana de terminaciones: el ingreso y el aviso los lleva la orden madre.'
+                    : (resData.status === 202 ? 'La orden se reingresó exitosamente al depósito.' : 'Orden guardada. Esperando WhatsApp...'),
                 idOrden: resData.data.idOrden || resolvedOrdId
             } : c));
         } catch (err) {

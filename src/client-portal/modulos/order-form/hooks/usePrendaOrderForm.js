@@ -899,7 +899,7 @@ export const usePrendaOrderForm = (serviceId, overrides = {}) => {
         
         // Calcular tamaño total para ETA
         const totalBytes = manifest.reduce((acc, item) => {
-            const fileObj = fileMap[item.originalName];
+            const fileObj = (item.fileKey && fileMap[item.fileKey]) || fileMap[item.originalName];
             return acc + (fileObj?.size || 0);
         }, 0);
         
@@ -909,7 +909,7 @@ export const usePrendaOrderForm = (serviceId, overrides = {}) => {
         try {
             for (let i = 0; i < manifest.length; i++) {
                 const item = manifest[i];
-                const fileObj = fileMap[item.originalName];
+                const fileObj = (item.fileKey && fileMap[item.fileKey]) || fileMap[item.originalName];
 
                 if (!fileObj) {
                     completed++;

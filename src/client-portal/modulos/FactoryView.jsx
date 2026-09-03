@@ -94,6 +94,14 @@ export const FactoryView = () => {
     const [orders, setOrders] = useState([]);
     const [loading, setLoading] = useState(true);
     const [searchTerm, setSearchTerm] = useState('');
+    // La búsqueda la resuelve el SERVIDOR sobre la lista entera (?q=): lo tecleado se aplica con
+    // un debounce y el resultado reemplaza la página 1. Filtrar en el cliente solo miraba las
+    // páginas ya cargadas por el scroll infinito (20 por vez) y "no encontraba" pedidos que existían.
+    const [debouncedSearch, setDebouncedSearch] = useState('');
+    const [refrescando, setRefrescando] = useState(false); // página 1 recargándose sin el spinner de pantalla completa
+    const searchRef = React.useRef('');      // término vigente, leído por fetchOrders (evita closures viejos en socket/observer)
+    const fetchSeqRef = React.useRef(0);     // cada carga de página 1 invalida las respuestas en vuelo: la última pedida gana
+    const pagina1EnVueloRef = React.useRef(false);
     const [statusFilter, setStatusFilter] = useState('ALL');
     const [expandedProject, setExpandedProject] = useState(null);
     const [projectFiles, setProjectFiles] = useState({}); // { [projectId]: { loading, files } }
@@ -125,11 +133,19 @@ export const FactoryView = () => {
     // Con los eventos de socket (el job de WSP avisa casi continuo) eso pasaba cada ~8s: la
     // pantalla "se refrescaba sola" mientras el cliente elegía texturas.
     const fetchOrders = async (pageNum = 1, shouldAppend = false, { silencioso = false } = {}) => {
-        if (pageNum === 1) { if (!silencioso) setLoading(true); }
+        if (pageNum === 1) { fetchSeqRef.current += 1; pagina1EnVueloRef.current = true; }
+        const seq = fetchSeqRef.current;
+        if (pageNum === 1) { if (!silencioso) setLoading(true); else setRefrescando(true); }
         else setLoadingMore(true);
 
         try {
-            const res = await apiClient.get(`/web-orders/my-orders?page=${pageNum}&limit=20`);
+            const q = searchRef.current;
+            const res = await apiClient.get(
+                `/web-orders/my-orders?page=${pageNum}&limit=20${q ? `&q=${encodeURIComponent(q)}` : ''}`
+            );
+            // Llegó después de otra carga de página 1 (se siguió tecleando, refresh por socket):
+            // descartarla — si no, la búsqueda vieja pisaba a la nueva según el orden de llegada.
+            if (seq !== fetchSeqRef.current) return;
             if (res.success) {
                 if (shouldAppend) {
                     setOrders(prev => [...prev, ...res.data]);
@@ -146,9 +162,19 @@ export const FactoryView = () => {
         } catch (error) {
             console.error("Error fetching orders:", error);
         } finally {
-            if (pageNum === 1) setLoading(false);
-            setLoadingMore(false);
+            if (seq === fetchSeqRef.current) {
+                if (pageNum === 1) { setLoading(false); setRefrescando(false); pagina1EnVueloRef.current = false; }
+                setLoadingMore(false);
+            }
         }
+    };
+
+    // Vuelve a la página 1 con datos frescos (mismo término de búsqueda). El efecto de [page]
+    // solo trae páginas siguientes — la 1 se pide siempre explícito — así que con page > 1 el
+    // setPage(1) no dispara un segundo fetch.
+    const recargar = (opts) => {
+        setPage(1);
+        return fetchOrders(1, false, opts);
     };
 
     // Carga (lazy) los archivos + copias de TODAS las hermanas del pedido al expandirlo.
@@ -176,8 +202,7 @@ export const FactoryView = () => {
                 setLoading(true);
                 try {
                     await apiClient.delete(`/web-orders/bundle/${docId}`, { razon });
-                    setPage(1);
-                    if (page === 1) await fetchOrders(1, false);
+                    await recargar();
                 } catch (err) {
                     alert('Error: ' + err.message);
                     setLoading(false);
@@ -201,8 +226,7 @@ export const FactoryView = () => {
                             await apiClient.delete(`/web-orders/incomplete/${so.OrdenID}`, { razon });
                         }
                     }
-                    setPage(1);
-                    if (page === 1) await fetchOrders(1, false);
+                    await recargar();
                 } catch (err) {
                     alert('Error al cancelar proyecto: ' + err.message);
                     setLoading(false);
@@ -219,8 +243,7 @@ export const FactoryView = () => {
             for (const oid of project.pendientesAprobacion) {
                 await apiClient.post('/web-orders/aprobar-pedido', { ordenId: oid });
             }
-            setPage(1);
-            if (page === 1) await fetchOrders(1, false);
+            await recargar();
         } catch (err) {
             alert('Error al aprobar el pedido: ' + err.message);
             setLoading(false);
@@ -269,8 +292,7 @@ export const FactoryView = () => {
             for (const oid of project.pendientesAprobacion) {
                 await apiClient.post('/web-orders/rechazar-pedido', { ordenId: oid, motivo });
             }
-            setPage(1);
-            if (page === 1) await fetchOrders(1, false);
+            await recargar();
         } catch (err) {
             alert('Error al rechazar el pedido: ' + err.message);
             setLoading(false);
@@ -286,9 +308,25 @@ export const FactoryView = () => {
         });
     };
 
+    // Scroll infinito: solo las páginas siguientes. La página 1 (montaje, búsqueda, refresh,
+    // acciones) la pide `recargar`, siempre con el término de búsqueda vigente.
     useEffect(() => {
-        fetchOrders(page, page > 1);
+        if (page > 1) fetchOrders(page, true);
     }, [page]);
+
+    // Buscador → servidor. Debounce corto para no pedir por cada tecla. El efecto de abajo corre
+    // también al montar (término vacío = lista completa) y `loading` arranca en true, así que la
+    // carga inicial conserva su spinner y las búsquedas van silenciosas: si el spinner de pantalla
+    // completa reemplazara la vista, el input perdería el foco mientras se tipea.
+    useEffect(() => {
+        const t = setTimeout(() => setDebouncedSearch(searchTerm.trim()), 350);
+        return () => clearTimeout(t);
+    }, [searchTerm]);
+
+    useEffect(() => {
+        searchRef.current = debouncedSearch;
+        recargar({ silencioso: true });
+    }, [debouncedSearch]);
 
     // ── Socket: actualización en tiempo real cuando cambia estado de una orden ──
     useEffect(() => {
@@ -306,8 +344,7 @@ export const FactoryView = () => {
             debounceTimer = setTimeout(() => {
                 debounceTimer = null;
                 lastFetchAt = Date.now();
-                setPage(1);
-                if (page === 1) fetchOrders(1, false, { silencioso: true });
+                recargar({ silencioso: true });
             }, wait);
         };
 
@@ -425,14 +462,9 @@ export const FactoryView = () => {
         }
     });
 
-    // Filtrado + orden por fecha desc (más nuevo primero)
+    // Filtrado por estado + orden por fecha desc (más nuevo primero). El texto del buscador NO se
+    // filtra acá: lo hace el servidor sobre la lista entera (ver fetchOrders / ?q=).
     const filteredProjects = Object.values(projects).filter(p => {
-        const searchLower = searchTerm.toLowerCase();
-        const matchesSearch = !searchTerm ||
-            p.id.toString().toLowerCase().includes(searchLower) ||
-            (p.title || '').toLowerCase().includes(searchLower);
-        if (!matchesSearch) return false;
-
         const projectStatus = getProjectStatus(p.subOrders);
         if (statusFilter === 'ALL') return true;
         if (statusFilter === 'CANCELLED') return projectStatus === 'cancelado';
@@ -445,17 +477,22 @@ export const FactoryView = () => {
     // Count badges replaced by globalCounts
     const statusCounts = globalCounts;
 
+    // Spinner en el input: hay tecleo pendiente de aplicar o la búsqueda está viajando al servidor.
+    const buscando = searchTerm.trim() !== debouncedSearch || (debouncedSearch !== '' && refrescando);
+
     // Observer ref
     const lastElementRef = React.useCallback(node => {
         if (loading || loadingMore) return;
         if (observer.current) observer.current.disconnect();
         observer.current = new IntersectionObserver(entries => {
-            if (entries[0].isIntersecting && hasMore) {
+            // Con la página 1 en vuelo (búsqueda/refresh) no pedir la 2: se apilaría sobre la
+            // lista vieja y después la respuesta de la 1 la pisaría.
+            if (entries[0].isIntersecting && hasMore && !pagina1EnVueloRef.current) {
                 setPage(prevPage => prevPage + 1);
             }
         });
         if (node) observer.current.observe(node);
-    }, [loading, loadingMore, hasMore]);
+    }, [loading, loadingMore, hasMore, refrescando]); // refrescando: re-armar el observer tras cada recarga silenciosa (mismo último nodo → no habría evento nuevo)
 
     if (loading && page === 1) return (
         <div className="flex flex-col items-center justify-center py-32 gap-4">
@@ -484,7 +521,7 @@ export const FactoryView = () => {
                 {/* Ojo: pasarlo pelado (onClick={fetchOrders}) manda el click event como pageNum
                     → pedía ?page=[object Object] y encendía loadingMore en vez de loading. */}
                 <button
-                    onClick={() => fetchOrders(1, false)}
+                    onClick={() => recargar()}
                     className="p-2.5 rounded-xl border border-zinc-700/50 bg-custom-dark hover:border-brand-cyan/30 hover:bg-brand-cyan/5 transition-all group shrink-0"
                     title="Refrescar"
                 >
@@ -499,10 +536,22 @@ export const FactoryView = () => {
                     <input
                         type="text"
                         placeholder="Buscar por #ID, título del trabajo..."
-                        className="w-full pl-11 pr-4 py-3 bg-zinc-800/50 border border-zinc-700/50 rounded-xl text-sm text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-brand-cyan/40 focus:bg-zinc-800 transition-all font-medium"
+                        className="w-full pl-11 pr-11 py-3 bg-zinc-800/50 border border-zinc-700/50 rounded-xl text-sm text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-brand-cyan/40 focus:bg-zinc-800 transition-all font-medium"
                         value={searchTerm}
                         onChange={(e) => setSearchTerm(e.target.value)}
                     />
+                    {buscando ? (
+                        <Loader2 size={16} className="absolute right-4 top-1/2 -translate-y-1/2 text-custom-cyan animate-spin" />
+                    ) : searchTerm && (
+                        <button
+                            type="button"
+                            onClick={() => setSearchTerm('')}
+                            className="absolute right-3 top-1/2 -translate-y-1/2 p-1 rounded-md text-zinc-500 hover:text-zinc-200 hover:bg-zinc-700/50 transition-colors"
+                            title="Limpiar búsqueda"
+                        >
+                            <X size={14} />
+                        </button>
+                    )}
                 </div>
 
                 <div className="flex flex-wrap sm:flex-nowrap gap-1.5">
@@ -542,7 +591,11 @@ export const FactoryView = () => {
                         <Layers className="w-7 h-7 text-zinc-600" />
                     </div>
                     <p className="text-zinc-400 text-sm font-bold">Sin pedidos encontrados</p>
-                    <p className="text-zinc-600 text-xs">Los pedidos que realices aparecerán aquí</p>
+                    <p className="text-zinc-600 text-xs">
+                        {debouncedSearch
+                            ? <>Nada coincide con «{debouncedSearch}». Probá con el número de pedido o parte del título.</>
+                            : 'Los pedidos que realices aparecerán aquí'}
+                    </p>
                 </div>
             ) : (
                 <div className="space-y-3">
@@ -976,7 +1029,7 @@ export const FactoryView = () => {
                         ordenId={tpu3D.ordenId}
                         codigo={tpu3D.codigo}
                         onClose={() => setTpu3D(null)}
-                        onAprobado={() => { setTpu3D(null); setPage(1); if (page === 1) fetchOrders(1, false); }}
+                        onAprobado={() => { setTpu3D(null); recargar(); }}
                     />
                 </Suspense>
             )}

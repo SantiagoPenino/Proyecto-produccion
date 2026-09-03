@@ -18,6 +18,10 @@ router.get('/telas', externalController.getTelas);
 // GET /api/external/clientes
 router.get('/clientes', externalController.getClientes);
 
+// Ficha de cliente para el CRM del compañero — campos y nombres acordados el 03/09.
+// GET /api/external/clientes-crm
+router.get('/clientes-crm', externalController.getClientesCrm);
+
 // Endpoint para actualizar el Vendedor de un cliente
 // PATCH /api/external/clientes/:id/vendedor
 router.patch('/clientes/:id/vendedor', externalController.updateVendedor);

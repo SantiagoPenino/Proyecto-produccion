@@ -1465,16 +1465,26 @@ const OrderForm = ({ serviceId: propServiceId }) => {
         actions.setLoading(true);
 
         try {
-            // Helper to map files for upload
+            // Helper to map files for upload.
+            // Cada File recibe una clave única (fileKey) que viaja en el payload y vuelve en el
+            // manifiesto de subida. Antes el mapa era SOLO por nombre: dos archivos distintos con
+            // el mismo nombre se pisaban y el último se subía dos veces. El nombre se conserva
+            // como fallback (referencias, y clientes/backends viejos que no manejan fileKey).
             const filesToUploadMap = {};
+            const fileKeys = new Map(); // File → fileKey
+            const fileOf = (f) => (f?.fileData instanceof File) ? f.fileData : (f instanceof File ? f : null);
+            const keyOf = (f) => {
+                if (f?.fileKey) return f.fileKey;
+                const file = fileOf(f);
+                if (!file) return null;
+                if (!fileKeys.has(file)) fileKeys.set(file, `${fileKeys.size + 1}::${file.name}`);
+                return fileKeys.get(file);
+            };
             const addToMap = (f) => {
-                if (f && f.name) {
-                    if (f.fileData && f.fileData instanceof File) {
-                        filesToUploadMap[f.name] = f.fileData;
-                    } else if (f instanceof File) {
-                        filesToUploadMap[f.name] = f;
-                    }
-                }
+                const file = fileOf(f);
+                if (!file || !f.name) return;
+                filesToUploadMap[keyOf(f)] = file;
+                filesToUploadMap[f.name] = file;
             };
 
             // Collect Files
@@ -1649,6 +1659,7 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                 grupos[key].sublineas.push({
                     archivoPrincipal: it.file ? {
                         name: it.file.name,
+                        fileKey: keyOf(it.file),
                         width: finalWidthM,
                         height: finalHeightM,
                         observaciones: it.printSettings?.observation || '',
@@ -1656,6 +1667,7 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                     } : null,
                     archivoDorso: fileBackEffective ? {
                         name: fileBackEffective.name, // ENVIAR NOMBRE ORIGINAL para que el backend encuentre el archivo
+                        fileKey: keyOf(fileBackEffective),
                         width: finalWidthM, // Enviar dimensiones correctas
                         height: finalHeightM,
                         observaciones: (it.printSettings?.observation || '') + ' [DORSO]', // Agregar DORSO a observaciones
@@ -1697,7 +1709,7 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                 const key = `${matInfo.name}| ${serviceSubType} `.toUpperCase();
                 const logos = (ponchadoFiles && ponchadoFiles.length > 0) ? ponchadoFiles : [null];
                 const sublineas = logos.map((logo, idx) => ({
-                    archivoPrincipal: logo ? { name: logo.name } : null,
+                    archivoPrincipal: logo ? { name: logo.name, fileKey: keyOf(logo) } : null,
                     cantidad: garmentQuantity || 1,
                     nota: `Logo ${idx + 1} - Bordado`
                 }));
@@ -1724,7 +1736,7 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                         codStock: serviceInfo?.config?.defaultCodStock || '1.1.5.1'
                     },
                     sublineas: [{
-                        archivoPrincipal: estampadoFile ? { name: estampadoFile.name, typeOverride: 'BOCETO_ESTAMPADO' } : null, // FIX: Override type for production loop
+                        archivoPrincipal: estampadoFile ? { name: estampadoFile.name, fileKey: keyOf(estampadoFile), typeOverride: 'BOCETO_ESTAMPADO' } : null, // FIX: Override type for production loop
                         cantidad: (estampadoQuantity || 1) * (estampadoPrints || 1),
                         nota: `Prendas: ${estampadoQuantity} | Estampados x Prenda: ${estampadoPrints}. Origen: ${estampadoOrigin}`,
                         observaciones: `OBS: Prendas: ${estampadoQuantity}, Estampados: ${estampadoPrints}`
@@ -1862,6 +1874,8 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                         height: sl.height,
                         fileName: sl.archivoPrincipal?.name, // <--- NECESARIO PARA VINCULAR
                         fileBackName: sl.archivoDorso?.name,
+                        fileKey: sl.archivoPrincipal?.fileKey || null, // clave única (ver filesToUploadMap)
+                        fileBackKey: sl.archivoDorso?.fileKey || null,
                         printSettings: sl.printSettings,
                         terminaciones: sl.terminaciones || [], // ECOUV: por archivo
 
@@ -1929,6 +1943,7 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                         ],
                         items: archivos.map(f => ({
                             fileName: f.name,
+                            fileKey: keyOf(f),
                             cantidad: f.copias || 1,       // cuántas veces se corta esa tizada
                             width: f.medicion.anchoTelaM,  // ancho de tela que ocupa
                             height: f.medicion.largoTelaM, // largo de tela (los "metros" del archivo)

@@ -98,6 +98,24 @@ async function crearHermanaTerminaciones(transaction, ecouvId) {
 }
 
 /**
+ * Marca como canceladas las líneas de OrdenTerminaciones de una orden.
+ * `Estado` solo tomaba 'Pendiente' y 'Hecha': 'Cancelado' es un valor NUEVO, así que los
+ * filtros que ya existen (= 'Pendiente' / = 'Hecha') lo excluyen solos.
+ * Las 'Hecha' NO se tocan: ese trabajo se hizo de verdad y reescribirlo mentiría sobre
+ * lo que pasó en el taller (mismo criterio que las XEUV ya finalizadas).
+ * @param {object} transaction transacción sql activa
+ * @param {number} ordenId orden dueña de las líneas (la ECOUV o su hermana)
+ */
+async function marcarTerminacionesCanceladas(transaction, ordenId) {
+    const r = await new sql.Request(transaction)
+        .input('OID', sql.Int, ordenId)
+        .query(`UPDATE OrdenTerminaciones
+                SET Estado = 'Cancelado'
+                WHERE OrdenID = @OID AND ISNULL(Estado, '') NOT IN ('Cancelado', 'Hecha')`);
+    return r.rowsAffected[0] || 0;
+}
+
+/**
  * Cancela la orden hermana TERMINAC (XEUV-*) cuando se cancela su orden ECOUV madre:
  * sin la impresión no hay material que terminar. Idempotente: si la orden no es ECOUV
  * o no tiene hermana viva, no hace nada y devuelve null.
@@ -112,6 +130,12 @@ async function cancelarHermanaTerminaciones(transaction, ecouvId, opts = {}) {
         .query('SELECT TOP 1 CodigoOrden, AreaID FROM Ordenes WHERE OrdenID = @OID');
     const o = src.recordset[0];
     if (!o || String(o.AreaID || '').trim().toUpperCase() !== 'ECOUV') return null;
+
+    // El detalle también queda cancelado EXPLÍCITAMENTE, no derivado del estado de la
+    // orden padre: cualquier consulta que se olvide del join mostraría trabajo que no
+    // existe. Se marcan las de la propia ECOUV por si nunca se creó la hermana (órdenes
+    // anteriores al 28/07, o creación fallida): en ese caso el detalle sigue colgando acá.
+    await marcarTerminacionesCanceladas(transaction, ecouvId);
 
     // Misma búsqueda que el guard anti-duplicado de crearHermanaTerminaciones:
     // corchetes escapados para no matchear la hermana de otro pedido.
@@ -133,6 +157,8 @@ async function cancelarHermanaTerminaciones(transaction, ecouvId, opts = {}) {
                     Observaciones = CONCAT(ISNULL(Observaciones, ''), @Obs)
                 WHERE OrdenID = @HID`);
 
+    await marcarTerminacionesCanceladas(transaction, hermana.OrdenID);
+
     // Estado + historial + socket por el servicio central, igual que la orden madre
     const { changeOrderState } = require('../services/stateManagerService');
     await changeOrderState(transaction, {
@@ -147,4 +173,48 @@ async function cancelarHermanaTerminaciones(transaction, ecouvId, opts = {}) {
     return { hermanaId: hermana.OrdenID, codigo: String(hermana.CodigoOrden || '').trim() };
 }
 
-module.exports = { crearHermanaTerminaciones, cancelarHermanaTerminaciones };
+/**
+ * Borra la hermana TERMINAC y el detalle de terminaciones de una orden ECOUV que se está
+ * BORRANDO físicamente (no cancelando): el portal hace hard-delete de los pedidos que
+ * quedaron a medio subir. Sin esto la hermana sobrevive a su madre y queda una orden viva
+ * en el taller que ya no referencia a nada.
+ * @param {object} transaction transacción sql activa
+ * @param {number} ecouvId OrdenID de la orden ECOUV que se borra
+ * @returns {Promise<{hermanaId:number, codigo:string}|null>}
+ */
+async function eliminarHermanaTerminaciones(transaction, ecouvId) {
+    const src = await new sql.Request(transaction)
+        .input('OID', sql.Int, ecouvId)
+        .query('SELECT TOP 1 CodigoOrden, AreaID FROM Ordenes WHERE OrdenID = @OID');
+    const o = src.recordset[0];
+    if (!o || String(o.AreaID || '').trim().toUpperCase() !== 'ECOUV') return null;
+
+    // Detalle de la propia orden (si nunca se creó la hermana, cuelga acá)
+    await new sql.Request(transaction)
+        .input('OID', sql.Int, ecouvId)
+        .query('DELETE FROM OrdenTerminaciones WHERE OrdenID = @OID');
+
+    // Misma búsqueda por Nota que el resto del módulo (corchetes escapados). Acá NO se
+    // filtra por estado: se borra la hermana exista como exista, porque su madre deja de existir.
+    const ya = await new sql.Request(transaction)
+        .input('Nota', sql.NVarChar(200), `%![TERMINACIONES DE ${String(o.CodigoOrden || '').trim()}!]%`)
+        .query(`SELECT TOP 1 OrdenID, CodigoOrden FROM Ordenes
+                WHERE AreaID = 'TERMINAC' AND Nota LIKE @Nota ESCAPE '!'`);
+    const hermana = ya.recordset[0];
+    if (!hermana) return null;
+
+    await new sql.Request(transaction)
+        .input('HID', sql.Int, hermana.OrdenID)
+        .query(`DELETE FROM OrdenTerminaciones WHERE OrdenID = @HID;
+                DELETE FROM Ordenes WHERE OrdenID = @HID;`);
+
+    logger.info(`[Terminaciones] Hermana ${String(hermana.CodigoOrden || '').trim()} (${hermana.OrdenID}) eliminada junto con su ECOUV ${ecouvId}`);
+    return { hermanaId: hermana.OrdenID, codigo: String(hermana.CodigoOrden || '').trim() };
+}
+
+module.exports = {
+    crearHermanaTerminaciones,
+    cancelarHermanaTerminaciones,
+    eliminarHermanaTerminaciones,
+    marcarTerminacionesCanceladas,
+};

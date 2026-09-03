@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef, useCallback, Suspense, lazy } from 'react';
-import { LayoutDashboard, Warehouse, Printer, ClipboardList, Terminal, CircleUserRound, Tags, Headset, Calculator, Landmark, Shirt, Sun, Sparkles, Flame, Scissors, Pen, Shapes, PenLine, QrCode, ShieldBan, PrinterCheck, History, LayoutGrid, PackagePlus, PackageCheck, Truck, FileSearch, Boxes, Waypoints, Send, Package, Bus, ClipboardCheck, Menu, Users, Shield, Eye, Settings, Database, UserX, RefreshCw, BadgeDollarSign, Layers, BookOpen, Banknote, CreditCard, ShieldCheck, Calendar, CalendarCheck, MapPin, Store, LifeBuoy, Ticket, ScanLine, FileText, Cpu, FileDown, Inbox, Receipt, ShoppingCart, Palette, Megaphone, ScanEye, FileSignature } from 'lucide-react';
+import { LayoutDashboard, Warehouse, Printer, ClipboardList, Terminal, CircleUserRound, Tags, Headset, Calculator, Landmark, Shirt, Sun, Sparkles, Flame, Scissors, Pen, Shapes, PenLine, QrCode, ShieldBan, PrinterCheck, History, LayoutGrid, PackagePlus, PackageCheck, Truck, FileSearch, Boxes, Waypoints, Send, Package, Bus, ClipboardCheck, Menu, Users, Shield, Eye, Settings, Database, UserX, RefreshCw, BadgeDollarSign, Layers, BookOpen, Banknote, CreditCard, ShieldCheck, Calendar, CalendarCheck, MapPin, Store, LifeBuoy, Ticket, ScanLine, FileText, Cpu, FileDown, Inbox, Receipt, ShoppingCart, Palette, Megaphone, ScanEye, FileSignature, TrendingUp } from 'lucide-react';
 import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Toaster, toast } from 'sonner';
@@ -92,6 +92,7 @@ const AdminEditarOrdenView = lazyWithRetry(() => import('../pages/AdminEditarOrd
 const ContabilidadCuentasView    = lazyWithRetry(() => import('../pages/ContabilidadCuentasView'));
 const ClienteVista360            = lazyWithRetry(() => import('../pages/ClienteVista360'));
 const VendedorCliente360         = lazyWithRetry(() => import('../pages/VendedorCliente360'));
+const VendedorVentasMensuales    = lazyWithRetry(() => import('../pages/VendedorVentasMensuales'));
 const PreFacturaPage             = lazyWithRetry(() => import('../pages/PreFacturaPage'));
 const ContabilidadAntiguedadView  = lazyWithRetry(() => import('../pages/ContabilidadAntiguedadView'));
 const ContabilidadColaEstadosView = lazyWithRetry(() => import('../pages/ContabilidadColaEstadosView'));
@@ -318,6 +319,8 @@ const lucideIconMapRaw = {
     'vista 360 del cliente': ScanEye,
     'vista 360': ScanEye,
     'presupuestos': FileSignature,
+    'ventas por vendedor': TrendingUp,
+    'mis ventas': TrendingUp,
     'cliente 360': ScanEye,
     'configuraciones ecouv': Settings,
     'configuracion ecouv': Settings,
@@ -720,6 +723,7 @@ const MainAppContent = ({ menuItems = [] }) => {
                 <Route path="/contabilidad/cuentas"          element={<ContabilidadCuentasView />} />
                 <Route path="/contabilidad/cliente-360"      element={<ClienteVista360 />} />
                 <Route path="/vendedores/cliente-360"        element={<VendedorCliente360 />} />
+                <Route path="/vendedores/ventas"             element={<VendedorVentasMensuales />} />
                 <Route path="/contabilidad/prefactura"        element={<PreFacturaPage />} />
                 <Route path="/contabilidad/antiguedad"        element={<ContabilidadAntiguedadView />} />
                 <Route path="/contabilidad/cola-estados"      element={<ContabilidadColaEstadosView />} />
@@ -944,6 +948,9 @@ const DynamicRouter = ({ menuItems }) => {
     // Presupuestos (26-ago): match directo por path — el ítem de menú puede no estar en la
     // sesión (se carga al loguear) o no existir aún en prod; la ruta funciona igual.
     if (normalizedPath === '/ventas/presupuestos') return <PresupuestosPage />;
+    // Ventas por vendedor (02-set): ídem — la ruta anda aunque el ítem de menú
+    // todavía no exista en prod.
+    if (normalizedPath === '/vendedores/ventas') return <VendedorVentasMensuales />;
     // Configuración ECOUV: vive DEBAJO de /area/ecouv — sin ítem de menú propio, el
     // matcher longest-match la mandaría a AreaView. Match directo por path.
     if (normalizedPath === '/area/ecouv/config') return <EcouvConfigPage />;
@@ -1036,6 +1043,7 @@ const DynamicRouter = ({ menuItems }) => {
     if (menuItem.Ruta === '/contabilidad/cuentas')              return <ContabilidadCuentasView />;
     if (menuItem.Ruta === '/contabilidad/cliente-360')          return <ClienteVista360 />;
     if (menuItem.Ruta === '/vendedores/cliente-360')            return <VendedorCliente360 />;
+    if (menuItem.Ruta === '/vendedores/ventas')                 return <VendedorVentasMensuales />;
     if (menuItem.Ruta === '/contabilidad/antiguedad')            return <ContabilidadAntiguedadView />;
     if (menuItem.Ruta === '/contabilidad/cola-estados')          return <ContabilidadColaEstadosView />;
     if (menuItem.Ruta === '/contabilidad/recursos')              return <ContabilidadCuentasView />;

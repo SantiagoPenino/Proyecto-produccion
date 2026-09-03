@@ -29,7 +29,7 @@
 .pp-sheet input::placeholder,.pp-sheet textarea::placeholder{color:#c0c0c0}
 
 .pp-hdr{display:grid;grid-template-columns:1fr auto;align-items:flex-end;gap:12mm;padding-bottom:3mm}
-.pp-logo{width:50mm;height:auto;display:block}
+.pp-logo{width:32mm;height:auto;display:block}
 .pp-docref{text-align:right;font:500 8.5pt/1.4 'Roboto Mono',monospace;letter-spacing:.06em;color:#606060}
 .pp-docref b{display:block;color:#0a0a0a;font-weight:700;letter-spacing:.18em;text-transform:uppercase;margin-bottom:1mm}
 

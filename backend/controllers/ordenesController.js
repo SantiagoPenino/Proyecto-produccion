@@ -392,6 +392,25 @@ const createOrden = async (req, res) => {
 
     const pool = await getPool();
 
+    // [HERMANAS TERMINAC] Las XEUV (área TERMINAC) contienen el TRABAJO de terminación,
+    // no un producto aparte: lo que el cliente retira es la orden madre (EUV).
+    // receiveDispatch ya las excluye de OrdenesDeposito; esta puerta (escaneo del QR de
+    // la etiqueta, que Recepción llama después del receive y que también usan Carga
+    // Depósito / Buscar Órdenes / Comprobar QR) las dejaba entrar con fila propia:
+    // línea fantasma (cant 1, costo 0) en el retiro y el job de WhatsApp avisaba el
+    // pedido dos veces (XEUV-12044, 13824 y 17398). Mismo criterio que receiveDispatch.
+    const areaRes = await pool.request()
+      .input('CodArea', sql.VarChar(100), CodigoOrden)
+      .query('SELECT TOP 1 AreaID FROM dbo.Ordenes WITH(NOLOCK) WHERE CodigoOrden = @CodArea');
+    const esHermanaTerminac = (areaRes.recordset[0]?.AreaID || '').trim().toUpperCase() === 'TERMINAC';
+    if (esHermanaTerminac) {
+      logger.info(`[CTRL:ORDEN] ${CodigoOrden}: hermana de terminaciones (TERMINAC) — no se ingresa a depósito con registro propio.`);
+      return res.status(200).json({
+        message: 'Hermana de terminaciones: el ingreso a depósito lo lleva la orden madre.',
+        hermanaTerminac: true,
+      });
+    }
+
     const existingResult = await pool.request()
       .input('CodigoOrden', sql.VarChar(100), CodigoOrden)
       .query('SELECT o.*, r.OReIdOrdenRetiro as checkRetiro, r.OReIdOrdenRetiro as oReId, r.OReFechaEstadoActual as rEstadoActual FROM OrdenesDeposito o WITH(UPDLOCK, HOLDLOCK) LEFT JOIN OrdenesRetiro r WITH(NOLOCK) ON o.OReIdOrdenRetiro = r.OReIdOrdenRetiro WHERE o.OrdCodigoOrden = @CodigoOrden');

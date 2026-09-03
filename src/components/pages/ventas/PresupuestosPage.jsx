@@ -97,7 +97,7 @@ html,body{margin:0;padding:0;font-family:'Inter','Helvetica Neue',Arial,sans-ser
 table.pg{width:100%;border-collapse:collapse}.pgc{padding:0;vertical-align:top}
 table.pg thead{display:table-header-group}table.pg tfoot{display:table-footer-group}
 .hdr{display:grid;grid-template-columns:1fr auto;align-items:flex-end;gap:12mm;padding-bottom:3mm}
-.logo{width:50mm;height:auto;display:block}
+.logo{width:32mm;height:auto;display:block}
 .docref{text-align:right;font:500 8.5pt/1.4 'Roboto Mono',monospace;letter-spacing:.06em;color:#606060}
 .docref b{display:block;color:#0a0a0a;font-weight:700;letter-spacing:.18em;text-transform:uppercase;margin-bottom:1mm}
 .cmyk{height:1mm;margin-top:3mm;overflow:hidden}.cmyk .inner{display:flex;height:100%;width:calc(100% + 10mm);margin-left:-5mm}

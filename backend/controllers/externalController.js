@@ -235,6 +235,69 @@ exports.getTelas = async (req, res) => {
     }
 };
 
+// GET /api/external/clientes-crm — ficha de cliente para el CRM del compañero (campos y
+// nombres definidos con él el 03/09). Distinto de /clientes: ese ya lo consume otra
+// integración y no se le tocan los nombres de campo para no romperla.
+// Auth: header x-api-key = CRM_API_KEY (si no está seteada, cae a EXTERNAL_API_KEY).
+//
+// Departamento/Localidad van RESUELTOS a texto (pedido explícito, no el ID crudo).
+// UltimaCompra = fecha del último pedido de OrdenesDeposito con pago asociado
+// (PagIdPago > 0) — no cualquier pedido, y no la fecha de facturación.
+// TotalFacturado quedó afuera a pedido: DocumentosContables mezcla ventas con
+// recibos/egresos y sumar todo a lo bruto da un número inflado — se descartó el cálculo.
+exports.getClientesCrm = async (req, res) => {
+    const apiKey = req.headers['x-api-key'];
+    const VALID_KEY = process.env.CRM_API_KEY || process.env.EXTERNAL_API_KEY;
+
+    if (!apiKey || apiKey !== VALID_KEY) {
+        return res.status(401).json({ error: 'No autorizado. API Key inválida o faltante.' });
+    }
+
+    try {
+        const pool = await getPool();
+        // CTE con la fecha ya agregada por cliente: un JOIN, no una subquery correlacionada
+        // por cada uno de los ~5.250 clientes (OrdenesDeposito no tiene índice en
+        // CliIdCliente — la correlacionada haría un scan por fila, mismo patrón que ya
+        // causó 275% de CPU en el tablero en agosto).
+        const query = `
+            ;WITH UltimasCompras AS (
+                SELECT CliIdCliente, MAX(OrdFechaIngresoOrden) AS UltimaCompra
+                FROM dbo.OrdenesDeposito WITH (NOLOCK)
+                WHERE PagIdPago > 0
+                GROUP BY CliIdCliente
+            )
+            SELECT
+                c.CliIdCliente                    AS Id,
+                LTRIM(RTRIM(c.IDCliente))          AS IdCliente,
+                LTRIM(RTRIM(c.Nombre))             AS Nombre,
+                LTRIM(RTRIM(c.TelefonoTrabajo))    AS Telefono,
+                uc.UltimaCompra                    AS UltimaCompra,
+                LTRIM(RTRIM(c.VendedorID))         AS Vendedor,
+                LTRIM(RTRIM(c.NombreFantasia))     AS RazonSocial,
+                LTRIM(RTRIM(c.Email))              AS Email,
+                LTRIM(RTRIM(dep.Nombre))           AS Departamento,
+                LTRIM(RTRIM(loc.Nombre))           AS Localidad,
+                c.ESTADO                           AS Estado
+            FROM dbo.Clientes c WITH (NOLOCK)
+            LEFT JOIN UltimasCompras uc ON uc.CliIdCliente = c.CliIdCliente
+            LEFT JOIN dbo.Departamentos dep WITH (NOLOCK) ON dep.ID = c.DepartamentoID
+            LEFT JOIN dbo.Localidades   loc WITH (NOLOCK) ON loc.ID = c.LocalidadID
+            WHERE c.CliIdCliente IS NOT NULL
+            ORDER BY c.CliIdCliente
+        `;
+        const result = await pool.request().query(query);
+
+        res.json({
+            success: true,
+            count: result.recordset.length,
+            data: result.recordset
+        });
+    } catch (error) {
+        console.error('Error obteniendo clientes-crm:', error);
+        res.status(500).json({ error: 'Error interno del servidor al obtener clientes.' });
+    }
+};
+
 // GET /api/external/vendedores
 exports.getVendedores = async (req, res) => {
     const apiKey = req.headers['x-api-key'];

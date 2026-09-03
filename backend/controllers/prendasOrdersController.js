@@ -635,6 +635,10 @@ exports.createWebOrder = async (req, res) => {
                     return {
                         fileName: it.fileName,
                         fileBackName: it.fileBackName,
+                        // Clave única por archivo (la manda el portal). Con dos archivos de igual
+                        // nombre, el match de subida por nombre subía el mismo archivo dos veces.
+                        fileKey: it.fileKey || null,
+                        fileBackKey: it.fileBackKey || null,
                         copies: it.cantidad || 1,
                         note: it.nota,
                         width: it.width,
@@ -1634,6 +1638,7 @@ exports.createWebOrder = async (req, res) => {
                             dbId: resFile.recordset[0].ArchivoID,
                             type: 'ORDEN',
                             originalName: item.fileName, // Para que el front sepa cuál es
+                            fileKey: item.fileKey || null, // match exacto en el front; originalName queda de fallback
                             finalName: finalName,
                             area: exec.areaID
                         });
@@ -1791,6 +1796,7 @@ exports.createWebOrder = async (req, res) => {
                             dbId: resFileBack.recordset[0].ArchivoID,
                             type: 'ORDEN',
                             originalName: item.fileBackName, // Nombre real para buscar en upload
+                            fileKey: item.fileBackKey || null,
                             finalName: finalNameBack,
                             area: exec.areaID
                         });

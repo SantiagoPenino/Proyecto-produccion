@@ -3261,6 +3261,14 @@ exports.cancelRequest = async (req, res) => {
                 io       : req.app.get('socketio')
             });
 
+                // ECOUV: sin NoDocERP el barrido de arriba no corre, así que la hermana de
+                // terminaciones no cae sola — hay que cancelarla explícitamente. No-op fuera de ECOUV.
+                const { cancelarHermanaTerminaciones } = require('../utils/hermanaTerminaciones');
+                await cancelarHermanaTerminaciones(transaction, orderId, {
+                    userObj : req.user || req.body.usuario,
+                    io      : req.app.get('socketio')
+                });
+
                 // Cancelar archivos
                 await new sql.Request(transaction)
                     .input('ID', sql.Int, orderId)
