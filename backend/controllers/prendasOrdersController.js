@@ -605,6 +605,27 @@ exports.createWebOrder = async (req, res) => {
             finalNote = generalNote ? `OBS: ${generalNote}` : '';
         }
 
+        // [PRENDAS] "Producto personalizado (cliente)" — solución puente mientras no está
+        // configurado el catálogo real: la orden madre PRO usa el artículo genérico
+        // 'PPERS' (Prenda Personalizada, PreciosBase $0, Mostrar=0). El front NO conoce
+        // ese ProIdProducto: manda el flag esPrendaPersonalizada y acá se resuelve.
+        // El modo de cobro viaja como marcador en la nota del servicio PRO
+        // ([FACTURA POR AREA] / [PRECIO ESTABLECIDO: monto MONEDA]) — lo lee erpSyncService.
+        let proIdPrendaPersonalizada = null;
+        if (Array.isArray(req.body.servicios) && req.body.servicios.some(s => s.esPrendaPersonalizada)) {
+            const rPers = await pool.request().query(`
+                SELECT TOP 1 ProIdProducto FROM dbo.Articulos
+                WHERE LTRIM(RTRIM(CodArticulo)) = 'PPERS' AND ISNULL(borrar, 0) = 0
+            `);
+            proIdPrendaPersonalizada = rPers.recordset[0]?.ProIdProducto || null;
+            if (!proIdPrendaPersonalizada) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Falta el artículo genérico 'Prenda Personalizada' (PPERS) — correr backend/scripts/create_articulo_prenda_personalizada.sql."
+                });
+            }
+        }
+
         // --- 5. ESTRUCTURAR ORDENES ---
         const pendingOrderExecutions = [];
 
@@ -688,6 +709,13 @@ exports.createWebOrder = async (req, res) => {
                     const cadenaEst = String(srv.chainedAfterAreaId).trim().toUpperCase();
                     if (cadenaEst === 'DF') { finalCodArt = '110'; finalProIdProducto = 29; }
                     else if (cadenaEst === 'TPU') { finalCodArt = '157'; finalProIdProducto = 418; }
+                }
+
+                // [PRENDAS] Orden madre PRO de una prenda personalizada (sin catálogo):
+                // artículo genérico PPERS resuelto arriba. Sin CodArt/CodStock a propósito
+                // (igual que el producto terminado: el precio sale de PreciosBase, $0).
+                if (areaID === 'PRO' && srv.esPrendaPersonalizada && proIdPrendaPersonalizada) {
+                    finalProIdProducto = proIdPrendaPersonalizada;
                 }
 
                 // Construir Nota con Metadatos Técnicos

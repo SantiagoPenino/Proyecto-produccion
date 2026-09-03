@@ -1400,7 +1400,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
       seleccionados.forEach(s => {
         getOrdenes(s.retiro).forEach(o => {
           if (o.orderIdMetodoPago !== null || o.orderPago !== null) return;
-          if (o.orderCobertura || o.orderEstado === 'Abonado' || o.orderEstado === 'Autorizado') return;
+          if (o.orderCobertura || o.orderCubiertaBilletera || o.orderEstado === 'Abonado' || o.orderEstado === 'Autorizado') return;
           const val = parseFloat((o.orderCosto || '').replace(/[^0-9.-]/g, '')) || 0;
           if (o.monedaId === 2) deudaPuraUSD += val;
           if (o.monedaId === 1) deudaPuraUYU += val;
@@ -1441,7 +1441,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
           direccion: seleccionados[0]?.retiro?.CliDireccion
         },
         items: seleccionados.flatMap(s => {
-          const ordersOfRetiro = getOrdenes(s.retiro).filter(o => !o.orderIdMetodoPago && !o.orderPago && o.orderEstado !== 'Abonado' && o.orderEstado !== 'Autorizado');
+          const ordersOfRetiro = getOrdenes(s.retiro).filter(o => !o.orderIdMetodoPago && !o.orderPago && !o.orderCubiertaBilletera && o.orderEstado !== 'Abonado' && o.orderEstado !== 'Autorizado');
           if (ordersOfRetiro.length === 0) {
             const m = calcularMontoPorMoneda(s.retiro, monedaExhibicion);
             return [{ descripcion: `Orden ${s.codigoRef}`, cantidad: 1, importe: m }];
@@ -1542,6 +1542,91 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
       } catch (eVoucher) { /* no crítico */ }
     } catch (e) { toast.error(e.response?.data?.error || 'Error al registrar egreso'); }
     finally { setProcesandoEgreso(false); }
+  };
+
+  // 🔋 Cubrir TODO el retiro con el saldo PREPAGO de la billetera del cliente (02/09/2026).
+  // Consumo sin documento (la factura de esa plata existió al cargarla). El backend valida
+  // que el saldo alcance para TODAS las órdenes pendientes (enteras, nunca en negativo):
+  // si una no entra, no descuenta nada y explica cuál falta.
+  const cubrirRetiroConBilletera = async (s) => {
+    try {
+      const prev = await api.post(`/contabilidad/retiros/${s.retiroId}/cubrir-con-billetera`, { preview: true });
+      const plan = prev.data?.plan || [];
+      const detalle = plan.map(p => {
+        let linea = `• ${p.codigo} ← "${p.cuenta}": ${p.monedaCuenta === 'USD' ? 'US$' : '$'} ${Number(p.importeCta).toFixed(2)}${p.cruzada ? ` (@ cot. ${Number(prev.data.cotizacion).toFixed(2)})` : ''}`;
+        // Repartida: una billetera sola no alcanzaba — un consumo por cuenta
+        (p.partes || []).forEach(x => {
+          linea += `\n   ↳ ${x.mon === 2 ? 'US$' : '$'} ${Number(x.importeCta).toFixed(2)} de "${x.cuenta}"${x.cruzada ? ` (@ cot. ${Number(prev.data.cotizacion).toFixed(2)})` : ''}`;
+        });
+        return linea;
+      }).join('\n');
+      const ya = (prev.data?.yaCubiertas || []).length ? `\nYa estaban cubiertas: ${prev.data.yaCubiertas.join(', ')}.` : '';
+      if (!window.confirm(`Cubrir el retiro con la BILLETERA del cliente (saldo prepago):\n\n${detalle}${ya}\n\n• Cada orden se descuenta ENTERA de la cuenta indicada.\n• NO se emite factura: esa plata ya se facturó al cargarla.\n• El retiro queda Abonado y se entrega sin cobrar.\n• Se imprime un comprobante interno del consumo (sin valor fiscal).\n\n¿Confirmás?`)) return;
+      const r = await api.post(`/contabilidad/retiros/${s.retiroId}/cubrir-con-billetera`, {});
+      toast.success(r.data?.message || 'Retiro cubierto con la billetera.');
+      // Ticket para imprimir, igual que en un cobro normal de caja. Es un comprobante
+      // interno del consumo: NO es un documento fiscal (esa plata ya se facturó al
+      // cargarse en la billetera).
+      const planEj = r.data?.plan || [];
+      if (planEj.length) {
+        const cot = Number(r.data?.cotizacion) || cotizacion || 0;
+        const totUYU = planEj.filter(p => p.monedaCuenta !== 'USD').reduce((a, p) => a + Number(p.importeCta || 0), 0);
+        const totUSD = planEj.filter(p => p.monedaCuenta === 'USD').reduce((a, p) => a + Number(p.importeCta || 0), 0);
+        const mixto = totUYU > 0.005 && totUSD > 0.005;
+        // Medios del ticket = de qué cuenta salió la plata: si la orden fue repartida
+        // (partes), cada billetera aporta su consumo; si no, la cuenta única el total.
+        const porCuenta = {};
+        const sumar = (cuenta, mon, monto) => {
+          const k = `${cuenta}|${mon}`;
+          porCuenta[k] = (porCuenta[k] || 0) + Number(monto || 0);
+        };
+        planEj.forEach(p => {
+          if (p.partes && p.partes.length) {
+            p.partes.forEach(x => sumar(x.cuenta, x.mon === 2 ? 'USD' : 'UYU', x.importeCta));
+          } else {
+            sumar(p.cuenta, p.monedaCuenta, p.importeCta);
+          }
+        });
+        const ticket = {
+          empresa: 'USER',
+          fecha: new Date().toLocaleString('es-UY'),
+          comprobante: `BILLETERA ${s.codigoRef || `RW-${s.retiroId}`}`,
+          cajero: sesion?.usrLogin || 'Sistema',
+          cliente: s.retiro?.CliNombre || 'CLIENTE',
+          caja: isAdminCaja ? 'Caja Administrativa' : 'Caja Central',
+          tipoCambio: planEj.some(p => p.cruzada) ? cot : null,
+          observaciones: `PAGADO CON SALDO PREPAGO DE LA BILLETERA. Comprobante interno, sin valor fiscal: esa plata ya fue facturada al cargarse en la billetera.${mixto ? ` El total combina pesos y dólares @ cot. ${cot.toFixed(2)}.` : ''}`,
+          esRetiro: true,
+          codigosRetiro: s.codigoRef || `RW-${s.retiroId}`,
+          clienteDetalles: {
+            id: s.retiro?.CliCodigoCliente,
+            ruc: s.retiro?.CliRuc,
+            email: s.retiro?.CliEmail,
+            telefono: s.retiro?.CliTelefono,
+            direccion: s.retiro?.CliDireccion
+          },
+          items: planEj.map(p => ({
+            descripcion: `Orden ${p.codigo} ← «${p.cuenta}»${p.cruzada ? ` (${p.moneda === 'USD' ? 'US$' : '$'} ${Number(p.importe).toFixed(2)} @ cot. ${cot.toFixed(2)})` : ''}`,
+            cantidad: 1,
+            importe: Number(p.importeCta || 0)
+          })),
+          totales: {
+            total: mixto ? totUYU + totUSD * cot : (totUSD > 0.005 ? totUSD : totUYU),
+            moneda: mixto ? '$' : (totUSD > 0.005 ? 'US$' : '$')
+          },
+          pagos: Object.entries(porCuenta).map(([k, monto]) => {
+            const [cuenta, mon] = k.split('|');
+            return { metodo: `Billetera «${cuenta}» (saldo prepago)`, moneda: mon === 'USD' ? 'US$' : '$', monto };
+          })
+        };
+        setTicketData(ticket);
+        printTicketData(ticket);
+        saveTicketOnServer(ticket);
+      }
+      fetchRetiros();
+    } catch (e) {
+      toast.error(e.response?.data?.error || e.message || 'No se pudo cubrir con la billetera.');
+    }
   };
 
   const handleAutorizar = async () => {
@@ -2000,7 +2085,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                                       return o.monedaId === 1 ? acc + val : acc;
                                     }, 0);
                                     
-                                    const hasUnpaid = getOrdenes(s.retiro).some(o => o.orderIdMetodoPago === null && o.orderPago === null && o.orderEstado !== 'Abonado' && o.orderEstado !== 'Autorizado');
+                                    const hasUnpaid = getOrdenes(s.retiro).some(o => o.orderIdMetodoPago === null && o.orderPago === null && !o.orderCubiertaBilletera && o.orderEstado !== 'Abonado' && o.orderEstado !== 'Autorizado');
 
                                     return (
                                       <div key={s.retiroId} className="bg-slate-50/50 border border-slate-200 rounded-xl p-3 flex flex-col gap-3">
@@ -2017,6 +2102,15 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                                             >
                                               <FileText size={11} /> Editar órdenes
                                             </button>
+                                            {hasUnpaid && (
+                                              <button
+                                                onClick={() => cubrirRetiroConBilletera(s)}
+                                                className="bg-cyan-600 hover:bg-cyan-700 text-white text-[9px] font-black px-2.5 py-1 rounded-lg transition-all flex items-center gap-0.5 uppercase tracking-wider shadow-sm"
+                                                title="Cubrir TODAS las órdenes pendientes del retiro con el saldo PREPAGO de la billetera del cliente (consumo, sin factura nueva). Si el saldo no alcanza para todas, no descuenta nada."
+                                              >
+                                                <Wallet size={11} /> Billetera
+                                              </button>
+                                            )}
                                             {hasUnpaid && (
                                               <button
                                                 onClick={() => setRetiroSelectAut({ retiroId: s.retiroId, raw: s.retiro, deudaEstimada: calcularMontoRetiro(s.retiro) })}
@@ -2042,11 +2136,14 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                                         {/* Sub-orders list */}
                                         <div className="flex flex-col gap-2 border-t border-slate-200/60 pt-2.5">
                                           {getOrdenes(s.retiro).map(o => {
-                                            const val = parseFloat((o.orderCosto || '').replace(/[^0-9.-]/g, '')) || 0;
+                                            // Cubierta con billetera: orderCosto llega en 0 (nada a cobrar);
+                                            // se muestra tachado el valor ORIGINAL para que se entienda qué cubrió.
+                                            const val = parseFloat(((o.orderCubiertaBilletera ? o.orderCostoOriginal : o.orderCosto) || o.orderCosto || '').replace(/[^0-9.-]/g, '')) || 0;
                                             const currency = o.monedaId === 2 ? 'US$' : '$';
                                             const exonerada = !!o.orderExonerada;
                                             const pagado = !exonerada && (o.orderIdMetodoPago !== null || o.orderPago !== null);
-                                            const cubierto = o.orderEstado === 'Abonado' || o.orderEstado === 'Autorizado';
+                                            const billetera = !!o.orderCubiertaBilletera;
+                                            const cubierto = billetera || o.orderEstado === 'Abonado' || o.orderEstado === 'Autorizado';
                                             return (
                                               <div
                                                 key={o.orderId}
@@ -2092,6 +2189,10 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                                                   ) : pagado ? (
                                                     <span className="px-2.5 py-0.5 bg-emerald-50 text-emerald-700 text-[10px] font-black rounded-full border border-emerald-100/50 flex items-center gap-1">
                                                       ✓ Pago
+                                                    </span>
+                                                  ) : billetera ? (
+                                                    <span className="px-2.5 py-0.5 bg-cyan-50 text-cyan-700 text-[10px] font-black rounded-full border border-cyan-200 flex items-center gap-1" title="Pagada con el saldo prepago de la billetera del cliente (consumo, sin factura nueva)">
+                                                      🔋 Pagada con billetera
                                                     </span>
                                                   ) : cubierto ? (
                                                     <span className="px-2.5 py-0.5 bg-brand-cyan/10 text-brand-cyan text-[10px] font-black rounded-full border border-brand-cyan/20 flex items-center gap-1">

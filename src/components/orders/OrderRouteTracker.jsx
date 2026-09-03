@@ -290,16 +290,28 @@ const OrderRouteTracker = ({ steps = [], title = "Hoja de Ruta (Flujo de Áreas)
                 // --- MODO GRAFO: columnas por capa, filas dentro de cada columna ---
                 <div ref={graphContainerRef} className="relative overflow-x-auto pb-6 pt-4">
                     <svg className="absolute top-0 left-0 pointer-events-none" style={{ width: '100%', height: '100%', overflow: 'visible', zIndex: 0 }}>
+                        <defs>
+                            {/* Flecha en la punta: hace inequívoco A QUÉ nodo llega cada línea */}
+                            <marker id="ort-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+                                <path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8" />
+                            </marker>
+                        </defs>
                         {lines.map(l => {
-                            // Curva suave con "cintura" en el medio — con nodos muy cerca en vertical
-                            // (misma columna con varias filas) una S muy cerrada se ve como que las
-                            // líneas se cruzan pegadas a las tarjetas; alargar el tramo horizontal
-                            // antes de curvar da más aire.
-                            const dx = Math.max(40, (l.x2 - l.x1) * 0.5);
+                            // Trazado en dos tramos: la línea viaja RECTA a la altura del ORIGEN
+                            // y baja/sube recién en el hueco libre (~120px) pegado al destino.
+                            // Así nunca cruza por DETRÁS de un nodo intermedio de la fila del
+                            // destino (los círculos son blancos, z-index arriba del svg: la
+                            // "cortaban" y un DTF → Estampado parecía terminar en Bordado).
+                            // El remate queda 5px antes del círculo para que la flecha se vea
+                            // entera y no la tape el nodo.
+                            const xEnd = l.x2 - 5;
+                            const span = xEnd - l.x1;
+                            const drop = Math.min(120, Math.max(30, span * 0.4));
+                            const xs = Math.max(l.x1, xEnd - drop); // arranque de la caída
                             return (
                                 <path key={l.key}
-                                    d={`M ${l.x1} ${l.y1} C ${l.x1 + dx} ${l.y1}, ${l.x2 - dx} ${l.y2}, ${l.x2} ${l.y2}`}
-                                    fill="none" stroke="#cbd5e1" strokeWidth="2.5" strokeLinecap="round" />
+                                    d={`M ${l.x1} ${l.y1} L ${xs} ${l.y1} C ${xs + (xEnd - xs) * 0.5} ${l.y1}, ${xEnd - (xEnd - xs) * 0.5} ${l.y2}, ${xEnd} ${l.y2}`}
+                                    fill="none" stroke="#94a3b8" strokeWidth="2" strokeLinecap="round" markerEnd="url(#ort-arrow)" />
                             );
                         })}
                     </svg>

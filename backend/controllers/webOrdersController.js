@@ -5566,17 +5566,38 @@ exports.cubrirConBilletera = async (req, res) => {
                 ...ctas.filter(c => !c.restringida && c.mon === monOrden),
                 ...ctas.filter(c => !c.restringida && c.mon !== monOrden),
             ];
-            let elegida = null, importeCta = 0, cruzada = false;
+            let elegida = null, importeCta = 0, cruzada = false, partes = null;
             for (const c of candidatas) {
                 cruzada = c.mon !== monOrden;
                 importeCta = cruzada ? (monOrden === 2 ? r2(importe * cot) : r2(importe / cot)) : importe;
                 if (c.disp + 0.001 >= importeCta) { elegida = c; break; }
             }
-            if (!elegida) { sinCubrir.push(`${codigo} (${monOrden === 2 ? 'US$' : '$'} ${importe.toFixed(2)}: no alcanza en ninguna cuenta)`); continue; }
-            elegida.disp = r2(elegida.disp - importeCta);
-            plan.push({ ordId: f.OrdIdOrden, movId: f.MovIdMovimiento, codigo, importe,
-                        moneda: monOrden === 2 ? 'USD' : 'UYU', cueIdCuenta: elegida.id, cuenta: elegida.nombre,
-                        monedaCuenta: elegida.mon === 2 ? 'USD' : 'UYU', importeCta, cruzada });
+            if (!elegida) {
+                // PARTES 2/9/2026 (regla usuario, sin traspasos): ninguna billetera sola
+                // alcanza — el pedido se consume REPARTIDO: primero la de la MISMA moneda
+                // hasta dejarla en 0, y el remanente @ cot. desde la(s) otra(s). Un CONSUMO
+                // por cuenta, todos con la marca sobre la misma orden.
+                const fuentes = ctas.filter(c => !c.restringida)
+                    .map(c => ({ id: c.id, nombre: c.nombre, mon: c.mon, disp: c.disp }));
+                const planP = contabilidadService.planPartesConsumoBilletera({ fuentes, monOrden, importe, cot });
+                if (planP && planP.length) {
+                    for (const p of planP) {
+                        const fu = ctas.find(c => c.id === p.cueIdCuenta);
+                        fu.disp = r2(fu.disp - p.importeCta);
+                    }
+                    partes = planP;
+                }
+            }
+            if (!elegida && !partes) { sinCubrir.push(`${codigo} (${monOrden === 2 ? 'US$' : '$'} ${importe.toFixed(2)}: no alcanza ni repartiendo entre tus billeteras)`); continue; }
+            if (elegida) elegida.disp = r2(elegida.disp - importeCta);
+            plan.push(elegida
+                ? { ordId: f.OrdIdOrden, movId: f.MovIdMovimiento, codigo, importe,
+                    moneda: monOrden === 2 ? 'USD' : 'UYU', cueIdCuenta: elegida.id, cuenta: elegida.nombre,
+                    monedaCuenta: elegida.mon === 2 ? 'USD' : 'UYU', importeCta, cruzada, partes: null }
+                : { ordId: f.OrdIdOrden, movId: f.MovIdMovimiento, codigo, importe,
+                    moneda: monOrden === 2 ? 'USD' : 'UYU', cueIdCuenta: partes[0].cueIdCuenta,
+                    cuenta: partes.map(p => p.cuenta).join(' + '), monedaCuenta: monOrden === 2 ? 'USD' : 'UYU',
+                    importeCta: importe, cruzada: false, partes });
         }
         if (sinCubrir.length) {
             const disp = ctas.map(c => `${c.nombre}: ${c.mon === 2 ? 'US$' : '$'} ${c.disp.toFixed(2)}`).join(' · ') || 'sin saldo en la billetera';
@@ -5590,11 +5611,15 @@ exports.cubrirConBilletera = async (req, res) => {
         const ctrlConta = require('./contabilidadController');
         const cubiertas = [];
         for (const p of plan) {
-            const out = await new Promise((resolve) => {
-                const fakeRes = { code: 200, status(c) { this.code = c; return this; }, json(o) { resolve({ code: this.code, ...o }); } };
-                ctrlConta.consumirDesdeSaldo({ params: { MovIdMovimiento: String(p.movId) },
-                    body: { CueIdCuenta: p.cueIdCuenta }, query: {}, user: { id: 999 } }, fakeRes);
-            });
+            // Repartida entre billeteras → consumos en partes (transaccional, todo-o-nada);
+            // una sola cuenta → el motor de siempre.
+            const out = p.partes
+                ? await ctrlConta.consumirOrdenDesdeSaldoEnPartes({ movId: p.movId, partes: p.partes, cot, UsuarioAlta: 999 })
+                : await new Promise((resolve) => {
+                    const fakeRes = { code: 200, status(c) { this.code = c; return this; }, json(o) { resolve({ code: this.code, ...o }); } };
+                    ctrlConta.consumirDesdeSaldo({ params: { MovIdMovimiento: String(p.movId) },
+                        body: { CueIdCuenta: p.cueIdCuenta }, query: {}, user: { id: 999 } }, fakeRes);
+                });
             if (out.code >= 400 || out.success === false) {
                 const hechas = cubiertas.map(c => c.codigo).join(', ');
                 logger.error(`[BILLETERA PORTAL] Cubrir con billetera: falló ${p.codigo} (${out.error}). Cubiertas antes de fallar: ${hechas || 'ninguna'}.`);

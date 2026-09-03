@@ -727,11 +727,11 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
             <div className="bg-amber-50 border border-amber-300 rounded-lg p-3 text-[11px] text-amber-800 flex flex-col gap-2">
               <span className="font-black">Pago parcial — falta {simboloDeuda} {pendienteParcial.falta.toFixed(2)}. La deuda queda parcialmente pagada.</span>
               <div className="flex gap-2">
-                <button onClick={() => handleProcesar({ forzarParcial: true })} className="flex-1 bg-amber-500 hover:bg-amber-600 text-white font-black py-1.5 rounded-lg">Confirmar parcial</button>
+                <button onClick={() => handleProcesar({ forzarParcial: true })} disabled={procesando} className="flex-1 bg-amber-500 hover:bg-amber-600 text-white font-black py-1.5 rounded-lg">Confirmar parcial</button>
                 <button onClick={() => setPendienteParcial(null)} className="flex-1 bg-white border border-amber-300 text-amber-700 font-black py-1.5 rounded-lg">Cancelar</button>
               </div>
               {esDifDeCambio(pendienteParcial.falta) && (
-                <button onClick={() => handleProcesar({ aCambioMonetario: true })}
+                <button onClick={() => handleProcesar({ aCambioMonetario: true })} disabled={procesando}
                   className="w-full bg-white border border-violet-300 text-violet-700 hover:bg-violet-50 font-black py-1.5 rounded-lg">
                   Es diferencia de cambio → cancelar la deuda entera
                 </button>
@@ -748,11 +748,11 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
             <div className="bg-sky-50 border border-sky-300 rounded-lg p-3 text-[11px] text-sky-800 flex flex-col gap-2">
               <span className="font-black">Pago en exceso — {simboloDeuda} {excedentePago.excedente.toFixed(2)} quedará como saldo a favor del cliente.</span>
               <div className="flex gap-2">
-                <button onClick={() => handleProcesar({ forzarExcedente: true })} className="flex-1 bg-sky-500 hover:bg-sky-600 text-white font-black py-1.5 rounded-lg">Cobrar y dejar a favor</button>
+                <button onClick={() => handleProcesar({ forzarExcedente: true })} disabled={procesando} className="flex-1 bg-sky-500 hover:bg-sky-600 text-white font-black py-1.5 rounded-lg">Cobrar y dejar a favor</button>
                 <button onClick={() => setExcedentePago(null)} className="flex-1 bg-white border border-sky-300 text-sky-700 font-black py-1.5 rounded-lg">Cancelar</button>
               </div>
               {esDifDeCambio(excedentePago.excedente) && (
-                <button onClick={() => handleProcesar({ aCambioMonetario: true })}
+                <button onClick={() => handleProcesar({ aCambioMonetario: true })} disabled={procesando}
                   className="w-full bg-white border border-violet-300 text-violet-700 hover:bg-violet-50 font-black py-1.5 rounded-lg">
                   Es diferencia de cambio → no dejar saldo a favor
                 </button>
@@ -1069,7 +1069,7 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
                 </p>
                 <div className="flex gap-2">
                   <button
-                    onClick={() => { handleProcesar({ forzarParcial: true }); }}
+                    onClick={() => { handleProcesar({ forzarParcial: true }); }} disabled={procesando}
                     className="flex-1 bg-amber-500 hover:bg-amber-600 text-white font-black py-2 px-4 rounded-xl text-sm transition-colors">
                     ✓ Confirmar pago parcial
                   </button>
@@ -1088,7 +1088,7 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
                       <strong> pérdida por diferencia de cambio</strong>, sin quedar pendientes al cliente.
                     </p>
                     <button
-                      onClick={() => { handleProcesar({ aCambioMonetario: true }); }}
+                      onClick={() => { handleProcesar({ aCambioMonetario: true }); }} disabled={procesando}
                       className="w-full bg-white border-2 border-violet-400 text-violet-700 font-black py-2 px-4 rounded-xl text-sm hover:bg-violet-50 transition-colors">
                       ⇄ Es diferencia de cambio — cancelar la deuda entera
                     </button>
@@ -1124,7 +1124,7 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
                 </p>
                 <div className="flex gap-2">
                   <button
-                    onClick={() => { handleProcesar({ forzarExcedente: true }); }}
+                    onClick={() => { handleProcesar({ forzarExcedente: true }); }} disabled={procesando}
                     className="flex-1 bg-sky-500 hover:bg-sky-600 text-white font-black py-2 px-4 rounded-xl text-sm transition-colors">
                     ✓ Cobrar y dejar saldo a favor
                   </button>
@@ -1142,7 +1142,7 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
                       van a <strong>ganancia por diferencia de cambio</strong> en vez de quedar como saldo a favor del cliente.
                     </p>
                     <button
-                      onClick={() => { handleProcesar({ aCambioMonetario: true }); }}
+                      onClick={() => { handleProcesar({ aCambioMonetario: true }); }} disabled={procesando}
                       className="w-full bg-white border-2 border-violet-400 text-violet-700 font-black py-2 px-4 rounded-xl text-sm hover:bg-violet-50 transition-colors">
                       ⇄ Es diferencia de cambio — no dejar saldo a favor
                     </button>

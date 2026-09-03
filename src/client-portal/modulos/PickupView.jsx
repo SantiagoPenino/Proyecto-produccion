@@ -473,9 +473,14 @@ export const PickupView = () => {
             const prev = await apiClient.post('/web-orders/pickup-orders/cubrir-con-billetera', { ...payloadBase, preview: true });
             if (!prev?.success) throw new Error(prev?.error || 'No se pudo calcular la cobertura.');
             setLoading(false);
-            const lineasHtml = (prev.plan || []).map(p =>
-                `• <b>${p.codigo}</b> ← <b>"${p.cuenta}"</b>: ${simDe(p.monedaCuenta)} ${Number(p.importeCta).toFixed(2)}${p.cruzada ? ` <span style="opacity:.7">(@ $${Number(prev.cotizacion).toFixed(2)})</span>` : ''}`
-            ).join('<br/>');
+            const lineasHtml = (prev.plan || []).map(p => {
+                let linea = `• <b>${p.codigo}</b> ← <b>"${p.cuenta}"</b>: ${simDe(p.monedaCuenta)} ${Number(p.importeCta).toFixed(2)}${p.cruzada ? ` <span style="opacity:.7">(@ $${Number(prev.cotizacion).toFixed(2)})</span>` : ''}`;
+                // Repartido: una billetera sola no alcanzaba — un consumo por cuenta
+                (p.partes || []).forEach(x => {
+                    linea += `<br/><span style="font-size:12px;opacity:.8">&nbsp;&nbsp;↳ ${x.mon === 2 ? 'US$' : '$'} ${Number(x.importeCta).toFixed(2)} de "${x.cuenta}"${x.cruzada ? ` (@ $${Number(prev.cotizacion).toFixed(2)})` : ''}</span>`;
+                });
+                return linea;
+            }).join('<br/>');
             const conf = await Swal.fire({
                 icon: 'question', title: 'Cubrir con mi billetera',
                 html: `Cada pedido se descuenta ENTERO de tu saldo prepago:<br/><br/>`

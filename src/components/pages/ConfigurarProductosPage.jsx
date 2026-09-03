@@ -36,6 +36,13 @@ const AREAS_DECORACION = [
     { id: 'DF', label: 'Estampado DTF', desc: 'Transfer film full color · área DTF', grad: 'from-pink-500 to-rose-600', chip: 'bg-pink-100 text-pink-700', icon: 'fa-palette' },
 ];
 const AREAS = [...AREAS_CONSTRUCCION, ...AREAS_DECORACION];
+// Nombre corto de cada servicio para chips/resúmenes. OJO: antes había un ternario
+// EMB/TPU/else→'DTF' que etiquetaba "DTF" a Sublimación, Corte y Costura — en el armado
+// del combo se veían 4 chips "DTF" que en realidad eran áreas distintas.
+const servicioCorto = (areaId) => ({
+    SB: 'Sublimación', TWC: 'Corte', TWT: 'Costura',
+    EMB: 'Bordado', TPU: 'TPU', DF: 'DTF',
+}[areaId] || areaId);
 const AREA_APLIQUE_EXTRA = { id: 'ETIQUETA', label: 'Etiqueta (grifa)', chip: 'bg-slate-100 text-slate-600' };
 const areaMeta = (id) => AREAS.find(a => a.id === id) || AREA_APLIQUE_EXTRA;
 
@@ -1146,7 +1153,7 @@ export default function ConfigurarProductosPage() {
                                                                     <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 mr-1">Servicios:</span>
                                                                     {AREAS.map(a => {
                                                                         const srv = (it.servicios || []).find(s => s.areaId === a.id);
-                                                                        const corto = a.id === 'EMB' ? 'Bordado' : a.id === 'TPU' ? 'TPU' : 'DTF';
+                                                                        const corto = servicioCorto(a.id);
                                                                         return (
                                                                             <span key={a.id} className="inline-flex items-center gap-1">
                                                                                 <button type="button"
@@ -1717,7 +1724,7 @@ export default function ConfigurarProductosPage() {
                                                                     {AREAS.filter(a => form.tecnicas[a.id].on).map(a => {
                                                                         const t = form.tecnicas[a.id];
                                                                         const opts = tecnicasCat.filter(o => o.AreaID === a.id && form.opcionesPermitidas.has(o.TecnicaOpcionID));
-                                                                        const corto = a.id === 'EMB' ? 'Bordado' : a.id === 'TPU' ? 'TPU' : 'DTF';
+                                                                        const corto = servicioCorto(a.id);
                                                                         const det = (t.modo !== 'LIBRE' && opts.length)
                                                                             ? ' ' + opts.map(o => o.Nombre.replace(/^Parche hasta\s*/i, '').replace(/^Bordado sobre prenda\s*/i, '')).join(' / ')
                                                                             : '';
@@ -1730,7 +1737,7 @@ export default function ConfigurarProductosPage() {
                                                                     {form.politica === 'PAQUETE' && form.comboItems.length > 0 && form.comboItems.map((it, i) => (
                                                                         <span key={`ci-${i}`} className="bg-amber-50 border border-amber-200 text-amber-700 px-2 py-0.5 rounded-md text-[10px] font-bold">
                                                                             {it.cantidad}× {it.itemNombre || `#${it.itemProIdProducto}`}{it.wmsVarianteId ? ` — ${it.varianteNombre || 'variante fija'}` : ''}
-                                                                            {(it.servicios || []).length > 0 && ` +${it.servicios.map(s => (s.areaId === 'EMB' ? 'Bordado' : s.areaId === 'TPU' ? 'TPU' : 'DTF') + (s.incluido ? '' : '($)')).join('+')}`}
+                                                                            {(it.servicios || []).length > 0 && ` +${it.servicios.map(s => servicioCorto(s.areaId) + (s.incluido ? '' : '($)')).join('+')}`}
                                                                         </span>
                                                                     ))}
                                                                     {form.politica === 'PAQUETE' && form.comboItems.length === 0 && form.cantidadFija && (

@@ -243,6 +243,43 @@ async function calcularAdelantoLimpio(transaction, CliIdCliente, moneda) {
  * para ese producto, el retiro pasa (Abonado). Sin ninguna historia → no es rollo real.
  * Espeja la condición de hookOrdenCreada (ultimoPlanRes, sin filtro PlaActivo).
  */
+/**
+ * ordenCubiertaPorLibro
+ * ¿El LIBRO de recursos muestra que esta orden ya consumió sus metros de un plan?
+ * (ENTREGA en cuentas de metros por >= OrdCantidad.) Es la prueba dura de cobertura:
+ * cubre el caso de una orden con costo VIEJO (cotizada antes de comprar el rollo)
+ * cuyos metros SÍ se descontaron al ingresar — no debe volver a cobrarse.
+ * OJO: m.OrdIdOrden apunta a Ordenes(ERP).OrdenID, acá llega el id de OrdenesDeposito
+ * — se resuelve por OrdCodigoOrden.
+ */
+async function ordenCubiertaPorLibro(transaction, OrdIdOrdenDeposito) {
+    try {
+        const r = await transaction.request()
+            .input('Ord', sql.Int, OrdIdOrdenDeposito)
+            .query(`
+                SELECT od.OrdCantidad,
+                       (SELECT ISNULL(SUM(-m.MovImporte), 0)
+                          FROM dbo.MovimientosCuenta m WITH(NOLOCK)
+                          JOIN dbo.CuentasCliente cc WITH(NOLOCK) ON cc.CueIdCuenta = m.CueIdCuenta
+                         WHERE m.OrdIdOrden = o.OrdenID
+                           AND cc.CliIdCliente = od.CliIdCliente
+                           AND cc.CueTipo NOT IN ('DINERO_USD','DINERO_UYU')
+                           AND m.MovTipo = 'ENTREGA'
+                           AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)) AS MetrosLibro
+                FROM dbo.OrdenesDeposito od WITH(NOLOCK)
+                JOIN dbo.Ordenes o WITH(NOLOCK) ON o.CodigoOrden = od.OrdCodigoOrden
+                WHERE od.OrdIdOrden = @Ord
+            `);
+        if (!r.recordset.length) return false;
+        const cant   = parseFloat(r.recordset[0].OrdCantidad) || 0;
+        const libro  = parseFloat(r.recordset[0].MetrosLibro) || 0;
+        return cant > 0 && libro >= cant - 0.005;
+    } catch (err) {
+        logger.warn(`[RETIRO] Error verificando libro de recursos OrdDep=${OrdIdOrdenDeposito}: ${err.message}.`);
+        return false;
+    }
+}
+
 async function tienePlanHistorico(transaction, CliIdCliente, ProIdProducto) {
     if (!CliIdCliente || !ProIdProducto) return false;
     const r = await transaction.request()
@@ -392,6 +429,12 @@ async function crearRetiro(transaction, { ordIds, totalCost, lugarRetiro, usuari
                 logger.info(`[RETIRO] Orden ${orden.OrdIdOrden} cubierta por rollo (costo 0) → pasa.`);
                 continue;
             }
+            // Costo VIEJO (cotizado antes de comprar el rollo) pero el LIBRO muestra los
+            // metros ya descontados de un plan → está cubierta, no se cobra de nuevo.
+            if (await ordenCubiertaPorLibro(transaction, orden.OrdIdOrden)) {
+                logger.info(`[RETIRO] Orden ${orden.OrdIdOrden} de rollo con costo ${costoOrden} pero metros YA descontados según el libro → cubierta, pasa.`);
+                continue;
+            }
             logger.warn(`[RETIRO] Orden ${orden.OrdIdOrden} de rollo con costo ${costoOrden} (fuera del rollo) → requiere pago o crédito (ciclo abierto).`);
             ordenesQueNecesitanCredito.push(orden);
             continue;
@@ -410,6 +453,15 @@ async function crearRetiro(transaction, { ordIds, totalCost, lugarRetiro, usuari
         const ctaRestr = await verificarCuentaRestringida(transaction, { CliIdCliente, OrdIdOrden: orden.OrdIdOrden, ProIdProducto: orden.ProIdProducto });
         if (ctaRestr.cubierta) {
             logger.info(`[RETIRO] Orden ${orden.OrdIdOrden} cubierta por cuenta restringida #${ctaRestr.cueId} (${ctaRestr.motivo})`);
+            continue;
+        }
+
+        // Costo 0 y el LIBRO muestra los metros ya descontados de un plan (aunque el
+        // plan se haya cerrado al consumir los últimos metros) → cubierta, no frena
+        // en caja con $0 a cobrar.
+        if ((parseFloat(orden.OrdCostoFinal) || 0) <= 0
+            && await ordenCubiertaPorLibro(transaction, orden.OrdIdOrden)) {
+            logger.info(`[RETIRO] Orden ${orden.OrdIdOrden} con costo 0 y metros descontados según el libro → cubierta, pasa.`);
             continue;
         }
 

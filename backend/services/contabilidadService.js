@@ -1030,14 +1030,21 @@ async function hookEntregaMetros(params) {
       const disponible = Math.round((total - usada) * 10000) / 10000;
 
       if (disponible <= 0) {
-         const updateReqZero = new sql.Request(transaction);
-         await updateReqZero.query(`UPDATE dbo.PlanesMetros SET PlaActivo = 0 WHERE PlaIdPlan = ${plan.PlaIdPlan}`);
+         // ROLLO POR ADELANTADO: el plan NO se cierra nunca por consumo — puede quedar
+         // en negativo y la próxima recarga (PlaCantidadTotal += metros) lo absorbe.
+         // El exceso de esta entrega se imputa más abajo (bloque 3a) al último plan.
+         if (!esRolloAdelantado) {
+           const updateReqZero = new sql.Request(transaction);
+           await updateReqZero.query(`UPDATE dbo.PlanesMetros SET PlaActivo = 0 WHERE PlaIdPlan = ${plan.PlaIdPlan}`);
+         }
          continue;
       }
 
       const consumir = Math.round(Math.min(cantidadPendiente, disponible) * 10000) / 10000;
       const nuevaUsada = Math.round((usada + consumir) * 10000) / 10000;
-      const activo = nuevaUsada >= total ? 0 : 1;
+      // ROLLO POR ADELANTADO: nunca se desactiva por consumo (queda activo aunque
+      // llegue al total; el negativo posterior también vive en el plan — bloque 3a).
+      const activo = (esRolloAdelantado || nuevaUsada < total) ? 1 : 0;
 
       const updateReq = new sql.Request(transaction);
       await updateReq
@@ -1102,6 +1109,18 @@ async function hookEntregaMetros(params) {
         OrdIdOrden,
         MovObservaciones: `Exceso s/ Plan #${lastPlan.PlaIdPlan}`,
       }, transaction);
+
+      // ROLLO POR ADELANTADO: el exceso también se imputa al PLAN (PlaCantidadUsada por
+      // encima del total, PlaActivo sigue en 1) para que el plan y la cuenta digan lo
+      // mismo y la próxima recarga absorba el negativo sola. Solo rollo: a los demás
+      // el exceso les queda únicamente en la cuenta, como siempre.
+      if (esRolloAdelantado) {
+        await new sql.Request(transaction)
+          .input('P', sql.Int, lastPlan.PlaIdPlan)
+          .input('E', sql.Decimal(18, 4), Math.abs(cantidadPendiente))
+          .query(`UPDATE dbo.PlanesMetros SET PlaCantidadUsada = PlaCantidadUsada + @E, PlaActivo = 1 WHERE PlaIdPlan = @P`);
+        logger.info(`[HOOK:METROS] ROLLO — exceso de ${cantidadPendiente} imputado al plan #${lastPlan.PlaIdPlan} (queda en negativo, sigue activo).`);
+      }
 
       await aplicarRecargoUrgenciaRollo({
         transaction, OrdIdOrden, CliIdCliente, ProIdProducto,
@@ -2555,6 +2574,7 @@ async function getCicloMovimientos(CicIdCiclo) {
                  LEFT JOIN dbo.Articulos a WITH(NOLOCK) ON a.ProIdProducto = d.ProIdProducto
                  LEFT JOIN dbo.StockArt sa WITH(NOLOCK) ON a.CodStock = sa.CodStock
                  WHERE LTRIM(RTRIM(pc.NoDocERP)) = COALESCE(od.OrdCodigoOrden, erp.CodigoOrden)
+                   AND d.OrdenID = m.OrdIdOrden
                  FOR JSON PATH
               ) AS DetallesJSON
       FROM dbo.MovimientosCuenta m WITH(NOLOCK)
@@ -4398,36 +4418,66 @@ async function consumirPrepagoDelCiclo(pool, {
       ...cuentas.filter(c => !c.restringida && c.mon !== monCicloId),
     ];
 
-    let elegida = null, importeCta = 0, cruzada = false;
+    let elegida = null, importeCta = 0, cruzada = false, partes = null;
     for (const c of candidatas) {
       cruzada = c.mon !== monCicloId;
       importeCta = cruzada ? (c.mon === 2 ? r2(ord.importe / cot) : r2(ord.importe * cot)) : ord.importe;
       if (c.negativo || c.disp + 0.001 >= importeCta) { elegida = c; break; }
     }
-    if (!elegida) { aFactura.push({ codigo: ord.codigo, importe: ord.importe, movId: ord.MovIdMovimiento }); continue; }
-    elegida.disp = r2(elegida.disp - importeCta);
+    if (!elegida) {
+      // PARTES 2/9/2026 (regla usuario): ninguna cuenta sola alcanza — la orden se
+      // consume REPARTIDA (sin traspasos): primero la libre de la moneda del ciclo
+      // hasta dejarla en 0, el remanente @ cot desde la(s) otra(s). Un CONSUMO por
+      // cuenta, todos con la marca sobre la misma orden.
+      const fuentes = cuentas.filter(c => !c.restringida)
+        .map(c => ({ id: c.id, nombre: c.nombre, mon: c.mon, disp: c.disp }));
+      const planP = planPartesConsumoBilletera({ fuentes, monOrden: monCicloId, importe: ord.importe, cot });
+      if (planP && planP.length) {
+        for (const p of planP) {
+          const f = cuentas.find(c => c.id === p.cueIdCuenta);
+          f.disp = r2(f.disp - p.importeCta);
+        }
+        partes = planP;
+      }
+    }
+    if (!elegida && !partes) { aFactura.push({ codigo: ord.codigo, importe: ord.importe, movId: ord.MovIdMovimiento }); continue; }
+    if (elegida) elegida.disp = r2(elegida.disp - importeCta);
 
-    const item = { movId: ord.MovIdMovimiento, codigo: ord.codigo, importe: ord.importe,
-                   cueId: elegida.id, cuenta: elegida.nombre, mon: elegida.mon === 2 ? 'USD' : 'UYU',
-                   importeCta, cruzada, ordIdDeposito };
+    const item = elegida
+      ? { movId: ord.MovIdMovimiento, codigo: ord.codigo, importe: ord.importe,
+          cueId: elegida.id, cuenta: elegida.nombre, mon: elegida.mon === 2 ? 'USD' : 'UYU',
+          importeCta, cruzada, ordIdDeposito, partes: null }
+      : { movId: ord.MovIdMovimiento, codigo: ord.codigo, importe: ord.importe,
+          cueId: partes[0].cueIdCuenta, cuenta: partes.map(p => p.cuenta).join(' + '),
+          mon: monCicloId === 2 ? 'USD' : 'UYU', importeCta: ord.importe, cruzada: false,
+          ordIdDeposito, partes };
     cubiertas.push(item);
 
     if (!dryRun) {
-      const consumo = await registrarMovimiento({
-        CueIdCuenta:      elegida.id,
-        MovTipo:          'CONSUMO_CUENTA',
-        MovConcepto:      String(ord.MovConcepto || ord.codigo || 'Consumo de orden').slice(0, 250),
-        MovImporte:       -Math.abs(importeCta),
-        MovUsuarioAlta:   UsuarioAlta,
-        OrdIdOrden:       ordIdDeposito || ord.OrdIdOrden || null,
-        MovObservaciones: `CUBIERTO_CUENTA_${elegida.id}${cruzada ? ` @ cot. ${cot}` : ''} — ${elegida.nombre} (cierre ciclo #${CicIdCiclo})`,
-      });
+      // Un CONSUMO por cuenta: normalmente 1, o N si la orden salió repartida (partes).
+      const consumosAHacer = partes
+        ? partes.map(p => ({ cueId: p.cueIdCuenta, cuenta: p.cuenta, importeCta: p.importeCta, cruzada: p.cruzada }))
+        : [{ cueId: elegida.id, cuenta: elegida.nombre, importeCta, cruzada }];
+      const refs = [];
+      for (let i = 0; i < consumosAHacer.length; i++) {
+        const cns = consumosAHacer[i];
+        const consumo = await registrarMovimiento({
+          CueIdCuenta:      cns.cueId,
+          MovTipo:          'CONSUMO_CUENTA',
+          MovConcepto:      String(ord.MovConcepto || ord.codigo || 'Consumo de orden').slice(0, 250),
+          MovImporte:       -Math.abs(cns.importeCta),
+          MovUsuarioAlta:   UsuarioAlta,
+          OrdIdOrden:       ordIdDeposito || ord.OrdIdOrden || null,
+          MovObservaciones: `CUBIERTO_CUENTA_${cns.cueId}${cns.cruzada ? ` @ cot. ${cot}` : ''} — ${cns.cuenta}${consumosAHacer.length > 1 ? ` (parte ${i + 1} de ${consumosAHacer.length})` : ''} (cierre ciclo #${CicIdCiclo})`,
+        });
+        refs.push(consumo.MovIdGenerado);
+      }
       // Marcar la ORDEN del ciclo como cubierta (sale del total, del link y de la factura)
-      // con el Ref# que usa la reversa "devolver pago con saldo".
+      // con los Ref# que usa la reversa "devolver pago con saldo" (uno por consumo).
       if (ord.MovIdMovimiento) {
         await pool.request()
           .input('M', sql.Int, ord.MovIdMovimiento)
-          .input('Obs', sql.NVarChar(500), `CUBIERTO_CUENTA_${elegida.id} (cierre ciclo #${CicIdCiclo}) Ref#${consumo.MovIdGenerado}`)
+          .input('Obs', sql.NVarChar(500), `CUBIERTO_CUENTA_${consumosAHacer[0].cueId} (cierre ciclo #${CicIdCiclo}) ${refs.map(id => `Ref#${id}`).join(' ')}`)
           .query('UPDATE dbo.MovimientosCuenta SET MovObservaciones = @Obs WHERE MovIdMovimiento = @M');
       }
       // Orden paga + retiro Abonado (mismo criterio que una orden cubierta al ingreso)
@@ -4449,7 +4499,7 @@ async function consumirPrepagoDelCiclo(pool, {
                 AND (od2.PagIdPago IS NULL AND (dd.DDeImportePendiente > 0.01 OR dd.DDeImportePendiente IS NULL)));
         `);
       }
-      logger.info(`[CICLO ${CicIdCiclo}] Prepago: ${ord.codigo || ord.MovIdMovimiento} (${ord.importe}) cubierta por "${elegida.nombre}" (-${importeCta}${cruzada ? ` @ ${cot}` : ''}). Disp: ${elegida.disp}.`);
+      logger.info(`[CICLO ${CicIdCiclo}] Prepago: ${ord.codigo || ord.MovIdMovimiento} (${ord.importe}) cubierta por "${item.cuenta}"${partes ? ` en ${partes.length} partes (${partes.map(p => `${p.mon === 2 ? 'US$' : '$'} ${p.importeCta.toFixed(2)}`).join(' + ')} @ cot. ${cot})` : ` (-${importeCta}${cruzada ? ` @ ${cot}` : ''})`}.`);
     }
   }
 
@@ -4858,11 +4908,61 @@ async function transferirEntreCuentas({ CueOrigen, CueDestino, Importe, Cotizaci
   }
 }
 
+/**
+ * planPartesConsumoBilletera — PURA, no toca la base (2/9/2026, regla del usuario).
+ * Cuando NINGUNA billetera sola alcanza para una orden, la orden se consume
+ * REPARTIDA (sin traspasos): primero la billetera de la MISMA moneda de la orden
+ * hasta dejarla en 0, y el remanente convertido @ cot desde la(s) otra(s).
+ * Cada parte es un CONSUMO_CUENTA sobre la misma orden.
+ * @param {Array}  fuentes  [{id, nombre, mon(1|2), disp}] — SOLO cuentas LIBRES con saldo
+ * @param {number} monOrden 1|2 (moneda de la orden)
+ * @param {number} importe  total de la orden, en SU moneda
+ * @param {number} cot      pesos por dólar
+ * @returns {Array|null} [{cueIdCuenta, cuenta, mon(1|2), importeCta, importeOrden, cruzada}]
+ *          (importeCta en la moneda de la CUENTA; importeOrden lo que cubre de la orden)
+ *          o null si NI SUMANDO TODAS alcanza. NO muta disp: el caller descuenta si acepta.
+ */
+function planPartesConsumoBilletera({ fuentes, monOrden, importe, cot }) {
+  const r2 = (n) => Math.round(n * 100) / 100;
+  let rem = r2(Number(importe));
+  if (rem <= 0.009) return [];
+  const ordenadas = [...(fuentes || [])].filter(f => Number(f.disp) > 0.009).sort((a, b) => {
+    const am = Number(a.mon) === Number(monOrden) ? 0 : 1;
+    const bm = Number(b.mon) === Number(monOrden) ? 0 : 1;
+    return am - bm || Number(b.disp) - Number(a.disp);
+  });
+  const partes = [];
+  for (const f of ordenadas) {
+    if (rem <= 0.009) break;
+    const monF = Number(f.mon) === 2 ? 2 : 1;
+    let importeCta, importeOrden, cruzada;
+    if (monF === Number(monOrden)) {
+      cruzada = false;
+      importeOrden = r2(Math.min(f.disp, rem));
+      importeCta = importeOrden;
+    } else {
+      cruzada = true;
+      // saldo de la cuenta expresado en la moneda de la orden
+      const dispEnOrden = monF === 2 ? r2(f.disp * cot) : r2(f.disp / cot);
+      importeOrden = r2(Math.min(rem, dispEnOrden));
+      // si se la vacía, el consumo es EXACTAMENTE el saldo (queda en 0, sin colas de redondeo)
+      importeCta = importeOrden >= dispEnOrden - 0.005
+        ? r2(f.disp)
+        : (Number(monOrden) === 2 ? r2(importeOrden * cot) : r2(importeOrden / cot));
+    }
+    if (importeCta <= 0.009) continue;
+    partes.push({ cueIdCuenta: f.id, cuenta: f.nombre, mon: monF, importeCta, importeOrden, cruzada });
+    rem = r2(rem - importeOrden);
+  }
+  return rem <= 0.009 ? partes : null;
+}
+
 module.exports = {
   // Cuentas
   obtenerOCrearCuenta,
   getSaldoRealCuenta,
   transferirEntreCuentas,
+  planPartesConsumoBilletera,
   buscarCuentaAutoConsumoParaOrden,
   consumirPrepagoDelCiclo,
   resincronizarConsumosBilletera,
@@ -5011,18 +5111,86 @@ async function procesarEventoContable(evtCodigo, data) {
           let importeCta = r2(importeOrdenAbs * factor);
           let parcial = false;
 
+          // Partes extra cuando la cuenta elegida no llega sola (regla usuario 2/9/2026):
+          // se la vacía hasta 0 y el remanente se consume @ cot desde las otras billeteras
+          // LIBRES automáticas de la MISMA modalidad. Sin traspasos: cada parte es un
+          // CONSUMO sobre la misma orden. Si ni sumando alcanza, sigue el camino de
+          // siempre (parcial + resto a la principal).
+          let partesExtra = null;
           if (!ctaAuto.CuePuedeNegativo) {
             const saldoCta = await getSaldoRealCuenta(ctaAuto.CueIdCuenta);
-            if (saldoCta <= 0.001) {
-              importeCta = 0;
-            } else if (saldoCta + 0.001 < importeCta) {
-              importeCta = r2(saldoCta);
-              parcial = true;
+            if (saldoCta <= 0.001 || saldoCta + 0.001 < importeCta) {
+              if (!ctaAuto.CueRestringida) {
+                try {
+                  const otras = (await pool.request()
+                    .input('Cli', sql.Int, CliIdCliente)
+                    .input('Cue', sql.Int, ctaAuto.CueIdCuenta)
+                    .query(`
+                      SELECT cc.CueIdCuenta, cc.CueNombre, cc.MonIdMoneda,
+                        ISNULL((SELECT SUM(m.MovImporte) FROM dbo.MovimientosCuenta m WITH(NOLOCK)
+                                WHERE m.CueIdCuenta = cc.CueIdCuenta AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)
+                                  AND m.MovTipo NOT IN ('ORDEN','ORDEN_ANTICIPO')), 0) AS Saldo
+                      FROM dbo.CuentasCliente cc WITH(NOLOCK)
+                      WHERE cc.CliIdCliente = @Cli AND cc.CueIdCuenta <> @Cue
+                        AND cc.CueActiva = 1 AND cc.CueEsPrincipal = 0 AND cc.CueRestringida = 0
+                        AND cc.CueAutoConsumo = 1 AND cc.CueTipo LIKE 'DINERO%'
+                        AND ISNULL(cc.CueModalidadFiscal,'ANTICIPO_A_FACTURAR') =
+                            (SELECT ISNULL(x.CueModalidadFiscal,'ANTICIPO_A_FACTURAR') FROM dbo.CuentasCliente x WITH(NOLOCK) WHERE x.CueIdCuenta = @Cue)`)).recordset;
+                  const fuentes = [
+                    { id: ctaAuto.CueIdCuenta, nombre: ctaAuto.CueNombre || `cuenta #${ctaAuto.CueIdCuenta}`, mon: monCta, disp: r2(Math.max(saldoCta, 0)) },
+                    ...otras.map(c => ({ id: c.CueIdCuenta, nombre: (c.CueNombre || `cuenta #${c.CueIdCuenta}`).trim(),
+                                         mon: Number(c.MonIdMoneda) === 2 ? 2 : 1, disp: r2(Number(c.Saldo)) })),
+                  ];
+                  if (!cotUsada && fuentes.some(f => f.mon !== MonIdMoneda && f.disp > 0.009)) {
+                    const cotiRes2 = await pool.request().query('SELECT TOP 1 CotDolar FROM dbo.Cotizaciones WITH(NOLOCK) ORDER BY CotFecha DESC');
+                    cotUsada = parseFloat(cotiRes2.recordset[0]?.CotDolar) || 40;
+                  }
+                  const planP = planPartesConsumoBilletera({ fuentes, monOrden: MonIdMoneda, importe: importeOrdenAbs, cot: cotUsada || 40 });
+                  if (planP && planP.length > 1) partesExtra = planP;
+                } catch (ePartes) {
+                  logger.error(`[MOTOR] ${evtCodigo}: reparto entre billeteras para ${CodigoOrden} falló: ${ePartes.message}. Sigue el camino normal.`);
+                  partesExtra = null;
+                }
+              }
+              if (!partesExtra) {
+                if (saldoCta <= 0.001) {
+                  importeCta = 0;
+                } else {
+                  importeCta = r2(saldoCta);
+                  parcial = true;
+                }
+              }
             }
           }
 
           const nomCta = ctaAuto.CueNombre || `cuenta #${ctaAuto.CueIdCuenta}`;
-          if (importeCta > 0.001) {
+          if (partesExtra) {
+            // Orden cubierta ENTERA repartida entre billeteras (un CONSUMO por cuenta,
+            // cada uno con la marca): primero la de la moneda de la orden hasta 0,
+            // el remanente @ cot desde la(s) otra(s).
+            for (let i = 0; i < partesExtra.length; i++) {
+              const parte = partesExtra[i];
+              resSubmayor = await registrarMovimiento({
+                CueIdCuenta:      parte.cueIdCuenta,
+                MovTipo:          'CONSUMO_CUENTA',
+                MovConcepto:      `${CodigoOrden} ${NombreTrabajo}`.trim() || 'Consumo de orden',
+                MovImporte:       -Math.abs(parte.importeCta),
+                MovUsuarioAlta:   UsuarioAlta,
+                OrdIdOrden:       ctaAuto.OrdIdDeposito || OrdIdOrden,
+                OReIdOrdenRetiro,
+                MovObservaciones: `CUBIERTO_CUENTA_${parte.cueIdCuenta}${parte.cruzada ? ` @ cot. ${cotUsada}` : ''} — ${parte.cuenta} (parte ${i + 1} de ${partesExtra.length})`,
+              });
+            }
+            resSubmayor.cuentaAutoConsumo = partesExtra[0].cueIdCuenta;
+            resSubmayor.cubiertoPorSaldo = true;
+            saltarDinero = true;
+            logger.info(`[MOTOR] ${evtCodigo}: Orden ${CodigoOrden} cubierta ENTERA repartida entre ${partesExtra.length} billeteras: ${partesExtra.map(p => `"${p.cuenta}" -${p.mon === 2 ? 'US$' : '$'} ${p.importeCta.toFixed(2)}`).join(' + ')}${cotUsada ? ` (@ cot. ${cotUsada})` : ''}. Sin deuda en la principal.`);
+            if (ctaAuto.OrdIdDeposito) {
+              await pool.request().input('Id', sql.Int, ctaAuto.OrdIdDeposito).query(`
+                UPDATE dbo.OrdenesDeposito SET OrdEstadoActual = CASE WHEN OrdEstadoActual = 1 THEN 7 ELSE OrdEstadoActual END WHERE OrdIdOrden = @Id;
+              `);
+            }
+          } else if (importeCta > 0.001) {
             const marca = parcial ? 'CUBIERTO_PARCIAL_CUENTA' : 'CUBIERTO_CUENTA';
             resSubmayor = await registrarMovimiento({
               CueIdCuenta:      ctaAuto.CueIdCuenta,

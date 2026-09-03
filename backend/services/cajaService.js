@@ -2697,6 +2697,79 @@ async function anularReciboInterno({ tcaId, usuarioId, motivo }) {
         .query(`UPDATE dbo.CuentasCliente SET CueSaldoActual = CueSaldoActual - @Importe WHERE CueIdCuenta = @CueId`);
     }
 
+    // 5.b DEVOLVERLE LA DEUDA A LOS DOCUMENTOS QUE ESTE COBRO HABÍA PAGADO.
+    //     Hasta el 2-sep-2026 esto NO se hacía: se anulaba la transacción, los pagos y
+    //     el movimiento de la cuenta, pero `DeudaDocumento` e `ImputacionPago` quedaban
+    //     intactos. Resultado: la plata desaparecía del libro y la factura SEGUÍA
+    //     diciendo COBRADO — quedaba impaga sin que nadie se enterara, y encima
+    //     invisible para cobranzas.
+    //     Se agrupa por deuda (un mismo cobro puede imputarse a varias) y se repone lo
+    //     imputado, sin pasarse nunca del importe original de la deuda.
+    const impRes = await new sql.Request(transaction)
+      .input('TcaId', sql.Int, tcaId)
+      .query(`
+        SELECT ip.DDeIdDocumento, dd.DocIdDocumento, Repone = SUM(ip.ImpImporte)
+        FROM dbo.ImputacionPago ip
+        JOIN dbo.DeudaDocumento dd ON dd.DDeIdDocumento = ip.DDeIdDocumento
+        WHERE ip.PagIdPago IN (SELECT PagIdPago FROM dbo.Pagos WHERE PagTcaIdTransaccion = @TcaId)
+        GROUP BY ip.DDeIdDocumento, dd.DocIdDocumento`);
+
+    for (const imp of impRes.recordset) {
+      await new sql.Request(transaction)
+        .input('DDe',    sql.Int,           imp.DDeIdDocumento)
+        .input('Repone', sql.Decimal(18,4), imp.Repone)
+        .input('Motivo', sql.NVarChar(200), motivo || 'sin motivo')
+        .input('TcaId',  sql.Int,           tcaId)
+        .query(`
+          UPDATE dbo.DeudaDocumento
+          SET DDeImportePendiente = CASE
+                WHEN DDeImportePendiente + @Repone > DDeImporteOriginal THEN DDeImporteOriginal
+                ELSE DDeImportePendiente + @Repone END,
+              DDeEstado = CASE
+                WHEN (CASE WHEN DDeImportePendiente + @Repone > DDeImporteOriginal THEN DDeImporteOriginal
+                           ELSE DDeImportePendiente + @Repone END) <= 0.01 THEN 'COBRADO'
+                WHEN (CASE WHEN DDeImportePendiente + @Repone > DDeImporteOriginal THEN DDeImporteOriginal
+                           ELSE DDeImportePendiente + @Repone END) >= DDeImporteOriginal - 0.01 THEN 'PENDIENTE'
+                ELSE 'PARCIAL' END,
+              -- si vuelve a deber, la fecha de cobro deja de tener sentido
+              DDeFechaCobro = CASE
+                WHEN (CASE WHEN DDeImportePendiente + @Repone > DDeImporteOriginal THEN DDeImporteOriginal
+                           ELSE DDeImportePendiente + @Repone END) > 0.01 THEN NULL
+                ELSE DDeFechaCobro END,
+              DDeObservaciones = LEFT(LTRIM(ISNULL(DDeObservaciones,'') +
+                ' | Deuda repuesta al anular el cobro (transaccion de caja ' +
+                CONVERT(VARCHAR(20), @TcaId) + '): ' + @Motivo), 500)
+          WHERE DDeIdDocumento = @DDe`);
+    }
+
+    // La imputación deja de existir: el pago que la respaldaba está anulado. Si se
+    // dejara viva, cualquier consulta que sume ImputacionPago seguiría creyendo que
+    // la deuda está cubierta. El rastro queda en TransaccionesCaja/Pagos ANULADO.
+    if (impRes.recordset.length) {
+      await new sql.Request(transaction)
+        .input('TcaId', sql.Int, tcaId)
+        .query(`
+          DELETE FROM dbo.ImputacionPago
+          WHERE PagIdPago IN (SELECT PagIdPago FROM dbo.Pagos WHERE PagTcaIdTransaccion = @TcaId)`);
+
+      // El documento de la DEUDA vuelve a estar impago. OJO: es el documento que se
+      // estaba pagando, NO el recibo de esta transacción (ese se anula en el paso 7).
+      // Se usan los ids capturados arriba, porque las imputaciones ya no existen.
+      for (const imp of impRes.recordset) {
+        if (!imp.DocIdDocumento) continue;
+        await new sql.Request(transaction)
+          .input('Doc', sql.Int, imp.DocIdDocumento)
+          .query(`
+            UPDATE dbo.DocumentosContables
+            SET DocPagado = 0
+            WHERE DocIdDocumento = @Doc
+              AND EXISTS (SELECT 1 FROM dbo.DeudaDocumento dd
+                          WHERE dd.DocIdDocumento = @Doc
+                            AND dd.DDeEstado IN ('PENDIENTE','PARCIAL','VENCIDO')
+                            AND dd.DDeImportePendiente > 0.01)`);
+      }
+    }
+
     // 6. Anular el asiento contable del ingreso (excluye el asiento de egresos por seguridad)
     await new sql.Request(transaction)
       .input('TcaId', sql.Int, tcaId)
@@ -2715,8 +2788,17 @@ async function anularReciboInterno({ tcaId, usuarioId, motivo }) {
         WHERE TcaIdTransaccion = @TcaId AND ISNULL(DocEstado,'') <> 'ANULADO'`);
 
     await transaction.commit();
-    logger.info(`[CAJA] 🔄 Recibo interno ${tcaId} anulado por usuario ${usuarioId} (${movsRes.recordset.length} movs revertidos).`);
-    return { success: true, mensaje: `Recibo ${tcaId} anulado correctamente.` };
+    const nDeudas = impRes.recordset.length;
+    const impRepuesto = impRes.recordset.reduce((s, i) => s + Number(i.Repone || 0), 0);
+    logger.info(`[CAJA] 🔄 Recibo interno ${tcaId} anulado por usuario ${usuarioId} (${movsRes.recordset.length} movs revertidos, ${nDeudas} deuda(s) repuesta(s) por ${impRepuesto.toFixed(2)}).`);
+    return {
+      success: true,
+      deudasRepuestas: nDeudas,
+      importeRepuesto: Number(impRepuesto.toFixed(2)),
+      mensaje: nDeudas
+        ? `Recibo ${tcaId} anulado. ${nDeudas} documento(s) volvieron a quedar impagos por ${impRepuesto.toFixed(2)}: la deuda se repuso y vuelve a figurar en cobranzas.`
+        : `Recibo ${tcaId} anulado correctamente.`
+    };
 
   } catch (err) {
     try { await transaction.rollback(); } catch (_) {}

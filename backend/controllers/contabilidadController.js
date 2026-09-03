@@ -1694,7 +1694,7 @@ exports.guardarPrecios = async (req, res) => {
         resyncBilletera = await svc.resincronizarConsumosBilletera({
           OrdIdOrden: bilRes.recordset[0].OrdIdOrden,
           nuevoCosto: Number(bilRes.recordset[0].MontoTotal),
-          UsuarioAlta: req.user?.id || 70,
+          UsuarioAlta: req.user.id,
           motivo: 'ajuste de precio en la pre-factura',
         }, tx);
         if (resyncBilletera?.mensaje) mensajesBilletera.push(resyncBilletera.mensaje);
@@ -2053,7 +2053,7 @@ exports.guardarPreciosCiclo = async (req, res) => {
         resyncBilletera = await svc.resincronizarConsumosBilletera({
           OrdIdOrden: bilRes.recordset[0].OrdIdOrden,
           nuevoCosto: Number(bilRes.recordset[0].MontoTotal),
-          UsuarioAlta: req.user?.id || 70,
+          UsuarioAlta: req.user.id,
           motivo: 'ajuste de precio en la pre-factura del ciclo',
         }, tx);
         if (resyncBilletera?.mensaje) mensajesBilletera.push(resyncBilletera.mensaje);
@@ -3148,7 +3148,7 @@ exports.anularOrdenPendiente = async (req, res) => {
   try {
     const pool = await getPool();
     const movId = parseInt(req.params.MovIdMovimiento);
-    const UsuarioAlta = req.user?.id || 1;
+    const UsuarioAlta = req.user.id;
 
     // 1. Verificar que el movimiento existe, es ORDEN, no está facturado y no está ya anulado
     const movRes = await pool.request()
@@ -3307,7 +3307,7 @@ exports.getOrdenesAnticipo = async (req, res) => {
 exports.emitirFacturaAnticipo = async (req, res) => {
   try {
     const { CliIdCliente } = req.params;
-    const UsuarioAlta = req.user?.id || 1;
+    const UsuarioAlta = req.user.id;
     const pool = await getPool();
 
     const {
@@ -3544,7 +3544,7 @@ exports.consumirRecursoAdelantado = async (req, res) => {
 
   try {
     const movId       = parseInt(req.params.MovIdMovimiento);
-    const UsuarioAlta = req.user?.id || 1;
+    const UsuarioAlta = req.user.id;
 
     if (!movId) return res.status(400).json({ success: false, error: 'MovIdMovimiento requerido.' });
 
@@ -4199,7 +4199,7 @@ exports.consumirDesdeSaldo = async (req, res) => {
     const movId       = parseInt(req.params.MovIdMovimiento);
     const cueElegida  = parseInt(req.body?.CueIdCuenta || req.query?.CueIdCuenta);
     const preview     = String(req.query?.preview || '') === '1';
-    const UsuarioAlta = req.user?.id || 1;
+    const UsuarioAlta = req.user.id;
     if (!movId) return res.status(400).json({ success: false, error: 'MovIdMovimiento requerido.' });
 
     // 1. La ORDEN
@@ -4326,6 +4326,87 @@ exports.consumirDesdeSaldo = async (req, res) => {
 };
 
 // ============================================================================
+// BILLETERA — CONSUMIR UNA ORDEN REPARTIDA ENTRE VARIAS CUENTAS (regla 2/9/2026)
+// Cuando ninguna billetera sola alcanza: primero la de la moneda de la orden hasta
+// dejarla en 0 y el remanente @ cot. desde la(s) otra(s). Un CONSUMO por cuenta,
+// todos con la marca; la ORDEN queda cubierta ENTERA (marca + deuda cancelada +
+// contra-asiento por el total), con un Ref# por consumo para la reversa.
+// NO es endpoint HTTP: lo usan caja y portal. Todo-o-nada (una transacción).
+// ============================================================================
+exports.consumirOrdenDesdeSaldoEnPartes = async ({ movId, partes, cot, UsuarioAlta = 1 }) => {
+  const pool = await getPool();
+  let transaction = null;
+  try {
+    const movRes = await pool.request().input('MovId', sql.Int, movId).query(`
+      SELECT m.MovIdMovimiento, m.CueIdCuenta, m.MovTipo, m.MovImporte, m.MovConcepto, m.OrdIdOrden,
+             m.DocIdDocumento, m.MovAnulado, m.MovObservaciones,
+             cc.CliIdCliente, cc.MonIdMoneda AS MonOrden,
+             COALESCE(od.OrdCodigoOrden, erp.CodigoOrden) AS OrdCodigoOrden,
+             COALESCE(od.OrdNombreTrabajo, erp.DescripcionTrabajo) AS OrdNombreTrabajo
+      FROM dbo.MovimientosCuenta m WITH(NOLOCK)
+      JOIN dbo.CuentasCliente cc WITH(NOLOCK) ON cc.CueIdCuenta = m.CueIdCuenta
+      LEFT JOIN dbo.Ordenes erp WITH(NOLOCK) ON erp.OrdenID = m.OrdIdOrden
+      LEFT JOIN dbo.OrdenesDeposito od WITH(NOLOCK) ON od.OrdIdOrden = m.OrdIdOrden OR (erp.CodigoOrden IS NOT NULL AND od.OrdCodigoOrden = erp.CodigoOrden)
+      WHERE m.MovIdMovimiento = @MovId`);
+    if (!movRes.recordset.length) return { code: 404, success: false, error: 'Movimiento no encontrado.' };
+    const mov = movRes.recordset[0];
+    if (!['ORDEN', 'ORDEN_ANTICIPO'].includes(mov.MovTipo)) return { code: 400, success: false, error: 'Solo aplicable sobre movimientos tipo ORDEN.' };
+    if (mov.MovAnulado)     return { code: 400, success: false, error: 'Este movimiento está anulado.' };
+    if (mov.DocIdDocumento) return { code: 400, success: false, error: 'La orden ya fue facturada. No se puede pagar con saldo desde acá.' };
+    if (mov.MovObservaciones && /^(CUBIERTO|MATERIAL_CUBIERTO)/.test(mov.MovObservaciones))
+      return { code: 400, success: false, error: 'Esta orden ya está cubierta (' + mov.MovObservaciones + ').' };
+
+    const importeOrden = Math.round(Math.abs(Number(mov.MovImporte)) * 100) / 100;
+    const monOrden     = Number(mov.MonOrden) === 2 ? 2 : 1;
+    const codigo       = mov.OrdCodigoOrden || mov.MovConcepto || ('ORD-' + mov.OrdIdOrden);
+
+    transaction = await pool.transaction();
+    await transaction.begin();
+    try {
+      const refs = [], nombres = [];
+      for (let i = 0; i < partes.length; i++) {
+        const parte = partes[i];
+        const saldo = await svc.getSaldoRealCuenta(parte.cueIdCuenta, transaction);
+        if (saldo + 0.001 < parte.importeCta)
+          throw new Error(`"${parte.cuenta}" ya no tiene saldo suficiente (disponible ${saldo.toFixed(2)}, necesita ${Number(parte.importeCta).toFixed(2)}).`);
+        const consumo = await svc.registrarMovimiento({
+          CueIdCuenta:      parte.cueIdCuenta,
+          MovTipo:          'CONSUMO_CUENTA',
+          MovConcepto:      `${codigo}${mov.OrdNombreTrabajo ? ' ' + mov.OrdNombreTrabajo : ''}`.trim(),
+          MovImporte:       -Math.abs(parte.importeCta),
+          MovUsuarioAlta:   UsuarioAlta,
+          OrdIdOrden:       mov.OrdIdOrden,
+          MovObservaciones: `CUBIERTO_CUENTA_${parte.cueIdCuenta}${parte.cruzada ? ` @ cot. ${cot}` : ''} — ${parte.cuenta} (parte ${i + 1} de ${partes.length})`,
+        }, transaction);
+        refs.push(consumo.MovIdGenerado);
+        nombres.push(parte.cuenta);
+      }
+      // Marca de la ORDEN con un Ref# por consumo (la reversa 🔄 los devuelve todos)
+      await new sql.Request(transaction)
+        .input('M', sql.Int, movId)
+        .input('Obs', sql.NVarChar(500), `CUBIERTO_CUENTA_${partes[0].cueIdCuenta} — pagada repartida entre ${nombres.join(' + ')} ${refs.map(id => `Ref#${id}`).join(' ')}`)
+        .query('UPDATE dbo.MovimientosCuenta SET MovObservaciones = @Obs WHERE MovIdMovimiento = @M');
+      if (mov.OrdIdOrden) await svc.cancelarDeuda({ ordId: mov.OrdIdOrden, cueId: mov.CueIdCuenta }, transaction);
+      // Contra-asiento por el TOTAL de la orden (igual que el consumo de una sola cuenta)
+      await asientoVentaOrdenBilletera(transaction, { importe: importeOrden, monedaId: monOrden, clienteId: mov.CliIdCliente, concepto: `${codigo} cubierta por ${nombres.join(' + ')}`, reversa: true });
+      if (mov.OrdIdOrden) {
+        await new sql.Request(transaction).input('Id', sql.Int, mov.OrdIdOrden).query(`
+          UPDATE dbo.OrdenesDeposito SET OrdEstadoActual = CASE WHEN OrdEstadoActual = 1 THEN 7 ELSE OrdEstadoActual END WHERE OrdIdOrden = @Id;`);
+      }
+      await transaction.commit();
+      logger.info(`[CONSUMO_SALDO] MovId=${movId} orden=${codigo} repartida entre ${partes.length} billeteras: ${partes.map(p => `"${p.cuenta}" -${p.mon === 2 ? 'US$' : '$'} ${Number(p.importeCta).toFixed(2)}`).join(' + ')} (consumos ${refs.join(', ')}).`);
+      return { code: 200, success: true, data: { consumoIds: refs } };
+    } catch (txErr) {
+      await transaction.rollback().catch(() => {});
+      throw txErr;
+    }
+  } catch (err) {
+    logger.error('[CONSUMO_SALDO PARTES] Error:', err.message);
+    return { code: 500, success: false, error: err.message };
+  }
+};
+
+// ============================================================================
 // BILLETERA — DEVOLVER UN CONSUMO DESDE SALDO (inversa de consumirDesdeSaldo)
 // Anula el CONSUMO_CUENTA (la plata vuelve a la cuenta), le quita la marca a la
 // ORDEN (vuelve a "pendiente de facturar"), restaura la deuda/ciclo y la orden.
@@ -4347,27 +4428,33 @@ exports.devolverConsumoSaldo = async (req, res) => {
     const obs = mov.MovObservaciones || '';
     if (!['ORDEN', 'ORDEN_ANTICIPO'].includes(mov.MovTipo)) return res.status(400).json({ success: false, error: 'Solo aplicable sobre movimientos tipo ORDEN.' });
     if (mov.DocIdDocumento) return res.status(400).json({ success: false, error: 'La orden ya fue facturada; no se puede devolver el consumo.' });
-    const refMatch = obs.match(/^CUBIERTO_CUENTA_(\d+).*Ref#(\d+)/);
-    if (!refMatch) return res.status(400).json({ success: false, error: 'Esta orden no tiene un consumo desde saldo para devolver.' });
-    const consumoId = parseInt(refMatch[2]);
+    if (!/^CUBIERTO_CUENTA_(\d+)/.test(obs)) return res.status(400).json({ success: false, error: 'Esta orden no tiene un consumo desde saldo para devolver.' });
+    // Uno o VARIOS Ref# (orden repartida entre billeteras, regla 2/9/2026): se devuelven todos.
+    const consumoIds = [...new Set((obs.match(/Ref#(\d+)/g) || []).map(s => parseInt(s.slice(4))))];
+    if (!consumoIds.length) return res.status(400).json({ success: false, error: 'Esta orden no tiene un consumo desde saldo para devolver.' });
 
-    const consRes = await pool.request().input('C', sql.Int, consumoId).query(`
-      SELECT MovIdMovimiento, CueIdCuenta, MovImporte, MovAnulado FROM dbo.MovimientosCuenta WITH(NOLOCK) WHERE MovIdMovimiento = @C AND MovTipo = 'CONSUMO_CUENTA'`);
-    if (!consRes.recordset.length) return res.status(400).json({ success: false, error: `No se encontró el consumo #${consumoId} para revertir.` });
-    const cons = consRes.recordset[0];
-    if (cons.MovAnulado) return res.status(400).json({ success: false, error: 'Ese consumo ya fue devuelto.' });
+    const consRes = await pool.request().query(`
+      SELECT MovIdMovimiento, CueIdCuenta, MovImporte, MovAnulado FROM dbo.MovimientosCuenta WITH(NOLOCK)
+      WHERE MovIdMovimiento IN (${consumoIds.join(',')}) AND MovTipo = 'CONSUMO_CUENTA'`);
+    if (!consRes.recordset.length) return res.status(400).json({ success: false, error: `No se encontró el consumo #${consumoIds.join('/#')} para revertir.` });
+    const consumos = consRes.recordset.filter(c => !c.MovAnulado);
+    if (!consumos.length) return res.status(400).json({ success: false, error: 'Ese consumo ya fue devuelto.' });
 
     const importeOrden = Math.round(Math.abs(Number(mov.MovImporte)) * 100) / 100;
-    const importeCons  = Math.abs(Number(cons.MovImporte));
+    const importeCons  = consumos.reduce((s, c) => s + Math.abs(Number(c.MovImporte)), 0);
+    const consumoId    = consumos[0].MovIdMovimiento;
+    const cons         = consumos[0];
 
     transaction = await pool.transaction();
     await transaction.begin();
     try {
-      // Plata vuelve a la cuenta: anular el consumo + saldo denormalizado
-      await new sql.Request(transaction).input('M', sql.Int, consumoId)
-        .query(`UPDATE dbo.MovimientosCuenta SET MovAnulado = 1, MovObservaciones = CONCAT(ISNULL(MovObservaciones,''), ' [DEVUELTO]') WHERE MovIdMovimiento = @M`);
-      await new sql.Request(transaction).input('C', sql.Int, cons.CueIdCuenta).input('Imp', sql.Decimal(18,4), importeCons)
-        .query('UPDATE dbo.CuentasCliente SET CueSaldoActual = ISNULL(CueSaldoActual,0) + @Imp WHERE CueIdCuenta = @C');
+      // Plata vuelve a cada cuenta: anular el/los consumo(s) + saldo denormalizado
+      for (const c of consumos) {
+        await new sql.Request(transaction).input('M', sql.Int, c.MovIdMovimiento)
+          .query(`UPDATE dbo.MovimientosCuenta SET MovAnulado = 1, MovObservaciones = CONCAT(ISNULL(MovObservaciones,''), ' [DEVUELTO]') WHERE MovIdMovimiento = @M`);
+        await new sql.Request(transaction).input('C', sql.Int, c.CueIdCuenta).input('Imp', sql.Decimal(18,4), Math.abs(Number(c.MovImporte)))
+          .query('UPDATE dbo.CuentasCliente SET CueSaldoActual = ISNULL(CueSaldoActual,0) + @Imp WHERE CueIdCuenta = @C');
+      }
       // La ORDEN vuelve a pendiente de facturar
       await new sql.Request(transaction).input('M', sql.Int, movId)
         .query('UPDATE dbo.MovimientosCuenta SET MovObservaciones = NULL WHERE MovIdMovimiento = @M');
@@ -4381,8 +4468,10 @@ exports.devolverConsumoSaldo = async (req, res) => {
       // Reposición del asiento de venta (la orden vuelve a pendiente: su venta vuelve al mayor)
       await asientoVentaOrdenBilletera(transaction, { importe: importeOrden, monedaId: mov.MonOrden, clienteId: mov.CliIdCliente, concepto: `devolución consumo #${consumoId}`, reversa: false });
       await transaction.commit();
-      logger.info(`[CONSUMO_SALDO] Devuelto: orden MovId=${movId}, consumo #${consumoId} (+${importeCons} a cuenta ${cons.CueIdCuenta})`);
-      return res.json({ success: true, message: `✅ Consumo devuelto: ${importeCons.toFixed(2)} volvieron a la cuenta #${cons.CueIdCuenta}. La orden vuelve a "pendiente de facturar".` });
+      logger.info(`[CONSUMO_SALDO] Devuelto: orden MovId=${movId}, ${consumos.length} consumo(s): ${consumos.map(c => `#${c.MovIdMovimiento} (+${Math.abs(Number(c.MovImporte)).toFixed(2)} a cuenta ${c.CueIdCuenta})`).join(', ')}`);
+      return res.json({ success: true, message: consumos.length > 1
+        ? `✅ Consumos devueltos: ${consumos.map(c => `${Math.abs(Number(c.MovImporte)).toFixed(2)} a la cuenta #${c.CueIdCuenta}`).join(' y ')}. La orden vuelve a "pendiente de facturar".`
+        : `✅ Consumo devuelto: ${importeCons.toFixed(2)} volvieron a la cuenta #${cons.CueIdCuenta}. La orden vuelve a "pendiente de facturar".` });
     } catch (txErr) {
       await transaction.rollback().catch(() => {});
       throw txErr;
@@ -4441,7 +4530,7 @@ exports.revertirConsumoCuenta = async (req, res) => {
   try {
     const movId = parseInt(req.params.MovIdMovimiento);
     const reactivarOrden = !!req.body?.reactivarOrden;
-    const UsuarioAlta = req.user?.id || 1;
+    const UsuarioAlta = req.user.id;
     if (!movId) return res.status(400).json({ success: false, error: 'MovIdMovimiento requerido.' });
     const r = await pool.request().input('M', sql.Int, movId).query(`
       SELECT m.MovIdMovimiento, m.MovTipo, m.MovImporte, m.CueIdCuenta, m.MovAnulado, m.MovObservaciones, m.MovConcepto, m.OrdIdOrden,
@@ -4531,7 +4620,7 @@ exports.consumoManualCuenta = async (req, res) => {
     const cueId = parseInt(req.params.CueIdCuenta);
     const { codigoOrden, nombreTrabajo = '', importe } = req.body || {};
     const imp = Math.abs(parseFloat(importe));
-    const UsuarioAlta = req.user?.id || 1;
+    const UsuarioAlta = req.user.id;
     if (!cueId || !String(codigoOrden || '').trim() || !(imp > 0))
       return res.status(400).json({ success: false, error: 'Código de orden e importe (> 0) son obligatorios.' });
     const codigo = String(codigoOrden).trim();
@@ -4711,7 +4800,7 @@ exports.cargaPrepago = async (req, res) => {
     const cueId = parseInt(req.params.CueIdCuenta);
     const docId = parseInt(req.body?.DocIdDocumento);
     const origen = req.body?.origen === 'SALDO_PRINCIPAL' ? 'SALDO_PRINCIPAL' : 'CAJA';
-    const UsuarioAlta = req.user?.id || 1;
+    const UsuarioAlta = req.user.id;
     if (!cueId || !docId) return res.status(400).json({ success: false, error: 'CueIdCuenta y DocIdDocumento son obligatorios.' });
 
     const cta = (await pool.request().input('C', sql.Int, cueId).query(`
@@ -4775,6 +4864,209 @@ exports.cargaPrepago = async (req, res) => {
     } catch (e) { await transaction.rollback().catch(() => {}); throw e; }
   } catch (err) {
     logger.error('[VENTA_SALDO] Error:', err.message);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+// ============================================================================
+// CAJA — CUBRIR UN RETIRO ENTERO CON LA BILLETERA (02-09-2026, pedido del usuario)
+// Espejo administrativo del "Cubrir con mi billetera" del portal: consume del saldo
+// PREPAGO cada orden del retiro (enteras, prioridad del motor, NUNCA en negativo,
+// sin documento — la factura de esa plata existió al cargarla). Valida que el saldo
+// alcance para TODAS las órdenes pendientes del retiro; si una no entra, no hace nada.
+// Cada cobertura corre por consumirDesdeSaldo (consumo + marca + deuda cancelada +
+// contra-asiento + orden paga). Al final el retiro queda Abonado.
+// POST /contabilidad/retiros/:OReIdOrdenRetiro/cubrir-con-billetera  { preview? }
+// ============================================================================
+exports.cubrirRetiroConBilletera = async (req, res) => {
+  try {
+    const pool = await getPool();
+    // Acepta el id numérico O el código con prefijo ("RW-20524"), como los demás
+    // endpoints de retiro (la lista de caja viaja con ordenDeRetiro prefijado).
+    const retiroId = parseInt(String(req.params.OReIdOrdenRetiro || '').replace(/[^0-9]/g, ''), 10);
+    const preview = !!req.body?.preview;
+    const UsuarioAlta = req.user?.id || 1;
+    if (!retiroId) return res.status(400).json({ success: false, error: 'Retiro inválido.' });
+
+    const r2 = (n) => Math.round(n * 100) / 100;
+    const cot = parseFloat((await pool.request()
+      .query('SELECT TOP 1 CotDolar FROM dbo.Cotizaciones WITH(NOLOCK) ORDER BY CotFecha DESC')).recordset[0]?.CotDolar) || 40;
+
+    // 1) Órdenes del retiro con su movimiento ORDEN pendiente (sin doc, sin marca)
+    const filas = (await pool.request().input('Ret', sql.Int, retiroId).query(`
+      SELECT od.OrdIdOrden, od.OrdCodigoOrden, od.CliIdCliente, od.MonIdMoneda, od.ProIdProducto, od.PagIdPago,
+             od.OrdCostoFinal,
+             mv.MovIdMovimiento, mv.MovImporte,
+             CASE WHEN EXISTS (SELECT 1 FROM dbo.MovimientosCuenta cx WITH(NOLOCK)
+                               JOIN dbo.CuentasCliente ccx WITH(NOLOCK) ON ccx.CueIdCuenta = cx.CueIdCuenta
+                               WHERE ccx.CliIdCliente = od.CliIdCliente AND cx.MovTipo = 'CONSUMO_CUENTA'
+                                 AND (cx.MovAnulado IS NULL OR cx.MovAnulado = 0)
+                                 AND cx.MovObservaciones LIKE 'CUBIERTO[_]CUENTA[_]%'
+                                 AND (cx.OrdIdOrden = od.OrdIdOrden OR cx.OrdIdOrden = erp.OrdenID)) THEN 1 ELSE 0 END AS YaCubierta
+      FROM dbo.OrdenesDeposito od WITH(NOLOCK)
+      OUTER APPLY (SELECT TOP 1 o.OrdenID FROM dbo.Ordenes o WITH(NOLOCK) WHERE o.CodigoOrden = od.OrdCodigoOrden) erp
+      OUTER APPLY (
+        SELECT TOP 1 m.MovIdMovimiento, m.MovImporte
+        FROM dbo.MovimientosCuenta m WITH(NOLOCK)
+        JOIN dbo.CuentasCliente cc WITH(NOLOCK) ON cc.CueIdCuenta = m.CueIdCuenta
+        WHERE cc.CliIdCliente = od.CliIdCliente AND m.MovTipo IN ('ORDEN','ORDEN_ANTICIPO')
+          AND (m.MovAnulado IS NULL OR m.MovAnulado = 0) AND m.DocIdDocumento IS NULL
+          AND (m.MovObservaciones IS NULL OR (m.MovObservaciones NOT LIKE 'CUBIERTO%' AND m.MovObservaciones NOT LIKE 'MATERIAL_CUBIERTO%'))
+          AND (m.OrdIdOrden = od.OrdIdOrden OR m.OrdIdOrden = erp.OrdenID)
+        ORDER BY m.MovIdMovimiento DESC
+      ) mv
+      WHERE od.OReIdOrdenRetiro = @Ret`)).recordset;
+    if (!filas.length) return res.status(404).json({ success: false, error: `El retiro RW-${retiroId} no tiene órdenes.` });
+    const CliIdCliente = filas[0].CliIdCliente;
+
+    // 2) Cuentas PREPAGO del cliente con saldo real (mismas reglas que el portal)
+    const ctas = (await pool.request().input('Cli', sql.Int, CliIdCliente).query(`
+      SELECT cc.CueIdCuenta, cc.CueNombre, cc.MonIdMoneda, cc.CueRestringida,
+        ISNULL((SELECT SUM(m.MovImporte) FROM dbo.MovimientosCuenta m WITH(NOLOCK)
+                WHERE m.CueIdCuenta = cc.CueIdCuenta AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)
+                  AND m.MovTipo NOT IN ('ORDEN','ORDEN_ANTICIPO')), 0) AS Saldo
+      FROM dbo.CuentasCliente cc WITH(NOLOCK)
+      WHERE cc.CliIdCliente = @Cli AND cc.CueActiva = 1 AND cc.CueTipo LIKE 'DINERO%'
+        AND cc.CueEsPrincipal = 0
+        AND ISNULL(cc.CueModalidadFiscal,'ANTICIPO_A_FACTURAR') = 'PREPAGO_FACTURADO'
+      ORDER BY cc.CueIdCuenta`)).recordset
+      .map(c => ({ id: c.CueIdCuenta, nombre: (c.CueNombre || `cuenta #${c.CueIdCuenta}`).trim(),
+                   mon: Number(c.MonIdMoneda) === 2 ? 2 : 1, restringida: !!c.CueRestringida,
+                   disp: r2(Number(c.Saldo)) }))
+      .filter(c => c.disp > 0.009);
+    const permitidos = new Map();
+    const restr = ctas.filter(c => c.restringida);
+    if (restr.length) {
+      const ap = await pool.request().query(`
+        SELECT CueIdCuenta, ProIdProducto FROM dbo.CuentasClienteArticulosPermitidos WITH(NOLOCK)
+        WHERE CueIdCuenta IN (${restr.map(c => c.id).join(',')})`);
+      for (const row of ap.recordset) {
+        if (!permitidos.has(row.CueIdCuenta)) permitidos.set(row.CueIdCuenta, new Set());
+        permitidos.get(row.CueIdCuenta).add(row.ProIdProducto);
+      }
+    }
+
+    // 3) Plan: cada orden ENTERA en una cuenta, prioridad del motor, sin negativo
+    const plan = [], yaCubiertas = [], sinCubrir = [];
+    for (const f of filas) {
+      const codigo = (f.OrdCodigoOrden || `#${f.OrdIdOrden}`).trim();
+      if (f.PagIdPago || f.YaCubierta) { yaCubiertas.push(codigo); continue; }
+      const monOrden = Number(f.MonIdMoneda) === 2 ? 2 : 1;
+      // Orden SIN cargo en cuenta corriente (vieja, pre-motor): se cubre igual por su
+      // costo, con un consumo directo (espejo del "+ Nueva orden" del libro).
+      const sinMov = !f.MovIdMovimiento;
+      const importe = sinMov ? r2(Math.abs(parseFloat(f.OrdCostoFinal) || 0)) : r2(Math.abs(Number(f.MovImporte)));
+      if (importe <= 0.009) { yaCubiertas.push(codigo); continue; }
+      const candidatas = [
+        ...ctas.filter(c => c.restringida && f.ProIdProducto != null && permitidos.get(c.id)?.has(f.ProIdProducto)),
+        ...ctas.filter(c => !c.restringida && c.mon === monOrden),
+        ...ctas.filter(c => !c.restringida && c.mon !== monOrden),
+      ];
+      let elegida = null, importeCta = 0, cruzada = false, partes = null;
+      for (const c of candidatas) {
+        cruzada = c.mon !== monOrden;
+        importeCta = cruzada ? (monOrden === 2 ? r2(importe * cot) : r2(importe / cot)) : importe;
+        if (c.disp + 0.001 >= importeCta) { elegida = c; break; }
+      }
+      if (!elegida) {
+        // PARTES 2/9/2026 (regla usuario, sin traspasos): ninguna billetera sola alcanza —
+        // la orden se consume REPARTIDA: primero la de la MISMA moneda de la orden hasta
+        // dejarla en 0, y el remanente @ cot. desde la(s) otra(s). Un CONSUMO por cuenta,
+        // todos con la marca sobre la misma orden.
+        const fuentes = ctas.filter(c => !c.restringida)
+          .map(c => ({ id: c.id, nombre: c.nombre, mon: c.mon, disp: c.disp }));
+        const planP = svc.planPartesConsumoBilletera({ fuentes, monOrden, importe, cot });
+        if (planP && planP.length) {
+          for (const p of planP) {
+            const fu = ctas.find(c => c.id === p.cueIdCuenta);
+            fu.disp = r2(fu.disp - p.importeCta);
+          }
+          partes = planP;
+        }
+      }
+      if (!elegida && !partes) { sinCubrir.push(`${codigo} (${monOrden === 2 ? 'US$' : '$'} ${importe.toFixed(2)}: no alcanza ni repartiendo entre las billeteras)`); continue; }
+      if (elegida) elegida.disp = r2(elegida.disp - importeCta);
+      plan.push(elegida
+        ? { ordId: f.OrdIdOrden, movId: f.MovIdMovimiento || null, sinMov, codigo, importe,
+            moneda: monOrden === 2 ? 'USD' : 'UYU', cueIdCuenta: elegida.id, cuenta: elegida.nombre,
+            monedaCuenta: elegida.mon === 2 ? 'USD' : 'UYU', importeCta, cruzada, partes: null }
+        : { ordId: f.OrdIdOrden, movId: f.MovIdMovimiento || null, sinMov, codigo, importe,
+            moneda: monOrden === 2 ? 'USD' : 'UYU', cueIdCuenta: partes[0].cueIdCuenta,
+            cuenta: partes.map(p => p.cuenta).join(' + '), monedaCuenta: monOrden === 2 ? 'USD' : 'UYU',
+            importeCta: importe, cruzada: false, partes });
+    }
+    // Validación estricta: se cubren TODAS las pendientes o no se hace nada
+    if (sinCubrir.length) {
+      const disp = ctas.map(c => `${c.nombre}: ${c.mon === 2 ? 'US$' : '$'} ${c.disp.toFixed(2)}`).join(' · ') || 'sin saldo en la billetera';
+      return res.status(400).json({ success: false, error: `La billetera no puede cubrir: ${sinCubrir.join('; ')}. Disponible: ${disp}. No se descontó nada.` });
+    }
+    if (!plan.length) return res.status(400).json({ success: false, error: yaCubiertas.length ? `Todas las órdenes del retiro ya están cubiertas o pagas (${yaCubiertas.join(', ')}).` : 'No hay órdenes para cubrir.' });
+
+    if (preview) return res.json({ success: true, preview: true, plan, yaCubiertas, cotizacion: cot });
+
+    // 4) Cubrir cada orden con el mismo motor de siempre (consumo + marca + deuda + asiento).
+    //    Sin cargo en cta cte → consumo directo con la marca (espejo del "+ Nueva orden"):
+    //    no hay deuda que cancelar ni asiento que revertir porque nunca existieron.
+    const cubiertas = [];
+    for (const p of plan) {
+      let out;
+      if (p.sinMov) {
+        // Sin cargo en cta cte: consumo(s) directos con la marca — normalmente 1,
+        // o N si la orden salió repartida entre billeteras (partes).
+        try {
+          const consumos = p.partes
+            ? p.partes.map(x => ({ cueId: x.cueIdCuenta, cuenta: x.cuenta, importeCta: x.importeCta, cruzada: x.cruzada }))
+            : [{ cueId: p.cueIdCuenta, cuenta: p.cuenta, importeCta: p.importeCta, cruzada: p.cruzada }];
+          for (let i = 0; i < consumos.length; i++) {
+            const cns = consumos[i];
+            await svc.registrarMovimiento({
+              CueIdCuenta: cns.cueId, MovTipo: 'CONSUMO_CUENTA',
+              MovConcepto: p.codigo,
+              MovImporte: -Math.abs(cns.importeCta), MovUsuarioAlta: UsuarioAlta,
+              OrdIdOrden: p.ordId, OReIdOrdenRetiro: retiroId,
+              MovObservaciones: `CUBIERTO_CUENTA_${cns.cueId}${cns.cruzada ? ` @ cot. ${cot}` : ''} — ${cns.cuenta}${consumos.length > 1 ? ` (parte ${i + 1} de ${consumos.length})` : ''} (cubierta desde caja, retiro RW-${retiroId}; la orden no tenía cargo en cuenta corriente)`,
+            });
+          }
+          out = { code: 200, success: true };
+        } catch (eSin) { out = { code: 500, error: eSin.message }; }
+      } else if (p.partes) {
+        // Con cargo en cta cte y repartida: los N consumos + marca + deuda + asiento
+        // van juntos en una transacción (todo-o-nada por orden).
+        out = await exports.consumirOrdenDesdeSaldoEnPartes({ movId: p.movId, partes: p.partes, cot, UsuarioAlta });
+      } else {
+        out = await new Promise((resolve) => {
+          const fakeRes = { code: 200, status(c) { this.code = c; return this; }, json(o) { resolve({ code: this.code, ...o }); } };
+          exports.consumirDesdeSaldo({ params: { MovIdMovimiento: String(p.movId) },
+            body: { CueIdCuenta: p.cueIdCuenta }, query: {}, user: { id: UsuarioAlta } }, fakeRes);
+        });
+      }
+      if (out.code >= 400 || out.success === false) {
+        const hechas = cubiertas.map(c => c.codigo).join(', ');
+        return res.status(500).json({ success: false, error: `${p.codigo} no se pudo cubrir: ${out.error || 'error interno'}.${hechas ? ` Estas SÍ quedaron cubiertas: ${hechas} — reintentá para terminar.` : ''}` });
+      }
+      cubiertas.push(p);
+      logger.info(`[CAJA] 🔋 ${p.codigo} cubierta con "${p.cuenta}" (−${p.monedaCuenta === 'USD' ? 'US$' : '$'} ${p.importeCta.toFixed(2)}${p.cruzada ? ` @ ${cot}` : ''}) desde caja (retiro RW-${retiroId}).`);
+    }
+
+    // 5) Con todo cubierto/pago, el retiro pasa al estado "abonado" que corresponde
+    //    a su etapa (llegar acá ya garantiza que TODAS las órdenes quedaron cubiertas
+    //    o pagas: sinCubrir vacío + plan ejecutado entero, por eso es incondicional).
+    //    1 Ingresado / 2 Pasar por caja → 3 Abonado; 7 Empaquetado sin abonar →
+    //    8 Empaquetado y abonado; 5 Entregado / 9 Autorizado / 10 En viaje no se tocan.
+    await pool.request().input('Ret', sql.Int, retiroId).query(`
+      UPDATE dbo.OrdenesRetiro
+      SET OReEstadoActual = CASE WHEN OReEstadoActual IN (1, 2) THEN 3
+                                 WHEN OReEstadoActual = 7 THEN 8
+                                 ELSE OReEstadoActual END,
+          OReFechaEstadoActual = GETDATE()
+      WHERE OReIdOrdenRetiro = @Ret AND OReEstadoActual IN (1, 2, 7)`);
+
+    req.app?.get && req.app.get('socketio')?.emit('actualizado', { type: 'actualizacion' });
+    req.app?.get && req.app.get('socketio')?.emit('retiros:update', { type: 'billetera' });
+    return res.json({ success: true, plan, yaCubiertas, cotizacion: cot,
+      message: `🔋 ${plan.length} orden(es) del retiro RW-${retiroId} cubiertas con la billetera: ${plan.map(p => `${p.codigo} ← «${p.cuenta}» ${p.monedaCuenta === 'USD' ? 'US$' : '$'} ${p.importeCta.toFixed(2)}`).join(' · ')}. El retiro queda Abonado, se entrega sin cobrar.` });
+  } catch (err) {
+    logger.error('[CAJA] cubrirRetiroConBilletera:', err.message);
     return res.status(500).json({ success: false, error: err.message });
   }
 };
@@ -4888,7 +5180,7 @@ exports.devolverConsumoRecurso = async (req, res) => {
   let transaction = null;
   try {
     const movId       = parseInt(req.params.MovIdMovimiento);
-    const UsuarioAlta  = req.user?.id || 1;
+    const UsuarioAlta  = req.user.id;
     if (!movId) return res.status(400).json({ success: false, error: 'MovIdMovimiento requerido.' });
 
     // 1. Cargar la ORDEN y validar que tenga un consumo para devolver

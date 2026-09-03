@@ -248,14 +248,17 @@ const processRetirosRows = (rows) => {
 
   const result = Object.values(map);
 
-  // Verificamos si todos los pedidos individuales están pagos
+  // Verificamos si todos los pedidos individuales están pagos.
+  // Cubierta ENTERA con la billetera = paga (el consumo prepago ya la saldó),
+  // aunque no tenga PagIdPago: así entrega de bultos/tótem la ven en verde.
   for (const retiro of result) {
     if (!retiro.pagorealizado && retiro.orders.length > 0) {
-      const allOrdersPaid = retiro.orders.every(o => o.subOrderPagIdPago != null);
+      const allOrdersPaid = retiro.orders.every(o => o.subOrderPagIdPago != null || o.orderCubiertaBilletera);
       if (allOrdersPaid) {
         retiro.pagorealizado = 1;
       }
     }
+    retiro.cubiertoBilletera = retiro.orders.length > 0 && retiro.orders.some(o => o.orderCubiertaBilletera);
   }
 
   return result;
@@ -406,7 +409,9 @@ const ordenesRetiroCaja = async (req, res) => {
     }
 
     // Solo mostrar retiros que tienen al menos una sub-orden sin pagar
-    // y que no estén cancelados (6)
+    // y que no estén cancelados (6). Una orden cubierta ENTERA con la billetera
+    // (consumo CUBIERTO_CUENTA_, no parcial) ya no tiene nada que cobrar: no
+    // mantiene al retiro en caja aunque su PagIdPago siga NULL.
     const query = `
       ${getOrdenesRetiroQueryBase}
       WHERE r.OReEstadoActual NOT IN (6)
@@ -415,6 +420,16 @@ const ordenesRetiroCaja = async (req, res) => {
         SELECT 1 FROM OrdenesDeposito od2 WITH(NOLOCK)
         WHERE od2.OReIdOrdenRetiro = r.OReIdOrdenRetiro
         AND od2.PagIdPago IS NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM MovimientosCuenta cb WITH(NOLOCK)
+          JOIN CuentasCliente ccb WITH(NOLOCK) ON ccb.CueIdCuenta = cb.CueIdCuenta
+          WHERE ccb.CliIdCliente = od2.CliIdCliente
+            AND cb.MovTipo = 'CONSUMO_CUENTA'
+            AND (cb.MovAnulado IS NULL OR cb.MovAnulado = 0)
+            AND cb.MovObservaciones LIKE 'CUBIERTO[_]CUENTA[_]%'
+            AND (cb.OrdIdOrden = od2.OrdIdOrden
+                 OR cb.OrdIdOrden IN (SELECT erpX.OrdenID FROM Ordenes erpX WITH(NOLOCK) WHERE erpX.CodigoOrden = od2.OrdCodigoOrden))
+        )
       )
       ${filtroTipo}
     `;

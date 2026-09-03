@@ -84,7 +84,22 @@ class ERPSyncService {
 
         // 2. Determinar Moneda (USD si hay al menos un artículo en USD)
         const hasUSD = siblings.some(s => (s.MonedaBase || '').toUpperCase() === 'USD');
-        const targetCurrency = hasUSD ? 'USD' : 'UYU';
+        let targetCurrency = hasUSD ? 'USD' : 'UYU';
+
+        // [PRENDA PERSONALIZADA] Marcadores en la Nota de la orden madre PRO (los escribe
+        // PrendaOrderForm al crear el pedido). Se leen ACÁ, antes de cotizar, porque el
+        // PRECIO ESTABLECIDO manda también en la MONEDA: "2000 UYU" es el precio final
+        // del pedido tal cual — pisa la regla hasUSD y NO se convierte nada (todas las
+        // líneas cotizan ya en esa moneda). El uso de cada marcador está más abajo, en
+        // el bloque de consolidación.
+        const proSibMadre = siblings.find(s => (s.AreaID || '').toString().trim().toUpperCase() === 'PRO' && !s.ComboItemID);
+        const notaProMadre = String(proSibMadre?.Nota || '');
+        const esFacturaPorArea = /\[FACTURA POR AREA\]/i.test(notaProMadre);
+        const mPrecioEst = notaProMadre.match(/\[PRECIO ESTABLECIDO:\s*([\d]+(?:[.,]\d+)?)\s*(UYU|USD)?\]/i);
+        if (mPrecioEst) {
+            targetCurrency = (mPrecioEst[2] || 'UYU').toUpperCase();
+            logger.info(`[ERPSync] ${noDocERP}: precio establecido — la moneda del pedido pasa a ${targetCurrency} (pactada al crear).`);
+        }
 
         let totalPriceSum = 0;
         let totalMagnitudeSum = 0;
@@ -278,6 +293,22 @@ class ERPSyncService {
                 // Verificar si el cliente tiene un plan activo para este producto
                 let metrosDisponibles = 0;
                 let planIdActivo = null;
+                // ¿Cliente "Rollo por adelantado"? Su plan activo cubre SIEMPRE, aunque el
+                // saldo esté en 0 o negativo: el consumo queda en negativo sobre el plan y
+                // lo absorbe la próxima recarga. (El plan de un rollo nunca se cierra por
+                // consumo — ver hookEntregaMetros.)
+                let esClienteRollo = false;
+                if (internalClientId) {
+                    try {
+                        const tcRes = await pool.request()
+                            .input('CliR', sql.Int, internalClientId)
+                            .query(`SELECT UPPER(ISNULL(tc.TClDescripcion,'')) AS T
+                                    FROM dbo.Clientes c WITH(NOLOCK)
+                                    LEFT JOIN dbo.TiposClientes tc WITH(NOLOCK) ON tc.TClIdTipoCliente = c.TClIdTipoCliente
+                                    WHERE c.CliIdCliente = @CliR`);
+                        esClienteRollo = (tcRes.recordset[0]?.T || '').includes('ROLLO');
+                    } catch (eTc) { /* ante la duda, comportamiento histórico */ }
+                }
                 if (internalClientId && sib.ProIdProducto) {
                     try {
                         const planRes = await pool.request()
@@ -339,8 +370,10 @@ class ERPSyncService {
                 // (una reposición/falla sin cargo NO consume plan: ya va en 0, no debe
                 // figurar como "Cubierto por Plan")
                 const metrosPedido = effectiveQty;
-                const hayPlan = !esSinCargo && planIdActivo !== null && metrosDisponibles > 0;
-                const coberturaTotal = hayPlan && metrosDisponibles >= metrosPedido;
+                // ROLLO: el plan activo cubre TODO aunque no le queden metros (negativo);
+                // para los demás rige la regla histórica (solo cubre lo disponible).
+                const hayPlan = !esSinCargo && planIdActivo !== null && (metrosDisponibles > 0 || esClienteRollo);
+                const coberturaTotal = hayPlan && (esClienteRollo || metrosDisponibles >= metrosPedido);
                 const coberturaParcial = hayPlan && !coberturaTotal;
 
                 if (coberturaTotal) {
@@ -587,7 +620,36 @@ class ERPSyncService {
             const lineaProIdx = detallesCobranza.findIndex(d => areaByOrdenId[d.OrdenID] === 'PRO' && !comboItemByOrdenId[d.OrdenID]);
             const lineasHermanas = detallesCobranza.filter(d => esHermana(d.OrdenID));
 
-            if (lineaProIdx !== -1 && lineasHermanas.length > 0) {
+            // [PRENDA PERSONALIZADA] Modo de cobro elegido al crear el pedido (marcadores
+            // parseados arriba, donde también fijan la moneda del pedido):
+            //  · [FACTURA POR AREA]  → cada área factura su propia línea con su tarifa; NO se
+            //    consolida nada en PRO (la línea PRO genérica PPERS queda en $0, "sin costo").
+            //  · [PRECIO ESTABLECIDO: monto MONEDA] → el pedido vale EXACTAMENTE ese monto en
+            //    ESA moneda (targetCurrency ya es la pactada — sin conversión): la línea PRO
+            //    se pisa con él y las hermanas quedan consolidadas (detalle, $ no se suma).
+            // Sin marcador → comportamiento de siempre (PRO base + suma de hermanas).
+            if (esFacturaPorArea) {
+                logger.info(`[ERPSync] ${noDocERP}: prenda personalizada FACTURA POR AREA — sin consolidación, cada área cobra su línea.`);
+            } else if (mPrecioEst && lineaProIdx !== -1) {
+                const montoEst = parseFloat(mPrecioEst[1].replace(',', '.')) || 0;
+                const lineaPro = detallesCobranza[lineaProIdx];
+                const proPrevio = parseFloat(lineaPro.Subtotal) || 0;
+                const sumaHermanas = lineasHermanas.reduce((s, d) => s + (parseFloat(d.Subtotal) || 0), 0);
+                const cantPro = parseFloat(lineaPro.Cantidad) || 0;
+                lineaPro.Moneda = targetCurrency;
+                lineaPro.MonedaOriginal = targetCurrency;
+                lineaPro.Subtotal = montoEst;
+                lineaPro.SubtotalOriginal = montoEst;
+                lineaPro.PrecioUnitario = cantPro > 0 ? montoEst / cantPro : montoEst;
+                lineaPro.PrecioUnitarioOriginal = lineaPro.PrecioUnitario;
+                lineaPro.PerfilAplicado = 'Manual';
+                lineaPro.LogPrecioAplicado = `${lineaPro.LogPrecioAplicado || ''}\nPrecio establecido al crear el pedido: ${montoEst} ${targetCurrency} (precio final, sin conversión)`.trim();
+                lineasHermanas.forEach(d => { d.esHermanaConsolidada = true; });
+                // El total del pedido pasa a ser el precio establecido: sacar lo que habían
+                // aportado la línea PRO previa y las hermanas, y poner el monto pactado.
+                totalPriceSum = totalPriceSum - proPrevio - sumaHermanas + montoEst;
+                logger.info(`[ERPSync] ${noDocERP}: prenda personalizada PRECIO ESTABLECIDO ${montoEst} ${targetCurrency} (hermanas consolidadas sin sumar).`);
+            } else if (lineaProIdx !== -1 && lineasHermanas.length > 0) {
                 const sumaHermanas = lineasHermanas.reduce((s, d) => s + (parseFloat(d.Subtotal) || 0), 0);
                 const lineaPro = detallesCobranza[lineaProIdx];
                 lineaPro.Subtotal = (parseFloat(lineaPro.Subtotal) || 0) + sumaHermanas;

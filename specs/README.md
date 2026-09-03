@@ -64,6 +64,8 @@ Su propósito es doble:
 | [36-rrhh-ligero.md](36-rrhh-ligero.md) | *(to-be)* Legajo, asistencia, licencias que descuentan capacidad, export de novedades al estudio |
 | [37-activos-fijos.md](37-activos-fijos.md) | *(to-be)* Activos con amortización automática, vínculo máquina↔activo, bajas y ventas |
 | [38-presupuesto-de-gastos.md](38-presupuesto-de-gastos.md) | *(to-be)* Partidas por rubro, real vs presupuesto, alerta de desvío durante el mes |
+| [39-fallas-faltantes-y-parciales.md](39-fallas-faltantes-y-parciales.md) | *(to-be, pendiente de aprobación)* Envío parcial entre áreas, libro de entregas por orden, faltantes con reposición hacia atrás, solicitud de insumo del cliente o del local |
+| [40-beneficios-pactados.md](40-beneficios-pactados.md) | *(to-be, pendiente de aprobación)* Beneficios sobre la billetera: plantillas, pacto vendedor-cliente con aprobación, activación por carga facturada, precios pactados y consumo de la bolsa |
 
 Las specs 01–11 documentan el sistema **actual** (as-is, a nivel de negocio). Las specs
 12–14 son de **escalamiento** (to-be): definen módulos que el sistema actual no tiene como

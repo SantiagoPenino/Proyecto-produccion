@@ -156,27 +156,33 @@ export default function CierreCicloPreviewModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [paso]);
 
-  // F2: al entrar al paso 2, simular el consumo prepago del cierre (FIFO, órdenes
-  // ENTERAS) con los importes FINALES por orden — los mismos que irían a la factura.
+  // F2: simular el consumo prepago del cierre (FIFO, órdenes ENTERAS) con los importes
+  // FINALES por orden — los mismos que irían a la factura. Corre TAMBIÉN en el paso 1
+  // (02/09, pedido del usuario): si la billetera cubre TODO, el paso 1 esconde tipo de
+  // comprobante / datos DGI y no valida nada fiscal (se cierra SIN factura). Se refresca
+  // al cambiar selección, precios o moneda, con un pequeño debounce.
   useEffect(() => {
-    if (paso !== 'pago' || !cliente?.CliIdCliente) { setConsumoPrev(null); return; }
-    try {
-      const porOrden = new Map();
-      for (const d of getDetallesParaPDF()) {
-        const cod = String(d.OrdCodigoOrden || '').trim();
-        if (!cod) continue;
-        porOrden.set(cod, (porOrden.get(cod) || 0) + Number(d.DcdSubtotal || 0));
-      }
-      const ordenesSim = Array.from(porOrden.entries()).map(([codigo, importe]) => ({ codigo, importe }));
-      if (!ordenesSim.length) { setConsumoPrev(null); return; }
-      api.post(`/contabilidad/clientes/${cliente.CliIdCliente}/preview-consumo-prepago`, {
-        ordenes: ordenesSim,
-        monedaCicloId: monedaFactura === 'USD' ? 2 : 1,
-        cotDolar,
-      }).then(r => setConsumoPrev(r.data?.data || null)).catch(() => setConsumoPrev(null));
-    } catch { setConsumoPrev(null); }
+    if (!cliente?.CliIdCliente) { setConsumoPrev(null); return; }
+    const t = setTimeout(() => {
+      try {
+        const porOrden = new Map();
+        for (const d of getDetallesParaPDF()) {
+          const cod = String(d.OrdCodigoOrden || '').trim();
+          if (!cod) continue;
+          porOrden.set(cod, (porOrden.get(cod) || 0) + Number(d.DcdSubtotal || 0));
+        }
+        const ordenesSim = Array.from(porOrden.entries()).map(([codigo, importe]) => ({ codigo, importe }));
+        if (!ordenesSim.length) { setConsumoPrev(null); return; }
+        api.post(`/contabilidad/clientes/${cliente.CliIdCliente}/preview-consumo-prepago`, {
+          ordenes: ordenesSim,
+          monedaCicloId: monedaFactura === 'USD' ? 2 : 1,
+          cotDolar,
+        }).then(r => setConsumoPrev(r.data?.data || null)).catch(() => setConsumoPrev(null));
+      } catch { setConsumoPrev(null); }
+    }, 350);
+    return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [paso]);
+  }, [paso, excluidos, detallesEditados, monedaFactura, cotDolar, movs]);
   const todoCubiertoPorPrepago = !!(consumoPrev && consumoPrev.cubiertas?.length && (consumoPrev.aFactura?.length || 0) === 0);
 
 
@@ -238,6 +244,29 @@ export default function CierreCicloPreviewModal({
   const monedasBase = Array.from(new Set(movs.map(m => (monIdBaseMov(m) === 1 ? 'UYU' : 'USD'))));
   const esMultimoneda = monedasBase.length > 1;
 
+  // ── Moneda del importe CONGELADO de un detalle (criterio ÚNICO, 01/09/2026) ──
+  // El número que se suma/muestra es el subtotal congelado en PedidosCobranza, así
+  // que manda SU moneda (d.Moneda). Si el pedido no la trae: la moneda explícita de
+  // la orden, y como último recurso la de la cuenta del movimiento. Sin esto, una
+  // orden en PESOS cuyo movimiento fue trasladado a la cuenta USD (pre-factura
+  // multimoneda) se sumaba como si fueran dólares — caso Puntogyf EUV-17592: $152
+  // mostrados como US$ 152 → el guard anti-descuadre frenaba la emisión (146,14 vs 294,42).
+  const monedaDetalle = (m, d) =>
+    d?.Moneda === 'USD' ? 'USD'
+      : d?.Moneda === 'UYU' ? 'UYU'
+        : Number(m?.OrdMonIdMoneda) === 2 ? 'USD'
+          : Number(m?.OrdMonIdMoneda) === 1 ? 'UYU'
+            : (monIdBaseMov(m) === 1 ? 'UYU' : 'USD');
+  // Factor para llevar ese importe a la moneda del comprobante elegida
+  const rateDetalle = (m, d) => {
+    const monBase = monedaDetalle(m, d);
+    return (monedaFactura === 'UYU' && monBase === 'USD') ? cotDolar
+      : (monedaFactura === 'USD' && monBase === 'UYU') ? (1 / cotDolar) : 1;
+  };
+  // Todo importe convertido se genera a 2 decimales (152/40,86 = 3,72, no 3,7199…):
+  // el mismo número en la fila, en el subtotal y en la línea de la factura.
+  const r2conv = (n) => Math.round((Number(n) || 0) * 100) / 100;
+
   const toggleExcluido = (movId) => {
     setExcluidos(prev => {
       const next = new Set(prev);
@@ -284,11 +313,11 @@ export default function CierreCicloPreviewModal({
       m.detalles.forEach(d => {
         const ed = detallesEditados[d.DetalleID];
         const sub = ed ? ed.Subtotal : d.Subtotal;
-        
-        const monBase = monIdBaseMov(m) === 1 ? 'UYU' : 'USD';
-        const rate = (monedaFactura === 'UYU' && monBase === 'USD') ? cotDolar : (monedaFactura === 'USD' && monBase === 'UYU' ? (1/cotDolar) : 1);
 
-        granTotalBase += (sub * rate);
+        // Moneda del congelado (d.Moneda) primero — ver monedaDetalle
+        const rate = rateDetalle(m, d);
+
+        granTotalBase += r2conv(sub * rate);
       });
     } else {
       // Si no hay detalle, usamos el movimiento total
@@ -369,7 +398,9 @@ export default function CierreCicloPreviewModal({
   // Nombre/Documento/Dirección/Ciudad son obligatorios solo cuando DGI los exige:
   // e-Factura siempre (necesita RUT del receptor), e-Ticket solo si supera el umbral.
   // Pedido Caja nunca los exige (borrador interno, no fiscal).
-  const requiereDatosComprobante = docType === 'E-FACTURA' || requiereDatosDGI;
+  // 🔋 Si la billetera prepaga cubre TODAS las órdenes, el cierre NO emite factura:
+  // no aplican datos DGI ni tipo de comprobante (02/09, pedido del usuario).
+  const requiereDatosComprobante = !todoCubiertoPorPrepago && (docType === 'E-FACTURA' || requiereDatosDGI);
 
   // Paso 1: abre el modal de confirmación (siempre que haya cambios)
   const handleGuardarPrecios = () => {
@@ -455,8 +486,9 @@ export default function CierreCicloPreviewModal({
     }
 
     // Validación estructural del documento (RUT/CI con dígito verificador)
-    // Pedido Caja es borrador interno (no fiscal): NO se valida contra reglas DGI
-    if (docType !== 'PEDIDO_CAJA') {
+    // Pedido Caja es borrador interno (no fiscal): NO se valida contra reglas DGI.
+    // 🔋 Billetera cubre todo → no hay factura → tampoco se valida nada fiscal.
+    if (docType !== 'PEDIDO_CAJA' && !todoCubiertoPorPrepago) {
       const valDoc = validarDocumentoUY(cliDgiDocumento);
 
       if (requiereDatosDGI) {
@@ -754,21 +786,12 @@ export default function CierreCicloPreviewModal({
 
         if (agruparFactura) {
           let orderSubtotal = 0;
-          // cuentaEsUSD: si la moneda base del movimiento NO es explícitamente UYU (=1), asumimos USD.
-          // Igual que granTotalBase. Aplica solo como fallback cuando OrdMonIdMoneda es null.
-          const cuentaEsUSD = monIdBaseMov(m) !== 1;
           detallesFiltrados.forEach(d => {
             const ed = detallesEditados[d.DetalleID];
             const sub = ed ? ed.Subtotal : d.Subtotal;
-            // OrdMonIdMoneda=2: explícitamente USD (OrdenesDeposito). Fiable.
-            // null: orden en tabla Ordenes o sin registro → usar d.Moneda o cuenta como fallback.
-            // OrdMonIdMoneda=1: explícitamente UYU → NO convertir aunque la cuenta sea USD.
-            const esOrdenUSD = Number(m.OrdMonIdMoneda) === 2
-                            || d.Moneda === 'USD'
-                            || (m.OrdMonIdMoneda == null && cuentaEsUSD);
-            const orderCurrency = esOrdenUSD ? 'USD' : 'UYU';
-            const rate = (monedaFactura === 'UYU' && orderCurrency === 'USD') ? cotDolar : (monedaFactura === 'USD' && orderCurrency === 'UYU' ? (1/cotDolar) : 1);
-            orderSubtotal += sub * rate;
+            // Criterio único: moneda del congelado (d.Moneda) > orden > cuenta — ver monedaDetalle
+            const rate = rateDetalle(m, d);
+            orderSubtotal += r2conv(sub * rate);
           });
           const urgenciaOrden = esOrdenUrgente(m) || detallesFiltrados.some(d => tieneRecargoUrgencia(d.LogPrecioAplicado));
           detallesParaPDF.push({
@@ -780,24 +803,20 @@ export default function CierreCicloPreviewModal({
           });
         } else {
           let orderSubtotal = 0;
-          const cuentaEsUSD = monIdBaseMov(m) !== 1;
 
           detallesFiltrados.forEach(d => {
             const ed = detallesEditados[d.DetalleID];
             const sub = ed ? ed.Subtotal : d.Subtotal;
 
-            const esOrdenUSD = Number(m.OrdMonIdMoneda) === 2
-                            || d.Moneda === 'USD'
-                            || (m.OrdMonIdMoneda == null && cuentaEsUSD);
-            const orderCurrency = esOrdenUSD ? 'USD' : 'UYU';
-            const rate = (monedaFactura === 'UYU' && orderCurrency === 'USD') ? cotDolar : (monedaFactura === 'USD' && orderCurrency === 'UYU' ? (1/cotDolar) : 1);
-            const finalSub = sub * rate;
+            // Criterio único: moneda del congelado (d.Moneda) > orden > cuenta — ver monedaDetalle
+            const rate = rateDetalle(m, d);
+            const finalSub = r2conv(sub * rate);
             // Usar precio y descuento editados (no el precio original de DB)
             const editedPrice = ed ? ed.PrecioUnitario : (d.PrecioUnitario || (d.Subtotal / d.Cantidad));
             const editedCant  = ed?.Cantidad ?? d.Cantidad;
             const editedDescPct = (ed && ed.DescTipo === '%') ? ed.DescValor : 0;
-            const unitario = editedPrice * rate;
-            const descItem = editedPrice * editedCant * (editedDescPct / 100) * rate;
+            const unitario = r2conv(editedPrice * rate);
+            const descItem = r2conv(editedPrice * editedCant * (editedDescPct / 100) * rate);
             orderSubtotal += finalSub;
 
             const descArticulo = `${d.ArticuloNombre ? d.ArticuloNombre.trim() + ' - ' : ''}${(d.Descripcion || d.LogPrecioAplicado || 'Servicio').trim()}`;
@@ -826,7 +845,7 @@ export default function CierreCicloPreviewModal({
         const esMovUSD = Number(m.OrdMonIdMoneda) === 2 || (m.OrdMonIdMoneda == null && cuentaEsUSD2);
         const monBase = esMovUSD ? 'USD' : 'UYU';
         const rate = (monedaFactura === 'UYU' && monBase === 'USD') ? cotDolar : (monedaFactura === 'USD' && monBase === 'UYU' ? (1/cotDolar) : 1);
-        const finalSub = importe * rate;
+        const finalSub = r2conv(importe * rate);
         
         const sufijoUrgencia = esOrdenUrgente(m) ? ' (Urgencia)' : '';
         detallesParaPDF.push({
@@ -1052,7 +1071,8 @@ export default function CierreCicloPreviewModal({
             {/* En el paso 2 el documento queda fijo: los controles se ocultan */}
             {paso === 'documento' && (<>
             <div className="flex flex-col items-end gap-1.5">
-              {/* FILA 1: Tipo de Documento */}
+              {/* FILA 1: Tipo de Documento — oculto si la billetera cubre TODO (no hay factura) */}
+              {!todoCubiertoPorPrepago && (
               <div className={`flex rounded-xl p-1 border gap-1 select-none ${pageMode ? 'bg-white/10 border-white/20' : 'bg-slate-100 border-slate-200'}`}>
                 {[
                   { val: 'PEDIDO_CAJA', label: 'Pedido Caja', icon: ShoppingBag },
@@ -1076,6 +1096,7 @@ export default function CierreCicloPreviewModal({
                   );
                 })}
               </div>
+              )}
 
               {/* La condición Contado/Crédito se elige en el PASO 2 (Pago) */}
             </div>
@@ -1130,7 +1151,21 @@ export default function CierreCicloPreviewModal({
             </div>
           )}
 
-          {/* Requerimientos DGI */}
+          {/* 🔋 Billetera cubre TODO: sin factura → sin comprobante, sin DGI, sin pago */}
+          {todoCubiertoPorPrepago && (
+            <div className="bg-cyan-50 border border-cyan-200 text-cyan-900 px-4 py-3 rounded-xl shadow-sm text-[13px] font-medium flex items-start gap-2">
+              <span className="mt-0.5">🔋</span>
+              <span>
+                <strong>La billetera prepaga del cliente cubre TODAS las órdenes de esta pre-factura</strong> — el
+                ciclo se cierra descontando del saldo, <strong>sin emitir factura</strong> (esa plata ya se facturó
+                al cargarla). Por eso no hay que elegir tipo de comprobante, ni datos DGI, ni forma de pago.
+                Al continuar vas a ver el desglose orden por orden antes de confirmar.
+              </span>
+            </div>
+          )}
+
+          {/* Requerimientos DGI — ocultos si la billetera cubre todo (no hay factura) */}
+          {!todoCubiertoPorPrepago && (
           <div className={`rounded-xl border p-4 shadow-sm transition-colors ${requiereDatosDGI ? 'bg-rose-50 border-rose-200' : 'bg-white border-slate-200'}`}>
             <div className="flex justify-between items-center mb-3">
               <h4 className={`text-xs font-black uppercase tracking-widest ${requiereDatosDGI ? 'text-rose-600' : 'text-slate-500'}`}>
@@ -1192,6 +1227,7 @@ export default function CierreCicloPreviewModal({
               </div>
             </div>
           </div>
+          )}
 
           <div className="rounded-xl border border-slate-200 overflow-y-auto bg-white shadow-sm max-h-[45vh] scrollbar-thin scrollbar-thumb-slate-200">
             <table className="w-full text-left text-sm whitespace-nowrap">
@@ -1287,13 +1323,12 @@ export default function CierreCicloPreviewModal({
                         const descPct = ed ? (ed.DescTipo === '%' ? ed.DescValor : 0) : 0;
                         const subt  = ed ? ed.Subtotal : d.Subtotal;
 
-                        // Conversión visual si se pide en UYU
-                        const monBase = monIdBaseMov(m) === 1 ? 'UYU' : 'USD';
-                        const rate = (monedaFactura === 'UYU' && monBase === 'USD') ? cotDolar : (monedaFactura === 'USD' && monBase === 'UYU' ? (1/cotDolar) : 1);
-                        const vPunit  = punit * rate;
-                        const vSubt   = subt  * rate;
+                        // Conversión visual: moneda del congelado (d.Moneda) primero — ver monedaDetalle
+                        const rate = rateDetalle(m, d);
+                        const vPunit  = r2conv(punit * rate);
+                        const vSubt   = r2conv(subt  * rate);
                         const puNeto  = punit * (1 - descPct / 100);
-                        const vPuNeto = puNeto * rate;
+                        const vPuNeto = r2conv(puNeto * rate);
 
                         return (
                           <tr key={d.DetalleID} className="group hover:bg-slate-50 text-[13px]">
@@ -1623,9 +1658,11 @@ export default function CierreCicloPreviewModal({
             </button>
             <button onClick={irAlPago}
               disabled={movs.filter(m => !excluidos.has(m.MovIdMovimiento)).length === 0}
-              title="El documento no se emite todavía: en el paso 2 elegís cómo se paga (contado o crédito) y ahí sí se genera"
-              className="flex items-center gap-2 px-8 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-black rounded-xl transition-all shadow-md hover:shadow-lg disabled:opacity-50">
-              Continuar al pago →
+              title={todoCubiertoPorPrepago
+                ? 'La billetera cubre todas las órdenes: en el paso 2 ves el desglose del descuento y confirmás — se cierra SIN factura'
+                : 'El documento no se emite todavía: en el paso 2 elegís cómo se paga (contado o crédito) y ahí sí se genera'}
+              className={`flex items-center gap-2 px-8 py-2.5 text-white text-sm font-black rounded-xl transition-all shadow-md hover:shadow-lg disabled:opacity-50 ${todoCubiertoPorPrepago ? 'bg-cyan-600 hover:bg-cyan-700' : 'bg-indigo-600 hover:bg-indigo-700'}`}>
+              {todoCubiertoPorPrepago ? '🔋 Continuar: ver desglose de la billetera →' : 'Continuar al pago →'}
             </button>
           </div>
         </div>

@@ -38,6 +38,10 @@ const conReintentoDeadlock = async (nombre, fn, maxIntentos = 3) => {
 // Tope para imputar una diferencia a "cambio monetario" en el pago de deudas.
 // Por encima de 1 USD ya no es fluctuación del tipo de cambio: se imputa al cliente.
 const LIMITE_DIF_CAMBIO_USD = 1;
+// Ventana del candado anti-doble-cobro del pago de deudas: dos cobros idénticos
+// (mismo cliente, mismo importe, misma moneda) dentro de estos segundos se toman
+// como el mismo clic repetido y el segundo se rechaza. Ver procesarPagoDeudaInterno.
+const VENTANA_DOBLE_COBRO_SEG = 90;
 // Cuentas de resultado del plan de cuentas (Cont_PlanCuentas) para esa diferencia.
 const CTA_GANANCIA_DIF_CAMBIO = '4.2.1';  // Ganancia por Diferencia de Cambio
 const CTA_PERDIDA_DIF_CAMBIO  = '5.2.01'; // Pérdida por Diferencia de Cambio
@@ -1496,6 +1500,48 @@ const procesarPagoDeudaInterno = async (req, res) => {
     if (esParcial)     logger.info(`[PAGO-DEUDA] Pago parcial: deudas=${sumDeudas.toFixed(2)} pagado=${totalPagadoBase.toFixed(2)}`);
 
     const pool = await getPool();
+
+    // ─────────────────────────────────────────────
+    // CANDADO ANTI-DOBLE COBRO
+    // El 2-sep-2026 el cobro de elea entró TRES veces en cuatro segundos (Tca
+    // 9778/9779/9780, US$ 655,13 cada una): los botones de los banners "pago
+    // parcial" y "pago en exceso" no se deshabilitaban al enviar, y cada clic
+    // abría una transacción nueva. La cuenta corriente quedó bien (el 2º y 3º
+    // cobro aplicaron 159,75 y 0) pero la CAJA quedó con $ 80.265,93 por un
+    // pago de $ 26.755,31.
+    // El botón del front ya se arregló, pero el candado que vale es este: un F5,
+    // un reintento del navegador o un doble POST por red hacen lo mismo.
+    // OJO: se mide contra GETDATE(), así que no cubre cobros retrofechados — esos
+    // se cargan con calma, no a repetición.
+    if (!header.confirmarDuplicado && totalPagadoBase > 0.005) {
+      const dupRes = await pool.request()
+        .input('cli',    sql.Int,           header.clienteId)
+        .input('monto',  sql.Decimal(18,4), totalPagadoBase)
+        .input('moneda', sql.VarChar(10),   monedaBaseStr)
+        .input('seg',    sql.Int,           VENTANA_DOBLE_COBRO_SEG)
+        .query(`
+          SELECT TOP 1 TcaIdTransaccion, TcaFecha,
+                 Recibo = RTRIM(TcaSerieDoc) + '-' + RTRIM(TcaNumeroDoc)
+          FROM dbo.TransaccionesCaja WITH(NOLOCK)
+          WHERE TcaClienteId = @cli
+            AND ISNULL(TcaEstado,'') NOT IN ('ANULADO','ANULADA')
+            AND ABS(TcaTotalCobrado - @monto) <= 0.005
+            AND ISNULL(TcaMonedaBase,'') = @moneda
+            AND TcaFecha >= DATEADD(SECOND, -@seg, GETDATE())
+          ORDER BY TcaFecha DESC`);
+      if (dupRes.recordset.length) {
+        const dup = dupRes.recordset[0];
+        logger.warn(`[PAGO-DEUDA] Doble cobro FRENADO: cliente ${header.clienteId}, ${totalPagadoBase.toFixed(2)} ${monedaBaseStr} ya cobrado en ${dup.Recibo} (Tca ${dup.TcaIdTransaccion}) hace menos de ${VENTANA_DOBLE_COBRO_SEG}s.`);
+        return res.status(409).json({
+          error: `Este cobro ya se registró hace instantes: recibo ${dup.Recibo} por ${totalPagadoBase.toFixed(2)} ${monedaBaseStr}. `
+               + `NO se volvió a cobrar. Si el cliente pagó dos veces el mismo importe, volvé a enviarlo confirmando que es un cobro nuevo.`,
+          duplicado: true,
+          recibo: dup.Recibo,
+          tcaIdTransaccion: dup.TcaIdTransaccion
+        });
+      }
+    }
+
     const transaction = pool.transaction();
     await transaction.begin();
 
