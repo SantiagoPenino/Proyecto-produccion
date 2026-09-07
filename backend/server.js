@@ -549,6 +549,16 @@ if (process.env.NODE_ENV !== 'test') {
                 logger.error("❌ [CRON] Error cargando CotizacionBCU:", e.message);
             }
 
+            // CUADRE NOCTURNO DE SALDOS (Contabilidad) — 06:30 hs. Arranca acá como los demás
+            // jobs porque scheduler.startAutoSync está desactivado (apaga el sync ERP) y todo
+            // lo agendado ahí nunca corre (05-09-2026).
+            try {
+                const { startCuadreSaldosJob } = require('./jobs/cuadreSaldos.job');
+                startCuadreSaldosJob();
+            } catch (e) {
+                logger.error("❌ [CRON] Error cargando CuadreSaldos:", e.message);
+            }
+
         } catch (error) {
             logger.error("❌ Error al iniciar el Scheduler:", error.message);
         }

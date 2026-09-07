@@ -500,7 +500,7 @@ async function hookOrdenCreada(params, transaction = null) {
         return; // Sin deuda monetaria
       }
 
-      // Sin plan activo — verificar si el cliente es ROLLO POR ADELANTADO.
+      // Sin plan activo — verificar si el cliente es ROLLO POR ADELANTADO o SEMANAL.
       // Si lo es, NO generar deuda monetaria; los metros se regularizarán al asignar el próximo plan.
       const rolloCheckReq = transaction ? new sql.Request(transaction) : pool.request();
       const rolloCheckRes = await rolloCheckReq
@@ -509,7 +509,7 @@ async function hookOrdenCreada(params, transaction = null) {
                 FROM dbo.Clientes c WITH(NOLOCK)
                 LEFT JOIN dbo.TiposClientes tc WITH(NOLOCK) ON tc.TClIdTipoCliente = c.TClIdTipoCliente
                 WHERE c.CliIdCliente = @CliIdCliente`);
-      const esRolloSinPlan = (rolloCheckRes.recordset[0]?.TipoDesc || '').includes('ROLLO');
+      const esRolloSinPlan = /ROLLO|SEMANAL/.test(rolloCheckRes.recordset[0]?.TipoDesc || '');
       if (esRolloSinPlan) {
         // ROLLO sin plan activo: buscar la cuenta de recursos del último plan (aunque esté cerrado)
         // y registrar el consumo en negativo. Así el "debe metros" queda visible en el estado de
@@ -960,7 +960,7 @@ async function hookEntregaMetros(params) {
       return;
     }
 
-    // Detectar si el cliente es "ROLLO POR ADELANTADO"
+    // Detectar si el cliente es "ROLLO POR ADELANTADO" o "SEMANAL"
     // → permite saldo negativo en cuenta de recursos; no genera deuda monetaria por exceso
     const cliTipoRes = await mkReq()
       .input('CliIdCliente', sql.Int, CliIdCliente)
@@ -968,7 +968,7 @@ async function hookEntregaMetros(params) {
               FROM dbo.Clientes c WITH(NOLOCK)
               LEFT JOIN dbo.TiposClientes tc WITH(NOLOCK) ON tc.TClIdTipoCliente = c.TClIdTipoCliente
               WHERE c.CliIdCliente = @CliIdCliente`);
-    const esRolloAdelantado = (cliTipoRes.recordset[0]?.TipoDesc || '').includes('ROLLO');
+    const esRolloAdelantado = /ROLLO|SEMANAL/.test(cliTipoRes.recordset[0]?.TipoDesc || '');
     logger.info(`[HOOK:METROS] CliId=${CliIdCliente} esRolloAdelantado=${esRolloAdelantado}`);
 
     // 2. Descontar en cascada de los planes activos (FIFO)
@@ -1954,6 +1954,7 @@ async function getResumenDocumentos(CliIdCliente, desde = null, hasta = null) {
         -- Fecha completa (con hora): igual motivo que en Emision arriba.
         m.MovFecha AS Fecha,
         m.MovTipo,
+        m.DocIdDocumento,
         m.PagIdPago,
         -- Billetera: cuenta dueña del movimiento (principal / secundaria / restringida)
         -- para poder filtrar el estado de cuenta POR CUENTA, no solo por moneda.
@@ -2131,6 +2132,12 @@ async function getResumenDocumentos(CliIdCliente, desde = null, hasta = null) {
                       : (TIPO_PAGO_LABEL[p.MovTipo] || p.MovTipo),
       esFavor,
       esConsumo,
+      // Tipo crudo del movimiento y documento al que pertenece. El front los necesita
+      // para la NOTA_CREDITO: su DOCUMENTO ya se muestra como abono (una NC acredita,
+      // no cobra), así que el movimiento no puede sumarse otra vez o el crédito se
+      // anula solo y nunca llega al saldo (caso ELISA RAMOS NC-000019, 04-09-2026).
+      movTipo: p.MovTipo,
+      docIdDocumento: p.DocIdDocumento || null,
       // Agrupador real del cobro: cuando un mismo pago cancela 2+ documentos, cada
       // aplicación es SU PROPIO movimiento (una fila acá) pero comparten PagIdPago —
       // permite armar el resumen "este cobro se aplicó a X e Y" sin adivinar por fecha/monto.
@@ -2774,10 +2781,20 @@ async function cerrarCicloCompleto({
         // el JOIN por texto no matcheaba nada y el cierre facturaba precios viejos).
         // Solo se toca si la orden tiene UN único mov ORDEN vivo en el ciclo: con
         // movimientos partidos no se puede repartir el MontoTotal sin duplicar.
-        const movUpd = await pool.request().input('PID', sql.Int, PedidoCobranzaID).input('CicIdCiclo', sql.Int, CicIdCiclo).query(`
+        // MONEDA (fix 4/9/2026, caso GLIDE SUB-11514): el pedido puede estar en pesos y el
+        // movimiento vivir en la cuenta de dólares (pre-factura multimoneda: la orden se
+        // trasladó @ cot). Pisarlo con MontoTotal "tal cual" escribía $243,14 como US$ 243,14.
+        // Se convierte a la moneda de la CUENTA del movimiento con la cotización del cierre.
+        const cotPaso0 = parseFloat(cotDolar) || 40;
+        const movUpd = await pool.request().input('PID', sql.Int, PedidoCobranzaID).input('CicIdCiclo', sql.Int, CicIdCiclo).input('Cot', sql.Decimal(18, 4), cotPaso0).query(`
           UPDATE m
-          SET m.MovImporte = - (SELECT MontoTotal FROM dbo.PedidosCobranza WHERE ID = @PID)
+          SET m.MovImporte = - CASE
+                WHEN pc.Moneda = 'UYU' AND cc.MonIdMoneda = 2 THEN ROUND(pc.MontoTotal / @Cot, 2)
+                WHEN pc.Moneda = 'USD' AND ISNULL(cc.MonIdMoneda, 1) = 1 THEN ROUND(pc.MontoTotal * @Cot, 2)
+                ELSE pc.MontoTotal END
           FROM dbo.MovimientosCuenta m
+          JOIN dbo.CuentasCliente cc ON cc.CueIdCuenta = m.CueIdCuenta
+          CROSS JOIN (SELECT MontoTotal, Moneda FROM dbo.PedidosCobranza WHERE ID = @PID) pc
           WHERE m.MovTipo = 'ORDEN' AND m.CicIdCiclo = @CicIdCiclo
             AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)
             AND (
@@ -4957,6 +4974,61 @@ function planPartesConsumoBilletera({ fuentes, monOrden, importe, cot }) {
   return rem <= 0.009 ? partes : null;
 }
 
+/**
+ * vincularPagosPorOrdenAlDocumento
+ * ----------------------------------------------------------------------------
+ * Al emitir un documento por un conjunto de órdenes, engancha al documento los
+ * pagos que YA existían a nivel ORDEN (PAGO / PAGO_CRUZADO con OrdIdOrden y sin
+ * DocIdDocumento — típicamente la cobertura automática por saldo a favor o el
+ * cruce de monedas) y devuelve cuánto suman, para que la deuda del documento
+ * nazca NETA de esa plata.
+ *
+ * Sin esto (05-09-2026, 57 documentos / ~45 clientes / $ 25.863 + US$ 497):
+ *   - las rutas de emisión estampaban DocIdDocumento SOLO en las ORDEN;
+ *   - el documento nacía "sin cobro" a los ojos de todo el mundo y la deuda por
+ *     el total;
+ *   - la caja volvía a cobrarlo → la misma plata dos veces, y permanente.
+ *
+ * NO mueve saldo: solo estampa DocIdDocumento (el importe ya está en el libro).
+ * @param {object} p
+ * @param {number}   p.DocIdDocumento
+ * @param {number}   p.CliIdCliente
+ * @param {number[]} p.OrdIds        OrdIdOrden de las órdenes que entran al documento
+ * @param {string}   [p.CueTipo]     'DINERO_UYU' | 'DINERO_USD' — limita a la moneda del documento
+ * @returns {Promise<{ total:number, movimientos:number }>} suma en la moneda de las cuentas filtradas
+ */
+async function vincularPagosPorOrdenAlDocumento({ DocIdDocumento, CliIdCliente, OrdIds, CueTipo = null }, transaction = null) {
+  const ids = (OrdIds || []).map(Number).filter(n => Number.isInteger(n) && n > 0);
+  if (!DocIdDocumento || !CliIdCliente || ids.length === 0) return { total: 0, movimientos: 0 };
+
+  const pool = await getPool();
+  const req = transaction ? new sql.Request(transaction) : pool.request();
+  req.input('Doc', sql.Int, DocIdDocumento).input('Cli', sql.Int, CliIdCliente);
+  ids.forEach((id, i) => req.input(`o${i}`, sql.Int, id));
+  if (CueTipo) req.input('CueTipo', sql.VarChar(20), CueTipo);
+
+  const res = await req.query(`
+    UPDATE m
+    SET    m.DocIdDocumento = @Doc
+    OUTPUT INSERTED.MovImporte
+    FROM   dbo.MovimientosCuenta m
+    JOIN   dbo.CuentasCliente cc ON cc.CueIdCuenta = m.CueIdCuenta
+    WHERE  cc.CliIdCliente = @Cli
+      AND  cc.CueTipo LIKE 'DINERO%'
+      ${CueTipo ? 'AND cc.CueTipo = @CueTipo' : ''}
+      AND  m.MovTipo IN ('PAGO','PAGO_CRUZADO')
+      AND  m.MovImporte > 0
+      AND  m.DocIdDocumento IS NULL
+      AND  m.OrdIdOrden IN (${ids.map((_, i) => `@o${i}`).join(',')})
+      AND  (m.MovAnulado IS NULL OR m.MovAnulado = 0)
+  `);
+  const total = (res.recordset || []).reduce((s, r) => s + Number(r.MovImporte || 0), 0);
+  if (total > 0) {
+    logger.info(`[CONTABILIDAD] Doc #${DocIdDocumento}: ${res.recordset.length} pago(s) previos por orden enganchados (suman ${total.toFixed(2)}) — la deuda nace neta.`);
+  }
+  return { total, movimientos: (res.recordset || []).length };
+}
+
 module.exports = {
   // Cuentas
   obtenerOCrearCuenta,
@@ -4978,6 +5050,7 @@ module.exports = {
   // Deuda
   crearDeudaDocumento,
   buscarDeudaVivaDeDocumento,
+  vincularPagosPorOrdenAlDocumento,
   cancelarDeuda,
   reducirDeuda,
   reemplazarDeuda,
@@ -5253,17 +5326,57 @@ async function procesarEventoContable(evtCodigo, data) {
 
         // 2. GENERACIÓN DE DEUDA VIVA (DOCUMENTOS PENDIENTES) Y CRUCES DE MONEDA
         // Si el saldo resultante bajó de 0 (hay deuda generada)
-        if (evt.EvtGeneraDeuda && resSubmayor.SaldoResultante < 0) {
-           let deudaReal = Math.min(Math.abs(Importe), Math.max(0, -resSubmayor.SaldoResultante));
-           
+        // El saldo que decide si hay deuda se mide con el LIBRO (suma de movimientos sin
+        // ORDEN/ORDEN_ANTICIPO), NO con CueSaldoActual ni con SaldoResultante: esa columna
+        // resta las órdenes dos veces y estaba mal en el 87% de las cuentas (05-09-2026),
+        // así que el motor creía que el cliente se endeudaba cuando no.
+        let saldoLibroCta = resSubmayor.SaldoResultante;
+        try {
+          const sl = await pool.request().input('CueLib', sql.Int, cueId).query(`
+            SELECT ISNULL(SUM(MovImporte), 0) AS Saldo FROM dbo.MovimientosCuenta WITH(NOLOCK)
+            WHERE CueIdCuenta = @CueLib AND (MovAnulado IS NULL OR MovAnulado = 0)
+              AND MovTipo NOT IN ('ORDEN','ORDEN_ANTICIPO')`);
+          saldoLibroCta = Number(sl.recordset[0]?.Saldo ?? saldoLibroCta);
+        } catch (eSl) { /* ante la duda, el valor del SP */ }
+
+        // El libro EXCLUYE las ORDEN, así que la orden recién registrada no está en
+        // saldoLibroCta. La decisión de deuda se toma sobre "el saldo CON esta orden"
+        // (misma semántica que tenía SaldoResultante): si el cliente tenía +50 y la orden
+        // es 100, queda -50 → deudaReal 50. Sin esto, un Común en 0 daba "saldo 0, no hay
+        // deuda" y la orden se auto-marcaba PAGA sin que nadie pagara.
+        const saldoConEstaOrden = ['ORDEN', 'ORDEN_ANTICIPO'].includes(String(evtCodigo))
+          ? saldoLibroCta - Math.abs(Importe)
+          : saldoLibroCta;
+
+        if (evt.EvtGeneraDeuda && saldoConEstaOrden < 0) {
+           let deudaReal = Math.min(Math.abs(Importe), Math.max(0, -saldoConEstaOrden));
+
            if (deudaReal > 0.01) {
-              // Intentar cruce de monedas (si tiene saldo a favor en la otra)
+              // Intentar cruce de monedas (si tiene saldo a favor en la otra).
+              // NUNCA para un cliente con ciclo abierto (Semanal): sus órdenes se acumulan y
+              // se facturan al cerrar la semana — cruzar acá le pre-pagaba trabajo que aún no
+              // estaba facturado, sacándole plata de la otra moneda antes de tiempo (CR SPORT
+              // 04/09, Martina 28/07). El cruce corría 46 líneas ANTES de mirar el ciclo.
+              // La cuenta origen se elige por el LIBRO, no por CueSaldoActual (ver arriba).
               const tipoOtra = MonIdMoneda === 2 ? 'DINERO_UYU' : 'DINERO_USD';
-              const ctaOtraRes = await pool.request()
+              const ctaOtraRes = cicloActivoEvt
+                ? { recordset: [] }
+                : await pool.request()
                  .input('CliCruce', sql.Int, CliIdCliente)
                  .input('TipoCruce', sql.VarChar(20), tipoOtra)
-                 .query(`SELECT CueIdCuenta, CueSaldoActual FROM CuentasCliente WHERE CliIdCliente=@CliCruce AND CueTipo=@TipoCruce AND CueActiva=1 AND CueEsPrincipal=1 AND CueSaldoActual > 0.01`);
-              
+                 .query(`SELECT cc.CueIdCuenta,
+                                CueSaldoActual = ISNULL((SELECT SUM(m.MovImporte) FROM dbo.MovimientosCuenta m WITH(NOLOCK)
+                                                         WHERE m.CueIdCuenta = cc.CueIdCuenta AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)
+                                                           AND m.MovTipo NOT IN ('ORDEN','ORDEN_ANTICIPO')), 0)
+                         FROM dbo.CuentasCliente cc
+                         WHERE cc.CliIdCliente=@CliCruce AND cc.CueTipo=@TipoCruce AND cc.CueActiva=1 AND cc.CueEsPrincipal=1
+                           AND ISNULL((SELECT SUM(m.MovImporte) FROM dbo.MovimientosCuenta m WITH(NOLOCK)
+                                       WHERE m.CueIdCuenta = cc.CueIdCuenta AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)
+                                         AND m.MovTipo NOT IN ('ORDEN','ORDEN_ANTICIPO')), 0) > 0.01`);
+              if (cicloActivoEvt) {
+                logger.info(`[MOTOR] ${evtCodigo}: Orden ${CodigoOrden} — cliente con ciclo abierto CicId=${cicloActivoEvt.CicIdCiclo}: NO se cruza moneda, la orden se acumula y se cobra al facturar.`);
+              }
+
               if (ctaOtraRes.recordset.length > 0) {
                  const ctaOtra = ctaOtraRes.recordset[0];
                  let coti = 1;

@@ -7,6 +7,7 @@ import { useState, useEffect, useCallback } from 'react';
 import {
   Clock, RefreshCw, Play, CheckCircle2, XCircle,
   AlertTriangle, Loader2, CalendarClock, Activity, Zap, ServerCrash,
+  ListChecks, ChevronDown, ChevronUp,
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -58,9 +59,126 @@ const EstadoBadge = ({ estado }) => {
   );
 };
 
+// ── Detalle del Cuadre Nocturno de Saldos ──────────────────────────────────────
+// Muestra la ÚLTIMA foto del job cuadre-saldos con sus listas (no solo los contadores):
+// cuentas fuera del modelo, cargos ≠ total, documentos sin cargo, ajustes a mano,
+// cobros dobles, y el histórico de los últimos 30 días para ver la tendencia.
+const fmtNum = (n) => (n == null || n === '' ? '—' : Number(n).toLocaleString('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+
+const TablaDetalle = ({ titulo, filas, cols, vacio = 'Nada para mostrar.' }) => (
+  <div className="bg-slate-800/40 rounded-xl p-4">
+    <p className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-2">{titulo} <span className="text-slate-600">({filas?.length || 0})</span></p>
+    {!filas?.length ? <p className="text-xs text-slate-500">{vacio}</p> : (
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead><tr className="text-slate-500 text-left">{cols.map(c => <th key={c.k} className={`py-1 pr-3 font-bold ${c.num ? 'text-right' : ''}`}>{c.t}</th>)}</tr></thead>
+          <tbody>
+            {filas.map((f, i) => (
+              <tr key={i} className="border-t border-slate-800 text-slate-300">
+                {cols.map(c => <td key={c.k} className={`py-1 pr-3 ${c.num ? 'text-right font-mono' : ''}`}>{c.num ? fmtNum(f[c.k]) : (f[c.k] ?? '—')}</td>)}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    )}
+  </div>
+);
+
+const DetalleCuadre = () => {
+  const [data, setData]       = useState(null);
+  const [msg, setMsg]         = useState('');
+  const [cargando, setCargando] = useState(true);
+
+  const cargarDetalle = useCallback(async () => {
+    setCargando(true);
+    try {
+      const r = await req('/api/sysadmin/cron/cuadre-saldos/detalle');
+      setData(r.data); setMsg(r.message || '');
+    } catch (e) { setMsg(e.message); }
+    finally { setCargando(false); }
+  }, []);
+
+  useEffect(() => { cargarDetalle(); }, [cargarDetalle]);
+
+  const botonActualizar = (
+    <button onClick={cargarDetalle} disabled={cargando}
+      className="self-start flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 disabled:opacity-40"
+      title="Volver a leer la última foto (después de Ejecutar)">
+      <RefreshCw size={12} className={cargando ? 'animate-spin' : ''} /> Actualizar
+    </button>
+  );
+
+  if (cargando) return <p className="text-xs text-slate-400 flex items-center gap-2"><Loader2 size={13} className="animate-spin" /> Cargando detalle…</p>;
+  if (!data)    return <div className="flex flex-col gap-2"><p className="text-xs text-slate-400">{msg || 'Sin datos.'}</p>{botonActualizar}</div>;
+
+  const c = data.contadores || {};
+  const d = data.detalle || {};
+  const h = data.historico || [];
+  const ayer = h[1] || null;
+  const delta = (k) => (ayer ? Number(c[k] || 0) - Number(ayer[k] || 0) : null);
+  const Contador = ({ k, label }) => {
+    const dv = delta(k);
+    return (
+      <div className="bg-slate-800/60 rounded-xl px-3 py-2 flex flex-col">
+        <span className="text-[10px] uppercase tracking-widest text-slate-500 font-black">{label}</span>
+        <span className="text-lg font-black text-white">{c[k] ?? '—'}
+          {dv != null && dv !== 0 && (
+            <span className={`ml-2 text-xs font-bold ${dv > 0 ? 'text-rose-400' : 'text-emerald-400'}`}>{dv > 0 ? `+${dv}` : dv}</span>
+          )}
+        </span>
+      </div>
+    );
+  };
+
+  return (
+    <div className="flex flex-col gap-4 border-t border-slate-800 pt-4">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <p className="text-xs text-slate-400 m-0">
+          Foto del <b className="text-slate-200">{fmtFecha(c.Corrida)}</b>
+        {ayer ? <> — variación contra la corrida anterior ({fmtFecha(ayer.Corrida)}) en <span className="text-rose-400">rojo</span> si empeoró.</> : ' — primera corrida, sin comparación.'}
+        </p>
+        {botonActualizar}
+      </div>
+
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+        <Contador k="CuentasFueraDelModelo" label="Fuera del modelo" />
+        <Contador k="DebeNoCuadra"          label="Debe y no cuadra" />
+        <Contador k="DebeSinDocumento"      label="Debe sin documento" />
+        <Contador k="AFavor"                label="A favor" />
+        <Contador k="AFavorConDeuda"        label="A favor c/ deuda viva" />
+        <Contador k="CargoDistintoTotal"    label="Cargo ≠ total" />
+        <Contador k="DocsSinCargo"          label="Docs sin cargo" />
+        <Contador k="ColumnaMal"            label="CueSaldoActual mal" />
+        <Contador k="FalsosPositivos"       label="Falsos positivos" />
+        <Contador k="AjustesManuales24h"    label="Ajustes a mano 24h" />
+        <Contador k="DobleCobro"            label="Cobro doble" />
+      </div>
+
+      <TablaDetalle titulo="Ajustes a mano (últimas 24 hs)" filas={d.ajustes}
+        cols={[{k:'Cliente',t:'Cliente'},{k:'Moneda',t:'Mon.'},{k:'MovTipo',t:'Tipo'},{k:'Importe',t:'Importe',num:true},{k:'Usuario',t:'Usuario'},{k:'Motivo',t:'Motivo'}]} />
+      <TablaDetalle titulo="Cobro doble: pago por orden y por documento" filas={d.dobleCobro}
+        cols={[{k:'Cliente',t:'Cliente'},{k:'Doc',t:'Documento'},{k:'Moneda',t:'Mon.'},{k:'PagoOrden',t:'Pago por orden',num:true},{k:'PagoDoc',t:'Pago por documento',num:true}]} />
+      <TablaDetalle titulo="Cuentas fuera del modelo (top 40)" filas={d.cuentas}
+        cols={[{k:'Cliente',t:'Cliente'},{k:'Tipo',t:'Tipo'},{k:'Moneda',t:'Mon.'},{k:'Situacion',t:'Situación'},{k:'Saldo',t:'Libro',num:true},{k:'VivaDoc',t:'Deuda doc.',num:true},{k:'Guardado',t:'Columna',num:true}]} />
+      <TablaDetalle titulo="Documentos con cargo ≠ total (top 20)" filas={d.cargoVsTotal}
+        cols={[{k:'Cliente',t:'Cliente'},{k:'Doc',t:'Documento'},{k:'CfeEstado',t:'CFE'},{k:'DocTotal',t:'Total',num:true},{k:'Cargo',t:'Cargo libro',num:true},{k:'Esperado',t:'Esperado',num:true}]} />
+      <TablaDetalle titulo="Documentos sin ningún cargo (top 20)" filas={d.sinCargo}
+        cols={[{k:'Cliente',t:'Cliente'},{k:'Doc',t:'Documento'},{k:'CfeEstado',t:'CFE'},{k:'Moneda',t:'Mon.'},{k:'DocTotal',t:'Total',num:true}]} />
+
+      <TablaDetalle titulo="Histórico (últimas corridas)" filas={h}
+        cols={[{k:'Fecha',t:'Fecha'},{k:'CuentasFueraDelModelo',t:'Fuera'},{k:'DebeNoCuadra',t:'No cuadra'},{k:'DebeSinDocumento',t:'Sin doc'},{k:'AFavor',t:'A favor'},{k:'CargoDistintoTotal',t:'Cargo≠tot'},{k:'DocsSinCargo',t:'Sin cargo'},{k:'ColumnaMal',t:'Col. mal'},{k:'FalsosPositivos',t:'Falsos+'},{k:'AjustesManuales24h',t:'Ajustes'},{k:'DobleCobro',t:'Doble'}]}
+        vacio="Sin corridas todavía." />
+    </div>
+  );
+};
+
 // ── Tarjeta de Job ─────────────────────────────────────────────────────────────
 const JobCard = ({ job, onEjecutar, ejecutandoId }) => {
   const ejecutando = ejecutandoId === job.id;
+  // Solo el cuadre de saldos tiene detalle (listas) además del resumen.
+  const tieneDetalle = job.id === 'cuadre-saldos';
+  const [verDetalle, setVerDetalle] = useState(false);
 
   return (
     <div className={`rounded-2xl border p-6 flex flex-col gap-5 transition-all ${
@@ -92,6 +210,19 @@ const JobCard = ({ job, onEjecutar, ejecutandoId }) => {
             : <><Play size={15} /> Ejecutar</>}
         </button>
       </div>
+
+      {tieneDetalle && (
+        <button
+          onClick={() => setVerDetalle(v => !v)}
+          className="self-start flex items-center gap-2 px-4 py-2 rounded-xl font-bold text-xs transition-all
+            bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700"
+          title="Ver las listas de la última corrida: cuentas, documentos, ajustes y cobros dobles"
+        >
+          <ListChecks size={14} />
+          {verDetalle ? 'Ocultar detalle' : 'Ver detalle (listas de la última corrida)'}
+          {verDetalle ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+        </button>
+      )}
 
       {/* Datos de programación */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -134,6 +265,9 @@ const JobCard = ({ job, onEjecutar, ejecutandoId }) => {
           </div>
         </div>
       )}
+
+      {/* Detalle del cuadre de saldos (listas de la última corrida) */}
+      {tieneDetalle && verDetalle && <DetalleCuadre />}
     </div>
   );
 };

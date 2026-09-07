@@ -29,12 +29,20 @@ reg.registrar('capacidad-diaria', {
     schedule:    '06:00 hs diarios',
 });
 
+reg.registrar('cuadre-saldos', {
+    nombre:      'Cuadre Nocturno de Saldos',
+    descripcion: 'Compara libro vs deuda documentada vs CueSaldoActual por cuenta, detecta cargos desalineados, documentos sin cargo, ajustes a mano y cobros dobles; guarda la foto en CuadreSaldosDiario y avisa por mail si algo empeoró respecto de ayer.',
+    schedule:    '06:30 hs diarios',
+});
+
 // ─── Función helper para correr con registro ─────────────────────────────────
 async function runJob(id, fn) {
     reg.marcarInicio(id);
     try {
-        await fn();
-        reg.marcarOk(id);
+        // Si el job devuelve un texto, ese es su "último resultado" (ej. el resumen del
+        // cuadre de saldos con los contadores); si no, queda 'Completado'.
+        const resultado = await fn();
+        reg.marcarOk(id, typeof resultado === 'string' && resultado.trim() ? resultado : undefined);
     } catch (e) {
         reg.marcarError(id, e);
         logger.error(`[JOB:${id}] ❌ Error:`, e.message);
@@ -83,6 +91,13 @@ async function startAutoSync(io) {
             }, msHastaProxima);
         }
         programarReconciliacion();
+
+        // ── 2b. CUADRE NOCTURNO DE SALDOS ──────────────────────────────────
+        // NO se agenda acá: startAutoSync está desactivado en server.js (apaga el sync
+        // ERP) y nada de lo que se programe en esta función corre. El job arranca desde
+        // server.js con startCuadreSaldosJob() (jobs/cuadreSaldos.job.js), que también
+        // hace el setFn del registro. Si algún día se reactiva startAutoSync, NO volver a
+        // programarlo acá o corre dos veces.
 
         // ── 3. ESTADOS DE CUENTA — Viernes 00:00 hs ───────────────────────
         const estadosCuentaBatch = require('./jobs/estadosCuenta.job');

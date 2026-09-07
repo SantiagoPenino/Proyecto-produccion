@@ -124,6 +124,9 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
 
   // Selectores simplificados
   const [tipoCliente, setTipoCliente] = useState('CONSUMIDOR_FINAL'); // 'CONSUMIDOR_FINAL' | 'RUT' | 'PEDIDO_CAJA'
+  // e-Ticket a un cliente con RUT: guarda "tipo|RUT" cuando el operador ya contestó "seguir con
+  // e-Ticket", para no volver a preguntarle mientras no cambie el tipo de documento ni el receptor.
+  const [ticketConRutElegido, setTicketConRutElegido] = useState('');
   const [formaPago, setFormaPago] = useState('CONTADO'); // 'CONTADO' | 'CREDITO'
 
   // Panel de pago
@@ -407,6 +410,20 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
     }
     familiaAnteriorRef.current = familia;
   }, [tiposDocs, tipoCliente, formaPago]);
+
+  // Al EDITAR, el documento trae el tipo como TEXTO ('E-Ticket Contado') pero el panel de pago
+  // trabaja con el CÓDIGO ('07'): con el texto no reconoce el tipo y muestra "Pedido Caja" (su
+  // opción por defecto) con una serie/número ajenos al documento. El efecto de arriba solo traduce
+  // cuando cambian tipoCliente/formaPago, y para un e-Ticket contado (los valores iniciales) no
+  // cambian, así que el texto quedaba. Acá se traduce texto → código apenas hay nomencladores;
+  // si no hay coincidencia exacta (ej. una nota con el nombre truncado) no se toca nada.
+  useEffect(() => {
+    if (tiposDocs.length === 0 || !formData.DocTipo) return;
+    if (tiposDocs.some(t => String(t.value) === String(formData.DocTipo))) return; // ya es código
+    const lbl = String(formData.DocTipo).trim().toUpperCase();
+    const porEtiqueta = tiposDocs.find(t => String(t.label || '').trim().toUpperCase() === lbl);
+    if (porEtiqueta) setFormData(prev => ({ ...prev, DocTipo: porEtiqueta.value }));
+  }, [tiposDocs, formData.DocTipo]);
 
   // NOTA: un Pedido Caja puede ir a CRÉDITO (no se fuerza CONTADO).
   // El default a CONTADO para un Pedido Caja recién elegido ya lo aplica el handler
@@ -1232,8 +1249,12 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
   const _recDigC = String(formData.DocCliDocumento || '').replace(/\D/g, '');
   const receptorEsRUT = _recDigC.length === 12;
   const cfeQueSale = esFacturaDoc ? 'e-Factura (111)' : esTicketDoc ? 'e-Ticket (101)' : '';
-  // Incoherencia típica: e-Ticket con un RUT de empresa → debería ser e-Factura.
+  // e-Ticket a un cliente con RUT: DGI lo admite (el ticket viaja identificado con el RUT, como
+  // pide para tickets sobre 10.000 UI), pero el cliente no puede descontar el IVA. No se bloquea:
+  // se le pregunta al operador qué quiere emitir, una sola vez por tipo+RUT.
   const ticketConRUT = esTicketDoc && receptorEsRUT && facturarModo !== 'final';
+  const ticketConRutKey = `${formData.DocTipo}|${_recDigC}`;
+  const preguntarTicketConRut = ticketConRUT && ticketConRutElegido !== ticketConRutKey;
 
   return (
     <div className="fixed inset-0 z-[9999] bg-zinc-100 flex flex-col w-screen h-screen overflow-hidden animate-in fade-in select-none">
@@ -1366,6 +1387,9 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
             setFormaPago(cond === 'CREDITO' ? 'CREDITO' : 'CONTADO');
           }}
           serieDoc={serieDoc}
+          // Al editar, el panel muestra el número REAL del documento (ET-7448) y no el "siguiente"
+          // de la secuencia, que es lo que predice para un documento nuevo.
+          numDoc={esEditar && editDocInfo?.DocSerie ? `${editDocInfo.DocSerie}-${editDocInfo.DocNumero}` : undefined}
           onSerieDoc={setSerieDoc}
           notas={notas}
           onNotas={setNotas}
@@ -1580,17 +1604,35 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
                 )}
               </div>
 
-              {/* Alerta de incoherencia: RUT (empresa) cargado en un e-Ticket → debería ser e-Factura */}
-              {ticketConRUT && (
-                <div className="rounded-lg px-2.5 py-2 border border-rose-300 bg-rose-50 text-rose-800 text-[10px] font-bold leading-snug flex flex-col gap-1.5">
-                  <span>⚠️ Cargaste un <b>RUT</b> (empresa) en un <b>e-Ticket</b>. Un receptor con RUT corresponde a una <b>e-Factura</b>. El e-Ticket saldría 101 identificado con ese RUT, que no es lo habitual.</span>
-                  <button
-                    type="button"
-                    onClick={() => { setTipoCliente('RUT'); }}
-                    className="self-start px-2.5 py-1 rounded-md text-[9px] font-black uppercase tracking-wider text-white bg-rose-600 hover:bg-rose-700 cursor-pointer"
-                  >
-                    Cambiar a E-Factura
-                  </button>
+              {/* e-Ticket a un cliente con RUT: se pregunta qué quiere emitir. NO bloquea nada. */}
+              {preguntarTicketConRut && (
+                <div className="rounded-lg px-2.5 py-2 border border-amber-300 bg-amber-50 text-amber-900 text-[10px] font-bold leading-snug flex flex-col gap-1.5">
+                  <span>Este cliente tiene <b>RUT</b>. ¿Qué querés emitir?</span>
+                  <span className="font-semibold text-amber-800">
+                    · <b>e-Ticket a su nombre</b>: DGI lo admite (viaja identificado con el RUT), pero el cliente <b>no puede descontar el IVA</b>.
+                    <br />· <b>e-Factura</b>: si el cliente necesita descontar el IVA.
+                  </span>
+                  <div className="flex flex-wrap gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setTicketConRutElegido(ticketConRutKey)}
+                      className="px-2.5 py-1 rounded-md text-[9px] font-black uppercase tracking-wider text-white bg-emerald-600 hover:bg-emerald-700 cursor-pointer"
+                    >
+                      Seguir con e-Ticket
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setTipoCliente('RUT'); }}
+                      className="px-2.5 py-1 rounded-md text-[9px] font-black uppercase tracking-wider text-white bg-indigo-600 hover:bg-indigo-700 cursor-pointer"
+                    >
+                      Cambiar a e-Factura
+                    </button>
+                  </div>
+                </div>
+              )}
+              {ticketConRUT && !preguntarTicketConRut && (
+                <div className="rounded-lg px-2.5 py-1.5 border border-emerald-200 bg-emerald-50 text-emerald-800 text-[10px] font-bold leading-snug">
+                  ✓ e-Ticket a nombre del cliente, identificado con su RUT (el cliente no descuenta IVA). Si necesita descontar IVA, cambiá el tipo a e-Factura.
                 </div>
               )}
 

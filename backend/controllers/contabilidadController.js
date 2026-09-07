@@ -1631,6 +1631,10 @@ exports.guardarPrecios = async (req, res) => {
 
   const cicloNum = (cicIdCiclo && !isNaN(Number(cicIdCiclo))) ? Number(cicIdCiclo) : null;
   const pool = await getPool();
+  // Cotización del día: los pedidos en pesos que viven en una cuenta de dólares (o al revés)
+  // se pisan CONVERTIDOS a la moneda de la cuenta (fix 4/9/2026, caso GLIDE SUB-11514).
+  const cotHoy = parseFloat((await pool.request()
+    .query('SELECT TOP 1 CotDolar FROM dbo.Cotizaciones WITH(NOLOCK) ORDER BY CotFecha DESC')).recordset[0]?.CotDolar) || 40;
   const tx = new sql.Transaction(pool);
   try {
     await tx.begin();
@@ -1707,10 +1711,16 @@ exports.guardarPrecios = async (req, res) => {
 
       if (!resyncBilletera) await mk()
         .input('PID', sql.Int, PedidoCobranzaID)
+        .input('Cot', sql.Decimal(18, 4), cotHoy)
         .query(`
           UPDATE m
-          SET m.MovImporte = -(SELECT MontoTotal FROM dbo.PedidosCobranza WHERE ID = @PID)
+          SET m.MovImporte = - CASE
+                WHEN pcM.Moneda = 'UYU' AND ccM.MonIdMoneda = 2 THEN ROUND(pcM.MontoTotal / @Cot, 2)
+                WHEN pcM.Moneda = 'USD' AND ISNULL(ccM.MonIdMoneda, 1) = 1 THEN ROUND(pcM.MontoTotal * @Cot, 2)
+                ELSE pcM.MontoTotal END
           FROM dbo.MovimientosCuenta m
+          JOIN dbo.CuentasCliente ccM ON ccM.CueIdCuenta = m.CueIdCuenta
+          CROSS JOIN (SELECT MontoTotal, Moneda FROM dbo.PedidosCobranza WHERE ID = @PID) pcM
           JOIN dbo.PedidosCobranza pc ON pc.ID = @PID
           WHERE (m.MovAnulado IS NULL OR m.MovAnulado = 0)
             AND m.MovTipo IN ('ORDEN','ORDEN_ANTICIPO')
@@ -2001,6 +2011,10 @@ exports.guardarPreciosCiclo = async (req, res) => {
 
   const cic = parseInt(CicIdCiclo);
   const pool = await getPool();
+  // Cotización del día: los pedidos en pesos que viven en una cuenta de dólares (o al revés)
+  // se pisan CONVERTIDOS a la moneda de la cuenta (fix 4/9/2026, caso GLIDE SUB-11514).
+  const cotHoy = parseFloat((await pool.request()
+    .query('SELECT TOP 1 CotDolar FROM dbo.Cotizaciones WITH(NOLOCK) ORDER BY CotFecha DESC')).recordset[0]?.CotDolar) || 40;
   const tx = new sql.Transaction(pool);
   try {
     await tx.begin();
@@ -2063,9 +2077,14 @@ exports.guardarPreciosCiclo = async (req, res) => {
       if (!resyncBilletera) await mk()
         .input('PID', sql.Int, PedidoCobranzaID)
         .input('cic', sql.Int, cic)
+        .input('Cot', sql.Decimal(18, 4), cotHoy)
         .query(`
-          UPDATE m SET m.MovImporte = -(SELECT MontoTotal FROM dbo.PedidosCobranza WHERE ID=@PID)
+          UPDATE m SET m.MovImporte = - CASE
+                WHEN pc.Moneda = 'UYU' AND ccM.MonIdMoneda = 2 THEN ROUND(pc.MontoTotal / @Cot, 2)
+                WHEN pc.Moneda = 'USD' AND ISNULL(ccM.MonIdMoneda, 1) = 1 THEN ROUND(pc.MontoTotal * @Cot, 2)
+                ELSE pc.MontoTotal END
           FROM dbo.MovimientosCuenta m
+          JOIN dbo.CuentasCliente ccM ON ccM.CueIdCuenta = m.CueIdCuenta
           JOIN dbo.PedidosCobranza pc ON pc.ID = @PID
           WHERE m.CicIdCiclo=@cic AND m.MovTipo IN ('ORDEN','ORDEN_ANTICIPO') AND (m.MovAnulado IS NULL OR m.MovAnulado=0)
             -- Match principal por OrdenID del detalle: NoDocERP va sin prefijo y
@@ -2432,7 +2451,13 @@ exports.generarEstadosManual = async (req, res) => {
  */
 exports.getClientesActivos = async (req, res) => {
   try {
-    const { q = '', tipo = '', todos = 'false', tipoCliente = '' } = req.query;
+    const {
+      q = '', tipo = '', todos = 'false', tipoCliente = '',
+      // Panel de filtros del 360 (checkboxes). Se combinan con Y: el cliente tiene que
+      // cumplir TODAS las condiciones tildadas para aparecer en la lista.
+      conDeuda = '', aFavorPrincipal = '', aFavorOtras = '',
+      conRollo = '', negRollo = '', negDinero = '',
+    } = req.query;
     const pool = await getPool();
     const request = pool.request();
 
@@ -2441,6 +2466,44 @@ exports.getClientesActivos = async (req, res) => {
     }
 
     const filtroTipoCliente = tipoCliente ? 'AND c.TClIdTipoCliente = @TipoCliente' : '';
+
+    // ── Panel de filtros del Panel 360 ────────────────────────────────────────
+    // "Dinero" = cuentas monetarias (billetera principal y secundarias).
+    // "Rollo"  = cuentas de recurso en metros (las NO monetarias, hoy CueTipo 'MTS').
+    // Cada filtro es un EXISTS por cliente, así que se van sumando con Y.
+    const CUE_DINERO = "'USD','UYU','ARS','EUR','PYG','BRL','CORRIENTE','CREDITO','DEBITO','CAJA','DINERO_USD','DINERO_UYU'";
+    const tildado = (v) => v === 'true' || v === '1';
+
+    // El saldo de una cuenta se mide por su LIBRO, no por la columna CueSaldoActual:
+    //   1. La columna arrastra escrituras a mano que nunca dejaron movimiento (hay decenas
+    //      de cuentas donde dice un número negativo y el libro está vacío).
+    //   2. El movimiento ORDEN es el DETALLE del trabajo; cuando ese trabajo ya se facturó
+    //      (DocIdDocumento != NULL) el cargo real es la factura, y contar los dos cobra
+    //      dos veces lo mismo. El panel lo descuenta así, y el filtro tiene que coincidir
+    //      con lo que el usuario ve en pantalla.
+    // Tolerancia de 0.01 para no colar migajas de redondeo.
+    const SALDO_LIBRO = `(SELECT ISNULL(SUM(mf.MovImporte), 0)
+            FROM dbo.MovimientosCuenta mf WITH(NOLOCK)
+            WHERE mf.CueIdCuenta = ccf.CueIdCuenta
+              AND (mf.MovAnulado IS NULL OR mf.MovAnulado = 0)
+              AND NOT (mf.MovTipo = 'ORDEN' AND mf.DocIdDocumento IS NOT NULL))`;
+
+    const existeCuenta = (cond) => `AND EXISTS (
+          SELECT 1 FROM dbo.CuentasCliente ccf WITH(NOLOCK)
+          WHERE ccf.CliIdCliente = c.CliIdCliente AND ccf.CueActiva = 1 AND ${cond})`;
+    const filtrosPanel = [
+      tildado(conDeuda) && `AND EXISTS (
+          SELECT 1 FROM dbo.DeudaDocumento ddf WITH(NOLOCK)
+          JOIN dbo.CuentasCliente ccf WITH(NOLOCK) ON ccf.CueIdCuenta = ddf.CueIdCuenta
+          WHERE ccf.CliIdCliente = c.CliIdCliente
+            AND ddf.DDeEstado IN ('PENDIENTE','VENCIDO','PARCIAL')
+            AND ddf.DDeImportePendiente > 0)`,
+      tildado(aFavorPrincipal) && existeCuenta(`ccf.CueTipo IN (${CUE_DINERO}) AND ISNULL(ccf.CueEsPrincipal, 0) = 1 AND ${SALDO_LIBRO} > 0.01`),
+      tildado(aFavorOtras)     && existeCuenta(`ccf.CueTipo IN (${CUE_DINERO}) AND ISNULL(ccf.CueEsPrincipal, 0) = 0 AND ${SALDO_LIBRO} > 0.01`),
+      tildado(conRollo)        && existeCuenta(`ccf.CueTipo NOT IN (${CUE_DINERO}) AND ABS(${SALDO_LIBRO}) > 0.01`),
+      tildado(negRollo)        && existeCuenta(`ccf.CueTipo NOT IN (${CUE_DINERO}) AND ${SALDO_LIBRO} < -0.01`),
+      tildado(negDinero)       && existeCuenta(`ccf.CueTipo IN (${CUE_DINERO}) AND ISNULL(ccf.CueEsPrincipal, 0) = 0 AND ${SALDO_LIBRO} < -0.01`),
+    ].filter(Boolean).join('\n        ');
 
     const filtroNombre = q.trim()
       ? `AND (
@@ -2483,6 +2546,7 @@ exports.getClientesActivos = async (req, res) => {
           AND cc.CueTipo NOT IN ('USD','UYU','ARS','EUR','PYG','BRL')
           ${filtroNombre}
           ${filtroTipoCliente}
+          ${filtrosPanel}
         GROUP BY c.CliIdCliente, c.Nombre, c.NombreFantasia, c.Email, c.CodCliente, c.IDCliente, c.TClIdTipoCliente, tc.TClDescripcion, c.CioRuc, c.DireccionTrabajo, c.DepartamentoID, c.TelefonoTrabajo
         ORDER BY RTRIM(LTRIM(c.Nombre))
       `);
@@ -2522,6 +2586,7 @@ exports.getClientesActivos = async (req, res) => {
                                                       AND cic.CicEstado  = 'ABIERTO'
         LEFT JOIN dbo.TiposClientes   tc WITH(NOLOCK) ON c.TClIdTipoCliente = tc.TClIdTipoCliente
         WHERE 1=1 ${filtroNombre} ${filtroTipoCliente}
+          ${filtrosPanel}
         GROUP BY c.CliIdCliente, c.Nombre, c.NombreFantasia, c.Email, c.CodCliente, c.IDCliente, c.TClIdTipoCliente, tc.TClDescripcion, c.CioRuc, c.DireccionTrabajo, c.DepartamentoID, c.TelefonoTrabajo
         ORDER BY ABS(SUM(ISNULL(cc.CueSaldoActual, 0))) DESC, RTRIM(LTRIM(c.Nombre))
       `);
@@ -2568,6 +2633,7 @@ exports.getClientesActivos = async (req, res) => {
         )
         ${filtroNombre}
         ${filtroTipoCliente}
+        ${filtrosPanel}
       GROUP BY c.CliIdCliente, c.Nombre, c.NombreFantasia, c.Email, c.CodCliente, c.IDCliente, c.TClIdTipoCliente, tc.TClDescripcion, c.CioRuc, c.DireccionTrabajo, c.DepartamentoID, c.TelefonoTrabajo
       ORDER BY ABS(SUM(cc.CueSaldoActual)) DESC, RTRIM(LTRIM(c.Nombre))
     `);
@@ -2575,6 +2641,60 @@ exports.getClientesActivos = async (req, res) => {
     res.json({ success: true, data: result.recordset });
   } catch (err) {
     logger.error('[CONTABILIDAD] getClientesActivos:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+/**
+ * GET /api/contabilidad/reportes/clientes-recursos
+ * Reportes del menú ☰ del Panel 360. Devuelve UNA FILA POR CUENTA de recurso,
+ * con el cliente al que pertenece.
+ * Query:
+ *   tipo=ROLLO          → cuentas de recurso en metros (las NO monetarias)
+ *   tipo=DINERO         → cuentas monetarias (billetera principal y secundarias)
+ *   soloNegativos=true  → solo las cuentas con saldo < 0
+ */
+exports.getReporteClientesRecursos = async (req, res) => {
+  try {
+    const { tipo = 'ROLLO', soloNegativos = 'false' } = req.query;
+    const esDinero = String(tipo).toUpperCase() === 'DINERO';
+    const CUE_DINERO = "'USD','UYU','ARS','EUR','PYG','BRL','CORRIENTE','CREDITO','DEBITO','CAJA','DINERO_USD','DINERO_UYU'";
+    const filtroTipo  = esDinero ? `AND cc.CueTipo IN (${CUE_DINERO})` : `AND cc.CueTipo NOT IN (${CUE_DINERO})`;
+    const filtroSaldo = (soloNegativos === 'true' || soloNegativos === '1') ? 'AND cc.CueSaldoActual < 0' : '';
+
+    const pool = await getPool();
+    const result = await pool.request().query(`
+      SELECT
+        c.CliIdCliente,
+        RTRIM(LTRIM(c.Nombre))          AS Nombre,
+        RTRIM(LTRIM(c.NombreFantasia))  AS NombreFantasia,
+        RTRIM(LTRIM(c.IDCliente))       AS IDCliente,
+        RTRIM(LTRIM(c.Email))           AS Email,
+        RTRIM(LTRIM(c.CioRuc))          AS CioRuc,
+        RTRIM(LTRIM(c.TelefonoTrabajo)) AS TelefonoTrabajo,
+        c.CodCliente,
+        c.TClIdTipoCliente,
+        cc.CueIdCuenta,
+        cc.CueTipo,
+        cc.CueEsPrincipal,
+        RTRIM(LTRIM(cc.CueNombre))      AS CueNombre,
+        cc.ProIdProducto,
+        RTRIM(art.Descripcion)          AS NombreArticulo,
+        cc.CueSaldoActual,
+        mon.MonSimbolo
+      FROM      dbo.CuentasCliente cc  WITH(NOLOCK)
+      JOIN      dbo.Clientes       c   WITH(NOLOCK) ON c.CliIdCliente    = cc.CliIdCliente
+      LEFT JOIN dbo.Articulos      art WITH(NOLOCK) ON art.ProIdProducto = cc.ProIdProducto
+      LEFT JOIN dbo.Monedas        mon WITH(NOLOCK) ON mon.MonIdMoneda   = cc.MonIdMoneda
+      WHERE cc.CueActiva = 1
+        ${filtroTipo}
+        ${filtroSaldo}
+      ORDER BY cc.CueSaldoActual ASC, RTRIM(LTRIM(c.Nombre))
+    `);
+
+    res.json({ success: true, data: result.recordset });
+  } catch (err) {
+    logger.error('[CONTABILIDAD] getReporteClientesRecursos:', err.message);
     res.status(500).json({ success: false, error: err.message });
   }
 };
@@ -3433,6 +3553,25 @@ exports.emitirFacturaAnticipo = async (req, res) => {
       logger.info(`[FACT-ANTICIPO] Multimoneda: ${movidos.length} orden(es) de la cuenta ${ajena.CueIdCuenta} (${monAjena}) trasladadas a la cuenta ${CueIdCuenta} (${accMon}) @ ${cotRate}`);
     }
 
+    // Ciclos de ORIGEN del traslado: recalcular su total con lo que les quedó (vaciado = 0).
+    // Antes quedaban ABIERTOS con el total viejo (caso GLIDE 4/9/2026: ciclo #381 con $243
+    // después de facturar su única orden en USD). Se hace acá, antes de emitir, porque el
+    // traslado persiste aunque la emisión falle.
+    const ciclosOrigen = [];
+    for (const ajena of cuentasAjenas) {
+      const cicAj = await pool.request().input('Cue', sql.Int, ajena.CueIdCuenta).query(`
+        SELECT TOP 1 CicIdCiclo FROM dbo.CiclosCredito WHERE CueIdCuenta = @Cue AND CicEstado = 'ABIERTO' ORDER BY CicIdCiclo DESC`);
+      const cicId = cicAj.recordset[0]?.CicIdCiclo;
+      if (!cicId) continue;
+      await pool.request().input('Cic', sql.Int, cicId).query(`
+        UPDATE c SET c.CicTotalOrdenes = ISNULL((SELECT SUM(ABS(m.MovImporte)) FROM dbo.MovimientosCuenta m
+          WHERE m.CicIdCiclo = c.CicIdCiclo AND m.MovTipo IN ('ORDEN','ORDEN_ANTICIPO') AND m.DocIdDocumento IS NULL
+            AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)
+            AND (m.MovObservaciones IS NULL OR m.MovObservaciones NOT LIKE 'CUBIERTO%')), 0)
+        FROM dbo.CiclosCredito c WHERE c.CicIdCiclo = @Cic`);
+      ciclosOrigen.push({ CicIdCiclo: cicId, CueIdCuenta: ajena.CueIdCuenta });
+    }
+
     for (const rawId of ordenesIds) {
       const ordId = parseInt(rawId, 10);
       try {
@@ -3514,6 +3653,33 @@ exports.emitirFacturaAnticipo = async (req, res) => {
       cuentasOrigen
     });
     
+    // Ciclos de origen que quedaron VACÍOS por el traslado: se cierran igual que el ciclo
+    // base (sin factura propia: sus órdenes salieron en esta) y se abre el siguiente, como
+    // hace cerrarCicloCompleto. No es fatal: la factura ya está emitida.
+    for (const co of ciclosOrigen) {
+      try {
+        const rest = await pool.request().input('Cic', sql.Int, co.CicIdCiclo).query(`
+          SELECT COUNT(*) AS N FROM dbo.MovimientosCuenta m
+          WHERE m.CicIdCiclo = @Cic AND m.MovTipo IN ('ORDEN','ORDEN_ANTICIPO') AND m.DocIdDocumento IS NULL
+            AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)`);
+        if (Number(rest.recordset[0]?.N) > 0) continue;
+        const docLbl = String(result?.docNumero || '');
+        await pool.request().input('Cic', sql.Int, co.CicIdCiclo).input('Doc', sql.VarChar(100), docLbl).input('U', sql.Int, UsuarioAlta)
+          .input('Obs', sql.NVarChar(500), `Vaciado por pre-factura multimoneda: sus órdenes se facturaron en ${docLbl || 'el documento'} desde la cuenta ${CueIdCuenta} (ciclo #${CicIdCiclo}).`)
+          .query(`
+            UPDATE dbo.CiclosCredito
+            SET CicEstado = 'CERRADO', CicSaldoFacturar = 0, CicTotalOrdenes = 0,
+                CicNumeroFactura = @Doc, CicFechaFactura = GETDATE(), CicFechaCierre = GETDATE(),
+                CicUsuarioCierre = @U,
+                CicObservaciones = LEFT(LTRIM(ISNULL(CicObservaciones, '') + ' ' + @Obs), 500)
+            WHERE CicIdCiclo = @Cic AND CicEstado = 'ABIERTO'`);
+        await svc.abrirCicloPorCuenta({ CueIdCuenta: co.CueIdCuenta, CliIdCliente: parseInt(CliIdCliente, 10), UsuarioAlta });
+        logger.info(`[FACT-ANTICIPO] Multimoneda: ciclo de origen #${co.CicIdCiclo} (cuenta ${co.CueIdCuenta}) quedó vacío → CERRADO con ${docLbl}; se abrió el siguiente.`);
+      } catch (eCic) {
+        logger.warn(`[FACT-ANTICIPO] No se pudo cerrar el ciclo de origen #${co.CicIdCiclo}: ${eCic.message}`);
+      }
+    }
+
     res.json({ success: true, data: result });
   } catch (err) {
     logger.error('Error emitirFacturaAnticipo:', err);

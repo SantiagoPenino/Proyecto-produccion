@@ -1,87 +1,13 @@
 const { getPool, sql } = require('../config/db');
 const logger = require('../utils/logger');
 const { calcularSaldoEfectivo, aplicarAnticipoAOrden } = require('../services/anticipoService');
-
-/**
- * Claves de comparación de un código de orden/etiqueta.
- *
- * La etiqueta FÍSICA que se escanea es `{NoDocERP}/B{idEtiqueta}` (ej. `9471/B11575`), mientras que
- * `OrdenesDeposito.OrdCodigoOrden` guarda el CodigoOrden CON prefijo de área (`SUB-9471`). Comparar
- * literal no matcheaba NUNCA: todo lo escaneado caía en "desconocido" (Falta Por Ingresar) y las
- * órdenes reales quedaban como extraviadas (de ahí que Activas y Extraviadas dieran el mismo número).
- *
- *   9471/B11575 → {'9471'}          SUB-9471 → {'SUB-9471', '9471'}     → matchean por '9471'
- *
- * Solo se quita el prefijo de área del INICIO: `SUB-7684-R1` → `7684-R1` (no `1`, que colisionaría
- * con cualquier código terminado en 1).
- */
-const clavesDeCodigo = (raw) => {
-    const base = String(raw || '').trim().toUpperCase().split('/')[0]; // saca el /B11575 de la etiqueta
-    const claves = new Set();
-    if (!base) return claves;
-    claves.add(base);
-    claves.add(base.replace(/^[A-Z]+-/, ''));
-    return claves;
-};
-
-/**
- * Cobro "vía documento" (semanales / cuenta corriente): esas órdenes no estampan
- * OrdenesDeposito.PagIdPago nunca — el cargo va como mov ORDEN a la cuenta, el cierre de ciclo
- * lo liga a un PC/factura (DocIdDocumento) y el cobro salda ese DOCUMENTO (DocPagado=1 /
- * DeudaDocumento saldada). Sin este join, toda orden así figuraba "Pendiente" eternamente.
- *
- * OJO: MovimientosCuenta.OrdIdOrden NO sirve para unir con OrdenesDeposito (la vía logística
- * graba el ID de Ordenes, otra tabla). El único match confiable es el código de orden, que es
- * el primer token del MovConcepto (`${CodigoOrden} ${NombreTrabajo}`).
- */
-const SQL_COLS_PAGO_DOC = `,
-        doc.DocIdDocumento AS DocIdVinculado,
-        doc.DocSerie       AS DocSerieVinculada,
-        doc.DocNumero      AS DocNumeroVinculado,
-        doc.DocPagado      AS DocPagadoVinculado,
-        dd.DeudasTotales, dd.DeudasVivas,
-        CASE WHEN mv.Cod IS NOT NULL THEN 1 ELSE 0 END AS TieneMovOrden`;
-
-const SQL_JOIN_PAGO_DOC = `
-      LEFT JOIN (
-        SELECT UPPER(LTRIM(RTRIM(CASE WHEN CHARINDEX(' ', mc.MovConcepto) > 0
-                     THEN LEFT(mc.MovConcepto, CHARINDEX(' ', mc.MovConcepto) - 1)
-                     ELSE mc.MovConcepto END))) AS Cod,
-               MAX(mc.DocIdDocumento) AS DocId
-        FROM dbo.MovimientosCuenta mc WITH(NOLOCK)
-        WHERE mc.MovTipo = 'ORDEN' AND ISNULL(mc.MovAnulado, 0) = 0
-        GROUP BY UPPER(LTRIM(RTRIM(CASE WHEN CHARINDEX(' ', mc.MovConcepto) > 0
-                     THEN LEFT(mc.MovConcepto, CHARINDEX(' ', mc.MovConcepto) - 1)
-                     ELSE mc.MovConcepto END)))
-      ) mv ON mv.Cod = UPPER(LTRIM(RTRIM(o.OrdCodigoOrden)))
-      LEFT JOIN dbo.DocumentosContables doc WITH(NOLOCK)
-             ON doc.DocIdDocumento = mv.DocId AND doc.DocEstado <> 'ANULADO'
-      LEFT JOIN (
-        SELECT DocIdDocumento,
-               COUNT(*) AS DeudasTotales,
-               SUM(CASE WHEN DDeEstado IN ('PENDIENTE','PARCIAL','VENCIDO') AND DDeImportePendiente > 0.01
-                        THEN 1 ELSE 0 END) AS DeudasVivas
-        FROM dbo.DeudaDocumento WITH(NOLOCK)
-        GROUP BY DocIdDocumento
-      ) dd ON dd.DocIdDocumento = doc.DocIdDocumento`;
-
-// Devuelve la situación de pago para mostrar + si la orden ya está saldada vía documento
-// (en cuyo caso NO va a "Entregadas Sin Pago"). Documento saldado = DocPagado=1 o todas sus
-// deudas saldadas (DocPagado puede quedar rezagado en docs cobrados por cuenta corriente).
-const resolverSituacionPago = (row) => {
-  if (row.PagIdPago) return { pagoEstado: 'Pagado', saldadaPorDoc: false };
-  if (row.DocIdVinculado) {
-    const serie = String(row.DocSerieVinculada || '').trim();
-    const numero = String(row.DocNumeroVinculado || '').trim();
-    const docRef = [serie, numero].filter(Boolean).join('-') || `Doc ${row.DocIdVinculado}`;
-    const saldada = row.DocPagadoVinculado === true || row.DocPagadoVinculado === 1
-      || ((row.DeudasTotales || 0) > 0 && (row.DeudasVivas || 0) === 0);
-    if (saldada) return { pagoEstado: `Pagado (${docRef})`, saldadaPorDoc: true };
-    return { pagoEstado: `Facturado - impago (${docRef})`, saldadaPorDoc: false };
-  }
-  if (row.TieneMovOrden) return { pagoEstado: 'En cta. cte. (sin facturar)', saldadaPorDoc: false };
-  return { pagoEstado: 'Pendiente', saldadaPorDoc: false };
-};
+// La normalización de códigos (clavesDeCodigo) y la "situación de pago" (pago vía documento) viven en
+// services/auditDepositoSql.js, compartidos con el servicio de sesiones/casos para que la fotografía se
+// clasifique EXACTAMENTE igual que esta pantalla. No cambiar uno sin el otro.
+const { clavesDeCodigo, SQL_COLS_PAGO_DOC, SQL_JOIN_PAGO_DOC, resolverSituacionPago } = require('../services/auditDepositoSql');
+// Sesión de auditoría (fotografía) + registro de casos. Con una auditoría ABIERTA, los endpoints de escaneo
+// de este archivo trabajan contra la sesión en vez de la tabla temporal AuditoriaScansTemp.
+const auditoriaSvc = require('../services/auditoriaDepositoService');
 
 /**
  * POST /api/audit-deposito/check
@@ -91,6 +17,14 @@ const resolverSituacionPago = (row) => {
 exports.checkAudit = async (req, res) => {
   try {
     const { scannedCodes = [] } = req.body;
+    // MODO SESIÓN: con una auditoría abierta, la clasificación sale de la fotografía + los escaneos guardados
+    // en la sesión (la lista que manda el cliente se ignora). entregadasSinPago = null significa "sin cambios".
+    const sesionAbierta = await auditoriaSvc.obtenerSesionAbierta(await getPool());
+    if (sesionAbierta) {
+      const { liveCodes, liveScans, auditData } = await auditoriaSvc.clasificarSesion(await getPool(), sesionAbierta);
+      const contadores = await auditoriaSvc.contadoresSesion(await getPool(), sesionAbierta.AudId);
+      return res.json({ success: true, data: auditData, liveCodes, liveScans, sesion: { codigo: sesionAbierta.AudCodigo, audId: sesionAbierta.AudId, contadores } });
+    }
     const pool = await getPool();
 
     // Traer la configuración de días máximos en depósito
@@ -249,7 +183,8 @@ exports.checkAudit = async (req, res) => {
 exports.performAction = async (req, res) => {
   try {
     const { codigos, accion } = req.body;
-    const usuarioId = req.user?.id || 1; 
+    const usuarioId = req.user?.id;
+    if (!usuarioId) return res.status(401).json({ success: false, error: 'Usuario no identificado. Volvé a iniciar sesión.' }); 
 
     if (!codigos || codigos.length === 0) {
       return res.status(400).json({ success: false, error: 'Sin cdigos para procesar.' });
@@ -263,7 +198,7 @@ exports.performAction = async (req, res) => {
       // 9 = Entregado. 
       // 5 = Listo (Pendiente de pago). 8 = Listo (Pagado).
       // Evaluaremos 5 u 8 basado en si PagIdPago est nulo al hacer el UPDATE (mejor slo asignar un estado de depsito acorde).
-      const sqlCodes = codigos.map(c => `'${c.trim()}'`).join(',');
+      const sqlCodes = codigos.map(c => `'${String(c).trim().replace(/'/g, "''")}'`).join(','); // comillas escapadas: los códigos vienen del body
 
       if (accion === 'ENTREGADO') {
         // OrdenesDeposito -> 9 (Entregado)
@@ -479,7 +414,8 @@ exports.notifyAction = async (req, res) => {
 
     const { getPool } = require('../config/db');
     const pool = await getPool();
-    const usuarioId = req.user?.id || 1;
+    const usuarioId = req.user?.id;
+    if (!usuarioId) return res.status(401).json({ success: false, error: 'Usuario no identificado. Volvé a iniciar sesión.' });
     // IN parametrizado: los códigos vienen del body, nunca concatenarlos al SQL.
     const bindCodes = (request) => codigos.map((c, i) => {
       request.input(`c${i}`, sql.VarChar(100), String(c).trim());
@@ -632,6 +568,20 @@ exports.initAudit = async (req, res) => {
       }
     }
 
+    // MODO SESIÓN: si hay una auditoría abierta, los escaneos y la clasificación salen de la fotografía.
+    // Solo "Entregadas Sin Pago" sigue viniendo de la tabla viva (no es parte de la auditoría física).
+    const sesionAbierta = await auditoriaSvc.obtenerSesionAbierta(pool);
+    if (sesionAbierta) {
+      const ses = await auditoriaSvc.clasificarSesion(pool, sesionAbierta);
+      const contadores = await auditoriaSvc.contadoresSesion(pool, sesionAbierta.AudId);
+      return res.json({
+        success: true,
+        liveCodes: ses.liveCodes,
+        liveScans: ses.liveScans,
+        auditData: { ...ses.auditData, entregadasSinPago: auditData.entregadasSinPago },
+        sesion: { codigo: sesionAbierta.AudCodigo, audId: sesionAbierta.AudId, contadores },
+      });
+    }
     res.json({ success: true, liveCodes, auditData });
   } catch (err) {
     logger.error('[AUDIT_DEPOSITO] Error en initAudit:', err.message);
@@ -656,6 +606,15 @@ exports.addLiveScan = async (req, res) => {
     if(!codigo) return res.status(400).json({success:false});
     const { getPool } = require('../config/db');
     const pool = await getPool();
+    // MODO SESIÓN: el escaneo se guarda contra la auditoría abierta, resuelto a su orden en el momento.
+    const sesionAbierta = await auditoriaSvc.obtenerSesionAbierta(pool);
+    if (sesionAbierta) {
+      const r = await auditoriaSvc.registrarEscaneo({ sesion: sesionAbierta, codigo, usuario: req.user });
+      if (req.app.get('socketio')) {
+        req.app.get('socketio').emit('audit:scan_added', { codigo: r.codigo, resultado: r.resultado, duplicado: r.duplicado, ordenCodigo: r.ordenCodigo, cliente: r.cliente, ordenYaEscaneada: r.ordenYaEscaneada });
+      }
+      return res.json({ success: true, data: r });
+    }
     await pool.request().input('codigo', require('mssql').VarChar, codigo).query("IF NOT EXISTS (SELECT 1 FROM dbo.AuditoriaScansTemp WHERE Codigo=@codigo) INSERT INTO dbo.AuditoriaScansTemp(Codigo) VALUES(@codigo)");
     
     if (req.app.get('socketio')) {
@@ -674,6 +633,12 @@ exports.removeLiveScan = async (req, res) => {
     if(!codigo) return res.status(400).json({success:false});
     const { getPool } = require('../config/db');
     const pool = await getPool();
+    const sesionAbierta = await auditoriaSvc.obtenerSesionAbierta(pool);
+    if (sesionAbierta) {
+      await auditoriaSvc.quitarEscaneo({ sesion: sesionAbierta, codigo });
+      if (req.app.get('socketio')) req.app.get('socketio').emit('audit:scan_removed', { codigo: String(codigo).trim().toUpperCase() });
+      return res.json({ success: true });
+    }
     await pool.request().input('codigo', require('mssql').VarChar, codigo).query("DELETE FROM dbo.AuditoriaScansTemp WHERE Codigo=@codigo");
     
     if (req.app.get('socketio')) {
@@ -690,6 +655,9 @@ exports.clearLiveScans = async (req, res) => {
   try {
     const { getPool } = require('../config/db');
     const pool = await getPool();
+    if (await auditoriaSvc.obtenerSesionAbierta(pool)) {
+      return res.status(409).json({ success: false, error: 'Hay una auditoría abierta: los escaneos pertenecen a esa sesión. Cerrala (genera los casos) o anulala (los descarta) desde la barra de auditoría.' });
+    }
     await pool.request().query("TRUNCATE TABLE dbo.AuditoriaScansTemp");
     
     if (req.app.get('socketio')) {

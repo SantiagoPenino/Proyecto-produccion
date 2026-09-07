@@ -306,7 +306,7 @@ class ERPSyncService {
                                     FROM dbo.Clientes c WITH(NOLOCK)
                                     LEFT JOIN dbo.TiposClientes tc WITH(NOLOCK) ON tc.TClIdTipoCliente = c.TClIdTipoCliente
                                     WHERE c.CliIdCliente = @CliR`);
-                        esClienteRollo = (tcRes.recordset[0]?.T || '').includes('ROLLO');
+                        esClienteRollo = /ROLLO|SEMANAL/.test(tcRes.recordset[0]?.T || '');
                     } catch (eTc) { /* ante la duda, comportamiento histórico */ }
                 }
                 if (internalClientId && sib.ProIdProducto) {
@@ -370,7 +370,7 @@ class ERPSyncService {
                 // (una reposición/falla sin cargo NO consume plan: ya va en 0, no debe
                 // figurar como "Cubierto por Plan")
                 const metrosPedido = effectiveQty;
-                // ROLLO: el plan activo cubre TODO aunque no le queden metros (negativo);
+                // ROLLO/SEMANAL: el plan activo cubre TODO aunque no le queden metros (negativo);
                 // para los demás rige la regla histórica (solo cubre lo disponible).
                 const hayPlan = !esSinCargo && planIdActivo !== null && (metrosDisponibles > 0 || esClienteRollo);
                 const coberturaTotal = hayPlan && (esClienteRollo || metrosDisponibles >= metrosPedido);

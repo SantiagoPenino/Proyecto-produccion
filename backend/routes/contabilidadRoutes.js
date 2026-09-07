@@ -99,6 +99,8 @@ router.patch('/planes/:PlaIdPlan/desactivar', ctrl.desactivarPlan);
 router.get('/reportes/antiguedad-deuda', ctrl.getAntiguedadDeuda);
 router.get('/reportes/estado-cuenta/:CliIdCliente', ctrl.getEstadoCuentaCliente);
 router.get('/reportes/deuda-consolidada', ctrl.getDeudaConsolidada);
+// Menú ☰ del Panel 360: clientes con recursos (rollo / dinero), todos o solo en negativo
+router.get('/reportes/clientes-recursos', ctrl.getReporteClientesRecursos);
 
 // ── Reportes de Ventas (página /contabilidad/reportes) ────────────────────────
 const reportesVentasCtrl = require('../controllers/contabilidadReportesController');
@@ -376,12 +378,13 @@ router.post('/ordenes/editar-metros', async (req, res) => {
           
           UPDATE pm
           SET pm.PlaActivo = CASE WHEN pm.PlaCantidadUsada < pm.PlaCantidadTotal THEN 1
-                                  -- ROLLO POR ADELANTADO: el plan nunca se cierra por consumo
+                                  -- ROLLO POR ADELANTADO y SEMANAL: el plan nunca se cierra por consumo
                                   -- (puede quedar en negativo; lo absorbe la próxima recarga)
                                   WHEN EXISTS (SELECT 1 FROM dbo.Clientes c
                                                JOIN dbo.TiposClientes tc ON tc.TClIdTipoCliente = c.TClIdTipoCliente
                                                WHERE c.CliIdCliente = pm.CliIdCliente
-                                                 AND UPPER(tc.TClDescripcion) LIKE '%ROLLO%') THEN 1
+                                                 AND (UPPER(tc.TClDescripcion) LIKE '%ROLLO%'
+                                                   OR UPPER(tc.TClDescripcion) LIKE '%SEMANAL%')) THEN 1
                                   ELSE 0 END
           FROM dbo.PlanesMetros pm
           WHERE pm.PlaIdPlan = @PlanId;
@@ -520,12 +523,13 @@ router.post('/ordenes/eliminar-metros', async (req, res) => {
           
           UPDATE pm
           SET pm.PlaActivo = CASE WHEN pm.PlaCantidadUsada < pm.PlaCantidadTotal THEN 1
-                                  -- ROLLO POR ADELANTADO: el plan nunca se cierra por consumo
+                                  -- ROLLO POR ADELANTADO y SEMANAL: el plan nunca se cierra por consumo
                                   -- (puede quedar en negativo; lo absorbe la próxima recarga)
                                   WHEN EXISTS (SELECT 1 FROM dbo.Clientes c
                                                JOIN dbo.TiposClientes tc ON tc.TClIdTipoCliente = c.TClIdTipoCliente
                                                WHERE c.CliIdCliente = pm.CliIdCliente
-                                                 AND UPPER(tc.TClDescripcion) LIKE '%ROLLO%') THEN 1
+                                                 AND (UPPER(tc.TClDescripcion) LIKE '%ROLLO%'
+                                                   OR UPPER(tc.TClDescripcion) LIKE '%SEMANAL%')) THEN 1
                                   ELSE 0 END
           FROM dbo.PlanesMetros pm
           WHERE pm.PlaIdPlan = @PlanId;
@@ -736,12 +740,13 @@ router.post('/ordenes/insertar-manual', async (req, res) => {
           
           UPDATE pm
           SET pm.PlaActivo = CASE WHEN pm.PlaCantidadUsada < pm.PlaCantidadTotal THEN 1
-                                  -- ROLLO POR ADELANTADO: el plan nunca se cierra por consumo
+                                  -- ROLLO POR ADELANTADO y SEMANAL: el plan nunca se cierra por consumo
                                   -- (puede quedar en negativo; lo absorbe la próxima recarga)
                                   WHEN EXISTS (SELECT 1 FROM dbo.Clientes c
                                                JOIN dbo.TiposClientes tc ON tc.TClIdTipoCliente = c.TClIdTipoCliente
                                                WHERE c.CliIdCliente = pm.CliIdCliente
-                                                 AND UPPER(tc.TClDescripcion) LIKE '%ROLLO%') THEN 1
+                                                 AND (UPPER(tc.TClDescripcion) LIKE '%ROLLO%'
+                                                   OR UPPER(tc.TClDescripcion) LIKE '%SEMANAL%')) THEN 1
                                   ELSE 0 END
           FROM dbo.PlanesMetros pm
           WHERE pm.PlaIdPlan = @PlanId;

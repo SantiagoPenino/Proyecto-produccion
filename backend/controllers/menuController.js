@@ -31,7 +31,9 @@ exports.getByUser = async (req, res) => {
             IdModulo: item.IdModulo,
             Nombre: item.Titulo, // Use Titulo as Nombre default
             Titulo: item.Titulo,
-            Ruta: item.Ruta,
+            // trim: una ruta con espacio adelante (' /admin/cron') es RELATIVA para el
+            // router y se apila a la URL actual en cada clic (05-09-2026).
+            Ruta: typeof item.Ruta === 'string' ? item.Ruta.trim() : item.Ruta,
             Icono: item.Icono,
             IdPadre: item.IdPadre,
             IndiceOrden: item.IndiceOrden,
@@ -69,7 +71,7 @@ exports.create = async (req, res) => {
         const pool = await getPool();
         await pool.request()
             .input('Titulo', sql.NVarChar, Titulo)
-            .input('Ruta', sql.NVarChar, Ruta)
+            .input('Ruta', sql.NVarChar, typeof Ruta === 'string' ? Ruta.trim() : Ruta) // sin espacios: ' /x' sería ruta relativa
             .input('Icono', sql.NVarChar, Icono)
             .input('IdPadre', sql.Int, IdPadre || null)
             .input('IndiceOrden', sql.Int, IndiceOrden || 0)
@@ -92,7 +94,7 @@ exports.update = async (req, res) => {
         await pool.request()
             .input('IdModulo', sql.Int, id)
             .input('Titulo', sql.NVarChar, Titulo)
-            .input('Ruta', sql.NVarChar, Ruta)
+            .input('Ruta', sql.NVarChar, typeof Ruta === 'string' ? Ruta.trim() : Ruta) // sin espacios: ' /x' sería ruta relativa
             .input('Icono', sql.NVarChar, Icono)
             .input('IdPadre', sql.Int, IdPadre || null)
             .input('IndiceOrden', sql.Int, IndiceOrden)
