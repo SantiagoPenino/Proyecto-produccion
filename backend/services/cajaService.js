@@ -1764,6 +1764,10 @@ async function procesarTransaccion(payload) {
                 }
               }
 
+              // Plata que YA cubría estas órdenes a nivel orden (cobertura por saldo / cruce
+              // de monedas). Se engancha al documento y se resta del pendiente para que la
+              // deuda nazca neta y nadie la vuelva a cobrar (05-09-2026).
+              let pagosPreviosOrden = 0;
               if (allOdIds.length > 0 || allOrIds.length > 0) {
                 const updateMcReq = new sql.Request(transaction).input('docId', sql.Int, docIdDocumento);
                 let updateMcQuery = `
@@ -1783,6 +1787,16 @@ async function procesarTransaccion(payload) {
                 }
                 updateMcQuery += ` AND (${mcConditions.join(' OR ')})`;
                 await updateMcReq.query(updateMcQuery);
+
+                if (allOdIds.length > 0) {
+                  const vinc = await contabilidadSvc.vincularPagosPorOrdenAlDocumento({
+                    DocIdDocumento: docIdDocumento,
+                    CliIdCliente:   header.clienteId,
+                    OrdIds:         allOdIds,
+                    CueTipo:        isOrdenUSD ? 'DINERO_USD' : 'DINERO_UYU',
+                  }, transaction);
+                  pagosPreviosOrden = vinc.total || 0;
+                }
                 logger.info(`[CAJA-CFE] Linked ORDEN/ORDEN_ANTICIPO movements to DocIdDocumento=${docIdDocumento}`);
               }
 
@@ -1793,7 +1807,11 @@ async function procesarTransaccion(payload) {
              const generaDeuda = !!header.esCredito || (evtConfig ? !!evtConfig.EvtGeneraDeuda : !!config.AfectaCtaCte);
 
              let totalCobradoMoneda = isOrdenUSD ? (totalCobrado / cotizRef) : totalCobrado;
-             let importePendienteMoneda = parseFloat((totalNeto - totalCobradoMoneda).toFixed(2));
+             // El pendiente descuenta ADEMÁS lo que ya cubría estas órdenes a nivel orden
+             // (pagosPreviosOrden, ya enganchado al documento más arriba). Sin esto la deuda
+             // nacía por el total y la caja la volvía a cobrar (05-09-2026).
+             let importePendienteMoneda = parseFloat((totalNeto - totalCobradoMoneda - pagosPreviosOrden).toFixed(2));
+             if (importePendienteMoneda < 0) importePendienteMoneda = 0;
              
              header._creoDeuda = false;
 
@@ -1815,8 +1833,14 @@ async function procesarTransaccion(payload) {
                const cuentaDeudaRes = await new sql.Request(transaction)
                  .input('cli', sql.Int, header.clienteId)
                  .query(`
-                   SELECT TOP 1 CueIdCuenta, ISNULL(CueSaldoActual, 0) as Saldo
-                   FROM dbo.CuentasCliente WITH(UPDLOCK)
+                   -- Saldo = LIBRO (sin ORDEN/ORDEN_ANTICIPO), no CueSaldoActual: esa columna
+                   -- resta las órdenes dos veces y hacía nacer deudas "cubiertas" por plata
+                   -- que no existía, o al revés (05-09-2026).
+                   SELECT TOP 1 CueIdCuenta,
+                          ISNULL((SELECT SUM(m.MovImporte) FROM dbo.MovimientosCuenta m WITH(NOLOCK)
+                                  WHERE m.CueIdCuenta = cc.CueIdCuenta AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)
+                                    AND m.MovTipo NOT IN ('ORDEN','ORDEN_ANTICIPO')), 0) as Saldo
+                   FROM dbo.CuentasCliente cc WITH(UPDLOCK)
                    WHERE CliIdCliente = @cli
                      AND CueTipo IN ('DINERO_UYU', 'DINERO_USD')
                      AND CueActiva = 1
@@ -2534,6 +2558,16 @@ async function generarCFEDesdeOrdenesDirectas({ orderIds, clienteId, monto, mone
         AND OrdIdOrden IN (${mcIdList})
     `);
   logger.info(`[CFE-MOSTRADOR] Linked ORDEN/ORDEN_ANTICIPO movements to DocIdDocumento=${docId} for orders ${mcIdList}`);
+
+  // Enganchar también los pagos que YA cubrían estas órdenes a nivel orden (cobertura
+  // por saldo / cruce de monedas), para que el documento muestre su cobro real y nadie
+  // lo vuelva a cobrar. Acá la deuda nace PAGADO igual; esto es para el 360 y la caja.
+  await contabilidadSvc.vincularPagosPorOrdenAlDocumento({
+    DocIdDocumento: docId,
+    CliIdCliente:   clienteId,
+    OrdIds:         allMcOrdIds,
+    CueTipo:        Number(monedaId) === 2 ? 'DINERO_USD' : 'DINERO_UYU',
+  });
 
   // Query order details for the descriptive concept
   let orderDetails = [];

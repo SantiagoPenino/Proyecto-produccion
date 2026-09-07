@@ -259,3 +259,50 @@ export const exportarExcelEstadoCuenta = async (cliente, cuentas, secciones, pla
 
   XLSX.writeFile(wb, filename);
 };
+
+/**
+ * Reportes del menú ☰ del Panel 360: clientes con recursos (rollo o dinero).
+ * Baja la lista COMPLETA — una fila por cuenta —, no solo lo que se ve en pantalla.
+ *
+ * @param {string}  titulo    - título del reporte, va en la 1ª fila y en el nombre del archivo
+ * @param {Array}   filas     - filas devueltas por /reportes/clientes-recursos
+ * @param {boolean} esDinero  - true = billeteras de dinero; false = recursos en metros (rollo)
+ */
+export const exportarExcelClientesRecursos = async (titulo, filas, esDinero) => {
+  const XLSX = await import('xlsx');
+  const wb = XLSX.utils.book_new();
+
+  const nombreCuenta = (f) => esDinero
+    ? (f.CueNombre || (f.CueTipo === 'DINERO_USD' ? 'Principal US$' : 'Principal $'))
+    : (f.NombreArticulo || f.CueNombre || 'Recurso #' + f.CueIdCuenta);
+
+  const encabezado = [
+    [titulo],
+    ['Generado: ' + new Date().toLocaleDateString('es-UY') + ' ' + new Date().toLocaleTimeString('es-UY')],
+    [new Set(filas.map(f => f.CliIdCliente)).size + ' clientes · ' + filas.length + ' cuentas'],
+    [],
+    ['Cliente', 'ID Cliente', 'RUT / CI', 'Teléfono', 'Email',
+     esDinero ? 'Billetera' : 'Recurso', 'Es principal', 'Cuenta', 'Saldo', 'Unidad'],
+  ];
+
+  const cuerpo = filas.map(f => [
+    f.Nombre || '',
+    f.IDCliente || f.CliIdCliente,
+    f.CioRuc || '',
+    f.TelefonoTrabajo || '',
+    f.Email || '',
+    nombreCuenta(f),
+    esDinero ? (f.CueEsPrincipal ? 'Sí' : 'No') : '—',
+    f.CueIdCuenta,
+    Number(f.CueSaldoActual || 0),
+    esDinero ? (f.CueTipo === 'DINERO_USD' ? 'US$' : '$') : (f.MonSimbolo || 'mts'),
+  ]);
+
+  const ws = XLSX.utils.aoa_to_sheet([...encabezado, ...cuerpo]);
+  ws['!cols'] = [{ wch: 38 }, { wch: 16 }, { wch: 14 }, { wch: 14 }, { wch: 28 },
+                 { wch: 30 }, { wch: 12 }, { wch: 10 }, { wch: 16 }, { wch: 8 }];
+  XLSX.utils.book_append_sheet(wb, ws, 'Reporte');
+
+  const archivo = titulo.replace(/[^0-9a-záéíóúñü ]/gi, '').trim().replace(/\s+/g, '_');
+  XLSX.writeFile(wb, archivo + '_' + new Date().toISOString().slice(0, 10) + '.xlsx');
+};

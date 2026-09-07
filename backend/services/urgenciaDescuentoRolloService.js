@@ -111,7 +111,7 @@ async function aplicarRecargoUrgenciaRollo({
       .query(`SELECT PlaCantidadTotal, PlaCantidadUsada FROM dbo.PlanesMetros WHERE PlaIdPlan = @PlaId`);
     const planRow = planRes.recordset[0];
     const nuevaUsada = (Number(planRow?.PlaCantidadUsada) || 0) + recargo;
-    // ROLLO POR ADELANTADO: el plan nunca se cierra por consumo (queda en negativo
+    // ROLLO POR ADELANTADO y SEMANAL: el plan nunca se cierra por consumo (queda en negativo
     // y lo absorbe la próxima recarga) — misma regla que hookEntregaMetros.
     let esRolloRecargo = false;
     try {
@@ -121,7 +121,7 @@ async function aplicarRecargoUrgenciaRollo({
                 FROM dbo.Clientes c
                 LEFT JOIN dbo.TiposClientes tc ON tc.TClIdTipoCliente = c.TClIdTipoCliente
                 WHERE c.CliIdCliente = @CliR`);
-      esRolloRecargo = (tRes.recordset[0]?.T || '').includes('ROLLO');
+      esRolloRecargo = /ROLLO|SEMANAL/.test(tRes.recordset[0]?.T || '');
     } catch (_) { /* ante la duda, regla histórica */ }
     const nuevoActivo = (!esRolloRecargo && planRow && nuevaUsada >= Number(planRow.PlaCantidadTotal)) ? 0 : 1;
 

@@ -23,13 +23,14 @@ import {
   Search, RefreshCw, Users, CreditCard, DollarSign, FileText, Wallet,
   ShoppingCart, Tag, FilePlus, MoreHorizontal, Download, Printer,
   ArrowLeft, Zap, CheckCircle2, Calendar, TrendingDown, PlusCircle, X, Layers, Ban, Scale, ChevronDown,
+  Menu, Filter, ExternalLink, Scroll, Coins,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useLocation, useNavigate } from 'react-router-dom';
 
 import api from '../../services/api';
 import { generarPdfEstadoCuenta, generarPdfEstadoCuentaResumen } from '../../utils/pdfGenerator';
-import { exportarExcelEstadoCuenta } from '../../utils/excelGenerator';
+import { exportarExcelEstadoCuenta, exportarExcelClientesRecursos } from '../../utils/excelGenerator';
 import ClienteBilletera from '../common/ClienteBilletera';
 import { fechaOrden, fmtFechaHora, hoyInput, aInputLocal } from '../../utils/fechas';
 import { codigoCuenta } from '../../utils/cuentaCodigo';
@@ -455,15 +456,36 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
       if (!cargosPorDoc.has(c.DocIdDocumento)) cargosPorDoc.set(c.DocIdDocumento, []);
       cargosPorDoc.get(c.DocIdDocumento).push(c);
     }
-    const filaDoc = (d, extra) => ({
-      clase: 'DOC', key: 'D' + d.DocIdDocumento, fecha: d.fecha, moneda: d.MonSimbolo,
-      cueId: principalPorMoneda[d.MonSimbolo] ?? null,
-      tipoKey: prefijoDoc(d), tipoLabel: d.tipo, etiqueta: d.documento,
-      descripcion: d.descripcion, factura: d.factura, cfeEstado: d.cfeEstado,
-      cfeNumeroOficial: d.cfeNumeroOficial || null,
-      cargo: Number(d.total || 0), abono: 0, estado: d.estado,
-      ...extra,
-    });
+    // Una NOTA DE CRÉDITO es el único documento que NO cobra: acredita. Va como ABONO,
+    // no como cargo. Antes entraba como cargo y su propio movimiento NOTA_CREDITO
+    // entraba como abono, así que se anulaba sola y el crédito nunca llegaba al saldo
+    // corrido (caso ELISA RAMOS NC-000019: la columna daba 83,76 de más, 04-09-2026).
+    // CANDADO: la corrección necesita que el backend mande movTipo/docIdDocumento. Si el
+    // proceso todavía no se reinició, no se cambia NADA — el comportamiento viejo está
+    // mal por 1 vez, pero mover el documento sin poder descartar su movimiento contaría
+    // el crédito DOS veces, que es peor.
+    const backendMandaTipo = pagos.some(p => p.movTipo !== undefined);
+    const esNotaCredito = (d) => backendMandaTipo &&
+      (prefijoDoc(d) === 'NC' || /NOTA\s*DE?\s*CR/i.test(d.tipo || ''));
+    const filaDoc = (d, extra) => {
+      const total = Number(d.total || 0);
+      const nc = esNotaCredito(d);
+      return {
+        clase: 'DOC', key: 'D' + d.DocIdDocumento, fecha: d.fecha, moneda: d.MonSimbolo,
+        cueId: principalPorMoneda[d.MonSimbolo] ?? null,
+        tipoKey: prefijoDoc(d), tipoLabel: d.tipo, etiqueta: d.documento,
+        descripcion: d.descripcion, factura: d.factura, cfeEstado: d.cfeEstado,
+        cfeNumeroOficial: d.cfeNumeroOficial || null,
+        cargo: nc ? 0 : total, abono: nc ? total : 0, estado: d.estado,
+        ...extra,
+      };
+    };
+    // Documentos que sí se están mostrando: solo para esos se descarta el movimiento
+    // NOTA_CREDITO. Si una NC no tiene documento en la lista (o el movimiento no está
+    // ligado a ninguno), el movimiento se mantiene o el crédito se perdería.
+    const docsNCVisibles = new Set(
+      docsEC.filter(esNotaCredito).map(d => d.DocIdDocumento).filter(id => id != null)
+    );
     const filas = [
       ...docsEC.flatMap(d => {
         const cargos = cargosPorDoc.get(d.DocIdDocumento) || [];
@@ -480,7 +502,11 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
           monedaDocumento: d.MonSimbolo,
         }));
       }),
-      ...pagos.map((p, i) => ({
+      // El movimiento NOTA_CREDITO es el MISMO dinero que su documento, que ya se
+      // muestra arriba como abono. Misma regla que el resto: el doc va solo como
+      // documento y el pago solo como pago, nunca los dos.
+      ...pagos.filter(p => !(p.movTipo === 'NOTA_CREDITO' && docsNCVisibles.has(p.docIdDocumento)))
+              .map((p, i) => ({
         clase: 'PAGO', key: 'P' + i, fecha: p.fecha, moneda: p.MonSimbolo,
         cueId: p.cueIdCuenta ?? null, cueNombre: p.cueNombre || null, cueEsPrincipal: !!p.cueEsPrincipal,
         tipoKey: 'PAGO', tipoLabel: p.tipo, etiqueta: p.aplicadoA || null, concepto: p.concepto || null,
@@ -1225,6 +1251,173 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
   );
 }
 
+/* Iconito de recurso para los filtros: un rollo o una bolsa de plata, con el signo −
+   cuando el filtro pide justamente los que están en negativo. */
+function IconoRecurso({ tipo, negativo }) {
+  const Icono = tipo === 'dinero' ? Coins : Scroll;
+  return (
+    <span className="inline-flex items-center shrink-0">
+      <Icono size={12} className={negativo ? 'text-rose-500' : 'text-amber-600'} />
+      {negativo && <span className="text-[11px] font-black leading-none text-rose-500 -ml-0.5">−</span>}
+    </span>
+  );
+}
+
+/* Un check del panel de filtros de la lista de clientes. El title dice EXACTAMENTE
+   a quién deja pasar el filtro, para que nadie tenga que adivinar. */
+function CheckFiltro({ campo, label, ayuda, icono, filtros, setFiltros }) {
+  return (
+    <label className="flex items-center gap-1.5 cursor-pointer group min-w-0" title={ayuda}>
+      <input type="checkbox" checked={!!filtros[campo]}
+        onChange={ev => setFiltros(f => ({ ...f, [campo]: ev.target.checked }))}
+        className="w-3.5 h-3.5 shrink-0 rounded border-slate-300 text-cyan-600 focus:ring-cyan-500 cursor-pointer" />
+      {icono}
+      <span className="text-[11px] font-bold text-slate-600 group-hover:text-slate-900 leading-tight truncate">{label}</span>
+    </label>
+  );
+}
+
+/* ── Menú ☰: reportes de clientes con recursos ──────────────────────────────
+   "Rollo"  = cuentas de recurso en metros (las NO monetarias).
+   "Dinero" = billeteras del cliente (principal y secundarias).
+   El saldo negativo de una billetera de dinero es lo que el cliente DEBE.        */
+const REPORTES_RECURSOS = [
+  { key: 'ROLLO_TODOS',  tipo: 'ROLLO',  soloNegativos: false, titulo: 'Clientes con recursos (rollo)',
+    ayuda: 'Todas las cuentas de rollo en metros, tengan saldo o no' },
+  { key: 'ROLLO_NEG',    tipo: 'ROLLO',  soloNegativos: true,  titulo: 'Clientes con recursos (rollo) en saldo negativo',
+    ayuda: 'Solo las cuentas de rollo con metros en menos' },
+  { key: 'DINERO_TODOS', tipo: 'DINERO', soloNegativos: false, titulo: 'Clientes con recursos (dinero)',
+    ayuda: 'Todas las billeteras de dinero, principal y secundarias' },
+  { key: 'DINERO_NEG',   tipo: 'DINERO', soloNegativos: true,  titulo: 'Clientes con recursos (dinero) en saldo negativo',
+    ayuda: 'Solo las billeteras en menos, es decir lo que el cliente debe' },
+];
+
+// Cuántas filas se pintan en pantalla. El Excel siempre baja la lista COMPLETA:
+// el reporte de dinero pasa las 6.000 filas y el navegador se arrastra.
+const REPORTE_MAX_EN_PANTALLA = 300;
+
+/* Modal de un reporte del menú ☰: lista en pantalla + bajada a Excel.
+   Al hacer clic en una fila se abre ese cliente en el panel. */
+function ModalReporteRecursos({ reporte, onClose, onAbrirCliente }) {
+  const [filas, setFilas]       = useState([]);
+  const [cargando, setCargando] = useState(true);
+  const [error, setError]       = useState(null);
+  const [bajando, setBajando]   = useState(false);
+
+  useEffect(() => {
+    let vivo = true;
+    (async () => {
+      setCargando(true); setError(null);
+      try {
+        const qp = new URLSearchParams({ tipo: reporte.tipo, soloNegativos: String(reporte.soloNegativos) });
+        const data = await fetchAPI(`/api/contabilidad/reportes/clientes-recursos?${qp.toString()}`);
+        if (vivo) setFilas(data.data || []);
+      } catch (e) { if (vivo) setError(e.message); }
+      finally { if (vivo) setCargando(false); }
+    })();
+    return () => { vivo = false; };
+  }, [reporte.tipo, reporte.soloNegativos]);
+
+  const esDinero  = reporte.tipo === 'DINERO';
+  const clientes  = new Set(filas.map(f => f.CliIdCliente)).size;
+  const visibles  = filas.slice(0, REPORTE_MAX_EN_PANTALLA);
+
+  const nombreCuenta = (f) => esDinero
+    ? `${f.CueNombre || (f.CueTipo === 'DINERO_USD' ? 'Principal US$' : 'Principal $')}${f.CueEsPrincipal ? ' · principal' : ''}`
+    : (f.NombreArticulo || f.CueNombre || `Recurso #${f.CueIdCuenta}`);
+
+  const saldoTexto = (f) => esDinero
+    ? `${f.CueTipo === 'DINERO_USD' ? 'US$' : '$'} ${Number(f.CueSaldoActual || 0).toLocaleString('es-UY', { minimumFractionDigits: 2 })}`
+    : `${Number(f.CueSaldoActual || 0).toLocaleString('es-UY', { minimumFractionDigits: 2 })} ${f.MonSimbolo || 'mts'}`;
+
+  const bajarExcel = async () => {
+    setBajando(true);
+    try {
+      await exportarExcelClientesRecursos(reporte.titulo, filas, esDinero);
+      toast.success(`Excel generado con las ${filas.length} filas del reporte.`);
+    } catch (e) { toast.error('No se pudo generar el Excel: ' + e.message); }
+    finally { setBajando(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[6000] bg-black/50 flex items-start justify-center px-2 pt-4 pb-4">
+      <div className="bg-white rounded-2xl shadow-2xl w-[98vw] max-w-5xl h-[calc(100vh-2rem)] flex flex-col overflow-hidden">
+        <div className="flex items-center justify-between px-5 py-3 border-b border-slate-200 bg-slate-50 shrink-0">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="w-8 h-8 rounded-lg bg-cyan-700 text-white flex items-center justify-center shrink-0"><Layers size={16} /></div>
+            <div className="min-w-0">
+              <h3 className="text-sm font-black text-slate-800 leading-tight truncate">{reporte.titulo}</h3>
+              <p className="text-[11px] text-slate-500">
+                {cargando ? 'Buscando…' : `${clientes} cliente${clientes === 1 ? '' : 's'} · ${filas.length} cuenta${filas.length === 1 ? '' : 's'} — ${reporte.ayuda}`}
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button onClick={bajarExcel} disabled={cargando || bajando || filas.length === 0}
+              title="Bajar este reporte completo a un archivo Excel"
+              className="flex items-center gap-1.5 px-3 py-2 text-emerald-700 hover:bg-white text-xs font-bold rounded-lg transition-colors disabled:opacity-40">
+              {bajando ? <RefreshCw size={14} className="animate-spin" /> : <Download size={14} />} Excel
+            </button>
+            <button onClick={onClose} title="Cerrar el reporte"
+              className="p-2 rounded-lg hover:bg-slate-200 text-slate-500 hover:text-slate-700 transition-colors">
+              <X size={18} />
+            </button>
+          </div>
+        </div>
+
+        <div className="flex-1 min-h-0 overflow-y-auto">
+          {cargando ? (
+            <div className="flex justify-center py-16"><div className="animate-spin h-7 w-7 border-2 border-cyan-500 border-t-transparent rounded-full" /></div>
+          ) : error ? (
+            <p className="text-center text-rose-500 text-sm py-12">No se pudo cargar el reporte: {error}</p>
+          ) : filas.length === 0 ? (
+            <p className="text-center text-slate-500 text-sm py-16">No hay clientes que cumplan con este reporte.</p>
+          ) : (
+            <table className="w-full text-xs">
+              <thead className="sticky top-0 bg-slate-100 z-10">
+                <tr className="text-[10px] font-black uppercase tracking-widest text-slate-500">
+                  <th className="px-4 py-2.5 text-left">Cliente</th>
+                  <th className="px-4 py-2.5 text-left">{esDinero ? 'Billetera' : 'Recurso'}</th>
+                  <th className="px-4 py-2.5 text-right">Saldo</th>
+                  <th className="px-4 py-2.5 text-right w-10"></th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {visibles.map(f => (
+                  <tr key={`${f.CliIdCliente}_${f.CueIdCuenta}`} className="hover:bg-violet-50 transition-colors">
+                    <td className="px-4 py-2.5">
+                      <div className="font-bold text-slate-800 truncate max-w-[280px]">{f.Nombre}</div>
+                      <div className="text-[10px] text-slate-400 font-mono">#{f.IDCliente || f.CliIdCliente}{f.CioRuc ? ` · RUT ${f.CioRuc}` : ''}</div>
+                    </td>
+                    <td className="px-4 py-2.5 text-slate-600">
+                      <span className="font-mono text-[10px] text-slate-400 mr-1.5">{codigoCuenta(f)}</span>{nombreCuenta(f)}
+                    </td>
+                    <td className={`px-4 py-2.5 text-right font-mono font-black tabular-nums ${Number(f.CueSaldoActual || 0) < 0 ? 'text-rose-600' : 'text-slate-800'}`}>
+                      {saldoTexto(f)}
+                    </td>
+                    <td className="px-4 py-2.5 text-right">
+                      <button onClick={() => onAbrirCliente(f)} title="Abrir este cliente en el Panel 360"
+                        className="p-1.5 rounded-lg text-slate-400 hover:bg-white hover:text-violet-700 transition-colors">
+                        <ExternalLink size={14} />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          {!cargando && filas.length > REPORTE_MAX_EN_PANTALLA && (
+            <p className="text-center text-[11px] text-slate-500 py-4 bg-slate-50 border-t border-slate-200">
+              En pantalla se muestran las primeras {REPORTE_MAX_EN_PANTALLA} de {filas.length} filas.
+              Bajá el Excel para ver el reporte completo.
+            </p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // Cliente elegido en el Panel 360: se recuerda mientras la pestaña siga abierta, para no
 // perderlo al ir y volver (pre-factura de "Facturar semanales") ni al refrescar con F5.
 const CLIENTE_360_KEY = 'cliente360:seleccion';
@@ -1261,6 +1454,14 @@ export default function ClienteVista360() {
   const [incluirAnulados, setIncluirAnulados]     = useState(false);
   const [exportandoExcel, setExportandoExcel]     = useState(false);
   const [showMasMenu, setShowMasMenu]             = useState(false);
+  // Panel de filtros de la lista de clientes: se combinan con Y (tiene que cumplir TODOS)
+  const [filtrosLista, setFiltrosLista]           = useState({
+    conDeuda: false, aFavorPrincipal: false, aFavorOtras: false,
+    conRollo: false, negRollo: false, negDinero: false,
+  });
+  // Menú ☰ de reportes + el reporte abierto
+  const [showReportesMenu, setShowReportesMenu]   = useState(false);
+  const [reporteAbierto, setReporteAbierto]       = useState(null);
   const [showBandejaCFE, setShowBandejaCFE]       = useState(false);
   const [showFacturaManual, setShowFacturaManual] = useState(false);
   const [showSaldoInicial, setShowSaldoInicial]   = useState(false);
@@ -1284,6 +1485,19 @@ export default function ClienteVista360() {
   const [ventaTipo, setVentaTipo]     = useState('recursos');    // 'recursos' (RECURSO) | 'libre' (insumos/productos)
   const [metodosPago, setMetodosPago] = useState([]);
   const [cotizacion, setCotizacion]   = useState(null);
+  const [loadingCot, setLoadingCot]   = useState(false);
+
+  // Cotización del día: la MISMA que usa el panel para convertir US$ a $.
+  // El ↻ del cartel vuelve a leerla, no la cambia.
+  const cargarCotizacion = useCallback(async () => {
+    setLoadingCot(true);
+    try {
+      const r = await api.get('/apicotizaciones/hoy');
+      if (r.data?.cotizaciones?.[0]) setCotizacion(r.data.cotizaciones[0].CotDolar);
+      else toast('Todavía no hay cotización cargada para hoy.');
+    } catch { toast.error('No se pudo leer la cotización del día.'); }
+    finally { setLoadingCot(false); }
+  }, []);
 
   // Datos base para el cobro (mismos endpoints que CajaTransaccionView)
   useEffect(() => {
@@ -1298,6 +1512,29 @@ export default function ClienteVista360() {
       } catch { /* no bloquea la vista de lectura */ }
     })();
   }, []);
+
+  const FILTROS_VACIOS = {
+    conDeuda: false, aFavorPrincipal: false, aFavorOtras: false,
+    conRollo: false, negRollo: false, negDinero: false,
+  };
+  const filtrosTildados = Object.values(filtrosLista).filter(Boolean).length;
+
+  // Clic en una fila del reporte del menú ☰ → abre ese cliente en el panel.
+  // La fila del reporte ya trae los datos de la ficha, así que no hace falta buscarlo.
+  const abrirClienteDesdeReporte = (fila) => {
+    setReporteAbierto(null);
+    seleccionarCliente({
+      CliIdCliente:     fila.CliIdCliente,
+      Nombre:           fila.Nombre,
+      NombreFantasia:   fila.NombreFantasia,
+      IDCliente:        fila.IDCliente,
+      Email:            fila.Email,
+      CioRuc:           fila.CioRuc,
+      TelefonoTrabajo:  fila.TelefonoTrabajo,
+      CodCliente:       fila.CodCliente,
+      TClIdTipoCliente: fila.TClIdTipoCliente,
+    });
+  };
 
   const onOperacionOk = () => recargarCuentas();
   const cerrarOp = () => { setOpModal(null); recargarCuentas(); };
@@ -1349,12 +1586,14 @@ export default function ClienteVista360() {
   };
 
   /* ── Datos: mismos endpoints que la vista de cuentas ────────────────── */
-  const cargarClientesActivos = useCallback(async (q = '', tipo = '') => {
+  const cargarClientesActivos = useCallback(async (q = '', tipo = '', filtros = null) => {
     setLoadingLista(true);
     try {
       const qp = new URLSearchParams();
       if (q.trim()) qp.append('q', q.trim());
       if (tipo) qp.append('tipoCliente', tipo);
+      // Filtros del panel: solo se mandan los tildados (el backend los une con Y)
+      Object.entries(filtros || {}).forEach(([k, v]) => { if (v) qp.append(k, 'true'); });
       // Modo TODOS: trae cualquier cliente, tenga o no cuenta abierta (la cuenta se abre con la 1ª operación)
       qp.append('tipo', 'TODOS');
       qp.append('todos', 'true');
@@ -1365,9 +1604,9 @@ export default function ClienteVista360() {
   }, []);
 
   useEffect(() => {
-    const timer = setTimeout(() => cargarClientesActivos(busqueda, filtroTipoCliente), 400);
+    const timer = setTimeout(() => cargarClientesActivos(busqueda, filtroTipoCliente, filtrosLista), 400);
     return () => clearTimeout(timer);
-  }, [busqueda, filtroTipoCliente, cargarClientesActivos]);
+  }, [busqueda, filtroTipoCliente, filtrosLista, cargarClientesActivos]);
 
   const seleccionarCliente = async (cli) => {
     if (clienteSel?.CliIdCliente === cli.CliIdCliente) return;
@@ -1597,6 +1836,42 @@ export default function ClienteVista360() {
         <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-100 px-2.5 py-1 rounded-full flex items-center gap-1">
           <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" /> Operaciones activas
         </span>
+
+        {/* Cotización del día (mismo cartel que la caja) */}
+        <div className="ml-auto shrink-0 bg-white flex items-center gap-2 px-3 py-1.5 rounded-lg border border-slate-200 h-9">
+          <RefreshCw size={14} onClick={cargarCotizacion}
+            title="Volver a leer la cotización del día (no la modifica)"
+            className={`text-cyan-600 cursor-pointer hover:text-cyan-800 ${loadingCot ? 'animate-spin' : ''}`} />
+          <span className="text-xs font-bold text-slate-800 whitespace-nowrap">
+            1 US$ = <span className="text-cyan-600">
+              ${cotizacion ? Number(cotizacion).toLocaleString('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '---'}
+            </span>
+          </span>
+        </div>
+
+        {/* ☰ Reportes — miran a TODOS los clientes, no al que está abierto */}
+        <div className="relative shrink-0">
+          <button type="button" onClick={() => setShowReportesMenu(v => !v)}
+            title="Reportes de clientes con recursos: rollo y dinero, todos o solo los que están en negativo"
+            className="flex items-center gap-1.5 px-3 py-2 bg-white border border-slate-200 hover:border-slate-300 text-slate-700 text-xs font-bold rounded-lg transition-colors">
+            <Menu size={14} /> Reportes
+          </button>
+          {showReportesMenu && (
+            <>
+              <div className="fixed inset-0 z-30" onClick={() => setShowReportesMenu(false)} />
+              <div className="absolute right-0 top-full mt-1.5 z-40 w-80 bg-white border border-slate-200 rounded-xl shadow-xl overflow-hidden py-1">
+                {REPORTES_RECURSOS.map(r => (
+                  <button key={r.key} type="button" title={r.ayuda}
+                    onClick={() => { setShowReportesMenu(false); setReporteAbierto(r); }}
+                    className="w-full flex flex-col items-start gap-0.5 px-3 py-2 text-left hover:bg-violet-50 transition-colors">
+                    <span className="text-[11px] font-bold text-slate-700">{r.titulo}</span>
+                    <span className="text-[10px] text-slate-400 leading-tight">{r.ayuda}</span>
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
       </div>
 
       <div className="px-3 sm:px-4 py-3">
@@ -1609,11 +1884,72 @@ export default function ClienteVista360() {
                 <h2 className="text-base font-bold text-slate-800 flex items-center gap-2">
                   <Users size={16} className="text-cyan-500" />Clientes
                 </h2>
-                <button onClick={() => cargarClientesActivos(busqueda, filtroTipoCliente)} title="Actualizar"
+                <button onClick={() => cargarClientesActivos(busqueda, filtroTipoCliente, filtrosLista)} title="Actualizar la lista de clientes"
                   className="p-1.5 hover:bg-slate-200 rounded-lg transition-colors text-slate-500">
                   <RefreshCw size={13} className={loadingLista ? 'animate-spin' : ''} />
                 </button>
               </div>
+              {/* Panel de filtros — va ARRIBA del buscador. Se combinan con Y: para
+                  aparecer, el cliente tiene que cumplir TODAS las condiciones tildadas. */}
+              <div className="flex flex-col gap-2 pb-3 border-b border-slate-200">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 flex items-center gap-1.5">
+                    <Filter size={11} /> Filtros
+                  </span>
+                  {filtrosTildados > 0 && (
+                    <button type="button" onClick={() => setFiltrosLista(FILTROS_VACIOS)}
+                      title="Destildar todos los filtros y volver a ver todos los clientes"
+                      className="text-[10px] font-black uppercase tracking-wider text-cyan-700 hover:text-cyan-900">
+                      Limpiar
+                    </button>
+                  )}
+                </div>
+
+                {/* Deuda | Saldo a favor — al mismo nivel, uno en cada columna */}
+                <div className="grid grid-cols-2 gap-x-3">
+                  <div className="flex flex-col gap-1">
+                    <span className="text-[9px] font-black uppercase tracking-wider text-slate-400">Deuda</span>
+                    <CheckFiltro campo="conDeuda" label="Con deuda"
+                      ayuda="Clientes con al menos un documento con importe pendiente de cobro"
+                      filtros={filtrosLista} setFiltros={setFiltrosLista} />
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <span className="text-[9px] font-black uppercase tracking-wider text-slate-400">Saldo a favor</span>
+                    <CheckFiltro campo="aFavorPrincipal" label="Cuenta principal"
+                      ayuda="Clientes con plata a favor en su cuenta principal de dinero"
+                      filtros={filtrosLista} setFiltros={setFiltrosLista} />
+                    <CheckFiltro campo="aFavorOtras" label="Billeteras"
+                      ayuda="Clientes con plata a favor en alguna billetera que NO es la principal"
+                      filtros={filtrosLista} setFiltros={setFiltrosLista} />
+                  </div>
+                </div>
+
+                {/* Recursos: primero TODOS los que tienen rollo, después los que están en menos */}
+                <div className="flex flex-col gap-1">
+                  <span className="text-[9px] font-black uppercase tracking-wider text-slate-400">Recursos</span>
+                  <div className="flex flex-col gap-1">
+                    <CheckFiltro campo="conRollo" label="Con rollo"
+                      icono={<IconoRecurso tipo="rollo" />}
+                      ayuda="Clientes con alguna cuenta de rollo abierta y con saldo — las cerradas y las que quedaron en cero no cuentan"
+                      filtros={filtrosLista} setFiltros={setFiltrosLista} />
+                    <CheckFiltro campo="negRollo" label="Metros negativos"
+                      icono={<IconoRecurso tipo="rollo" negativo />}
+                      ayuda="Clientes con alguna cuenta de rollo con los metros en negativo"
+                      filtros={filtrosLista} setFiltros={setFiltrosLista} />
+                    <CheckFiltro campo="negDinero" label="Billeteras negativas"
+                      icono={<IconoRecurso tipo="dinero" negativo />}
+                      ayuda="Clientes con alguna billetera de dinero en negativo, sin contar la cuenta principal"
+                      filtros={filtrosLista} setFiltros={setFiltrosLista} />
+                  </div>
+                </div>
+
+                {filtrosTildados > 1 && (
+                  <p className="text-[10px] text-slate-400 leading-snug">
+                    Con más de un filtro tildado se muestran solo los clientes que cumplen TODOS.
+                  </p>
+                )}
+              </div>
+
               <div className="flex gap-2">
                 <div className="relative flex-1 flex items-center">
                   <div className="absolute left-3 text-slate-400"><Search size={14} /></div>
@@ -1648,6 +1984,11 @@ export default function ClienteVista360() {
             </div>
             <div className="px-4 py-2.5 border-t border-slate-200 text-[11px] text-slate-500 text-center">
               {clientesActivos.length} clientes
+              {clientesActivos.length === 50 && (
+                <span className="block text-[10px] font-normal text-slate-400 normal-case mt-0.5">
+                  Es el tope de la lista: puede haber más. Afiná la búsqueda o los filtros.
+                </span>
+              )}
             </div>
           </div>
 
@@ -1662,7 +2003,8 @@ export default function ClienteVista360() {
             ) : (
               <>
                 {/* Cabecera del cliente + KPIs */}
-                <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                {/* Sin overflow-hidden: si no, la tarjeta recorta el menú "Más" de la barra de acciones */}
+                <div className="bg-white rounded-2xl border border-slate-200 shadow-sm">
                   <div className="p-5 flex flex-col xl:flex-row gap-5">
                     {/* Identidad */}
                     <div className="flex items-start gap-3 w-full xl:w-80 shrink-0">
@@ -1960,6 +2302,15 @@ export default function ClienteVista360() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Menú ☰ → reporte de clientes con recursos (lista + Excel) */}
+      {reporteAbierto && (
+        <ModalReporteRecursos
+          reporte={reporteAbierto}
+          onClose={() => setReporteAbierto(null)}
+          onAbrirCliente={abrirClienteDesdeReporte}
+        />
       )}
 
       {/* Menú "Más" → Bandeja CFE del cliente (reusa ContabilidadBandejaCFE, fijada al cliente) */}

@@ -378,12 +378,12 @@ const NavNode = ({ item, openMenus, toggleMenu, navigate, location, level = 0, i
                         if (!wasOpen) {
                             const firstChild = item.children.find(c => c.Ruta);
                             if (firstChild && window.innerWidth >= 768) {
-                                navigate(firstChild.Ruta);
+                                navigate(String(firstChild.Ruta).trim()); // ' /x' sería relativa y se apila a la URL
                                 // Modificado: Eliminamos setIsCollapsed(true) para que el padre quede desplegado
                             }
                         }
                     } else if (item.Ruta) {
-                        navigate(item.Ruta);
+                        navigate(String(item.Ruta).trim()); // ' /x' sería relativa y se apila a la URL
                         setIsCollapsed(true);
                     }
                 }}

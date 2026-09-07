@@ -1589,7 +1589,7 @@ if (triggerReversal || triggerForward) {
                                                         FROM dbo.Clientes c WITH(NOLOCK)
                                                         LEFT JOIN dbo.TiposClientes tc WITH(NOLOCK) ON tc.TClIdTipoCliente = c.TClIdTipoCliente
                                                         WHERE c.CliIdCliente = @CliR`);
-                                            esClienteRollo = (tcCk.recordset[0]?.T || '').includes('ROLLO');
+                                            esClienteRollo = /ROLLO|SEMANAL/.test(tcCk.recordset[0]?.T || '');
                                         } catch (eTc) { /* ante la duda, comportamiento histórico */ }
                                     }
 
@@ -1795,7 +1795,7 @@ if (triggerReversal || triggerForward) {
 
                                               const hayPlanCtb = planIdCtb !== null && planMetrosDisp > 0;
 
-                                              // ROLLO: con plan activo (aunque esté en 0 o negativo) la línea entra
+                                              // ROLLO/SEMANAL: con plan activo (aunque esté en 0 o negativo) la línea entra
                                               // ENTERA como ENTREGA a $0 — el hook deja el plan en rojo y la próxima
                                               // recarga lo absorbe. Nunca genera deuda en dinero por el producto.
                                               if ((esClienteRollo && planIdCtb !== null) || (hayPlanCtb && lineQty <= planMetrosDisp)) {

@@ -79,8 +79,10 @@ async function ejecutarManual(id) {
 
     marcarInicio(id);
     try {
-        await job.fn();
-        marcarOk(id, 'Ejecutado manualmente');
+        // Si el job devuelve un texto, ese es el resultado que se muestra (ej. el resumen
+        // del cuadre de saldos); si no, el genérico.
+        const resultado = await job.fn();
+        marcarOk(id, typeof resultado === 'string' && resultado.trim() ? resultado : 'Ejecutado manualmente');
     } catch (e) {
         marcarError(id, e);
         throw e;

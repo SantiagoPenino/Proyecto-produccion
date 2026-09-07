@@ -1547,6 +1547,10 @@ const procesarPagoDeudaInterno = async (req, res) => {
 
     let totalImputado = 0;
     const movIdsPago = []; // movimientos 'PAGO' de este cobro → se les estampa el PagIdPago al final
+    // Órdenes cuya deuda POR ORDEN (sin documento) quedó COBRADA en este pago: se les
+    // estampa PagIdPago al final (cuando ya existe) para que el retiro y la caja las
+    // vean PAGAS y no las vuelvan a cobrar (05-09-2026).
+    const ordenesPagadasPorDeuda = [];
     // Imputación completa (trazabilidad, reporte 26-ago-2026): lo aplicado a cada deuda
     // se anota acá y, cuando existan los Pagos, se escribe en dbo.ImputacionPago.
     const imputacionesPend = []; // [{ ddeId, cueIdCuenta, monto }] en moneda de la deuda
@@ -1674,6 +1678,34 @@ const procesarPagoDeudaInterno = async (req, res) => {
           } catch (eOrden) {
             logger.warn(`[PAGO-DEUDA] No se pudo marcar OrdenDeposito como pagada para DeudaDoc #${ddeId}: ${eOrden.message}`);
             // ─────────────────────────────────────────────
+          }
+
+          // Deuda POR ORDEN (todavía sin documento): el bloque de arriba no la alcanza
+          // porque busca la orden a través del documento. Sin esto la orden seguía
+          // "pendiente", el retiro no la veía paga y la caja la cobraba OTRA VEZ al
+          // retirar (57 documentos / ~45 clientes con doble cobro, 05-09-2026).
+          const ordPagadaPorDeuda = docImputado ? null : Number(dde.OrdIdOrden || ap.ordIdOrden || 0);
+          if (ordPagadaPorDeuda > 0) {
+            try {
+              await new sql.Request(transaction)
+                .input('Ord', sql.Int, ordPagadaPorDeuda)
+                .input('Usr', sql.Int, usuarioId)
+                .query(`
+                  UPDATE dbo.OrdenesDeposito
+                  SET OrdEstadoActual = 7, OrdFechaEstadoActual = GETDATE()
+                  WHERE OrdIdOrden = @Ord AND OrdEstadoActual NOT IN (7, 9, 10, 11);
+
+                  INSERT INTO dbo.HistoricoEstadosOrdenes (OrdIdOrden, EOrIdEstadoOrden, HEOFechaEstado, HEOUsuarioAlta)
+                  SELECT @Ord, 7, GETDATE(), @Usr
+                  WHERE EXISTS (SELECT 1 FROM dbo.OrdenesDeposito
+                                WHERE OrdIdOrden = @Ord AND OrdEstadoActual = 7
+                                  AND OrdFechaEstadoActual >= DATEADD(SECOND, -5, GETDATE()));
+                `);
+              ordenesPagadasPorDeuda.push(ordPagadaPorDeuda);
+              logger.info(`[PAGO-DEUDA] Orden #${ordPagadaPorDeuda} (deuda por orden #${ddeId}) marcada como PAGADA.`);
+            } catch (eOrd) {
+              logger.warn(`[PAGO-DEUDA] No se pudo marcar la orden #${ordPagadaPorDeuda} como pagada: ${eOrd.message}`);
+            }
           }
         }
 
@@ -2195,6 +2227,37 @@ const procesarPagoDeudaInterno = async (req, res) => {
             WHERE MovIdMovimiento IN (${idsMov.join(',')})
               AND PagIdPago IS NULL
           `);
+      }
+
+      // ─────────────────────────────────────────────
+      // Órdenes cuya deuda POR ORDEN quedó cobrada en este pago: ahora que existe el
+      // PagIdPago, se estampa en OrdenesDeposito (es lo que mira retiroService para
+      // saltarla) y, si el retiro padre quedó sin órdenes pendientes, pasa a Abonado
+      // (misma regla que el auto-marcado del motor contable).
+      const ordsPagadas = ordenesPagadasPorDeuda.map(Number).filter(Boolean);
+      if (primerPagIdPago && ordsPagadas.length) {
+        await new sql.Request(transaction)
+          .input('pagId', sql.Int, primerPagIdPago)
+          .query(`
+            UPDATE dbo.OrdenesDeposito
+            SET PagIdPago = @pagId
+            WHERE OrdIdOrden IN (${ordsPagadas.join(',')})
+              AND PagIdPago IS NULL;
+
+            UPDATE r
+            SET OReEstadoActual = CASE WHEN OReEstadoActual = 1 THEN 3 WHEN OReEstadoActual = 5 THEN 8 ELSE OReEstadoActual END
+            FROM dbo.OrdenesRetiro r
+            WHERE r.OReIdOrdenRetiro IN (SELECT d.OReIdOrdenRetiro FROM dbo.OrdenesDeposito d
+                                         WHERE d.OrdIdOrden IN (${ordsPagadas.join(',')}) AND d.OReIdOrdenRetiro IS NOT NULL)
+              AND NOT EXISTS (
+                SELECT 1 FROM dbo.OrdenesDeposito od2
+                LEFT JOIN dbo.DeudaDocumento dd ON dd.OrdIdOrden = od2.OrdIdOrden
+                WHERE od2.OReIdOrdenRetiro = r.OReIdOrdenRetiro
+                  AND od2.PagIdPago IS NULL
+                  AND (dd.DDeImportePendiente > 0.01 OR dd.DDeImportePendiente IS NULL)
+              );
+          `);
+        logger.info(`[PAGO-DEUDA] PagIdPago #${primerPagIdPago} estampado en ${ordsPagadas.length} orden(es) pagada(s) por deuda; retiro padre revisado.`);
       }
 
       // ─────────────────────────────────────────────

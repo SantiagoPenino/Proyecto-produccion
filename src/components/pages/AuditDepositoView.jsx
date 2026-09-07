@@ -1,10 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import api from '../../services/apiClient';
 import { Toaster, toast } from 'react-hot-toast';
-import { Loader2, CheckCircle2, AlertTriangle, Clock, XCircle, Search, HelpCircle, Download, Smartphone, Camera, ScanLine, X } from 'lucide-react';
+import { Loader2, CheckCircle2, AlertTriangle, Clock, XCircle, Search, HelpCircle, Download, Smartphone, Camera, ScanLine, X, ClipboardList, FileText, Repeat } from 'lucide-react';
 import ScannerComponent from '../common/ScannerComponent';
 import * as XLSX from 'xlsx';
 import { socket } from '../../services/socketService';
+import AuditDepositoSesionBar from './AuditDepositoSesionBar';
+import AuditDepositoCasosTab from './AuditDepositoCasosTab';
+import AuditDepositoReportesTab from './AuditDepositoReportesTab';
+import AuditDepositoCiclicoTab from './AuditDepositoCiclicoTab';
 
 export default function AuditDepositoView() {
   const [inputText, setInputText] = useState('');
@@ -23,6 +27,28 @@ export default function AuditDepositoView() {
   const [activeTab, setActiveTab] = useState('escaneo');
   const [dataLoaded, setDataLoaded] = useState(false); // lazy: se carga al entrar a un tab de datos
 
+  // ── Sesión de auditoría (fotografía) + Registro de Casos ──
+  // estadoSesion = GET /audit-deposito/sesion | null (cargando) | { sinSoporte: true } (backend viejo)
+  const [estadoSesion, setEstadoSesion] = useState(null);
+  const [liveScans, setLiveScans] = useState([]);   // escaneos de la sesión con su resultado (modo sesión)
+  const [kpisCasos, setKpisCasos] = useState(null);
+  const [refreshCasos, setRefreshCasos] = useState(0);
+  const sesionAbierta = !!(estadoSesion && estadoSesion.sesion);
+  const cargarEstadoSesion = () => api.get('/audit-deposito/sesion')
+    .then(({ data }) => { if (data.success) setEstadoSesion(data); })
+    .catch(err => setEstadoSesion({ sesion: null, sinSoporte: true, error: err?.response?.status || err.message }));
+  const cargarKpisCasos = () => api.get('/audit-deposito/casos', { params: { estado: 'VIVOS', limit: 1 } })
+    .then(({ data }) => { if (data.success) setKpisCasos(data.kpis); }).catch(() => {});
+  const recargarTodo = () => {
+    cargarEstadoSesion(); cargarKpisCasos(); setRefreshCasos(x => x + 1);
+    api.get('/audit-deposito/init').then(({ data }) => {
+      if (!data.success) return;
+      setLiveCodes(Array.isArray(data.liveCodes) ? data.liveCodes : []);
+      setLiveScans(Array.isArray(data.liveScans) ? data.liveScans : []);
+      setResults(data.auditData || null);
+    }).catch(() => {});
+  };
+
   // Carga inicial: un solo request que devuelve liveCodes + auditData juntos (elimina round-trip extra en LAN)
   useEffect(() => {
     setLoading(true);
@@ -30,12 +56,15 @@ export default function AuditDepositoView() {
       .then(({ data }) => {
         if (data.success) {
           setLiveCodes(data.liveCodes || []);
+          setLiveScans(data.liveScans || []);
           setResults(data.auditData || null);
         }
       })
       .catch(err => console.error('Error cargando init', err))
       .finally(() => setLoading(false));
     setDataLoaded(true);
+    cargarEstadoSesion();
+    cargarKpisCasos();
 
     // Conectar a WebSockets para sincronización en tiempo real entre Celular <-> PC
     const handleScanAdded = ({ codigo }) => {
@@ -66,15 +95,22 @@ export default function AuditDepositoView() {
     socket.on('audit:scan_added', handleScanAdded);
     socket.on('audit:scan_removed', handleScanRemoved);
     socket.on('audit:scans_cleared', handleScansCleared);
+    // Auditoría abierta / cerrada / anulada desde cualquier dispositivo: recargar todo
+    const handleSesion = () => recargarTodo();
+    socket.on('audit:sesion', handleSesion);
+    socket.on('audit:cerrada', handleSesion);
 
     return () => {
       socket.off('audit:scan_added', handleScanAdded);
       socket.off('audit:scan_removed', handleScanRemoved);
       socket.off('audit:scans_cleared', handleScansCleared);
+      socket.off('audit:sesion', handleSesion);
+      socket.off('audit:cerrada', handleSesion);
     };
   }, []);
 
   const handleFinalizarInventario = () => {
+    if (sesionAbierta) { toast('Hay una auditoría abierta: usá "Cerrar auditoría" en la barra de arriba para generar los casos.', { icon: 'ℹ️' }); return; }
     if (!results) return;
     const informe = `INFORME DE INVENTARIO FÍSICO
 Fecha: ${new Date().toLocaleString()}
@@ -124,7 +160,11 @@ Reporte Generado Automáticamente por USER.
     try {
       const { data } = await api.post('/audit-deposito/check', { scannedCodes: codesArray });
       if (data.success) {
-        setResults(data.data);
+        // Modo sesión: entregadasSinPago viene null ("sin cambios") y los escaneos son los de la sesión
+        setResults(prev => ({ ...data.data, entregadasSinPago: data.data.entregadasSinPago ?? prev?.entregadasSinPago ?? [] }));
+        if (Array.isArray(data.liveScans)) setLiveScans(data.liveScans);
+        if (Array.isArray(data.liveCodes)) setLiveCodes(data.liveCodes);
+        if (data.sesion) setEstadoSesion(prev => (prev && prev.sesion ? { ...prev, sesion: { ...prev.sesion, contadores: data.sesion.contadores } } : prev));
       } else {
         toast.error('Error al verificar: ' + data.error);
       }
@@ -156,6 +196,21 @@ Reporte Generado Automáticamente por USER.
     setActiveTab(tabId);
   };
 
+  // Qué es lo que se acaba de escanear (modo sesión): un aviso por resultado, sin ambigüedad.
+  const feedbackEscaneo = (r) => {
+    const ref = r.ordenCodigo ? `${r.ordenCodigo}${r.cliente ? ' · ' + r.cliente : ''}` : r.codigo;
+    if (r.duplicado) return toast(`Ya estaba escaneada: ${ref}`, { icon: '⚠️' });
+    switch (r.resultado) {
+      case 'OK': return toast.success(r.ordenYaEscaneada ? `Otro bulto de la misma orden: ${ref}` : `OK, está en la fotografía: ${ref}`);
+      case 'ENTREGADA': return toast(`Figura ENTREGADA en el sistema: ${ref} (sobrante)`, { icon: '🟠', duration: 5000 });
+      case 'SIN_INGRESO': return toast(`Existe en producción pero NUNCA ingresó al depósito: ${ref}`, { icon: '🟣', duration: 5000 });
+      case 'DESCONOCIDO': return toast.error(`Código desconocido, no existe en el sistema: ${r.codigo}`);
+      case 'FUERA_ALCANCE': return toast(`Fuera del alcance de esta auditoría (otra área): ${ref}`, { icon: '⛔', duration: 5000 });
+      case 'INGRESO_POSTERIOR': return toast(`Ingresó al depósito después de abrir la auditoría: ${ref} (no cuenta como diferencia)`, { icon: 'ℹ️', duration: 5000 });
+      default: return toast(`${r.resultado}: ${ref}`);
+    }
+  };
+
   const processDiscoveredCode = (rawCode, fromCamera = false) => {
     let parsed = processInputCodes(rawCode);
     if (parsed.length > 0) {
@@ -166,10 +221,18 @@ Reporte Generado Automáticamente por USER.
       }
       const newLive = [...liveCodes, codeEscaneado];
       setLiveCodes(newLive);
-      // Solo refrescar datos si el usuario ya entró a algún tab de datos
-      if (dataLoaded) fetchAuditData(newLive);
-      // Registrar en la base de datos de auditoría
-      api.post('/audit-deposito/live', { codigo: codeEscaneado }).catch(e => console.error('Error db temp', e));
+      // Registrar en la base. Con auditoría abierta el servidor resuelve la orden y contesta qué es;
+      // recién después se refrescan las listas (si no, el check correría antes de guardar el escaneo).
+      api.post('/audit-deposito/live', { codigo: codeEscaneado })
+        .then(({ data }) => {
+          if (data && data.data) { feedbackEscaneo(data.data); fetchAuditData(newLive); }
+          else if (dataLoaded) fetchAuditData(newLive);
+        })
+        .catch(e => {
+          console.error('Error db temp', e);
+          toast.error('No se pudo guardar el escaneo: ' + (e?.response?.data?.error || e.message));
+          if (dataLoaded) fetchAuditData(newLive);
+        });
     }
   };
 
@@ -287,10 +350,13 @@ Reporte Generado Automáticamente por USER.
     { id: 'escaneo', label: 'Escaneo Físico', count: liveCodes.length, icon: ScanLine, color: 'text-indigo-600', bg: 'bg-indigo-50', border: 'border-indigo-200' },
     { id: 'totales', label: 'Órdenes Activas', count: results?.totales.length ?? '…', icon: Search, color: 'text-blue-600', bg: 'bg-blue-50', border: 'border-blue-200' },
     { id: 'olvidadas', label: 'Caducadas', count: results?.olvidadas.length ?? '…', icon: Clock, color: 'text-purple-600', bg: 'bg-purple-50', border: 'border-purple-200' },
-    { id: 'faltantes', label: 'Extraviadas', count: results?.faltaEnDeposito.length ?? '…', icon: XCircle, color: 'text-red-600', bg: 'bg-red-50', border: 'border-red-200' },
+    { id: 'faltantes', label: 'Sin escanear', count: results?.faltaEnDeposito.length ?? '…', icon: XCircle, color: 'text-red-600', bg: 'bg-red-50', border: 'border-red-200' },
     { id: 'sobrantes', label: 'Sobrantes', count: results?.sobraEnDeposito.length ?? '…', icon: AlertTriangle, color: 'text-orange-600', bg: 'bg-orange-50', border: 'border-orange-200' },
     { id: 'sinpago', label: 'Entregadas Sin Pago', count: results?.entregadasSinPago.length ?? '…', icon: AlertTriangle, color: 'text-amber-600', bg: 'bg-amber-50', border: 'border-amber-200' },
     { id: 'desconocidas', label: 'Desconocidos', count: results?.desconocido.length ?? '…', icon: HelpCircle, color: 'text-slate-600', bg: 'bg-slate-50', border: 'border-slate-200' },
+    { id: 'casos', label: 'Registro de Casos', count: kpisCasos ? kpisCasos.vivos : '…', icon: ClipboardList, color: 'text-purple-600', bg: 'bg-purple-50', border: 'border-purple-200' },
+    { id: 'reportes', label: 'Reportes', count: '', icon: FileText, color: 'text-blue-600', bg: 'bg-blue-50', border: 'border-blue-200' },
+    { id: 'ciclico', label: 'Conteo cíclico', count: '', icon: Repeat, color: 'text-indigo-600', bg: 'bg-indigo-50', border: 'border-indigo-200' },
   ];
 
   // Extraviadas ordenadas por código (orden natural: SUB-9 antes que SUB-12)
@@ -307,6 +373,9 @@ Reporte Generado Automáticamente por USER.
           <p className="text-sm text-slate-500 mt-1">Revisa el estado global del depósito, cruza códigos con escáner, exporta reportes y notifica clientes.</p>
         </div>
       </div>
+
+      {/* BARRA DE SESIÓN: abrir (fotografía) / cerrar (motor de casos) / anular */}
+      <AuditDepositoSesionBar estado={estadoSesion} loading={loading} onChange={recargarTodo} />
 
       {/* PANEL PRINCIPAL — siempre visible */}
       <div className="bg-white lg:rounded-xl shadow-sm border border-slate-200 overflow-hidden">
@@ -327,9 +396,11 @@ Reporte Generado Automáticamente por USER.
               >
                 <Icon size={18} className={isActive ? tab.color : 'text-slate-400'} />
                 {tab.label}
-                <span className={`px-2 py-0.5 rounded-full text-xs ${isActive ? `${tab.bg} ${tab.color}` : 'bg-slate-100 text-slate-500'}`}>
-                  {tab.count}
-                </span>
+                {tab.count !== '' && (
+                  <span className={`px-2 py-0.5 rounded-full text-xs ${isActive ? `${tab.bg} ${tab.color}` : 'bg-slate-100 text-slate-500'}`}>
+                    {tab.count}
+                  </span>
+                )}
               </button>
             );
           })}
@@ -338,7 +409,7 @@ Reporte Generado Automáticamente por USER.
         <div className="p-0 lg:p-6">
 
           {/* Skeleton para data tabs que aún no cargaron */}
-          {activeTab !== 'escaneo' && !results && (
+          {!['escaneo', 'casos', 'reportes', 'ciclico'].includes(activeTab) && !results && (
             <div className="flex flex-col items-center justify-center py-20 gap-4 text-slate-400">
               {loading
                 ? <><div className="w-8 h-8 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin" /><p className="text-sm font-medium">Cargando datos...</p></>
@@ -355,11 +426,15 @@ Reporte Generado Automáticamente por USER.
                 <div className="w-full lg:w-1/3 bg-slate-50 p-4 lg:rounded-xl border border-slate-200 shadow-inner">
                   <h3 className="font-bold text-slate-800 mb-2 flex justify-between items-center w-full">
                     <span className="flex items-center gap-2"><ScanLine size={18} className="text-indigo-600" /> Pistola Escáner</span>
-                    <button onClick={handleFinalizarInventario} className="text-[10px] bg-slate-800 hover:bg-slate-900 text-white px-2 py-1.5 rounded shadow">
-                      Finalizar / Reporte
-                    </button>
+                    {sesionAbierta ? (
+                      <span className="text-[10px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 px-2 py-1 rounded">Auditoría {estadoSesion.sesion.codigo} abierta</span>
+                    ) : (
+                      <button onClick={handleFinalizarInventario} className="text-[10px] bg-slate-800 hover:bg-slate-900 text-white px-2 py-1.5 rounded shadow">
+                        Finalizar / Reporte
+                      </button>
+                    )}
                   </h3>
-                  <p className="text-xs text-slate-500 mb-4 block">Tus escaneos se guardan en la DB automáticamente.</p>
+                  <p className="text-xs text-slate-500 mb-4 block">{sesionAbierta ? `Cada lectura se guarda en la auditoría ${estadoSesion.sesion.codigo} y se resuelve a su orden al instante.` : 'Tus escaneos se guardan en la DB automáticamente.'}</p>
                   <div className="flex flex-col gap-3 mb-6">
                     <input
                       type="text"
@@ -388,10 +463,21 @@ Reporte Generado Automáticamente por USER.
                   )}
 
                   <div className="flex flex-col gap-2 mt-4 max-h-[500px] overflow-y-auto pr-2">
-                    {liveCodes.slice().reverse().map(code => (
-                      <div key={code} className="bg-white border text-center relative border-indigo-100 shadow-sm p-3 rounded-lg flex justify-between items-center group">
-                        <span className="font-mono font-bold text-indigo-900 border-b border-dashed border-indigo-300">{code}</span>
-                        <button onClick={() => handleRemoveLiveCode(code)} className="text-red-400 opacity-50 hover:bg-red-50 hover:opacity-100 p-1.5 rounded-full transition-all">
+                    {(sesionAbierta && liveScans.length ? liveScans.slice().reverse() : liveCodes.slice().reverse().map(c => ({ codigo: c }))).map((s, i) => (
+                      <div key={s.codigo + '_' + i} className="bg-white border text-center relative border-indigo-100 shadow-sm p-3 rounded-lg flex justify-between items-center group">
+                        <div className="text-left min-w-0">
+                          <span className="font-mono font-bold text-indigo-900 border-b border-dashed border-indigo-300">{s.codigo}</span>
+                          {s.resultado && (
+                            <div className="text-[10px] mt-0.5 truncate">
+                              <span className={`font-bold ${s.duplicado ? 'text-amber-600' : s.resultado === 'OK' ? 'text-green-700' : s.resultado === 'ENTREGADA' ? 'text-orange-600' : s.resultado === 'SIN_INGRESO' ? 'text-purple-600' : s.resultado === 'DESCONOCIDO' ? 'text-red-600' : 'text-slate-500'}`}>
+                                {s.duplicado ? 'REPETIDA' : s.resultado === 'OK' ? 'OK' : s.resultado === 'ENTREGADA' ? 'FIGURA ENTREGADA' : s.resultado === 'SIN_INGRESO' ? 'SIN INGRESO' : s.resultado === 'DESCONOCIDO' ? 'DESCONOCIDO' : s.resultado === 'FUERA_ALCANCE' ? 'FUERA DE ALCANCE' : 'INGRESÓ DESPUÉS'}
+                              </span>
+                              {s.ordenCodigo && s.ordenCodigo !== s.codigo && <span className="text-slate-500"> · {s.ordenCodigo}</span>}
+                              {s.cliente && <span className="text-slate-400"> · {s.cliente}</span>}
+                            </div>
+                          )}
+                        </div>
+                        <button onClick={() => handleRemoveLiveCode(s.codigo)} className="text-red-400 opacity-50 hover:bg-red-50 hover:opacity-100 p-1.5 rounded-full transition-all" title="Quitar este escaneo">
                           <X size={16} />
                         </button>
                       </div>
@@ -406,8 +492,8 @@ Reporte Generado Automáticamente por USER.
                   {/* Faltan en Deposito (NO fueron escaneadas pero estan Activas) */}
                   <div className="bg-red-50 border border-red-100 rounded-xl p-4 flex flex-col shadow-sm">
                     <div className="border-b border-red-200 pb-2 mb-3">
-                      <h4 className="font-bold text-red-800 flex items-center gap-1"><XCircle size={14} /> Faltan por Escanear</h4>
-                      <p className="text-[10px] text-red-600 leading-tight">Activas pero NO escaneadas. ¿Ya se entregaron Físicamente?</p>
+                      <h4 className="font-bold text-red-800 flex items-center gap-1"><XCircle size={14} /> Sin escanear</h4>
+                      <p className="text-[10px] text-red-600 leading-tight">{sesionAbierta ? 'Activas de la fotografía que todavía no se escanearon. Recién al cerrar la auditoría se vuelven casos FALTANTE.' : 'Activas pero NO escaneadas. ¿Ya se entregaron físicamente?'}</p>
                     </div>
                     <div className="flex flex-col gap-2 flex-grow overflow-y-auto max-h-[500px] pr-1">
                       {results.faltaEnDeposito.map(o => (
@@ -426,7 +512,7 @@ Reporte Generado Automáticamente por USER.
                       <p className="text-[10px] text-orange-600 leading-tight">Escaneadas, pero figuran Entregadas. Volver a Depósito.</p>
                     </div>
                     <div className="flex flex-col gap-2 flex-grow overflow-y-auto max-h-[500px] pr-1">
-                      {results.sobraEnDeposito.filter(o => liveCodes.includes(o.codigo)).map(o => (
+                      {(sesionAbierta ? results.sobraEnDeposito : results.sobraEnDeposito.filter(o => liveCodes.includes(o.codigo))).map(o => (
                         <div key={o.codigo} className="bg-white p-2 text-xs border border-orange-200 rounded text-orange-900 shadow-sm">
                           <p className="font-bold">{o.codigo}</p>
                           <p className="text-[9px] truncate text-slate-500">{o.cliente}</p>
@@ -442,9 +528,10 @@ Reporte Generado Automáticamente por USER.
                       <p className="text-[10px] text-slate-600 leading-tight">Escaneadas que no están en la Base de Datos.</p>
                     </div>
                     <div className="flex flex-col gap-2 flex-grow overflow-y-auto max-h-[500px] pr-1">
-                      {results.desconocido.filter(o => liveCodes.includes(o.codigo)).map(o => (
-                        <div key={o.codigo} className="bg-white p-2 text-xs border border-slate-300 rounded text-slate-900 shadow-sm font-mono font-bold">
-                          {o.codigo}
+                      {[...(results.sinIngreso || []), ...(sesionAbierta ? results.desconocido : results.desconocido.filter(o => liveCodes.includes(o.codigo)))].map(o => (
+                        <div key={o.codigo} className="bg-white p-2 text-xs border border-slate-300 rounded text-slate-900 shadow-sm">
+                          <p className="font-mono font-bold">{o.codigo}</p>
+                          {o.ordenCodigo && <p className="text-[9px] text-purple-700 truncate">En producción sin ingreso: {o.ordenCodigo}{o.cliente ? ' · ' + o.cliente : ''}</p>}
                         </div>
                       ))}
                     </div>
@@ -549,8 +636,8 @@ Reporte Generado Automáticamente por USER.
             <div className="animate-in fade-in slide-in-from-bottom-2 duration-300">
               <div className="flex justify-between items-center mb-4">
                 <div>
-                  <h3 className="text-lg font-bold text-red-800">Faltan en Depósito</h3>
-                  <p className="text-xs text-red-700 mt-1 font-medium">En el sistema figuran que están en bodega, pero no las has escaneado. ¿Se entregaron sin procesar?</p>
+                  <h3 className="text-lg font-bold text-red-800">Sin escanear</h3>
+                  <p className="text-xs text-red-700 mt-1 font-medium">{sesionAbierta ? 'Están en la fotografía como activas y todavía no se escanearon. No son extraviadas: al cerrar la auditoría, las que sigan sin aparecer se convierten en casos FALTANTE del Registro.' : 'En el sistema figuran en depósito pero no se escanearon. ¿Se entregaron sin procesar?'}</p>
                 </div>
                 <div className="flex gap-2">
                   <button
@@ -654,6 +741,21 @@ Reporte Generado Automáticamente por USER.
                 />
               ) : <EmptyState text="Todo en orden. No figuran comprobantes Entregados sin Pago." />}
             </div>
+          )}
+
+          {/* REGISTRO DE CASOS (lista única y permanente) */}
+          {activeTab === 'casos' && (
+            <AuditDepositoCasosTab estado={estadoSesion} refreshKey={refreshCasos} onKpis={setKpisCasos} />
+          )}
+
+          {/* REPORTES (Fase 4): ejecutivo / completo, PDF por impresión y Excel multi-hoja */}
+          {activeTab === 'reportes' && (
+            <AuditDepositoReportesTab refreshKey={refreshCasos} />
+          )}
+
+          {/* CONTEO CÍCLICO (Fase 5): áreas por clase ABC, última auditoría y vencimiento */}
+          {activeTab === 'ciclico' && (
+            <AuditDepositoCiclicoTab estado={estadoSesion} refreshKey={refreshCasos} onChange={recargarTodo} />
           )}
 
           {/* DESCONOCIDOS */}
