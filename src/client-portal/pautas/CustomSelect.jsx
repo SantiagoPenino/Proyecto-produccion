@@ -2,7 +2,9 @@ import { Fragment } from 'react';
 import { Listbox, Transition } from '@headlessui/react';
 import { ChevronDown, Check } from 'lucide-react';
 
-export function CustomSelect({ value, onChange, options, placeholder, disabled, size = 'normal', direction = 'down', className = '', variant = 'dark', name, 'aria-label': ariaLabel }) {
+// `sinScroll`: la lista muestra TODAS las opciones sin tope de alto (listas cortas y cerradas, como
+// los centímetros del parche TPU, donde el scroll escondía el 1, el 2 y el 10).
+export function CustomSelect({ value, onChange, options, placeholder, disabled, size = 'normal', direction = 'down', className = '', variant = 'dark', name, 'aria-label': ariaLabel, sinScroll = false }) {
     const selected = options.find(o => String(o.value) === String(value)) || null;
 
     const isLight = variant === 'light';
@@ -69,7 +71,7 @@ export function CustomSelect({ value, onChange, options, placeholder, disabled, 
                     leaveFrom="opacity-100 translate-y-0 scale-100"
                     leaveTo={`opacity-0 scale-[0.98] ${direction === 'up' ? 'translate-y-1' : '-translate-y-1'}`}
                 >
-                    <Listbox.Options className={`absolute z-50 max-h-80 w-full overflow-auto rounded-xl border ${dropdownColors} focus:outline-none scrollbar-thin ${direction === 'up' ? 'bottom-full mb-1.5' : 'mt-1.5'}`}>
+                    <Listbox.Options className={`absolute z-50 w-full rounded-xl border ${dropdownColors} focus:outline-none ${sinScroll ? 'max-h-none overflow-visible' : 'max-h-80 overflow-auto scrollbar-thin'} ${direction === 'up' ? 'bottom-full mb-1.5' : 'mt-1.5'}`}>
                         {options.length === 0 ? (
                             <div className="py-3 px-4 text-sm text-zinc-500 text-center">
                                 Sin opciones

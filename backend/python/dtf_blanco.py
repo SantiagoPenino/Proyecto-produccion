@@ -9,7 +9,7 @@ UN PDF: el arte original intacto + un canal de tinta plana (Separation "Spot 1")
 con la plancha de blanco, en sobreimpresion, listo para PhotoPrint.
 
 Reglas (decodificadas del .atn + spec del usuario, 14/08/2026):
-  - Zonas de color: blanco al 100%, con CHOKE de 1 px @ 300 dpi (fisico: 0,085 mm; era 2 hasta el 31/08).
+  - Zonas de color: blanco al 100%, con CHOKE de 2 px @ 300 dpi (fisico: 0,169 mm; igual que la accion PS).
   - Blancos del disenio (RGB >= tol, default 245): blanco al 100% SIN choke.
   - Semitransparencias: blanco = opacidad 1:1, lineal desde 0 (identico a la accion,
     que rellena 100K a traves de la seleccion de transparencia).
@@ -23,7 +23,7 @@ parametros pisados con los valores confirmados).
 
 Uso:
     python dtf_blanco.py entrada.pdf salida.pdf [--preview salida.png]
-        [--dpi 300] [--choke-px 1] [--white-pct 100] [--ramp 25] [--tail-cut 3]
+        [--dpi 300] [--choke-px 2] [--white-pct 100] [--ramp 25] [--tail-cut 3]
         [--tol 245] [--spot "Spot 1"]
 
 Salida (ultima linea, para el caller de Node): JSON {"ok":true,...} o {"ok":false,"error":...}
@@ -481,7 +481,9 @@ def main():
     ap.add_argument("salida", help="PDF resultante (arte + spot de blanco)")
     ap.add_argument("--preview", help="PNG opcional con la plancha de blanco (para revision)")
     ap.add_argument("--dpi", type=int, default=300)
-    ap.add_argument("--choke-px", type=float, default=1.0, help="choke en px a 300 dpi (default 1, pedido 31/08)")
+    # 2 px = el valor de la accion de Photoshop. Se probo 1 px el 31/08 y se volvio a 2 el
+    # 03/09 (decision del usuario tras comparar TB-DTF-20199 contra el original).
+    ap.add_argument("--choke-px", type=float, default=2.0, help="choke en px a 300 dpi (default 2, como la accion PS)")
     ap.add_argument("--white-pct", type=float, default=100.0, help="blanco bajo el color (default 100)")
     # Default 25 (veredicto impreso 27/08 sobre tela oscura): el blanco arranca recién en el
     # 25% de opacidad — abajo de eso el color queda sin respaldo y se funde con la tela, que

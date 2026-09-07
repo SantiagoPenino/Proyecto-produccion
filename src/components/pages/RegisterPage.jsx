@@ -48,23 +48,14 @@ const RegisterPage = () => {
         }
     }, [isMontevideo]);
 
-    // Fetch vendedores when department changes
+    // Asesores: todos los del área Ventas, una sola vez. Ya no dependen del departamento (la Zona
+    // Principal/Interior dejó de regir), así que la elección tampoco se resetea al cambiarlo.
     useEffect(() => {
-        if (form.departamentoId) {
-            fetch(`${API_URL}/nomenclators/vendedores-by-department/${form.departamentoId}`)
-                .then(r => r.json())
-                .then(data => {
-                    if (data.success) setVendedores(data.data);
-                    else setVendedores([]);
-                })
-                .catch(() => setVendedores([]));
-        } else {
-            setVendedores([]);
-        }
-        setSelectedVendedorId('');
-        setSelectedVendedorName('');
-        setHadVendedor(false);
-    }, [form.departamentoId]);
+        fetch(`${API_URL}/nomenclators/vendedores`)
+            .then(r => r.json())
+            .then(data => setVendedores(data.success ? data.data : []))
+            .catch(() => setVendedores([]));
+    }, []);
 
     const set = (key) => (e) => {
         const val = key === 'idCliente' ? e.target.value.replace(/\s/g, '') : e.target.value;
@@ -356,13 +347,14 @@ const RegisterPage = () => {
                             </div>
 
                             {/* Vendedor checkbox + SweetAlert picker */}
-                            <div className={`bg-[#111] border border-[#3f3f46] rounded-[10px] p-4 space-y-3 ${!form.departamentoId || !form.localidadId ? 'opacity-50' : ''}`}>
-                                <label className={`flex items-center gap-3 select-none ${!form.departamentoId || !form.localidadId ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
+                            {/* El tilde ya no espera a que elija departamento y localidad: la lista de
+                                asesores dejó de depender de la zona del cliente. */}
+                            <div className="bg-[#111] border border-[#3f3f46] rounded-[10px] p-4 space-y-3">
+                                <label className="flex items-center gap-3 select-none cursor-pointer"
                                     onClick={async () => {
-                                        if (!form.departamentoId || !form.localidadId) return;
                                         if (!hadVendedor) {
                                             if (vendedores.length === 0) {
-                                                Swal.fire({ title: 'Sin asesores', text: 'No hay asesores disponibles para este departamento.', icon: 'info', background: '#212121', color: '#f4f4f5' });
+                                                Swal.fire({ title: 'Sin asesores', text: 'No hay asesores disponibles en este momento.', icon: 'info', background: '#212121', color: '#f4f4f5' });
                                                 return;
                                             }
                                             // Build HTML grid with photos

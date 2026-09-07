@@ -22,9 +22,11 @@ import Swal from 'sweetalert2';
 // Lazy: carga three.js/pdfjs solo si se abre.
 const Tpu3DViewer = React.lazy(() => import('../../../client-portal/modulos/Tpu3DViewer'));
 
-// Capas del arte TPU: son EXACTAMENTE estas, ni una más ni una menos. Espeja CAPAS_ARTE_TPU del
-// backend (ordersController) — el que manda es el backend, esto es UX para no dejar subir de más.
-const CAPAS_ARTE_TPU = 5;
+// Capas del arte TPU (04/09/2026): HASTA 5, y con 2 alcanza (formato actual: cmyk-spots + corte;
+// el viejo: 5 archivos). Espeja CAPAS_ARTE_TPU / CAPAS_ARTE_TPU_MIN del backend
+// (ordersController) — el que manda es el backend, esto es UX para no dejar subir de más.
+const CAPAS_ARTE_TPU = 5;        // máximo
+const CAPAS_ARTE_TPU_MIN = 2;    // mínimo para "arte completo"
 
 // [PRO] Costura/Bordado/Estampado: las únicas 3 áreas reordenables del flujo físico.
 // Mismo conjunto que backend/controllers/ordersController.js (updateOrderRoutePriority).
@@ -430,6 +432,9 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
     const matrizFiles = productionFiles.filter(esMatrizBordado);
     const printFilesVista = productionFiles.filter(f => !esBocetoProduccion(f) && !esMatrizBordado(f));
     const bocetosProduccion = productionFiles.filter(esBocetoProduccion);
+    // Capas de arte cargadas (sin boceto, sin matriz de bordado, sin cancelados): decide si el
+    // cartel de "boceto aprobado" sigue pidiendo el arte o ya avisa que está completo.
+    const capasArteCargadas = printFilesVista.filter(f => (f.Estado || f.estado || f.EstadoArchivo || '').toUpperCase() !== 'CANCELADO').length;
 
     // Fase BOCETO del flujo TPU: el cliente todavía no aprobó → lo único que se sube es el boceto
     // de producción (un solo PDF). El resto del arte recién va después de la aprobación. El reuso
@@ -486,10 +491,10 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                 ? [f]
                 : [new File([f], `BOCETO-${f.name}`, { type: f.type })];
         } else if (!isPRO && yaHayArte + validos.length > CAPAS_ARTE_TPU) {
-            // El arte son CAPAS_ARTE_TPU capas exactas (sin contar las canceladas). Acá es tope
-            // porque se suben de a poco; el "ni una menos" se exige al enviar.
+            // Tope de capas de arte (sin contar las canceladas): máximo CAPAS_ARTE_TPU. El formato
+            // actual usa 2; el viejo, 5.
             // [PRO] Producción no tiene tope: cada archivo es un arte que suma unidades a la Magnitud.
-            return toast.error(`El arte son ${CAPAS_ARTE_TPU} archivos, ni más ni menos (ya hay ${yaHayArte}).`);
+            return toast.error(`El arte admite como máximo ${CAPAS_ARTE_TPU} archivos (ya hay ${yaHayArte}).`);
         }
         if (!currentOrder?.id) return;
         setUploadingTPU(true);
@@ -758,8 +763,8 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
         if (esReusoRegen) {
             // El reuso no pasa por el cliente: va directo a fabricar, así que necesita el arte completo.
             const capasArte = activos.filter(f => !esBocetoProduccion(f)).length;
-            if (capasArte !== CAPAS_ARTE_TPU) {
-                return toast.error(`Se necesitan exactamente ${CAPAS_ARTE_TPU} archivos de arte para enviar a producción (hay ${capasArte}).`);
+            if (capasArte < CAPAS_ARTE_TPU_MIN || capasArte > CAPAS_ARTE_TPU) {
+                return toast.error(`Se necesitan entre ${CAPAS_ARTE_TPU_MIN} y ${CAPAS_ARTE_TPU} archivos de arte para enviar a producción (hay ${capasArte}).`);
             }
         } else if (!activos.some(esBocetoProduccion)) {
             // Lo único que se manda a aprobar es el BOCETO; el resto del arte se sube después.
@@ -768,7 +773,7 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
         const r = await Swal.fire({
             title: esReusoRegen ? '¿Enviar a producción?' : '¿Enviar a aprobación del cliente?',
             html: esReusoRegen
-                ? `Es un <b>reuso de matriz</b> con cantidad distinta: el diseño ya está aprobado.<br/>Con las ${CAPAS_ARTE_TPU} capas nuevas, la orden entra <b>directo a producción</b> (sin aprobación del cliente).`
+                ? `Es un <b>reuso de matriz</b> con cantidad distinta: el diseño ya está aprobado.<br/>Con el arte nuevo completo, la orden entra <b>directo a producción</b> (sin aprobación del cliente).`
                 : 'El cliente verá el <b>boceto</b> y deberá aprobarlo.<br/>La orden queda <b>retenida</b> hasta que apruebe.',
             icon: 'question',
             showCancelButton: true,
@@ -2054,10 +2059,17 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                                             )
                                         ) : tpuEstado.aprobado ? (
                                             // Aprobado: el botón de enviar NO vuelve a aparecer — re-enviarla
-                                            // retendría una orden que ya está en producción.
-                                            <div className="flex items-center justify-center gap-2 py-3 mb-2 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs font-bold uppercase tracking-wide">
-                                                <i className="fa-solid fa-check-double"></i> Boceto aprobado por el cliente — subí el arte ({CAPAS_ARTE_TPU} capas)
-                                            </div>
+                                            // retendría una orden que ya está en producción. Con el arte ya
+                                            // cargado (2 a 5 archivos) el cartel deja de pedirlo.
+                                            capasArteCargadas >= CAPAS_ARTE_TPU_MIN ? (
+                                                <div className="flex items-center justify-center gap-2 py-3 mb-2 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs font-bold uppercase tracking-wide">
+                                                    <i className="fa-solid fa-check-double"></i> Diseño aprobado — arte cargado ({capasArteCargadas} archivo{capasArteCargadas === 1 ? '' : 's'}), lista para el lote
+                                                </div>
+                                            ) : (
+                                                <div className="flex items-center justify-center gap-2 py-3 mb-2 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs font-bold uppercase tracking-wide">
+                                                    <i className="fa-solid fa-check-double"></i> Boceto aprobado por el cliente — subí el arte ({CAPAS_ARTE_TPU_MIN} a {CAPAS_ARTE_TPU} archivos)
+                                                </div>
+                                            )
                                         ) : currentOrder?.status === 'Cargando...' ? (
                                             <div className="flex items-center justify-center gap-2 py-3 mb-2 rounded-xl bg-amber-50 border border-amber-200 text-amber-700 text-xs font-bold uppercase tracking-wide">
                                                 <i className="fa-regular fa-clock"></i> Esperando aprobación del cliente
@@ -2151,7 +2163,7 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                                                         : 'Subiendo...')
                                                     : faseBocetoTPU
                                                         ? 'Subir boceto de producción (PDF)'
-                                                        : `Subir arte (PDF / PLT · ${CAPAS_ARTE_TPU} capas)`}
+                                                        : `Subir arte (PDF / PLT · hasta ${CAPAS_ARTE_TPU} archivos)`}
                                             </span>
                                             <input type="file"
                                                 accept={faseBocetoTPU ? 'application/pdf,.pdf' : 'application/pdf,.pdf,.plt'}

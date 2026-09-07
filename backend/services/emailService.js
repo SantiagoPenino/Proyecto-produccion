@@ -10,19 +10,23 @@ const BASE_URL = process.env.BASE_URL || 'https://localhost:5173';
 const FROM_EMAIL = 'User <notificaciones@user.com.uy>';
 
 exports.sendMail = async (to, subject, html, attachments = []) => {
+    // Clientes.Email es CHAR: llega con relleno de espacios ("mail@x.com      ") y Resend
+    // rechaza la dirección. Se limpia acá, así cubre a todos los que mandan (activación,
+    // recuperación de contraseña, confirmación de pedido).
+    const dest = Array.isArray(to) ? to.map(t => String(t ?? '').trim()) : String(to ?? '').trim();
     try {
         const { data, error } = await resend.emails.send({
             from: FROM_EMAIL,
-            to,
+            to: dest,
             subject,
             html,
             ...(attachments.length > 0 && { attachments })
         });
         if (error) {
-            logger.error(`[Email] ❌ RESEND ERROR enviando a ${to}: ${JSON.stringify(error)}`);
+            logger.error(`[Email] ❌ RESEND ERROR enviando a ${dest}: ${JSON.stringify(error)}`);
             return false;
         }
-        logger.info(`[Email] ✅ Enviado a ${to}: ${subject}`);
+        logger.info(`[Email] ✅ Enviado a ${dest}: ${subject}`);
         return true;
 
     } catch (err) {

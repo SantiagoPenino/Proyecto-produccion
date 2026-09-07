@@ -102,6 +102,10 @@ router.put('/:ordenId/route-priority', verifyToken, ordersController.updateOrder
 // TPU: visor 3D interno (el diseñador elige texturas desde el detalle de la orden).
 router.get('/:ordenId/tpu-model', verifyToken, ordersController.getTpuModelCapasInterno);
 router.get('/:ordenId/tpu-model/archivo/:archivoId', verifyToken, ordersController.getTpuModelArchivoInterno);
+// TPU "Hago mi matriz": job + análisis del vector del cliente y el PDF fuente, para que el visor 3D
+// abra la orden en modo matriz (el boceto y la plancha de corte no están alineados entre sí).
+router.get('/:ordenId/tpu-matriz', verifyToken, ordersController.getTpuMatrizInterno);
+router.get('/:ordenId/tpu-matriz/fuente', verifyToken, ordersController.getTpuMatrizFuenteInterno);
 router.post('/file/cancel', verifyToken, ordersController.cancelFile);
 router.post('/reactivate', verifyToken, ordersController.reactivateOrder);
 router.post('/reactivate-request', verifyToken, ordersController.reactivateRequest);

@@ -36,6 +36,9 @@ router.get('/orders-files', verifyToken, impersonarCliente, webOrdersController.
 // TPU: visor 3D del parche — capas del arte y su contenido (solo dueño del pedido)
 router.get('/tpu-model/:ordenId', verifyToken, impersonarCliente, webOrdersController.getTpuModelCapas);
 router.get('/tpu-model/:ordenId/archivo/:archivoId', verifyToken, impersonarCliente, webOrdersController.getTpuModelArchivo);
+// TPU "Hago mi matriz": la matriz del pedido (job + análisis) y su PDF fuente, para el visor 3D en modo matriz.
+router.get('/orden/:ordenId/tpu-matriz', verifyToken, impersonarCliente, webOrdersController.getTpuMatriz);
+router.get('/orden/:ordenId/tpu-matriz/fuente', verifyToken, impersonarCliente, webOrdersController.getTpuMatrizFuente);
 
 // TPU: catálogo de texturas (listado de assets/textures). Sin impersonarCliente: no hay nada
 // scopeado al cliente y lo consume también el detalle de orden interno (F5).
@@ -207,6 +210,10 @@ router.post('/upload-stream', verifyToken, impersonarCliente, upload.single('fil
 // Va acá abajo y no con el resto de las rutas TPU porque necesita `upload`, que se define recién
 // unas líneas más arriba.
 router.post('/orden/:ordenId/boceto-aprobado', verifyToken, impersonarCliente, upload.single('file'), webOrdersController.subirBocetoAprobado);
+
+// TPU "Hago mi matriz": el cliente sube su PDF vectorial y recibe el análisis (trazados por color)
+// para armar las zonas de relieve en el form. El pedido viaja después con el token que devuelve.
+router.post('/tpu-matriz/analizar', verifyToken, impersonarCliente, upload.single('file'), webOrdersController.analizarMatrizTpu);
 
 // ── TIENDA (e-commerce del portal — ver docs/ecommerce-portal-plan.md) ───────
 // Catálogo de la vitrina: solo productos publicados en TiendaProductos, precio base y stock

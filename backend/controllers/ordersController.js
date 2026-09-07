@@ -3,9 +3,16 @@ const logger = require('../utils/logger');
 const pushService = require('../services/pushNotificationService');
 const { changeOrderState } = require('../services/stateManagerService');
 
-// Capas del arte TPU: son EXACTAMENTE estas, ni una más ni una menos. Al subir funciona como
-// tope (se cargan de a poco) y al mandar a producción se exige el número justo.
-const CAPAS_ARTE_TPU = 5;
+// Capas del arte TPU (04/09/2026): HASTA 5, y con 2 alcanza. Conviven dos formatos —
+// el viejo de 5 archivos (CMYK + Spot 1/2/3 + Corte.plt, las matrices migradas) y el actual
+// del script de Illustrator, que saca 2 PDFs: '<x>-cmyk-spots.pdf' (CMYK + Spot 1/2/3 juntos,
+// separados por tinta plana) + '<x>-corte.pdf' (CutContour). Al subir, CAPAS_ARTE_TPU es el
+// tope; "arte completo" (pase a Diseñado, gate de lote, reuso) es tener entre MIN y MAX.
+// OJO legacy: una orden del formato viejo queda "completa" al 2º archivo — el operario sube
+// los 5 antes de asignarla a lote (decisión del usuario: regla simple, sin olfatear roles).
+const CAPAS_ARTE_TPU = 5;        // máximo
+const CAPAS_ARTE_TPU_MIN = 2;    // mínimo para considerar el arte completo
+const arteTPUCompleto = (n) => Number(n || 0) >= CAPAS_ARTE_TPU_MIN && Number(n || 0) <= CAPAS_ARTE_TPU;
 
 // HELPER: Recalcular Magnitud de la Orden (Suma de piezas de Archivos + Servicios)
 // Se usa en add, update, delete y cancel para mantener la coherencia.
@@ -149,7 +156,7 @@ exports.uploadProductionFile = async (req, res) => {
         await require('./webOrdersController').ensureColFechaAprobacion(pool);
         const ordRes = await pool.request()
             .input('OID', sql.Int, parseInt(ordenId))
-            .query('SELECT OrdenID, CodigoOrden, AreaID, Nota, FechaAprobacionCliente FROM Ordenes WHERE OrdenID = @OID');
+            .query('SELECT OrdenID, CodigoOrden, AreaID, Nota, FechaAprobacionCliente, NoDocERP FROM Ordenes WHERE OrdenID = @OID');
         if (!ordRes.recordset.length) return res.status(404).json({ error: "Orden no encontrada." });
         const orden = ordRes.recordset[0];
 
@@ -163,7 +170,18 @@ exports.uploadProductionFile = async (req, res) => {
                       AND LOWER(NombreArchivo) NOT LIKE '%boceto%'
                       AND ISNULL(TipoArchivo,'') <> 'MATRIZ'`);
         const nArchivos = cntRes.recordset[0]?.n || 0;
-        const finalName = file.originalname;
+        let finalName = file.originalname;
+
+        // [TPU 04/09] El script de Illustrator exporta '<base> - Impresion.pdf' (CMYK + Spot 1/2/3
+        // juntos). Todo lo que le muestra el arte al cliente, a "Mis matrices" y al visor 3D lo
+        // busca por '%cmyk%' en el nombre, así que ese archivo entra renombrado a
+        // 'tpu<NoDocERP>-cmyk-spots.pdf' (convención provisoria del usuario, "después veré una
+        // nueva forma"). El de corte ya trae 'corte' en el nombre y no se toca.
+        if (String(orden.AreaID || '').toUpperCase() === 'TPU' && /impresion/i.test(finalName)) {
+            const ext = (finalName.match(/\.[a-z0-9]+$/i) || ['.pdf'])[0];
+            const idBase = orden.NoDocERP ? `tpu${String(orden.NoDocERP).trim()}` : String(orden.CodigoOrden || '').trim();
+            finalName = `${idBase}-cmyk-spots${ext}`;
+        }
 
         // TPU en dos fases. Antes de la aprobación del cliente solo existe UNA subida válida: el
         // BOCETO DE PRODUCCIÓN (PDF con 'boceto' en el nombre). Las otras capas del arte recién se
@@ -185,12 +203,12 @@ exports.uploadProductionFile = async (req, res) => {
                 return res.status(400).json({ error: 'El boceto de producción debe ser un PDF (es lo que el cliente ve y el visor 3D rasteriza).' });
             }
         } else if (!esMatriz && !esPROOrden && nArchivos >= CAPAS_ARTE_TPU) {
-            // El arte son CAPAS_ARTE_TPU capas exactas (sin contar cancelados). Acá es un tope
-            // porque se suben de a poco; el "ni una menos" se exige al mandar a producción.
+            // Tope de capas de arte (sin contar cancelados): máximo CAPAS_ARTE_TPU. El formato
+            // actual usa 2 (cmyk-spots + corte); el viejo, 5.
             // [BORDADO] La matriz no ocupa capa de arte: queda exenta del tope.
             // [PRO] Producción (prendas) también queda exenta del tope: sus archivos son
             // artes por prenda, no capas (y no tocan la Magnitud, que es la cantidad pedida).
-            return res.status(400).json({ error: `La orden ya tiene ${CAPAS_ARTE_TPU} archivos de arte (son ${CAPAS_ARTE_TPU}, ni más ni menos).` });
+            return res.status(400).json({ error: `La orden ya tiene ${CAPAS_ARTE_TPU} archivos de arte (el máximo es ${CAPAS_ARTE_TPU}).` });
         }
 
         // 1. INSERT fila ArchivosOrden (ruta pendiente hasta que suba a Drive)
@@ -231,13 +249,15 @@ exports.uploadProductionFile = async (req, res) => {
             } catch (e) { logger.warn('[uploadProductionFile] thumb read: ' + e.message); }
         }
 
-        // TPU: con la ÚLTIMA capa del arte la orden queda lista para fabricar. El estado de área
-        // pasa a 'Diseñado' — que cuelga de Producción, así que el general salta solo y el tablero
-        // deja de pulsar. `nArchivos` es el conteo previo a este INSERT (sin el boceto).
+        // TPU: cuando el arte llega al mínimo (CAPAS_ARTE_TPU_MIN, el formato de 2 archivos) la
+        // orden queda lista para fabricar. El estado de área pasa a 'Diseñado' — que cuelga de
+        // Producción, así que el general salta solo y el tablero deja de pulsar. Se dispara UNA vez,
+        // al entrar en el rango (no en cada archivo siguiente). `nArchivos` es el conteo previo a
+        // este INSERT (sin el boceto).
         // El reuso va por `esReusoTPU`, igual que el gate de arriba: nunca tiene fecha de aprobación
         // (el diseño ya lo aprobó el cliente en la orden original), así que exigirla lo dejaba
-        // clavado en Pendiente con las 5 capas subidas.
-        if (esTPUOrden && (orden.FechaAprobacionCliente || esReusoTPU) && (nArchivos + 1) === CAPAS_ARTE_TPU) {
+        // clavado en Pendiente con las capas subidas.
+        if (esTPUOrden && (orden.FechaAprobacionCliente || esReusoTPU) && (nArchivos + 1) === CAPAS_ARTE_TPU_MIN) {
             const tx = new sql.Transaction(pool);
             await tx.begin();
             try {
@@ -245,7 +265,7 @@ exports.uploadProductionFile = async (req, res) => {
                     target : { type: 'ORDER', id: orden.OrdenID },
                     estado : 'Diseñado',
                     userObj: req.user || 'Sistema',
-                    detalle: `Arte completo (${CAPAS_ARTE_TPU} capas) — lista para asignar a un lote`,
+                    detalle: `Arte completo (${nArchivos + 1} capas) — lista para asignar a un lote`,
                     io     : req.app.get('socketio'),
                 });
                 await tx.commit();
@@ -662,8 +682,8 @@ exports.enviarAprobacionTPU = async (req, res) => {
             // El reuso NO pasa por el cliente: entra directo a fabricar, así que el arte tiene que
             // estar completo (las capas regeneradas para la cantidad nueva).
             const capasArte = (o.archivos || 0) - (o.bocetos || 0); // el boceto no es una capa de arte
-            if (capasArte !== CAPAS_ARTE_TPU) {
-                return res.status(400).json({ error: `Se necesitan exactamente ${CAPAS_ARTE_TPU} archivos de arte para enviar a producción (hay ${capasArte}).` });
+            if (!arteTPUCompleto(capasArte)) {
+                return res.status(400).json({ error: `Se necesitan entre ${CAPAS_ARTE_TPU_MIN} y ${CAPAS_ARTE_TPU} archivos de arte para enviar a producción (hay ${capasArte}).` });
             }
             if (String(o.Estado || '') !== 'Cargando...') return res.status(400).json({ error: 'La orden ya está en producción.' });
             // Activar directo a producción (sin aprobación del cliente).
@@ -962,6 +982,37 @@ exports.getTpuModelArchivoInterno = async (req, res) => {
     }
 };
 
+// GET /api/orders/:ordenId/tpu-matriz — si la orden es "Hago mi matriz", el job (zonas/texturas) y
+// el análisis del vector del cliente, para abrir el visor 3D en modo matriz. 404 si no lo es.
+exports.getTpuMatrizInterno = async (req, res) => {
+    const ordenId = parseInt(req.params.ordenId, 10);
+    if (!ordenId) return res.status(400).json({ error: 'Datos inválidos' });
+    try {
+        const tpuMatrizService = require('../services/tpuMatrizService');
+        const pool = await getPool();
+        const m = await tpuMatrizService.leerMatrizDeOrden(pool, ordenId);
+        if (!m) return res.status(404).json({ success: false, error: 'La orden no tiene matriz propia.' });
+        res.json({ success: true, ...m });
+    } catch (err) {
+        logger.error(`[TPU-Matriz interno] ${ordenId}: ${err.message}`);
+        res.status(500).json({ error: 'No se pudo leer la matriz de la orden.' });
+    }
+};
+
+// GET /api/orders/:ordenId/tpu-matriz/fuente — el PDF vectorial del cliente (proxy Drive).
+exports.getTpuMatrizFuenteInterno = async (req, res) => {
+    const ordenId = parseInt(req.params.ordenId, 10);
+    if (!ordenId) return res.status(400).json({ error: 'Datos inválidos' });
+    try {
+        const tpuMatrizService = require('../services/tpuMatrizService');
+        const pool = await getPool();
+        await tpuMatrizService.responderFuenteMatriz(pool, ordenId, null, res);
+    } catch (err) {
+        logger.error(`[TPU-Matriz interno] fuente ${ordenId}: ${err.message}`);
+        if (!res.headersSent) res.status(500).json({ error: 'No se pudo leer el PDF de la matriz.' });
+    }
+};
+
 // =====================================================================
 // 1. OBTENER ÓRDENES (ACTUALIZADO: Lee Material, Variante y CodigoOrden)
 // =====================================================================
@@ -1153,7 +1204,7 @@ exports.getOrdersByArea = async (req, res) => {
             veredictoCliente     : o.FechaAprobacionCliente ? 'APROBADO'
                                  : (o.FechaRechazoCliente ? 'RECHAZADO' : null),
             fechaVeredictoCliente: o.FechaAprobacionCliente || o.FechaRechazoCliente || null,
-            arteCompleto: (o.CapasArte || 0) >= CAPAS_ARTE_TPU,
+            arteCompleto: arteTPUCompleto(o.CapasArte || 0),
             priority: o.Prioridad,
             entryDate: o.FechaIngreso,
 
@@ -1472,9 +1523,9 @@ exports.assignRoll = async (req, res) => {
 
         // ----------------------------------------------------
         // REGLA DE NEGOCIO PARA TPU
-        // A un lote solo entra la orden con el ARTE COMPLETO: las CAPAS_ARTE_TPU capas, sin contar
-        // el boceto (que es lo que aprobó el cliente, no se fabrica). Sin esto se podía mandar a
-        // imprimir una orden a la que todavía le faltan capas.
+        // A un lote solo entra la orden con el ARTE COMPLETO: entre CAPAS_ARTE_TPU_MIN y
+        // CAPAS_ARTE_TPU capas, sin contar el boceto (que es lo que aprobó el cliente, no se
+        // fabrica). Sin esto se podía mandar a imprimir una orden sin arte.
         // ----------------------------------------------------
         if (areaCode === 'TPU') {
             const idsTPU = targetOrderIds.map(x => parseInt(x, 10)).filter(Number.isInteger);
@@ -1489,13 +1540,13 @@ exports.assignRoll = async (req, res) => {
                         FROM dbo.Ordenes o
                         WHERE o.OrdenID IN (${idsTPU.join(',')})
                     `);
-                const incompletas = arteRes.recordset.filter(o => (o.Capas || 0) !== CAPAS_ARTE_TPU);
+                const incompletas = arteRes.recordset.filter(o => !arteTPUCompleto(o.Capas || 0));
                 if (incompletas.length > 0) {
                     const detalle = incompletas
-                        .map(o => `${o.CodigoOrden} (${o.Capas || 0}/${CAPAS_ARTE_TPU})`)
+                        .map(o => `${o.CodigoOrden} (${o.Capas || 0} capas)`)
                         .join(', ');
                     return res.status(400).json({
-                        error: `⛔ Falta el arte para asignar a un lote: ${detalle}. Subí las ${CAPAS_ARTE_TPU} capas antes de mandarla a imprimir.`
+                        error: `⛔ Falta el arte para asignar a un lote: ${detalle}. Subí el arte (entre ${CAPAS_ARTE_TPU_MIN} y ${CAPAS_ARTE_TPU} archivos) antes de mandarla a imprimir.`
                     });
                 }
             }
@@ -2693,14 +2744,14 @@ exports.unassignOrder = async (req, res) => {
             const normEstado = (s) => (s || '').toUpperCase().trim();
             const isProtectedState = TERMINALES.includes(normEstado(estadoActual)) || TERMINALES.includes(normEstado(estadoAreaActual));
 
-            // TPU: el estado previo no se recuerda, se DEDUCE. Una orden con las CAPAS_ARTE_TPU capas
-            // subidas y el diseño aprobado (o un reuso, que nunca tiene aprobación) ya está diseñada:
+            // TPU: el estado previo no se recuerda, se DEDUCE. Una orden con el arte completo (entre
+            // CAPAS_ARTE_TPU_MIN y CAPAS_ARTE_TPU capas) y el diseño aprobado (o un reuso, que nunca tiene aprobación) ya está diseñada:
             // aplastarla a 'Pendiente' al sacarla del lote borraba ese hecho y el operario la veía
             // como si le faltara el arte. Misma condición que usa uploadProductionFile para pasarla
             // a 'Diseñado', así no hay dos definiciones de "arte completo" que se desincronicen.
             const ord = current.recordset[0] || {};
             const arteCompletoTPU = String(ord.AreaID || '').trim().toUpperCase() === 'TPU'
-                && (ord.Capas || 0) === CAPAS_ARTE_TPU
+                && arteTPUCompleto(ord.Capas || 0)
                 && (!!ord.FechaAprobacionCliente || /\[REUSO-REGEN\]/i.test(ord.Nota || ''));
             const estadoDestino = arteCompletoTPU ? 'Diseñado' : 'Pendiente';
 

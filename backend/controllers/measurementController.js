@@ -690,7 +690,7 @@ const sanitizeFileName = (str) => (str || '').replace(/\//g, '-').replace(/[<>:"
 
 /**
  * Subcarpeta destino del archivo dentro de la descarga (ZIP o escritura en disco).
- * Solo TPU: una orden son 5 capas (CMYK + spots + corte) y sueltas en la raíz del lote no se
+ * Solo TPU: una orden son hasta 5 capas (CMYK + spots + corte; 2 en el formato actual) y sueltas en la raíz del lote no se
  * sabe cuál es de cuál, así que cada orden va en su propia carpeta `tpu-<NoDocERP>`.
  * El resto de las áreas sigue plano (null = sin carpeta).
  * Fallback al CodigoOrden: las matrices migradas de la planilla vieja no tienen NoDocERP.

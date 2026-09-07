@@ -67,7 +67,11 @@ async function marcarImpresaAlCompletar(transaction, ordenId) {
             );
             UPDATE dbo.Ordenes
             SET Impreso = 1,
-                CantidadImpresa = CASE WHEN @TotalParcial IS NOT NULL THEN @TotalParcial ELSE CantidadImpresa END
+                CantidadImpresa = CASE WHEN @TotalParcial IS NOT NULL THEN @TotalParcial ELSE CantidadImpresa END,
+                -- Orden REAL de impresión (ver rollsController.ensureOrderColumns): el WHERE de abajo
+                -- ya garantiza que esto solo corre en la transición 0→1, así que siempre es la fecha
+                -- correcta y nunca se pisa un valor previo.
+                FechaImpreso = GETDATE()
             WHERE OrdenID = @OID AND ISNULL(Impreso, 0) = 0
         `);
 }

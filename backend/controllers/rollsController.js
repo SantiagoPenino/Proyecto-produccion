@@ -9,6 +9,14 @@ async function ensureOrderColumns(pool) {
     await pool.request().query(`
         IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE Name = 'Impreso' AND Object_ID = Object_ID('dbo.Ordenes'))
             ALTER TABLE dbo.Ordenes ADD Impreso BIT NOT NULL CONSTRAINT DF_Ordenes_Impreso DEFAULT 0;
+        -- Cuándo se marcó Impreso=1 (NULL = nunca, o desmarcada). Es la única verdad del orden REAL
+        -- de impresión que no depende del navegador: antes, una orden agregada tarde a un lote SB
+        -- que quedaba "fuera de secuencia" se pineaba al final solo en el sessionStorage del
+        -- navegador que la vio así — otra PC, sin ese dato local, la volvía a fundir en su bloque
+        -- de tela apenas se imprimía. Con esta fecha el detalle del lote arma el orden de impresión
+        -- igual en cualquier PC.
+        IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE Name = 'FechaImpreso' AND Object_ID = Object_ID('dbo.Ordenes'))
+            ALTER TABLE dbo.Ordenes ADD FechaImpreso DATETIME2 NULL;
         IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE Name = 'Calandrado' AND Object_ID = Object_ID('dbo.Ordenes'))
             ALTER TABLE dbo.Ordenes ADD Calandrado BIT NOT NULL CONSTRAINT DF_Ordenes_Calandrado DEFAULT 0;
         IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE Name = 'CantidadImpresa' AND Object_ID = Object_ID('dbo.Ordenes'))
@@ -1283,7 +1291,7 @@ exports.getRollDetails = async (req, res) => {
                 SELECT 
                     o.OrdenID, o.CodigoOrden, o.Cliente, o.DescripcionTrabajo, 
                     o.Magnitud, o.Material, o.Variante, o.RolloID, 
-                    o.Prioridad, o.Estado, o.FechaIngreso, o.Secuencia, o.Tinta, o.NoDocERP, o.IdCabezalERP, o.Nota, o.Impreso, o.Calandrado, o.UM, o.CantidadImpresa, o.CantidadCortada, o.MetrosGrupoFalla, o.GrupoManual,
+                    o.Prioridad, o.Estado, o.FechaIngreso, o.Secuencia, o.Tinta, o.NoDocERP, o.IdCabezalERP, o.Nota, o.Impreso, o.FechaImpreso, o.Calandrado, o.UM, o.CantidadImpresa, o.CantidadCortada, o.MetrosGrupoFalla, o.GrupoManual,
                     o.BobinaTelaID,
                     -- TELA DE CLIENTE: partes de la bobina elegida (para mostrar como material y agrupar por Referencia)
                     ibt.Referencia AS BobRef, ibt.DescripcionTela AS BobDesc, COALESCE(ibt.AnchoReal, ibt.Ancho) AS BobAncho,
@@ -1354,6 +1362,7 @@ exports.getRollDetails = async (req, res) => {
                 rollId: o.RolloID,
                 sequence: o.Secuencia,
                 printed: !!o.Impreso,
+                fechaImpreso: o.FechaImpreso || null,        // orden REAL de impresión (backend, no sessionStorage)
                 calandered: !!o.Calandrado,
                 um: (o.UM || '').trim(),                    // Impresión parcial (TPU)
                 cantidadImpresa: o.CantidadImpresa || 0,    // unidades/copias ya impresas
@@ -1428,7 +1437,10 @@ exports.setOrderPrinted = async (req, res) => {
                     -- nunca queden inconsistentes.
                     CantidadImpresa = CASE WHEN @TotalParcial IS NOT NULL
                         THEN CASE WHEN @P = 1 THEN @TotalParcial ELSE 0 END
-                        ELSE CantidadImpresa END
+                        ELSE CantidadImpresa END,
+                    -- Se desmarca al desmarcar Impreso: si se reimprime después, la fecha nueva
+                    -- refleja CUÁNDO ocurrió de verdad, no cuándo se había marcado la primera vez.
+                    FechaImpreso = CASE WHEN @P = 1 THEN GETDATE() ELSE NULL END
                 WHERE OrdenID = @OID
             `);
         res.json({ ok: true });
@@ -1526,7 +1538,10 @@ exports.setOrderCantidadImpresa = async (req, res) => {
                 DECLARE @Val DECIMAL(10,2) = CASE WHEN @C < 0 THEN 0 WHEN @Total > 0 AND @C > @Total THEN @Total ELSE @C END;
                 UPDATE dbo.Ordenes
                 SET ${colCant} = @Val,
-                    ${colFlag} = CASE WHEN @Total > 0 AND @Val >= @Total THEN 1 ELSE 0 END
+                    ${colFlag} = CASE WHEN @Total > 0 AND @Val >= @Total THEN 1 ELSE 0 END${segundaEstacion ? '' : `,
+                    -- Impreso derivado del contador: la fecha se fija la PRIMERA vez que se completa
+                    -- (ISNULL: re-guardar el mismo total no la pisa) y se limpia si se corrige para abajo.
+                    FechaImpreso = CASE WHEN @Total > 0 AND @Val >= @Total THEN ISNULL(FechaImpreso, GETDATE()) ELSE NULL END`}
                 WHERE OrdenID = @OID;
                 SELECT @Val AS CantidadImpresa, @Total AS Total, CASE WHEN @Total > 0 AND @Val >= @Total THEN 1 ELSE 0 END AS Impreso;
             `);

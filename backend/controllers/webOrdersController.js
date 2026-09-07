@@ -474,6 +474,9 @@ exports.createWebOrder = async (req, res) => {
                     if (srv.metadata.piezasTotal) metaParts.push(`Piezas: ${srv.metadata.piezasTotal}`);
                     if (srv.metadata.metrosCorteTotal) metaParts.push(`Corte laser: ${srv.metadata.metrosCorteTotal} m`);
                     if (srv.metadata.largoTelaTotal) metaParts.push(`Largo tela: ${srv.metadata.largoTelaTotal} m`);
+                    // TPU "Hago mi matriz": el cliente hizo su propia matriz (sin cargo de matriz);
+                    // el arte lo genera el sistema al crear el pedido (tpuMatrizService).
+                    if (srv.metadata.matrizPropia) metaParts.push('Matriz propia del cliente (arte generado por el sistema, sin cargo de matriz)');
 
                     if (metaParts.length > 0) {
                         techInfo = metaParts.join(', '); // Format: "Prendas: 45, Bajadas: 3, Origen: Cliente"
@@ -522,6 +525,12 @@ exports.createWebOrder = async (req, res) => {
                     fabricOrigin: srv.metadata?.fabricOrigin || null,
                     selectedSubOrderId: srv.metadata?.selectedSubOrderId || null,
                     selectedBobinaIdExtra: srv.metadata?.selectedBobinaId ? parseInt(srv.metadata.selectedBobinaId) : null,
+                    // TPU "Hago mi matriz": token del PDF analizado + zonas/texturas elegidas por el
+                    // cliente. Se valida ACÁ (antes de crear nada) para que un pedido roto no nazca;
+                    // la generación corre después del commit (tpuMatrizService.encolarGeneracion).
+                    matrizPropia: (serviceId === 'tpu' && srv.esPrincipal && srv.metadata?.matrizPropia)
+                        ? require('../services/tpuMatrizService').validarMatriz(srv.metadata.matrizPropia, req.user?.codCliente)
+                        : null,
                     notaAdicional: serviceNote, // Nota completa para la Orden
                     techInfo: techInfo // Info técnica limpia para ServiciosExtraOrden
                 };
@@ -1384,7 +1393,8 @@ exports.createWebOrder = async (req, res) => {
 
                 // TPU trabajo nuevo: cobrar la matriz (artículo 156 = US$15) como línea de facturación.
                 // El reuso de matriz va por /reuse-matriz y NO pasa por acá, así que ahí no se cobra.
-                if (serviceId === 'tpu' && !exec.isExtra && String(exec.areaID || '').toUpperCase() === 'TPU') {
+                // "Hago mi matriz" (exec.matrizPropia) tampoco la paga: la matriz la hizo el cliente.
+                if (serviceId === 'tpu' && !exec.isExtra && !exec.matrizPropia && String(exec.areaID || '').toUpperCase() === 'TPU') {
                     await new sql.Request(transaction)
                         .input('OID', sql.Int, newOID)
                         .query(`INSERT INTO ServiciosExtraOrden (OrdenID, CodArt, CodStock, Descripcion, Cantidad, PrecioUnitario, TotalLinea, Observacion, FechaRegistro)
@@ -2111,6 +2121,28 @@ exports.createWebOrder = async (req, res) => {
                 uploadManifest: filesToUpload,
                 fechaCompromisoEmb // 'YYYY-MM-DD' o null si el pedido no llevaba Bordado (o no se pudo calcular)
             });
+
+            // --- TPU "HAGO MI MATRIZ": generar el arte en segundo plano ---
+            // Después del commit y de responder: el generador tarda segundos y sube a Drive. La
+            // orden ya nació 'Pendiente' (sin archivos que esperar) y pasa a 'Diseñado' cuando el
+            // arte está; si falla, queda marcada en Nota/Historial para que producción la haga a mano.
+            try {
+                const conMatriz = pendingOrderExecutions.filter(e => e.matrizPropia && e.newOrdenID);
+                if (conMatriz.length) {
+                    const tpuMatrizService = require('../services/tpuMatrizService');
+                    for (const e of conMatriz) {
+                        tpuMatrizService.encolarGeneracion({
+                            ordenId: e.newOrdenID,
+                            codCliente: req.user?.codCliente,
+                            matriz: e.matrizPropia,
+                            cantidad: e.magnitudInicial,
+                            io: req.app.get('socketio'),
+                        });
+                    }
+                }
+            } catch (matrizErr) {
+                logger.error(`[TPU-Matriz] no se pudo encolar la generación: ${matrizErr.message}`);
+            }
 
             // --- AUTO-COTIZACIÓN ASÍNCRONA ---
             // Disparar el cálculo de precios en segundo plano para que la orden
@@ -2980,9 +3012,11 @@ exports.getMisMatrices = async (req, res) => {
     }
 };
 
-// Espeja CAPAS_ARTE_TPU de ordersController: el arte de un TPU son exactamente estas capas. Acá se
-// usa para saber si la matriz tiene arte fabricable o solo el boceto.
-const CAPAS_ARTE_TPU = 5;
+// Espeja CAPAS_ARTE_TPU / CAPAS_ARTE_TPU_MIN de ordersController (04/09/2026): el arte de un TPU
+// son HASTA 5 archivos y con 2 alcanza (formato actual: cmyk-spots + corte; el viejo: 5). Acá se
+// usa para saber si la matriz tiene arte fabricable (>= MIN) o solo el boceto.
+const CAPAS_ARTE_TPU = 5;        // máximo
+const CAPAS_ARTE_TPU_MIN = 2;    // mínimo para considerar el arte completo
 
 // Cantidad mínima para REUSAR una matriz (el trabajo nuevo pide 15, ver services.js minCopies).
 // Espeja `minCopiesReuso` del portal; acá es la validación que de verdad manda.
@@ -3026,16 +3060,16 @@ exports.reuseMatrizTPU = async (req, res) => {
         const mat = matRes.recordset[0];
         if (!mat.nArch) return res.status(400).json({ error: 'La matriz no tiene arte para reusar.' });
 
-        // ¿Misma cantidad? Las 5 capas del arte se generan CON la cantidad adentro (repeticiones en
+        // ¿Misma cantidad? Las capas del arte se generan CON la cantidad adentro (repeticiones en
         // el layout), así que el arte de la matriz solo sirve para fabricar si la cantidad coincide.
-        // Si difiere (o la matriz no tiene magnitud confiable), producción debe REGENERAR las 5 capas
+        // Si difiere (o la matriz no tiene magnitud confiable), producción debe REGENERAR el arte
         // — sin aprobación del cliente (el diseño ya está aprobado, solo cambia la cantidad).
         // Segunda condición: las matrices migradas de la planilla vieja sin arte traen SOLO el boceto.
-        // Copiarlo como arte dejaría la orden en Diseñado con 1 archivo en vez de 5 — el operario la
-        // ve pronta y recién se entera al asignarla a un lote, y encima el boceto le ocupa una de las
-        // 5 ranuras al subir. Sin las capas completas, siempre se regenera.
+        // Copiarlo como arte dejaría la orden en Diseñado sin nada fabricable — el operario la ve
+        // pronta y recién se entera al asignarla a un lote, y encima el boceto le ocupa una de las
+        // ranuras al subir. Con menos del mínimo de capas (CAPAS_ARTE_TPU_MIN), siempre se regenera.
         const matMag = parseInt(String(mat.MatMag || '').trim()) || 0;
-        const regenerar = !(matMag > 0 && matMag === cantidad) || (mat.nCapas || 0) < CAPAS_ARTE_TPU;
+        const regenerar = !(matMag > 0 && matMag === cantidad) || (mat.nCapas || 0) < CAPAS_ARTE_TPU_MIN;
 
         // 2. Reservar número de pedido
         const reserveRes = await pool.request().query(`
@@ -3051,23 +3085,23 @@ exports.reuseMatrizTPU = async (req, res) => {
 
         // 3. Crear la orden TPU nueva.
         //  - Misma cantidad  → directo a producción ('Pendiente') con el arte de la matriz copiado.
-        //  - Cantidad distinta → 'Cargando...': producción regenera las 5 capas y recién ahí entra a
+        //  - Cantidad distinta → producción regenera el arte y recién ahí entra a
         //    producción. La marca [REUSO-REGEN] indica que NO requiere aprobación del cliente.
         // El reuso NO pasa por 'Cargando...': ese estado es para un pedido web que todavía está
         // subiendo archivos, acá la orden nace completa. Lo único que cambia es si el arte de la
         // matriz sirve tal cual o hay que rehacerlo:
         //  - arte copiado (misma cantidad) → Produccion / Diseñado: lista para asignar a un lote.
-        //  - hay que regenerar las 5 capas → Pendiente / Aprobado: el cliente ya aprobó el diseño en
-        //    la matriz, falta que producción suba el arte (con la 5ª capa pasa sola a Diseñado).
+        //  - hay que regenerar el arte → Pendiente / Aprobado: el cliente ya aprobó el diseño en
+        //    la matriz, falta que producción suba el arte (al llegar al mínimo de capas pasa sola a Diseñado).
         const estadoGenNueva  = regenerar ? 'Pendiente' : 'Produccion';
         const estadoAreaNueva = regenerar ? 'Aprobado'  : 'Diseñado';
         // Sin las capas el motivo NO es la cantidad, y decir "regenerar ... (matriz: 100 u)" cuando el
         // cliente pidió 100 u le queda incoherente al operario. Se nombra el motivo real.
-        const sinCapas = (mat.nCapas || 0) < CAPAS_ARTE_TPU;
+        const sinCapas = (mat.nCapas || 0) < CAPAS_ARTE_TPU_MIN;
         const notaNueva = (regenerar
             ? `Reuso de matriz ${matCod} [REUSO-REGEN] · ` + (sinCapas
-                ? `la matriz no tiene el arte cargado (solo boceto) — hacer las ${CAPAS_ARTE_TPU} capas para ${cantidad} u`
-                : `regenerar ${CAPAS_ARTE_TPU} capas para ${cantidad} u (matriz: ${matMag || '?'} u)`)
+                ? `la matriz no tiene el arte cargado (solo boceto) — hacer el arte (cmyk-spots + corte) para ${cantidad} u`
+                : `regenerar el arte para ${cantidad} u (matriz: ${matMag || '?'} u)`)
             : `Reuso de matriz ${matCod}`)
             + (medidaTpu ? ` [Medida: ${medidaTpu}]` : '');
         const insOrd = await new sql.Request(transaction)
@@ -3134,8 +3168,8 @@ exports.reuseMatrizTPU = async (req, res) => {
             }
         } else {
             // Cantidad distinta: el arte viejo NO sirve para fabricar (cantidad incrustada en las capas).
-            // Se copia solo como REFERENCIA (base visual de las capas a regenerar); producción sube las
-            // 5 capas nuevas como arte de producción.
+            // Se copia solo como REFERENCIA (base visual de las capas a regenerar); producción sube el
+            // arte nuevo (hasta 5 archivos, 2 en el formato actual) como arte de producción.
             for (const a of arte.recordset) {
                 await new sql.Request(transaction)
                     .input('OID', sql.Int, newOID)
@@ -3218,8 +3252,8 @@ exports.getOrderFiles = async (req, res) => {
 };
 
 // ─── TPU: VISOR 3D DEL PARCHE (portal) ───────────────────────────────────────
-// El arte TPU son varias capas (boceto, cmyk, corte, relieve…) — el número exacto lo fija
-// CAPAS_ARTE_TPU en ordersController, acá solo importan los roles. El portal solo
+// El arte TPU son varias capas (boceto, cmyk, corte, relieve…) — el rango (2 a 5) lo fijan
+// CAPAS_ARTE_TPU_MIN / CAPAS_ARTE_TPU en ordersController, acá solo importan los roles. El portal solo
 // LISTA el boceto (getOrderFiles), pero el visor 3D necesita el CONTENIDO de las capas internas
 // para armar el modelo (silueta del corte + arte cmyk + relieve como altura). Estos endpoints
 // exponen ese contenido SOLO al dueño del pedido (CodCliente del token) y solo en órdenes TPU.
@@ -3235,6 +3269,39 @@ const rolCapaTpu = exports.rolCapaTpu = (nombre) => {
     if (/relieve\s*2/.test(n)) return 'relieve2';
     if (n.includes('relieve')) return 'relieve';
     return null;
+};
+
+// GET /api/web-orders/orden/:ordenId/tpu-matriz — matriz propia del pedido (job + análisis del
+// vector), solo para el dueño. El visor la abre en modo matriz. 404 si el pedido no es de matriz propia.
+exports.getTpuMatriz = async (req, res) => {
+    const codCliente = req.user?.codCliente;
+    const ordenId = parseInt(req.params.ordenId, 10);
+    if (!codCliente || !ordenId) return res.status(400).json({ error: 'Datos inválidos' });
+    try {
+        const tpuMatrizService = require('../services/tpuMatrizService');
+        const pool = await getPool();
+        const m = await tpuMatrizService.leerMatrizDeOrden(pool, ordenId, codCliente);
+        if (!m) return res.status(404).json({ success: false, error: 'El pedido no tiene matriz propia.' });
+        res.json({ success: true, ...m });
+    } catch (err) {
+        logger.error(`[TPU-Matriz] ${ordenId}: ${err.message}`);
+        res.status(500).json({ error: 'No se pudo leer la matriz del pedido.' });
+    }
+};
+
+// GET /api/web-orders/orden/:ordenId/tpu-matriz/fuente — el PDF vectorial del cliente (proxy Drive).
+exports.getTpuMatrizFuente = async (req, res) => {
+    const codCliente = req.user?.codCliente;
+    const ordenId = parseInt(req.params.ordenId, 10);
+    if (!codCliente || !ordenId) return res.status(400).json({ error: 'Datos inválidos' });
+    try {
+        const tpuMatrizService = require('../services/tpuMatrizService');
+        const pool = await getPool();
+        await tpuMatrizService.responderFuenteMatriz(pool, ordenId, codCliente, res);
+    } catch (err) {
+        logger.error(`[TPU-Matriz] fuente ${ordenId}: ${err.message}`);
+        if (!res.headersSent) res.status(500).json({ error: 'No se pudo leer el PDF de la matriz.' });
+    }
 };
 
 // GET /api/web-orders/tpu-model/:ordenId — qué capas (ArchivoID) tiene el arte de la orden.
@@ -3475,6 +3542,42 @@ exports.guardarTexturasOrden = async (pool, ordenId, elecciones, elegidaPor, usu
                     VALUES (@OID, @Z, @A, @B, @E, @H, @X, @Y, @P, GETDATE())
                 `);
         }
+    }
+};
+
+// ─── TPU: "HAGO MI MATRIZ" — análisis del vector del cliente ─────────────────
+// POST /api/web-orders/tpu-matriz/analizar (multipart 'file' = PDF). Guarda el PDF con un token
+// ligado al cliente (uploads/tpu-matriz) y devuelve el análisis para el editor de zonas: si es
+// vector puro, los trazados con su color (coordenadas de la página, listas para un <svg>) y la
+// agrupación por color. El pedido después viaja con ese token en metadata.matrizPropia.
+exports.analizarMatrizTpu = async (req, res) => {
+    const tpuMatrizService = require('../services/tpuMatrizService');
+    const codCliente = req.user?.codCliente;
+    if (!codCliente) return res.status(401).json({ error: 'No autenticado.' });
+    if (!tpuMatrizService.habilitado()) return res.status(503).json({ error: 'La matriz propia no está disponible por el momento.' });
+    const file = req.file;
+    if (!file) return res.status(400).json({ error: 'Falta el archivo.' });
+    const borrarTmp = () => { try { if (file.path && fs.existsSync(file.path)) fs.unlinkSync(file.path); } catch (_) { } };
+    if (!/\.pdf$/i.test(file.originalname || '')) {
+        borrarTmp();
+        return res.status(400).json({ error: 'Subí tu diseño en PDF vectorial (exportado desde Illustrator, CorelDRAW, Inkscape…).' });
+    }
+    if (file.size > tpuMatrizService.MAX_PDF_BYTES) {
+        borrarTmp();
+        return res.status(400).json({ error: 'El PDF supera los 50 MB. Un vector limpio pesa mucho menos: revisá que no tenga imágenes incrustadas.' });
+    }
+    let token = null;
+    try {
+        const guardado = tpuMatrizService.guardarFuente(file.path, codCliente);
+        token = guardado.token;
+        const analisis = await tpuMatrizService.analizar(guardado.ruta);
+        if (!analisis.vector) tpuMatrizService.descartarFuente(token);
+        res.json({ success: true, token: analisis.vector ? token : null, analisis });
+    } catch (err) {
+        if (token) tpuMatrizService.descartarFuente(token);
+        borrarTmp();
+        logger.error('[TPU-Matriz] analizar: ' + err.message);
+        res.status(500).json({ error: 'No se pudo analizar el PDF: ' + err.message });
     }
 };
 

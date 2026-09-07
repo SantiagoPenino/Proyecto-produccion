@@ -40,6 +40,10 @@ import CorteTechnicalUI from './order-form/components/CorteTechnicalUI';
 import BobinaSelector from './order-form/components/BobinaSelector';
 import CosturaTechnicalUI from './order-form/components/CosturaTechnicalUI';
 import BordadoTechnicalUI from './order-form/components/BordadoTechnicalUI';
+// TPU "Hago mi matriz": el visor 3D en modo 'matriz' — el cliente marca las zonas de relieve
+// sobre su vector y elige texturas viendo el parche. Lazy: solo lo carga quien elige ese modo
+// (mismo patrón que en FactoryView).
+const Tpu3DViewer = React.lazy(() => import('./Tpu3DViewer'));
 import { puntadasDePaleta, estimarMinutos } from './order-form/utils/bordadoHilos';
 import { EstampadoTechnicalUI } from './order-form/components/EstampadoTechnicalUI';
 import EcouvTerminacionesUI from './EcouvTerminacionesUI';
@@ -575,6 +579,77 @@ const OrderForm = ({ serviceId: propServiceId }) => {
     const [matrices, setMatrices] = useState([]);
     const [matrizSel, setMatrizSel] = useState(null);
     const [loadingMatrices, setLoadingMatrices] = useState(false);
+    // TPU — "Hago mi matriz": el cliente sube su PDF vectorial, el backend lo analiza (token +
+    // trazados por color) y en el editor arma las zonas de relieve/texturas. Viaja en
+    // metadata.matrizPropia; el arte lo genera el sistema al crear el pedido (sin cargo de matriz,
+    // sin aprobación). tpuMatriz = { token, analisis, zonas, medida }.
+    const [tpuMatriz, setTpuMatriz] = useState(null);
+    const [tpuMatrizFile, setTpuMatrizFile] = useState(null);
+    const [tpuMatrizVisor, setTpuMatrizVisor] = useState(false);
+    const [tpuMatrizAnalizando, setTpuMatrizAnalizando] = useState(false);
+    // Motivo del rechazo, escrito debajo de la zona (el toast se va y el cliente no sabe qué pasó).
+    const [tpuMatrizError, setTpuMatrizError] = useState(null);
+    // La zona de subida no tiene botón de quitar (se cambia eligiendo otro archivo): acá sí hace
+    // falta, porque un archivo rechazado tiene que poder salir y volver a empezar.
+    const quitarMatrizTpu = () => {
+        setTpuMatriz(null);
+        setTpuMatrizFile(null);
+        setTpuMatrizError(null);
+        setTpuMatrizVisor(false);
+    };
+    const analizarMatrizTpu = async (file) => {
+        if (!file) return;
+        setTpuMatrizError(null);
+        setTpuMatriz(null);
+        if (!/\.pdf$/i.test(file.name || '')) {
+            setTpuMatrizFile(null);
+            setTpuMatrizError('Tu matriz tiene que ser un PDF vectorial (ese archivo es ' + (file.name.split('.').pop() || 'otro formato').toUpperCase() + ').');
+            return addToast('Tu matriz tiene que ser un PDF vectorial.', 'error');
+        }
+        setTpuMatrizAnalizando(true);
+        try {
+            const fd = new FormData();
+            fd.append('file', file);
+            const r = await apiClient.postFormData('/web-orders/tpu-matriz/analizar', fd);
+            const an = r?.analisis;
+            if (!an?.vector || !r?.token) {
+                setTpuMatrizFile(null);
+                setTpuMatrizError(an?.motivo || 'El PDF no sirve como matriz.');
+                return addToast(an?.motivo || 'El PDF no sirve como matriz.', 'error');
+            }
+            (an.avisos || []).forEach(a => addToast(a));
+            // Medida por defecto: el tamaño real del vector (se puede cambiar si el producto no
+            // trae tope; con tope manda la medida elegida en el producto).
+            const medida = Array.isArray(an.bbox_mm) ? { ancho: an.bbox_mm[0], alto: an.bbox_mm[1] } : null;
+            setTpuMatriz({ token: r.token, analisis: an, zonas: [], medida });
+            setTpuMatrizVisor(true);
+        } catch (err) {
+            setTpuMatrizFile(null);
+            setTpuMatrizError('No se pudo analizar el PDF: ' + (err?.message || 'error de conexión'));
+            addToast('No se pudo analizar el PDF: ' + (err?.message || ''), 'error');
+        } finally {
+            setTpuMatrizAnalizando(false);
+        }
+    };
+    // Medida que viaja al generador (mm): la del producto si tiene tope (selectores alto/ancho en
+    // cm), si no la que el cliente fijó en el editor (default: el tamaño real del vector).
+    const medidaMatrizMm = () => {
+        if (tpuAlto && tpuAncho) return { ancho: parseFloat(tpuAncho) * 10, alto: parseFloat(tpuAlto) * 10 };
+        return tpuMatriz?.medida || null;
+    };
+    // Medida libre (producto sin tope): ancho y alto en mm, con la proporción del vector fija.
+    const cambiarMedidaMatriz = (campo, valor) => {
+        const v = parseFloat(String(valor).replace(',', '.'));
+        const bb = tpuMatriz?.analisis?.bbox_mm;
+        const prop = (Array.isArray(bb) && bb[0] > 0) ? bb[1] / bb[0] : 1;
+        setTpuMatriz(m => {
+            if (!m) return m;
+            if (!(v > 0)) return { ...m, medida: { ...(m.medida || {}), [campo]: '' } };
+            return { ...m, medida: campo === 'ancho'
+                ? { ancho: v, alto: Math.round(v * prop * 10) / 10 }
+                : { alto: v, ancho: Math.round((v / prop) * 10) / 10 } };
+        });
+    };
     useEffect(() => {
         if (serviceId !== 'tpu') return;
         setLoadingMatrices(true);
@@ -1216,6 +1291,12 @@ const OrderForm = ({ serviceId: propServiceId }) => {
             return;
         }
 
+        // TPU — "Hago mi matriz": PDF analizado + al menos una zona de relieve.
+        if (serviceId === 'tpu' && tpuMode === 'propia') {
+            if (!tpuMatriz?.token) return addToast('Subí tu diseño en PDF vectorial y armá la matriz.', 'error');
+            if (!(tpuMatriz.zonas || []).length) return addToast('Marcá al menos una zona de relieve en tu matriz.', 'error');
+        }
+
         const invalidPrintSettings = items.some(it => it.printSettings?.isValid === false);
         if (invalidPrintSettings) {
             return addToast('Hay errores en la configuración de impresión. Revise los items.', 'error');
@@ -1353,7 +1434,8 @@ const OrderForm = ({ serviceId: propServiceId }) => {
             const minTpu = config.minCopies || 15;
             // (El modo matriz ya se resolvió arriba con return; acá siempre es "trabajo nuevo".)
             // Modo boceto: el boceto (PNG/JPG/PDF) es obligatorio; con él diseñamos el arte.
-            if (config.bocetoMode && !bocetoFile) {
+            // (En "Hago mi matriz" no hay boceto: el arte sale del PDF del cliente.)
+            if (config.bocetoMode && tpuMode !== 'propia' && !bocetoFile) {
                 return addToast('Subí el boceto de lo que querés (PNG, JPG o PDF).', 'error');
             }
             // La medida es obligatoria cuando el producto tiene un tope (o sea, cuando los selectores
@@ -1823,7 +1905,11 @@ const OrderForm = ({ serviceId: propServiceId }) => {
 
                 // Metadata Específica del Servicio Principal
                 let metadata = {};
-                if (serviceId === 'estampado' || serviceId === 'EST') {
+                if (serviceId === 'tpu' && tpuMode === 'propia' && tpuMatriz?.token) {
+                    // "Hago mi matriz": token del PDF analizado + zonas/texturas + medida en mm. El
+                    // backend lo valida antes de crear la orden y genera el arte después del commit.
+                    metadata = { matrizPropia: { token: tpuMatriz.token, medida: medidaMatrizMm(), zonas: tpuMatriz.zonas } };
+                } else if (serviceId === 'estampado' || serviceId === 'EST') {
                     metadata = { prendas: estampadoQuantity, estampadosPorPrenda: estampadoPrints, origen: estampadoOrigin };
                 } else if (serviceId === 'bordado' || serviceId === 'EMB') {
                     // La cantidad total ya no es un campo suelto: es la suma de lo que
@@ -2348,6 +2434,7 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                                 </p>
                                                 <CustomSelect
                                                     name="tpuAlto"
+                                                    sinScroll
                                                     aria-label="Alto del parche"
                                                     value={tpuAlto}
                                                     onChange={setTpuAlto}
@@ -2362,6 +2449,7 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                                 </p>
                                                 <CustomSelect
                                                     name="tpuAncho"
+                                                    sinScroll
                                                     aria-label="Ancho del parche"
                                                     value={tpuAncho}
                                                     onChange={setTpuAncho}
@@ -2534,12 +2622,17 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                             {/* Standard Production Files (Items) */}
                             {serviceId === 'tpu' && (
                                 <div className="space-y-4">
-                                    {/* Selector: trabajo nuevo vs reusar una matriz */}
-                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                    {/* Selector: trabajo nuevo / hago mi matriz / reusar una matriz */}
+                                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                                         <button type="button" onClick={() => { setTpuMode('nuevo'); setMatrizSel(null); }}
                                             className={`text-left p-3 rounded-xl border-2 transition-all ${tpuMode === 'nuevo' ? 'border-cyan-400 bg-cyan-400/5' : 'border-zinc-700 hover:border-zinc-600'}`}>
                                             <div className="text-sm font-bold text-zinc-100">Trabajo nuevo</div>
                                             <div className="text-[11px] text-zinc-500 mt-0.5">Subís un boceto y diseñamos el arte. Incluye el costo de matriz.</div>
+                                        </button>
+                                        <button type="button" onClick={() => { setTpuMode('propia'); setMatrizSel(null); }}
+                                            className={`text-left p-3 rounded-xl border-2 transition-all ${tpuMode === 'propia' ? 'border-cyan-400 bg-cyan-400/5' : 'border-zinc-700 hover:border-zinc-600'}`}>
+                                            <div className="text-sm font-bold text-zinc-100">Hago mi matriz</div>
+                                            <div className="text-[11px] text-zinc-500 mt-0.5">Subís tu vector en PDF, marcás relieves y texturas. Sin costo de matriz, directo a producción.</div>
                                         </button>
                                         <button type="button" onClick={() => setTpuMode('matriz')}
                                             className={`text-left p-3 rounded-xl border-2 transition-all ${tpuMode === 'matriz' ? 'border-cyan-400 bg-cyan-400/5' : 'border-zinc-700 hover:border-zinc-600'}`}>
@@ -2548,7 +2641,82 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                         </button>
                                     </div>
 
-                                    {tpuMode === 'nuevo' ? (
+                                    {tpuMode === 'propia' ? (
+                                        <div>
+                                            <div className="flex justify-between items-center mb-4">
+                                                <p className="text-sm font-bold uppercase text-zinc-400">Tu matriz <span className="text-red-400">*</span></p>
+                                                {tpuMatriz && <span className="text-[10px] text-cyan-400 font-bold">Vector OK · {tpuMatriz.zonas.length} zona{tpuMatriz.zonas.length === 1 ? '' : 's'} de relieve</span>}
+                                            </div>
+                                            <div className="bg-brand-dark p-4 md:rounded-2xl rounded-none border-y border-x-0 md:border-x border-zinc-700/50 shadow-sm -mx-4 md:mx-0 space-y-5">
+                                                <div>
+                                                    <FileUploadZone
+                                                        id="matriz-tpu"
+                                                        label="TU DISEÑO EN PDF VECTORIAL"
+                                                        accept=".pdf,application/pdf"
+                                                        selectedFile={tpuMatrizFile}
+                                                        onFileSelected={(f) => { setTpuMatrizFile(f); analizarMatrizTpu(f); }}
+                                                        color="blue"
+                                                    />
+                                                    {tpuMatrizAnalizando && (
+                                                        <p className="text-[11px] text-cyan-300 mt-2 animate-pulse">Analizando el vector…</p>
+                                                    )}
+                                                    {tpuMatrizError && !tpuMatrizAnalizando && (
+                                                        <p className="text-[11px] text-red-300 mt-2 font-bold">{tpuMatrizError}</p>
+                                                    )}
+                                                    {(tpuMatrizFile || tpuMatriz) && !tpuMatrizAnalizando && (
+                                                        <button type="button" onClick={quitarMatrizTpu}
+                                                            className="mt-2 text-[11px] font-bold text-zinc-400 hover:text-red-300 flex items-center gap-1">
+                                                            <Trash2 size={12} /> Quitar el archivo
+                                                        </button>
+                                                    )}
+                                                    {tpuMatriz && (
+                                                        <div className="mt-3 flex flex-wrap items-center gap-2">
+                                                            <div className="text-[11px] text-zinc-300 bg-zinc-900/60 p-2 px-3 rounded-lg border border-zinc-700/50 flex-1 min-w-[200px]">
+                                                                <span className="font-bold text-emerald-400">Vector verificado.</span>{' '}
+                                                                {tpuMatriz.analisis.formas.length} trazados · {tpuMatriz.analisis.colores.length} colores
+                                                                {tpuMatriz.analisis.bbox_mm ? ` · ${tpuMatriz.analisis.bbox_mm[0]} × ${tpuMatriz.analisis.bbox_mm[1]} mm` : ''}
+                                                                {tpuMatriz.zonas.length === 0 && <span className="text-amber-300"> · todavía sin zonas de relieve</span>}
+                                                            </div>
+                                                            <button type="button" onClick={() => setTpuMatrizVisor(true)}
+                                                                className="px-3 py-2 rounded-lg text-xs font-bold bg-cyan-500 text-zinc-950 hover:bg-cyan-400 flex items-center gap-1">
+                                                                <Layers size={14} /> {tpuMatriz.zonas.length ? 'Editar la matriz en 3D' : 'Armar la matriz en 3D'}
+                                                            </button>
+                                                        </div>
+                                                    )}
+                                                    {tpuMatriz && !medidaMaximaTPU(globalMaterial) && (
+                                                        <div className="mt-3 grid grid-cols-2 gap-2 max-w-xs">
+                                                            <label className="text-[10px] uppercase font-black text-zinc-400">Ancho (mm)
+                                                                <input type="number" step="0.1" min="5" max="500" value={tpuMatriz.medida?.ancho ?? ''}
+                                                                    onChange={(e) => cambiarMedidaMatriz('ancho', e.target.value)}
+                                                                    className="mt-1 w-full bg-zinc-900/60 border border-zinc-700 rounded-lg p-2 text-white text-sm focus:border-cyan-500 outline-none" />
+                                                            </label>
+                                                            <label className="text-[10px] uppercase font-black text-zinc-400">Alto (mm)
+                                                                <input type="number" step="0.1" min="5" max="500" value={tpuMatriz.medida?.alto ?? ''}
+                                                                    onChange={(e) => cambiarMedidaMatriz('alto', e.target.value)}
+                                                                    className="mt-1 w-full bg-zinc-900/60 border border-zinc-700 rounded-lg p-2 text-white text-sm focus:border-cyan-500 outline-none" />
+                                                            </label>
+                                                            <p className="col-span-2 text-[10px] text-zinc-500 -mt-1">La proporción del diseño se mantiene; el arte se escala a esta medida (sin contar el sangrado de 1 mm).</p>
+                                                        </div>
+                                                    )}
+                                                    <p className="text-[11px] text-zinc-500 mt-2">
+                                                        Solo PDF 100 % vectorial (sin fotos ni textos sin curvar). Vos marcás qué partes llevan relieve y qué textura va en cada una;
+                                                        el sistema genera el arte y el pedido entra directo a producción, sin costo de matriz ni aprobación.
+                                                    </p>
+                                                </div>
+                                                <div>
+                                                    <label className="block text-[10px] uppercase font-black text-zinc-400 mb-1">Cantidad (mínimo {config.minCopies || 15})</label>
+                                                    <input
+                                                        type="number"
+                                                        min={config.minCopies || 15}
+                                                        value={items[0]?.copies ?? ''}
+                                                        onChange={(e) => items[0] && actions.updateItem(items[0].id, 'copies', parseInt(e.target.value) || 0)}
+                                                        className="w-full bg-zinc-900/60 border border-zinc-700 rounded-lg p-2.5 text-white text-sm focus:border-cyan-500 outline-none"
+                                                        placeholder={String(config.minCopies || 15)}
+                                                    />
+                                                </div>
+                                            </div>
+                                        </div>
+                                    ) : tpuMode === 'nuevo' ? (
                                         <div>
                                             <div className="flex justify-between items-center mb-4">
                                                 <p className="text-sm font-bold uppercase text-zinc-400">Boceto de tu diseño <span className="text-red-400">*</span></p>
@@ -2640,6 +2808,21 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                         </div>
                                     )}
                                 </div>
+                            )}
+
+                            {/* TPU "Hago mi matriz": el visor 3D en modo matriz (modal, lazy). Recibe el PDF
+                                del cliente y el análisis; devuelve las zonas con textura/barniz/doble. */}
+                            {tpuMatrizVisor && tpuMatriz && tpuMatrizFile && (
+                                <React.Suspense fallback={null}>
+                                    <Tpu3DViewer
+                                        modo="matriz"
+                                        codigo={jobName?.trim() || 'Tu matriz'}
+                                        fuente={{ pdf: tpuMatrizFile, analisis: tpuMatriz.analisis }}
+                                        inicial={{ zonas: tpuMatriz.zonas }}
+                                        onListo={({ zonas }) => setTpuMatriz(m => ({ ...m, zonas }))}
+                                        onClose={() => setTpuMatrizVisor(false)}
+                                    />
+                                </React.Suspense>
                             )}
 
                             {config.requiresProductionFiles && (
@@ -3637,6 +3820,15 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                     <p className="text-[11px] text-amber-200 font-bold leading-relaxed">
                                         Pediste una cantidad distinta a la de la matriz, así que <b>regeneramos el arte</b> con esa cantidad.
                                         No necesitás aprobar nada: el pedido ya entró y arranca apenas esté el arte listo.
+                                    </p>
+                                </div>
+                            )}
+
+                            {serviceId === 'tpu' && tpuMode === 'propia' && (
+                                <div className="w-full bg-cyan-500/10 border border-cyan-500/30 rounded-2xl p-4 -mt-2 mb-2">
+                                    <p className="text-[11px] text-cyan-100 font-bold leading-relaxed">
+                                        Tu matriz quedó registrada: <b>estamos generando el arte</b> con las zonas y texturas que marcaste.
+                                        No necesitás aprobar nada — el pedido entra directo a producción y no lleva costo de matriz.
                                     </p>
                                 </div>
                             )}

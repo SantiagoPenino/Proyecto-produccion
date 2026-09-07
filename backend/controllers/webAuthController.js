@@ -167,30 +167,23 @@ exports.register = asyncHandler(async (req, res) => {
         }
     }
 
-    // --- Vendedor assignment: manual selection takes priority, otherwise auto-assign ---
+    // --- Vendedor: la elección manual manda; si no eligió, el asesor de Ventas con menos
+    // clientes. Ya no se filtra por la Zona del departamento (Principal / Interior dejó de regir
+    // el 04/09/2026): con la zona, un departamento sin asesor propio dejaba al cliente sin vendedor.
+    // Se guarda t.ID (VEN-00X) porque el perfil del portal resuelve el nombre del asesor por ese
+    // campo (joins de login/perfil más abajo). ---
     let vendedorId = manualVendedorId || null;
-    if (!vendedorId && departamentoId) {
+    if (!vendedorId) {
         try {
-            const zonaResult = await pool.request()
-                .input('DepID', sql.Int, departamentoId)
-                .query("SELECT Zona FROM dbo.Departamentos WHERE ID = @DepID");
-
-            const zona = zonaResult.recordset[0]?.Zona;
-
-            if (zona) {
-                const vendedorResult = await pool.request()
-                    .input('Zona', sql.NVarChar, zona)
-                    .query(`
-                        SELECT TOP 1 t.ID
-                        FROM dbo.Trabajadores t
-                        LEFT JOIN dbo.Clientes c ON c.VendedorID = t.ID
-                        WHERE t.Zona = @Zona AND t.[Área] = 'Ventas'
-                        GROUP BY t.ID
-                        ORDER BY COUNT(c.CodCliente) ASC
-                    `);
-
-                vendedorId = vendedorResult.recordset[0]?.ID || null;
-            }
+            const vendedorResult = await pool.request().query(`
+                SELECT TOP 1 t.ID
+                FROM dbo.Trabajadores t
+                LEFT JOIN dbo.Clientes c ON c.VendedorID = t.ID
+                WHERE UPPER(LTRIM(RTRIM(ISNULL(t.[Área], '')))) = 'VENTAS'
+                GROUP BY t.ID
+                ORDER BY COUNT(c.CodCliente) ASC
+            `);
+            vendedorId = vendedorResult.recordset[0]?.ID || null;
         } catch (err) {
             logger.warn('⚠️ Error auto-assigning vendedor:', err.message);
         }

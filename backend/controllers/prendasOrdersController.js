@@ -2770,9 +2770,9 @@ exports.reuseMatrizTPU = async (req, res) => {
         const mat = matRes.recordset[0];
         if (!mat.nArch) return res.status(400).json({ error: 'La matriz no tiene arte para reusar.' });
 
-        // ¿Misma cantidad? Las 5 capas del arte se generan CON la cantidad adentro (repeticiones en
+        // ¿Misma cantidad? Las capas del arte se generan CON la cantidad adentro (repeticiones en
         // el layout), así que el arte de la matriz solo sirve para fabricar si la cantidad coincide.
-        // Si difiere (o la matriz no tiene magnitud confiable), producción debe REGENERAR las 5 capas
+        // Si difiere (o la matriz no tiene magnitud confiable), producción debe REGENERAR el arte
         // — sin aprobación del cliente (el diseño ya está aprobado, solo cambia la cantidad).
         const matMag = parseInt(String(mat.MatMag || '').trim()) || 0;
         const regenerar = !(matMag > 0 && matMag === cantidad);
@@ -2791,11 +2791,11 @@ exports.reuseMatrizTPU = async (req, res) => {
 
         // 3. Crear la orden TPU nueva.
         //  - Misma cantidad  → directo a producción ('Pendiente') con el arte de la matriz copiado.
-        //  - Cantidad distinta → 'Cargando...': producción regenera las 5 capas y recién ahí entra a
+        //  - Cantidad distinta → 'Cargando...': producción regenera el arte y recién ahí entra a
         //    producción. La marca [REUSO-REGEN] indica que NO requiere aprobación del cliente.
         const estadoNueva = regenerar ? 'Cargando...' : 'Pendiente';
         const notaNueva = regenerar
-            ? `Reuso de matriz ${matCod} [REUSO-REGEN] · regenerar 5 capas para ${cantidad} u (matriz: ${matMag || '?'} u)`
+            ? `Reuso de matriz ${matCod} [REUSO-REGEN] · regenerar el arte para ${cantidad} u (matriz: ${matMag || '?'} u)`
             : `Reuso de matriz ${matCod}`;
         const insOrd = await new sql.Request(transaction)
             .input('Cliente', sql.NVarChar(200), mat.Cliente)
@@ -2849,8 +2849,8 @@ exports.reuseMatrizTPU = async (req, res) => {
             }
         } else {
             // Cantidad distinta: el arte viejo NO sirve para fabricar (cantidad incrustada en las capas).
-            // Se copia solo como REFERENCIA (base visual de las capas a regenerar); producción sube las
-            // 5 capas nuevas como arte de producción.
+            // Se copia solo como REFERENCIA (base visual de las capas a regenerar); producción sube el
+            // arte nuevo (hasta 5 archivos, 2 en el formato actual) como arte de producción.
             for (const a of arte.recordset) {
                 await new sql.Request(transaction)
                     .input('OID', sql.Int, newOID)
