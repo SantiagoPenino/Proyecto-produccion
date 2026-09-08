@@ -6,6 +6,7 @@ const { PDFDocument, StandardFonts, rgb } = require('pdf-lib');
 const logger = require('../utils/logger');
 const ERPSyncService = require('../services/erpSyncService');
 const { construirNombreArchivo, materialParaNombre, usaNombreNuevo } = require('../utils/nombreArchivoOrden');
+const { calcularFechasOrden } = require('../services/fechaPrometidaService');
 
 // --- CONSTANTES Y MAPEOS ---
 const SERVICE_TO_AREA_MAP = {
@@ -641,6 +642,11 @@ exports.createPlanillaOrder = async (req, res) => {
                 const newOID = resOrder.recordset[0].OrdenID;
                 generatedOrders.push(exec.codigoOrden);
                 generatedIDs.push(newOID);
+
+                // Fecha real: plan fijo + compromiso por agenda (nunca antes del plan). No
+                // bloqueante — si falla, la orden queda con el DATEADD(day,3,...) del INSERT.
+                try { await calcularFechasOrden(transaction, newOID); }
+                catch (feErr) { logger.error(`⚠️ calcularFechasOrden falló para OrdenID ${newOID}: ${feErr.message}`); }
 
                 let totalMagnitud = 0;
                 let fileCount = 0;

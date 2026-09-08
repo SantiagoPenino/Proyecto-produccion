@@ -2,6 +2,7 @@ const axios = require('axios');
 const { sql, getPool } = require('../config/db');
 const fileProcessingService = require('../services/fileProcessingService');
 const logger = require('../utils/logger');
+const { calcularFechasOrden } = require('../services/fechaPrometidaService');
 
 // Semáforo para evitar ejecuciones superpuestas del scheduler
 let isProcessing = false;
@@ -538,9 +539,9 @@ const syncOrdersLogic = async (io) => {
                     }
 
                     try {
-                        await new sql.Request(transaction).input('OrdenID', sql.Int, newID).execute('sp_CalcularFechaEntrega');
+                        await calcularFechasOrden(transaction, newID);
                     } catch (fechaErr) {
-                        logger.error(`⚠️ sp_CalcularFechaEntrega falló para OrdenID ${newID} (sync): ${fechaErr.message}`);
+                        logger.error(`⚠️ calcularFechasOrden falló para OrdenID ${newID} (sync): ${fechaErr.message}`);
                     }
                 }
             }

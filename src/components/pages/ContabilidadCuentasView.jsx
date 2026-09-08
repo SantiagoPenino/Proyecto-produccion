@@ -4762,6 +4762,28 @@ export default function ContabilidadCuentasView() {
     return ordenesAnticipo.filter(o => o.CueIdCuenta === cuentaActiva.CueIdCuenta);
   }, [ordenesAnticipo, cuentaActiva]);
 
+  // TODAS las órdenes pendientes del cliente, cada una etiquetada con la moneda de SU
+  // cuenta. Antes el panel solo miraba la cuenta activa y eso escondía trabajo:
+  //   · si estabas parado en una cuenta sin órdenes (las que nacen vacías), el panel
+  //     entero desaparecía aunque el cliente tuviera órdenes en otra — caso IMPRENTA
+  //     ROJO SRL, que tiene 4 cuentas y solo 2 con órdenes.
+  //   · una orden en pesos era invisible mientras mirabas la cuenta en dólares.
+  // MovMonIdMoneda es lo que la pre-factura usa para convertir cada orden desde su
+  // propia moneda (mismo criterio que irAPrefactura() del Panel 360).
+  const ordenesTodasResumen = useMemo(() => {
+    const items = (ordenesAnticipo || []).map(o => {
+      const cta = cuentas.find(c => c.CueIdCuenta === o.CueIdCuenta);
+      const esUSD = Number(cta?.MonIdMoneda) === 2 || cta?.MonSimbolo === 'US$' || cta?.CueTipo === 'DINERO_USD';
+      return {
+        ...o,
+        MovMonIdMoneda: esUSD ? 2 : 1,
+        MonSimboloOrden: cta?.MonSimbolo || (esUSD ? 'US$' : '$'),
+      };
+    });
+    const monedas = new Set(items.map(o => o.MovMonIdMoneda));
+    return { total: items.length, multimoneda: monedas.size > 1, items };
+  }, [ordenesAnticipo, cuentas]);
+
   return (
     <>
       {/* Modal pago */}
@@ -5057,8 +5079,9 @@ export default function ContabilidadCuentasView() {
                 </div>
               ) : (
                 <>
-                  {/* Panel de Órdenes Pendientes de Facturar */}
-                  {ordenesFiltradas.length > 0 && (
+                  {/* Panel de Órdenes Pendientes de Facturar — del CLIENTE, no de la cuenta
+                      activa: si no, el panel desaparecía al pararse en una cuenta vacía. */}
+                  {ordenesTodasResumen.total > 0 && (
                     <div className="mb-4 rounded-xl border border-emerald-200 overflow-hidden shadow-sm animate-in fade-in duration-300">
                       <div className="flex items-center justify-between px-4 py-3 bg-emerald-600 text-white">
                         <div className="flex items-center gap-2">
@@ -5067,32 +5090,51 @@ export default function ContabilidadCuentasView() {
                             Órdenes Pendientes de Facturar
                           </span>
                           <span className="bg-white/20 text-white text-[10px] font-bold px-2 py-0.5 rounded-full animate-pulse">
-                            ● {ordenesFiltradas.length} PENDIENTE{ordenesFiltradas.length > 1 ? 'S' : ''}
+                            ● {ordenesTodasResumen.total} PENDIENTE{ordenesTodasResumen.total > 1 ? 'S' : ''}
                           </span>
                         </div>
                         <button 
                           onClick={() => {
-                            // Navegar a la página completa de pre-factura
+                            // Se mandan TODAS las órdenes pendientes del cliente, no solo las de
+                            // la cuenta activa: la pre-factura sabe juntar monedas distintas en un
+                            // solo comprobante (convierte cada una con cotDolar). Antes iban solo
+                            // las de la cuenta activa y las de la otra moneda no se facturaban
+                            // nunca desde acá — había que ir al Panel 360.
+                            // Cada orden viaja etiquetada con SU moneda en MovMonIdMoneda; sin esa
+                            // etiqueta la pre-factura las trata a todas con la moneda de la cuenta
+                            // base y una orden en pesos se suma como si fueran dólares.
+                            // MISMO criterio que irAPrefactura() del Panel 360 (ClienteVista360).
+                            const movsTodas = ordenesTodasResumen.items.map(m => ({
+                              ...m,
+                              MovImporte: m.MovImporte < 0 ? m.MovImporte : -Math.abs(m.MovImporte),
+                            }));
                             navigate('/contabilidad/prefactura', {
                               state: {
                                 ciclo: { CicIdCiclo: (cuentaActiva && Number(cuentaActiva.CueSaldoActual || 0) > 0) ? 'ANTICIPO' : 'CREDITO', CicFechaInicio: new Date().toISOString(), CicFechaCierre: new Date().toISOString() },
                                 cliente: clienteSel,
                                 cuenta: cuentaActiva || cuentas[0],
-                                movsOriginales: ordenesFiltradas.map(m => ({
-                                  ...m,
-                                  MovImporte: m.MovImporte < 0 ? m.MovImporte : -Math.abs(m.MovImporte)
-                                })),
+                                movsOriginales: movsTodas,
                                 returnTo: '/contabilidad/cuentas',
                               }
                             });
                           }}
+                          title={ordenesTodasResumen.multimoneda
+                            ? `Se van a facturar las ${ordenesTodasResumen.total} órdenes pendientes del cliente, de todas sus cuentas. Hay órdenes en pesos y en dólares: la pre-factura las convierte a la moneda que elijas, con la cotización del día.`
+                            : `Se van a facturar las ${ordenesTodasResumen.total} órdenes pendientes del cliente, de todas sus cuentas.`}
                           className="flex items-center gap-1.5 text-xs px-3.5 py-2 bg-white/20 hover:bg-white/30 text-white rounded-lg transition-colors font-bold">
                           <i className="fa-solid fa-file-invoice-dollar"></i>
-                          Revisar y Facturar Todas
+                          {ordenesTodasResumen.total > 1
+                            ? `Revisar y Facturar las ${ordenesTodasResumen.total}`
+                            : 'Revisar y Facturar'}
+                          {ordenesTodasResumen.multimoneda && (
+                            <span className="ml-1 bg-amber-400 text-amber-950 text-[9px] font-black px-1.5 py-0.5 rounded-full">
+                              $ + US$
+                            </span>
+                          )}
                         </button>
                       </div>
                       <div className="divide-y divide-emerald-100 bg-emerald-50/30">
-                        {ordenesFiltradas.map(orden => (
+                        {ordenesTodasResumen.items.map(orden => (
                           <div key={orden.MovIdMovimiento} className="flex items-center justify-between px-4 py-2.5 hover:bg-emerald-50 transition-colors group">
                             <div className="flex items-center gap-3 flex-1 min-w-0">
                               <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0"></div>
@@ -5107,7 +5149,7 @@ export default function ContabilidadCuentasView() {
                             </div>
                             <div className="flex items-center gap-3 shrink-0">
                               <span className="text-xs font-bold text-emerald-700 font-mono">
-                                {cuentaActiva?.MonSimbolo || '$'} {new Intl.NumberFormat('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Math.abs(orden.MovImporte))}
+                                {orden.MonSimboloOrden} {new Intl.NumberFormat('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Math.abs(orden.MovImporte))}
                               </span>
                               <button
                                 onClick={(e) => {
@@ -5124,10 +5166,23 @@ export default function ContabilidadCuentasView() {
                       </div>
                       <div className="px-4 py-2 bg-white border-t border-emerald-200 flex items-center justify-between">
                         <span className="text-[10px] text-slate-400 font-bold uppercase">
-                          Total: {ordenesFiltradas.length} orden(es)
+                          Total: {ordenesTodasResumen.total} orden(es)
                         </span>
-                        <span className="text-sm font-black text-emerald-700">
-                          {cuentaActiva?.MonSimbolo || '$'} {new Intl.NumberFormat('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(ordenesFiltradas.reduce((sum, o) => sum + Math.abs(o.MovImporte), 0))}
+                        {/* Un total POR MONEDA. Sumar pesos y dólares en un solo número con un
+                            solo símbolo daba un importe que no existe. La conversión a la moneda
+                            del comprobante la hace la pre-factura, con la cotización del día. */}
+                        <span className="text-sm font-black text-emerald-700 flex items-center gap-2">
+                          {Object.entries(
+                            ordenesTodasResumen.items.reduce((acc, o) => {
+                              acc[o.MonSimboloOrden] = (acc[o.MonSimboloOrden] || 0) + Math.abs(Number(o.MovImporte) || 0);
+                              return acc;
+                            }, {})
+                          ).map(([sim, tot], i, arr) => (
+                            <span key={sim}>
+                              {sim} {new Intl.NumberFormat('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(tot)}
+                              {i < arr.length - 1 && <span className="text-emerald-300 mx-1">·</span>}
+                            </span>
+                          ))}
                         </span>
                       </div>
                     </div>

@@ -1,13 +1,17 @@
 const { getPool, sql } = require('../config/db');
 const logger = require('../utils/logger');
-const { calcularSaldoEfectivo, aplicarAnticipoAOrden } = require('../services/anticipoService');
 // La normalización de códigos (clavesDeCodigo) y la "situación de pago" (pago vía documento) viven en
 // services/auditDepositoSql.js, compartidos con el servicio de sesiones/casos para que la fotografía se
 // clasifique EXACTAMENTE igual que esta pantalla. No cambiar uno sin el otro.
-const { clavesDeCodigo, SQL_COLS_PAGO_DOC, SQL_JOIN_PAGO_DOC, resolverSituacionPago } = require('../services/auditDepositoSql');
+const { clavesDeCodigo, SQL_COLS_PAGO_DOC, SQL_JOIN_PAGO_DOC, resolverSituacionPago, clasificarEscaneosSinSesion } = require('../services/auditDepositoSql');
 // Sesión de auditoría (fotografía) + registro de casos. Con una auditoría ABIERTA, los endpoints de escaneo
 // de este archivo trabajan contra la sesión en vez de la tabla temporal AuditoriaScansTemp.
 const auditoriaSvc = require('../services/auditoriaDepositoService');
+// Acciones sobre la orden (ENTREGADO / A_DEPOSITO / avisar nuevamente), compartidas con el Registro de Casos.
+const accionesSvc = require('../services/auditDepositoAccionesService');
+// "Entregadas Sin Pago" excluye a los clientes SEMANALES: cobran por ciclo (cuenta corriente), así que una
+// orden entregada sin PagIdPago es lo normal para ellos, no una deuda a perseguir desde el depósito.
+const esClienteSemanal = (tipo) => /semanal/i.test(String(tipo || ''));
 
 /**
  * POST /api/audit-deposito/check
@@ -40,6 +44,8 @@ exports.checkAudit = async (req, res) => {
         o.OrdFechaIngresoOrden,
         o.PagIdPago,
         o.OReIdOrdenRetiro,
+        o.OrdAvisoWsp,
+        o.OrdFechaAvisoWsp,
         c.Nombre AS ClienteNombre,
         c.TelefonoTrabajo AS ClienteTelefono,
         c.Email AS ClienteEmail,
@@ -50,7 +56,6 @@ exports.checkAudit = async (req, res) => {
       LEFT JOIN dbo.TiposClientes tc WITH(NOLOCK) ON tc.TClIdTipoCliente = c.TClIdTipoCliente
       LEFT JOIN dbo.OrdenesRetiro r WITH(NOLOCK) ON o.OReIdOrdenRetiro = r.OReIdOrdenRetiro${SQL_JOIN_PAGO_DOC}
       WHERE o.OrdEstadoActual < 9 OR o.OrdEstadoActual IS NULL
-         OR (o.OrdEstadoActual >= 9 AND o.PagIdPago IS NULL)
     `;
 
     // Si hay ms de 0 cdigos, ampliamos la condicin para traer las que podran ya estar entregadas.
@@ -121,6 +126,8 @@ exports.checkAudit = async (req, res) => {
         clienteTipo: row.ClienteTipo || 'Desconocido',
         pagoEstado,
         ordenRetiro: row.OReIdOrdenRetiro ? `ID: ${row.OReIdOrdenRetiro} - ${row.FormaRetiro || 'S/D'}` : 'Sin Asignar',
+        avisado: !!row.OrdAvisoWsp,
+        fechaAviso: row.OrdFechaAvisoWsp,
         estadoActualId: row.OrdEstadoActual,
         diasEnDeposito,
         maxDiasDeposito
@@ -145,7 +152,7 @@ exports.checkAudit = async (req, res) => {
 
       // Clasificacin Entregadas Sin Pago (que estn efectivamente entregadas).
       // Las saldadas vía documento (PC/factura del cierre ya cobrado) NO son "sin pago".
-      if (row.OrdEstadoActual >= 9 && !row.PagIdPago && !saldadaPorDoc) {
+      if (row.OrdEstadoActual >= 9 && !row.PagIdPago && !saldadaPorDoc && !esClienteSemanal(row.ClienteTipo)) {
         resultado.entregadasSinPago.push(item);
       }
     }
@@ -168,7 +175,8 @@ exports.checkAudit = async (req, res) => {
       }
     }
 
-    res.json({ success: true, data: resultado });
+    // Categoría de cada lectura (OK / ENTREGADA / DESCONOCIDO) para mostrarla en la lista de la pistola
+    res.json({ success: true, data: resultado, liveScans: clasificarEscaneosSinSesion(scannedCodes, dbMap) });
   } catch (err) {
     logger.error('[AUDIT_DEPOSITO] Error en checkAudit:', err.message);
     res.status(500).json({ success: false, error: err.message });
@@ -184,223 +192,16 @@ exports.performAction = async (req, res) => {
   try {
     const { codigos, accion } = req.body;
     const usuarioId = req.user?.id;
-    if (!usuarioId) return res.status(401).json({ success: false, error: 'Usuario no identificado. Volvé a iniciar sesión.' }); 
-
-    if (!codigos || codigos.length === 0) {
-      return res.status(400).json({ success: false, error: 'Sin cdigos para procesar.' });
-    }
-
-    const pool = await getPool();
-    const tran = pool.transaction();
-    await tran.begin();
-
-    try {
-      // 9 = Entregado. 
-      // 5 = Listo (Pendiente de pago). 8 = Listo (Pagado).
-      // Evaluaremos 5 u 8 basado en si PagIdPago est nulo al hacer el UPDATE (mejor slo asignar un estado de depsito acorde).
-      const sqlCodes = codigos.map(c => `'${String(c).trim().replace(/'/g, "''")}'`).join(','); // comillas escapadas: los códigos vienen del body
-
-      if (accion === 'ENTREGADO') {
-        // OrdenesDeposito -> 9 (Entregado)
-        await tran.request().query(`
-          UPDATE dbo.OrdenesDeposito
-          SET OrdEstadoActual = 9, OrdFechaEstadoActual = GETDATE()
-          WHERE OrdCodigoOrden IN (${sqlCodes})
-        `);
-        await tran.request().query(`
-          INSERT INTO dbo.HistoricoEstadosOrdenes (OrdIdOrden, EOrIdEstadoOrden, HEOFechaEstado, HEOUsuarioAlta)
-          SELECT OrdIdOrden, 9, GETDATE(), ${usuarioId}
-          FROM dbo.OrdenesDeposito WHERE OrdCodigoOrden IN (${sqlCodes})
-        `);
-        
-        // Sincronizar con Estado global en Ordenes
-        try {
-            const mainOrdersRes = await tran.request().query(`
-                SELECT OrdenID FROM Ordenes WITH(NOLOCK) WHERE CodigoOrden IN (${sqlCodes}) OR NoDocERP IN (${sqlCodes})
-            `);
-            if (mainOrdersRes.recordset.length > 0) {
-                const { changeOrderState } = require('../services/stateManagerService');
-                for (const row of mainOrdersRes.recordset) {
-                    await changeOrderState(tran, {
-                        target: { type: 'ORDER', id: row.OrdenID },
-                        estado: 'Entregado',
-                        userObj: req.user || 'Sistema',
-                        detalle: 'Estado global sincronizado (Entregado en depósito)',
-                        io: req.app.get('socketio')
-                    });
-                }
-            }
-        } catch (syncErr) {
-            console.error('Error sincronizando estado global a Entregado en auditDeposito:', syncErr);
-        }
-
-        // OrdenesRetiro -> 5 (Entregado)
-        await tran.request().query(`
-          UPDATE r
-          SET r.OReEstadoActual = 5, r.OReFechaEstadoActual = GETDATE(), r.ORePasarPorCaja = 0
-          FROM dbo.OrdenesRetiro r
-          INNER JOIN dbo.OrdenesDeposito d ON r.OReIdOrdenRetiro = d.OReIdOrdenRetiro
-          WHERE d.OrdCodigoOrden IN (${sqlCodes})
-        `);
-        await tran.request().query(`
-          INSERT INTO dbo.HistoricoEstadosOrdenesRetiro (OReIdOrdenRetiro, EORIdEstadoOrden, HEOFechaEstado, HEOUsuarioAlta)
-          SELECT DISTINCT d.OReIdOrdenRetiro, 5, GETDATE(), ${usuarioId}
-          FROM dbo.OrdenesDeposito d
-          WHERE d.OrdCodigoOrden IN (${sqlCodes}) AND d.OReIdOrdenRetiro IS NOT NULL
-        `);
-
-        // Liberar estantes correspondientes
-        await tran.request().query(`
-          DELETE FROM dbo.OcupacionEstantes
-          WHERE OrdenRetiro IN (
-              SELECT DISTINCT COALESCE(r.FormaRetiro, 'R') + '-' + CAST(r.OReIdOrdenRetiro AS VARCHAR)
-              FROM dbo.OrdenesRetiro r
-              INNER JOIN dbo.OrdenesDeposito d ON r.OReIdOrdenRetiro = d.OReIdOrdenRetiro
-              WHERE d.OrdCodigoOrden IN (${sqlCodes}) AND d.OReIdOrdenRetiro IS NOT NULL
-          )
-        `);
-
-        // Marcar bultos como DESPACHADO
-        await tran.request().query(`
-          UPDATE lb
-          SET lb.Estado = 'DESPACHADO'
-          FROM dbo.Logistica_Bultos lb
-          INNER JOIN dbo.Ordenes o ON o.OrdenID = lb.OrdenID
-          WHERE o.CodigoOrden IN (${sqlCodes})
-          AND lb.Estado NOT IN ('DESPACHADO', 'PERDIDO')
-        `);
-
-        await tran.commit();
-        return res.json({ success: true, message: `${codigos.length} órdenes entregadas con éxito.` });
-
-      } else if (accion === 'A_DEPOSITO') {
-        // ── 1. Actualizar OrdenesDeposito → estado 7 ────────────────────────────
-        await tran.request().query(`
-          UPDATE dbo.OrdenesDeposito
-          SET OrdEstadoActual = 7, OrdFechaEstadoActual = GETDATE()
-          WHERE OrdCodigoOrden IN (${sqlCodes})
-        `);
-        await tran.request().query(`
-          INSERT INTO dbo.HistoricoEstadosOrdenes (OrdIdOrden, EOrIdEstadoOrden, HEOFechaEstado, HEOUsuarioAlta)
-          SELECT OrdIdOrden, 7, GETDATE(), ${usuarioId}
-          FROM dbo.OrdenesDeposito WHERE OrdCodigoOrden IN (${sqlCodes})
-        `);
-
-        // ── 2. OrdenesRetiro: estado provisional según si ya tenía pago ──────────
-        await tran.request().query(`
-          UPDATE r
-          SET r.OReEstadoActual = CASE WHEN r.PagIdPago IS NOT NULL THEN 8 ELSE 7 END,
-              r.OReFechaEstadoActual = GETDATE()
-          FROM dbo.OrdenesRetiro r
-          INNER JOIN dbo.OrdenesDeposito d ON r.OReIdOrdenRetiro = d.OReIdOrdenRetiro
-          WHERE d.OrdCodigoOrden IN (${sqlCodes})
-        `);
-        await tran.request().query(`
-          INSERT INTO dbo.HistoricoEstadosOrdenesRetiro (OReIdOrdenRetiro, EORIdEstadoOrden, HEOFechaEstado, HEOUsuarioAlta)
-          SELECT DISTINCT d.OReIdOrdenRetiro, CASE WHEN r.PagIdPago IS NOT NULL THEN 8 ELSE 7 END, GETDATE(), ${usuarioId}
-          FROM dbo.OrdenesDeposito d
-          INNER JOIN dbo.OrdenesRetiro r ON d.OReIdOrdenRetiro = r.OReIdOrdenRetiro
-          WHERE d.OrdCodigoOrden IN (${sqlCodes})
-        `);
-
-        // Marcar bultos como DESPACHADO al pasar al depósito (salen del área de producción)
-        await tran.request().query(`
-          UPDATE lb
-          SET lb.Estado = 'DESPACHADO'
-          FROM dbo.Logistica_Bultos lb
-          INNER JOIN dbo.Ordenes o ON o.OrdenID = lb.OrdenID
-          WHERE o.CodigoOrden IN (${sqlCodes})
-          AND lb.Estado NOT IN ('DESPACHADO', 'PERDIDO')
-        `);
-
-        // ── 3. AUTO-APROBACIÓN POR ANTICIPO ─────────────────────────────────────
-        // Para cada OrdenRetiro sin pago, verificar si el cliente tiene saldo
-        // efectivo suficiente y, de ser así, imputarlo automáticamente.
-        const retirosSinPago = await tran.request().query(`
-          SELECT DISTINCT
-            r.OReIdOrdenRetiro,
-            r.OReCostoTotalOrden,
-            o.CliIdCliente,
-            o.MonIdMoneda
-          FROM dbo.OrdenesRetiro r WITH(NOLOCK)
-          INNER JOIN dbo.OrdenesDeposito o WITH(NOLOCK)
-                  ON o.OReIdOrdenRetiro = r.OReIdOrdenRetiro
-          WHERE o.OrdCodigoOrden IN (${sqlCodes})
-            AND r.PagIdPago IS NULL
-            AND (r.ReferenciaPagoOnline IS NULL OR r.ReferenciaPagoOnline != 'ANTICIPO')
-            AND o.CliIdCliente IS NOT NULL
-        `);
-
-        const resumenAnticipo = { aprobadas: [], pendientesCaja: [] };
-
-        for (const retiro of retirosSinPago.recordset) {
-          const { OReIdOrdenRetiro, OReCostoTotalOrden, CliIdCliente, MonIdMoneda } = retiro;
-          const monto    = parseFloat(OReCostoTotalOrden) || 0;
-          const monedaId = MonIdMoneda || 1;
-          if (monto <= 0 || !CliIdCliente) continue;
-
-          try {
-            // Calcular saldo efectivo (descontando órdenes ya comprometidas)
-            const pool = await getPool();
-            const { cuentaId, saldoEfectivo } = await calcularSaldoEfectivo(CliIdCliente, monedaId, pool);
-
-            if (cuentaId && saldoEfectivo >= monto) {
-              // ✅ Saldo suficiente → imputar anticipo
-              const { pagIdPago } = await aplicarAnticipoAOrden({
-                oReId:     OReIdOrdenRetiro,
-                cliId:     CliIdCliente,
-                cuentaId,
-                monto,
-                monedaId,
-                usuarioId,
-                tran,
-              });
-              resumenAnticipo.aprobadas.push({
-                oReId: OReIdOrdenRetiro,
-                monto,
-                pagIdPago,
-                saldoRestante: parseFloat((saldoEfectivo - monto).toFixed(2)),
-              });
-              logger.info(`[AUDIT-DEPOSITO] ✅ Anticipo auto-aprobado: OReId=${OReIdOrdenRetiro} Monto=${monto} PagId=${pagIdPago}`);
-            } else {
-              // ❌ Saldo insuficiente → queda en caja
-              resumenAnticipo.pendientesCaja.push({
-                oReId:            OReIdOrdenRetiro,
-                monto,
-                saldoDisponible:  parseFloat((saldoEfectivo || 0).toFixed(2)),
-                faltante:         parseFloat((monto - (saldoEfectivo || 0)).toFixed(2)),
-              });
-              // Asegurarse de que ORePasarPorCaja = 1
-              await tran.request()
-                .input('OReId', sql.Int, OReIdOrdenRetiro)
-                .query('UPDATE dbo.OrdenesRetiro SET ORePasarPorCaja = 1 WHERE OReIdOrdenRetiro = @OReId');
-            }
-          } catch (eAnt) {
-            logger.warn(`[AUDIT-DEPOSITO] Error al evaluar anticipo para OReId=${OReIdOrdenRetiro}: ${eAnt.message}`);
-            resumenAnticipo.pendientesCaja.push({ oReId: OReIdOrdenRetiro, monto, error: eAnt.message });
-          }
-        }
-
-        await tran.commit();
-        return res.json({
-          success: true,
-          message: `${codigos.length} órdenes actualizadas.`,
-          resumenAnticipo,
-        });
-
-      } else {
-        throw new Error('Accin invlida.');
-      }
-    } catch (txErr) {
-      await tran.rollback();
-      throw txErr;
-    }
+    if (!usuarioId) return res.status(401).json({ success: false, error: 'Usuario no identificado. Volvé a iniciar sesión.' });
+    if (!codigos || codigos.length === 0) return res.status(400).json({ success: false, error: 'Sin códigos para procesar.' });
+    // La lógica (ENTREGADO / A_DEPOSITO) vive en services/auditDepositoAccionesService.js: la comparte el Registro de Casos.
+    const r = await accionesSvc.ejecutarAccionOrdenes({ codigos, accion, usuarioId, userObj: req.user, io: req.app.get('socketio') });
+    return res.json({ success: true, ...r });
   } catch (err) {
     logger.error('[AUDIT_DEPOSITO] Error en performAction:', err.message);
-    res.status(500).json({ success: false, error: err.message });
+    res.status(err.status || 500).json({ success: false, error: err.message });
   }
 };
-
 /**
  * POST /api/audit-deposito/notify
  * Enva un aviso (WhatsApp/Email) a la lista de cdigos seleccionados.
@@ -426,22 +227,8 @@ exports.notifyAction = async (req, res) => {
         // "Avisar nuevamente" NO toca órdenes resueltas (9/10/11): el 26/06/26 este UPDATE sin
         // guard devolvió a la cola de avisos ~60 órdenes YA ENTREGADAS y el job de WhatsApp las
         // re-avisó a todas. Además deja rastro en el historial (antes cambiaba estado en silencio).
-        const reqEstado = pool.request().input('Usr', sql.Int, usuarioId);
-        const inCodes = bindCodes(reqEstado);
-        await reqEstado.query(`
-          DECLARE @cambios TABLE (OrdIdOrden INT, EstadoViejo INT, EstadoNuevo INT);
-
-          UPDATE dbo.OrdenesDeposito
-          SET OrdEstadoActual = 12, OrdFechaEstadoActual = GETDATE()
-          OUTPUT inserted.OrdIdOrden, deleted.OrdEstadoActual, inserted.OrdEstadoActual INTO @cambios
-          WHERE OrdCodigoOrden IN (${inCodes})
-            AND OrdEstadoActual NOT IN (9, 10, 11);
-
-          INSERT INTO dbo.HistoricoEstadosOrdenes (OrdIdOrden, EOrIdEstadoOrden, HEOFechaEstado, HEOUsuarioAlta)
-          SELECT OrdIdOrden, EstadoNuevo, GETDATE(), @Usr
-          FROM @cambios WHERE EstadoViejo <> EstadoNuevo;
-        `);
-        return res.json({ success: true, message: `Estado cambiado a 'Avisar nuevamente' para ${codigos.length} órdenes (las entregadas/canceladas no se tocan).` });
+        const r = await accionesSvc.avisarNuevamente({ codigos, usuarioId });
+        return res.json({ success: true, message: r.message });
     }
 
     if (accion === 'EMAIL') {
@@ -502,7 +289,7 @@ exports.initAudit = async (req, res) => {
         // Traer todas las órdenes activas (sin filtrar por escaneados en el init — aún no sabemos cuáles son)
         const { recordset } = await pool.request().query(`
           SELECT o.OrdCodigoOrden, o.OrdNombreTrabajo, o.OrdEstadoActual, o.OrdFechaIngresoOrden,
-                 o.PagIdPago, o.OReIdOrdenRetiro,
+                 o.PagIdPago, o.OReIdOrdenRetiro, o.OrdAvisoWsp, o.OrdFechaAvisoWsp,
                  c.Nombre AS ClienteNombre, c.TelefonoTrabajo AS ClienteTelefono, c.Email AS ClienteEmail,
                  tc.TClDescripcion AS ClienteTipo, r.FormaRetiro${SQL_COLS_PAGO_DOC}
           FROM dbo.OrdenesDeposito o WITH(NOLOCK)
@@ -510,7 +297,6 @@ exports.initAudit = async (req, res) => {
           LEFT JOIN dbo.TiposClientes tc WITH(NOLOCK) ON tc.TClIdTipoCliente = c.TClIdTipoCliente
           LEFT JOIN dbo.OrdenesRetiro r WITH(NOLOCK) ON o.OReIdOrdenRetiro = r.OReIdOrdenRetiro${SQL_JOIN_PAGO_DOC}
           WHERE o.OrdEstadoActual < 9 OR o.OrdEstadoActual IS NULL
-             OR (o.OrdEstadoActual >= 9 AND o.PagIdPago IS NULL)
         `);
         return { recordset, maxDias };
       })()
@@ -546,6 +332,7 @@ exports.initAudit = async (req, res) => {
         clienteTipo: row.ClienteTipo || 'Desconocido',
         pagoEstado,
         ordenRetiro: row.OReIdOrdenRetiro ? `ID: ${row.OReIdOrdenRetiro} - ${row.FormaRetiro || 'S/D'}` : 'Sin Asignar',
+        avisado: !!row.OrdAvisoWsp, fechaAviso: row.OrdFechaAvisoWsp,
         estadoActualId: row.OrdEstadoActual, diasEnDeposito: dias, maxDiasDeposito: maxDias
       };
       if (activa) auditData.totales.push(item);
@@ -554,7 +341,7 @@ exports.initAudit = async (req, res) => {
       else if (activa && !escaneado) auditData.faltaEnDeposito.push(item);
       else if (!activa && escaneado) auditData.sobraEnDeposito.push(item);
       // Saldadas vía documento (PC/factura cobrado) NO van a "Entregadas Sin Pago"
-      if (row.OrdEstadoActual >= 9 && !row.PagIdPago && !saldadaPorDoc) auditData.entregadasSinPago.push(item);
+      if (row.OrdEstadoActual >= 9 && !row.PagIdPago && !saldadaPorDoc && !esClienteSemanal(row.ClienteTipo)) auditData.entregadasSinPago.push(item);
     }
     // Sobre los códigos ORIGINALES (no las claves normalizadas): si no, el mismo escaneo se
     // reportaría dos veces y con un texto que el operario nunca vio en la etiqueta.
@@ -582,7 +369,7 @@ exports.initAudit = async (req, res) => {
         sesion: { codigo: sesionAbierta.AudCodigo, audId: sesionAbierta.AudId, contadores },
       });
     }
-    res.json({ success: true, liveCodes, auditData });
+    res.json({ success: true, liveCodes, liveScans: clasificarEscaneosSinSesion(liveCodes, dbMap), auditData });
   } catch (err) {
     logger.error('[AUDIT_DEPOSITO] Error en initAudit:', err.message);
     res.status(500).json({ success: false, error: err.message });

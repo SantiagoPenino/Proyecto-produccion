@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import api from '../../services/apiClient';
 import { Toaster, toast } from 'react-hot-toast';
-import { Loader2, CheckCircle2, AlertTriangle, Clock, XCircle, Search, HelpCircle, Download, Smartphone, Camera, ScanLine, X, ClipboardList, FileText, Repeat } from 'lucide-react';
+import { Loader2, CheckCircle2, AlertTriangle, Clock, XCircle, Search, HelpCircle, Download, Smartphone, Camera, ScanLine, X, ClipboardList, FileText, Repeat, Wrench, Bell, BellOff, Phone, Mail, CircleDollarSign, Receipt, Wallet, QrCode } from 'lucide-react';
 import ScannerComponent from '../common/ScannerComponent';
 import * as XLSX from 'xlsx';
 import { socket } from '../../services/socketService';
@@ -9,6 +9,87 @@ import AuditDepositoSesionBar from './AuditDepositoSesionBar';
 import AuditDepositoCasosTab from './AuditDepositoCasosTab';
 import AuditDepositoReportesTab from './AuditDepositoReportesTab';
 import AuditDepositoCiclicoTab from './AuditDepositoCiclicoTab';
+import { useAuth } from '../../context/AuthContext';
+
+// Categoría de una lectura de la pistola, con los mismos nombres que las tarjetas de la derecha.
+const grupoScan = (s) => s.duplicado ? 'REPETIDA' : s.resultado === 'CORREGIDA' ? 'CORREGIDA' : ['SIN_INGRESO', 'DESCONOCIDO'].includes(s.resultado) ? 'FALTA_INGRESAR' : ['FUERA_ALCANCE', 'INGRESO_POSTERIOR'].includes(s.resultado) ? 'OTROS' : (s.resultado || 'PENDIENTE');
+const FILTROS_SCAN = [['TODOS', 'Todas'], ['OK', 'OK'], ['ENTREGADA', 'Entregadas'], ['FALTA_INGRESAR', 'No ingresadas'], ['CORREGIDA', 'Corregidas'], ['REPETIDA', 'Repetidas'], ['OTROS', 'Otras'], ['PENDIENTE', 'Clasificando']];
+// Estado escueto de la tarjeta
+const estadoScan = (s) => {
+  if (s.duplicado) return 'REPETIDA';
+  switch (s.resultado) {
+    case 'OK': return 'OK';
+    case 'ENTREGADA': return 'ENTREGADA';
+    case 'SIN_INGRESO': return 'NO INGRESADA';
+    case 'DESCONOCIDO': return 'NO EXISTE';
+    case 'CORREGIDA': return 'CORREGIDA';
+    case 'FUERA_ALCANCE': return 'OTRA ÁREA';
+    case 'INGRESO_POSTERIOR': return 'INGRESÓ DESPUÉS';
+    default: return '…';
+  }
+};
+const esRojaScan = (s) => !s.duplicado && ['ENTREGADA', 'SIN_INGRESO', 'DESCONOCIDO'].includes(s.resultado);
+// Color pleno: verde OK · rojo error · ámbar repetida · verde azulado corregida · gris el resto
+const fondoScan = (s) => s.duplicado ? 'bg-amber-500 border-amber-600 text-white' : s.resultado === 'OK' ? 'bg-green-600 border-green-700 text-white' : esRojaScan(s) ? 'bg-red-600 border-red-700 text-white' : s.resultado === 'CORREGIDA' ? 'bg-teal-600 border-teal-700 text-white' : s.resultado ? 'bg-slate-500 border-slate-600 text-white' : 'bg-slate-200 border-slate-300 text-slate-600';
+// Explicación que abre el signo de pregunta
+const ayudaScan = (s, sesionAbierta) => {
+  if (s.duplicado) return 'Esta etiqueta ya se había leído en esta sesión. No suma.';
+  switch (s.resultado) {
+    case 'OK': return sesionAbierta ? 'Está en el depósito y en la fotografía. Nada que hacer.' : 'Está activa en el depósito. Nada que hacer.';
+    case 'ENTREGADA': return 'En el sistema figura ENTREGADA, pero está físicamente acá. Acción: Regresar a Depósito (vuelve a "Pronto para entregar" y el retiro queda pendiente otra vez).';
+    case 'SIN_INGRESO': return 'Existe en producción pero nunca se pistoleó al depósito. Acción: Ingresar al depósito (mismo proceso que la pantalla de Recepción).';
+    case 'DESCONOCIDO': return 'No existe en el sistema. Si fue un error de lectura, quitala con la X; si es una orden real, hay que ingresarla a depósito mediante escaneo de su etiqueta.' + (sesionAbierta ? ' Al cerrar la auditoría queda como caso "Sin registro".' : '');
+    case 'CORREGIDA': return 'Ya corregida durante esta auditoría. No genera caso.';
+    case 'FUERA_ALCANCE': return 'Está activa, pero es de un área fuera del alcance de esta auditoría. No cuenta.';
+    case 'INGRESO_POSTERIOR': return 'Ingresó al depósito después de abrir la auditoría. No cuenta como diferencia.';
+    default: return 'Clasificando…';
+  }
+};
+
+// Señalética de pago: un ícono por situación, el detalle completo en el tooltip
+const senalPago = (pagoEstado) => {
+  const p = String(pagoEstado || '');
+  if (p.startsWith('Pagado')) return { Icono: CheckCircle2, cls: 'text-green-600', label: 'Pagado' };
+  if (p.startsWith('Facturado')) return { Icono: Receipt, cls: 'text-red-600', label: 'Fact. s/cobrar' };
+  if (p.startsWith('En cta')) return { Icono: Wallet, cls: 'text-blue-600', label: 'Sin facturar' };
+  if (!p || p === 'N/A') return { Icono: HelpCircle, cls: 'text-slate-300', label: 'S/D' };
+  return { Icono: CircleDollarSign, cls: 'text-amber-600', label: 'Sin cobrar' };
+};
+const catPago = (p) => { const s = String(p || ''); if (s.startsWith('Pagado')) return 'PAGADO'; if (s.startsWith('Facturado')) return 'FACTURADO'; if (s.startsWith('En cta')) return 'SIN_FACTURAR'; return 'SIN_COBRAR'; };
+// Pasos del filtro cíclico de pago (cada clic avanza al siguiente)
+const PASOS_PAGO = [
+  { k: '', label: 'Pago: todas', Icono: CircleDollarSign, cls: 'text-slate-500 border-slate-300 bg-white' },
+  { k: 'PAGADO', label: 'Pagado', Icono: CheckCircle2, cls: 'text-green-700 border-green-300 bg-green-50' },
+  { k: 'SIN_COBRAR', label: 'Sin cobrar', Icono: CircleDollarSign, cls: 'text-amber-700 border-amber-300 bg-amber-50' },
+  { k: 'FACTURADO', label: 'Facturado sin cobrar', Icono: Receipt, cls: 'text-red-700 border-red-300 bg-red-50' },
+  { k: 'SIN_FACTURAR', label: 'Sin facturar', Icono: Wallet, cls: 'text-blue-700 border-blue-300 bg-blue-50' },
+];
+function PagoIcono({ estado }) {
+  const s = senalPago(estado); const I = s.Icono;
+  return <span className={`inline-flex items-center gap-1 text-[11px] font-semibold whitespace-nowrap ${s.cls}`} title={estado || ''}><I size={14} />{s.label}</span>;
+}
+function AvisoIcono({ avisado, fecha }) {
+  if (avisado === undefined || avisado === null) return <span className="text-xs text-slate-300">—</span>;
+  if (avisado) return <span className="inline-flex items-center gap-1 text-xs text-green-700" title={fecha ? 'Avisada el ' + new Date(fecha).toLocaleString('es-UY') : 'Avisada'}><Bell size={14} />{fecha ? new Date(fecha).toLocaleDateString('es-UY', { day: '2-digit', month: '2-digit' }) : 'Sí'}</span>;
+  return <span className="inline-flex items-center gap-1 text-xs text-red-600" title="Nunca se avisó al cliente"><BellOff size={14} />Sin aviso</span>;
+}
+
+// Switch compacto de tres posiciones: solo el ícono (rojo = faltan · gris = todas · verde = ya están) y la bolita.
+// Cada clic avanza: todas → rojo → verde → todas. El detalle y los conteos van en el tooltip.
+function SwitchTriple({ valor, setValor, izq, der, iconos, titulo }) {
+  const es = (k) => valor === k;
+  const Ico = es(der.k) ? iconos.der : es(izq.k) ? iconos.izq : iconos.centro;
+  const color = es(der.k) ? 'text-green-600' : es(izq.k) ? 'text-red-600' : 'text-slate-400';
+  const ahora = es(der.k) ? `solo ${der.label} (${der.n})` : es(izq.k) ? `solo ${izq.label} (${izq.n})` : `todas · ${izq.label} ${izq.n} · ${der.label} ${der.n}`;
+  return (
+    <button onClick={() => setValor(v => (v === '' ? izq.k : v === izq.k ? der.k : ''))} className="inline-flex items-center gap-1 ml-1 select-none" title={`${titulo} · ahora: ${ahora}`}>
+      <Ico size={16} className={color} />
+      <span className={`relative inline-block w-8 h-4 rounded-full border transition-colors ${es(der.k) ? 'bg-green-600 border-green-700' : es(izq.k) ? 'bg-red-500 border-red-600' : 'bg-slate-300 border-slate-400'}`}>
+        <span className={`absolute top-[1px] w-3 h-3 rounded-full bg-white shadow transition-all ${es(der.k) ? 'left-[17px]' : es(izq.k) ? 'left-[1px]' : 'left-[9px]'}`} />
+      </span>
+    </button>
+  );
+}
 
 export default function AuditDepositoView() {
   const [inputText, setInputText] = useState('');
@@ -19,8 +100,6 @@ export default function AuditDepositoView() {
   const [showCamera, setShowCamera] = useState(false);
 
   // Para seleccin mltiple en la vista de errores/sobrantes
-  const [selectedSobran, setSelectedSobran] = useState(new Set());
-  const [selectedFaltan, setSelectedFaltan] = useState(new Set());
   const [selectedOlvidadas, setSelectedOlvidadas] = useState(new Set());
 
   // Pestaa activa
@@ -34,6 +113,98 @@ export default function AuditDepositoView() {
   const [kpisCasos, setKpisCasos] = useState(null);
   const [refreshCasos, setRefreshCasos] = useState(0);
   const sesionAbierta = !!(estadoSesion && estadoSesion.sesion);
+  // Escanear solo con auditoría abierta. Única excepción: backend viejo sin el módulo (modo anterior), para no cortar el depósito.
+  const puedeEscanear = sesionAbierta || !!(estadoSesion && estadoSesion.sinSoporte);
+  const [filtroScan, setFiltroScan] = useState('TODOS');
+  // Lista de lecturas con su categoría. Con sesión abierta manda el servidor (incluye repetidas);
+  // sin sesión son los códigos locales con la categoría que devolvió /check (hasta que llega: "clasificando").
+  const listaEscaneos = React.useMemo(() => {
+    if (sesionAbierta && liveScans.length) return liveScans.slice().reverse();
+    const porCodigo = new Map(liveScans.map(s => [s.codigo, s]));
+    return liveCodes.slice().reverse().map(c => porCodigo.get(c) || { codigo: c, resultado: null });
+  }, [sesionAbierta, liveScans, liveCodes]);
+  const conteoScan = React.useMemo(() => {
+    const m = { TODOS: listaEscaneos.length };
+    listaEscaneos.forEach(s => { const g = grupoScan(s); m[g] = (m[g] || 0) + 1; });
+    return m;
+  }, [listaEscaneos]);
+  const listaEscaneosFiltrada = filtroScan === 'TODOS' ? listaEscaneos : listaEscaneos.filter(s => grupoScan(s) === filtroScan);
+  const { user: usuarioActual } = useAuth();
+  const [corrigiendo, setCorrigiendo] = useState(null); // código cuya corrección está en curso
+  const [panelScan, setPanelScan] = useState(null);     // { codigo, tipo: 'AYUDA' | 'ACCIONES' } abierto en una tarjeta
+  const togglePanel = (codigo, tipo) => setPanelScan(p => (p && p.codigo === codigo && p.tipo === tipo ? null : { codigo, tipo }));
+
+  // ── "Órdenes Activas" es UNA lista (incluye Caducadas): filtros, búsqueda y selección ──
+  const [buscaActivas, setBuscaActivas] = useState('');
+  const [prefijoActivas, setPrefijoActivas] = useState('');
+  const maxDiasCfg = results?.olvidadas?.[0]?.maxDiasDeposito || results?.totales?.[0]?.maxDiasDeposito || 15;
+  const escaneadasSet = useMemo(() => new Set((results?.ok || []).map(o => o.codigo)), [results]);
+  const prefijosActivas = useMemo(() => [...new Set((results?.totales || []).filter(o => String(o.codigo).includes('-')).map(o => String(o.codigo).split('-')[0]))].sort(), [results]);
+  const sinCobrar = (o) => !String(o.pagoEstado || '').startsWith('Pagado');
+  // Avance del escaneo: órdenes verificadas sobre el total en depósito (la fotografía, con sesión abierta)
+  const totalOrdenes = results?.totales?.length || 0;
+  const escaneadasOk = results?.ok?.length || 0;
+  const pctEscaneadas = totalOrdenes ? Math.round((escaneadasOk / totalOrdenes) * 1000) / 10 : 0;
+  const conteoActivas = useMemo(() => {
+    const t = results?.totales || [];
+    return {
+      TODAS: t.length,
+      CADUCADAS: t.filter(o => o.diasEnDeposito > maxDiasCfg).length,
+      SIN_AVISO: t.filter(o => o.avisado === false).length,
+      SIN_COBRAR: t.filter(sinCobrar).length,
+      SIN_ESCANEAR: t.filter(o => !escaneadasSet.has(o.codigo)).length,
+      ESCANEADAS: t.filter(o => escaneadasSet.has(o.codigo)).length,
+    };
+  }, [results, maxDiasCfg, escaneadasSet]);
+  const [filtroEscaneo, setFiltroEscaneo] = useState(''); // '' todas · 'ESCANEADAS' · 'SIN_ESCANEAR' (switch con el QR)
+  const [filtroAviso, setFiltroAviso] = useState('');     // '' todas · 'AVISADAS' · 'SIN_AVISO' (switch con la campana)
+  const [filtroPago, setFiltroPago] = useState('');       // '' todas · PAGADO · SIN_COBRAR · FACTURADO · SIN_FACTURAR (ciclo)
+  const [filtroPlazo, setFiltroPlazo] = useState('');     // '' todas · 'CADUCADAS' · 'EN_PLAZO' (switch con el reloj)
+  const filtradoActivas = useMemo(() => {
+    let l = results?.totales || [];
+    if (prefijoActivas) l = l.filter(o => String(o.codigo).startsWith(prefijoActivas + '-'));
+    if (buscaActivas.trim()) { const q = buscaActivas.trim().toLowerCase(); l = l.filter(o => String(o.codigo).toLowerCase().includes(q) || String(o.cliente || '').toLowerCase().includes(q)); }
+    const caducadasN = l.filter(o => o.diasEnDeposito > maxDiasCfg).length;
+    const enPlazoN = l.length - caducadasN;
+    if (filtroPlazo === 'CADUCADAS') l = l.filter(o => o.diasEnDeposito > maxDiasCfg);
+    else if (filtroPlazo === 'EN_PLAZO') l = l.filter(o => o.diasEnDeposito <= maxDiasCfg);
+    if (filtroPago) l = l.filter(o => catPago(o.pagoEstado) === filtroPago);
+    const avisadas = l.filter(o => o.avisado === true).length;
+    const sinAvisoN = l.filter(o => o.avisado === false).length;
+    if (filtroAviso === 'AVISADAS') l = l.filter(o => o.avisado === true);
+    else if (filtroAviso === 'SIN_AVISO') l = l.filter(o => o.avisado === false);
+    const escaneadas = l.filter(o => escaneadasSet.has(o.codigo)).length;
+    const sinEscanearN = l.length - escaneadas;
+    if (filtroEscaneo === 'ESCANEADAS') l = l.filter(o => escaneadasSet.has(o.codigo));
+    else if (filtroEscaneo === 'SIN_ESCANEAR') l = l.filter(o => !escaneadasSet.has(o.codigo));
+    return { lista: l.slice().sort((a, b) => (b.diasEnDeposito || 0) - (a.diasEnDeposito || 0)), escaneadas, sinEscanearN, avisadas, sinAvisoN, caducadasN, enPlazoN };
+  }, [results, filtroPlazo, filtroPago, filtroAviso, filtroEscaneo, prefijoActivas, buscaActivas, maxDiasCfg, escaneadasSet]);
+  const activasFiltradas = filtradoActivas.lista;
+  // Corrección desde la tarjeta: la MISMA acción que el botón "Regresar a Depósito" de la pestaña Sobrantes.
+  const regresarADeposito = async (s) => {
+    if (!s.ordenCodigo) return;
+    if (!window.confirm(`Regresar a Depósito la orden ${s.ordenCodigo}${s.cliente ? ' (' + s.cliente + ')' : ''}.\n\nFigura ENTREGADA en el sistema pero está físicamente acá. Vuelve a estado "Pronto para entregar" y su retiro queda pendiente otra vez (si el cliente tiene saldo, se aplica solo).\n\n¿Confirmar?`)) return;
+    setCorrigiendo(s.codigo);
+    try {
+      const { data } = await api.post('/audit-deposito/actions', { codigos: [s.ordenCodigo], accion: 'A_DEPOSITO' });
+      toast.success(data.message || `${s.ordenCodigo} regresada a depósito`);
+      fetchAuditData(liveCodes);
+    } catch (e) { toast.error('No se pudo regresar a depósito: ' + (e?.response?.data?.error || e.message)); }
+    finally { setCorrigiendo(null); }
+  };
+  // Corrección desde la tarjeta: el MISMO proceso que la pantalla de Recepción (POST /logistics/receive, área DEPOSITO).
+  const ingresarADeposito = async (s) => {
+    const etiqueta = s.etiqueta || (String(s.codigo).includes('/B') ? s.codigo : null);
+    if (!etiqueta) return toast.error('Esta orden no tiene bulto con etiqueta: generá la etiqueta desde el área antes de ingresarla.');
+    if (!window.confirm(`Ingresar al depósito el bulto ${etiqueta}${s.ordenCodigo ? ' (orden ' + s.ordenCodigo + ')' : ''}.\n\nEs el MISMO proceso que la pantalla de Recepción: crea la orden en depósito, aplica el control de pedido completo y dispara los avisos.\n\n¿Confirmar?`)) return;
+    setCorrigiendo(s.codigo);
+    try {
+      await api.post('/logistics/receive', { envioId: null, codigoEtiqueta: etiqueta, usuarioId: usuarioActual?.id, areaReceptora: 'DEPOSITO' });
+      toast.success(`Bulto ${etiqueta} ingresado al depósito`);
+      fetchAuditData(liveCodes);
+    } catch (e) { toast.error('No se pudo ingresar: ' + (e?.response?.data?.error || e.message)); }
+    finally { setCorrigiendo(null); }
+  };
   const cargarEstadoSesion = () => api.get('/audit-deposito/sesion')
     .then(({ data }) => { if (data.success) setEstadoSesion(data); })
     .catch(err => setEstadoSesion({ sesion: null, sinSoporte: true, error: err?.response?.status || err.message }));
@@ -155,14 +326,17 @@ Reporte Generado Automáticamente por USER.
     }
   };
 
-  const fetchAuditData = async (codesArray) => {
+  const fetchAuditData = async (codesArray, codigoNuevo = null) => {
     setLoading(true);
     try {
       const { data } = await api.post('/audit-deposito/check', { scannedCodes: codesArray });
       if (data.success) {
         // Modo sesión: entregadasSinPago viene null ("sin cambios") y los escaneos son los de la sesión
         setResults(prev => ({ ...data.data, entregadasSinPago: data.data.entregadasSinPago ?? prev?.entregadasSinPago ?? [] }));
-        if (Array.isArray(data.liveScans)) setLiveScans(data.liveScans);
+        if (Array.isArray(data.liveScans)) {
+          setLiveScans(data.liveScans);
+          if (codigoNuevo) { const s = data.liveScans.find(x => x.codigo === codigoNuevo); if (s) feedbackEscaneo(s); }
+        }
         if (Array.isArray(data.liveCodes)) setLiveCodes(data.liveCodes);
         if (data.sesion) setEstadoSesion(prev => (prev && prev.sesion ? { ...prev, sesion: { ...prev.sesion, contadores: data.sesion.contadores } } : prev));
       } else {
@@ -201,10 +375,10 @@ Reporte Generado Automáticamente por USER.
     const ref = r.ordenCodigo ? `${r.ordenCodigo}${r.cliente ? ' · ' + r.cliente : ''}` : r.codigo;
     if (r.duplicado) return toast(`Ya estaba escaneada: ${ref}`, { icon: '⚠️' });
     switch (r.resultado) {
-      case 'OK': return toast.success(r.ordenYaEscaneada ? `Otro bulto de la misma orden: ${ref}` : `OK, está en la fotografía: ${ref}`);
-      case 'ENTREGADA': return toast(`Figura ENTREGADA en el sistema: ${ref} (sobrante)`, { icon: '🟠', duration: 5000 });
-      case 'SIN_INGRESO': return toast(`Existe en producción pero NUNCA ingresó al depósito: ${ref}`, { icon: '🟣', duration: 5000 });
-      case 'DESCONOCIDO': return toast.error(`Código desconocido, no existe en el sistema: ${r.codigo}`);
+      case 'OK': return toast.success(r.ordenYaEscaneada ? `Otro bulto de la misma orden: ${ref}` : `${sesionAbierta ? 'OK, está en la fotografía' : 'OK, en depósito'}: ${ref}`);
+      case 'ENTREGADA': return toast(`ENTREGADA ERRÓNEA: figura entregada en el sistema: ${ref}`, { icon: '🟠', duration: 5000 });
+      case 'SIN_INGRESO': return toast(`FALTA POR INGRESAR: existe en producción pero nunca ingresó al depósito: ${ref}`, { icon: '🟣', duration: 5000 });
+      case 'DESCONOCIDO': return toast.error(`FALTA POR INGRESAR: no existe en el sistema: ${r.codigo}`);
       case 'FUERA_ALCANCE': return toast(`Fuera del alcance de esta auditoría (otra área): ${ref}`, { icon: '⛔', duration: 5000 });
       case 'INGRESO_POSTERIOR': return toast(`Ingresó al depósito después de abrir la auditoría: ${ref} (no cuenta como diferencia)`, { icon: 'ℹ️', duration: 5000 });
       default: return toast(`${r.resultado}: ${ref}`);
@@ -212,6 +386,7 @@ Reporte Generado Automáticamente por USER.
   };
 
   const processDiscoveredCode = (rawCode, fromCamera = false) => {
+    if (!puedeEscanear) { toast.error('No hay auditoría abierta. Apretá "Abrir auditoría (tomar fotografía)" antes de escanear.'); return; }
     let parsed = processInputCodes(rawCode);
     if (parsed.length > 0) {
       const codeEscaneado = parsed[0];
@@ -226,7 +401,7 @@ Reporte Generado Automáticamente por USER.
       api.post('/audit-deposito/live', { codigo: codeEscaneado })
         .then(({ data }) => {
           if (data && data.data) { feedbackEscaneo(data.data); fetchAuditData(newLive); }
-          else if (dataLoaded) fetchAuditData(newLive);
+          else if (dataLoaded) fetchAuditData(newLive, codeEscaneado);
         })
         .catch(e => {
           console.error('Error db temp', e);
@@ -266,9 +441,24 @@ Reporte Generado Automáticamente por USER.
   const [notifyActionType, setNotifyActionType] = useState('ESTADO');
   const [emailTemplate, setEmailTemplate] = useState('Hola,\\n\\nQueremos avisarte que tu orden [CODIGO] sigue disponible para retirar en nuestro depósito.\\n¡Te esperamos pronto!');
 
+  // "Marcar como Entregado": la orden ya salió del depósito sin pasar por el sistema (antes vivía en la pestaña Sin escanear)
+  const marcarEntregadas = async () => {
+    const codigos = Array.from(selectedOlvidadas);
+    if (!codigos.length) return toast.error('Seleccioná al menos una orden de la lista.');
+    if (!window.confirm(`Marcar como ENTREGADAS ${codigos.length} orden${codigos.length === 1 ? '' : 'es'}.\n\nSe usa cuando la orden ya salió del depósito sin pasar por el sistema: pasa a estado Entregado, su retiro queda entregado, se libera el estante y los bultos quedan despachados. No se deshace desde acá.\n\n¿Confirmar?`)) return;
+    setLoading(true);
+    try {
+      const { data } = await api.post('/audit-deposito/actions', { codigos, accion: 'ENTREGADO' });
+      if (data.success) { toast.success(data.message); setSelectedOlvidadas(new Set()); refreshData(); }
+      else toast.error(data.error);
+    } catch (err) { toast.error('Error al marcar entregadas: ' + (err?.response?.data?.error || err.message)); }
+    finally { setLoading(false); }
+  };
+  const ejecutarAccionActivas = () => (notifyActionType === 'ENTREGADO' ? marcarEntregadas() : handleNotify());
+
   const handleNotify = async () => {
     if (selectedOlvidadas.size === 0) {
-      toast.error('Selecciona al menos una orden olvidada.');
+      toast.error('Seleccioná al menos una orden de la lista.');
       return;
     }
     const codigosArr = Array.from(selectedOlvidadas);
@@ -300,40 +490,6 @@ Reporte Generado Automáticamente por USER.
     }
   };
 
-  const handleAction = async (tipo, action) => {
-    const isSobra = tipo === 'SOBRA';
-    const set = isSobra ? selectedSobran : selectedFaltan;
-
-    if (set.size === 0) {
-      toast.error('Selecciona al menos una orden.');
-      return;
-    }
-
-    const codigosArr = Array.from(set);
-
-    if (!confirm(`¿Seguro de aplicar esta acción a ${codigosArr.length} órdenes?`)) return;
-
-    setLoading(true);
-    try {
-      const { data } = await api.post('/audit-deposito/actions', {
-        codigos: codigosArr,
-        accion: action
-      });
-
-      if (data.success) {
-        toast.success(data.message);
-        // Recargar usando los códigos en vivo
-        refreshData();
-      } else {
-        toast.error(data.error);
-      }
-    } catch (err) {
-      toast.error('Error al aplicar acción: ' + err.message);
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const exportToExcel = (dataArray, filename) => {
     if (!dataArray || dataArray.length === 0) {
       toast.error('No hay datos para exportar en esta pestaña.');
@@ -348,21 +504,13 @@ Reporte Generado Automáticamente por USER.
   // Tabs — el de escaneo siempre visible, los de datos muestran count solo cuando cargaron
   const tabsDef = [
     { id: 'escaneo', label: 'Escaneo Físico', count: liveCodes.length, icon: ScanLine, color: 'text-indigo-600', bg: 'bg-indigo-50', border: 'border-indigo-200' },
-    { id: 'totales', label: 'Órdenes Activas', count: results?.totales.length ?? '…', icon: Search, color: 'text-blue-600', bg: 'bg-blue-50', border: 'border-blue-200' },
-    { id: 'olvidadas', label: 'Caducadas', count: results?.olvidadas.length ?? '…', icon: Clock, color: 'text-purple-600', bg: 'bg-purple-50', border: 'border-purple-200' },
-    { id: 'faltantes', label: 'Sin escanear', count: results?.faltaEnDeposito.length ?? '…', icon: XCircle, color: 'text-red-600', bg: 'bg-red-50', border: 'border-red-200' },
-    { id: 'sobrantes', label: 'Sobrantes', count: results?.sobraEnDeposito.length ?? '…', icon: AlertTriangle, color: 'text-orange-600', bg: 'bg-orange-50', border: 'border-orange-200' },
-    { id: 'sinpago', label: 'Entregadas Sin Pago', count: results?.entregadasSinPago.length ?? '…', icon: AlertTriangle, color: 'text-amber-600', bg: 'bg-amber-50', border: 'border-amber-200' },
-    { id: 'desconocidas', label: 'Desconocidos', count: results?.desconocido.length ?? '…', icon: HelpCircle, color: 'text-slate-600', bg: 'bg-slate-50', border: 'border-slate-200' },
+    { id: 'totales', label: 'Situación depósito', count: results?.totales.length ?? '…', icon: Search, color: 'text-blue-600', bg: 'bg-blue-50', border: 'border-blue-200' },
     { id: 'casos', label: 'Registro de Casos', count: kpisCasos ? kpisCasos.vivos : '…', icon: ClipboardList, color: 'text-purple-600', bg: 'bg-purple-50', border: 'border-purple-200' },
     { id: 'reportes', label: 'Reportes', count: '', icon: FileText, color: 'text-blue-600', bg: 'bg-blue-50', border: 'border-blue-200' },
     { id: 'ciclico', label: 'Conteo cíclico', count: '', icon: Repeat, color: 'text-indigo-600', bg: 'bg-indigo-50', border: 'border-indigo-200' },
   ];
 
-  // Extraviadas ordenadas por código (orden natural: SUB-9 antes que SUB-12)
-  const faltantesOrdenadas = results
-    ? [...results.faltaEnDeposito].sort((a, b) => String(a.codigo).localeCompare(String(b.codigo), 'es', { numeric: true }))
-    : [];
+
 
   return (
     <div className="px-0 lg:px-6 py-4 lg:py-6 max-w-7xl mx-auto font-sans text-slate-800">
@@ -423,23 +571,44 @@ Reporte Generado Automáticamente por USER.
             <div className="animate-in fade-in slide-in-from-bottom-2 duration-300">
               <div className="flex flex-col lg:flex-row gap-6">
                 {/* Columna Izquierda: Input y Tarjetas */}
-                <div className="w-full lg:w-1/3 bg-slate-50 p-4 lg:rounded-xl border border-slate-200 shadow-inner">
+                <div className="w-full bg-slate-50 p-4 lg:rounded-xl border border-slate-200 shadow-inner">
                   <h3 className="font-bold text-slate-800 mb-2 flex justify-between items-center w-full">
                     <span className="flex items-center gap-2"><ScanLine size={18} className="text-indigo-600" /> Pistola Escáner</span>
                     {sesionAbierta ? (
                       <span className="text-[10px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 px-2 py-1 rounded">Auditoría {estadoSesion.sesion.codigo} abierta</span>
                     ) : (
-                      <button onClick={handleFinalizarInventario} className="text-[10px] bg-slate-800 hover:bg-slate-900 text-white px-2 py-1.5 rounded shadow">
-                        Finalizar / Reporte
+                      <button onClick={handleFinalizarInventario} className="text-[10px] bg-slate-600 hover:bg-slate-700 text-white px-2 py-1.5 rounded shadow" title="Baja un .txt con el resumen y vacía la lista temporal. NO cierra ninguna auditoría ni genera casos.">
+                        Vaciar lista temporal (.txt)
                       </button>
                     )}
                   </h3>
-                  <p className="text-xs text-slate-500 mb-4 block">{sesionAbierta ? `Cada lectura se guarda en la auditoría ${estadoSesion.sesion.codigo} y se resuelve a su orden al instante.` : 'Tus escaneos se guardan en la DB automáticamente.'}</p>
+                  {sesionAbierta ? (
+                    <p className="text-xs text-slate-500 mb-2 block">Cada lectura se guarda en la auditoría {estadoSesion.sesion.codigo} y se resuelve a su orden al instante.</p>
+                  ) : (
+                    <div className="mb-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                      <b>No hay auditoría abierta: el escaneo está bloqueado.</b> Los escaneos solo cuentan dentro de una auditoría; sin ella no generan casos ni quedan en el historial.
+                      Para auditar de verdad, primero apretá <b>"Abrir auditoría (tomar fotografía)"</b> en la barra de arriba y al terminar <b>"Cerrar auditoría y generar casos"</b>.
+                    </div>
+                  )}
+                  {/* Termómetro de avance */}
+                  {results && (
+                    <div className="mb-4 xl:w-2/3 mx-auto">
+                      <div className="flex justify-between items-baseline text-xs font-bold text-slate-700 mb-1">
+                        <span>Escaneadas <span className="font-mono">{escaneadasOk}</span> de <span className="font-mono">{totalOrdenes}</span> órdenes{sesionAbierta ? ' de la fotografía' : ' en depósito'}</span>
+                        <span className={`font-mono text-base ${pctEscaneadas >= 100 ? 'text-green-700' : 'text-indigo-700'}`}>{pctEscaneadas}%</span>
+                      </div>
+                      <div className="h-3 rounded-full bg-slate-200 overflow-hidden" title={`${escaneadasOk} de ${totalOrdenes}`}>
+                        <div className={`h-full rounded-full transition-all duration-500 ${pctEscaneadas >= 100 ? 'bg-green-600' : pctEscaneadas >= 50 ? 'bg-indigo-600' : 'bg-indigo-400'}`} style={{ width: `${Math.min(100, pctEscaneadas)}%` }} />
+                      </div>
+                      <div className="text-[10px] text-slate-400 mt-1">{totalOrdenes - escaneadasOk > 0 ? `Faltan ${totalOrdenes - escaneadasOk} por escanear.` : totalOrdenes ? 'Todas escaneadas.' : 'Sin órdenes en depósito.'}</div>
+                    </div>
+                  )}
                   <div className="flex flex-col gap-3 mb-6">
                     <input
                       type="text"
-                      className="w-full xl:w-2/3 mx-auto p-4 text-xl border-2 border-indigo-200 focus:border-indigo-500 rounded-xl shadow-sm text-center font-mono font-bold bg-white outline-none"
-                      placeholder="Pistola láser aquí (Enter)"
+                      className="w-full xl:w-2/3 mx-auto p-4 text-xl border-2 border-indigo-200 focus:border-indigo-500 rounded-xl shadow-sm text-center font-mono font-bold bg-white outline-none disabled:bg-slate-100 disabled:text-slate-400 disabled:cursor-not-allowed"
+                      placeholder={puedeEscanear ? 'Pistola láser aquí (Enter)' : 'Abrí una auditoría para escanear'}
+                      disabled={!puedeEscanear}
                       value={scanInput}
                       onChange={e => setScanInput(e.target.value)}
                       onKeyDown={handleLiveScan}
@@ -447,7 +616,8 @@ Reporte Generado Automáticamente por USER.
                     />
                     <button
                       onClick={() => setShowCamera(true)}
-                      className="xl:w-2/3 mx-auto flex items-center justify-center gap-2 bg-slate-800 text-white p-3 rounded-xl shadow hover:bg-slate-700 transition"
+                      disabled={!puedeEscanear}
+                      className="xl:w-2/3 mx-auto flex items-center justify-center gap-2 bg-slate-800 text-white p-3 rounded-xl shadow hover:bg-slate-700 transition disabled:bg-slate-400 disabled:cursor-not-allowed"
                     >
                       <Smartphone size={20} />
                       Usar Cámara del Móvil
@@ -462,287 +632,165 @@ Reporte Generado Automáticamente por USER.
                     />
                   )}
 
-                  <div className="flex flex-col gap-2 mt-4 max-h-[500px] overflow-y-auto pr-2">
-                    {(sesionAbierta && liveScans.length ? liveScans.slice().reverse() : liveCodes.slice().reverse().map(c => ({ codigo: c }))).map((s, i) => (
-                      <div key={s.codigo + '_' + i} className="bg-white border text-center relative border-indigo-100 shadow-sm p-3 rounded-lg flex justify-between items-center group">
-                        <div className="text-left min-w-0">
-                          <span className="font-mono font-bold text-indigo-900 border-b border-dashed border-indigo-300">{s.codigo}</span>
-                          {s.resultado && (
-                            <div className="text-[10px] mt-0.5 truncate">
-                              <span className={`font-bold ${s.duplicado ? 'text-amber-600' : s.resultado === 'OK' ? 'text-green-700' : s.resultado === 'ENTREGADA' ? 'text-orange-600' : s.resultado === 'SIN_INGRESO' ? 'text-purple-600' : s.resultado === 'DESCONOCIDO' ? 'text-red-600' : 'text-slate-500'}`}>
-                                {s.duplicado ? 'REPETIDA' : s.resultado === 'OK' ? 'OK' : s.resultado === 'ENTREGADA' ? 'FIGURA ENTREGADA' : s.resultado === 'SIN_INGRESO' ? 'SIN INGRESO' : s.resultado === 'DESCONOCIDO' ? 'DESCONOCIDO' : s.resultado === 'FUERA_ALCANCE' ? 'FUERA DE ALCANCE' : 'INGRESÓ DESPUÉS'}
-                              </span>
-                              {s.ordenCodigo && s.ordenCodigo !== s.codigo && <span className="text-slate-500"> · {s.ordenCodigo}</span>}
-                              {s.cliente && <span className="text-slate-400"> · {s.cliente}</span>}
-                            </div>
-                          )}
-                        </div>
-                        <button onClick={() => handleRemoveLiveCode(s.codigo)} className="text-red-400 opacity-50 hover:bg-red-50 hover:opacity-100 p-1.5 rounded-full transition-all" title="Quitar este escaneo">
-                          <X size={16} />
+                  {listaEscaneos.length > 0 && (
+                    <div className="flex flex-wrap gap-1 mt-4">
+                      {FILTROS_SCAN.filter(([k]) => k === 'TODOS' || conteoScan[k]).map(([k, l]) => (
+                        <button key={k} onClick={() => setFiltroScan(k)} className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${filtroScan === k ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'}`}>
+                          {l} <span className="opacity-70">{conteoScan[k] || 0}</span>
                         </button>
+                      ))}
+                    </div>
+                  )}
+                  <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-1.5 mt-2 max-h-[70vh] overflow-y-auto pr-1 items-start">
+                    {listaEscaneosFiltrada.map((s, i) => (
+                      <div key={s.codigo + '_' + i} className={`border rounded-md shadow-sm ${fondoScan(s)}`}>
+                        <div className="flex items-center justify-between gap-1 px-2 py-1">
+                          <div className="min-w-0 leading-tight">
+                            <div className="font-mono font-bold text-sm truncate" title={s.ordenCodigo && s.ordenCodigo !== s.codigo ? `Etiqueta ${s.codigo}` : s.codigo}>{s.ordenCodigo || s.codigo}</div>
+                            <div className="text-[10px] font-extrabold tracking-wide opacity-90">{estadoScan(s)}</div>
+                          </div>
+                          <div className="flex items-center shrink-0">
+                            <button onClick={() => togglePanel(s.codigo, 'AYUDA')} className={`p-1 rounded hover:bg-white/25 ${panelScan && panelScan.codigo === s.codigo && panelScan.tipo === 'AYUDA' ? 'bg-white/30' : ''}`} title="¿Qué significa?"><HelpCircle size={14} /></button>
+                            {esRojaScan(s) && <button onClick={() => togglePanel(s.codigo, 'ACCIONES')} className={`p-1 rounded hover:bg-white/25 ${panelScan && panelScan.codigo === s.codigo && panelScan.tipo === 'ACCIONES' ? 'bg-white/30' : ''}`} title="Acciones"><Wrench size={14} /></button>}
+                            <button onClick={() => handleRemoveLiveCode(s.codigo)} className="p-1 rounded hover:bg-white/25" title="Quitar esta lectura"><X size={14} /></button>
+                          </div>
+                        </div>
+                        {panelScan && panelScan.codigo === s.codigo && panelScan.tipo === 'AYUDA' && (
+                          <div className="bg-white text-slate-700 text-[11px] leading-snug px-2 py-1.5 rounded-b-md border-t border-white/40">
+                            {ayudaScan(s, sesionAbierta)}
+                            {(s.cliente || (s.ordenCodigo && s.ordenCodigo !== s.codigo)) && (
+                              <div className="mt-1 text-[10px] text-slate-500">{s.ordenCodigo && s.ordenCodigo !== s.codigo ? `Etiqueta leída: ${s.codigo}` : ''}{s.cliente ? `${s.ordenCodigo && s.ordenCodigo !== s.codigo ? ' · ' : ''}Cliente: ${s.cliente}` : ''}</div>
+                            )}
+                          </div>
+                        )}
+                        {panelScan && panelScan.codigo === s.codigo && panelScan.tipo === 'ACCIONES' && (
+                          <div className="bg-white text-slate-700 text-[11px] px-2 py-1.5 rounded-b-md border-t border-white/40 flex flex-col gap-1.5">
+                            {s.resultado === 'ENTREGADA' && (
+                              <button onClick={() => regresarADeposito(s)} disabled={corrigiendo === s.codigo} className="px-2 py-1.5 rounded bg-orange-600 hover:bg-orange-700 disabled:bg-orange-300 text-white font-bold text-left">Regresar a Depósito <span className="font-normal opacity-80">· vuelve a Pronto para entregar</span></button>
+                            )}
+                            {(s.resultado === 'SIN_INGRESO' || (s.resultado === 'DESCONOCIDO' && String(s.codigo).includes('/B'))) && (
+                              <button onClick={() => ingresarADeposito(s)} disabled={corrigiendo === s.codigo} className="px-2 py-1.5 rounded bg-purple-600 hover:bg-purple-700 disabled:bg-purple-300 text-white font-bold text-left">Ingresar al depósito <span className="font-normal opacity-80">· mismo proceso que Recepción</span></button>
+                            )}
+                            {s.resultado === 'DESCONOCIDO' && !String(s.codigo).includes('/B') && (
+                              <div className="text-slate-600">No hay corrección automática: no existe en el sistema. Si es una orden real, ingresala a depósito escaneando su etiqueta (Recepción).</div>
+                            )}
+                            <button onClick={() => handleRemoveLiveCode(s.codigo)} className="px-2 py-1.5 rounded bg-white border border-red-300 text-red-700 font-bold text-left hover:bg-red-50">Quitar la lectura <span className="font-normal opacity-80">· fue un error de escaneo</span></button>
+                          </div>
+                        )}
                       </div>
                     ))}
-                    {liveCodes.length === 0 && <p className="text-xs text-center text-slate-400 py-4">Aún no has escaneado ninguna orden.</p>}
+                    {listaEscaneos.length === 0 && <p className="text-xs text-center text-slate-400 py-4">Aún no has escaneado ninguna orden.</p>}
+                    {listaEscaneos.length > 0 && listaEscaneosFiltrada.length === 0 && <p className="text-xs text-center text-slate-400 py-4">No hay lecturas en esta categoría.</p>}
                   </div>
                 </div>
 
-                {/* Columna Derecha: solo visible en desktop y cuando hay datos */}
-                {results && <div className="hidden lg:grid lg:w-2/3 grid-cols-1 md:grid-cols-3 gap-4">
-
-                  {/* Faltan en Deposito (NO fueron escaneadas pero estan Activas) */}
-                  <div className="bg-red-50 border border-red-100 rounded-xl p-4 flex flex-col shadow-sm">
-                    <div className="border-b border-red-200 pb-2 mb-3">
-                      <h4 className="font-bold text-red-800 flex items-center gap-1"><XCircle size={14} /> Sin escanear</h4>
-                      <p className="text-[10px] text-red-600 leading-tight">{sesionAbierta ? 'Activas de la fotografía que todavía no se escanearon. Recién al cerrar la auditoría se vuelven casos FALTANTE.' : 'Activas pero NO escaneadas. ¿Ya se entregaron físicamente?'}</p>
-                    </div>
-                    <div className="flex flex-col gap-2 flex-grow overflow-y-auto max-h-[500px] pr-1">
-                      {results.faltaEnDeposito.map(o => (
-                        <div key={o.codigo} className="bg-white p-2 text-xs border border-red-200 rounded text-red-900 shadow-sm">
-                          <p className="font-bold">{o.codigo}</p>
-                          <p className="text-[9px] truncate text-slate-500">{o.cliente}</p>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Entregada Erroneo (Sobrantes) */}
-                  <div className="bg-orange-50 border border-orange-100 rounded-xl p-4 flex flex-col shadow-sm">
-                    <div className="border-b border-orange-200 pb-2 mb-3">
-                      <h4 className="font-bold text-orange-800 flex items-center gap-1"><AlertTriangle size={14} /> Entregada Errónea</h4>
-                      <p className="text-[10px] text-orange-600 leading-tight">Escaneadas, pero figuran Entregadas. Volver a Depósito.</p>
-                    </div>
-                    <div className="flex flex-col gap-2 flex-grow overflow-y-auto max-h-[500px] pr-1">
-                      {(sesionAbierta ? results.sobraEnDeposito : results.sobraEnDeposito.filter(o => liveCodes.includes(o.codigo))).map(o => (
-                        <div key={o.codigo} className="bg-white p-2 text-xs border border-orange-200 rounded text-orange-900 shadow-sm">
-                          <p className="font-bold">{o.codigo}</p>
-                          <p className="text-[9px] truncate text-slate-500">{o.cliente}</p>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Falta por Ingresar (Desconocidas) */}
-                  <div className="bg-slate-100 border border-slate-200 rounded-xl p-4 flex flex-col shadow-sm">
-                    <div className="border-b border-slate-300 pb-2 mb-3">
-                      <h4 className="font-bold text-slate-800 flex items-center gap-1"><HelpCircle size={14} /> Falta Por Ingresar</h4>
-                      <p className="text-[10px] text-slate-600 leading-tight">Escaneadas que no están en la Base de Datos.</p>
-                    </div>
-                    <div className="flex flex-col gap-2 flex-grow overflow-y-auto max-h-[500px] pr-1">
-                      {[...(results.sinIngreso || []), ...(sesionAbierta ? results.desconocido : results.desconocido.filter(o => liveCodes.includes(o.codigo)))].map(o => (
-                        <div key={o.codigo} className="bg-white p-2 text-xs border border-slate-300 rounded text-slate-900 shadow-sm">
-                          <p className="font-mono font-bold">{o.codigo}</p>
-                          {o.ordenCodigo && <p className="text-[9px] text-purple-700 truncate">En producción sin ingreso: {o.ordenCodigo}{o.cliente ? ' · ' + o.cliente : ''}</p>}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                </div>}
+                {/* Las listas de la derecha se reemplazaron por la categoría en cada tarjeta (ver lista de la pistola) */}
               </div>
             </div>
           )}
 
-          {/* TOTALES ACTIVAS */}
+          {/* ÓRDENES ACTIVAS (incluye Caducadas): lista única con filtros, selección, acciones de aviso y señalética */}
           {activeTab === 'totales' && results && (
             <div className="animate-in fade-in slide-in-from-bottom-2 duration-300">
-              <div className="flex justify-between items-center mb-4">
-                <h3 className="text-lg font-bold text-blue-800">Censo Completo de Órdenes (Según Sistema)</h3>
-                <button onClick={() => exportToExcel(results.totales, 'Totales_Deposito')} className="flex items-center gap-2 px-3 py-1.5 bg-green-600 text-white text-sm font-bold rounded shadow-sm hover:bg-green-700">
-                  <Download size={16} /> Exportar Excel
-                </button>
-              </div>
-              {results.totales.length > 0 ? (
-                <TableRender
-                  data={results.totales}
-                  columns={['Código', 'Cliente', 'Tipo Cliente', 'Situación Pago', 'Días en Depósito', 'Forma/Retiro']}
-                  rowMap={(o) => [
-                    <span className="font-mono font-bold text-blue-900">{o.codigo}</span>,
-                    o.cliente,
-                    o.clienteTipo,
-                    o.pagoEstado,
-                    o.diasEnDeposito + ' días',
-                    <span className="text-xs font-mono">{o.ordenRetiro}</span>
-                  ]}
-                />
-              ) : <EmptyState text="No hay órdenes en depósito según el sistema." />}
-            </div>
-          )}
-
-          {/* OLVIDADAS */}
-          {activeTab === 'olvidadas' && results && (
-            <div className="animate-in fade-in slide-in-from-bottom-2 duration-300">
-              <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-4 gap-4">
+              <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-3 gap-3">
                 <div>
-                  <h3 className="text-lg font-bold text-purple-800 flex items-center gap-2">Órdenes Olvidadas / Vencidas</h3>
-                  <p className="text-xs text-purple-700 mt-1 font-medium">Llevan más del tiempo configurado ({results.olvidadas[0]?.maxDiasDeposito || 15} días) sin retirarse.</p>
+                  <h3 className="text-lg font-bold text-blue-800">Situación del depósito según el sistema</h3>
+                  <p className="text-xs text-blue-700/80 mt-1 font-medium">Incluye las caducadas (más de {maxDiasCfg} días) y marca cuáles ya se escanearon. Ordenadas de la más antigua a la más nueva.</p>
                 </div>
                 <div className="flex flex-col gap-2 items-end w-full md:w-auto">
-                  <div className="flex items-center gap-2">
-                    <select
-                      className="text-sm border-slate-300 rounded shadow-sm py-1.5 focus:border-purple-500 focus:ring-purple-500"
-                      value={notifyActionType}
-                      onChange={(e) => setNotifyActionType(e.target.value)}
-                    >
-                      <option value="ESTADO">Cambiar de Estado (Avisar Nuevamente)</option>
-                      <option value="EMAIL">Solo Enviar Email</option>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <select value={notifyActionType} onChange={(e) => setNotifyActionType(e.target.value)} className="text-sm border-slate-300 rounded shadow-sm py-1.5">
+                      <option value="ESTADO">Avisar nuevamente (cambia el estado y reenvía el WhatsApp)</option>
+                      <option value="EMAIL">Solo enviar email (no cambia el estado)</option>
+                      <option value="ENTREGADO">Marcar como Entregado (ya salió del depósito sin pasar por el sistema)</option>
                     </select>
-
-                    <button
-                      onClick={handleNotify}
-                      disabled={selectedOlvidadas.size === 0 || loading}
-                      className="px-4 py-1.5 bg-purple-600 hover:bg-purple-700 disabled:bg-purple-300 text-white rounded text-sm font-bold shadow-sm"
-                    >
-                      Ejecutar Acción ({selectedOlvidadas.size})
-                    </button>
-                    <button onClick={() => exportToExcel(results.olvidadas, 'Olvidadas_Deposito')} className="flex items-center gap-2 px-3 py-1.5 bg-green-600 text-white text-sm font-bold rounded shadow-sm hover:bg-green-700">
-                      <Download size={16} /> Excel
-                    </button>
+                    <button onClick={ejecutarAccionActivas} disabled={selectedOlvidadas.size === 0 || loading} className="px-4 py-1.5 bg-purple-600 hover:bg-purple-700 disabled:bg-purple-300 text-white rounded text-sm font-bold shadow-sm">Ejecutar en {selectedOlvidadas.size} seleccionada{selectedOlvidadas.size === 1 ? '' : 's'}</button>
+                    {selectedOlvidadas.size > 0 && <button onClick={() => setSelectedOlvidadas(new Set())} className="px-3 py-1.5 bg-white border border-slate-300 text-slate-600 rounded text-sm">Quitar selección</button>}
+                    <button onClick={() => exportToExcel(activasFiltradas.map(o => ({ Código: o.codigo, Cliente: o.cliente, Tipo: o.clienteTipo, Días: o.diasEnDeposito, Caducada: o.diasEnDeposito > maxDiasCfg ? 'SI' : '', Avisada: o.avisado == null ? '' : o.avisado ? 'SI' : 'NO', 'Fecha aviso': o.fechaAviso ? new Date(o.fechaAviso).toLocaleDateString('es-UY') : '', Pago: o.pagoEstado, Teléfono: o.clienteTelefono || '', Email: o.clienteEmail || '', Retiro: o.ordenRetiro, Estante: o.estante || '', Escaneada: escaneadasSet.has(o.codigo) ? 'SI' : 'NO' })), 'Ordenes_Deposito')} className="flex items-center gap-2 px-3 py-1.5 bg-green-600 text-white text-sm font-bold rounded shadow-sm hover:bg-green-700"><Download size={16} /> Excel</button>
                   </div>
-
                   {notifyActionType === 'EMAIL' && (
-                    <div className="w-full mt-2 bg-purple-50 p-3 rounded-lg border border-purple-100">
-                      <label className="block text-xs font-bold text-purple-800 mb-1">Plantilla de Email (Usa [CODIGO] para la orden)</label>
-                      <textarea
-                        className="w-full text-sm p-2 border-slate-300 rounded focus:ring-purple-500 resize-y"
-                        rows="3"
-                        value={emailTemplate}
-                        onChange={(e) => setEmailTemplate(e.target.value)}
-                      />
+                    <div className="w-full mt-1 bg-purple-50 p-3 rounded-lg border border-purple-100">
+                      <label className="block text-xs font-bold text-purple-800 mb-1">Plantilla de Email (usa [CODIGO] para la orden)</label>
+                      <textarea className="w-full text-sm p-2 border-slate-300 rounded focus:ring-purple-500 resize-y" rows="3" value={emailTemplate} onChange={(e) => setEmailTemplate(e.target.value)} />
                     </div>
                   )}
                 </div>
               </div>
-              {results.olvidadas.length > 0 ? (
-                <TableRender
-                  data={results.olvidadas}
-                  hasSelection={true}
-                  selectedSet={selectedOlvidadas}
-                  onToggle={(codigo) => handleToggleSet(codigo, setSelectedOlvidadas, selectedOlvidadas)}
-                  columns={['Código', 'Días', 'Cliente (Tipo)', 'Contacto', 'Retiro']}
-                  rowMap={(o) => [
-                    <span className="font-mono font-bold text-purple-900">{o.codigo}</span>,
-                    <span className="font-bold text-purple-700">{o.diasEnDeposito} d</span>,
-                    <>{o.cliente} <span className="text-[10px] text-slate-500 bg-slate-100 px-1 rounded uppercase">{o.clienteTipo}</span></>,
-                    <div className="text-xs text-slate-600">Tel: {o.clienteTelefono || 'N/D'} <br /> ✉️: {o.clienteEmail || 'N/D'}</div>,
-                    <span className="text-xs font-mono">{o.ordenRetiro}</span>
-                  ]}
-                />
-              ) : <EmptyState text="Geniál. No hay órdenes vencidas ni olvidadas." />}
-            </div>
-          )}
-
-          {/* FALTANTES */}
-          {activeTab === 'faltantes' && results && (
-            <div className="animate-in fade-in slide-in-from-bottom-2 duration-300">
-              <div className="flex justify-between items-center mb-4">
-                <div>
-                  <h3 className="text-lg font-bold text-red-800">Sin escanear</h3>
-                  <p className="text-xs text-red-700 mt-1 font-medium">{sesionAbierta ? 'Están en la fotografía como activas y todavía no se escanearon. No son extraviadas: al cerrar la auditoría, las que sigan sin aparecer se convierten en casos FALTANTE del Registro.' : 'En el sistema figuran en depósito pero no se escanearon. ¿Se entregaron sin procesar?'}</p>
-                </div>
-                <div className="flex gap-2">
-                  <button
-                    onClick={() => handleAction('FALTA', 'ENTREGADO')}
-                    disabled={selectedFaltan.size === 0 || loading}
-                    className="px-4 py-1.5 bg-red-600 hover:bg-red-700 disabled:bg-red-300 text-white rounded text-sm font-bold shadow-sm"
-                  >
-                    Marcar como Entregado ({selectedFaltan.size})
-                  </button>
-                  <button onClick={() => exportToExcel(faltantesOrdenadas, 'Faltantes_Deposito')} className="flex items-center gap-2 px-3 py-1.5 bg-green-600 text-white text-sm font-bold rounded shadow-sm hover:bg-green-700">
-                    <Download size={16} /> Excel
-                  </button>
-                </div>
+              {/* Filtros */}
+              <div className="flex flex-wrap items-center gap-2 mb-2">
+                {/* Plazo en depósito: reloj rojo = caducadas · gris = todas · verde = en plazo */}
+                <SwitchTriple valor={filtroPlazo} setValor={setFiltroPlazo} titulo={`Plazo en depósito (${maxDiasCfg} días)`}
+                  izq={{ k: 'CADUCADAS', label: 'caducadas', n: filtradoActivas.caducadasN }} der={{ k: 'EN_PLAZO', label: 'en plazo', n: filtradoActivas.enPlazoN }}
+                  iconos={{ izq: Clock, centro: Clock, der: Clock }} />
+                {/* Switches: escaneo (QR) y aviso (campana). Izquierda = los que faltan, centro = todas, derecha = los que ya están */}
+                <SwitchTriple valor={filtroEscaneo} setValor={setFiltroEscaneo} titulo="Escaneo"
+                  izq={{ k: 'SIN_ESCANEAR', label: 'Sin escanear', n: filtradoActivas.sinEscanearN }} der={{ k: 'ESCANEADAS', label: 'Escaneadas', n: filtradoActivas.escaneadas }}
+                  iconos={{ izq: QrCode, centro: QrCode, der: QrCode }} />
+                <SwitchTriple valor={filtroAviso} setValor={setFiltroAviso} titulo="Aviso al cliente"
+                  izq={{ k: 'SIN_AVISO', label: 'Sin aviso', n: filtradoActivas.sinAvisoN }} der={{ k: 'AVISADAS', label: 'Avisadas', n: filtradoActivas.avisadas }}
+                  iconos={{ izq: BellOff, centro: Bell, der: Bell }} />
+                {/* Situación de pago: un solo botón que recorre los estados */}
+                {(() => {
+                  const i = Math.max(0, PASOS_PAGO.findIndex(p => p.k === filtroPago));
+                  const p = PASOS_PAGO[i]; const I = p.Icono;
+                  return (
+                    <button onClick={() => setFiltroPago(PASOS_PAGO[(i + 1) % PASOS_PAGO.length].k)} className={`inline-flex items-center gap-1 ml-1 px-2 py-0.5 rounded-full border text-[11px] font-bold ${p.cls}`}
+                      title="Situación de pago. Cada clic pasa al siguiente: todas → pagado → sin cobrar → facturado sin cobrar → sin facturar">
+                      <I size={14} />{p.label}
+                    </button>
+                  );
+                })()}
+                <select value={prefijoActivas} onChange={e => setPrefijoActivas(e.target.value)} className="text-xs border-slate-300 rounded py-1">
+                  <option value="">Todas las áreas</option>
+                  {prefijosActivas.map(p => <option key={p} value={p}>{p}</option>)}
+                </select>
+                <div className="relative"><Search size={14} className="absolute left-2 top-2 text-slate-400" /><input value={buscaActivas} onChange={e => setBuscaActivas(e.target.value)} placeholder="Código o cliente…" className="pl-7 pr-2 py-1 text-xs border border-slate-300 rounded w-48" /></div>
+                <span className="text-xs text-slate-500">{activasFiltradas.length} de {conteoActivas.TODAS}</span>
               </div>
-              {faltantesOrdenadas.length > 0 ? (
-                <TableRender
-                  data={faltantesOrdenadas}
-                  hasSelection={true}
-                  selectedSet={selectedFaltan}
-                  onToggle={(codigo) => handleToggleSet(codigo, setSelectedFaltan, selectedFaltan)}
-                  columns={['Código', 'Días', 'Cliente', 'Situación Pago', 'Forma/Retiro']}
-                  rowMap={(o) => [
-                    <span className="font-mono font-bold text-red-900">{o.codigo}</span>,
-                    <span className="font-bold text-red-700">{o.diasEnDeposito} d</span>,
-                    o.cliente,
-                    o.pagoEstado,
-                    <span className="text-xs font-mono">{o.ordenRetiro}</span>
-                  ]}
-                />
-              ) : <EmptyState text={inputText.trim() !== '' ? 'No detectamos faltantes de la lista que escaneaste.' : 'Realiza un escaneo para descubrir faltantes.'} />}
-            </div>
-          )}
-
-          {/* SOBRANTES */}
-          {activeTab === 'sobrantes' && results && (
-            <div className="animate-in fade-in slide-in-from-bottom-2 duration-300">
-              <div className="flex justify-between items-center mb-4">
-                <div>
-                  <h3 className="text-lg font-bold text-orange-800">Sobran en Depósito</h3>
-                  <p className="text-xs text-orange-700 mt-1 font-medium">Estas órdenes se escanearon aquí, pero en el sistema figuran como Entregadas. ¿Se olvidaron de darla a la mensajería?</p>
-                </div>
-                <div className="flex gap-2">
-                  <button
-                    onClick={() => handleAction('SOBRA', 'A_DEPOSITO')}
-                    disabled={selectedSobran.size === 0 || loading}
-                    className="px-4 py-1.5 bg-orange-600 hover:bg-orange-700 disabled:bg-orange-300 text-white rounded text-sm font-bold shadow-sm"
-                  >
-                    Regresar a Depósito ({selectedSobran.size})
-                  </button>
-                  <button onClick={() => exportToExcel(results.sobraEnDeposito, 'Sobrantes_Deposito')} className="flex items-center gap-2 px-3 py-1.5 bg-green-600 text-white text-sm font-bold rounded shadow-sm hover:bg-green-700">
-                    <Download size={16} /> Excel
-                  </button>
-                </div>
+              {/* Señalética */}
+              <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-slate-500 mb-2">
+                <span className="inline-flex items-center gap-1"><CheckCircle2 size={13} className="text-green-600" /> Pagado</span>
+                <span className="inline-flex items-center gap-1"><CircleDollarSign size={13} className="text-amber-600" /> Sin cobrar</span>
+                <span className="inline-flex items-center gap-1"><Receipt size={13} className="text-red-600" /> Facturado sin cobrar</span>
+                <span className="inline-flex items-center gap-1"><Wallet size={13} className="text-blue-600" /> Sin facturar (cargo en cuenta corriente)</span>
+                <span className="inline-flex items-center gap-1"><Bell size={13} className="text-green-600" /> Avisada (fecha)</span>
+                <span className="inline-flex items-center gap-1"><BellOff size={13} className="text-red-600" /> Sin aviso</span>
+                <span className="inline-flex items-center gap-1"><Clock size={13} className="text-red-600" /> Caducada</span>
+                <span className="inline-flex items-center gap-1"><QrCode size={13} className="text-green-600" /> Escaneada</span>
+                <span className="inline-flex items-center gap-1"><XCircle size={13} className="text-red-500" /> Sin escanear</span>
               </div>
-              {results.sobraEnDeposito.length > 0 ? (
-                <TableRender
-                  data={results.sobraEnDeposito}
-                  hasSelection={true}
-                  selectedSet={selectedSobran}
-                  onToggle={(codigo) => handleToggleSet(codigo, setSelectedSobran, selectedSobran)}
-                  columns={['Código', 'Cliente', 'Situación Pago', 'Forma/Retiro']}
-                  rowMap={(o) => [
-                    <span className="font-mono font-bold text-orange-900">{o.codigo}</span>,
-                    o.cliente,
-                    o.pagoEstado,
-                    <span className="text-xs font-mono">{o.ordenRetiro}</span>
-                  ]}
-                />
-              ) : <EmptyState text={inputText.trim() !== '' ? 'No escaneaste órdenes que sobren/estén como entregadas.' : 'Realiza un escaneo primero.'} />}
+              {activasFiltradas.length > 0 ? (
+                <div className="overflow-x-auto bg-white rounded-lg border border-slate-200 shadow-sm">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-slate-50 text-slate-600 font-semibold border-b border-slate-200 text-[11px]">
+                      <tr>
+                        <th className="px-2 py-1.5 w-8 text-center"><input type="checkbox" checked={activasFiltradas.length > 0 && activasFiltradas.every(o => selectedOlvidadas.has(o.codigo))} onChange={e => { const s = new Set(selectedOlvidadas); activasFiltradas.forEach(o => (e.target.checked ? s.add(o.codigo) : s.delete(o.codigo))); setSelectedOlvidadas(s); }} title="Seleccionar todas las filtradas" /></th>
+                        <th className="px-2 py-1.5">Código</th><th className="px-2 py-1.5">Días</th><th className="px-2 py-1.5">Cliente</th><th className="px-2 py-1.5">Contacto</th><th className="px-2 py-1.5">Aviso</th><th className="px-2 py-1.5">Pago</th><th className="px-2 py-1.5">Retiro</th><th className="px-2 py-1.5">Escaneo</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {activasFiltradas.map(o => {
+                        const caducada = o.diasEnDeposito > maxDiasCfg;
+                        return (
+                          <tr key={o.codigo} className={`hover:bg-slate-50/70 ${selectedOlvidadas.has(o.codigo) ? 'bg-purple-50/40' : ''}`}>
+                            <td className="px-2 py-1 text-center"><input type="checkbox" className="w-3.5 h-3.5 cursor-pointer rounded border-slate-300" checked={selectedOlvidadas.has(o.codigo)} onChange={() => handleToggleSet(o.codigo, setSelectedOlvidadas, selectedOlvidadas)} /></td>
+                            <td className="px-2 py-1 font-mono font-bold text-blue-900 whitespace-nowrap">{o.codigo}{o.estante && <span className="ml-1 text-[10px] font-normal text-slate-400" title="Estante">{o.estante}</span>}</td>
+                            <td className={`px-2 py-1 font-mono font-bold whitespace-nowrap ${caducada ? 'text-red-600' : 'text-slate-700'}`}><span className="inline-flex items-center gap-1">{caducada && <Clock size={12} />}{o.diasEnDeposito} d</span></td>
+                            <td className="px-2 py-1 max-w-[190px]"><span className="block truncate" title={`${o.cliente || ''} (${o.clienteTipo})`}>{o.cliente} <span className="text-[9px] text-slate-500 bg-slate-100 px-1 rounded uppercase">{o.clienteTipo}</span></span></td>
+                            <td className="px-2 py-1 text-[11px] text-slate-600 max-w-[230px]"><span className="flex items-center gap-1 whitespace-nowrap"><Phone size={11} className="text-slate-400 shrink-0" />{o.clienteTelefono || <span className="text-red-500">sin teléfono</span>}<Mail size={11} className="text-slate-400 ml-2 shrink-0" /><span className="truncate" title={o.clienteEmail || ''}>{o.clienteEmail || '—'}</span></span></td>
+                            <td className="px-2 py-1 whitespace-nowrap"><AvisoIcono avisado={o.avisado} fecha={o.fechaAviso} /></td>
+                            <td className="px-2 py-1"><PagoIcono estado={o.pagoEstado} /></td>
+                            <td className="px-2 py-1 text-[11px] font-mono whitespace-nowrap" title={o.ordenRetiro}>{String(o.ordenRetiro || '').replace('ID: ', '')}</td>
+                            <td className="px-2 py-1 whitespace-nowrap">{escaneadasSet.has(o.codigo) ? <span className="inline-flex items-center gap-1 text-[11px] font-bold text-green-700" title="Leída con la pistola"><QrCode size={14} /> Escaneada</span> : <span className="inline-flex items-center gap-1 text-[11px] text-red-500" title="Todavía no se leyó con la pistola"><XCircle size={13} /> Sin escanear</span>}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              ) : <EmptyState text={conteoActivas.TODAS ? 'No hay órdenes con este filtro.' : 'No hay órdenes en depósito según el sistema.'} />}
             </div>
           )}
-
-
-
-          {/* ENTREGADAS SIN PAGO */}
-          {activeTab === 'sinpago' && results && (
-            <div className="animate-in fade-in slide-in-from-bottom-2 duration-300">
-              <div className="flex justify-between items-center mb-4">
-                <div>
-                  <h3 className="text-lg font-bold text-amber-800">Órdenes Entregadas Sin Pago</h3>
-                  <p className="text-xs text-amber-700 mt-1 font-medium">Figuran en estado finalizado o entregado, pero carecen de pago saldado (Fiados, Mayoristas asincrónicos o errores humanos).</p>
-                </div>
-                <div className="flex gap-2">
-                  <button onClick={() => exportToExcel(results.entregadasSinPago, 'Entregadas_SinPago')} className="flex items-center gap-2 px-3 py-1.5 bg-green-600 text-white text-sm font-bold rounded shadow-sm hover:bg-green-700">
-                    <Download size={16} /> Excel
-                  </button>
-                </div>
-              </div>
-              {results.entregadasSinPago.length > 0 ? (
-                <TableRender
-                  data={results.entregadasSinPago}
-                  columns={['Código', 'Cliente', 'Tipo Cliente', 'Situación Pago', 'Días', 'Forma/Retiro']}
-                  rowMap={(o) => [
-                    <span className="font-mono font-bold text-amber-900">{o.codigo}</span>,
-                    o.cliente,
-                    o.clienteTipo,
-                    o.pagoEstado,
-                    o.diasEnDeposito + ' d',
-                    <span className="text-xs font-mono">{o.ordenRetiro}</span>
-                  ]}
-                />
-              ) : <EmptyState text="Todo en orden. No figuran comprobantes Entregados sin Pago." />}
-            </div>
-          )}
-
           {/* REGISTRO DE CASOS (lista única y permanente) */}
           {activeTab === 'casos' && (
             <AuditDepositoCasosTab estado={estadoSesion} refreshKey={refreshCasos} onKpis={setKpisCasos} />
@@ -758,27 +806,6 @@ Reporte Generado Automáticamente por USER.
             <AuditDepositoCiclicoTab estado={estadoSesion} refreshKey={refreshCasos} onChange={recargarTodo} />
           )}
 
-          {/* DESCONOCIDOS */}
-          {activeTab === 'desconocidas' && results && (
-            <div className="animate-in fade-in slide-in-from-bottom-2 duration-300">
-              <div className="flex justify-between items-center mb-4">
-                <div>
-                  <h3 className="text-lg font-bold text-slate-700">Códigos No Reconocidos</h3>
-                  <p className="text-xs text-slate-500 mt-1">Se escanearon físicamente pero no existen en el sistema. ¡Debes ingresarlos manualmente utilizando las pantallas regulares de producción o importación!</p>
-                </div>
-                <button onClick={() => exportToExcel(results.desconocido, 'Desconocidos_Deposito')} className="flex items-center gap-2 px-3 py-1.5 bg-green-600 text-white text-sm font-bold rounded shadow-sm hover:bg-green-700">
-                  <Download size={16} /> Excel
-                </button>
-              </div>
-              {results.desconocido.length > 0 ? (
-                <div className="flex flex-wrap gap-2 mt-4 bg-slate-50 p-4 rounded-lg border border-slate-100">
-                  {results.desconocido.map(x => (
-                    <span key={x.codigo} className="bg-white text-slate-700 font-mono text-xs px-3 py-1.5 rounded-md border border-slate-200 shadow-sm">{x.codigo}</span>
-                  ))}
-                </div>
-              ) : <EmptyState text="No hay códigos desconocidos en tu escaneo actual." />}
-            </div>
-          )}
 
         </div>
       </div>

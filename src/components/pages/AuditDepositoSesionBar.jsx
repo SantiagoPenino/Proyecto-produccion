@@ -30,6 +30,20 @@ export default function AuditDepositoSesionBar({ estado, onChange, loading }) {
   const ses = estado.sesion;
   const ult = estado.ultimaCerrada;
 
+  // Antes de mostrar el formulario se vuelve a consultar al servidor: si otra persona abrió una auditoría desde
+  // otra pantalla, acá se ve "no hay ninguna" hasta que llega el aviso, y no tiene sentido dejar abrir otra.
+  const abrirModalSeguro = async () => {
+    try {
+      const { data } = await api.get('/audit-deposito/sesion');
+      if (data.success && data.sesion) {
+        toast.error(`Ya hay una auditoría abierta: ${data.sesion.codigo}, abierta por ${data.sesion.usuarioApertura}. Cerrala o anulala antes de abrir otra.`, { duration: 7000 });
+        onChange && onChange();
+        return;
+      }
+    } catch (e) { /* si la consulta falla, el servidor igual rechaza una segunda apertura */ }
+    setModal('ABRIR');
+  };
+
   const cerrar = async () => {
     setBusy(true);
     try {
@@ -72,6 +86,7 @@ export default function AuditDepositoSesionBar({ estado, onChange, loading }) {
                 {ses.contadores.fueraAlcance > 0 && <span className="text-slate-500">Fuera de alcance: <b>{ses.contadores.fueraAlcance}</b></span>}
                 {ses.contadores.ingresoPosterior > 0 && <span className="text-slate-500">Ingresaron después: <b>{ses.contadores.ingresoPosterior}</b></span>}
                 {ses.contadores.duplicados > 0 && <span className="text-amber-700">Lecturas repetidas: <b>{ses.contadores.duplicados}</b></span>}
+                {ses.contadores.corregidas > 0 && <span className="text-teal-700">Corregidas desde la pantalla: <b>{ses.contadores.corregidas}</b></span>}
               </div>
             )}
             <p className="mt-1 text-[11px] text-indigo-700/80">Lo que no se escaneó todavía es <b>pendiente de escaneo</b>, no extraviado. Los casos se generan recién al cerrar.</p>
@@ -97,7 +112,7 @@ export default function AuditDepositoSesionBar({ estado, onChange, loading }) {
             )}
             {estado.escaneosSueltos > 0 && <div className="mt-1 text-[11px] text-amber-700">Hay <b>{estado.escaneosSueltos}</b> escaneos sueltos en la lista temporal (se pueden importar al abrir).</div>}
           </div>
-          <button onClick={() => setModal('ABRIR')} disabled={busy || loading} className="inline-flex items-center gap-1.5 px-3 py-2 bg-violet-600 hover:bg-violet-700 disabled:bg-violet-300 text-white text-xs font-bold rounded-lg shadow-sm shrink-0">
+          <button onClick={abrirModalSeguro} disabled={busy || loading} className="inline-flex items-center gap-1.5 px-3 py-2 bg-violet-600 hover:bg-violet-700 disabled:bg-violet-300 text-white text-xs font-bold rounded-lg shadow-sm shrink-0">
             <Camera size={14} /> Abrir auditoría (tomar fotografía)
           </button>
         </div>
@@ -162,14 +177,18 @@ function ModalAbrir({ estado, busy, setBusy, onClose, onDone }) {
       const { data } = await api.post('/audit-deposito/sesion/abrir', { alcanceTipo, alcanceValor: elegidos.join(','), importarPrevios: importar, observaciones: obs || null });
       toast.success(data.message, { duration: 7000 });
       onDone();
-    } catch (e) { toast.error('No se pudo abrir: ' + errorDe(e)); }
+    } catch (e) {
+      // 409 = el servidor encontró otra auditoría abierta (la base solo admite una): se cierra el formulario y se recarga la barra
+      if (e?.response?.status === 409) { toast.error(errorDe(e), { duration: 7000 }); onDone(); return; }
+      toast.error('No se pudo abrir: ' + errorDe(e));
+    }
     finally { setBusy(false); }
   };
 
   return (
     <Modal title="Abrir una auditoría de depósito" onClose={() => !busy && onClose()}>
       <p className="text-xs text-slate-600">Al abrir se toma la <b>fotografía</b> de las órdenes activas ({total} en total) y desde ese momento cada lectura de la pistola se guarda en esta auditoría. Lo que entre o salga del depósito después <b>no cuenta</b> como diferencia.</p>
-      {esPrimera && <p className="mt-2 text-xs bg-violet-50 border border-violet-200 text-violet-800 rounded-lg px-3 py-2">Es la <b>primera auditoría</b> (línea base): solo detecta diferencias físicas (faltantes, sobrantes, sin ingreso, sin registro). Los casos <b>Sin aviso</b> y <b>Excede plazo</b> se activan desde la segunda.</p>}
+      {esPrimera && <p className="mt-2 text-xs bg-violet-50 border border-violet-200 text-violet-800 rounded-lg px-3 py-2">Es la <b>primera auditoría</b> (línea base): solo detecta diferencias físicas (faltantes, sobrantes, sin ingreso, sin registro). Los casos <b>Sin aviso</b> y <b>Envejecida</b> se activan desde la segunda.</p>}
       <div className="mt-3">
         <label className="block text-xs font-bold text-slate-700 mb-1">Alcance</label>
         <div className="flex gap-2">

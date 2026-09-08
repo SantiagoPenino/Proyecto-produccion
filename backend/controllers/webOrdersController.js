@@ -3,6 +3,7 @@ const driveService = require('../services/driveService');
 const axios = require('axios');
 const { PDFDocument, StandardFonts, rgb } = require('pdf-lib')
 const logger = require('../utils/logger');
+const { calcularFechasOrden } = require('../services/fechaPrometidaService');
 const fs = require('fs');
 const path = require('path');
 const contabilidadService = require('../services/contabilidadService');
@@ -1258,12 +1259,14 @@ exports.createWebOrder = async (req, res) => {
                 generatedOrders.push(exec.codigoOrden);
                 generatedIDs.push(newOID);
 
-                // Fecha de entrega real (área/prioridad/horario/feriados). Si el SP falla,
-                // queda el DATEADD(day,3,GETDATE()) del INSERT como respaldo.
+                // Plan fijo + compromiso por agenda (nunca antes del plan). Para Bordado, el
+                // bloque de más abajo pisa FechaCompromiso con el máximo del grupo — esto igual
+                // deja FechaEstimadaEntrega (el plan) siempre puesto. Si algo falla, queda el
+                // DATEADD(day,3,GETDATE()) del INSERT como respaldo.
                 try {
-                    await new sql.Request(transaction).input('OrdenID', sql.Int, newOID).execute('sp_CalcularFechaEntrega');
+                    await calcularFechasOrden(transaction, newOID);
                 } catch (fechaErr) {
-                    logger.error(`⚠️ sp_CalcularFechaEntrega falló para OrdenID ${newOID}: ${fechaErr.message}`);
+                    logger.error(`⚠️ calcularFechasOrden falló para OrdenID ${newOID}: ${fechaErr.message}`);
                 }
 
                 // [BORDADO] El diseño de esta orden: medidas del bordado, prendas que
@@ -3134,12 +3137,12 @@ exports.reuseMatrizTPU = async (req, res) => {
                     'DEPOSITO', @UM, @EstadoGen, @EstadoArea, @CodArt, @ProId, @CliId, GETDATE())`);
         const newOID = insOrd.recordset[0].OrdenID;
 
-        // Fecha de entrega real (área/prioridad/horario/feriados). Si el SP falla,
-        // queda el DATEADD(day,3,GETDATE()) del INSERT como respaldo.
+        // Plan fijo + compromiso por agenda (nunca antes del plan). Si algo falla, queda el
+        // DATEADD(day,3,GETDATE()) del INSERT como respaldo.
         try {
-            await new sql.Request(transaction).input('OrdenID', sql.Int, newOID).execute('sp_CalcularFechaEntrega');
+            await calcularFechasOrden(transaction, newOID);
         } catch (fechaErr) {
-            logger.error(`⚠️ sp_CalcularFechaEntrega falló para OrdenID ${newOID}: ${fechaErr.message}`);
+            logger.error(`⚠️ calcularFechasOrden falló para OrdenID ${newOID}: ${fechaErr.message}`);
         }
 
         // 4. Traer el arte de la matriz.

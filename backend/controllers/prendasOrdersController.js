@@ -32,6 +32,7 @@ const driveService = require('../services/driveService');
 const axios = require('axios');
 const { PDFDocument, StandardFonts, rgb } = require('pdf-lib')
 const logger = require('../utils/logger');
+const { calcularFechasOrden } = require('../services/fechaPrometidaService');
 const fs = require('fs');
 const path = require('path');
 const contabilidadService = require('../services/contabilidadService');
@@ -1460,6 +1461,11 @@ exports.createWebOrder = async (req, res) => {
                 const newOID = resOrder.recordset[0].OrdenID;
                 generatedOrders.push(exec.codigoOrden);
                 generatedIDs.push(newOID);
+
+                // Fecha real: plan fijo + compromiso por agenda (nunca antes del plan). No
+                // bloqueante — si falla, queda el DATEADD(day,3,GETDATE()) del INSERT.
+                try { await calcularFechasOrden(transaction, newOID); }
+                catch (feErr) { logger.error(`⚠️ calcularFechasOrden falló para OrdenID ${newOID}: ${feErr.message}`); }
                 // [PRENDAS] Guarda el primer OrdenID insertado para esta área (o para esta
                 // área DE ESTE COMPONENTE, si es un combo) — es lo que usa una Orden
                 // encadenada más adelante en el loop (ej. Estampado → su DTF/TPU).
@@ -2169,6 +2175,8 @@ exports.createWebOrder = async (req, res) => {
                         )
                     `);
                 const anclaOrdenId = insertAncla.recordset[0].OrdenID;
+                try { await calcularFechasOrden(transaction, anclaOrdenId); }
+                catch (feErr) { logger.error(`⚠️ calcularFechasOrden falló para OrdenID ${anclaOrdenId} (ancla combo): ${feErr.message}`); }
 
                 await new sql.Request(transaction)
                     .input('PID', sql.Int, pedidoVentaId)
@@ -2822,6 +2830,8 @@ exports.reuseMatrizTPU = async (req, res) => {
                     GETDATE(), DATEADD(day,3,GETDATE()), @Mat, @Var, @Cod, @ERP, @Nota, @Mag,
                     'DEPOSITO', @UM, @Estado, @Estado, @CodArt, @ProId, @CliId, GETDATE())`);
         const newOID = insOrd.recordset[0].OrdenID;
+        try { await calcularFechasOrden(transaction, newOID); }
+        catch (feErr) { logger.error(`⚠️ calcularFechasOrden falló para OrdenID ${newOID} (reposición TPU): ${feErr.message}`); }
 
         // 4. Traer el arte de la matriz.
         const arte = await new sql.Request(transaction)

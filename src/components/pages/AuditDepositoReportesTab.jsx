@@ -3,6 +3,17 @@ import api from '../../services/apiClient';
 import { toast } from 'react-hot-toast';
 import * as XLSX from 'xlsx';
 import { Download, Printer, Loader2 } from 'lucide-react';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from 'recharts';
+
+// Criterios de severidad del motor (se recalcula en cada auditoría; un caso que reaparece sube solo)
+const CRITERIO_SEVERIDAD = (umbral) => ({
+  ALTA: `3 o más detecciones, o Faltante con valor mayor a ${plata(umbral)}, o más de 90 días (del caso o de la orden en depósito)`,
+  MEDIA: 'cualquier diferencia física (Faltante, Sobrante, Sin ingreso, Sin registro), o más de 30 días',
+  BAJA: 'el resto (Sin aviso y Envejecida recientes)',
+});
+const COLOR_SEV = { ALTA: '#dc2626', MEDIA: '#d97706', BAJA: '#94a3b8' };
+const COLOR_PAGO = { 'Pagado': '#16a34a', 'Pendiente de cobro': '#d97706', 'Facturado sin cobrar': '#dc2626', 'Sin facturar (cargo en cuenta corriente)': '#2563eb' };
+const COLOR_AREA = ['#0ea5e9', '#6366f1', '#8b5cf6', '#ec4899', '#f97316', '#14b8a6', '#84cc16', '#64748b'];
 
 const fmtF = (d) => (d ? new Date(d).toLocaleDateString('es-UY') : '');
 const fmtFH = (d) => (d ? new Date(d).toLocaleString('es-UY', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '');
@@ -88,6 +99,8 @@ export default function AuditDepositoReportesTab({ refreshKey }) {
   };
 
   const r = rep && rep.resumen;
+  const umbralAlta = (r && r.umbralValorAlta) || 5000;
+  const crit = CRITERIO_SEVERIDAD(umbralAlta);
   return (
     <div className="animate-in fade-in slide-in-from-bottom-2 duration-300">
       <style>{`@media print { body * { visibility: hidden !important; } #reporte-print, #reporte-print * { visibility: visible !important; } #reporte-print { position: absolute !important; left: 0; top: 0; width: 100%; padding: 0 12px; font-size: 11px; } .no-print { display: none !important; } .salto { page-break-before: always; } }`}</style>
@@ -143,6 +156,116 @@ export default function AuditDepositoReportesTab({ refreshKey }) {
               </div>
             ))}
           </div>
+
+          {/* Análisis Gráfico Ejecutivo */}
+          {ejecutivo && (
+            <Seccion titulo="Análisis Gráfico Ejecutivo" color="text-sky-800" sub="Antigüedad, casos por tipo y severidad, verificación física, situación de pago y valor por área">
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+                <div className="bg-slate-50 border border-slate-200 p-4 rounded-xl">
+                  <h5 className="text-xs font-bold text-slate-600 mb-3 text-center">Volumen de Órdenes por Antigüedad</h5>
+                  <div className="h-64">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={rep.aging} margin={{ top: 10, right: 10, left: -20, bottom: 20 }}>
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+                        <XAxis dataKey="tramo" tick={{ fontSize: 10, fill: '#64748b' }} axisLine={false} tickLine={false} />
+                        <YAxis tick={{ fontSize: 10, fill: '#64748b' }} axisLine={false} tickLine={false} />
+                        <Tooltip contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} />
+                        <Bar dataKey="n" name="Órdenes" fill="#0ea5e9" radius={[4, 4, 0, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+
+                <div className="bg-slate-50 border border-slate-200 p-4 rounded-xl">
+                  <h5 className="text-xs font-bold text-slate-600 mb-3 text-center">Casos Abiertos por Tipo (Valorización $)</h5>
+                  <div className="h-64">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={rep.casos.porTipo} margin={{ top: 10, right: 10, left: 10, bottom: 20 }}>
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+                        <XAxis dataKey="nombre" tick={{ fontSize: 10, fill: '#64748b' }} axisLine={false} tickLine={false} />
+                        <YAxis tick={{ fontSize: 10, fill: '#64748b' }} axisLine={false} tickLine={false} tickFormatter={(v) => `$${v >= 1000 ? (v/1000).toFixed(0)+'k' : v}`} />
+                        <Tooltip formatter={(value) => plata(value)} contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} />
+                        <Bar dataKey="pesos" name="Valor $" fill="#f43f5e" radius={[4, 4, 0, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+              </div>
+              {/* Segunda fila: verificación física, severidad de los casos, situación de pago y valor por área */}
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 mb-3">
+                {rep.auditoria && (
+                  <div className="bg-slate-50 border border-slate-200 p-4 rounded-xl">
+                    <h5 className="text-xs font-bold text-slate-600 mb-1 text-center">Verificación física (ERI {r.eri}%)</h5>
+                    <div className="h-56">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <PieChart>
+                          <Pie data={[{ name: 'Verificadas', value: r.verificadas || 0 }, { name: 'Faltantes', value: r.faltantes || 0 }, { name: 'Sobrantes', value: r.sobrantes || 0 }, { name: 'Movidas', value: r.movidas || 0 }].filter(d => d.value > 0)} dataKey="value" nameKey="name" innerRadius={45} outerRadius={70} paddingAngle={2}>
+                            {['#16a34a', '#dc2626', '#f97316', '#94a3b8'].map((c, i) => <Cell key={i} fill={c} />)}
+                          </Pie>
+                          <Tooltip formatter={(v, n) => [num(v), n]} />
+                          <Legend wrapperStyle={{ fontSize: 10 }} />
+                        </PieChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+                )}
+                <div className="bg-slate-50 border border-slate-200 p-4 rounded-xl">
+                  <h5 className="text-xs font-bold text-slate-600 mb-1 text-center">Casos abiertos por tipo y severidad</h5>
+                  <div className="h-56">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={rep.casos.porTipo} margin={{ top: 10, right: 10, left: -20, bottom: 5 }}>
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+                        <XAxis dataKey="nombre" tick={{ fontSize: 10, fill: '#64748b' }} axisLine={false} tickLine={false} />
+                        <YAxis tick={{ fontSize: 10, fill: '#64748b' }} axisLine={false} tickLine={false} />
+                        <Tooltip contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} />
+                        <Legend wrapperStyle={{ fontSize: 10 }} />
+                        <Bar dataKey="ALTA" name="Alta" stackId="s" fill={COLOR_SEV.ALTA} />
+                        <Bar dataKey="MEDIA" name="Media" stackId="s" fill={COLOR_SEV.MEDIA} />
+                        <Bar dataKey="BAJA" name="Baja" stackId="s" fill={COLOR_SEV.BAJA} radius={[4, 4, 0, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+                <div className="bg-slate-50 border border-slate-200 p-4 rounded-xl">
+                  <h5 className="text-xs font-bold text-slate-600 mb-1 text-center">Situación de pago (valor en depósito)</h5>
+                  <div className="h-56">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <PieChart>
+                        <Pie data={rep.valorizacion.porPago.map(p => ({ name: p.categoria, value: p.pesos }))} dataKey="value" nameKey="name" innerRadius={45} outerRadius={70} paddingAngle={2}>
+                          {rep.valorizacion.porPago.map((p, i) => <Cell key={i} fill={COLOR_PAGO[p.categoria] || COLOR_AREA[i % COLOR_AREA.length]} />)}
+                        </Pie>
+                        <Tooltip formatter={(v, n) => [plata(v), n]} />
+                        <Legend wrapperStyle={{ fontSize: 10 }} />
+                      </PieChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+                <div className="bg-slate-50 border border-slate-200 p-4 rounded-xl">
+                  <h5 className="text-xs font-bold text-slate-600 mb-1 text-center">Valor en depósito por área</h5>
+                  <div className="h-56">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={rep.valorizacion.porPrefijo.slice(0, 8)} layout="vertical" margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
+                        <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#e2e8f0" />
+                        <XAxis type="number" tick={{ fontSize: 10, fill: '#64748b' }} axisLine={false} tickLine={false} tickFormatter={(v) => `$${v >= 1000 ? (v / 1000).toFixed(0) + 'k' : v}`} />
+                        <YAxis type="category" dataKey="prefijo" width={48} tick={{ fontSize: 10, fill: '#64748b', fontFamily: 'monospace' }} axisLine={false} tickLine={false} />
+                        <Tooltip formatter={(v, n, p) => [`${plata(v)} · ${p.payload.n} órdenes`, 'Valor']} contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} />
+                        <Bar dataKey="pesos" name="Valor $" radius={[0, 4, 4, 0]}>
+                          {rep.valorizacion.porPrefijo.slice(0, 8).map((p, i) => <Cell key={p.prefijo} fill={COLOR_AREA[i % COLOR_AREA.length]} />)}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+              </div>
+              {/* Criterios que explican los gráficos */}
+              <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-[11px] text-slate-600 space-y-0.5">
+                <div><b className="text-red-700">Severidad ALTA</b>: {crit.ALTA}.</div>
+                <div><b className="text-amber-700">MEDIA</b>: {crit.MEDIA}. <b className="text-slate-500">BAJA</b>: {crit.BAJA}.</div>
+                <div><b>Crónico</b>: caso detectado en 3 o más auditorías seguidas. <b>Reincidente</b>: caso cerrado que volvió a aparecer. <b>Envejecida</b>: más de {r.diasMax} días en depósito. <b>Sin aviso</b>: lista para retirar hace más de {r.diasSinAviso ?? 3} días sin WhatsApp enviado.</div>
+                {rep.auditoria && <div><b>ERI</b>: verificadas sobre el total de la fotografía. Faltantes y sobrantes se informan por separado, nunca neteados. Las movidas se entregaron o ingresaron durante la auditoría y no cuentan como diferencia.</div>}
+              </div>
+            </Seccion>
+          )}
 
           {/* Hallazgos */}
           <Seccion titulo="Hallazgos" color="text-indigo-700">
@@ -217,12 +340,22 @@ export default function AuditDepositoReportesTab({ refreshKey }) {
           {/* Registro de casos */}
           <Seccion titulo="Registro de casos" color="text-indigo-700" sub={`${rep.casos.auditoriasCerradas} auditorías cerradas`}>
             <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-2 mb-3">
-              {[['Abiertos', rep.casos.vivos], ['Crónicos (3+)', rep.casos.cronicos], ['Reincidentes', rep.casos.reincidentes], ['Cerrados', rep.casos.cerrados], ['Asumidos', rep.casos.asumidos], ['Vencidos', rep.casos.vencidos], ['Edad prom. (d)', rep.casos.edadPromedio], ['Tasa reincidencia', `${rep.casos.tasaReincidencia}%`]].map(([l, v]) => (
-                <div key={l} className="rounded-lg border border-slate-200 p-2"><div className="text-[10px] font-bold uppercase text-slate-500">{l}</div><div className="text-base font-extrabold font-mono">{v}</div></div>
+              {[
+                ['Abiertos', rep.casos.vivos, 'ABIERTO + EN CURSO + ESPERANDO'],
+                ['Crónicos (3+)', rep.casos.cronicos, 'Abiertos detectados en 3 o más auditorías seguidas'],
+                ['Reincidentes', rep.casos.reincidentes, 'Se cerraron y volvieron a aparecer en una auditoría'],
+                ['Cerrados', rep.casos.cerrados, 'RESUELTO + ASUMIDO'],
+                ['Asumidos', rep.casos.asumidos, 'Cerrados como pérdida asumida (orden cancelada en depósito)'],
+                ['Vencidos', rep.casos.vencidos, 'Abiertos con fecha límite ya pasada'],
+                ['Edad prom. (d)', rep.casos.edadPromedio, 'Días promedio desde la primera detección de los abiertos'],
+                ['Tasa reincidencia', `${rep.casos.tasaReincidencia}%`, 'Reincidentes sobre el total de casos que alguna vez se cerraron'],
+              ].map(([l, v, t]) => (
+                <div key={l} className="rounded-lg border border-slate-200 p-2" title={t}><div className="text-[10px] font-bold uppercase text-slate-500">{l}</div><div className="text-base font-extrabold font-mono">{v}</div><div className="text-[9px] text-slate-400 leading-tight">{t}</div></div>
               ))}
             </div>
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-              <Tabla cols={[{ k: 'nombre', l: 'Tipo (abiertos)' }, { k: 'n', l: 'Casos', r: true }, { k: 'pesos', l: 'Valor $', r: true, f: plata }, { k: 'ALTA', l: 'Alta', r: true }, { k: 'MEDIA', l: 'Media', r: true }, { k: 'BAJA', l: 'Baja', r: true }]} rows={rep.casos.porTipo} vacio="Sin casos abiertos." />
+              <div><Tabla cols={[{ k: 'nombre', l: 'Tipo (abiertos)' }, { k: 'n', l: 'Casos', r: true }, { k: 'pesos', l: 'Valor $', r: true, f: plata }, { k: 'ALTA', l: 'Alta', r: true }, { k: 'MEDIA', l: 'Media', r: true }, { k: 'BAJA', l: 'Baja', r: true }]} rows={rep.casos.porTipo} vacio="Sin casos abiertos." />
+                <div className="mt-1 text-[10px] text-slate-500 leading-tight"><b className="text-red-700">Alta</b>: {crit.ALTA}. <b className="text-amber-700">Media</b>: {crit.MEDIA}. <b>Baja</b>: {crit.BAJA}.</div></div>
               <Tabla cols={[{ k: 'codigo', l: 'Auditoría', mono: true }, { k: 'fechaCierre', l: 'Cierre', f: fmtF }, { k: 'alcance', l: 'Alcance' }, { k: 'fotografia', l: 'Foto', r: true }, { k: 'nuevos', l: 'Nuevos', r: true }, { k: 'existentes', l: 'Ya estaban', r: true }, { k: 'reincidentes', l: 'Reinc.', r: true }, { k: 'resueltos', l: 'Resueltos', r: true }, { k: 'abiertos', l: 'Abiertos', r: true }]} rows={rep.casos.ultimasAuditorias} vacio="Todavía no hay auditorías cerradas." />
             </div>
           </Seccion>

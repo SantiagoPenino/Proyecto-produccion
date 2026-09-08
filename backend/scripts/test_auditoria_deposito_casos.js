@@ -43,6 +43,14 @@ const ok = (nombre, cond, detalle = '') => {
     // ── Precondiciones y marcas para limpiar
     const abierta = await svc.obtenerSesionAbierta(pool);
     if (abierta) { console.error(`Hay una auditoría abierta (${abierta.AudCodigo}). Cerrala o anulala antes de correr las pruebas.`); process.exit(2); }
+    // El motor de fusión trabaja sobre TODO el registro: si ya hay casos reales, las auditorías de prueba los
+    // cerrarían o modificarían (pasó el 7-sep en local). Solo se corre con el registro vacío, salvo --forzar.
+    const previos = (await q(`SELECT (SELECT COUNT(*) FROM dbo.AuditoriaDeposito) AS a, (SELECT COUNT(*) FROM dbo.AuditoriaDepositoCaso) AS c`))[0];
+    if ((previos.a > 0 || previos.c > 0) && !process.argv.includes('--forzar')) {
+        console.error(`El registro NO está vacío (${previos.a} auditorías, ${previos.c} casos). Las pruebas modificarían casos reales. Abortado.`);
+        console.error('Si de verdad querés correrlas igual (solo en una base de prueba): node backend/scripts/test_auditoria_deposito_casos.js --forzar');
+        process.exit(2);
+    }
     const max0 = (await q(`SELECT ISNULL(MAX(AudId),0) AS a FROM dbo.AuditoriaDeposito`))[0].a;
     const maxCaso0 = (await q(`SELECT ISNULL(MAX(CasoId),0) AS c FROM dbo.AuditoriaDepositoCaso`))[0].c;
     const maxEvt0 = (await q(`SELECT ISNULL(MAX(EvtId),0) AS e FROM dbo.AuditoriaDepositoCasoEvento`))[0].e;

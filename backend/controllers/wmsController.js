@@ -1,5 +1,6 @@
 const { getPool, sql } = require('../config/db');
 const logger = require('../utils/logger');
+const { calcularFechasOrden } = require('../services/fechaPrometidaService');
 // Dynamic import for fetch if needed, but since Node 18 it's native.
 // The .env has WMS_API_URL
 
@@ -307,7 +308,7 @@ exports.createOrder = async (req, res) => {
             } catch (eCli) { /* fallback al nombre por defecto */ }
 
             const totalUnidades = items.reduce((s, it) => s + (Number(it.cantidad) || 0), 0);
-            await transaction.request()
+            const insAncla = await transaction.request()
                 .input('Cliente', sql.NVarChar(200), clienteNombre)
                 .input('CliId', sql.Int, clienteId || 2089)
                 .input('Desc', sql.NVarChar(300), `VENTA WMS (${items.length} artículo(s), ${totalUnidades} unidad(es))`)
@@ -326,6 +327,7 @@ exports.createOrder = async (req, res) => {
                         Magnitud, ProximoServicio, UM, Estado, EstadoenArea,
                         ProIdProducto, WmsVarianteId, EstadoDependencia
                     )
+                    OUTPUT INSERTED.OrdenID
                     VALUES (
                         'PRO', @Cliente, @CliId, @Desc, 'Normal',
                         GETDATE(), DATEADD(day, 3, GETDATE()), @Mat, @Cod, @Doc,
@@ -333,6 +335,11 @@ exports.createOrder = async (req, res) => {
                         @Prod, @Wms, 'VENTA_DIRECTA'
                     )
                 `);
+            const oidAncla = insAncla.recordset?.[0]?.OrdenID;
+            if (oidAncla) {
+                try { await calcularFechasOrden(transaction, oidAncla); }
+                catch (feErr) { logger.error(`⚠️ calcularFechasOrden falló para OrdenID ${oidAncla} (WMS): ${feErr.message}`); }
+            }
 
             await transaction.commit();
 
