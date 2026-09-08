@@ -50,6 +50,7 @@ Formato de job.json:
                    "max_alto_mm": 500, "completar_filas": true},
     "aplanar": true,                                # spots inline en la pagina (default; ver APLANAR_*)
     "spots_raster": false,                          # true = capas de relieve como IMAGEN con su tinta
+    "spots_trazado": false,                         # true = capas de relieve como TRAZADOS ya recortados
     "boceto": true,
     "pieza_unica": true                             # el corte envuelve TODO el arte (default)
   }
@@ -759,6 +760,66 @@ def _capa_raster(pdf, xo_unitario, Wp, Hp, imp, copias, sep, dpi=SPOTS_RASTER_DP
     return pdf.make_indirect(img), int(pix.width), int(pix.height)
 
 
+def _capa_trazada(pdf, xo_unitario, Wp, Hp, imp, copias, cs_name, dpi=SPOTS_RASTER_DPI,
+                  min_mm=RELIEVE_MIN_MM):
+    """La capa de relieve como TRAZADOS ya recortados: se rasteriza la capa entera de la plancha
+    (con el engorde), se sacan los contornos y se emiten como paths rellenos con la tinta. Sin
+    clips anidados (el sospechoso de que PhotoPrint solo dibuje el contorno) y sin imagenes
+    (que el RIP mostraba solo como borde). Es la forma mas parecida al arte de Illustrator."""
+    from skimage.measure import find_contours, approximate_polygon
+
+    # 1) mascara binaria de la capa, ya engordada (misma cocina que _capa_raster)
+    tinta, w, h = _mascara_capa(pdf, xo_unitario, imp, copias, dpi, min_mm)
+    if not tinta.any():
+        return None
+    # 2) contornos (con agujeros) -> paths; even-odd resuelve los huecos
+    esc = (imp.W / w)                       # px de la mascara -> pt de la pagina
+    tol_px = max(0.5, (TOL_SIMPLIFICACION_MM / 25.4) * dpi)
+    partes = [f"/{cs_name} cs 1 scn /GSop gs"]
+    n = 0
+    for c in find_contours(np.pad(tinta.astype(np.float32), 1), 127.5):
+        c = approximate_polygon(c - 1.0, tolerance=tol_px)
+        if len(c) < 3:
+            continue
+        pts = [(x * esc, imp.H - y * esc) for y, x in c]
+        partes.append(f"{_f(pts[0][0])} {_f(pts[0][1])} m " +
+                      " ".join(f"{_f(x)} {_f(y)} l" for x, y in pts[1:]) + " h")
+        n += 1
+    if not n:
+        return None
+    partes.append("f*")
+    return chr(10).join(partes), n
+
+
+def _mascara_capa(pdf, xo_unitario, imp, copias, dpi, min_mm):
+    """Mascara binaria (0/255) de una capa sobre la plancha entera, con el engorde aplicado."""
+    import pikepdf
+    from pikepdf import Dictionary, Name
+    tmp = pikepdf.new()
+    pg = tmp.add_blank_page(page_size=(imp.W, imp.H))
+    xo = tmp.copy_foreign(xo_unitario)
+    cont = []
+    for (cx, cy) in copias:
+        cont.append(f"q 1 0 0 1 {_f(cx)} {_f(cy)} cm /X Do Q")
+    pg.Resources = Dictionary({"/XObject": Dictionary({"/X": xo})})
+    pg.Contents = tmp.make_stream(chr(10).join(cont).encode("latin-1"))
+    buf = io.BytesIO()
+    tmp.save(buf)
+    tmp.close()
+    doc = fitz.open("pdf", buf.getvalue())
+    pix = doc[0].get_pixmap(dpi=dpi, colorspace=fitz.csGRAY, alpha=True)
+    alfa = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, 2)[:, :, 1]
+    doc.close()
+    tinta = np.where(alfa >= 128, np.uint8(255), np.uint8(0))
+    if min_mm and min_mm > 0:
+        from scipy import ndimage
+        radio = max(0.0, (min_mm * (dpi / 25.4) - 1.0) / 2.0)
+        if radio >= 0.5 and tinta.any():
+            dist = ndimage.distance_transform_edt(tinta == 0)
+            tinta = np.where(dist <= radio, np.uint8(255), np.uint8(0))
+    return tinta, pix.width, pix.height
+
+
 def _circulo(cx, cy, r):
     k = 0.5522847498 * r
     return (f"{_f(cx + r)} {_f(cy)} m "
@@ -1216,7 +1277,8 @@ def generar(job, preview=None):
     # dispara: ahi se vuelve a XObjects y se avisa.
     aplanar = bool(job.get("aplanar", True))
     spots_raster = bool(job.get("spots_raster", False))
-    if spots_raster:
+    spots_trazado = bool(job.get("spots_trazado", False))
+    if spots_raster or spots_trazado:
         aplanar = False
     if aplanar:
         peso = sum(len(x) for x in (plano1, plano2, plano3) if x) * max(1, imp.copias_total)
@@ -1263,7 +1325,11 @@ def generar(job, preview=None):
         for idx, xo, plano in ((3, x_spot3, plano3), (2, x_spot2, plano2), (1, x_spot1, plano1)):
             cont.append(f"/OC /MC{PROP_DE_TINTA[idx]} BDC")
             if xo is not None:
-                if spots_raster:
+                if spots_trazado:
+                    tr = _capa_trazada(pdf, xo, Wp, Hp, imp, copias, f"CSs{idx}")
+                    if tr:
+                        cont.append("q " + tr[0] + " Q")
+                elif spots_raster:
                     # Una imagen por capa, cubriendo la plancha entera (ver SPOTS_RASTER_DPI).
                     im, iw, ih = _capa_raster(pdf, xo, Wp, Hp, imp, copias, seps[f"Spot {idx}"],
                                               min_mm=float(job.get("relieve_min_mm", RELIEVE_MIN_MM)))
@@ -1287,7 +1353,7 @@ def generar(job, preview=None):
         xod = Dictionary({"/XCmyk": x_cmyk})
         for k, v in imgs.items():
             xod[Name(k)] = v
-        if not aplanar and not spots_raster:   # inline o imagen: declarar los XObjects seria basura
+        if not aplanar and not spots_raster and not spots_trazado:   # inline/imagen/trazado: no hace falta
             for idx, xo in ((1, x_spot1), (2, x_spot2), (3, x_spot3)):
                 if xo is not None:
                     xod[Name(f"/XSpot{idx}")] = xo

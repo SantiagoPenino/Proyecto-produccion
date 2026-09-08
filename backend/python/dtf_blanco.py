@@ -10,6 +10,8 @@ con la plancha de blanco, en sobreimpresion, listo para PhotoPrint.
 
 Reglas (decodificadas del .atn + spec del usuario, 14/08/2026):
   - Zonas de color: blanco al 100%, con CHOKE de 2 px @ 300 dpi (fisico: 0,169 mm; igual que la accion PS).
+    Se contrae el NUCLEO del arte (opacidad >= 50%, como la seleccion de transparencia de PS),
+    no el primer rastro de alpha: ver la nota en plancha_blanco (08/09/2026).
   - Blancos del disenio (RGB >= tol, default 245): blanco al 100% SIN choke.
   - Semitransparencias: blanco = opacidad 1:1, lineal desde 0 (identico a la accion,
     que rellena 100K a traves de la seleccion de transparencia).
@@ -23,8 +25,8 @@ parametros pisados con los valores confirmados).
 
 Uso:
     python dtf_blanco.py entrada.pdf salida.pdf [--preview salida.png]
-        [--dpi 300] [--choke-px 2] [--white-pct 100] [--ramp 25] [--tail-cut 3]
-        [--tol 245] [--spot "Spot 1"]
+        [--dpi 300] [--choke-px 2] [--umbral-choke 0.5] [--white-pct 100] [--ramp 25]
+        [--tail-cut 3] [--tol 245] [--spot "Spot 1"]
 
 Salida (ultima linea, para el caller de Node): JSON {"ok":true,...} o {"ok":false,"error":...}
 """
@@ -152,7 +154,7 @@ def mascara_conservar(rgba, tail_cut_pct):
 
 
 def plancha_blanco(rgba, dpi, choke_px300=2.0, white_pct=100.0, tol=245, ramp_pct=0.0,
-                   conservar=None, gamma=1.0):
+                   conservar=None, gamma=1.0, umbral_choke=0.5):
     """Imagen L con la convencion negro(0) = 100% de tinta blanca."""
     H, W = rgba.shape[:2]
     r, g, b, a = rgba[..., 0], rgba[..., 1], rgba[..., 2], rgba[..., 3]
@@ -183,10 +185,19 @@ def plancha_blanco(rgba, dpi, choke_px300=2.0, white_pct=100.0, tol=245, ramp_pc
 
     # Choke SOLO sobre el color: el blanco del disenio no se adelgaza. El parametro esta
     # definido "en px a 300 dpi" (la unidad de la accion original): se escala al dpi real.
+    #
+    # Se erosiona el NUCLEO (alpha >= umbral_choke), no "alpha > 0": la accion contrae la
+    # seleccion de transparencia, que Photoshop binariza al 50%. Erosionar desde el primer
+    # rastro de alpha arranca en el borde del antialiasing, y en un arte binario remuestreado
+    # (tramas de semitono) eso infla cada forma ~1 px ANTES de erosionar: la erosion gasta
+    # 1 px en comerse el halo y el choke de 2 px termina actuando como 1.
+    # Medido sobre DTF-21175 (trama binaria nativa a 286 dpi, punto de 0,347 mm), area
+    # impresa con Spot 1 en color plano: 22,08% erosionando alpha>0, contra 13,20% de la
+    # accion sobre la mascara nativa. Con el nucleo al 50%: 13,44% (1,8% de diferencia).
     choke_px = choke_px300 * (dpi / 300.0)
     if choke_px > 0:
-        color_erosionado = _erosion(es_color, choke_px)
-        perdidos = es_color & (~color_erosionado)
+        nucleo = _erosion(es_color & (alpha >= umbral_choke), choke_px)
+        perdidos = es_color & (~nucleo)
         blanco[perdidos] = 0.0
 
     # Corte de cola: el blanco muere en el mismo borde que el color (ver mascara_conservar).
@@ -504,6 +515,11 @@ def main():
     ap.add_argument("--gamma", type=float, default=1.0,
                     help="curva del blanco: 1 lineal, >1 menos blanco en medios/bajos (default 1)")
     ap.add_argument("--tol", type=int, default=245, help="umbral RGB de blanco del disenio (default 245)")
+    # Opacidad a partir de la cual un pixel cuenta como "adentro de la forma" para contraer.
+    # 0.5 = como Photoshop (la seleccion de transparencia se binariza al 50%). Bajarlo a 0
+    # recupera el comportamiento viejo, que chokeaba de menos en artes con trama.
+    ap.add_argument("--umbral-choke", type=float, default=0.5,
+                    help="opacidad minima para el nucleo que se contrae (default 0.5, como PS)")
     ap.add_argument("--spot", default="Spot 1")
     # Perfil para separar el arte a CMYK — SOLO entrada PNG y SOLO si el arte no trae
     # perfil propio (si trae, se respeta el suyo). El PDF del cliente va intacto siempre.
@@ -535,6 +551,7 @@ def main():
             rgba, dpi,
             choke_px300=args.choke_px, white_pct=args.white_pct,
             tol=args.tol, ramp_pct=args.ramp, conservar=conservar, gamma=args.gamma,
+            umbral_choke=args.umbral_choke,
         )
 
         if conservar is not None:
