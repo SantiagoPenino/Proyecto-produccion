@@ -32,6 +32,7 @@ const driveService = require('../services/driveService');
 const axios = require('axios');
 const { PDFDocument, StandardFonts, rgb } = require('pdf-lib')
 const logger = require('../utils/logger');
+const { rollbackSeguro } = require('../utils/rollbackSeguro');
 const fs = require('fs');
 const path = require('path');
 const contabilidadService = require('../services/contabilidadService');
@@ -4308,10 +4309,13 @@ exports.handyWebhook = async (req, res) => {
 
                     // NUEVO FLUJO: crear el retiro ahora si aún no existía
                     if (storedData.type === 'pickup-deferred' && !storedOrdenRetiro && storedData.ordIds?.length > 0) {
+                        // Fuera del try: el catch de abajo no la ve si se declara adentro
+                        // (const es de bloque) y el rollback nunca corre. Ver utils/rollbackSeguro.js.
+                        let retiroTransaction = null;
                         try {
                             logger.info('[HANDY WEBHOOK] Creando retiro diferido...');
                             const { crearRetiro } = require('../services/retiroService');
-                            const retiroTransaction = new sql.Transaction(pool);
+                            retiroTransaction = new sql.Transaction(pool);
                             await retiroTransaction.begin();
                             const OReIdOrdenRetiro = await crearRetiro(retiroTransaction, {
                                 ordIds:        storedData.ordIds,
@@ -4369,9 +4373,7 @@ exports.handyWebhook = async (req, res) => {
                                 .input('codigoRetiro', sql.VarChar(20), codigoRetiro)
                                 .query('UPDATE HandyTransactions SET OrdersJson = @jsonStr, OrdenRetiroCreada = @codigoRetiro WHERE TransactionId = @txId3');
                         } catch (retiroErr) {
-                            if (retiroTransaction) {
-                                try { await retiroTransaction.rollback(); } catch (e) { /* ignore */ }
-                            }
+                            await rollbackSeguro(retiroTransaction, `handyWebhook retiro diferido tx ${transactionId}`);
                             logger.error('[HANDY WEBHOOK] Error creando retiro diferido — se aborta el flujo de pago para evitar registrar un pago sin retiro confirmado:', retiroErr.message);
                             return res.status(200).json({ received: true, warning: 'retiro_deferred_failed' });
                         }

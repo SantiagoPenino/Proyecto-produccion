@@ -418,7 +418,12 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
     });
 
     // Archivos de Referencia = select * from ArchivosReferencia
-    const referenceFiles = files.filter(f => f.Categoria === 'referencia');
+    const referenciasTodas = files.filter(f => f.Categoria === 'referencia');
+    // TPU "Hago mi matriz": el job (zonas/texturas) y la vista tintada son insumos del sistema — el
+    // visor 3D y la regeneración los leen de Drive por tipo, no de esta lista. Al operario no le
+    // dicen nada, así que no se listan (pedido 07/09). El vector del cliente (MATRIZ FUENTE) sí.
+    const esInsumoMatriz = (f) => /^(MATRIZ JOB|VISTA MATRIZ)$/i.test(String(f.TipoArchivo || f.tipo || '').trim());
+    const referenceFiles = referenciasTodas.filter(f => !esInsumoMatriz(f));
 
     // TPU: el arte cuyo nombre contiene "boceto" es el BOCETO DE PRODUCCIÓN. Es LO ÚNICO que hace
     // falta para mandar la orden a aprobación (las otras capas se suben después, ya aprobada), y se
@@ -435,6 +440,14 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
     // Capas de arte cargadas (sin boceto, sin matriz de bordado, sin cancelados): decide si el
     // cartel de "boceto aprobado" sigue pidiendo el arte o ya avisa que está completo.
     const capasArteCargadas = printFilesVista.filter(f => (f.Estado || f.estado || f.EstadoArchivo || '').toUpperCase() !== 'CANCELADO').length;
+    // TPU "Hago mi matriz": el arte lo generó el sistema a partir del vector del cliente (quedan las
+    // referencias MATRIZ FUENTE / MATRIZ JOB y la marca en la Nota). Con el arte ya cargado no hay
+    // nada que subir: el botón solo vuelve si la generación falló y hay que hacerlo a mano.
+    const esMatrizPropia = isTPU && (
+        referenciasTodas.some(f => /MATRIZ (JOB|FUENTE)/i.test(String(f.TipoArchivo || f.tipo || ''))) ||
+        /Matriz propia del cliente/i.test(String(currentOrder?.Nota || currentOrder?.nota || order?.Nota || order?.nota || ''))
+    );
+    const arteGeneradoMatrizPropia = esMatrizPropia && capasArteCargadas >= CAPAS_ARTE_TPU_MIN;
 
     // Fase BOCETO del flujo TPU: el cliente todavía no aprobó → lo único que se sube es el boceto
     // de producción (un solo PDF). El resto del arte recién va después de la aprobación. El reuso
@@ -2146,7 +2159,7 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                             </button>
                         </>
                     )}
-                    {isTPU && !(faseBocetoTPU && bocetosProduccion.length > 0) && (
+                    {isTPU && !(faseBocetoTPU && bocetosProduccion.length > 0) && !arteGeneradoMatrizPropia && (
                                         <label className={`relative overflow-hidden flex items-center justify-center gap-2 py-3 mb-2 rounded-xl border-2 border-dashed transition-colors ${uploadingTPU ? 'border-brand-cyan/30 text-brand-cyan pointer-events-none' : 'border-brand-cyan/40 text-brand-cyan hover:bg-brand-cyan/5 cursor-pointer'}`}>
                                             {/* Barra de progreso de la subida (relleno de fondo, % por bytes) */}
                                             {uploadingTPU && progresoTPU && (

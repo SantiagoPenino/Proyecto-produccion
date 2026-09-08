@@ -148,6 +148,38 @@ const ALTURA_NORMAL = 1.2;
 // Tope del tile respecto del ancho del render: sin esto, escalas grandes generan un canvas de
 // varios miles de píxeles y el recorrido píxel a píxel de cargarTile se hace notar.
 const TILE_MAX_FACTOR = 1.5;
+// GROSOR MÍNIMO del relieve, en mm — el mismo de `RELIEVE_MIN_MM` en backend/python/tpu_matriz.py.
+// La tinta blanca no resuelve trazos más finos: medido el 08/09, el arte de Illustrator que imprime
+// bien tiene trazos de 2,7 mm de mediana, y las texturas del catálogo llevadas al tamaño del parche
+// caían a 0,08 mm y salían lisas. Se engordan ACÁ TAMBIÉN para que el 3D muestre lo que se imprime.
+const RELIEVE_MIN_MM = 0.5;
+
+// Dilata un tile en grises (máximo local): se redibuja desplazado dentro de un círculo de radio
+// `r` px con 'lighter'. El tile es seamless, así que se trabaja sobre un mosaico 3×3 y se recorta
+// el centro; si no, los trazos del borde se engordarían solo hacia adentro.
+const engordarTile = (tile, r) => {
+    if (!(r >= 0.5)) return tile;
+    const w = tile.width, h = tile.height;
+    const c = document.createElement('canvas');
+    c.width = w * 3; c.height = h * 3;
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, c.width, c.height);
+    // 'lighten' = máximo por canal (dilatación). NO 'lighter', que SUMA: con decenas de pasadas
+    // satura el mapa entero y el parche sale con relieve en todos lados (08/09).
+    ctx.globalCompositeOperation = 'lighten';
+    const paso = Math.max(1, Math.round(r / 2));
+    for (let dy = -r; dy <= r; dy += paso) {
+        for (let dx = -r; dx <= r; dx += paso) {
+            if (dx * dx + dy * dy > r * r) continue;
+            for (let j = 0; j < 3; j++) for (let i = 0; i < 3; i++) ctx.drawImage(tile, i * w + dx, j * h + dy);
+        }
+    }
+    const out = document.createElement('canvas');
+    out.width = w; out.height = h;
+    out.getContext('2d').drawImage(c, w, h, w, h, 0, 0, w, h);
+    return out;
+};
 
 // Carga una textura y la deja rasterizada como TILE de tamaño entero en píxeles, EN GRISES.
 // La textura no pinta color: el color lo sigue poniendo el arte. Se usa como mapa de RELIEVE
@@ -160,7 +192,7 @@ const TILE_MAX_FACTOR = 1.5;
 // `altura` = cuánto SOBRESALE el trazo (1 = medio relieve, 2 = relieve completo). En un bumpMap lo
 // más claro es lo más alto, así que el gris se INVIERTE: la tinta del dibujo pasa a blanco (sube) y
 // el fondo a negro (nivel base). Sin invertir, el dibujo quedaba grabado hacia adentro.
-const cargarTile = async (url, anchoRenderPx, repeticiones, altura) => {
+const cargarTile = async (url, anchoRenderPx, repeticiones, altura, engordarPx = 0) => {
     const img = new Image();
     await new Promise((ok, fail) => {
         img.onload = ok;
@@ -222,6 +254,12 @@ const cargarTile = async (url, anchoRenderPx, repeticiones, altura) => {
         d.data[i * 4] = v; d.data[i * 4 + 1] = v; d.data[i * 4 + 2] = v; d.data[i * 4 + 3] = 255;
     }
     ctx.putImageData(d, 0, 0);
+    const cFinal = engordarTile(c, engordarPx);
+    if (cFinal !== c) { cFinal.invertido = invertido; return cFinal; }
+    // La polaridad viaja con el tile: en modo matriz se manda al generador por zona para que la
+    // impresión levante exactamente lo que el cliente vio (texturas cerca del 50 % podrían caer
+    // distinto si cada lado la calculara por su cuenta).
+    c.invertido = invertido;
     return c;
 };
 
@@ -626,11 +664,16 @@ const PadMover = ({ dx, dy, onChange, onReset, clase }) => {
 //    tocando formas del parche), toda zona lleva relieve (liso o textura, normal o doble), y el
 //    botón Listo devuelve todo por `onListo({ zonas })` — nada se guarda ni se aprueba.
 //    `inicial.zonas` (misma forma que la salida) reabre el visor con lo ya elegido.
-export const Tpu3DViewer = ({ ordenId, codigo, onClose, onAprobado, modo = 'cliente', fuente = null, inicial = null, onListo = null }) => {
+export const Tpu3DViewer = ({ ordenId, codigo, onClose, onAprobado, modo = 'cliente', fuente = null, inicial = null, onListo = null, medidaMm = null }) => {
     const esInterno = modo === 'interno';
     const esMatriz = modo === 'matriz';
     const fuentePdf = esMatriz ? (fuente?.pdf || null) : null;
     const analisisMatriz = esMatriz ? (fuente?.analisis || null) : null;
+    // Ancho del parche en mm: el que eligió el cliente o, si no hay, el tamaño real del vector.
+    // Con eso se sabe cuántos píxeles del render son medio milímetro (ver RELIEVE_MIN_MM).
+    const anchoParcheMm = Number(medidaMm?.ancho) > 0
+        ? Number(medidaMm.ancho)
+        : (Array.isArray(analisisMatriz?.bbox_mm) ? Number(analisisMatriz.bbox_mm[0]) : 0);
     // Semillas del modo matriz: lo elegido en una apertura anterior, indexado por zona.
     const semillaMatriz = (campo, mapa = (x) => x, soloVerdadero = false) => {
         const out = {};
@@ -730,6 +773,17 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose, onAprobado, modo = 'clie
     // Arranca cerrado: el modal abre mostrando el parche. Se despliega al tocar una zona y se
     // vuelve a cerrar al elegir la textura, que es cuando el cliente quiere ver cómo quedó.
     const [panelAbierto, setPanelAbierto] = useState(modo === 'matriz'); // matriz: abre con el cajón a la vista (hay que crear zonas)
+    // Desktop (≥ sm, 640px): el cajón de zonas/texturas queda SIEMPRE a la vista — pedido del
+    // usuario 07/09: que no se esconda. Los cierres automáticos (elegir una textura, tocar fuera
+    // del parche, la pestaña) quedan solo para mobile, donde el cajón tapa el 78 % del ancho.
+    const [esDesktop, setEsDesktop] = useState(() => typeof window !== 'undefined' && window.matchMedia('(min-width: 640px)').matches);
+    useEffect(() => {
+        const mq = window.matchMedia('(min-width: 640px)');
+        const fn = (e) => setEsDesktop(e.matches);
+        mq.addEventListener('change', fn);
+        return () => mq.removeEventListener('change', fn);
+    }, []);
+    const panelVisible = esDesktop || panelAbierto;
     // Ojo del header: saca de encima la pestaña del cajón, el joystick y la barra de escala, para
     // mirar el parche sin nada arriba. No cambia nada de lo elegido, solo esconde los controles.
     const [controlesVisibles, setControlesVisibles] = useState(true);
@@ -862,11 +916,20 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose, onAprobado, modo = 'clie
             const archivo = elecciones[i] || null;
             const t = archivo ? texturas.find(x => x.archivo === archivo) : null;
             const a = t ? ajusteDe(i, t) : null;
+            // Polaridad del tile que se está viendo (cualquier clave de esa textura sirve: no
+            // depende de la escala ni de la altura).
+            let invertida = null;
+            if (archivo) {
+                for (const [k, tile] of tilesRef.current) {
+                    if (k.startsWith(`${archivo}|`) && tile && typeof tile.invertido === 'boolean') { invertida = tile.invertido; break; }
+                }
+            }
             return {
                 indice: i,
                 nombre: z.nombre || `Zona ${i + 1}`,
                 seqnos: [...z.seqnos],
                 textura: t ? t.archivo : null,
+                invertida,
                 repeticiones: t ? (Number(t.repeticiones) || 2) : null,
                 escala: a ? a.escala : 1,
                 dx: a ? a.dx : 0.5,
@@ -1089,7 +1152,12 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose, onAprobado, modo = 'clie
                 if (!tilesRef.current.has(clave)) {
                     // null = textura que no cargó: la zona queda sin relieve en vez de romper el render.
                     let tile = null;
-                    try { tile = await cargarTile(t.url, e.anchoRenderPx, repeticionesDe(t, escala), altura); } catch { tile = null; }
+                    try {
+                        // px por mm del render (el ancho del recorte ES el ancho del parche)
+                        const anchoMm = Number(anchoParcheMm) > 0 ? Number(anchoParcheMm) : 0;
+                        const rPx = anchoMm > 0 ? Math.round(((RELIEVE_MIN_MM * (e.anchoRenderPx / anchoMm)) - 1) / 2) : 0;
+                        tile = await cargarTile(t.url, e.anchoRenderPx, repeticionesDe(t, escala), altura, rPx);
+                    } catch { tile = null; }
                     tilesRef.current.set(clave, tile);
                 }
                 tiles[idx] = tilesRef.current.get(clave);
@@ -1106,7 +1174,7 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose, onAprobado, modo = 'clie
     // recién con estado 'listo' — DESPUÉS del armado de la escena — por eso vive acá.
     useEffect(() => {
         if (estado !== 'listo') return;
-        panelAbiertoRef.current = panelAbierto;
+        panelAbiertoRef.current = panelVisible;
         const fn = () => escenaRef.current?.ajustarCentradoVisual?.();
         fn();
         const el = barraInferiorRef.current;
@@ -1114,7 +1182,7 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose, onAprobado, modo = 'clie
         const ro = new ResizeObserver(fn);
         ro.observe(el);
         return () => ro.disconnect();
-    }, [estado, panelAbierto]);
+    }, [estado, panelVisible]);
 
 
     useEffect(() => {
@@ -1188,8 +1256,24 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose, onAprobado, modo = 'clie
                 // Silueta: interior del corte; sin corte, interior de la tinta del arte
                 // (no sirve el alpha pelado: la plancha puede traer fondo blanco OPACO).
                 const silPlancha = interiorDeCorte(mascaraSilueta(cvGuia));
-                const fr = bboxUnaCopia(silPlancha);
-                if (!fr) throw new Error('No se pudo detectar el diseño en la plancha.');
+                let fr;
+                if (esMatriz && analisisMatriz?.bbox && analisisMatriz?.pagina) {
+                    // MATRIZ: el recorte sale del bbox del vector (el análisis del backend), con
+                    // margen y SIN limitarlo a la hoja. bboxUnaCopia recorta a la página: si el
+                    // arte toca el borde (las estrellas del escudo de la AUF arrancan en y = 0),
+                    // esas piezas quedaban pegadas al borde del lienzo y la limpieza de silueta
+                    // las borraba como "puntita de la copia vecina". Acá no hay plancha: todo lo
+                    // que hay en la hoja es el parche.
+                    const b = analisisMatriz.bbox, pg = analisisMatriz.pagina;
+                    const mx = (b[2] - b[0]) * 0.05 + 2, my = (b[3] - b[1]) * 0.05 + 2;
+                    fr = {
+                        x0: (b[0] - mx - pg.x) / pg.ancho, x1: (b[2] + mx - pg.x) / pg.ancho,
+                        y0: (b[1] - my - pg.y) / pg.alto, y1: (b[3] + my - pg.y) / pg.alto,
+                    };
+                } else {
+                    fr = bboxUnaCopia(silPlancha);
+                    if (!fr) throw new Error('No se pudo detectar el diseño en la plancha.');
+                }
 
                 // 3b. PASADA 2: re-rasterizar SOLO el recorte de esa copia, a resolución completa.
                 // Antes se recortaba de la plancha ya rasterizada (~500px la copia) y se estiraba a
@@ -1247,11 +1331,42 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose, onAprobado, modo = 'clie
                 // Restaurar: todo visible MENOS extras (que queda apagada para siempre en este visor).
                 for (const [otro, g] of occArte) occArte.setVisibility(otro, !esCapaExtras(g?.name));
 
+                // MODO MATRIZ: mapa de "qué trazado del vector pinta cada píxel", con el MISMO
+                // recorte y escala que el arte (rasterCrop). Con eso se selecciona una forma tocando
+                // el parche y se arman las máscaras de zona sin OCG. Las coordenadas de `d` son las
+                // de la página (origen arriba-izquierda, en puntos): las mismas del viewport de
+                // pdf.js a escala 1. Cada forma se pinta SOLA y se lee por alfa — codificar el
+                // índice en colores fallaría en los bordes por el antialias.
+                let idMap = null;
+                let formasMatriz = [];
+                if (esMatriz) {
+                    formasMatriz = (analisisMatriz?.formas || []).filter(f => f.fill && f.d);
+                    idMap = new Int32Array(W * H);
+                    const sM = W / ((fr.x1 - fr.x0) * pdfArte.baseW);
+                    const cvId = document.createElement('canvas'); cvId.width = W; cvId.height = H;
+                    const ctxId = cvId.getContext('2d', { willReadFrequently: true });
+                    formasMatriz.forEach((f, k) => {
+                        ctxId.setTransform(1, 0, 0, 1, 0, 0);
+                        ctxId.clearRect(0, 0, W, H);
+                        ctxId.setTransform(sM, 0, 0, sM, -fr.x0 * pdfArte.baseW * sM, -fr.y0 * pdfArte.baseH * sM);
+                        ctxId.fillStyle = '#000';
+                        try { ctxId.fill(new Path2D(f.d), f.evenOdd ? 'evenodd' : 'nonzero'); } catch { return; }
+                        const dId = ctxId.getImageData(0, 0, W, H).data;
+                        for (let i = 0; i < W * H; i++) if (dId[i * 4 + 3] >= 128) idMap[i] = k + 1;
+                    });
+                }
+
                 // Silueta del recorte (a resolución completa). La limpieza saca lo que entra por
                 // el margen (la puntita de la copia vecina) pero CONSERVA las piezas sueltas del
                 // diseño — las estrellas sobre el escudo son parte del parche.
-                const silCrop = interiorDeCorte(mascaraSilueta(cvCorteCrop || cvArteCrop));
-                limpiarSiluetaRecorte(silCrop);
+                // MATRIZ: la silueta sale de las FORMAS del vector (el mapa de arriba, que ya excluye el
+                // fondo de página), no del raster. Con el recorte con margen, el raster tomaba la hoja
+                // entera del PDF como parche (la página del AUF quedaba como un rectángulo blanco).
+                const silCrop = (esMatriz && idMap)
+                    ? interiorDeCorte({ m: Uint8Array.from(idMap, v => (v ? 1 : 0)), w: W, h: H })
+                    : interiorDeCorte(mascaraSilueta(cvCorteCrop || cvArteCrop));
+                // En modo matriz no hay copias vecinas que limpiar (y el recorte ya trae margen).
+                if (!esMatriz) limpiarSiluetaRecorte(silCrop);
                 const cvSilCrop = mascaraACanvas(silCrop);
 
                 // 4. Texturas: color (arte sobre base blanca) y alpha (silueta). Nada más:
@@ -1318,31 +1433,6 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose, onAprobado, modo = 'clie
                 // Copia del color sin resaltados: `resaltar` (modo matriz) pinta la selección
                 // encima y vuelve a esto al deseleccionar.
                 const colorBase = new Uint8ClampedArray(iColor.data);
-
-                // MODO MATRIZ: mapa de "qué trazado del vector pinta cada píxel", con el MISMO
-                // recorte y escala que el arte (rasterCrop). Con eso se selecciona una forma tocando
-                // el parche y se arman las máscaras de zona sin OCG. Las coordenadas de `d` son las
-                // de la página (origen arriba-izquierda, en puntos): las mismas del viewport de
-                // pdf.js a escala 1. Cada forma se pinta SOLA y se lee por alfa — codificar el
-                // índice en colores fallaría en los bordes por el antialias.
-                let idMap = null;
-                let formasMatriz = [];
-                if (esMatriz) {
-                    formasMatriz = (analisisMatriz?.formas || []).filter(f => f.fill && f.d);
-                    idMap = new Int32Array(W * H);
-                    const sM = W / ((fr.x1 - fr.x0) * pdfArte.baseW);
-                    const cvId = document.createElement('canvas'); cvId.width = W; cvId.height = H;
-                    const ctxId = cvId.getContext('2d', { willReadFrequently: true });
-                    formasMatriz.forEach((f, k) => {
-                        ctxId.setTransform(1, 0, 0, 1, 0, 0);
-                        ctxId.clearRect(0, 0, W, H);
-                        ctxId.setTransform(sM, 0, 0, sM, -fr.x0 * pdfArte.baseW * sM, -fr.y0 * pdfArte.baseH * sM);
-                        ctxId.fillStyle = '#000';
-                        try { ctxId.fill(new Path2D(f.d), f.evenOdd ? 'evenodd' : 'nonzero'); } catch { return; }
-                        const dId = ctxId.getImageData(0, 0, W, H).data;
-                        for (let i = 0; i < W * H; i++) if (dId[i * 4 + 3] >= 128) idMap[i] = k + 1;
-                    });
-                }
 
                 // 4b. Zonas listas para usar: la máscara de cada capa recortada por la silueta
                 // (lo que quede fuera del parche no se pinta ni se puede clickear).
@@ -2162,14 +2252,15 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose, onAprobado, modo = 'clie
                         /* bg-zinc-950: el canvas detrás es un degradado zinc-900→zinc-800 y la pestaña
                            cae justo donde el fondo vale casi lo mismo. Con un tono parecido, aunque sea
                            opaca, se lee como vidrio esmerilado. Necesita contrastar de verdad. */
-                        className={`absolute top-1/2 -translate-y-1/2 z-10 w-6 h-16 rounded-l-lg border border-r-0 ${ui.pestania} flex items-center justify-center transition-all duration-150 ${
+                        /* sm:hidden — en desktop el cajón está siempre a la vista y la pestaña no tiene qué abrir. */
+                        className={`absolute top-1/2 -translate-y-1/2 z-10 w-6 h-16 rounded-l-lg border border-r-0 sm:hidden ${ui.pestania} flex items-center justify-center transition-all duration-150 ${
                             panelAbierto ? 'right-[78%] sm:right-72' : 'right-0'
                         } ${controlesVisibles ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
                         title={panelAbierto ? 'Ocultar texturas' : 'Elegir texturas'}
                     >{panelAbierto ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}</button>
 
                     <aside ref={cajonRef} className={`absolute inset-y-0 right-0 w-[78%] sm:w-72 ${ui.drawer} border-l overflow-y-auto transition-all duration-150 ${
-                        panelAbierto ? 'translate-x-0' : 'translate-x-full'
+                        panelVisible ? 'translate-x-0' : 'translate-x-full'
                     } ${controlesVisibles ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
                     <div className="p-3 space-y-2.5">
                         {/* MODO MATRIZ: armar las zonas. Por color (todas las formas de ese relleno) o

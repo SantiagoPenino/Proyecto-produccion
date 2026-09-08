@@ -3744,6 +3744,97 @@ async function anularMovimientosPorFiltro(filtros, transaction = null) {
  *          pendientes = planes de esta venta que siguen con metros disponibles y
  *          cuya ENTRADA no se pudo ubicar (hay que revertirlos a mano).
  */
+/**
+ * recursosBloqueanReversion — chequeo SOLO LECTURA, antes de abrir la transacción.
+ *
+ * Responde la misma pregunta que el guard de revertirRecursosPorTransaccion ("¿este
+ * rollo por adelantado ya se consumió?") pero sin tomar un solo lock. Sirve para
+ * rechazar la anulación / nota de crédito ANTES de empezar a escribir: si el guard
+ * salta con la transacción abierta, hay que revertir todo lo hecho hasta ahí, y si el
+ * rollback falla la transacción queda huérfana bloqueando media planta (incidente del
+ * 07/09/2026, plan #161).
+ *
+ * Deliberadamente NO reemplaza al guard de adentro: la validación real sigue estando
+ * bajo UPDLOCK, que es lo único que evita la condición de carrera entre el chequeo y
+ * la escritura. Esto es un filtro previo para el 99% de los casos.
+ *
+ * @param {number|null} tcaId
+ * @returns {Promise<{bloqueado: boolean, mensaje: string|null, planes: number[]}>}
+ */
+async function recursosBloqueanReversion(tcaId) {
+  const libre = { bloqueado: false, mensaje: null, planes: [] };
+  if (!tcaId) return libre;
+
+  try {
+    const pool = await getPool();
+
+    // Mismo criterio que la reversión: la ENTRADA etiquetada con MovRefExterna = <TcaId>,
+    // más las compras viejas ubicadas por TransaccionDetalle (TdeTipoReferencia='RECURSO').
+    const res = await pool.request()
+      .input('TcaId', sql.Int, tcaId)
+      .query(`
+        SELECT pm.PlaIdPlan,
+               pm.PlaCantidadTotal,
+               pm.PlaCantidadUsada,
+               ABS(m.MovImporte) AS MetrosComprados,
+               RTRIM(art.Descripcion) AS Articulo
+        FROM   dbo.MovimientosCuenta m WITH(NOLOCK)
+        JOIN   dbo.PlanesMetros pm WITH(NOLOCK) ON pm.CueIdCuenta = m.CueIdCuenta
+                                               AND m.MovObservaciones = 'Plan #' + CAST(pm.PlaIdPlan AS VARCHAR(20))
+        LEFT JOIN dbo.Articulos art WITH(NOLOCK) ON art.ProIdProducto = pm.ProIdProducto
+        WHERE  m.MovRefExterna = CAST(@TcaId AS VARCHAR(100))
+          AND  (m.MovAnulado IS NULL OR m.MovAnulado = 0)
+
+        UNION
+
+        SELECT pm.PlaIdPlan,
+               pm.PlaCantidadTotal,
+               pm.PlaCantidadUsada,
+               ABS(m2.MovImporte) AS MetrosComprados,
+               RTRIM(art2.Descripcion) AS Articulo
+        FROM   dbo.TransaccionDetalle td WITH(NOLOCK)
+        JOIN   dbo.TransaccionesCaja  tc WITH(NOLOCK) ON tc.TcaIdTransaccion = td.TcaIdTransaccion
+        JOIN   dbo.PlanesMetros       pm WITH(NOLOCK) ON pm.PlaIdPlan        = td.TdeReferenciaId
+        JOIN   dbo.MovimientosCuenta  m2 WITH(NOLOCK)
+                                         ON m2.CueIdCuenta = pm.CueIdCuenta
+                                        AND m2.MovTipo = 'ENTRADA'
+                                        AND (m2.MovAnulado IS NULL OR m2.MovAnulado = 0)
+                                        AND m2.MovRefExterna IS NULL
+                                        AND ABS(DATEDIFF(SECOND, tc.TcaFecha, m2.MovFecha)) <= 2700
+        LEFT JOIN dbo.Articulos art2 WITH(NOLOCK) ON art2.ProIdProducto = pm.ProIdProducto
+        WHERE  td.TcaIdTransaccion  = @TcaId
+          AND  td.TdeTipoReferencia = 'RECURSO'
+      `);
+
+    // Mismo cálculo que el guard: si al restar los metros comprados el plan queda por
+    // debajo de lo ya usado, esos metros están consumidos y no se pueden devolver.
+    const bloqueados = res.recordset.filter(r => {
+      const total   = Number(r.PlaCantidadTotal)  || 0;
+      const usada   = Number(r.PlaCantidadUsada)  || 0;
+      const metros  = Number(r.MetrosComprados)   || 0;
+      return (total - metros) < (usada - 0.0001);
+    });
+
+    if (bloqueados.length === 0) return libre;
+
+    const p = bloqueados[0];
+    return {
+      bloqueado: true,
+      planes: bloqueados.map(x => x.PlaIdPlan),
+      mensaje:
+        `No se puede anular: el rollo por adelantado del plan #${p.PlaIdPlan}` +
+        `${p.Articulo ? ` (${p.Articulo})` : ''} ya fue consumido ` +
+        `(usados ${Number(p.PlaCantidadUsada)} de ${Number(p.PlaCantidadTotal)} metros). ` +
+        `Revertí esos consumos desde el libro del plan antes de anular la venta o emitir la Nota de Crédito.`
+    };
+  } catch (err) {
+    // Un fallo del chequeo previo NO puede frenar la operación: el guard real sigue
+    // adentro de la transacción. Se avisa y se deja seguir.
+    logger.warn(`[CONTAB] recursosBloqueanReversion(tx #${tcaId}) falló: ${err.message} — sigue el guard interno.`);
+    return libre;
+  }
+}
+
 async function revertirRecursosPorTransaccion(tcaId, usuarioId, transaction) {
   // Sin transacción de caja no hay recurso que revertir. Devolver SIEMPRE el objeto
   // del contrato: generarNotaCredito destructura { revertidos, pendientes } y con un
@@ -5089,6 +5180,7 @@ module.exports = {
   anularMovimiento,
   anularMovimientosPorFiltro,
   revertirRecursosPorTransaccion,
+  recursosBloqueanReversion,
   transformarMovimiento,
 };
 

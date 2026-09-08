@@ -162,8 +162,8 @@ del archivo**, con N = veces que se imprime la plancha (copias de plancha, no pa
 de prueba (parche 70 × 82 mm, pedido 40): 4 por fila, 5 filas entran en 50 cm → plancha de
 300 × 450 mm con 20 parches → se imprime 2 veces → `tpu<NoDocERP>-cmyk-spots-2copias.pdf`, y el
 historial dice "imprimir 2 veces". **Tintas planas como el archivo de referencia** (04/09, caso
-TPU-20744): alternativo de color (Spot 1 cian, Spot 2 amarillo, Spot 3 verde, CutContour
-magenta), sin sobreimpresión (knockout), corte relleno, PDF 1.6. Con alternativo (0,0,0,0) +
+TPU-20744): alternativo de color, sin sobreimpresión (knockout), corte relleno, PDF 1.6. **07/09: Spot 1, 2
+y 3 con alternativo NEGRO (K100)** por pedido del usuario; CutContour sigue magenta. Con alternativo (0,0,0,0) +
 sobreimpresión —la receta de la tinta blanca DTF— Drive y Acrobat pintaban las zonas de blanco
 opaco encima del arte y el archivo se veía vacío; el RIP separa por nombre igual. Descartadas: ancho de plancha por variante (queda el fijo de 30 cm) y que
 el operario imponga a mano.
@@ -199,6 +199,43 @@ el operario imponga a mano.
 - **Textura por tinta** (07/09, lo delató el PDF de control): el XObject de una textura se cacheaba una
   sola vez repintado con `Spot 1` y se reutilizaba en Spot 2; como un Form XObject usa sus propios
   recursos, las zonas dobles con textura iban a la tinta equivocada. Ahora se cachea por (textura, tinta).
+- **Texturas leídas con parser propio** (`backend/python/svg_trazos.py`, 07/09): fitz convierte SVG a PDF
+  pero no aplica clases CSS ni rellenos con `<pattern>`, que es como exporta Illustrator las texturas
+  "Recurso N"/"texturaN" (un rectángulo relleno con `url(#Motivo…)` cuyo dibujo vive en `<defs>`): las
+  pintaba como un rectángulo negro sólido y la zona salía al 100 % (TPU-20747). El parser cubre clases,
+  path/polygon/rect/circle/ellipse/line, transform y patrones con repetición **recortados por celda**
+  (el desborde de cada celda lo oculta el SVG; sin recorte se superponían). Coincide trazado a trazado
+  con fitz en las 33 "textura-0NN". **Polaridad como el visor**: si la tinta cubre más de la mitad del
+  tile (alfa ≥ 50 % a 512 px), se imprime el complemento (sube el fondo), igual que `cargarTile` invierte.
+  Para que no haya desacuerdo en texturas cercanas al 50 %, **el visor manda su propia decisión por zona**
+  (`invertida`, sale del tile que el cliente vio) y el generador la respeta; el cálculo propio es el fallback.
+  Las ventanas de celda llevan 0,05 pt de solape para no dejar costuras antialiasadas. Las bandas de
+  "Recurso 10" son del diseño: el navegador sobre blanco las muestra igual.
+- **Fondo de la mesa de trabajo** (07/09, escudo de la AUF de seeklogo): las formas casi blancas cuyo
+  bbox toca **dos o más bordes de la hoja** se descartan del arte (`es_fondo`) — si se cuentan, el corte
+  sale rectangular. El blanco legítimo del dibujo (el interior del escudo) queda separado del borde. Si
+  TODO calificaría como fondo no se descarta nada. Además el arte del cliente se **recorta**: al contorno
+  del sangrado en la capa CMYK y al troquel en el boceto, para que su hoja no se imprima fuera del parche.
+- **Recorte del visor en modo matriz**: sale del bbox del análisis con margen (puede exceder la hoja) y sin
+  la limpieza de piezas que tocan el borde, que borraba las estrellas del escudo pegadas al borde; la
+  silueta se arma con el mapa de formas del vector, no con el raster.
+- **Capas de relieve APLANADAS en la página** (07/09, PhotoPrint las mostraba vacías al asignarlas a
+  spot color): el archivo de Illustrator que separa bien no usa Form XObjects — todos sus objetos están
+  directos en el content stream, cada uno con su `cs 1 scn`. El generador hace lo mismo: el contenido de
+  Spot 1/2/3 y el troquel se emiten inline, una vez por copia (el arte del cliente sigue como XObject:
+  es proceso, no tinta plana). Medido en el escudo de prueba con 12 copias: 61.883 rellenos propios en
+  la página contra 11 antes, 1,9 MB. Tope `APLANAR_MAX_BYTES` (60 MB): si con texturas muy densas se
+  dispara, vuelve a XObjects y avisa. Se apaga por job con `"aplanar": false`.
+- **Grosor mínimo del relieve** (08/09, la causa real de "las texturas no salen"): la tinta blanca no
+  resuelve trazos finos. Medido: el arte de Illustrator que imprime bien tiene trazos de **2,71 mm de
+  mediana** (3 % bajo 0,5 mm); las texturas del catálogo llevadas al tamaño del parche caían a **0,08 mm**
+  (88 % bajo 0,3 mm) y el parche salía liso. Prueba del usuario con rayas de 0,5 / 1 / 2 mm en Spot 1 y 2:
+  **todas salieron**, así que el RIP no descarta tramas, eran demasiado finas. Ahora la máscara del relieve
+  se **dilata a `RELIEVE_MIN_MM` = 0,5 mm** en el generador (modo raster) y **el visor engorda igual**
+  (`engordarTile`, mismo mm sobre el ancho del parche), para que lo impreso sea lo que el cliente vio.
+  Descartadas antes, por medición: XObjects vs inline, sobreimpresión, orden de capas, alternativos de color.
+- **Spot 3 sin barniz / Spot 2 sin dobles**: la capa queda vacía; los marcadores de tinta del RIP solo
+  se emiten para las tintas con objetos, y en el PDF de control la página vacía lleva solo el rótulo.
 - **Base blanca del modelo**: achique por distancia al borde (5 px), bisel hacia adentro
   (`bevelOffset: -BISEL`) y simplificación 0,6 px: asomaba en los tramos cóncavos.
 

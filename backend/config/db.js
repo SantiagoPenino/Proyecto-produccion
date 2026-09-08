@@ -27,10 +27,21 @@ const config = {
         // producción. Para verificar en qué está parado un server: SELECT GETDATE(), GETUTCDATE().
         useUTC: process.env.DB_USE_UTC !== 'false'
     },
+    // Pool de conexiones. El `max` es el techo de operaciones simultáneas contra la base:
+    // cuando se llena, TODO lo demás queda encolado y a los 30s muere con
+    // "operation timed out for an unknown reason" (el acquireTimeoutMillis por defecto de
+    // tarn) — incluido /api/health, que ni siquiera toca la base.
+    //
+    // Con 10 alcanzaba que UNA transacción quedara trabada para voltear el sistema entero
+    // en pocos minutos (incidente del 07/09/2026: una anulación de factura dejó la
+    // transacción huérfana y en 4 minutos no quedaba una conexión libre). Subirlo no
+    // arregla la causa — eso es rollbackSeguro.js — pero da aire para reaccionar en vez
+    // de que la planta se pare de golpe.
     pool: {
-        max: 10,
-        min: 0,
-        idleTimeoutMillis: 30000
+        max: 25,
+        min: 2,                        // conexiones tibias: evita el arranque en frío de cada ráfaga
+        idleTimeoutMillis: 30000,
+        acquireTimeoutMillis: 30000    // explícito: era el default invisible detrás de los timeouts de 30s
     }
 };
 

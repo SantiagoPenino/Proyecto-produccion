@@ -38,10 +38,18 @@ const TTL_FUENTE_MS = 24 * 60 * 60 * 1000;
 const MAX_PDF_BYTES = 50 * 1024 * 1024;
 
 // Imposición — los defaults del script de Illustrator + las decisiones del 04/09 (ver arriba).
-const IMPOSICION = { plancha_mm: 300, sep_mm: 0, sep_filas_mm: 5, max_alto_mm: 500, completar_filas: true };
+// sep_mm / sep_filas_mm se miden entre LÍNEAS DE CORTE (08/09): 5 mm entre parches vecinos, o sea
+// 2,5 mm que aporta cada uno; contra el borde de la plancha no se agrega margen. El generador les
+// descuenta el sangrado de los dos parches.
+const IMPOSICION = { plancha_mm: 300, sep_mm: 5, sep_filas_mm: 5, max_alto_mm: 500, completar_filas: true };
 const SANGRADO_MM = 1.0;
 // PDF de control de capas (una página por capa del parche): temporal, para verificar el generador.
 const CAPAS_CONTROL = true;
+// Capas de relieve (Spot 1/2/3) como IMAGEN con su tinta plana, a 600 dpi, en vez de vectores con
+// recortes anidados: es la receta de la tinta blanca de DTF, que PhotoPrint ya separa bien. Con las
+// capas vectoriales el RIP mostraba las zonas lisas pero NO las texturadas (07/09). El arte CMYK
+// sigue vectorial. `false` vuelve al vector.
+const SPOTS_RASTER = true;
 
 const habilitado = () => process.env.TPU_MATRIZ_ENABLED !== '0';
 
@@ -186,6 +194,9 @@ function validarMatriz(matriz, codCliente) {
             seqnos,
             textura,
             repeticiones: textura ? num(z.repeticiones, null, 1, 200) : null,
+            // Polaridad de la textura tal como la vio el cliente en el 3D (la manda el visor);
+            // null = que la calcule el generador.
+            invertida: (z.invertida === true || z.invertida === false) ? z.invertida : null,
             escala: num(z.escala, 1, 0.1, 10),
             dx: num(z.dx, 0.5, 0, 1),
             dy: num(z.dy, 0.5, 0, 1),
@@ -254,6 +265,7 @@ async function procesarOrden({ ordenId, codCliente, matriz, cantidad, io }) {
         boceto: true,
         vista: true,
         capas: CAPAS_CONTROL,
+        spots_raster: SPOTS_RASTER,
     };
     const jobPath = path.join(salidaDir, 'job.json');
     fs.writeFileSync(jobPath, JSON.stringify(job, null, 2));
@@ -408,7 +420,7 @@ async function leerMatrizDeOrden(pool, ordenId, codCliente = null) {
     const refs = await referenciasMatriz(pool, ordenId, codCliente);
     if (!refs) return null;
     const [jobBuf, pdfBuf] = await Promise.all([descargarDrive(refs.job.UbicacionStorage), descargarDrive(refs.fuente.UbicacionStorage)]);
-    const job = JSON.parse(jobBuf.toString('utf8'));
+    const job = JSON.parse(jobBuf.buffer.toString('utf8'));   // descargarDrive devuelve { buffer, mimeType }
     fs.mkdirSync(DIR_SALIDA, { recursive: true });
     const tmp = path.join(DIR_SALIDA, `fuente-${ordenId}-${Date.now()}.pdf`);
     fs.writeFileSync(tmp, pdfBuf.buffer);

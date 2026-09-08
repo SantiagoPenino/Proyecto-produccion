@@ -1,5 +1,6 @@
 const { getPool, sql } = require('../config/db');
 const logger = require('../utils/logger');
+const { rollbackSeguro } = require('../utils/rollbackSeguro');
 
 // =====================================================================
 // 1. OBTENER MÁQUINAS (Desde ConfigEquipos)
@@ -85,9 +86,13 @@ exports.createTicket = async (req, res) => {
     // Generar ID de Ticket (Ej: T-820192)
     const ticketId = `T-${Date.now().toString().slice(-6)}`;
 
+    // Fuera del try: adentro, el catch no la ve (const es de bloque) y el
+    // `if (transaction)` de abajo tiraba ReferenceError — sin rollback, sin respuesta
+    // al cliente y con la transacción abierta. Ver utils/rollbackSeguro.js.
+    let transaction = null;
     try {
         const pool = await getPool();
-        const transaction = new sql.Transaction(pool);
+        transaction = new sql.Transaction(pool);
         await transaction.begin();
 
         // A. Insertar Ticket (maquinaId ahora es un EquipoID de ConfigEquipos)
@@ -112,7 +117,7 @@ exports.createTicket = async (req, res) => {
         res.json({ success: true, ticketId });
 
     } catch (err) {
-        if (transaction) await transaction.rollback();
+        await rollbackSeguro(transaction, `crearTicketMantenimiento ${ticketId}`);
         logger.error("Error creando ticket:", err);
         res.status(500).json({ error: err.message });
     }

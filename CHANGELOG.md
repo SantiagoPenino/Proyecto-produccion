@@ -7,6 +7,33 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
 
 ---
 
+## [2026-09-07] — Sin deployar
+
+### Arreglado
+- **El sistema entero se cayó por una anulación de factura rechazada**: al anular un comprobante de una venta que había cargado un rollo por adelantado ya consumido, el sistema lo rechazaba bien pero no soltaba la transacción, y en cuatro minutos dejó a toda la planta sin poder trabajar. La causa: la transacción se declaraba dentro del bloque protegido y el intento de revertirla ocurría fuera de su alcance, así que fallaba en silencio y la conexión volvía al pool con los candados puestos. Se corrigió ahí y en los otros dos lugares con el mismo patrón (ticket de falla de máquina y retiro diferido del cobro online), y ahora cualquier reversión que falle queda escrita en el log en vez de perderse. Además, la validación del rollo consumido corre **antes** de empezar a escribir, así el operador recibe el mismo aviso sin que se tome un solo candado.
+- **Más aire ante un bloqueo**: el sistema pasó de 10 a 25 operaciones simultáneas contra la base. Antes alcanzaba una sola operación trabada para que todo lo demás quedara esperando y empezara a fallar, incluso las pantallas que no tocan esos datos.
+- **Las texturas con patrón de Illustrator salían como relieve sólido**: los archivos "Recurso 8, 9, 10" y "textura 1 a 5" del catálogo son un rectángulo relleno con un patrón repetido y estilos por clase, y la conversión que usaba el generador no entiende ninguna de las dos cosas: pintaba el rectángulo entero y la zona salía al 100 % de relieve, sin la textura elegida (pedido TPU-20747). Ahora el generador lee los SVG con un lector propio que respeta clases, transformaciones y patrones, recortando cada celda como lo hace el navegador. Se verificó trazado por trazado contra las 33 texturas "textura-0NN" y visualmente contra el navegador en las de patrón. Además, la polaridad de cada textura, si se levanta el dibujo o el fondo, la decide el visor 3D y viaja con el pedido, así la impresión levanta exactamente lo que el cliente vio.
+- **Una textura usada en dos capas iba siempre a Spot 1**: el objeto de la textura se preparaba una sola vez con la tinta Spot 1 y se reutilizaba en Spot 2; las zonas con relieve doble y textura perdían la segunda pasada. Ahora hay un objeto por textura y por tinta.
+- **Zonas excluyentes en el arte**: un fondo marcado liso tapaba en Spot 1 a las estrellas y franjas con textura que tenía encima. Cada forma de una zona se recorta con las formas superiores de otras zonas o planas, igual que en el visor.
+- **El visor 3D de una orden de matriz propia mostraba un recorte gris incoherente**: tomaba el boceto, un parche unitario sobre hoja gris, como arte y la plancha de corte para la silueta. Ahora detecta que la orden tiene matriz propia y abre en modo matriz con el PDF del cliente y sus zonas, desde el detalle interno y desde Mi Fábrica.
+- **Base blanca del modelo 3D asomando en los bordes cóncavos**: achique parejo por distancia al borde, bisel hacia adentro y contorno más fiel.
+- **El cartel "subí el arte" del detalle de orden** seguía apareciendo con el arte cargado; ahora dice que el arte está cargado y la orden lista para el lote.
+- **Selectores de alto y ancho del parche TPU** sin scroll en el portal; la barra lateral del visor 3D queda fija en desktop.
+
+- **Los fondos blancos de los vectores bajados de internet se colaban en el parche**: muchos logos traen una banda o unas esquinas blancas que llegan al borde de la hoja, y el corte salía rectangular en vez de seguir el dibujo. Ahora esas formas se descartan, se avisa cuántas fueron, y el arte del cliente se recorta al contorno del parche, así nada de su hoja queda fuera. En el visor, además, las piezas que tocan el borde de la hoja, como las estrellas de un escudo, ya no se descartan.
+
+### Agregado
+- **Archivos de control por orden de matriz propia**: `tpu<pedido>-capas.pdf` con una página por capa (CMYK, Spot 1, Spot 2, Spot 3, Corte y todo junto), rotuladas y con la silueta de corte de referencia, para comprobar que cada capa lleva lo suyo; y `tpu<pedido>-vista.png` con el arte, las zonas tintadas y el corte, porque el PDF de impresión pinta las tintas planas opacas encima del arte, igual que el de Illustrator, y en Drive no se ve el diseño debajo. Una capa sin contenido, como Spot 3 sin barniz, queda vacía y su tinta no se declara en el RIP.
+- **Botón 2D/3D en el visor**, vista de frente sin girar, en todos los modos.
+
+### Cambiado
+- **Las capas de relieve salían vacías en PhotoPrint** al asignarlas a color plano: el arte de cada capa estaba guardado como un objeto reutilizado en cada copia, y el RIP no entra ahí a buscar la tinta. Ahora se escriben directas en la página, como en los archivos que salen de Illustrator.
+- **Tintas planas como en el archivo de referencia**: sin sobreimpresión, corte como forma rellena y PDF 1.6; Spot 1, 2 y 3 se ven en negro y el corte en magenta. La receta anterior, alternativo blanco con sobreimpresión, hacía que Drive y Acrobat pintaran las zonas de blanco opaco encima del arte y el archivo se viera vacío.
+- **El sufijo `-Ncopias`** de los archivos de impresión y corte indica cuántas veces hay que imprimir la plancha para cubrir el pedido, no cuántos parches trae.
+
+### Notas de deploy
+- Backend, build del frontend y los dos scripts de Python `backend/python/tpu_matriz.py` y `backend/python/svg_trazos.py`. No hay SQL.
+
 ## [2026-09-04] — Sin deployar
 
 ### Cambiado

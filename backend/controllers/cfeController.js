@@ -1,5 +1,6 @@
 const { getPool, sql } = require('../config/db');
 const logger = require('../utils/logger');
+const { rollbackSeguro } = require('../utils/rollbackSeguro');
 const { estamparAreaLineas } = require('../services/areaLineaService');
 
 // ID del cliente genérico "Consumidor Final" — no tiene cuenta corriente propia
@@ -1023,10 +1024,33 @@ exports.getNomencladores = async (req, res) => {
 // ── Anular documento (solo si está PENDIENTE — no fue enviado a DGI aún) ─────────
 // Si ya fue ACEPTADO_DGI, debe emitirse una Nota de Crédito en su lugar.
 exports.anularFactura = async (req, res) => {
+    // OJO: `transaction` va declarada ACÁ, fuera del try. Estaba adentro y el catch
+    // de abajo hacía `transaction.rollback()` sobre una variable que en ese scope no
+    // existe (const es de bloque): tiraba ReferenceError, el catch vacío se lo comía y
+    // la transacción quedaba ABIERTA reteniendo locks. Incidente del 07/09/2026: una
+    // anulación rechazada por el guard de recursos dejó la conexión huérfana 6 minutos
+    // y volteó el sistema entero al agotarse el pool.
+    let transaction = null;
+    const { id } = req.params;
     try {
-        const { id } = req.params;
         const pool = await getPool();
-        const transaction = pool.transaction();
+
+        // Guard de recursos ANTES de abrir la transacción: si la venta cargó un rollo
+        // por adelantado que ya se consumió, la anulación no se puede hacer. Chequearlo
+        // acá (solo lectura) evita tomar UPDLOCK sobre PlanesMetros/CuentasCliente para
+        // después tener que revertir todo.
+        const docPrev = await pool.request()
+            .input('id', sql.Int, id)
+            .query('SELECT TcaIdTransaccion FROM DocumentosContables WITH(NOLOCK) WHERE DocIdDocumento = @id');
+        const tcaPrev = docPrev.recordset[0]?.TcaIdTransaccion || null;
+        if (tcaPrev) {
+            const bloqueo = await contabilidadService.recursosBloqueanReversion(tcaPrev);
+            if (bloqueo.bloqueado) {
+                return res.status(400).json({ error: bloqueo.mensaje });
+            }
+        }
+
+        transaction = pool.transaction();
         await transaction.begin();
 
         const docRes = await transaction.request()
@@ -1034,13 +1058,13 @@ exports.anularFactura = async (req, res) => {
             .query('SELECT CfeEstado, DocPagado, AsiIdAsiento, TcaIdTransaccion, DocTotal FROM DocumentosContables WHERE DocIdDocumento = @id');
         
         if (docRes.recordset.length === 0) {
-            await transaction.rollback();
+            await rollbackSeguro(transaction, `anularFactura doc ${id} (no encontrado)`);
             return res.status(404).json({ error: 'Documento no encontrado' });
         }
-        
+
         const doc = docRes.recordset[0];
         if (doc.CfeEstado === 'ACEPTADO_DGI') {
-            await transaction.rollback();
+            await rollbackSeguro(transaction, `anularFactura doc ${id} (aceptado DGI)`);
             return res.status(400).json({
                 error: 'Este documento ya fue aceptado por DGI. Para revertirlo debés emitir una Nota de Crédito (e-NC tipo 102 o 112).'
             });
@@ -1193,11 +1217,7 @@ exports.anularFactura = async (req, res) => {
         res.json({ success: true, message: 'Documento anulado correctamente' });
     } catch (err) {
         logger.error('Error anulando documento CFE:', err);
-        try {
-            await transaction.rollback();
-        } catch (rollbackErr) {
-            // Ignorar si ya se abortó la transacción
-        }
+        await rollbackSeguro(transaction, `anularFactura doc ${id}`);
         res.status(500).json({ error: err.message });
     }
 };

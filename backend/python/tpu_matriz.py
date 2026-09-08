@@ -7,10 +7,12 @@ Reemplaza, para el modo "matriz propia", lo que hoy hace SCRIPT DE PRUEBA 1PDF.j
 Illustrator. Reproduce su contrato de salida (verificado 04/09/2026 sobre
 "PRUEBA SPOTS como TINTAS SINEDIT.pdf" y "TPU UV  - Corte.pdf"):
 
-  <base>-cmyk-spots.pdf   una pagina por plancha, 4 capas OCG en este orden:
+  <base>-cmyk-spots.pdf   una pagina por plancha, 4 capas OCG (panel de capas, de arriba a abajo):
                             CMYK · Spot 1 (Relieve 1) · Spot 2 (Relieve 2) · Spot 3 (Barniz)
                           y 3 tintas planas Separation "Spot 1" / "Spot 2" / "Spot 3"
-                          (alternate DeviceCMYK). PhotoPrint separa por TINTA, no por capa.
+                          (alternate DeviceCMYK). ORDEN DE DIBUJO: spots primero y CMYK ultimo,
+                          encima — el relieve es tinta blanca que va debajo del color.
+                          PhotoPrint separa por TINTA, no por capa.
   <base>-corte.pdf        misma geometria de plancha, capa OCG "Corte", tinta "CutContour".
   <base>-boceto.pdf       (opcional) el parche unitario a tamanio real con cotas, para el
                           cliente / "Mis matrices". No va al RIP.
@@ -40,12 +42,16 @@ Formato de job.json:
       {"indice": 0, "nombre": "Amarillo", "seqnos": [1, 5, 9],
        "textura": "textura-005.svg" | null,         # null = liso (zona entera en relieve)
        "repeticiones": 6, "escala": 1.0, "dx": 0.0, "dy": 0.0,
+       "invertida": false,                          # polaridad que decidio el visor (opcional)
        "doble": false,                              # true = tambien en Spot 2 (doble altura)
        "barniz": true}                              # true = zona entera en Spot 3
     ],
-    "imposicion": {"cantidad": 40, "plancha_mm": 300, "sep_mm": 0, "sep_filas_mm": 5,
+    "imposicion": {"cantidad": 40, "plancha_mm": 300, "sep_mm": 5, "sep_filas_mm": 5,   # entre CORTES
                    "max_alto_mm": 500, "completar_filas": true},
-    "boceto": true
+    "aplanar": true,                                # spots inline en la pagina (default; ver APLANAR_*)
+    "spots_raster": false,                          # true = capas de relieve como IMAGEN con su tinta
+    "boceto": true,
+    "pieza_unica": true                             # el corte envuelve TODO el arte (default)
   }
 
 Reglas (docs/tpu-cliente-sube-vectorizado-plan.md §1 y §0.6, decisiones del 04/09):
@@ -81,21 +87,31 @@ try:                        # PyMuPDF >= 1.24: nombre nuevo. 'fitz' sigue existi
 except ImportError:         # instalaciones viejas
     import fitz
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import svg_trazos           # lector propio de los SVG del catalogo (fitz no aplica clases CSS ni <pattern>)
+
 PT_POR_MM = 72.0 / 25.4
 DIAMETRO_REGISTRO_MM = 5.0
 OFFSET_REGISTRO_MM = 5.0        # del borde de la plancha al borde de la marca
 MARGEN_EXTRA_MM = 5.0           # mesa = contenido + este margen
+# Separacion entre parches vecinos, medida entre LINEAS DE CORTE (decision del usuario 08/09:
+# "5 mm entre escudo y escudo, 2,5 mm de cada uno, solo si hay un escudo de ese lado"). Como cada
+# parche ya lleva su sangrado, la separacion entre las cajas del parche es SEP - 2 x sangrado; y
+# contra el borde de la plancha no se agrega nada, porque ahi no hay vecino.
+SEP_CORTES_DEFAULT_MM = 5.0
 SEP_FILAS_DEFAULT_MM = 5.0
 PLANCHA_DEFAULT_MM = 300.0
 MAX_ALTO_DEFAULT_MM = 500.0     # alto maximo de la plancha (decision del usuario 04/09)
 REPETICIONES_DEFAULT = 2        # espeja REPETICIONES_DEFAULT de webOrdersController.getTexturasTpu
 CAPAS_BANDA_MM = 12.0           # banda superior con el rotulo en el PDF de control de capas
 
+# Orden EXACTO de la referencia de Illustrator ('TPU UV  - Impresion.pdf'): el panel de capas y el
+# orden de dibujo van Spot 3 -> Spot 2 -> Spot 1 -> CMYK (el relieve, tinta blanca, debajo del color).
 CAPAS = [
-    ("CMYK", None),
-    ("Spot 1 (Relieve 1)", "Spot 1"),
-    ("Spot 2 (Relieve 2)", "Spot 2"),
     ("Spot 3 (Barniz)", "Spot 3"),
+    ("Spot 2 (Relieve 2)", "Spot 2"),
+    ("Spot 1 (Relieve 1)", "Spot 1"),
+    ("CMYK", None),
 ]
 CAPA_CORTE = ("Corte", "CutContour")
 
@@ -104,6 +120,12 @@ MAX_PIXELES_RASTER = 24_000_000
 TOL_SIMPLIFICACION_MM = 0.05    # Douglas-Peucker sobre los contornos
 CIERRE_MM = 0.3                 # une piezas separadas por menos de 2x esto
 ISLA_MINIMA_MM2 = 1.0
+# PIEZA UNICA (decision del usuario 08/09): todo lo que trae el archivo del cliente es UN parche.
+# Las piezas sueltas (las 4 estrellas del escudo de la AUF) se unen con TPU al cuerpo principal en
+# vez de salir como recortes separados. Se cierra la silueta con un radio creciente hasta que quede
+# un solo componente; si ni con el tope se unen, se usa la envolvente convexa.
+PIEZA_UNICA = True
+CIERRE_MAX_MM = 25.0
 PASO_CURVA_MM = 0.15
 
 
@@ -236,16 +258,29 @@ def leer_vector(ruta_pdf):
     formas = [Forma(d) for d in page.get_drawings()]
     formas = [f for f in formas if f.items and (f.fill is not None or (f.stroke is not None and f.width > 0))]
 
-    # Fondo de pagina: un rectangulo (casi) del tamanio de la hoja, blanco. No es parte del parche.
+    # FONDO DE LA MESA DE TRABAJO: formas blancas que llegan al borde de la hoja. No son parte del
+    # parche — si se cuentan, el corte sale rectangular en vez de seguir el dibujo (caso del escudo
+    # de la AUF de seeklogo, 07/09: una banda blanca arriba y dos esquinas abajo).
+    # Se pide que toque AL MENOS DOS bordes de la hoja: el blanco legitimo del dibujo (el interior
+    # del escudo) queda separado del borde, y una forma que apenas roza un lado no se descarta.
     pr = page.rect
+    tol = 1.0
     for f in formas:
-        if f.fill is not None and min(f.fill[:3]) >= 0.98 and _es_rectangulo(f) and f.rect is not None:
-            r = f.rect
-            if (abs(r.x0 - pr.x0) <= 1 and abs(r.y0 - pr.y0) <= 1 and
-                    abs(r.x1 - pr.x1) <= 1 and abs(r.y1 - pr.y1) <= 1):
-                f.es_fondo = True
-    if any(f.es_fondo for f in formas):
-        avisos.append("Se ignoro un rectangulo blanco del tamanio de la hoja (fondo de pagina).")
+        if f.fill is None or min(f.fill[:3]) < 0.95 or f.rect is None:
+            continue
+        r = f.rect
+        bordes = sum((abs(r.x0 - pr.x0) <= tol, abs(r.y0 - pr.y0) <= tol,
+                      abs(r.x1 - pr.x1) <= tol, abs(r.y1 - pr.y1) <= tol))
+        if bordes >= 2:
+            f.es_fondo = True
+    # Nunca dejar el arte vacio: si TODO seria fondo, no se descarta nada (arte blanco a sangre).
+    if formas and all(f.es_fondo or f.fill is None for f in formas):
+        for f in formas:
+            f.es_fondo = False
+    n_fondo = sum(1 for f in formas if f.es_fondo)
+    if n_fondo:
+        avisos.append(f"Se ignoraron {n_fondo} forma(s) blancas de fondo que llegaban al borde de la hoja "
+                      f"(no son parte del parche: el corte sigue el dibujo).")
 
     utiles = [f for f in formas if not f.es_fondo]
     if motivo is None and not utiles:
@@ -432,7 +467,25 @@ def _area_poligono(c):
     return 0.5 * abs(np.dot(x, np.roll(y, 1)) - np.dot(y, np.roll(x, 1)))
 
 
-def islas(mask, owner, formas, ppmm, sangrado_mm):
+def _unir_en_una(mask, ppmm, cierre_max_mm=CIERRE_MAX_MM):
+    """Devuelve la mascara cerrada de modo que quede UNA sola pieza (ver PIEZA_UNICA)."""
+    from scipy import ndimage
+    etiquetas, n = ndimage.label(mask, structure=np.ones((3, 3), dtype=int))
+    if n <= 1:
+        return mask
+    r = 1.0
+    while r <= cierre_max_mm:
+        cerrada = _disco(_disco(mask, r * ppmm, True), r * ppmm, False) | mask
+        _, n2 = ndimage.label(cerrada, structure=np.ones((3, 3), dtype=int))
+        if n2 <= 1:
+            return cerrada
+        r *= 1.6
+    # Ultimo recurso: envolvente convexa de todo el arte.
+    from skimage.morphology import convex_hull_image
+    return convex_hull_image(mask)
+
+
+def islas(mask, owner, formas, ppmm, sangrado_mm, pieza_unica=PIEZA_UNICA):
     """Por isla del arte: contorno de corte (exterior, sin huecos), contornos del sangrado
     (compound, even-odd) y color del borde. Coordenadas (row, col) en px del raster."""
     from scipy import ndimage
@@ -440,6 +493,9 @@ def islas(mask, owner, formas, ppmm, sangrado_mm):
     cierre_px = CIERRE_MM * ppmm
     tol_px = TOL_SIMPLIFICACION_MM * ppmm
     unida = _disco(_disco(mask, cierre_px, True), cierre_px, False) | mask
+    if pieza_unica:
+        # El corte envuelve TODO el arte: una sola pieza, con el TPU uniendo lo que estaba suelto.
+        unida = _unir_en_una(unida, ppmm)
     etiquetas, n = ndimage.label(unida, structure=np.ones((3, 3), dtype=int))
     resultado = []
     descartadas = 0
@@ -450,8 +506,9 @@ def islas(mask, owner, formas, ppmm, sangrado_mm):
             descartadas += 1
             continue
         original = region & mask
-        # Corte: exterior de la isla, huecos rellenos, sin agrandar.
-        llena = ndimage.binary_fill_holes(original | region)
+        # Corte: exterior de la isla, huecos rellenos, sin agrandar. Con PIEZA_UNICA, `region` ya
+        # trae los puentes de TPU que unen las piezas sueltas, y el corte los sigue.
+        llena = ndimage.binary_fill_holes(region if pieza_unica else (original | region))
         cortes = contornos_de(llena, tol_px)
         if not cortes:
             continue
@@ -479,15 +536,16 @@ def islas(mask, owner, formas, ppmm, sangrado_mm):
 # ── construccion de PDFs (pikepdf) ───────────────────────────────────────────
 
 # Color ALTERNATIVO (CMYK) de cada tinta plana: es lo que pinta cualquier visor que no separe
-# tintas (Drive, pdf.js, Acrobat sin "previsualizar sobreimpresion"). Copiados del archivo de
-# referencia que hoy imprime bien ("PRUEBA SPOTS como TINTAS SINEDIT.pdf" / "TPU UV - Corte.pdf",
-# los "acompanantes" del script de Illustrator). El RIP separa por NOMBRE, no por este color.
-# Con (0,0,0,0) —la receta de dtf_blanco para la tinta blanca— los visores pintaban las zonas de
-# relieve de BLANCO OPACO encima del arte y el archivo se veia vacio (caso TPU-20744, 04/09).
+# tintas (Drive, pdf.js, Acrobat sin "previsualizar sobreimpresion"). El RIP separa por NOMBRE,
+# no por este color. Decision del usuario 07/09: las tres tintas de relieve se ven NEGRAS (el
+# relieve es una sola tinta negra en los archivos de produccion, plan §1); el corte queda magenta
+# como en el archivo de referencia. Con (0,0,0,0) —la receta de dtf_blanco para la tinta blanca—
+# los visores pintaban las zonas de BLANCO OPACO encima del arte y el archivo se veia vacio
+# (caso TPU-20744, 04/09).
 ALTERNATIVOS = {
-    "Spot 1": (1, 0, 0, 0),
-    "Spot 2": (0, 0, 1, 0),
-    "Spot 3": (1, 0, 1, 0),
+    "Spot 1": (0, 0, 0, 1),
+    "Spot 2": (0, 0, 0, 1),
+    "Spot 3": (0, 0, 0, 1),
     "CutContour": (0, 1, 0, 0),
 }
 
@@ -505,10 +563,17 @@ def _separation(pdf, nombre):
 
 
 def _ocg(pdf, nombre):
-    from pikepdf import Dictionary, Name
+    """Capa (OCG) declarada COMO LAS DE ILLUSTRATOR (verificado 08/09 en 'TPU UV - Impresion.pdf'):
+    con /Intent [/View /Design] y /Usage /CreatorInfo. Las mias iban sin /Intent ni /Usage y el RIP
+    no imprimia su contenido — la prueba que si salio (`prueba-trama-spot.pdf`) no tenia capas."""
+    from pikepdf import Array, Dictionary, Name, String
     d = Dictionary()
     d[Name.Type] = Name.OCG
     d[Name.Name] = nombre
+    d[Name.Intent] = Array([Name.View, Name("/Design")])
+    d[Name.Usage] = Dictionary({
+        "/CreatorInfo": Dictionary({"/Creator": String("Adobe Illustrator 29.0"), "/Subtype": Name("/Artwork")}),
+    })
     return pdf.make_indirect(d)
 
 
@@ -524,81 +589,174 @@ def _form_xobject(pdf, contenido, bbox, recursos):
 
 
 def _extgstate_overprint(pdf):
+    """Sobreimpresion ENCENDIDA, como dtf_blanco.incrustar_spot (en produccion desde agosto).
+    Imprescindible para las capas RASTERIZADAS: la imagen cubre TODA la plancha y, sin
+    sobreimpresion, hace knockout de los otros canales en cada pixel sin tinta — se comia el
+    relieve texturado (07/09). Para los vectores se sigue usando el /GS0 de Illustrator."""
     from pikepdf import Dictionary, Name
     gs = Dictionary()
     gs[Name.Type] = Name.ExtGState
     gs[Name.OP] = True
     gs[Name("/op")] = True
     gs[Name.OPM] = 1
+    gs[Name.BM] = Name.Normal
+    gs[Name.SMask] = Name("/None")
     return pdf.make_indirect(gs)
 
 
-def repintar_con_tinta(pdf, xobj, cs_name, sep, visitados=None):
-    """Quita todo operador de color del Form XObject (y sus hijos) y lo pinta con la tinta plana
-    al 100 %. Es lo que hace pintarConTinta() del script sobre las capas tecnicas."""
+def _extgstate_illustrator(pdf):
+    """El /GS0 que Illustrator pone en CADA objeto del archivo que PhotoPrint separa bien
+    (verificado 07/09 en 'TPU UV  - Impresion.pdf'): knockout, sin mascara, opacidad 1."""
+    from pikepdf import Dictionary, Name
+    gs = Dictionary()
+    gs[Name.Type] = Name.ExtGState
+    gs[Name("/AIS")] = False
+    gs[Name.BM] = Name.Normal
+    gs[Name.CA] = 1.0
+    gs[Name("/ca")] = 1.0
+    gs[Name.OP] = False
+    gs[Name("/op")] = False
+    gs[Name.OPM] = 1
+    gs[Name("/SA")] = True
+    gs[Name.SMask] = Name("/None")   # Name.None_ se escribe "/None_" (pikepdf); el RIP espera "/None"
+    return pdf.make_indirect(gs)
+
+
+# Umbral de "tinta mayoritaria" para invertir la textura, como el visor (cargarTile: si lo que
+# subiria es mas de la mitad de la superficie, se da vuelta y sube el fondo).
+POLARIDAD_INVERTIR = 0.5
+
+# APLANADO de las capas con tinta plana (07/09): PhotoPrint mostraba las capas Spot 1/2/3 VACIAS al
+# asignarlas a spot color. El archivo de Illustrator que separa bien no usa Form XObjects: todos sus
+# objetos estan DIRECTOS en el content stream de la pagina, cada uno con su `cs 1 scn`. Aca se hace
+# igual: el contenido de los spots (y el troquel) se emite inline, una vez por copia. El arte del
+# cliente (CMYK) sigue como XObject: es proceso, no tinta plana, y repetirlo multiplicaria el archivo.
+# Tope de seguridad: si el contenido aplanado se dispara (texturas muy densas x muchas copias), se
+# vuelve a XObjects y se avisa — mejor un archivo que abre que uno de cientos de MB.
+APLANAR_MAX_BYTES = 60 * 1024 * 1024
+
+# RASTERIZAR las capas de relieve (job "spots_raster"): cada capa entra como UNA imagen en escala de
+# grises con su tinta plana, en vez de decenas de miles de trazados con recortes anidados. Es la
+# receta de dtf_blanco.py (`incrustar_spot`), que PhotoPrint ya separa bien en produccion. Motivo
+# (07/09): con las capas vectoriales, PhotoPrint mostraba las zonas LISAS pero no las TEXTURADAS —
+# lo que las distingue son los clips anidados que meten la trama dentro de la forma.
+SPOTS_RASTER_DPI = 600
+
+# GROSOR MINIMO del relieve, en mm. Medido el 08/09: el arte de Illustrator que imprime bien tiene
+# trazos de 2,7 mm de mediana (solo el 3 % baja de 0,5 mm), mientras que las texturas del catalogo
+# llevadas al tamanio del parche caian a 0,08 mm de mediana — el 88 % por debajo de 0,3 mm. En la
+# prueba del usuario, rayas de 0,5 y 1 mm salieron perfectas y esa trama fina no salia. La mascara
+# del relieve se DILATA hasta este minimo, conservando el dibujo.
+RELIEVE_MIN_MM = 0.5
+
+
+def cargar_textura(pdf, ruta_svg, sep, cs_name="CSspot", invertir=None):
+    """SVG del catalogo -> Form XObject vectorial pintado con la tinta plana `sep` al 100 %.
+
+    Se lee con svg_trazos (clases CSS, <pattern>, transform) y NO con fitz.convert_to_pdf: fitz
+    pintaba las texturas con patron de Illustrator como un rectangulo negro solido (TPU-20747).
+    Polaridad como el visor 3D: lo que sube es el DIBUJO; si la tinta cubre mas de la mitad del
+    tile, sube el complemento (rectangulo del tile menos el dibujo, par-impar).
+    Devuelve (xobject, ancho_pt, alto_pt, info)."""
     import pikepdf
-    from pikepdf import Dictionary, Name, Operator
-
-    if visitados is None:
-        visitados = set()
-    try:
-        oid = xobj.objgen
-        if oid in visitados:
-            return
-        visitados.add(oid)
-    except Exception:
-        pass
-
-    COLOR_OPS = {"g", "rg", "k", "cs", "sc", "scn", "G", "RG", "K", "CS", "SC", "SCN", "gs", "sh"}
-    nuevas = [
-        pikepdf.ContentStreamInstruction([Name("/" + cs_name)], Operator("cs")),
-        pikepdf.ContentStreamInstruction([1], Operator("scn")),
-        pikepdf.ContentStreamInstruction([Name("/" + cs_name)], Operator("CS")),
-        pikepdf.ContentStreamInstruction([1], Operator("SCN")),
-    ]
-    for inst in pikepdf.parse_content_stream(xobj):
-        if isinstance(inst, pikepdf.ContentStreamInlineImage):
-            raise ValueError("La textura contiene una imagen rasterizada: tiene que ser un SVG de trazados.")
-        op = str(inst.operator)
-        if op in COLOR_OPS:
-            continue
-        if op == "Do":
-            # forma anidada: repintar adentro tambien
-            res = xobj.get("/Resources")
-            if res is not None and res.get("/XObject") is not None:
-                hijo = res.XObject.get(inst.operands[0])
-                if hijo is not None and str(hijo.get("/Subtype")) == "/Form":
-                    repintar_con_tinta(pdf, hijo, cs_name, sep, visitados)
-                elif hijo is not None:
-                    raise ValueError("La textura contiene una imagen rasterizada: tiene que ser un SVG de trazados.")
-        nuevas.append(inst)
-    xobj.write(pikepdf.unparse_content_stream(nuevas))
-    res = xobj.get("/Resources")
-    if res is None:
-        res = Dictionary()
-        xobj[Name.Resources] = res
-    csd = res.get("/ColorSpace")
-    if csd is None:
-        csd = Dictionary()
-        res[Name.ColorSpace] = csd
-    csd[Name("/" + cs_name)] = sep
-
-
-def cargar_textura(pdf, ruta_svg):
-    """SVG del catalogo -> Form XObject vectorial dentro de `pdf` (aun con sus colores).
-    Devuelve (xobject, ancho_pt, alto_pt)."""
-    import pikepdf
+    from pikepdf import Dictionary, Name
     ext = os.path.splitext(ruta_svg)[1].lower()
     if ext != ".svg":
         raise ValueError(f"La textura {os.path.basename(ruta_svg)} no es SVG: solo las texturas vectoriales sirven para el relieve.")
-    doc = fitz.open(ruta_svg)
-    pdf_bytes = doc.convert_to_pdf()
+    svg = svg_trazos.leer_svg(ruta_svg)
+    if not svg["figuras"]:
+        raise ValueError(f"La textura {os.path.basename(ruta_svg)} no tiene trazados con tinta.")
+    tw, th = svg["ancho"], svg["alto"]
+
+    # cobertura de tinta: se rasteriza el tile tal cual (sin invertir) a ~256 px
+    cont_directo = svg_trazos.contenido_tile(svg, invertir=False)
+    tmp = pikepdf.new()
+    pg = tmp.add_blank_page(page_size=(tw, th))
+    pg.Contents = tmp.make_stream(("0 g\n" + cont_directo).encode("latin-1"))
+    buf = io.BytesIO()
+    tmp.save(buf)
+    tmp.close()
+    dtmp = fitz.open("pdf", buf.getvalue())
+    zoom = 512.0 / max(tw, 1)
+    pix = dtmp[0].get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=True)
+    alfa = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, 4)[:, :, 3]
+    # umbral al 50 % de alfa: con "alfa > 0" las rayas finas antialiasadas contaban como tinta en
+    # todo el tile (Recurso 8 daba 100 % y se invertia a vacio)
+    cobertura = float((alfa >= 128).mean())
+    dtmp.close()
+    # Si el visor 3D ya decidio la polaridad (lo que el cliente VIO), manda esa; el calculo propio
+    # es el fallback (texturas cerca del 50 % podrian caer distinto en cada lado).
+    if invertir is None:
+        invertir = cobertura > POLARIDAD_INVERTIR
+    else:
+        invertir = bool(invertir)
+
+    contenido = svg_trazos.contenido_tile(svg, invertir=invertir)
+    recursos = Dictionary()
+    recursos[Name.ColorSpace] = Dictionary({"/" + cs_name: sep})
+    xo = _form_xobject(pdf, f"/{cs_name} cs 1 scn\n" + contenido, (0, 0, tw, th), recursos)
+    info = {"cobertura": round(cobertura, 3), "invertida": invertir, "figuras": len(svg["figuras"]),
+            "avisos": svg["avisos"], "contenido": contenido}
+    return xo, tw, th, info
+
+
+def _capa_raster(pdf, xo_unitario, Wp, Hp, imp, copias, sep, dpi=SPOTS_RASTER_DPI, min_mm=RELIEVE_MIN_MM):
+    """Renderiza una capa (el XObject unitario repetido en las copias) y la devuelve como imagen
+    con la tinta plana `sep`: 0 = sin tinta, 255 = tinta al 100 %. Igual que dtf_blanco."""
+    import pikepdf
+    from pikepdf import Array, Dictionary, Name
+
+    # 1) PDF temporal con la capa sola, en negro sobre blanco, del tamanio de la plancha
+    tmp = pikepdf.new()
+    pg = tmp.add_blank_page(page_size=(imp.W, imp.H))
+    xo = tmp.copy_foreign(xo_unitario)
+    # NO se toca el ColorSpace: la Separation tiene alternate NEGRO (K100), asi que el render sale
+    # negro sobre blanco. Cambiarlo por DeviceGray convertia el "1 scn" (tinta al 100 %) en "gris 1"
+    # = BLANCO y la capa salia vacia — asi quedo Spot 3 en la prueba del 07/09.
+    # SIN fondo: la mascara sale del canal ALFA (donde la capa pinto algo), no del brillo. Con el
+    # brillo, un alternativo claro (Spot 1 cian, Spot 2 amarillo) no pasaba el umbral y la capa
+    # salia VACIA — asi quedo la prueba 9 del 08/09.
+    cont = []
+    for (cx, cy) in copias:
+        cont.append(f"q 1 0 0 1 {_f(cx)} {_f(cy)} cm /X Do Q")
+    pg.Resources = Dictionary({"/XObject": Dictionary({"/X": xo})})
+    pg.Contents = tmp.make_stream(chr(10).join(cont).encode("latin-1"))
+    buf = io.BytesIO()
+    tmp.save(buf)
+    tmp.close()
+
+    # 2) rasterizar en gris
+    doc = fitz.open("pdf", buf.getvalue())
+    pix = doc[0].get_pixmap(dpi=dpi, colorspace=fitz.csGRAY, alpha=True)
+    buf = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, 2)
+    alfa = buf[:, :, 1]
     doc.close()
-    src = pikepdf.open(io.BytesIO(pdf_bytes))
-    pg = pikepdf.Page(src.pages[0])
-    mb = [float(v) for v in pg.mediabox]
-    xo = pdf.copy_foreign(pg.as_form_xobject())
-    return xo, mb[2] - mb[0], mb[3] - mb[1]
+    # BINARIO: el relieve es tinta o nada (como el vector del script de Illustrator). Sin el umbral,
+    # el antialias del render deja medias tintas y la capa nunca llega al 100 % (max 223/255 medido
+    # el 07/09). Umbral al 50 % del gris.
+    tinta = np.where(alfa >= 128, np.uint8(255), np.uint8(0))
+
+    # Engordar los trazos finos hasta RELIEVE_MIN_MM: dilatacion por distancia (cada pixel a menos
+    # de medio ancho minimo de un trazo pasa a tinta). Sin esto la trama existe en el archivo pero
+    # es demasiado fina para el blanco y el parche sale liso.
+    if min_mm and min_mm > 0:
+        from scipy import ndimage
+        px_mm = dpi / 25.4
+        radio = max(0.0, (min_mm * px_mm - 1.0) / 2.0)
+        if radio >= 0.5 and tinta.any():
+            dist = ndimage.distance_transform_edt(tinta == 0)
+            tinta = np.where(dist <= radio, np.uint8(255), np.uint8(0))
+
+    # 3) imagen con la Separation como colorspace (receta de dtf_blanco.incrustar_spot)
+    img = pdf.make_stream(zlib.compress(tinta.tobytes(), 6))
+    img[Name.Type] = Name.XObject
+    img[Name.Subtype] = Name.Image
+    img[Name.Width] = int(pix.width)
+    img[Name.Height] = int(pix.height)
+    img[Name.BitsPerComponent] = 8
+    img[Name.ColorSpace] = sep
+    img[Name.Filter] = Name.FlateDecode
+    return pdf.make_indirect(img), int(pix.width), int(pix.height)
 
 
 def _circulo(cx, cy, r):
@@ -630,8 +788,15 @@ class Imposicion:
         self.Wp, self.Hp = Wp, Hp
         self.cantidad = max(1, int(cfg.get("cantidad") or 1))
         self.W = float(cfg.get("plancha_mm") or PLANCHA_DEFAULT_MM) * PT_POR_MM
-        self.sep = float(cfg.get("sep_mm") or 0.0) * PT_POR_MM
-        self.sepF = float(cfg.get("sep_filas_mm") if cfg.get("sep_filas_mm") is not None else SEP_FILAS_DEFAULT_MM) * PT_POR_MM
+        # sep_mm / sep_filas_mm se miden entre CORTES: se les descuenta el sangrado de los dos
+        # parches vecinos para obtener la separacion entre sus cajas (que incluyen el sangrado).
+        sangrado = float(cfg.get("sangrado_mm") or 0.0)
+        sep_cortes = float(cfg.get("sep_mm") if cfg.get("sep_mm") is not None else SEP_CORTES_DEFAULT_MM)
+        sepf_cortes = float(cfg.get("sep_filas_mm") if cfg.get("sep_filas_mm") is not None else SEP_FILAS_DEFAULT_MM)
+        self.sep = max(0.0, sep_cortes - 2 * sangrado) * PT_POR_MM
+        self.sepF = max(0.0, sepf_cortes - 2 * sangrado) * PT_POR_MM
+        self.sep_cortes_mm = sep_cortes
+        self.sepf_cortes_mm = sepf_cortes
         self.max_alto = float(cfg.get("max_alto_mm") or MAX_ALTO_DEFAULT_MM) * PT_POR_MM
         self.completar = bool(cfg.get("completar_filas", True))
         max_filas_cfg = int(cfg.get("max_filas") or 0)          # tope opcional extra (0 = sin tope)
@@ -689,8 +854,10 @@ class Imposicion:
             "suficiente": self.suficiente,
             "impresiones_necesarias": self.impresiones,
             "sufijo": self.sufijo,
-            "sep_mm": round(self.sep / PT_POR_MM, 1),
-            "sep_filas_mm": round(self.sepF / PT_POR_MM, 1),
+            "sep_entre_cortes_mm": self.sep_cortes_mm,
+            "sep_filas_entre_cortes_mm": self.sepf_cortes_mm,
+            "sep_cajas_mm": round(self.sep / PT_POR_MM, 1),
+            "sep_filas_cajas_mm": round(self.sepF / PT_POR_MM, 1),
         }
 
 
@@ -748,16 +915,17 @@ def generar(job, preview=None):
     mask, owner, W_px, H_px, _, _ = rasterizar(utiles, (x0, y0, x1, y1), escala, sangrado_pt, ppmm)
     if not mask.any():
         raise ValueError("No se pudo rasterizar la silueta del arte.")
-    lista_islas, descartadas = islas(mask, owner, utiles, ppmm, sangrado_mm)
+    lista_islas, descartadas = islas(mask, owner, utiles, ppmm, sangrado_mm,
+                                     pieza_unica=bool(job.get("pieza_unica", PIEZA_UNICA)))
     if not lista_islas:
         raise ValueError("No se encontro ninguna isla de corte en el arte.")
     if descartadas:
         avisos.append(f"Se ignoraron {descartadas} pieza(s) menores a {ISLA_MINIMA_MM2:g} mm2 (basura del vector).")
     if len(lista_islas) > 1:
-        avisos.append(f"El arte tiene {len(lista_islas)} islas separadas: cada una lleva su propio contorno de corte.")
+        avisos.append(f"El arte tiene {len(lista_islas)} piezas separadas y muy lejos entre si: cada una lleva su propio corte.")
     # La imposicion se resuelve ANTES de armar los PDFs: los nombres de salida dependen de si la
     # plancha alcanza la cantidad pedida (sufijo -Ncopias).
-    imp = Imposicion(Wp, Hp, job.get("imposicion") or {})
+    imp = Imposicion(Wp, Hp, dict(job.get("imposicion") or {}, sangrado_mm=sangrado_mm))
     if not imp.suficiente:
         avisos.append(f"La plancha de {imp.W / PT_POR_MM:.0f} x {imp.H / PT_POR_MM:.0f} mm trae {imp.copias_total} parches y el pedido es de "
                       f"{imp.cantidad}: hay que imprimirla {imp.impresiones} veces ({imp.copias_total * imp.impresiones} parches, "
@@ -780,6 +948,8 @@ def generar(job, preview=None):
     pdf = pikepdf.new()
     seps = {n: _separation(pdf, n) for _, n in CAPAS if n}
     seps[CAPA_CORTE[1]] = _separation(pdf, CAPA_CORTE[1])
+    gs_ai = _extgstate_illustrator(pdf)
+    gs_op = _extgstate_overprint(pdf)
     arte_xo = pdf.copy_foreign(pikepdf.Page(src_pdf.pages[0]).as_form_xobject())
 
     # matriz para colocar el arte original dentro del parche: pdf(user) -> parche
@@ -811,7 +981,15 @@ def generar(job, preview=None):
         for cont in isla["sangrado"]:
             ops.append(_contorno_a_path(cont, H_px, ppmm))
         ops.append("f*")
+    # El arte va RECORTADO al contorno del sangrado: la hoja del cliente puede traer fondo (blanco o
+    # de color) que llega al borde y quedaria impreso fuera del parche (escudo de la AUF, 07/09).
+    ops.append("q")
+    for isla in lista_islas:
+        for cont in isla["sangrado"]:
+            ops.append(_contorno_a_path(cont, H_px, ppmm))
+    ops.append("W* n")
     ops.append(f"q {cm_arte} /XArte Do Q")
+    ops.append("Q")
     res_cmyk = Dictionary()
     res_cmyk[Name.XObject] = Dictionary({"/XArte": arte_xo})
     x_cmyk = _form_xobject(pdf, "\n".join(ops), (0, 0, Wp, Hp), res_cmyk)
@@ -826,11 +1004,12 @@ def generar(job, preview=None):
         except Exception:
             avisos.append("texturas.json ilegible: se usan los defaults de repeticion.")
 
-    def xobj_textura(nombre, tinta):
+    def xobj_textura(nombre, tinta, invertida=None):
         # Un XObject por textura Y por tinta: el Form XObject trae sus propios recursos y esos
         # mandan sobre los del padre, asi que la misma textura repintada con "Spot 1" pintaba en
         # Spot 1 aunque se dibujara en la capa Spot 2 (lo delato el PDF de control, 07/09).
-        clave = (nombre, tinta)
+        # `invertida`: polaridad decidida por el visor (None = calcularla aca).
+        clave = (nombre, tinta, invertida)
         if clave in texturas_cache:
             return texturas_cache[clave]
         if not texturas_dir:
@@ -838,9 +1017,13 @@ def generar(job, preview=None):
         ruta = os.path.join(texturas_dir, nombre)
         if not os.path.isfile(ruta):
             raise ValueError(f"No existe la textura {nombre}.")
-        xo, tw, th = cargar_textura(pdf, ruta)
-        repintar_con_tinta(pdf, xo, "CSspot", seps[tinta])
-        texturas_cache[clave] = (xo, tw, th)
+        xo, tw, th, info = cargar_textura(pdf, ruta, seps[tinta], invertir=invertida)
+        texto_tile = info["contenido"]
+        if info["invertida"]:
+            avisos.append(f"Textura {nombre}: el dibujo cubre el {int(info['cobertura'] * 100)} % del tile, se imprime invertida (sube el fondo), como en el visor.")
+        for a in info["avisos"]:
+            avisos.append(f"Textura {nombre}: {a}.")
+        texturas_cache[clave] = (xo, tw, th, texto_tile)
         return texturas_cache[clave]
 
     # Zonas EXCLUYENTES, como en el visor 3D ("cada pixel pertenece a la forma MAS ALTA que lo
@@ -866,10 +1049,17 @@ def generar(job, preview=None):
             return None
         recursos = Dictionary()
         recursos[Name.ColorSpace] = Dictionary({"/CSspot": seps[tinta]})
+        recursos[Name.ExtGState] = Dictionary({"/GS0": gs_ai, "/GSop": gs_op})
         xobjs = Dictionary()
         # Sin ExtGState de sobreimpresion: el archivo de referencia (Illustrator) va en knockout
         # (/OP false) y asi imprime bien; los visores ademas muestran las zonas como areas de color.
-        partes = ["/CSspot cs 1 scn /CSspot CS 1 SCN"]
+        # `partes` arma el contenido con los tiles como XObject (para el PDF de control) y `planas`
+        # el mismo contenido con los tiles INLINE (para la pagina del PDF del RIP, ver APLANAR_*).
+        # /GSop = sobreimpresion ENCENDIDA. Las tres tintas de relieve conviven en el mismo lugar
+        # (Spot 2 es la misma geometria que Spot 1; el CMYK va encima de todo): con knockout cada
+        # capa borraba a la anterior en su area y del relieve sobrevivia casi nada (07/09).
+        partes = ["/CSspot cs 1 scn /GSop gs"]
+        planas = ["/CSspot cs 1 scn /GSop gs"]
         n_tex = 0
         for z in zonas:
             formas_z = [por_seqno[s] for s in z["seqnos"] if s in por_seqno]
@@ -878,26 +1068,30 @@ def generar(job, preview=None):
             zona_idx = pertenece.get(formas_z[0].seqno)
             tex = z.get("textura") if con_textura else None
 
+            def emitir(txt):
+                partes.append(txt)
+                planas.append(txt)
+
             def recortar(f):
                 """Emite los clips de la forma (menos lo que la tapa). Va dentro de un q ... Q."""
-                partes.append(path_pdf(f, T))
-                partes.append("W* n" if f.even_odd else "W n")
+                emitir(path_pdf(f, T))
+                emitir("W* n" if f.even_odd else "W n")
                 tapas = tapan_a(f, zona_idx)
                 if tapas:
-                    partes.append(path_pdf(f, T))
+                    emitir(path_pdf(f, T))
                     for g in tapas:
-                        partes.append(path_pdf(g, T))
-                    partes.append("W* n")
+                        emitir(path_pdf(g, T))
+                    emitir("W* n")
 
             if not tex:
                 for f in formas_z:
-                    partes.append("q")
+                    emitir("q")
                     recortar(f)
-                    partes.append(path_pdf(f, T))
-                    partes.append("f*" if f.even_odd else "f")
-                    partes.append("Q")
+                    emitir(path_pdf(f, T))
+                    emitir("f*" if f.even_odd else "f")
+                    emitir("Q")
                 continue
-            xo, tw, th = xobj_textura(tex, tinta)
+            xo, tw, th, texto_tile = xobj_textura(tex, tinta, z.get("invertida"))
             nombre_xo = f"/XT{len(xobjs)}"
             xobjs[Name(nombre_xo)] = xo
             rep = float(z.get("repeticiones") or manifest.get(tex, {}).get("repeticiones") or REPETICIONES_DEFAULT)
@@ -913,7 +1107,7 @@ def generar(job, preview=None):
                 (zx0, zy1), (zx1, zy0) = T(r.x0, r.y0), T(r.x1, r.y1)
                 zx0, zx1 = min(zx0, zx1), max(zx0, zx1)
                 zy0, zy1 = min(zy0, zy1), max(zy0, zy1)
-                partes.append("q")
+                emitir("q")
                 recortar(f)
                 # tiles que tocan el bbox de la forma (floor/ceil ya cubren los bordes)
                 i0 = int(math.floor((zx0 - sangrado_pt - dx) / tile_w))
@@ -924,12 +1118,14 @@ def generar(job, preview=None):
                     for i in range(i0, i1):
                         tx = sangrado_pt + dx + i * tile_w
                         ty = sangrado_pt + dy + j * tile_h
-                        partes.append(f"q {_f(s)} 0 0 {_f(s)} {_f(tx)} {_f(ty)} cm {nombre_xo} Do Q")
+                        cm_tile = f"{_f(s)} 0 0 {_f(s)} {_f(tx)} {_f(ty)} cm"
+                        partes.append(f"q {cm_tile} {nombre_xo} Do Q")
+                        planas.append(f"q {cm_tile} {texto_tile} Q")
                         n_tex += 1
-                partes.append("Q")
+                emitir("Q")
         if len(xobjs.keys()):
             recursos[Name.XObject] = xobjs
-        return _form_xobject(pdf, "\n".join(partes), (0, 0, Wp, Hp), recursos), n_tex
+        return _form_xobject(pdf, "\n".join(partes), (0, 0, Wp, Hp), recursos), "\n".join(planas), n_tex
 
     zonas = job.get("zonas") or []
     for z in zonas:
@@ -944,21 +1140,23 @@ def generar(job, preview=None):
     r1 = contenido_zonas(zonas, "Spot 1")
     r2 = contenido_zonas([z for z in zonas if z.get("doble")], "Spot 2")
     r3 = contenido_zonas([z for z in zonas if z.get("barniz")], "Spot 3", con_textura=False)
-    x_spot1, tiles1 = r1 if r1 else (None, 0)
-    x_spot2, _ = r2 if r2 else (None, 0)
-    x_spot3, _ = r3 if r3 else (None, 0)
+    x_spot1, plano1, tiles1 = r1 if r1 else (None, None, 0)
+    x_spot2, plano2, _ = r2 if r2 else (None, None, 0)
+    x_spot3, plano3, _ = r3 if r3 else (None, None, 0)
     if x_spot1 is None:
         avisos.append("Ninguna zona con relieve: el parche saldria sin Spot 1 (impresion plana).")
 
     # -- corte unitario: la silueta RELLENA con CutContour, como en el archivo de referencia (el
     # troquel de Illustrator son formas rellenas; la cortadora sigue el contorno del objeto).
-    ops_c = ["/CScut cs 1 scn"]
+    ops_c = ["/CScut cs 1 scn /GS0 gs"]
     for isla in lista_islas:
         ops_c.append(_contorno_a_path(isla["corte"], H_px, ppmm))
         ops_c.append("f")
     res_c = Dictionary()
     res_c[Name.ColorSpace] = Dictionary({"/CScut": seps["CutContour"]})
-    x_corte = _form_xobject(pdf, "\n".join(ops_c), (0, 0, Wp, Hp), res_c)
+    res_c[Name.ExtGState] = Dictionary({"/GS0": gs_ai})
+    plano_corte = "\n".join(ops_c)
+    x_corte = _form_xobject(pdf, plano_corte, (0, 0, Wp, Hp), res_c)
 
     # -- PDF de CONTROL: el parche unitario con UNA pagina por capa (CMYK, Spot 1, Spot 2, Spot 3,
     # Corte) y una ultima con todo junto, cada una rotulada y con la silueta de corte en gris como
@@ -979,6 +1177,10 @@ def generar(job, preview=None):
             ("Spot 3 (Barniz)", x_spot3, f"Capa Spot 3 (Barniz): zonas con barniz. Tinta 'Spot 3', alternativo {alternativos_txt['Spot 3']}", True),
             ("Corte", x_corte, f"Corte: silueta exterior por isla, rellena. Tinta 'CutContour', alternativo {alternativos_txt['CutContour']}", False),
         ]
+        paginas = [
+            (t, xo, (d if xo is not None else d + "  -  SIN CONTENIDO: esta capa va vacia"), sil)
+            for t, xo, d, sil in paginas
+        ]
         def pagina_capa(titulo, xobjs, detalle, con_silueta):
             pg_c = pdf_cap.add_blank_page(page_size=(Wp, Hp + BANDA))
             xod = Dictionary()
@@ -987,13 +1189,14 @@ def generar(job, preview=None):
                 if xo is None:
                     continue
                 xod[Name(f"/X{k}")] = pdf_cap.copy_foreign(xo)
-            if con_silueta:
-                cont.append(silueta_gris)
-            for k, xo in enumerate(xobjs):
-                if xo is not None:
-                    cont.append(f"q /X{k} Do Q")
-            if not any(xobjs):
-                cont.append(f"BT /F1 9 Tf 0.5 g 1 0 0 1 {_f(8)} {_f(Hp / 2)} Tm (Sin contenido en esta capa) Tj ET")
+            # Capa sin contenido (p. ej. Spot 3 sin barniz): la pagina queda VACIA, solo el rotulo
+            # (pedido del usuario 07/09: no dibujar nada, ni la silueta de referencia).
+            if any(xobjs):
+                if con_silueta:
+                    cont.append(silueta_gris)
+                for k, xo in enumerate(xobjs):
+                    if xo is not None:
+                        cont.append(f"q /X{k} Do Q")
             # banda superior con el rotulo
             cont.append(f"q 0.93 g 0 {_f(Hp)} {_f(Wp)} {_f(BANDA)} re f Q")
             cont.append(f"BT /F1 10 Tf 0 g 1 0 0 1 {_f(8)} {_f(Hp + BANDA - 16)} Tm ({titulo}) Tj ET")
@@ -1002,15 +1205,31 @@ def generar(job, preview=None):
             pg_c.Contents = pdf_cap.make_stream("\n".join(cont).encode("latin-1", "replace"))
         for titulo, xo, detalle, con_sil in paginas:
             pagina_capa(titulo, [xo], detalle, con_sil)
-        pagina_capa("Todo junto", [x_cmyk, x_spot1, x_spot2, x_spot3],
-                    "Las cuatro capas superpuestas en el orden de impresion (los spots tapan el arte en pantalla; el RIP los separa por tinta)", False)
+        pagina_capa("Todo junto", [x_spot1, x_spot2, x_spot3, x_cmyk],
+                    "Las cuatro capas en el orden de impresion: relieve (tinta blanca) abajo, CMYK encima. El RIP separa por tinta.", False)
         ruta_capas = os.path.join(salida_dir, f"{base}-capas.pdf")
         pdf_cap.save(ruta_capas, min_version="1.6")
         pdf_cap.close()
 
     # -- imposicion (ya calculada arriba) y capas
+    # ¿Se aplana? (ver APLANAR_MAX_BYTES). Con texturas muy densas x muchas copias el contenido se
+    # dispara: ahi se vuelve a XObjects y se avisa.
+    aplanar = bool(job.get("aplanar", True))
+    spots_raster = bool(job.get("spots_raster", False))
+    if spots_raster:
+        aplanar = False
+    if aplanar:
+        peso = sum(len(x) for x in (plano1, plano2, plano3) if x) * max(1, imp.copias_total)
+        if peso > APLANAR_MAX_BYTES:
+            aplanar = False
+            avisos.append(f"El arte con las texturas elegidas pesa demasiado para aplanarlo ({peso // (1024 * 1024)} MB): "
+                          f"las capas de relieve van como objetos reutilizados. Si PhotoPrint las muestra vacias, "
+                          f"usa menos repeticiones o una textura mas simple.")
     ocgs = {nombre: _ocg(pdf, nombre) for nombre, _ in CAPAS}
     orden_ocg = [ocgs[n] for n, _ in CAPAS]
+
+    # /MCn sigue el orden de CAPAS (Spot 3, Spot 2, Spot 1, CMYK): tinta -> indice de propiedad.
+    PROP_DE_TINTA = {3: 0, 2: 1, 1: 2, 0: 3}
 
     def props_de(ocg_map):
         d = Dictionary()
@@ -1032,28 +1251,53 @@ def generar(job, preview=None):
         filas, H, copias, registros = imp.pagina(i)
         pg = pdf.add_blank_page(page_size=(imp.W, H))
         cont = []
+        imgs = {}
         # marcador vectorial por tinta (como dtf_blanco): PhotoPrint enumera tintas usadas por
         # objetos del contenido de pagina.
-        cont.append("q /CSs1 cs 1 scn 0 0 0.05 0.05 re f /CSs2 cs 1 scn 0.05 0 0.05 0.05 re f "
-                    "/CSs3 cs 1 scn 0.1 0 0.05 0.05 re f Q")
-        cont.append("/OC /MC0 BDC")
+        # (Sin "marcador de tintas": la referencia de Illustrator no lo tiene. Cada tinta figura en
+        # la lista de canales por los objetos que la usan, que ahora estan aplanados en la pagina.)
+        # ORDEN DE DIBUJO = orden fisico de impresion: el relieve es tinta BLANCA que va DEBAJO del
+        # color, asi que los spots se dibujan primero y el CMYK ultimo, encima (correccion del
+        # usuario 07/09). Es lo que hace el archivo de referencia de Illustrator: su primer objeto
+        # es de Spot 3 y el CMYK va al final. El panel de capas (/Order) sigue con CMYK arriba.
+        for idx, xo, plano in ((3, x_spot3, plano3), (2, x_spot2, plano2), (1, x_spot1, plano1)):
+            cont.append(f"/OC /MC{PROP_DE_TINTA[idx]} BDC")
+            if xo is not None:
+                if spots_raster:
+                    # Una imagen por capa, cubriendo la plancha entera (ver SPOTS_RASTER_DPI).
+                    im, iw, ih = _capa_raster(pdf, xo, Wp, Hp, imp, copias, seps[f"Spot {idx}"],
+                                              min_mm=float(job.get("relieve_min_mm", RELIEVE_MIN_MM)))
+                    imgs[f"/ISpot{idx}"] = im
+                    cont.append(f"q /GSop gs {_f(imp.W)} 0 0 {_f(H)} 0 0 cm /ISpot{idx} Do Q")
+                else:
+                    # El contenido inline nombra su tinta "/CSspot" (venia de un XObject con recursos
+                    # propios); en la pagina la tinta de esta capa se llama "/CSs{idx}".
+                    cuerpo = plano.replace("/CSspot", f"/CSs{idx}") if (aplanar and plano) else f"/XSpot{idx} Do"
+                    for (cx, cy) in copias:
+                        cont.append(f"q 1 0 0 1 {_f(cx)} {_f(cy)} cm {cuerpo} Q")
+            cont.append("EMC")
+        cont.append(f"/OC /MC{PROP_DE_TINTA[0]} BDC")
         for (cx, cy) in copias:
-            cont.append(f"q 1 0 0 1 {_f(cx)} {_f(cy)} cm /XCmyk Do Q")
+            # /GSop: el arte va ENCIMA del relieve; sin sobreimpresion su knockout apagaba los
+            # canales de relieve en toda el area del parche.
+            cont.append(f"q /GSop gs 1 0 0 1 {_f(cx)} {_f(cy)} cm /XCmyk Do Q")
         cont.append("q " + _marcas(registros, imp.W, "0 0 0 1 k") + " Q")
         cont.append("EMC")
-        for idx, xo in ((1, x_spot1), (2, x_spot2), (3, x_spot3)):
-            cont.append(f"/OC /MC{idx} BDC")
-            if xo is not None:
-                for (cx, cy) in copias:
-                    cont.append(f"q 1 0 0 1 {_f(cx)} {_f(cy)} cm /XSpot{idx} Do Q")
-            cont.append("EMC")
         res = Dictionary()
         xod = Dictionary({"/XCmyk": x_cmyk})
-        for idx, xo in ((1, x_spot1), (2, x_spot2), (3, x_spot3)):
-            if xo is not None:
-                xod[Name(f"/XSpot{idx}")] = xo
+        for k, v in imgs.items():
+            xod[Name(k)] = v
+        if not aplanar and not spots_raster:   # inline o imagen: declarar los XObjects seria basura
+            for idx, xo in ((1, x_spot1), (2, x_spot2), (3, x_spot3)):
+                if xo is not None:
+                    xod[Name(f"/XSpot{idx}")] = xo
         res[Name.XObject] = xod
-        res[Name.ColorSpace] = Dictionary({"/CSs1": seps["Spot 1"], "/CSs2": seps["Spot 2"], "/CSs3": seps["Spot 3"]})
+        cs_pg = Dictionary()
+        for idx, xo in ((1, x_spot1), (2, x_spot2), (3, x_spot3)):
+            if xo is not None:                     # solo las tintas realmente usadas
+                cs_pg[Name(f"/CSs{idx}")] = seps[f"Spot {idx}"]
+        res[Name.ColorSpace] = cs_pg
+        res[Name.ExtGState] = Dictionary({"/GS0": gs_ai, "/GSop": gs_op})
         res[Name.Properties] = props_de(CAPAS)
         pg.Resources = res
         pg.Contents = pdf.make_stream("\n".join(cont).encode("latin-1"))
@@ -1063,6 +1307,7 @@ def generar(job, preview=None):
     d = Dictionary()
     d[Name.Order] = Array(orden_ocg)
     d[Name.ON] = Array(orden_ocg)
+    d[Name("/RBGroups")] = Array([])
     ocp[Name.D] = d
     pdf.Root[Name.OCProperties] = ocp
     ruta_imp = os.path.join(salida_dir, f"{base}-cmyk-spots{imp.sufijo}.pdf")
@@ -1082,11 +1327,13 @@ def generar(job, preview=None):
         pg = pdf_c.add_blank_page(page_size=(imp.W, H))
         cont = ["/OC /MC0 BDC"]
         for (cx, cy) in copias:
-            cont.append(f"q 1 0 0 1 {_f(cx)} {_f(cy)} cm /XCorte Do Q")
+            cuerpo = plano_corte if aplanar else "/XCorte Do"
+            cont.append(f"q 1 0 0 1 {_f(cx)} {_f(cy)} cm {cuerpo} Q")
         cont.append("q " + _marcas(registros, imp.W, "/CScut cs 1 scn") + " Q")
         cont.append("EMC")
         res = Dictionary()
-        res[Name.XObject] = Dictionary({"/XCorte": x_corte_c})
+        if not aplanar:
+            res[Name.XObject] = Dictionary({"/XCorte": x_corte_c})
         res[Name.ColorSpace] = Dictionary({"/CScut": sep_cut})
         res[Name.Properties] = Dictionary({"/MC0": ocg_c})
         pg.Resources = res
@@ -1096,6 +1343,7 @@ def generar(job, preview=None):
     d = Dictionary()
     d[Name.Order] = Array([ocg_c])
     d[Name.ON] = Array([ocg_c])
+    d[Name("/RBGroups")] = Array([])
     ocp[Name.D] = d
     pdf_c.Root[Name.OCProperties] = ocp
     ruta_corte = os.path.join(salida_dir, f"{base}-corte{imp.sufijo}.pdf")
@@ -1144,7 +1392,7 @@ def generar(job, preview=None):
         "zonas": len(zonas),
         "tiles_textura": tiles1,
         "arte_cmyk": usa_cmyk,
-        "avisos": avisos,
+        "avisos": list(dict.fromkeys(avisos)),   # sin repetidos (una textura usada en Spot 1 y Spot 2 avisaba dos veces)
     }
 
 
@@ -1225,7 +1473,13 @@ def _boceto(ruta, ruta_arte, cm_arte, Wp, Hp, lista_islas, H_px, ppmm):
     c.append("0 0 0 0 k")
     for isla in lista_islas:
         c.append(_contorno_a_path(isla["corte"], H_px, ppmm) + " f")     # parche en blanco (base)
+    # Arte recortado al troquel: lo que la hoja del cliente tenga fuera del parche no se ve.
+    c.append("q")
+    for isla in lista_islas:
+        c.append(_contorno_a_path(isla["corte"], H_px, ppmm))
+    c.append("W* n")
     c.append(f"q {cm_arte} /XArte Do Q")
+    c.append("Q")
     # linea de troquel en magenta ENCIMA del arte (convencion de imprenta): es lo que corta la cuchilla
     c.append("0 1 0 0 K 0.6 w")
     for isla in lista_islas:
