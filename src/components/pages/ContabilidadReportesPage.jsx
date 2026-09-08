@@ -4,11 +4,19 @@ import { fmtFecha } from '../../utils/fechas';
 import {
     Landmark, ChevronRight, Search, RefreshCw, Download,
     PieChart as PieChartIcon, FileCheck2, CheckCircle2, XCircle, Wallet, BookText, Eye,
-    Users, Package, BarChart3, Settings2, FolderTree, ChevronDown, Check,
+    Users, Package, BarChart3, Settings2, FolderTree, ChevronDown, Check, LayoutDashboard,
 } from 'lucide-react';
+import ProduccionPanelSection from './ProduccionPanelSection';
 
 // ─── Reportes disponibles ────────────────────────────────────────────────────
 const REPORTS = [
+    {
+        id: 'dashboard',
+        label: 'Dashboard de Producción',
+        icon: LayoutDashboard,
+        desc: 'Panel de producción: cumplimiento, órdenes en proceso y en cola, fallas, máquinas y producción por sector',
+        color: 'text-indigo-500',
+    },
     {
         id: 'ventas-area',
         label: 'Ventas por Área',
@@ -63,7 +71,7 @@ const REPORTS = [
 
 // Reportes que manejan sus propios filtros y carga (no usan los filtros genéricos
 // del encabezado ni el fetch automático de la página).
-const REPORTES_AUTONOMOS = ['libro-contador', 'top-clientes', 'top-productos', 'resumen-mensual', 'catalogo'];
+const REPORTES_AUTONOMOS = ['libro-contador', 'top-clientes', 'top-productos', 'resumen-mensual', 'catalogo', 'dashboard'];
 
 // ─── Utilidades de fecha (mismo patrón que ReportesPage.jsx) ─────────────────
 const FECHA_PRESETS = [
@@ -2132,6 +2140,8 @@ export default function ContabilidadReportesPage() {
                                 Reintentar
                             </button>
                         </div>
+                    ) : activeReport === 'dashboard' ? (
+                        <ProduccionPanelSection />
                     ) : activeReport === 'catalogo' ? (
                         <CatalogoSectoresSection />
                     ) : activeReport === 'libro-contador' ? (

@@ -76,8 +76,8 @@ exports.getAuditoria = (req, res) => responder(res, async () => ({ data: await s
 
 // GET /api/audit-deposito/casos?estado=VIVOS|CERRADOS|TODOS|CRONICOS|REINCIDENTES|ALTA&tipo=&severidad=&q=
 exports.listarCasos = (req, res) => responder(res, async () => {
-    const { estado, tipo, severidad, q, limit, responsableId } = req.query || {};
-    return svc.listarCasos({ estado, tipo, severidad, q, limit, responsableId });
+    const { estado, tipo, severidad, q, orden, limit, responsableId } = req.query || {};
+    return svc.listarCasos({ estado, tipo, severidad, q, orden, limit, responsableId });
 });
 
 // GET /api/audit-deposito/casos/:id → caso + línea de tiempo
@@ -88,7 +88,7 @@ exports.accionCaso = (req, res) => responder(res, async () => {
     const usuario = usuarioDe(req);
     const { accion, detalle, responsableId, responsableNombre } = req.body || {};
     const fechaLimite = Object.prototype.hasOwnProperty.call(req.body || {}, 'fechaLimite') ? req.body.fechaLimite : undefined;
-    const r = await svc.accionCaso({ casoId: req.params.id, accion, detalle, usuario, responsableId, responsableNombre, fechaLimite });
+    const r = await svc.accionCaso({ casoId: req.params.id, accion, detalle, usuario, responsableId, responsableNombre, fechaLimite, io: req.app.get('socketio') });
     return { data: r, message: `${r.codigo}: ${svc.ACCIONES[r.accion].nombre.toLowerCase()} aplicada` + (r.estado ? ` (estado ${r.estado})` : '') };
 });
 
@@ -97,7 +97,7 @@ exports.accionLote = (req, res) => responder(res, async () => {
     const usuario = usuarioDe(req);
     const { casoIds, accion, detalle, responsableId, responsableNombre } = req.body || {};
     const fechaLimite = Object.prototype.hasOwnProperty.call(req.body || {}, 'fechaLimite') ? req.body.fechaLimite : undefined;
-    const r = await svc.accionLote({ casoIds, accion, detalle, usuario, responsableId, responsableNombre, fechaLimite });
+    const r = await svc.accionLote({ casoIds, accion, detalle, usuario, responsableId, responsableNombre, fechaLimite, io: req.app.get('socketio') });
     return { data: r, message: `Acción aplicada a ${r.aplicados} caso${r.aplicados === 1 ? '' : 's'}` + (r.errores.length ? `; ${r.errores.length} con error` : '') };
 });
 

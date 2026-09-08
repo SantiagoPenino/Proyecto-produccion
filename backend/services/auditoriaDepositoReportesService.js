@@ -26,7 +26,7 @@ const categoriaPago = (pagoEstado) => {
     const p = String(pagoEstado || 'Pendiente');
     if (p.startsWith('Pagado')) return 'Pagado';
     if (p.startsWith('Facturado')) return 'Facturado sin cobrar';
-    if (p.startsWith('En cta')) return 'En cuenta corriente (sin facturar)';
+    if (p.startsWith('En cta')) return 'Sin facturar (cargo en cuenta corriente)';
     return 'Pendiente de cobro';
 };
 
@@ -189,7 +189,7 @@ async function construirReporte({ audId = null } = {}) {
     const sobrantes = auditData ? auditData.sobraEnDeposito : [];
     const resumen = {
         fuente: auditoria ? 'AUDITORIA' : 'EN_VIVO',
-        generado: ahora, cotizacion: cot, diasMax,
+        generado: ahora, cotizacion: cot, diasMax, umbralValorAlta: cfg.umbralValorAlta, diasSinAviso: cfg.diasSinAviso,
         activas, valorPesos: valorTotal, promedioDias, medianaDias,
         caducadas: caducadas.length, pctCaducadas: pct(caducadas.length, activas), valorCaducadas: suma(caducadas, i => i.valorPesos),
         sinAviso: sinAvisar.length, pctSinAviso: pct(sinAvisar.length, activas),

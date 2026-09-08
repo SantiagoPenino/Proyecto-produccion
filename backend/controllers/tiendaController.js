@@ -1,5 +1,6 @@
 const { getPool, sql } = require('../config/db');
 const logger = require('../utils/logger');
+const { calcularFechasOrden } = require('../services/fechaPrometidaService');
 
 // [TIENDA] E-commerce del portal de clientes — F0: modelo de publicación + catálogo.
 // Plan: docs/ecommerce-portal-plan.md. La tabla TiendaProductos decide QUÉ artículos se ven
@@ -639,7 +640,7 @@ async function crearVentaTienda(pool, { cliIdCliente, clienteNombre, lineas, mon
         // producción — existe para el bulto/etiqueta con destino Depósito. ModoRetiro
         // lleva la forma de envío elegida (misma columna que muestran los detalles).
         const totalUnidades = lineas.reduce((s, l) => s + l.cantidad, 0);
-        await transaction.request()
+        const insAncla = await transaction.request()
             .input('Cliente', sql.NVarChar(200), clienteNombre)
             .input('CliId', sql.Int, cliIdCliente)
             .input('Desc', sql.NVarChar(300), `VENTA TIENDA WEB (${lineas.length} artículo(s), ${totalUnidades} unidad(es))`)
@@ -657,6 +658,7 @@ async function crearVentaTienda(pool, { cliIdCliente, clienteNombre, lineas, mon
                     Magnitud, ProximoServicio, UM, Estado, EstadoenArea,
                     ProIdProducto, WmsVarianteId, EstadoDependencia, ModoRetiro
                 )
+                OUTPUT INSERTED.OrdenID
                 VALUES (
                     'PRO', @Cliente, @CliId, @Desc, 'Normal',
                     GETDATE(), DATEADD(day, 3, GETDATE()), @Mat, @Cod, @Doc,
@@ -664,6 +666,11 @@ async function crearVentaTienda(pool, { cliIdCliente, clienteNombre, lineas, mon
                     @Prod, @Wms, 'VENTA_DIRECTA', @Modo
                 )
             `);
+        const oidAncla = insAncla.recordset?.[0]?.OrdenID;
+        if (oidAncla) {
+            try { await calcularFechasOrden(transaction, oidAncla); }
+            catch (feErr) { logger.error(`⚠️ calcularFechasOrden falló para OrdenID ${oidAncla} (tienda): ${feErr.message}`); }
+        }
 
         await transaction.commit();
     } catch (err) {

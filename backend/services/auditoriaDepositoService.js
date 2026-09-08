@@ -19,14 +19,17 @@
 const { getPool, sql } = require('../config/db');
 const logger = require('../utils/logger');
 const { prefijoDe, claveSinPrefijo, SQL_JOIN_PAGO_DOC } = require('./auditDepositoSql');
+// Acciones sobre la ORDEN (marcar entregada, regresar a depósito, avisar nuevamente): el mismo código que usa la pantalla.
+const accionesSvc = require('./auditDepositoAccionesService');
 
+// nombre = etiqueta corta (chips); descripcion = qué significa (tooltip)
 const TIPOS = {
-    FALTANTE:      { nombre: 'Faltante físico',             fisico: true  },
-    SOBRANTE:      { nombre: 'Sobrante (figura entregada)',  fisico: true  },
-    SIN_INGRESO:   { nombre: 'Sin ingreso a depósito',      fisico: true  },
-    NO_REGISTRADA: { nombre: 'Sin registro en el sistema',  fisico: true  },
-    SIN_AVISO:     { nombre: 'Cliente sin aviso',           fisico: false },
-    PERMANENCIA:   { nombre: 'Excede plazo en depósito',    fisico: false },
+    FALTANTE:      { nombre: 'Faltante',     descripcion: 'Estaba en la fotografía y no se escaneó',                              fisico: true  },
+    SOBRANTE:      { nombre: 'Sobrante',     descripcion: 'Se escaneó pero en el sistema figura entregada',                        fisico: true  },
+    SIN_INGRESO:   { nombre: 'Sin ingreso',  descripcion: 'Se escaneó, existe en producción y nunca ingresó al depósito',           fisico: true  },
+    NO_REGISTRADA: { nombre: 'Sin registro', descripcion: 'Se escaneó y no existe en el sistema',                                  fisico: true  },
+    SIN_AVISO:     { nombre: 'Sin aviso',    descripcion: 'Lista para retirar y el cliente nunca recibió el aviso',                 fisico: false },
+    PERMANENCIA:   { nombre: 'Envejecida',   descripcion: 'Lleva en el depósito más días que el plazo configurado sin retirarse',   fisico: false },
 };
 const TIPOS_DEFAULT = Object.keys(TIPOS).join(',');
 const ESTADOS_VIVOS = ['ABIERTO', 'EN_CURSO', 'ESPERANDO'];
@@ -84,8 +87,27 @@ async function contadoresSesion(exec, audId) {
           (SELECT COUNT(DISTINCT OrdIdOrden) FROM dbo.AuditoriaDepositoEscaneo WHERE AudId = @A AND Resultado = 'OK' AND Duplicado = 0) AS escaneadas,
           (SELECT COUNT(*) FROM dbo.AuditoriaDepositoEscaneo WHERE AudId = @A AND Duplicado = 0) AS escaneos,
           (SELECT COUNT(*) FROM dbo.AuditoriaDepositoEscaneo WHERE AudId = @A AND Duplicado = 1) AS duplicados,
-          (SELECT COUNT(DISTINCT OrdIdOrden) FROM dbo.AuditoriaDepositoEscaneo WHERE AudId = @A AND Resultado = 'ENTREGADA' AND Duplicado = 0) AS sobrantes,
-          (SELECT COUNT(DISTINCT Codigo) FROM dbo.AuditoriaDepositoEscaneo WHERE AudId = @A AND Resultado = 'SIN_INGRESO' AND Duplicado = 0) AS sinIngreso,
+          -- Sobrantes que SIGUEN figurando entregadas (las que se regresaron a depósito desde la pantalla ya no cuentan)
+          (SELECT COUNT(DISTINCT e.OrdIdOrden) FROM dbo.AuditoriaDepositoEscaneo e
+             LEFT JOIN dbo.OrdenesDeposito d WITH(NOLOCK) ON d.OrdIdOrden = e.OrdIdOrden
+             WHERE e.AudId = @A AND e.Resultado = 'ENTREGADA' AND e.Duplicado = 0 AND NOT (d.OrdEstadoActual < 9)) AS sobrantes,
+          -- Sin ingreso que SIGUEN sin fila activa en depósito (las ingresadas desde la pantalla ya no cuentan)
+          (SELECT COUNT(DISTINCT e.Codigo) FROM dbo.AuditoriaDepositoEscaneo e
+             LEFT JOIN dbo.Ordenes po WITH(NOLOCK) ON po.OrdenID = e.OrdenProdId
+             WHERE e.AudId = @A AND e.Resultado = 'SIN_INGRESO' AND e.Duplicado = 0
+               AND NOT EXISTS (SELECT 1 FROM dbo.OrdenesDeposito d WITH(NOLOCK)
+                               WHERE UPPER(LTRIM(RTRIM(d.OrdCodigoOrden))) = UPPER(LTRIM(RTRIM(po.CodigoOrden)))
+                                 AND (d.OrdEstadoActual < 9 OR d.OrdEstadoActual IS NULL))) AS sinIngreso,
+          -- Corregidas desde la pantalla durante la sesión (regresadas a depósito + ingresadas)
+          ((SELECT COUNT(DISTINCT e.OrdIdOrden) FROM dbo.AuditoriaDepositoEscaneo e
+              JOIN dbo.OrdenesDeposito d WITH(NOLOCK) ON d.OrdIdOrden = e.OrdIdOrden
+              WHERE e.AudId = @A AND e.Resultado = 'ENTREGADA' AND e.Duplicado = 0 AND d.OrdEstadoActual < 9)
+           + (SELECT COUNT(DISTINCT e.Codigo) FROM dbo.AuditoriaDepositoEscaneo e
+              JOIN dbo.Ordenes po WITH(NOLOCK) ON po.OrdenID = e.OrdenProdId
+              WHERE e.AudId = @A AND e.Resultado = 'SIN_INGRESO' AND e.Duplicado = 0
+                AND EXISTS (SELECT 1 FROM dbo.OrdenesDeposito d WITH(NOLOCK)
+                            WHERE UPPER(LTRIM(RTRIM(d.OrdCodigoOrden))) = UPPER(LTRIM(RTRIM(po.CodigoOrden)))
+                              AND (d.OrdEstadoActual < 9 OR d.OrdEstadoActual IS NULL)))) AS corregidas,
           (SELECT COUNT(DISTINCT Codigo) FROM dbo.AuditoriaDepositoEscaneo WHERE AudId = @A AND Resultado = 'DESCONOCIDO' AND Duplicado = 0) AS desconocidos,
           (SELECT COUNT(DISTINCT Codigo) FROM dbo.AuditoriaDepositoEscaneo WHERE AudId = @A AND Resultado = 'FUERA_ALCANCE' AND Duplicado = 0) AS fueraAlcance,
           (SELECT COUNT(DISTINCT Codigo) FROM dbo.AuditoriaDepositoEscaneo WHERE AudId = @A AND Resultado = 'INGRESO_POSTERIOR' AND Duplicado = 0) AS ingresoPosterior`);
@@ -431,7 +453,8 @@ async function clasificarSesion(exec, sesion) {
                    COALESCE(s.OrdCodigoOrden, v.OrdCodigoOrden, po.CodigoOrden) AS OrdenCodigo,
                    COALESCE(s.ClienteNombre, cv.Nombre, po.Cliente) AS Cliente,
                    v.OrdEstadoActual AS EstadoVivo, v.OrdFechaIngresoOrden AS IngresoVivo, v.OReIdOrdenRetiro AS RetiroVivo, rv.FormaRetiro AS FormaRetiroVivo,
-                   tcv.TClDescripcion AS ClienteTipoVivo, cv.TelefonoTrabajo AS TelVivo, cv.Email AS EmailVivo, v.PagIdPago AS PagVivo
+                   tcv.TClDescripcion AS ClienteTipoVivo, cv.TelefonoTrabajo AS TelVivo, cv.Email AS EmailVivo, v.PagIdPago AS PagVivo,
+                   vi.OrdIdOrden AS IngresadaId, et.CodigoEtiqueta AS Etiqueta
             FROM dbo.AuditoriaDepositoEscaneo e WITH(NOLOCK)
             LEFT JOIN dbo.AuditoriaDepositoSnapshot s WITH(NOLOCK) ON s.AudId = e.AudId AND s.OrdIdOrden = e.OrdIdOrden
             LEFT JOIN dbo.OrdenesDeposito v WITH(NOLOCK) ON v.OrdIdOrden = e.OrdIdOrden AND s.OrdIdOrden IS NULL
@@ -439,9 +462,30 @@ async function clasificarSesion(exec, sesion) {
             LEFT JOIN dbo.TiposClientes tcv WITH(NOLOCK) ON tcv.TClIdTipoCliente = cv.TClIdTipoCliente
             LEFT JOIN dbo.OrdenesRetiro rv WITH(NOLOCK) ON rv.OReIdOrdenRetiro = v.OReIdOrdenRetiro
             LEFT JOIN dbo.Ordenes po WITH(NOLOCK) ON po.OrdenID = e.OrdenProdId AND e.OrdIdOrden IS NULL
+            -- SIN_INGRESO corregida desde la pantalla: ahora hay fila activa en depósito para esa orden
+            OUTER APPLY (
+                SELECT TOP 1 d.OrdIdOrden FROM dbo.OrdenesDeposito d WITH(NOLOCK)
+                WHERE e.Resultado = 'SIN_INGRESO' AND po.OrdenID IS NOT NULL
+                  AND UPPER(LTRIM(RTRIM(d.OrdCodigoOrden))) = UPPER(LTRIM(RTRIM(po.CodigoOrden)))
+                  AND (d.OrdEstadoActual < 9 OR d.OrdEstadoActual IS NULL)
+                ORDER BY d.OrdIdOrden DESC
+            ) vi
+            -- etiqueta física del bulto (para "Ingresar al depósito" con el mismo proceso que Recepción)
+            OUTER APPLY (
+                SELECT TOP 1 b.CodigoEtiqueta FROM dbo.Logistica_Bultos b WITH(NOLOCK)
+                WHERE e.Resultado = 'SIN_INGRESO' AND b.OrdenID = e.OrdenProdId AND b.Tipocontenido = 'PROD_TERMINADO'
+                ORDER BY b.BultoID DESC
+            ) et
             WHERE e.AudId = @A
             ORDER BY e.EscId`),
     ]);
+    // Resultado EFECTIVO de cada lectura: lo guardado al escanear, salvo que se haya corregido desde la pantalla
+    // (ENTREGADA regresada a depósito · SIN_INGRESO ya ingresada) → 'CORREGIDA'.
+    const efectivo = (e) => {
+        if (e.Resultado === 'ENTREGADA' && e.EstadoVivo !== null && e.EstadoVivo !== undefined && e.EstadoVivo < 9) return { resultado: 'CORREGIDA', correccion: 'REGRESADA' };
+        if (e.Resultado === 'SIN_INGRESO' && e.IngresadaId) return { resultado: 'CORREGIDA', correccion: 'INGRESADA' };
+        return { resultado: e.Resultado, correccion: null };
+    };
     const maxDias = sesion.AudDiasMaxDeposito || 15;
     const itemSnap = (s) => ({
         ordIdOrden: s.OrdIdOrden,
@@ -468,6 +512,7 @@ async function clasificarSesion(exec, sesion) {
     const vistosOrden = new Set();
     for (const e of esc.recordset) {
         if (e.Duplicado) continue;
+        if (efectivo(e).resultado === 'CORREGIDA') continue; // ya no es sobrante ni sin ingreso
         const itVivo = () => ({
             ordIdOrden: e.OrdIdOrden, codigo: e.OrdenCodigo || e.Codigo, codigoEscaneado: e.Codigo, trabajo: null, cliente: e.Cliente,
             clienteTelefono: e.TelVivo, clienteEmail: e.EmailVivo, clienteTipo: e.ClienteTipoVivo || 'Desconocido',
@@ -481,9 +526,14 @@ async function clasificarSesion(exec, sesion) {
         else if (e.Resultado === 'SIN_INGRESO') { if (!vistosCod.has(e.Codigo)) { vistosCod.add(e.Codigo); data.sinIngreso.push({ codigo: e.Codigo, ordenCodigo: e.OrdenCodigo, cliente: e.Cliente, ordenProdId: e.OrdenProdId, trabajo: 'En producción, sin ingreso a depósito', clienteTipo: 'N/A', pagoEstado: 'N/A', ordenRetiro: 'N/A', estadoActualId: null }); } }
         else if (e.Resultado === 'DESCONOCIDO') { if (!vistosCod.has(e.Codigo)) { vistosCod.add(e.Codigo); data.desconocido.push({ codigo: e.Codigo, trabajo: 'N/A', cliente: 'N/A', clienteTipo: 'N/A', pagoEstado: 'N/A', ordenRetiro: 'N/A', estadoActualId: null }); } }
     }
-    const liveScans = esc.recordset.map(e => ({
-        codigo: e.Codigo, resultado: e.Resultado, duplicado: !!e.Duplicado, ordenCodigo: e.OrdenCodigo, cliente: e.Cliente, fecha: e.Fecha, usuario: e.UsuarioNombre,
-    }));
+    const liveScans = esc.recordset.map(e => {
+        const ef = efectivo(e);
+        return {
+            codigo: e.Codigo, resultado: ef.resultado, resultadoOriginal: e.Resultado, correccion: ef.correccion,
+            duplicado: !!e.Duplicado, ordenCodigo: e.OrdenCodigo, cliente: e.Cliente, fecha: e.Fecha, usuario: e.UsuarioNombre,
+            etiqueta: e.Etiqueta || (String(e.Codigo).includes('/B') ? e.Codigo : null),
+        };
+    });
     const liveCodes = [...new Set(esc.recordset.filter(e => !e.Duplicado).map(e => e.Codigo))];
     return { liveCodes, liveScans, auditData: data };
 }
@@ -586,8 +636,13 @@ async function cerrarAuditoria({ usuario, io = null }) {
                 LEFT JOIN dbo.Clientes c WITH(NOLOCK) ON c.CliIdCliente = o.CliIdCliente
                 WHERE o.OrdIdOrden IN (SELECT CAST(value AS INT) FROM STRING_SPLIT(@ids, ','))`)).recordset;
             for (const v of viv) {
-                const entregadaDurante = v.OrdFechaEstadoActual && new Date(v.OrdFechaEstadoActual) > apertura;
-                if (entregadaDurante) { movidas.push({ tipo: 'SOBRANTE', codigo: v.OrdCodigoOrden, cliente: v.ClienteNombre, motivo: 'Se entregó durante la auditoría (estaba en depósito al escanearla)' }); continue; }
+                const activaAhora = v.OrdEstadoActual === null || v.OrdEstadoActual < 9;
+                const cambioDurante = v.OrdFechaEstadoActual && new Date(v.OrdFechaEstadoActual) > apertura;
+                if (activaAhora || cambioDurante) {
+                    movidas.push({ tipo: 'SOBRANTE', codigo: v.OrdCodigoOrden, cliente: v.ClienteNombre,
+                        motivo: activaAhora ? 'Regresó a depósito durante la auditoría (corregida desde la pantalla)' : 'Se entregó durante la auditoría (estaba en depósito al escanearla)' });
+                    continue;
+                }
                 if (!activo('SOBRANTE')) continue;
                 const valor = v.MonIdMoneda === 2 ? Number(v.OrdCostoFinal || 0) * cot : Number(v.OrdCostoFinal || 0);
                 hallazgos.push({ tipo: 'SOBRANTE', ordIdOrden: v.OrdIdOrden, codigo: v.OrdCodigoOrden, prefijo: prefijoDe(v.OrdCodigoOrden), cliIdCliente: v.CliIdCliente,
@@ -606,12 +661,22 @@ async function cerrarAuditoria({ usuario, io = null }) {
                     FROM dbo.Ordenes o WITH(NOLOCK) WHERE o.OrdenID IN (SELECT CAST(value AS INT) FROM STRING_SPLIT(@ids, ','))`)).recordset
                     .forEach(r => info.set(r.OrdenID, r));
             }
+            // Las que ya se ingresaron al depósito durante la auditoría (corregidas desde la pantalla) no son hallazgo
+            const codsProd = [...info.values()].map(i => i.CodigoOrden).filter(Boolean);
+            const ingresadas = new Set();
+            if (codsProd.length) {
+                (await rq().input('cods', sql.NVarChar(sql.MAX), codsProd.join(',')).query(`
+                    SELECT UPPER(LTRIM(RTRIM(OrdCodigoOrden))) AS Cod FROM dbo.OrdenesDeposito WITH(NOLOCK)
+                    WHERE UPPER(LTRIM(RTRIM(OrdCodigoOrden))) IN (SELECT value FROM STRING_SPLIT(@cods, ','))
+                      AND (OrdEstadoActual < 9 OR OrdEstadoActual IS NULL)`)).recordset.forEach(r => ingresadas.add(r.Cod));
+            }
             const vistosCod = new Set();
             for (const e of porProd.values()) {
                 const i = e.OrdenProdId ? info.get(e.OrdenProdId) : null;
                 const codigo = (i && i.CodigoOrden) || e.Codigo;
                 if (vistosCod.has(codigo)) continue;
                 vistosCod.add(codigo);
+                if (ingresadas.has(codigo)) { movidas.push({ tipo: 'SIN_INGRESO', codigo, cliente: i ? i.Cliente : null, motivo: 'Ingresó al depósito durante la auditoría (corregida desde la pantalla)' }); continue; }
                 hallazgos.push({ tipo: 'SIN_INGRESO', ordIdOrden: null, codigo, prefijo: prefijoDe(codigo), cliIdCliente: null, cliente: i ? i.Cliente : null, valorPesos: 0, diasEnDeposito: 0, ordenProdId: e.OrdenProdId || null });
             }
         }
@@ -807,17 +872,25 @@ async function obtenerAuditoria(audId) {
 /* ═══════════════════════════════ CASOS ═══════════════════════════════ */
 
 const SQL_CASO_BASE = `
-    SELECT c.*, pa.AudCodigo AS PrimeraAudCodigo, ua.AudCodigo AS UltimaAudCodigo
+    SELECT c.*, pa.AudCodigo AS PrimeraAudCodigo, ua.AudCodigo AS UltimaAudCodigo,
+           od.OrdEstadoActual AS EstadoOrden, od.OReIdOrdenRetiro AS RetiroId, orr.FormaRetiro, et.CodigoEtiqueta AS Etiqueta
     FROM dbo.AuditoriaDepositoCaso c WITH(NOLOCK)
     LEFT JOIN dbo.AuditoriaDeposito pa WITH(NOLOCK) ON pa.AudId = c.PrimeraAudId
-    LEFT JOIN dbo.AuditoriaDeposito ua WITH(NOLOCK) ON ua.AudId = c.UltimaAudId`;
+    LEFT JOIN dbo.AuditoriaDeposito ua WITH(NOLOCK) ON ua.AudId = c.UltimaAudId
+    LEFT JOIN dbo.OrdenesDeposito od WITH(NOLOCK) ON od.OrdIdOrden = c.OrdIdOrden
+    LEFT JOIN dbo.OrdenesRetiro orr WITH(NOLOCK) ON orr.OReIdOrdenRetiro = od.OReIdOrdenRetiro
+    OUTER APPLY (
+        SELECT TOP 1 b.CodigoEtiqueta FROM dbo.Logistica_Bultos b WITH(NOLOCK)
+        WHERE c.OrdenProdId IS NOT NULL AND b.OrdenID = c.OrdenProdId AND b.Tipocontenido = 'PROD_TERMINADO'
+        ORDER BY b.BultoID DESC
+    ) et`;
 
 function casoPublico(c) {
     return {
         casoId: c.CasoId, codigo: c.CasoCodigo,
         ordIdOrden: c.OrdIdOrden, ordenCodigo: c.OrdCodigoOrden, ordenProdId: c.OrdenProdId, prefijo: c.Prefijo,
         cliIdCliente: c.CliIdCliente, cliente: c.ClienteNombre,
-        tipo: c.Tipo, tipoNombre: TIPOS[c.Tipo] ? TIPOS[c.Tipo].nombre : c.Tipo,
+        tipo: c.Tipo, tipoNombre: TIPOS[c.Tipo] ? TIPOS[c.Tipo].nombre : c.Tipo, tipoDescripcion: TIPOS[c.Tipo] ? TIPOS[c.Tipo].descripcion : '',
         estado: c.Estado, vivo: ESTADOS_VIVOS.includes(c.Estado), severidad: c.Severidad,
         valorPesos: Number(c.ValorPesos || 0), diasEnDeposito: c.DiasEnDeposito,
         primeraAudId: c.PrimeraAudId, primeraAud: c.PrimeraAudCodigo, primeraDeteccion: c.PrimeraDeteccion,
@@ -828,11 +901,60 @@ function casoPublico(c) {
         fechaLimite: c.FechaLimite ? new Date(c.FechaLimite).toISOString().slice(0, 10) : null,
         vencido: !!(c.FechaLimite && ESTADOS_VIVOS.includes(c.Estado) && new Date(c.FechaLimite).toISOString().slice(0, 10) < new Date().toISOString().slice(0, 10)),
         motivoCierre: c.MotivoCierre, cerradoEn: c.CerradoEn, cerradoPor: c.CerradoPorNombre, actualizadoEn: c.ActualizadoEn,
+        // estado VIVO de la orden (para ofrecer la corrección correcta desde el registro)
+        estadoOrden: c.EstadoOrden === undefined ? null : c.EstadoOrden, retiroId: c.RetiroId || null, formaRetiro: c.FormaRetiro || null, etiqueta: c.Etiqueta || null,
     };
 }
 
-async function listarCasos({ estado = 'VIVOS', tipo = null, severidad = null, q = null, responsableId = null, limit = 500 } = {}) {
+/**
+ * Sincroniza los casos vivos con lo que pasó en el depósito FUERA de la auditoría (entregas, cancelaciones, regresos,
+ * ingresos hechos desde otras pantallas). Corre cada vez que se lista el registro.
+ *   FALTANTE / SIN_AVISO / PERMANENCIA → la orden salió del depósito (estado >= 9 o fila borrada) → RESUELTO
+ *   SOBRANTE                            → la orden volvió a estar activa (regresó a depósito)          → RESUELTO
+ *   SIN_INGRESO                         → ya hay fila activa en depósito para esa orden               → RESUELTO
+ * Devuelve cuántos cerró. Cada cierre deja su evento con el motivo real.
+ */
+async function sincronizarCasosConDeposito(exec) {
+    const r = await exec.request().query(`
+        SELECT c.CasoId, c.Tipo, o.OrdEstadoActual AS Estado, e.EOrNombreEstado AS EstadoNombre, o.OrdFechaEstadoActual AS Fecha,
+               CASE WHEN c.Tipo IN ('FALTANTE','SIN_AVISO','PERMANENCIA') THEN 'SALIO' WHEN c.Tipo = 'SOBRANTE' THEN 'VOLVIO' ELSE 'INGRESO' END AS Motivo
+        FROM dbo.AuditoriaDepositoCaso c
+        LEFT JOIN dbo.OrdenesDeposito o WITH(NOLOCK) ON o.OrdIdOrden = c.OrdIdOrden
+        LEFT JOIN dbo.EstadosOrdenes e WITH(NOLOCK) ON e.EOrIdEstadoOrden = o.OrdEstadoActual
+        WHERE c.Estado IN ('ABIERTO','EN_CURSO','ESPERANDO')
+          AND (
+                (c.Tipo IN ('FALTANTE','SIN_AVISO','PERMANENCIA') AND c.OrdIdOrden IS NOT NULL AND (o.OrdIdOrden IS NULL OR o.OrdEstadoActual >= 9))
+             OR (c.Tipo = 'SOBRANTE' AND o.OrdIdOrden IS NOT NULL AND (o.OrdEstadoActual < 9 OR o.OrdEstadoActual IS NULL))
+             OR (c.Tipo = 'SIN_INGRESO' AND c.OrdenProdId IS NOT NULL AND EXISTS (
+                    SELECT 1 FROM dbo.OrdenesDeposito d WITH(NOLOCK)
+                    JOIN dbo.Ordenes po WITH(NOLOCK) ON po.OrdenID = c.OrdenProdId
+                    WHERE UPPER(LTRIM(RTRIM(d.OrdCodigoOrden))) = UPPER(LTRIM(RTRIM(po.CodigoOrden)))
+                      AND (d.OrdEstadoActual < 9 OR d.OrdEstadoActual IS NULL)))
+          )`);
+    let cerrados = 0;
+    for (const x of r.recordset) {
+        const fecha = x.Fecha ? new Date(x.Fecha).toLocaleString('es-UY', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
+        const motivo = x.Motivo === 'SALIO'
+            ? (x.Estado === null || x.Estado === undefined ? 'La orden ya no está en depósito (la fila no existe)' : `La orden pasó a ${x.EstadoNombre || 'estado ' + x.Estado} en depósito${fecha ? ' el ' + fecha : ''}`)
+            : x.Motivo === 'VOLVIO' ? `La orden volvió a estar activa en depósito (${x.EstadoNombre || 'estado ' + x.Estado})`
+            : 'La orden ya tiene ingreso activo en depósito';
+        const up = await exec.request().input('id', sql.Int, x.CasoId).input('m', sql.NVarChar(300), motivo.slice(0, 300)).query(`
+            UPDATE dbo.AuditoriaDepositoCaso
+            SET Estado = 'RESUELTO', MotivoCierre = @m, CerradoEn = GETDATE(), CerradoPor = NULL, CerradoPorNombre = 'sincronización con depósito', ActualizadoEn = GETDATE()
+            WHERE CasoId = @id AND Estado IN ('ABIERTO','EN_CURSO','ESPERANDO')`);
+        if (up.rowsAffected[0] !== 1) continue; // otro proceso lo cerró en el medio
+        await insertarEvento(exec, { casoId: x.CasoId, tipo: 'CAMBIO_ESTADO', usuario: { id: null, name: 'sincronización con depósito' }, estadoNuevo: 'RESUELTO', detalle: `Resuelto automáticamente: ${motivo}` });
+        cerrados++;
+    }
+    if (cerrados) logger.info(`[AUDIT-DEP] Sincronización con depósito: ${cerrados} caso(s) resueltos por cambios hechos fuera de la auditoría`);
+    return cerrados;
+}
+
+async function listarCasos({ estado = 'VIVOS', tipo = null, severidad = null, q = null, orden = null, responsableId = null, limit = 500 } = {}) {
     const pool = await getPool();
+    // Primero se refleja lo que pasó en el depósito desde la última vez (entregas, cancelaciones, regresos, ingresos)
+    let sincronizados = 0;
+    try { sincronizados = await sincronizarCasosConDeposito(pool); } catch (e) { logger.error('[AUDIT-DEP] Error sincronizando casos con depósito: ' + e.message); }
     const rq = pool.request();
     const where = [];
     const est = String(estado || 'VIVOS').toUpperCase();
@@ -842,6 +964,7 @@ async function listarCasos({ estado = 'VIVOS', tipo = null, severidad = null, q 
     else if (est === 'REINCIDENTES') where.push(`c.Reincidente = 1`);
     else if (est === 'ALTA') where.push(`c.Estado IN ('ABIERTO','EN_CURSO','ESPERANDO') AND c.Severidad = 'ALTA'`);
     else if (est === 'VENCIDOS') where.push(`c.Estado IN ('ABIERTO','EN_CURSO','ESPERANDO') AND c.FechaLimite IS NOT NULL AND c.FechaLimite < CAST(GETDATE() AS DATE)`);
+    else if (est === 'RECIENTES') where.push(`c.Estado IN ('RESUELTO','ASUMIDO') AND c.CerradoEn >= DATEADD(hour, -48, GETDATE())`); // el rastro de lo que se cerró (a mano, por auditoría o por sincronización)
     else if (['ABIERTO', 'EN_CURSO', 'ESPERANDO', 'RESUELTO', 'ASUMIDO'].includes(est)) { rq.input('est', sql.VarChar(10), est); where.push('c.Estado = @est'); }
     if (tipo && TIPOS[String(tipo).toUpperCase()]) { rq.input('tipo', sql.VarChar(20), String(tipo).toUpperCase()); where.push('c.Tipo = @tipo'); }
     if (severidad && ['ALTA', 'MEDIA', 'BAJA'].includes(String(severidad).toUpperCase())) { rq.input('sev', sql.VarChar(5), String(severidad).toUpperCase()); where.push('c.Severidad = @sev'); }
@@ -850,10 +973,18 @@ async function listarCasos({ estado = 'VIVOS', tipo = null, severidad = null, q 
         else if (Number.isFinite(Number(responsableId))) { rq.input('resp', sql.Int, Number(responsableId)); where.push('c.ResponsableId = @resp'); }
     }
     if (q && String(q).trim()) { rq.input('q', sql.NVarChar(200), `%${String(q).trim()}%`); where.push(`(c.OrdCodigoOrden LIKE @q OR c.ClienteNombre LIKE @q OR ('CASO-' + RIGHT('000000' + CAST(c.CasoId AS VARCHAR(10)), 6)) LIKE @q)`); }
+    // Filtro por ORDEN: sirve el código con o sin prefijo (SUB-19301 o 19301) y la etiqueta física (19301/B123)
+    if (orden && String(orden).trim()) {
+        const base = String(orden).trim().toUpperCase().split('/')[0];
+        rq.input('ord', sql.VarChar(100), `%${base}%`);
+        where.push('UPPER(c.OrdCodigoOrden) LIKE @ord');
+    }
     rq.input('n', sql.Int, Math.min(Math.max(parseInt(limit, 10) || 500, 1), 5000));
     const r = await rq.query(`${SQL_CASO_BASE.replace('SELECT c.*', 'SELECT TOP (@n) c.*')}
         ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
-        ORDER BY CASE c.Severidad WHEN 'ALTA' THEN 0 WHEN 'MEDIA' THEN 1 ELSE 2 END, c.ValorPesos DESC, c.VecesDetectado DESC, c.CasoId ASC`);
+        ${['CERRADOS', 'RECIENTES'].includes(est)
+            ? 'ORDER BY c.CerradoEn DESC, c.CasoId DESC'   // lo último que se cerró, primero
+            : "ORDER BY CASE c.Severidad WHEN 'ALTA' THEN 0 WHEN 'MEDIA' THEN 1 ELSE 2 END, c.ValorPesos DESC, c.VecesDetectado DESC, c.CasoId ASC"}`);
     const k = await pool.request().query(`
         SELECT
           (SELECT COUNT(*) FROM dbo.AuditoriaDepositoCaso WITH(NOLOCK) WHERE Estado IN ('ABIERTO','EN_CURSO','ESPERANDO')) AS vivos,
@@ -863,12 +994,13 @@ async function listarCasos({ estado = 'VIVOS', tipo = null, severidad = null, q 
           (SELECT COUNT(*) FROM dbo.AuditoriaDepositoCaso WITH(NOLOCK) WHERE Estado IN ('RESUELTO','ASUMIDO')) AS cerrados,
           (SELECT COUNT(*) FROM dbo.AuditoriaDepositoCaso WITH(NOLOCK)) AS total,
           (SELECT COUNT(*) FROM dbo.AuditoriaDepositoCaso WITH(NOLOCK) WHERE Estado IN ('ABIERTO','EN_CURSO','ESPERANDO') AND FechaLimite IS NOT NULL AND FechaLimite < CAST(GETDATE() AS DATE)) AS vencidos,
+          (SELECT COUNT(*) FROM dbo.AuditoriaDepositoCaso WITH(NOLOCK) WHERE Estado IN ('RESUELTO','ASUMIDO') AND CerradoEn >= DATEADD(hour, -48, GETDATE())) AS cerradosRecientes,
           (SELECT COUNT(*) FROM dbo.AuditoriaDeposito WITH(NOLOCK) WHERE AudEstado = 'CERRADA') AS auditoriasCerradas`);
     const resp = await pool.request().query(`
         SELECT ResponsableId AS id, MAX(ResponsableNombre) AS nombre, COUNT(*) AS n
         FROM dbo.AuditoriaDepositoCaso WITH(NOLOCK) WHERE Estado IN ('ABIERTO','EN_CURSO','ESPERANDO') AND ResponsableId IS NOT NULL
         GROUP BY ResponsableId ORDER BY MAX(ResponsableNombre)`);
-    return { casos: r.recordset.map(casoPublico), kpis: k.recordset[0], tipos: TIPOS, responsables: resp.recordset };
+    return { casos: r.recordset.map(casoPublico), kpis: k.recordset[0], tipos: TIPOS, responsables: resp.recordset, sincronizados };
 }
 
 async function obtenerCaso(casoId) {
@@ -893,10 +1025,14 @@ const ACCIONES = {
     RESOLVER:  { nombre: 'Marcar resuelto',     necesitaDetalle: true  },   // motivo obligatorio
     ASUMIR:    { nombre: 'Asumir la pérdida',   necesitaDetalle: true  },   // motivo + responsable obligatorios (INVARIANTE 5)
     REABRIR:   { nombre: 'Reabrir',             necesitaDetalle: true  },
+    // Acciones que CAMBIAN LA ORDEN en depósito (mismo código que la pantalla de auditoría) y resuelven el caso
+    ENTREGAR:  { nombre: 'Marcar como Entregada', necesitaDetalle: false }, // estado 9 + retiro + estante + bultos → caso RESUELTO
+    REGRESAR:  { nombre: 'Regresar a Depósito',   necesitaDetalle: false }, // estado 7 + retiro pendiente → caso RESUELTO
+    AVISAR:    { nombre: 'Avisar nuevamente',     necesitaDetalle: false }, // estado 12, el cron reenvía el WhatsApp → caso EN_CURSO
 };
 
 /** Una acción humana sobre un caso. Cada acción deja un evento; las que cambian estado lo dicen explícitamente. */
-async function accionCaso({ casoId, accion, detalle = null, usuario, responsableId = null, responsableNombre = null, fechaLimite }) {
+async function accionCaso({ casoId, accion, detalle = null, usuario, responsableId = null, responsableNombre = null, fechaLimite, io = null }) {
     const acc = String(accion || '').toUpperCase();
     if (!ACCIONES[acc]) throw httpError(400, `Acción desconocida: ${accion}.`);
     const det = detalle ? String(detalle).trim().slice(0, 500) : '';
@@ -970,12 +1106,40 @@ async function accionCaso({ casoId, accion, detalle = null, usuario, responsable
                 set += `, Estado = 'ABIERTO', MotivoCierre = NULL, CerradoEn = NULL, CerradoPor = NULL, CerradoPorNombre = NULL`;
                 texto = `Reabierto a mano por ${u.nombre}: ${det}`;
                 break;
+            // ── Acciones que cambian la ORDEN en depósito, en la misma transacción que el caso ──
+            case 'ENTREGAR':
+                if (!vivo) throw httpError(409, 'El caso está cerrado.');
+                if (!c.OrdIdOrden || !c.OrdCodigoOrden) throw httpError(400, 'Este caso no tiene una orden de depósito para marcar como entregada.');
+                await accionesSvc.ejecutarAccionOrdenes({ codigos: [c.OrdCodigoOrden], accion: 'ENTREGADO', usuarioId: u.id, userObj: usuario, io, tranExterna: tran });
+                estadoNuevo = 'RESUELTO'; tipoEvento = 'CAMBIO_ESTADO';
+                set += `, Estado = 'RESUELTO', MotivoCierre = @motivoAuto, CerradoEn = GETDATE(), CerradoPor = @uid, CerradoPorNombre = @unom, ResponsableId = @rid, ResponsableNombre = @rnom`;
+                texto = `Marcada como ENTREGADA en depósito desde el registro (salió sin pasar por el sistema): estado 9, retiro entregado, estante liberado, bultos despachados${det ? '. ' + det : ''}`;
+                break;
+            case 'REGRESAR':
+                if (!vivo) throw httpError(409, 'El caso está cerrado.');
+                if (!c.OrdIdOrden || !c.OrdCodigoOrden) throw httpError(400, 'Este caso no tiene una orden de depósito para regresar.');
+                await accionesSvc.ejecutarAccionOrdenes({ codigos: [c.OrdCodigoOrden], accion: 'A_DEPOSITO', usuarioId: u.id, userObj: usuario, io, tranExterna: tran });
+                estadoNuevo = 'RESUELTO'; tipoEvento = 'CAMBIO_ESTADO';
+                set += `, Estado = 'RESUELTO', MotivoCierre = @motivoAuto, CerradoEn = GETDATE(), CerradoPor = @uid, CerradoPorNombre = @unom, ResponsableId = @rid, ResponsableNombre = @rnom`;
+                texto = `Regresada a depósito desde el registro: estado "Pronto para entregar" y retiro pendiente otra vez${det ? '. ' + det : ''}`;
+                break;
+            case 'AVISAR': {
+                if (!vivo) throw httpError(409, 'El caso está cerrado.');
+                if (!c.OrdIdOrden || !c.OrdCodigoOrden) throw httpError(400, 'Este caso no tiene una orden de depósito para avisar.');
+                const av = await accionesSvc.avisarNuevamente({ codigos: [c.OrdCodigoOrden], usuarioId: u.id, tranExterna: tran });
+                if (av.cambiadas === 0) throw httpError(409, 'La orden ya está entregada o cancelada: no se puede volver a avisar.');
+                set += `, ResponsableId = @rid, ResponsableNombre = @rnom`;
+                if (c.Estado === 'ABIERTO') { set += `, Estado = 'EN_CURSO'`; estadoNuevo = 'EN_CURSO'; }
+                texto = `Avisar nuevamente: la orden pasó a estado 12 y el cron reenvía el WhatsApp${det ? '. ' + det : ''}`;
+                break;
+            }
             default: break;
         }
         if (limite !== undefined) { set += ', FechaLimite = @fl'; texto += limite ? ` · fecha límite ${limite}` : ' · sin fecha límite'; }
         await rq().input('id', sql.Int, c.CasoId).input('rid', sql.Int, respId).input('rnom', sql.VarChar(100), respNom)
             .input('det', sql.NVarChar(300), det ? det.slice(0, 300) : null).input('uid', sql.Int, u.id).input('unom', sql.VarChar(100), u.nombre)
             .input('fl', sql.Date, limite === undefined ? null : limite)
+            .input('motivoAuto', sql.NVarChar(300), String(texto || '').slice(0, 300))
             .query(`UPDATE dbo.AuditoriaDepositoCaso SET ${set} WHERE CasoId = @id`);
         await insertarEvento(tran, { casoId: c.CasoId, tipo: tipoEvento, usuario, detalle: texto, estadoNuevo });
         await tran.commit();
@@ -987,13 +1151,13 @@ async function accionCaso({ casoId, accion, detalle = null, usuario, responsable
 }
 
 /** La misma acción sobre varios casos. Cada caso va en su transacción: uno que falla no frena a los demás. */
-async function accionLote({ casoIds, accion, detalle = null, usuario, responsableId = null, responsableNombre = null, fechaLimite }) {
+async function accionLote({ casoIds, accion, detalle = null, usuario, responsableId = null, responsableNombre = null, fechaLimite, io = null }) {
     const ids = [...new Set((Array.isArray(casoIds) ? casoIds : []).map(x => parseInt(x, 10)).filter(Number.isFinite))];
     if (!ids.length) throw httpError(400, 'No se indicó ningún caso.');
     if (ids.length > 500) throw httpError(400, 'Máximo 500 casos por lote.');
     const ok = []; const errores = [];
     for (const id of ids) {
-        try { ok.push(await accionCaso({ casoId: id, accion, detalle, usuario, responsableId, responsableNombre, fechaLimite })); }
+        try { ok.push(await accionCaso({ casoId: id, accion, detalle, usuario, responsableId, responsableNombre, fechaLimite, io })); }
         catch (e) { errores.push({ casoId: id, error: e.message }); }
     }
     return { aplicados: ok.length, errores, resultados: ok };
@@ -1004,5 +1168,5 @@ module.exports = {
     leerConfig, obtenerSesionAbierta, contadoresSesion, estadoModulo, listarPrefijosActivos,
     abrirAuditoria, registrarEscaneo, quitarEscaneo, clasificarSesion, cerrarAuditoria, anularAuditoria,
     listarAuditorias, obtenerAuditoria,
-    listarCasos, obtenerCaso, accionCaso, accionLote, calcSeveridad,
+    listarCasos, obtenerCaso, accionCaso, accionLote, calcSeveridad, sincronizarCasosConDeposito,
 };

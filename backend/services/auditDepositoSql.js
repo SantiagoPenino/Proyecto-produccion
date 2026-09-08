@@ -97,4 +97,30 @@ const resolverSituacionPago = (row) => {
   return { pagoEstado: 'Pendiente', saldadaPorDoc: false };
 };
 
-module.exports = { clavesDeCodigo, prefijoDe, claveSinPrefijo, SQL_COLS_PAGO_DOC, SQL_JOIN_PAGO_DOC, resolverSituacionPago };
+/**
+ * Categoría de cada lectura en el modo SIN auditoría abierta (tabla temporal), con la misma forma que devuelve
+ * la sesión: OK (activa en depósito) · ENTREGADA (existe pero figura entregada) · DESCONOCIDO (no está en
+ * OrdenesDeposito). `dbMap` es el mapa clave→fila que arma la pantalla (una fila bajo todas sus claves).
+ */
+const clasificarEscaneosSinSesion = (scannedCodes, dbMap) => {
+    const vistos = new Set();
+    const salida = [];
+    for (const raw of scannedCodes || []) {
+        const original = String(raw || '').trim().toUpperCase();
+        if (!original) continue;
+        const duplicado = vistos.has(original);
+        vistos.add(original);
+        const row = [...clavesDeCodigo(original)].map(k => dbMap.get(k)).find(Boolean) || null;
+        const activa = row ? (row.OrdEstadoActual === null || row.OrdEstadoActual < 9) : false;
+        salida.push({
+            codigo: original,
+            resultado: !row ? 'DESCONOCIDO' : activa ? 'OK' : 'ENTREGADA',
+            duplicado,
+            ordenCodigo: row ? String(row.OrdCodigoOrden || '').trim().toUpperCase() : null,
+            cliente: row ? row.ClienteNombre || null : null,
+        });
+    }
+    return salida;
+};
+
+module.exports = { clavesDeCodigo, prefijoDe, claveSinPrefijo, SQL_COLS_PAGO_DOC, SQL_JOIN_PAGO_DOC, resolverSituacionPago, clasificarEscaneosSinSesion };

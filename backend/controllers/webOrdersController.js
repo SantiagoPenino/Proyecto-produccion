@@ -3,6 +3,8 @@ const driveService = require('../services/driveService');
 const axios = require('axios');
 const { PDFDocument, StandardFonts, rgb } = require('pdf-lib')
 const logger = require('../utils/logger');
+const { rollbackSeguro } = require('../utils/rollbackSeguro');
+const { calcularFechasOrden } = require('../services/fechaPrometidaService');
 const fs = require('fs');
 const path = require('path');
 const contabilidadService = require('../services/contabilidadService');
@@ -1258,12 +1260,14 @@ exports.createWebOrder = async (req, res) => {
                 generatedOrders.push(exec.codigoOrden);
                 generatedIDs.push(newOID);
 
-                // Fecha de entrega real (área/prioridad/horario/feriados). Si el SP falla,
-                // queda el DATEADD(day,3,GETDATE()) del INSERT como respaldo.
+                // Plan fijo + compromiso por agenda (nunca antes del plan). Para Bordado, el
+                // bloque de más abajo pisa FechaCompromiso con el máximo del grupo — esto igual
+                // deja FechaEstimadaEntrega (el plan) siempre puesto. Si algo falla, queda el
+                // DATEADD(day,3,GETDATE()) del INSERT como respaldo.
                 try {
-                    await new sql.Request(transaction).input('OrdenID', sql.Int, newOID).execute('sp_CalcularFechaEntrega');
+                    await calcularFechasOrden(transaction, newOID);
                 } catch (fechaErr) {
-                    logger.error(`⚠️ sp_CalcularFechaEntrega falló para OrdenID ${newOID}: ${fechaErr.message}`);
+                    logger.error(`⚠️ calcularFechasOrden falló para OrdenID ${newOID}: ${fechaErr.message}`);
                 }
 
                 // [BORDADO] El diseño de esta orden: medidas del bordado, prendas que
@@ -3134,12 +3138,12 @@ exports.reuseMatrizTPU = async (req, res) => {
                     'DEPOSITO', @UM, @EstadoGen, @EstadoArea, @CodArt, @ProId, @CliId, GETDATE())`);
         const newOID = insOrd.recordset[0].OrdenID;
 
-        // Fecha de entrega real (área/prioridad/horario/feriados). Si el SP falla,
-        // queda el DATEADD(day,3,GETDATE()) del INSERT como respaldo.
+        // Plan fijo + compromiso por agenda (nunca antes del plan). Si algo falla, queda el
+        // DATEADD(day,3,GETDATE()) del INSERT como respaldo.
         try {
-            await new sql.Request(transaction).input('OrdenID', sql.Int, newOID).execute('sp_CalcularFechaEntrega');
+            await calcularFechasOrden(transaction, newOID);
         } catch (fechaErr) {
-            logger.error(`⚠️ sp_CalcularFechaEntrega falló para OrdenID ${newOID}: ${fechaErr.message}`);
+            logger.error(`⚠️ calcularFechasOrden falló para OrdenID ${newOID}: ${fechaErr.message}`);
         }
 
         // 4. Traer el arte de la matriz.
@@ -6986,10 +6990,12 @@ exports.mpWebhook = async (req, res) => {
 
         // Crear el retiro diferido si aún no existe (mismo flujo que Handy)
         if (storedData.type === 'pickup-deferred' && !storedOrdenRetiro && storedData.ordIds?.length > 0) {
+            // Fuera del try para que el catch la vea (const es de bloque) y pueda revertirla.
+            let retiroTransaction = null;
             try {
                 logger.info('[MP WEBHOOK] Creando retiro diferido...');
                 const { crearRetiro } = require('../services/retiroService');
-                const retiroTransaction = new sql.Transaction(pool);
+                retiroTransaction = new sql.Transaction(pool);
                 await retiroTransaction.begin();
                 const OReIdOrdenRetiro = await crearRetiro(retiroTransaction, {
                     ordIds:       storedData.ordIds,
@@ -7035,6 +7041,9 @@ exports.mpWebhook = async (req, res) => {
                     ioInst.emit('retiros:update', { type: 'nuevo_retiro', ordenId: OReIdOrdenRetiro, formaRetiro: 'RW' });
                 }
             } catch (retiroErr) {
+                // Sin esto la transacción quedaba ABIERTA en el pool bloqueando la planta
+                // (mismo modo de falla del incidente del 07/09/2026).
+                await rollbackSeguro(retiroTransaction, `mpWebhook retiro diferido ${externalRef}`);
                 logger.error('[MP WEBHOOK] Error creando retiro diferido:', retiroErr.message);
                 await crearTicketFinanzas(pool, tx.CodCliente,
                     `ALERTA: pago MercadoPago cobrado SIN retiro creado (Tx ${externalRef})`,

@@ -1,5 +1,6 @@
 const { getPool, sql } = require('../config/db');
 const logger = require('../utils/logger');
+const { calcularFechasOrden } = require('../services/fechaPrometidaService');
 const { descontarStockWmsExterno, explotarCombos } = require('../services/wmsStockService');
 const { SQL_RECALC_MONTO_TOTAL } = require('../utils/montoTotalPedido');
 
@@ -731,7 +732,7 @@ async function ensureAnclasPedido(pool, pedidoId) {
     const lineas = pedRes.recordset;
     const cab = lineas[0];
     const totalUnidades = lineas.reduce((s, l) => s + (Number(l.Cantidad) || 0), 0);
-    await pool.request()
+    const insAncla = await pool.request()
         .input('Cliente', sql.NVarChar(200), cab.ClienteNombre)
         .input('CliId', sql.Int, cab.ClienteID || 2089)
         .input('Desc', sql.NVarChar(300), `VENTA WMS (${lineas.length} artículo(s), ${totalUnidades} unidad(es))`)
@@ -748,6 +749,7 @@ async function ensureAnclasPedido(pool, pedidoId) {
                 Magnitud, ProximoServicio, UM, Estado, EstadoenArea,
                 ProIdProducto, WmsVarianteId, EstadoDependencia
             )
+            OUTPUT INSERTED.OrdenID
             VALUES (
                 'PRO', @Cliente, @CliId, @Desc, 'Normal',
                 GETDATE(), DATEADD(day, 3, GETDATE()), @Mat, @Cod, @Doc,
@@ -755,6 +757,11 @@ async function ensureAnclasPedido(pool, pedidoId) {
                 @Prod, @Wms, 'VENTA_DIRECTA'
             )
         `);
+    const oidAncla = insAncla.recordset?.[0]?.OrdenID;
+    if (oidAncla) {
+        try { await calcularFechasOrden(pool, oidAncla); }
+        catch (feErr) { logger.error(`⚠️ calcularFechasOrden falló para OrdenID ${oidAncla} (logisticaWms): ${feErr.message}`); }
+    }
 
     r = await pool.request().input('PID', sql.Int, parseInt(pedidoId)).query(ANCHORS_QUERY);
     return r.recordset;

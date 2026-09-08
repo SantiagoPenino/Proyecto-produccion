@@ -1,5 +1,6 @@
 const { getPool, sql } = require('../config/db');
 const logger = require('../utils/logger');
+const { rollbackSeguro } = require('../utils/rollbackSeguro');
 const { esAdminOServicioTecnico } = require('../middleware/authMiddleware');
 
 // =====================================================================
@@ -277,9 +278,10 @@ exports.deleteStatus = async (req, res) => {
 // =====================================================================
 exports.saveColumns = async (req, res) => {
     const { areaId, columnas } = req.body;
+    let transaction = null;   // fuera del try: el catch tiene que poder revertirla
     try {
         const pool = await getPool();
-        const transaction = new sql.Transaction(pool);
+        transaction = new sql.Transaction(pool);
         await transaction.begin();
 
         await new sql.Request(transaction).input('id', sql.VarChar(20), areaId)
@@ -300,6 +302,8 @@ exports.saveColumns = async (req, res) => {
         await transaction.commit();
         res.json({ success: true });
     } catch (err) {
+        await rollbackSeguro(transaction, `saveColumns área ${areaId}`);
+        logger.error(`[AREAS] Error guardando columnas de ${areaId}: ${err.message}`);
         res.status(500).json({ error: err.message });
     }
 };

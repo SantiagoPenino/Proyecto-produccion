@@ -2,6 +2,7 @@ const { getPool, sql } = require('../config/db');
 const logger = require('../utils/logger');
 const pushService = require('../services/pushNotificationService');
 const { changeOrderState } = require('../services/stateManagerService');
+const { calcularFechasOrden } = require('../services/fechaPrometidaService');
 
 // Capas del arte TPU (04/09/2026): HASTA 5, y con 2 alcanza. Conviven dos formatos —
 // el viejo de 5 archivos (CMYK + Spot 1/2/3 + Corte.plt, las matrices migradas) y el actual
@@ -1325,7 +1326,13 @@ exports.createOrder = async (req, res) => {
                 `);
 
             const newOrderId = resultOrder.recordset[0].OrdenID;
-            
+
+            // Fecha real: plan fijo del área (sp_CalcularFechaEntrega, ya no lo que haya
+            // mandado el formulario) + compromiso por agenda, nunca antes del plan. No
+            // bloqueante — si falla, queda la @FechaEstimada del INSERT (la del formulario).
+            try { await calcularFechasOrden(transaction, newOrderId); }
+            catch (feErr) { logger.error(`⚠️ calcularFechasOrden falló para OrdenID ${newOrderId}: ${feErr.message}`); }
+
             // Traer el CodigoOrden que fue generado por la BD o Trigger
             const codeReq = await new sql.Request(transaction).input('OID', sql.Int, newOrderId).query(`SELECT CodigoOrden FROM Ordenes WHERE OrdenID = @OID`);
             const generatedCode = codeReq.recordset.length > 0 ? codeReq.recordset[0].CodigoOrden : (areaId + '-' + newOrderId);
