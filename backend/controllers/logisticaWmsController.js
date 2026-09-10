@@ -254,7 +254,7 @@ exports.confirmPreparation = async (req, res) => {
         const itemsDescuento = await explotarCombos(pool, items);
         // ref = idempotencia del WMS interno (con el externo no cambia nada)
         const { wmsDisponible, wmsErrors } = await descontarStockWmsExterno(itemsDescuento,
-            { refTipo: 'PEDIDO_COBRANZA', refId: parseInt(pedidoId, 10) });
+            { refTipo: 'PEDIDO_COBRANZA', refId: parseInt(pedidoId, 10), refDoc: noDocErpVen });
 
         // Bloquear solo si el WMS está completamente offline
         if (!wmsDisponible) {

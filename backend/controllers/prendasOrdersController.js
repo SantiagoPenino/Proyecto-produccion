@@ -343,7 +343,7 @@ exports.confirmarRetiroWms = async (req, res) => {
         // logisticaWmsController.confirmPreparation (helper compartido).
         const { wmsDisponible, wmsErrors } = await descontarStockWmsExterno([
             { wms_variante_id: orden.WmsVarianteId, Cantidad: parseFloat(orden.Magnitud) || 1 }
-        ], { refTipo: 'ORDEN', refId: orden.OrdenID }); // idempotencia del WMS interno
+        ], { refTipo: 'ORDEN', refId: orden.OrdenID, refDoc: orden.NoDocERP }); // idempotencia del WMS interno
 
         if (!wmsDisponible) {
             return res.status(503).json({
