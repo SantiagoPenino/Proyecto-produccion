@@ -293,12 +293,27 @@ exports.createReception = async (req, res) => {
                 }
             }
 
+            // Spec 39: si esta PRE repone una solicitud de insumo del cliente, recién ahora nace la
+            // orden de falla con la bobina/prenda nueva (la solicitud pasa a Resuelta).
+            let solicitudInfo = null;
+            const solicitudIdRepone = parseInt(req.body?.solicitudId, 10);
+            if (solicitudIdRepone > 0) {
+                try {
+                    const solCtrl = require('./solicitudesInsumoController');
+                    solicitudInfo = await solCtrl.vincularPreInterno({ solicitudId: solicitudIdRepone, recepcionId: newId, user: req.user, ip: req.ip });
+                } catch (eSol) {
+                    logger.error('[RECEPCION] No se pudo vincular la PRE a la solicitud ' + solicitudIdRepone + ': ' + eSol.message);
+                    solicitudInfo = { error: eSol.message };
+                }
+            }
+
             res.json({
                 success:         true,
                 ordenAsignada:   codigoBase,
                 comprobantePath: comprobantePath || null,
                 operario:        operarioNombre,
-                message:         `Orden ${codigoBase} guardada correctamente.`
+                solicitud:       solicitudInfo,
+                message:         `Orden ${codigoBase} guardada correctamente.` + (solicitudInfo?.message ? ' ' + solicitudInfo.message : (solicitudInfo?.error ? ` ATENCIÓN: la solicitud no se pudo vincular (${solicitudInfo.error}).` : ''))
             });
 
         } catch (inner) {

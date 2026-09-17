@@ -82,10 +82,6 @@ class ERPSyncService {
         const siblings = orderRes.recordset;
         if (siblings.length === 0) throw new Error(`No se encontraron órdenes para el documento ${noDocERP}`);
 
-        // 2. Determinar Moneda (USD si hay al menos un artículo en USD)
-        const hasUSD = siblings.some(s => (s.MonedaBase || '').toUpperCase() === 'USD');
-        let targetCurrency = hasUSD ? 'USD' : 'UYU';
-
         // [PRENDA PERSONALIZADA] Marcadores en la Nota de la orden madre PRO (los escribe
         // PrendaOrderForm al crear el pedido). Se leen ACÁ, antes de cotizar, porque el
         // PRECIO ESTABLECIDO manda también en la MONEDA: "2000 UYU" es el precio final
@@ -96,6 +92,41 @@ class ERPSyncService {
         const notaProMadre = String(proSibMadre?.Nota || '');
         const esFacturaPorArea = /\[FACTURA POR AREA\]/i.test(notaProMadre);
         const mPrecioEst = notaProMadre.match(/\[PRECIO ESTABLECIDO:\s*([\d]+(?:[.,]\d+)?)\s*(UYU|USD)?\]/i);
+
+        // 2. Determinar Moneda: USD si hay al menos un artículo en USD entre las líneas que
+        // se COBRAN. "Comprar y personalizar" (orden madre PRO sin [FACTURA POR AREA]): las
+        // personalizaciones (EMB/DF/TPU/EST/TWC/TWT/SB) quedan incluidas dentro de PRO y no
+        // se facturan aparte, así que NO deciden la moneda — manda el artículo de PRO
+        // (prendas en pesos → pedido en pesos aunque la sublimación cotice en dólares).
+        // Misma regla que la cotización al guardar (solo líneas facturables).
+        const AREAS_HERMANAS = ['EMB', 'DF', 'TPU', 'EST', 'TWC', 'TWT', 'SB'];
+        const decidenMoneda = (proSibMadre && !esFacturaPorArea)
+            ? siblings.filter(s => !AREAS_HERMANAS.includes((s.AreaID || '').toString().trim().toUpperCase()))
+            : siblings;
+        let hasUSD = decidenMoneda.some(s => (s.MonedaBase || '').toUpperCase() === 'USD');
+        // [VENTA UNA LÍNEA] "Comprar y personalizar" tiene UNA sola PRO con el artículo genérico
+        // PPERS (en pesos) y los artículos del carrito como líneas extra de esa orden. La moneda
+        // la tienen que decidir esos artículos — igual que cuando había una PRO por artículo —,
+        // no el genérico: sin esto un pedido con Pet Film en dólares pasaba a cotizar en pesos.
+        if (!hasUSD && proSibMadre) {
+            try {
+                const artUsd = await pool.request()
+                    .input('OID', sql.Int, proSibMadre.OrdenID)
+                    .query(`
+                        -- Misma fuente de moneda que el resto de las órdenes (MonedaBase =
+                        -- PreciosBase del artículo), no Articulos.MonIdMoneda.
+                        SELECT TOP 1 1 AS X
+                        FROM ServiciosExtraOrden s WITH(NOLOCK)
+                        JOIN Articulos a WITH(NOLOCK) ON LTRIM(RTRIM(a.CodArticulo)) = LTRIM(RTRIM(s.CodArt))
+                        JOIN PreciosBase pb WITH(NOLOCK) ON pb.ProIdProducto = a.ProIdProducto
+                        WHERE s.OrdenID = @OID AND s.Observacion = '[ARTICULO VENTA]' AND pb.MonIdMoneda = 2
+                    `);
+                if (artUsd.recordset.length) hasUSD = true;
+            } catch (eMon) {
+                logger.warn(`[ERPSync] ${noDocERP}: no se pudo leer la moneda de los artículos de la venta: ${eMon.message}`);
+            }
+        }
+        let targetCurrency = hasUSD ? 'USD' : 'UYU';
         if (mPrecioEst) {
             targetCurrency = (mPrecioEst[2] || 'UYU').toUpperCase();
             logger.info(`[ERPSync] ${noDocERP}: precio establecido — la moneda del pedido pasa a ${targetCurrency} (pactada al crear).`);
@@ -161,6 +192,36 @@ class ERPSyncService {
                 if (!quantityOverride && umEsMetros && metrosReales > 0 && magVal > metrosReales + 0.01) {
                     logger.warn(`[ERPSync] ${sib.CodigoOrden}: Magnitud ${magVal} > metros de archivos ${metrosReales} — se cotiza por los metros (la magnitud venía contaminada con cantidades de servicios).`);
                     magVal = metrosReales;
+                }
+
+                // [POR ÁREA] Bordado / Estampado de un pedido de prendas cobrado POR ÁREA: la orden
+                // guarda Magnitud 0 (la cantidad real vive en la venta de retiro de su prenda o en
+                // la orden madre PRO) y más abajo se cotizaba con "|| 1": un bordado sobre 4 shorts
+                // se cobraba como UNO. En "Por área" cada línea se cobra sola, así que la cantidad
+                // tiene que ser la de prendas. Solo en este modo: en Consolidado (combos, fabricar a
+                // medida) no se cambia nada del precio.
+                const areaSibQty = (sib.AreaID || '').toString().trim().toUpperCase();
+                if (esFacturaPorArea && !(magVal > 0) && ['EMB', 'EST'].includes(areaSibQty)) {
+                    try {
+                        const pr = await pool.request().input('OID', sql.Int, sib.OrdenID).query(`
+                            SELECT TOP 1 TRY_CAST(p.Magnitud AS FLOAT) AS Prendas
+                            FROM Ordenes o
+                            JOIN Ordenes p ON (
+                                    o.ComboItemID IS NOT NULL AND p.ComboItemID = o.ComboItemID
+                                    AND p.EstadoDependencia = 'VENTA_DIRECTA'
+                                    AND LTRIM(RTRIM(p.ComboPedidoNoDocERP)) = LTRIM(RTRIM(CAST(o.NoDocERP AS VARCHAR(50)))))
+                                 OR (LTRIM(RTRIM(p.NoDocERP)) = LTRIM(RTRIM(o.NoDocERP)) AND p.AreaID = 'PRO'
+                                    AND ISNULL(p.EstadoDependencia, '') <> 'VENTA_DIRECTA')
+                            WHERE o.OrdenID = @OID
+                            ORDER BY CASE WHEN o.ComboItemID IS NOT NULL AND p.ComboItemID = o.ComboItemID THEN 0 ELSE 1 END, p.OrdenID`);
+                        const prendas = parseFloat(pr.recordset[0]?.Prendas) || 0;
+                        if (prendas > 0) {
+                            magVal = prendas;
+                            logger.info(`[ERPSync] ${sib.CodigoOrden}: por área — se cotiza por ${prendas} prenda(s).`);
+                        }
+                    } catch (ePr) {
+                        logger.warn(`[ERPSync] ${sib.CodigoOrden}: no se pudo resolver la cantidad de prendas: ${ePr.message}`);
+                    }
                 }
 
                 // APLICAR OVERRIDE DE CANTIDAD SI EXISTE
@@ -237,6 +298,29 @@ class ERPSyncService {
                 let PUOriginal = 0;
                 let SubtotalOriginal = 0;
                 let MonedaOriginal = targetCurrency;
+                // Desglose estructurado (lista / descuento / recargos) que se congela con la
+                // línea del pedido (columnas nuevas de PedidosCobranzaDetalle). null = sin desglose.
+                let desgloseLinea = null;
+                // Beneficio pactado con el que salió el precio (specs/40): se estampa en la
+                // línea y en Ordenes para que el motor contable consuma SU bolsa.
+                let bclAplicado = null;
+                // Cotización de referencia del motor para las líneas que NO salen del motor
+                // (precio manual, reposición sin cargo): de ahí se toma la LISTA para que la
+                // línea igual diga "lista X, descuento Y". Nunca corta el sync si falla.
+                const desgloseReferencia = async () => {
+                    try {
+                        const ref = await PricingService.calculatePrice(
+                            { codArticulo: sib.CodArticulo || '', proIdProducto: sib.ProIdProducto || null },
+                            effectiveQty || 1,
+                            { cliIdCliente: internalClientId, clienteLegacy: sib.CodCliente || internalClientId },
+                            extraProfiles, { ...vars, skipPrepago: true }, targetCurrency, null, sib.AreaID
+                        );
+                        return ref.desglose || null;
+                    } catch (eRef) {
+                        logger.warn(`[ERPSync] Sin desglose de referencia para ${codigoOrdenCheck}: ${eRef.message}`);
+                        return null;
+                    }
+                };
 
                 if (priceOverride !== null && !isNaN(parseFloat(priceOverride))) {
                     costoCalculado = parseFloat(priceOverride);
@@ -247,6 +331,7 @@ class ERPSyncService {
                     SubtotalOriginal = costoCalculado;
                     MonedaOriginal = targetCurrency;
                     logger.info(`[ERPSync] Aplicando Precio Override: ${costoCalculado}`);
+                    desgloseLinea = PricingService.desgloseManual(await desgloseReferencia(), precioUnitario, 'Precio ajustado manualmente en el pedido');
                 } else if (esSinCargo) {
                     // Reposición (-R#) / Falla (-F#): NO SE COBRA. Línea en 0 para que figure
                     // en la cotización sin sumar al total.
@@ -258,6 +343,8 @@ class ERPSyncService {
                     SubtotalOriginal = 0;
                     MonedaOriginal = targetCurrency;
                     logger.info(`[ERPSync] 🔄 ${codigoOrdenCheck}: reposición/falla — se cotiza en 0 (sin cargo)`);
+                    // Queda registrado cuánto valía el retrabajo regalado: lista + descuento 100 %.
+                    desgloseLinea = PricingService.desgloseSinCargo(await desgloseReferencia(), 'REPOSICION', 'Reposición sin cargo');
                 } else if (esRetiroCombo) {
                     // [COMBOS] Retiro de stock de un componente — precio consolidado en la
                     // orden PRO del combo (precio único), no se factura aparte.
@@ -287,6 +374,8 @@ class ERPSyncService {
                     PUOriginal = priceResult.precioUnitarioOriginal || precioUnitario;
                     SubtotalOriginal = priceResult.precioTotalOriginal || costoCalculado;
                     MonedaOriginal = priceResult.monedaOriginal || targetCurrency;
+                    desgloseLinea = priceResult.desglose || null;
+                    bclAplicado = priceResult.beneficioAplicado?.bclId || null;
                 }
 
                 // ---- LÓGICA DE PREPAGO (PlanesMetros) ----
@@ -403,7 +492,9 @@ class ERPSyncService {
                         Moneda: targetCurrency,
                         MonedaOriginal: MonedaOriginal,
                         LogPrecioAplicado: textLog,
-                        Perfiles: perfilAplicado
+                        Perfiles: perfilAplicado,
+                        // Desglose del precio ANTES de la cobertura + marca de que el plan la cubrió.
+                        desglose: desgloseLinea ? { ...desgloseLinea, cobertura: { tipo: 'PLAN', planId: planIdActivo, metros: metrosPedido } } : null
                     });
 
                 } else if (coberturaParcial) {
@@ -437,7 +528,8 @@ class ERPSyncService {
                         Moneda: targetCurrency,
                         MonedaOriginal: MonedaOriginal,
                         LogPrecioAplicado: `Prepago Parcial — ${metrosDisponibles}m cubiertos por Plan #${planIdActivo}`,
-                        Perfiles: 'Prepago Parcial (Rollo Pre-Comprado)'
+                        Perfiles: 'Prepago Parcial (Rollo Pre-Comprado)',
+                        desglose: desgloseLinea ? { ...desgloseLinea, cobertura: { tipo: 'PLAN', planId: planIdActivo, metros: metrosDisponibles } } : null
                     });
 
                     // Línea 2: metros restantes → precio proporcional
@@ -453,7 +545,8 @@ class ERPSyncService {
                         Moneda: targetCurrency,
                         MonedaOriginal: MonedaOriginal,
                         LogPrecioAplicado: `Excedente de prepago — ${metrosRestantes}m a precio normal`,
-                        Perfiles: 'Precio Base (Excedente de Rollo)'
+                        Perfiles: 'Precio Base (Excedente de Rollo)',
+                        desglose: desgloseLinea
                     });
 
                 } else {
@@ -462,7 +555,9 @@ class ERPSyncService {
                         .input('Cost', sql.Decimal(18, 2), costoCalculado)
                         .input('Obs', sql.NVarChar(sql.MAX), userNotes)
                         .input('OID', sql.Int, sib.OrdenID)
-                        .query("UPDATE Ordenes SET CostoTotal = @Cost, Observaciones = CASE WHEN @Obs <> '' THEN @Obs ELSE Observaciones END WHERE OrdenID = @OID");
+                        .input('Bcl', sql.Int, bclAplicado)
+                        .query("UPDATE Ordenes SET CostoTotal = @Cost, BclIdBeneficioCliente = @Bcl, Observaciones = CASE WHEN @Obs <> '' THEN @Obs ELSE Observaciones END WHERE OrdenID = @OID");
+                    if (bclAplicado) logger.info(`[ERPSync] ${codigoOrdenCheck || sib.OrdenID}: cotizada con el beneficio #${bclAplicado} → la orden queda marcada para consumir SU bolsa.`);
 
                     totalPriceSum += costoCalculado;
 
@@ -470,6 +565,7 @@ class ERPSyncService {
                         OrdenID: sib.OrdenID,
                         CodArticulo: sib.CodArticulo,
                         ProIdProducto: sib.ProIdProducto,
+                        Bcl: bclAplicado,
                         Cantidad: effectiveQty,
                         PrecioUnitario: precioUnitario,
                         Subtotal: costoCalculado,
@@ -483,7 +579,8 @@ class ERPSyncService {
                         // las puntadas (lo que mueve el precio unitario); en estampado, las
                         // bajadas. Se guarda para que el área vea de dónde salió el precio y
                         // pueda corregirlo si el ponchado real dio otra cosa.
-                        datoTecnico: vars.puntadas || vars.bajadas || null
+                        datoTecnico: vars.puntadas || vars.bajadas || null,
+                        desglose: desgloseLinea
                     });
                 }
 
@@ -570,6 +667,9 @@ class ERPSyncService {
                     const srvPUOrig = srvPriceRes.precioUnitarioOriginal || (srvPriceRes.precioUnitario || 0);
                     const srvSubOrig = srvPriceRes.precioTotalOriginal || srvCostoTotal;
                     const srvMonOrig = srvPriceRes.monedaOriginal || targetCurrency;
+                    const srvDesglose = esSinCargo
+                        ? PricingService.desgloseSinCargo(srvPriceRes.desglose, 'REPOSICION', 'Reposición sin cargo')
+                        : (srvPriceRes.desglose || null);
 
                     detallesCobranza.push({
                         OrdenID: sib.OrdenID,
@@ -583,7 +683,8 @@ class ERPSyncService {
                         Moneda: targetCurrency,
                         MonedaOriginal: srvMonOrig,
                         LogPrecioAplicado: srvPriceRes.txt,
-                        Perfiles: srvPerfil
+                        Perfiles: srvPerfil,
+                        desglose: srvDesglose
                     });
 
                     // Update Servicio en DB
@@ -619,6 +720,15 @@ class ERPSyncService {
             // incluido "Comprar y Personalizar"), el filtro es un no-op — misma PRO de hoy.
             const lineaProIdx = detallesCobranza.findIndex(d => areaByOrdenId[d.OrdenID] === 'PRO' && !comboItemByOrdenId[d.OrdenID]);
             const lineasHermanas = detallesCobranza.filter(d => esHermana(d.OrdenID));
+            // [PRENDAS] La línea de la orden madre PRO es el "pilar" del pedido — el ÚNICO
+            // lugar donde vive el modo de facturación (PRECIO ESTABLECIDO la pisa acá mismo,
+            // más abajo). En modo "Por área" cotiza $0 a propósito (cada componente cobra la
+            // suya) — si se la tratara como cualquier línea en $0, la regla de "solo insertar
+            // facturables" (14-sep-2026) la dejaría afuera, y volver a "Precio establecido"
+            // no tendría ninguna línea PRO para pisarle el precio (bug real, visto en vivo:
+            // el pedido quedaba con 0 líneas y "Guardar" rechazaba todo). Se marca para que
+            // el insert de más abajo la mantenga SIEMPRE, aunque esté en $0.
+            if (lineaProIdx !== -1) detallesCobranza[lineaProIdx].esProMadre = true;
 
             // [PRENDA PERSONALIZADA] Modo de cobro elegido al crear el pedido (marcadores
             // parseados arriba, donde también fijan la moneda del pedido):
@@ -1034,8 +1144,63 @@ class ERPSyncService {
                 const cant    = parseFloat(d.Cantidad)      || 0;
                 const pu      = parseFloat(d.PrecioUnitario) || 0;
                 const st      = parseFloat(d.Subtotal)       || 0;
+                // [PRENDAS] "Facturar por área"/áreas sin precio configurado dejan líneas en
+                // $0 (Corte, Costura, la base de Producción...) que sirven para trazabilidad
+                // interna pero no deben imprimirse en la factura/CFE real. Una hermana ya
+                // consolidada tampoco: su costo vive en la línea de Producción. EsFacturable
+                // marca cuáles de estas líneas SÍ tienen que salir en la factura del cliente.
+                const esFacturable = !d.esHermanaConsolidada && Math.abs(st) > 0.005;
+
+                // [PRENDAS] Decisión del usuario (14-sep-2026): PedidosCobranzaDetalle solo
+                // debe tener las líneas que realmente se van a facturar — nada de hermanas
+                // consolidadas ni reposiciones/retiros de combo en $0 "por las dudas". Si más
+                // adelante hace falta facturar algo que quedó afuera (ej. cambia el modo de
+                // facturación de CONSOLIDADO a POR_AREA), se agrega a mano desde "Agregar
+                // línea" en la cotización del pedido completo (vista PRO/TODOS, sin
+                // restricción de área — ver QuotationEditModal.jsx). Antes esto se insertaba
+                // igual con EsFacturable=0, oculto pero recuperable; ahora directamente no se
+                // inserta, para no meter ruido en la tabla real de facturación.
+                //
+                // EXCEPCIÓN: la línea de la orden madre PRO (d.esProMadre) SIEMPRE se inserta
+                // aunque esté en $0 — es el pilar del pedido y el único lugar donde "Precio
+                // establecido" puede pisar el monto pactado. Sin esta excepción, un pedido en
+                // "Por área" (PRO en $0 por diseño) se queda sin línea PRO para volver a
+                // "Precio establecido" — bug real visto en vivo (14-sep-2026).
+                if (!esFacturable && !d.esProMadre) {
+                    logger.info(`[ERPSync] ${d.OrdenID}: línea no facturable (hermana consolidada o subtotal 0) — no se inserta en PedidosCobranzaDetalle.`);
+                    continue;
+                }
+
+                // Desglose congelado (lista / descuento / recargos). INV-PRE.03: en la línea
+                // guardada, lista − descuento + recargo = PrecioUnitario (a 2 decimales); el
+                // IMPORTE del descuento absorbe el redondeo (el % queda el de la regla). Si la
+                // línea está cubierta por un plan, el neto no sale de la cuenta y no se fuerza.
+                const r4 = n => Math.round((Number(n || 0) + Number.EPSILON) * 10000) / 10000;
+                const dg = d.desglose || null;
+                const lista = dg && dg.precioLista != null ? r4(dg.precioLista) : null;
+                let dTipo = dg && dg.descuento ? dg.descuento.tipo : null;
+                let dPct  = dg && dg.descuento && dg.descuento.pct != null ? r4(dg.descuento.pct) : null;
+                let dImp  = dg && dg.descuento ? r4(dg.descuento.importeUnitario) : null;
+                let rImp  = dg && dg.recargoImporte != null ? r4(dg.recargoImporte) : null;
+                const rPct = dg && dg.recargoPct != null ? r4(dg.recargoPct) : null;
+                if (lista != null && !dg.cobertura) {
+                    const diff = r4(lista + (rImp || 0) - pu);
+                    if (dTipo) { if (diff >= 0) dImp = diff; }
+                    else if (rImp != null) { const rr = r4(pu - lista); if (rr >= 0) rImp = rr; }
+                }
 
                 await pool.request()
+                    .input('PLista',  sql.Decimal(18, 4),    lista)
+                    .input('DTipo',   sql.VarChar(12),       dTipo)
+                    .input('DPct',    sql.Decimal(9, 4),     dPct)
+                    .input('DImp',    sql.Decimal(18, 4),    dImp)
+                    .input('DOrig',   sql.NVarChar(150),     dg && dg.descuento ? String(dg.descuento.texto || dg.descuento.origen || '').substring(0, 150) : null)
+                    .input('DPerfil', sql.Int,               dg && dg.descuento && dg.descuento.perfilId != null ? dg.descuento.perfilId : null)
+                    .input('DRegla',  sql.Int,               dg && dg.descuento && dg.descuento.reglaId != null ? dg.descuento.reglaId : null)
+                    .input('RPct',    sql.Decimal(9, 4),     rPct)
+                    .input('RImp',    sql.Decimal(18, 4),    rImp)
+                    .input('ROrig',   sql.NVarChar(200),     dg && dg.recargoTexto ? String(dg.recargoTexto).substring(0, 200) : null)
+                    .input('DJson',   sql.NVarChar(sql.MAX), dg ? JSON.stringify(dg) : null)
                     .input('Pid',    sql.Int,              id)
                     .input('OID',    sql.Int,              d.OrdenID)
                     .input('CodArt', sql.NVarChar(50),     codArt)
@@ -1051,12 +1216,14 @@ class ERPSyncService {
                     .input('PUOrig', sql.Decimal(18, 4),    puOrig)
                     .input('STOrig', sql.Decimal(18, 4),    stOrig)
                     .input('EsHnaCons', sql.Bit,            d.esHermanaConsolidada ? 1 : 0)
+                    .input('EsFact',    sql.Bit,            esFacturable ? 1 : 0)
                     // Dato técnico que explica el precio unitario: las PUNTADAS en bordado,
                     // las bajadas en estampado. La columna existe y la pantalla de cotización
                     // la muestra, pero nadie la escribía: quedaba siempre vacía y el área no
                     // veía sobre qué número se había cotizado.
                     .input('DTec',   sql.NVarChar(100),     d.datoTecnico != null ? String(d.datoTecnico) : null)
-                    .query("INSERT INTO PedidosCobranzaDetalle (PedidoCobranzaID, OrdenID, CodArticulo, ProIdProducto, Cantidad, PrecioUnitario, Subtotal, LogPrecioAplicado, Moneda, PerfilAplicado, PricingTrace, MonedaOriginal, PrecioUnitarioOriginal, SubtotalOriginal, EsHermanaConsolidada, DatoTecnico) VALUES (@Pid, @OID, @CodArt, @ProdID, @Cant, @PU, @ST, @Log, @Mon, @Perfil, @Trace, @MonOrig, @PUOrig, @STOrig, @EsHnaCons, @DTec)");
+                    .input('Bcl',    sql.Int,               d.Bcl || null)
+                    .query("INSERT INTO PedidosCobranzaDetalle (PedidoCobranzaID, OrdenID, CodArticulo, ProIdProducto, Cantidad, PrecioUnitario, Subtotal, LogPrecioAplicado, Moneda, PerfilAplicado, PricingTrace, MonedaOriginal, PrecioUnitarioOriginal, SubtotalOriginal, EsHermanaConsolidada, EsFacturable, DatoTecnico, PrecioLista, DescuentoTipo, DescuentoPct, DescuentoImporte, DescuentoOrigen, DescuentoPerfilId, DescuentoReglaId, RecargoPct, RecargoImporte, RecargoOrigen, DesgloseJSON, BclIdBeneficioCliente) VALUES (@Pid, @OID, @CodArt, @ProdID, @Cant, @PU, @ST, @Log, @Mon, @Perfil, @Trace, @MonOrig, @PUOrig, @STOrig, @EsHnaCons, @EsFact, @DTec, @PLista, @DTipo, @DPct, @DImp, @DOrig, @DPerfil, @DRegla, @RPct, @RImp, @ROrig, @DJson, @Bcl)");
             } catch (eRow) {
                 logger.error(`[ERPSync] ❌ Error insertando detalle cobranza para OrdenID=${d.OrdenID}: ${eRow?.message || eRow}`);
             }

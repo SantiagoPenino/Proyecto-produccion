@@ -864,6 +864,85 @@ exports.updateComponenteOpcion = async (req, res) => {
 };
 
 // ═════════════════════════════════════════════════════════════════════════
+//  NOMENCLADOR DE PIEZAS (Frente / Espalda / Manga izquierda / ...)
+//  De acá sale el combo de Posición del aplique: antes era texto libre.
+//  Tabla dbo.PiezasPrenda — docs/migrations/configurador_nomenclador_piezas.sql
+// ═════════════════════════════════════════════════════════════════════════
+
+// GET /api/configurador/piezas (?all=1 incluye las inactivas)
+exports.getPiezas = async (req, res) => {
+    try {
+        const pool = await getPool();
+        const all = req.query.all === '1';
+        const r = await pool.request().query(`
+            SELECT PiezaID, Codigo, Nombre, Familia, AdmiteAplique, Activo, Orden
+            FROM dbo.PiezasPrenda
+            ${all ? '' : 'WHERE Activo = 1'}
+            ORDER BY ISNULL(Orden, 999), Codigo
+        `);
+        res.json({ success: true, data: r.recordset });
+    } catch (e) {
+        logger.error('[Configurador] getPiezas:', e);
+        res.status(500).json({ error: e.message });
+    }
+};
+
+// POST /api/configurador/piezas
+exports.crearPieza = async (req, res) => {
+    const { codigo, nombre, familia, admiteAplique, orden } = req.body || {};
+    if (!codigo || !String(codigo).trim()) return res.status(400).json({ error: 'El código es obligatorio (ej. PZ-10).' });
+    if (!nombre || !String(nombre).trim()) return res.status(400).json({ error: 'El nombre es obligatorio.' });
+    try {
+        const pool = await getPool();
+        const r = await pool.request()
+            .input('Cod', sql.VarChar(10), String(codigo).trim().toUpperCase())
+            .input('Nom', sql.NVarChar(100), String(nombre).trim())
+            .input('Fam', sql.NVarChar(60), familia ? String(familia).trim() : null)
+            .input('Apl', sql.Bit, admiteAplique === false ? 0 : 1)
+            .input('Ord', sql.Int, Number.isInteger(Number(orden)) ? Number(orden) : null)
+            .query(`INSERT INTO dbo.PiezasPrenda (Codigo, Nombre, Familia, AdmiteAplique, Orden)
+                    OUTPUT INSERTED.PiezaID
+                    VALUES (@Cod, @Nom, @Fam, @Apl, @Ord)`);
+        res.json({ success: true, piezaId: r.recordset[0].PiezaID });
+    } catch (e) {
+        if (/UQ_PiezasPrenda/.test(e.message)) return res.status(409).json({ error: 'Ese código ya existe.' });
+        logger.error('[Configurador] crearPieza:', e);
+        res.status(500).json({ error: e.message });
+    }
+};
+
+// PUT /api/configurador/piezas/:id — mismo patrón "undefined = no tocar"
+exports.updatePieza = async (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isInteger(id)) return res.status(400).json({ error: 'ID inválido.' });
+    const { nombre, familia, admiteAplique, activo, orden } = req.body || {};
+    try {
+        const pool = await getPool();
+        const r = await pool.request()
+            .input('ID', sql.Int, id)
+            .input('Nom', sql.NVarChar(100), nombre !== undefined ? String(nombre).trim() : null)
+            .input('Fam', sql.NVarChar(60), familia !== undefined ? (familia ? String(familia).trim() : null) : null)
+            .input('FamSet', sql.Bit, familia !== undefined ? 1 : 0)
+            .input('Apl', sql.Bit, admiteAplique !== undefined ? (admiteAplique ? 1 : 0) : null)
+            .input('Act', sql.Bit, activo !== undefined ? (activo ? 1 : 0) : null)
+            .input('Ord', sql.Int, orden !== undefined ? (Number.isInteger(Number(orden)) ? Number(orden) : null) : null)
+            .input('OrdSet', sql.Bit, orden !== undefined ? 1 : 0)
+            .query(`UPDATE dbo.PiezasPrenda SET
+                        Nombre = ISNULL(@Nom, Nombre),
+                        Familia = CASE WHEN @FamSet = 1 THEN @Fam ELSE Familia END,
+                        AdmiteAplique = ISNULL(@Apl, AdmiteAplique),
+                        Activo = ISNULL(@Act, Activo),
+                        Orden = CASE WHEN @OrdSet = 1 THEN @Ord ELSE Orden END
+                    WHERE PiezaID = @ID`);
+        if (!r.rowsAffected[0]) return res.status(404).json({ error: 'Pieza no encontrada.' });
+        res.json({ success: true });
+    } catch (e) {
+        logger.error('[Configurador] updatePieza:', e);
+        res.status(500).json({ error: e.message });
+    }
+};
+
+// ═════════════════════════════════════════════════════════════════════════
 //  PRODUCTOS DEL LOCAL (selector del paso Origen)
 // ═════════════════════════════════════════════════════════════════════════
 

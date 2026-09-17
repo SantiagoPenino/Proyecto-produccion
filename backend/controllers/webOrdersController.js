@@ -5111,6 +5111,24 @@ exports.getMisCuentas = async (req, res) => {
         // Umbral DGI del e-Ticket (10.000 UI): por encima hay que identificar al receptor.
         // El valor de la UI se puede pisar desde ConfiguracionGlobal (clave VALOR_UI).
         const umbral = await _umbralEticketUI(pool);
+        // BENEFICIOS (specs/40 RN-BEN.30): la bolsa de un beneficio es una cuenta más, pero con
+        // su nombre, precio pactado, vencimiento y "te quedan ≈ N", y sin botón Recargar.
+        const bolsaMap = new Map();
+        try {
+            if (await contabilidadService.tablaBeneficiosExiste(pool)) {
+                const benSvc = require('../services/beneficiosService');
+                for (const b of await benSvc.bolsasDelCliente(pool, cli.CliIdCliente)) {
+                    const reglas = await benSvc.reglasDePerfil(pool, b.PerfilID);
+                    const fija = reglas.find(x => x.tipo === 'fixed' && x.valor > 0);
+                    bolsaMap.set(b.CueIdCuenta, {
+                        bclId: b.BclIdBeneficioCliente, nombre: String(b.BenNombre || '').trim(), estado: b.BclEstado,
+                        vence: b.BclFechaVencimiento ? String(b.BclFechaVencimiento).slice(0, 10) : null,
+                        reglasTexto: reglas.map(benSvc.textoRegla), aproxUnidades: fija ? Math.floor(b.Saldo / fija.valor) : null,
+                        cargado: Number(b.BclImporteCarga), consumos: Number(b.Consumos || 0),
+                    });
+                }
+            }
+        } catch (eB) { logger.warn(`[BILLETERA PORTAL] bolsas de beneficio: ${eB.message}`); }
         res.json({ success: true, umbralCedula: umbral.porMoneda, valorUI: umbral.valorUI, data: r.recordset.map(c => ({
             CueIdCuenta: c.CueIdCuenta,
             nombre: c.CueNombre || `Cuenta #${c.CueIdCuenta}`,
@@ -5121,7 +5139,9 @@ exports.getMisCuentas = async (req, res) => {
             activa: !!c.CueActiva,
             // F4: las prepago también se recargan desde el portal — la recarga emite
             // su factura automática (e-Ticket / e-Factura) al acreditarse el pago.
-            permiteRecarga: !!c.CueActiva,
+            // La bolsa de un beneficio NO se recarga: nació con su carga (specs/40).
+            permiteRecarga: !!c.CueActiva && !bolsaMap.has(c.CueIdCuenta),
+            beneficio: bolsaMap.get(c.CueIdCuenta) || null,
             modalidad: c.Modalidad,
             // Creada desde el portal (usuario 999): solo esas se pueden reabrir desde acá
             creadaPortal: Number(c.CueUsuarioAlta) === 999,
@@ -5467,6 +5487,50 @@ const _acreditarRecargaBilletera = async (pool, { storedData, codCliente, txId, 
         .query('SELECT CliIdCliente FROM dbo.Clientes WITH(NOLOCK) WHERE CodCliente = @Cod')).recordset[0];
     if (!cli) throw new Error(`Cliente CodCliente=${codCliente} no encontrado para la recarga`);
 
+    // ── BENEFICIO PACTADO (specs/40 RN-BEN.15/16): esta recarga ACTIVA un beneficio ──
+    // Factura automática (e-Ticket / e-Factura) + nace la bolsa con esa carga. Aprobado no es
+    // habilitado: recién acá, con el pago confirmado, el beneficio empieza a aplicar.
+    if (storedData.beneficioId) {
+        const benSvc = require('../services/beneficiosService');
+        const benId = parseInt(storedData.beneficioId);
+        const dupB = await pool.request().input('T', sql.NVarChar(200), `%(Tx: ${txId})%`)
+            .query(`SELECT TOP 1 MovIdMovimiento FROM dbo.MovimientosCuenta WITH(NOLOCK) WHERE MovTipo = 'CARGA_PREPAGO' AND MovObservaciones LIKE @T`);
+        if (dupB.recordset.length) { logger.info(`[BENEFICIOS PORTAL] Activación del beneficio #${benId} Tx ${txId} ya acreditada — webhook duplicado ignorado.`); return { duplicated: true }; }
+        const ben = await benSvc.obtenerBeneficio(pool, benId, { conReglas: false });
+        if (!ben) throw new Error(`Beneficio #${benId} inexistente (Tx ${txId})`);
+        if (ben.monedaId !== monedaId) throw new Error(`La recarga Tx ${txId} llegó en ${monedaId === 2 ? 'US$' : '$'} pero el beneficio #${benId} es en ${ben.monedaId === 2 ? 'US$' : '$'}: activar a mano desde el 360.`);
+        const r2b = (n) => Math.round(n * 100) / 100;
+        const netoB = r2b(monto / 1.22);
+        const cfeCtrlB = require('./cfeController');
+        const outFactB = await new Promise((resolve) => {
+            const fakeRes = { code: 200, status(c) { this.code = c; return this; }, json(o) { resolve({ code: this.code, ...o }); } };
+            cfeCtrlB.crearFacturaManual({ user: { id: 999 }, body: {
+                DocTipo: storedData.docTipo === '01' ? '01' : '07',
+                MonIdMoneda: monedaId,
+                CliIdCliente: cli.CliIdCliente,
+                Lineas: [{ concepto: `Crédito prepago de servicios — Beneficio «${ben.nombre}»`, cantidad: 1, precioUnitario: monto, iva: 22 }],
+                Totales: { subtotal: netoB, iva: r2b(monto - netoB), total: monto },
+                DocPagado: true,
+                Pagos: [{ metodoPagoId, monedaId, monto }],
+                DocCliNombre: storedData.docReceptor?.nombre || '',
+                DocCliDocumento: storedData.docReceptor?.documento || '',
+            } }, fakeRes);
+        });
+        if (outFactB.code >= 400 || !outFactB.docId) throw new Error(`No se pudo emitir la factura de la activación del beneficio #${benId} (Tx ${txId}): ${outFactB.error || 'sin docId'}`);
+        try {
+            const act = await benSvc.activarBeneficio(pool, { benId, cliId: cli.CliIdCliente, docId: outFactB.docId, importe: monto, monedaId, usuarioId: 999, origen: 'PORTAL', txId });
+            logger.info(`[BENEFICIOS PORTAL] ✅ Beneficio #${benId} "${ben.nombre}" ACTIVADO desde el portal: ${monedaId === 2 ? 'US$' : '$'} ${monto} en la bolsa #${act.cueId} con factura ${act.refDoc} (doc ${outFactB.docId}, Tx ${txId})`);
+        } catch (eAct) {
+            // La factura YA existe: NO reintentar la emisión. Recuperación manual desde el 360:
+            // /api/beneficios/activar { BenIdBeneficio, CliIdCliente, DocIdDocumento } con esta factura.
+            logger.error(`[BENEFICIOS PORTAL] 🚨 CRÍTICO Tx ${txId}: la factura doc ${outFactB.docId} se emitió pero la ACTIVACIÓN del beneficio #${benId} falló (${eAct.message}). Activarlo a mano con esa factura (POST /api/beneficios/activar).`);
+            throw eAct;
+        }
+        const ioB = req?.app?.get ? req.app.get('socketio') : null;
+        if (ioB) ioB.emit('actualizado', { type: 'actualizacion' });
+        return { code: 200, docId: outFactB.docId };
+    }
+
     // Modalidad REAL de la cuenta al momento de acreditar (no la del momento del link)
     const ctaAcred = (await pool.request().input('C', sql.Int, parseInt(storedData.cueIdCuenta)).query(`
         SELECT CueIdCuenta, CliIdCliente, CueNombre, MonIdMoneda, CueActiva,
@@ -5565,6 +5629,119 @@ const _acreditarRecargaBilletera = async (pool, { storedData, codCliente, txId, 
 // Exportado para poder probarlo/recuperarlo sin pasar por el webhook real
 exports._acreditarRecargaBilletera = _acreditarRecargaBilletera;
 
+// ═══════════════════════════════════════════════════════════════════════════
+// BENEFICIOS PACTADOS en el portal (specs/40 RN-BEN.30)
+// ═══════════════════════════════════════════════════════════════════════════
+const _vigenciaTextoBen = (b) => b.vigenciaHasta ? `hasta el ${String(b.vigenciaHasta).split('-').reverse().join('/')}`
+    : b.vigenciaDias ? `${b.vigenciaDias} días desde que lo actives` : 'hasta agotar el saldo';
+
+// GET /web-orders/mis-beneficios — activos (bolsas) + disponibles para activar
+// (pactos aprobados del cliente y plantillas públicas), con la alerta si le salen peor.
+exports.getMisBeneficios = async (req, res) => {
+    try {
+        const pool = await getPool();
+        const codCliente = req.user?.codCliente;
+        if (!codCliente) return res.status(401).json({ error: 'Sesión inválida.' });
+        if (!(await _billeteraPortalHabilitada(pool, codCliente))) return res.json({ success: true, habilitada: false, activo: false, activos: [], disponibles: [] });
+        const { beneficiosActivos } = require('../utils/beneficiosFlag');
+        if (!(await beneficiosActivos(pool))) return res.json({ success: true, habilitada: true, activo: false, activos: [], disponibles: [] });
+        const cli = (await pool.request().input('Cod', sql.Int, codCliente).query('SELECT CliIdCliente FROM dbo.Clientes WITH(NOLOCK) WHERE CodCliente = @Cod')).recordset[0];
+        if (!cli) return res.json({ success: true, habilitada: true, activo: true, activos: [], disponibles: [] });
+        const benSvc = require('../services/beneficiosService');
+        const vista = await benSvc.vistaCliente(pool, cli.CliIdCliente, { paraPortal: true });
+        const umbral = await _umbralEticketUI(pool);
+        const r2 = (n) => Math.round(Number(n || 0) * 100) / 100;
+        res.json({
+            success: true, habilitada: true, activo: true, umbralCedula: umbral.porMoneda,
+            activos: vista.activos.map(b => ({
+                bclId: b.BclIdBeneficioCliente, nombre: String(b.BenNombre || '').trim(), cuentaId: b.CueIdCuenta,
+                moneda: Number(b.MonIdMoneda) === 2 ? 'USD' : 'UYU', saldo: r2(b.Saldo), cargado: r2(b.BclImporteCarga),
+                vence: b.BclFechaVencimiento ? String(b.BclFechaVencimiento).slice(0, 10) : null, estado: b.BclEstado,
+                reglasTexto: b.reglasTexto, aproxUnidades: b.aproxUnidades, consumos: Number(b.Consumos || 0), fechaActivacion: b.BclFechaActivacion,
+            })),
+            disponibles: vista.disponibles.map(d => ({
+                benId: d.BenIdBeneficio, tipo: d.tipo, nombre: d.nombre, descripcion: d.descripcion,
+                moneda: d.monedaId === 2 ? 'USD' : 'UYU', carga: d.carga, cargaEsMinimo: d.cargaEsMinimo,
+                vigenciaTexto: _vigenciaTextoBen(d), reglasTexto: d.reglasTexto, vendedorNombre: d.vendedorNombre,
+                comparacion: d.evaluacion ? d.evaluacion.reglas.map(x => ({ texto: x.texto, lista: x.lista, actual: x.actual, pactado: x.pactado, peor: x.peor })) : [],
+                alertas: d.evaluacion ? { peores: d.evaluacion.peores, detalle: d.evaluacion.reglas.flatMap(x => x.detalle.filter(y => y.peor).map(y => ({ articulo: y.descripcion || y.cod, actual: y.actual, pactado: y.pactado }))) } : null,
+            })),
+        });
+    } catch (err) {
+        logger.error('[BENEFICIOS PORTAL] mis-beneficios:', err.message);
+        res.status(500).json({ error: 'Error al leer tus beneficios.' });
+    }
+};
+
+// POST /web-orders/mis-beneficios/:BenIdBeneficio/recargar
+// { gateway: 'handy'|'mercadopago', comprobante: 'e-ticket'|'e-factura', documentoFiscal, nombreFiscal, importe? }
+// Genera el link de pago. El beneficio se activa recién cuando la pasarela confirma
+// (webhook → _acreditarRecargaBilletera, rama beneficioId): factura + bolsa nueva.
+exports.iniciarRecargaBeneficio = async (req, res) => {
+    try {
+        const pool = await getPool();
+        const codCliente = req.user?.codCliente;
+        const benId = parseInt(req.params.BenIdBeneficio);
+        const gateway = req.body?.gateway === 'mercadopago' ? 'mercadopago' : 'handy';
+        if (!codCliente) return res.status(401).json({ error: 'Sesión inválida.' });
+        if (!(await _billeteraPortalHabilitada(pool, codCliente))) return res.status(403).json({ error: MSG_BILLETERA_PORTAL_OFF });
+        const { beneficiosActivos } = require('../utils/beneficiosFlag');
+        if (!(await beneficiosActivos(pool))) return res.status(409).json({ error: 'Los beneficios todavía no están habilitados.' });
+        const cli = (await pool.request().input('Cod', sql.Int, codCliente).query('SELECT CliIdCliente FROM dbo.Clientes WITH(NOLOCK) WHERE CodCliente = @Cod')).recordset[0];
+        if (!cli) return res.status(401).json({ error: 'Sesión inválida.' });
+        const benSvc = require('../services/beneficiosService');
+        const disponibles = await benSvc.disponiblesParaCliente(pool, cli.CliIdCliente, { incluirNoPublicas: false });
+        const ben = disponibles.find(d => Number(d.BenIdBeneficio) === benId);
+        if (!ben) return res.status(400).json({ error: 'Ese beneficio no está disponible para activar desde el portal.' });
+        const moneda = ben.monedaId === 2 ? 'USD' : 'UYU';
+        let importe = Math.round(Number(ben.carga) * 100) / 100;
+        if (ben.cargaEsMinimo && req.body?.importe != null && req.body.importe !== '') {
+            const imp = Math.round(Number(req.body.importe) * 100) / 100;
+            if (!(imp >= ben.carga)) return res.status(400).json({ error: `La carga mínima de este beneficio es ${moneda === 'USD' ? 'US$' : '$'} ${ben.carga.toFixed(2)}.` });
+            importe = imp;
+        }
+        // Comprobante: misma regla que la recarga prepago (e-Ticket / e-Factura + RUT/CI)
+        const { validarDocumentoUY, normalizarDocumento } = require('../utils/documentoUY');
+        const comprobante = req.body?.comprobante === 'e-factura' ? 'e-factura' : (req.body?.comprobante === 'e-ticket' ? 'e-ticket' : null);
+        if (!comprobante) return res.status(400).json({ error: 'Elegí qué comprobante querés para esta carga: e-Ticket o e-Factura.' });
+        const docFiscal = normalizarDocumento(req.body?.documentoFiscal);
+        const nombreFiscal = String(req.body?.nombreFiscal || '').trim();
+        if (comprobante === 'e-factura') {
+            const v = validarDocumentoUY(docFiscal);
+            if (!v.valido || v.tipo !== 'RUT') return res.status(400).json({ error: v.tipo === 'RUT' ? v.motivo : 'La e-Factura necesita un RUT válido de 12 dígitos (sin puntos ni guiones).' });
+            if (nombreFiscal.length < 3) return res.status(400).json({ error: 'Poné la razón social que va en la e-Factura.' });
+        } else {
+            const umbral = await _umbralEticketUI(pool);
+            const tope = umbral.porMoneda[moneda] || umbral.porMoneda.UYU;
+            if (importe >= tope && !docFiscal) return res.status(400).json({ error: `Para cargas de ${moneda === 'USD' ? 'US$' : '$'} ${tope} o más, DGI exige identificar al receptor del e-Ticket: poné tu cédula (o elegí e-Factura con RUT).` });
+            if (docFiscal) { const v = validarDocumentoUY(docFiscal); if (!v.valido) return res.status(400).json({ error: v.motivo }); }
+        }
+        const nombreCuenta = `Beneficio: ${ben.nombre}`;
+        const ordersData = { type: 'wallet-topup', beneficioId: benId, importe, moneda, nombreCuenta, prepago: true,
+            docTipo: comprobante === 'e-factura' ? '01' : '07', docReceptor: { documento: docFiscal || '', nombre: nombreFiscal || '' } };
+        const itemDesc = `Activación de beneficio — ${ben.nombre}`;
+        if (gateway === 'handy') {
+            const { createPaymentLink } = require('../services/handyService');
+            const result = await createPaymentLink({
+                products: [{ Name: itemDesc.substring(0, 50), Quantity: 1, Amount: importe, TaxedAmount: Number((importe / 1.22).toFixed(2)) }],
+                totalAmount: importe, currencyCode: moneda === 'USD' ? 840 : 858, commerceName: 'USER', ordersData, codCliente, logPrefix: '[HANDY BENEFICIO]',
+            });
+            if (!result.success) return res.status(500).json({ error: result.error });
+            return res.json({ success: true, url: result.url, transactionId: result.transactionId, importe, moneda });
+        }
+        const { createPreference } = require('../services/mercadoPagoService');
+        const result = await createPreference({
+            items: [{ id: `BEN-${benId}`, title: itemDesc.substring(0, 256), quantity: 1, unit_price: importe, currency_id: moneda }],
+            totalAmount: importe, currency: moneda, commerceName: 'USER', ordersData, codCliente, logPrefix: '[MP BENEFICIO]',
+        });
+        if (!result.success) return res.status(500).json({ error: result.error });
+        return res.json({ success: true, url: result.url || result.initPoint, transactionId: result.transactionId, importe, moneda });
+    } catch (err) {
+        logger.error('[BENEFICIOS PORTAL] recargar beneficio:', err.message);
+        res.status(500).json({ error: 'No se pudo iniciar la activación del beneficio.' });
+    }
+};
+
 // POST /web-orders/pickup-orders/cubrir-con-billetera — F5
 // "Cubrir con mi billetera": el cliente cubre sus pedidos pendientes con el saldo
 // PREPAGO (semántica CONSUMO, igual que el descuento automático del motor: sin
@@ -5643,6 +5820,7 @@ exports.cubrirConBilletera = async (req, res) => {
             WHERE cc.CliIdCliente = @Cli AND cc.CueActiva = 1 AND cc.CueTipo LIKE 'DINERO%'
               AND cc.CueEsPrincipal = 0
               AND ISNULL(cc.CueModalidadFiscal,'ANTICIPO_A_FACTURAR') = 'PREPAGO_FACTURADO'
+              ${(await contabilidadService.tablaBeneficiosExiste(pool)) ? "AND NOT EXISTS (SELECT 1 FROM dbo.BeneficiosCliente bx WITH(NOLOCK) WHERE bx.CueIdCuenta = cc.CueIdCuenta) -- bolsas de beneficio: solo pagan sus pedidos, al ingreso" : ''}
             ORDER BY cc.CueIdCuenta`)).recordset
             .map(c => ({ id: c.CueIdCuenta, nombre: (c.CueNombre || `cuenta #${c.CueIdCuenta}`).trim(),
                          mon: Number(c.MonIdMoneda) === 2 ? 2 : 1, restringida: !!c.CueRestringida,

@@ -212,7 +212,17 @@ const extractParams = (q) => ({
     articulo:   q.articulo || null,
     moneda:     q.moneda || null,
     sector:     q.sector || null,
+    dgi:        q.dgi || null, // 'DGI' | 'SIN_DGI' | null/'TODO' (sin filtro)
 });
+
+// Filtro por estado DGI del documento (switch SIN DGI / TODO / DGI de la pantalla).
+// 'DGI' = solo CFE aceptados por DGI; 'SIN_DGI' = todo lo que no lo está (incluye
+// Pedidos Caja, que nunca se envían); cualquier otro valor = sin filtro (TODO).
+const condDgi = (alias, dgi) => {
+    if (dgi === 'DGI')     return `${alias}.CfeEstado = 'ACEPTADO_DGI'`;
+    if (dgi === 'SIN_DGI') return `(${alias}.CfeEstado IS NULL OR ${alias}.CfeEstado <> 'ACEPTADO_DGI')`;
+    return '';
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SECTORES COMERCIALES (dbo.Sectores + dbo.SectorMapeo)
@@ -339,10 +349,11 @@ exports.getVentasPorArea = async (req, res) => {
         await tieneDcdArea(); // el área sale de DcdArea; si no existe, del parseo del prefijo
         const pool = await getPool();
         const params = extractParams(req.query);
-        const { moneda } = params;
+        const { moneda, dgi } = params;
 
         const areaExpr   = areaDesdeCodigo('dcd.OrdCodigoOrden');
         const monedaExpr = `CASE WHEN l.MonIdMoneda = 2 THEN 'USD' ELSE 'UYU' END`;
+        const filtroDgi  = condDgi('fdoc', dgi);
 
         const r = pool.request();
         bindFiltrosComunes(r, params);
@@ -354,6 +365,7 @@ exports.getVentasPorArea = async (req, res) => {
                 FROM dbo.DocumentosContables fdoc WITH(NOLOCK)
                 WHERE ${condEsVenta('fdoc')}
                   AND fdoc.DocEstado <> 'ANULADO'
+                  ${filtroDgi ? `AND ${filtroDgi}` : ''}
                   AND (@fechaDesde IS NULL OR fdoc.DocFechaEmision >= @fechaDesde)
                   AND (@fechaHasta IS NULL OR fdoc.DocFechaEmision <= @fechaHasta)
                   AND (@articulo IS NULL OR EXISTS (
@@ -454,7 +466,7 @@ exports.getVentasPorDocumento = async (req, res) => {
         await tieneDcdArea(); // el área sale de DcdArea; si no existe, del parseo del prefijo
         const pool = await getPool();
         const params = extractParams(req.query);
-        const { fechaDesde, fechaHasta, articulo, moneda } = params;
+        const { fechaDesde, fechaHasta, articulo, moneda, dgi } = params;
 
         const r = pool.request();
         bindFiltrosComunes(r, params);
@@ -462,11 +474,13 @@ exports.getVentasPorDocumento = async (req, res) => {
 
         const condAreas = condAreasIn(await areasDeFiltro(params), areaDesdeCodigo('dcd.OrdCodigoOrden'), r);
         const filtro = filtroAreaArticulo(condAreas, articulo, 'doc');
+        const filtroDgi = condDgi('doc', dgi);
 
         const conds = [
             COND_ES_VENTA,
             `doc.DocEstado <> 'ANULADO'`,
         ];
+        if (filtroDgi)   conds.push(filtroDgi);
         if (fechaDesde)  conds.push('doc.DocFechaEmision >= @fechaDesde');
         if (fechaHasta)  conds.push('doc.DocFechaEmision <= @fechaHasta');
         if (moneda)      conds.push('doc.MonIdMoneda = @moneda');
@@ -526,7 +540,7 @@ exports.getIngresos = async (req, res) => {
         await tieneDcdArea(); // el área sale de DcdArea; si no existe, del parseo del prefijo
         const pool = await getPool();
         const params = extractParams(req.query);
-        const { articulo, moneda } = params;
+        const { articulo, moneda, dgi } = params;
 
         const r = pool.request();
         bindFiltrosComunes(r, params);
@@ -536,6 +550,7 @@ exports.getIngresos = async (req, res) => {
 
         const condAreas = condAreasIn(await areasDeFiltro(params), areaDesdeCodigo('dcd.OrdCodigoOrden'), r);
         const filtro = filtroAreaArticulo(condAreas, articulo, 'dc');
+        const filtroDgi = condDgi('dc', dgi);
 
         const result = await r.query(`
             ;WITH ${filtro.cte ? `${filtro.cte},` : ''}
@@ -547,6 +562,7 @@ exports.getIngresos = async (req, res) => {
                 WHERE p.PagTipoMovimiento <> 'ANULADO'
                   AND ${condEsVenta('dc')}
                   AND dc.DocEstado <> 'ANULADO'
+                  ${filtroDgi ? `AND ${filtroDgi}` : ''}
                   AND (@moneda IS NULL OR p.PagIdMonedaPago = @moneda)
                   ${filtro.cond ? `AND ${filtro.cond}` : ''}
             ),
@@ -560,6 +576,7 @@ exports.getIngresos = async (req, res) => {
                   AND p.PagTipoMovimiento <> 'ANULADO'
                   AND ${condEsVenta('dc')}
                   AND dc.DocEstado <> 'ANULADO'
+                  ${filtroDgi ? `AND ${filtroDgi}` : ''}
                   AND (@moneda IS NULL OR p.PagIdMonedaPago = @moneda)
                   ${filtro.cond ? `AND ${filtro.cond}` : ''}
             ),

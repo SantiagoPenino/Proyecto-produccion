@@ -34,6 +34,9 @@ router.post('/create', verifyToken, impersonarClienteInterno, prendasOrdersContr
 // [PRENDAS] "Comprar y personalizar" — retiro WMS pendiente (equivalente de
 // getPendingOrders/confirmPreparation de logisticaWmsController, pero sobre Ordenes).
 router.get('/retiros-wms-pendientes', verifyToken, prendasOrdersController.getRetirosWmsPendientes);
+// [CONFIGURADOR] Qué personalización (EMB/DF/TPU) admite cada artículo de stock del carrito,
+// según los productos "del local" del Configurador que apuntan a él. ?ids=474,440
+router.get('/personalizacion-admitida', verifyToken, prendasOrdersController.getPersonalizacionAdmitida);
 router.put('/:ordenId/iniciar-preparacion-retiro', verifyToken, prendasOrdersController.iniciarPreparacionRetiroWms);
 router.put('/:ordenId/actualizar-cantidad-retiro', verifyToken, prendasOrdersController.actualizarCantidadRetiroWms);
 router.put('/:ordenId/confirmar-retiro-wms', verifyToken, prendasOrdersController.confirmarRetiroWms);
@@ -54,8 +57,14 @@ router.get('/productos-terminados', verifyToken, async (req, res) => {
         // no aplican a "Fabricar a Medida". El selector de Producto a Fabricar pasa
         // ?categoria=Prendas Confeccionadas para traer solo lo suyo.
         const categoria = (req.query.categoria || '').trim();
+        // [PRENDAS] Filtro opcional por GRUPO de StockArt. Desde que el configurador
+        // partió las prendas en familias reales (Camisetas, Remeras, Shorts, ...), filtrar
+        // por un solo nombre de categoría ya no alcanza: el Grupo '2.1' las agrupa a todas
+        // (Combos viven en '2.2' y Productos del Local en '2.3', que no aplican acá).
+        const grupo = (req.query.grupo || '').trim();
         const request = pool.request();
         if (categoria) request.input('Cat', require('mssql').VarChar, categoria);
+        if (grupo) request.input('Grp', require('mssql').VarChar, grupo);
         const r = await request.query(`
             SELECT
                 a.ProIdProducto,
@@ -78,6 +87,7 @@ router.get('/productos-terminados', verifyToken, async (req, res) => {
               AND ISNULL(a.borrar, 0) = 0
               AND ISNULL(a.Mostrar, 1) = 1
               ${categoria ? 'AND LTRIM(RTRIM(sa.Articulo)) = @Cat' : ''}
+              ${grupo ? 'AND LTRIM(RTRIM(sa.Grupo)) = @Grp' : ''}
             ORDER BY Categoria, Descripcion
         `);
         res.json({ success: true, data: r.recordset });

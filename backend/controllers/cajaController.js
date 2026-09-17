@@ -2063,6 +2063,14 @@ const procesarPagoDeudaInterno = async (req, res) => {
                     `);
                 }
               }
+              // Desglose lista / descuento / recargo de las líneas recién insertadas, desde la
+              // línea congelada del pedido (misma regla que el resolvedor). Nunca bloquea el cobro.
+              try {
+                const nDz = await contabilidadCore.enriquecerLineasDocumento(docId, transaction);
+                if (nDz) logger.info(`[PAGO-DEUDA] Desglose completado en ${nDz} línea(s) del doc ${docId}`);
+              } catch (eDz) {
+                logger.warn(`[PAGO-DEUDA] Sin desglose en las líneas del doc ${docId}: ${eDz.message}`);
+              }
             } else {
               // RECIBO: deudas ya facturadas, una linea simple por aplicacion
               for (const app of aplicaciones) {
@@ -2701,9 +2709,9 @@ const generarNotaCredito = async (req, res) => {
           .input('DocId', sql.Int,          ncId)
           .input('DocRef',sql.Int,          parseInt(docIdOrigen))
           .query(`INSERT INTO dbo.DocumentosContablesDetalle
-                    (DocIdDocumento, OrdCodigoOrden, DcdNomItem, DcdDscItem, DcdCantidad, DcdPrecioUnitario, DcdSubtotal, DcdImpuestos, DcdTotal, DcdTotalDescuentos, DcdDescuentoStr)
-                  SELECT 
-                    @DocId, OrdCodigoOrden, DcdNomItem, DcdDscItem, DcdCantidad, DcdPrecioUnitario, DcdSubtotal, DcdImpuestos, DcdTotal, DcdTotalDescuentos, DcdDescuentoStr
+                    (DocIdDocumento, OrdCodigoOrden, DcdNomItem, DcdDscItem, DcdCantidad, DcdPrecioUnitario, DcdSubtotal, DcdImpuestos, DcdTotal, DcdTotalDescuentos, DcdDescuentoStr, DcdDescuentoPct, DcdTotalRecargos, DcdRecargoPct, DcdRecargoStr, DcdDescuentoOrigen)
+                  SELECT
+                    @DocId, OrdCodigoOrden, DcdNomItem, DcdDscItem, DcdCantidad, DcdPrecioUnitario, DcdSubtotal, DcdImpuestos, DcdTotal, DcdTotalDescuentos, DcdDescuentoStr, DcdDescuentoPct, DcdTotalRecargos, DcdRecargoPct, DcdRecargoStr, DcdDescuentoOrigen
                   FROM dbo.DocumentosContablesDetalle
                   WHERE DocIdDocumento = @DocRef`);
       }
@@ -3098,9 +3106,9 @@ const generarNotaDebito = async (req, res) => {
           .input('DocId', sql.Int,          ndId)
           .input('DocRef',sql.Int,          parseInt(docIdOrigen))
           .query(`INSERT INTO dbo.DocumentosContablesDetalle
-                    (DocIdDocumento, OrdCodigoOrden, DcdNomItem, DcdDscItem, DcdCantidad, DcdPrecioUnitario, DcdSubtotal, DcdImpuestos, DcdTotal, DcdTotalDescuentos, DcdDescuentoStr)
-                  SELECT 
-                    @DocId, OrdCodigoOrden, DcdNomItem, DcdDscItem, DcdCantidad, DcdPrecioUnitario, DcdSubtotal, DcdImpuestos, DcdTotal, DcdTotalDescuentos, DcdDescuentoStr
+                    (DocIdDocumento, OrdCodigoOrden, DcdNomItem, DcdDscItem, DcdCantidad, DcdPrecioUnitario, DcdSubtotal, DcdImpuestos, DcdTotal, DcdTotalDescuentos, DcdDescuentoStr, DcdDescuentoPct, DcdTotalRecargos, DcdRecargoPct, DcdRecargoStr, DcdDescuentoOrigen)
+                  SELECT
+                    @DocId, OrdCodigoOrden, DcdNomItem, DcdDscItem, DcdCantidad, DcdPrecioUnitario, DcdSubtotal, DcdImpuestos, DcdTotal, DcdTotalDescuentos, DcdDescuentoStr, DcdDescuentoPct, DcdTotalRecargos, DcdRecargoPct, DcdRecargoStr, DcdDescuentoOrigen
                   FROM dbo.DocumentosContablesDetalle
                   WHERE DocIdDocumento = @DocRef`);
       }

@@ -9,6 +9,9 @@ import OrderRequirementsList from '../logistics/OrderRequirementsList';
 import { printLabelsHelper } from '../../utils/printHelper';
 import { fmtFechaCorta } from '../../utils/fechas';
 import OrdenProntaModal from './components/OrdenProntaModal';
+import ReportarFallaModal from './components/ReportarFallaModal';
+import PendientesPedidoPanel from './components/PendientesPedidoPanel';
+import { logisticsService } from '../../services/modules/logisticsService';
 
 // Mismos 3 colores que usa el semáforo de PlanificacionPage.jsx (duplicado acá a propósito:
 // son 2 líneas, no vale la pena acoplar este archivo a otro solo para reusarlas).
@@ -99,9 +102,14 @@ const TizadaAvanceCard = ({ tizada, ordenId, service, campo, onChanged, bloquead
     const isCompleted = total > 0 && count >= total;
     const pct = total > 0 ? Math.min(100, Math.round((count / total) * 100)) : 0;
     const esControl = campo === 'control';
+    // Spec 39 (validación cruzada): Control de ESTA tizada no puede superar lo que Trabajo
+    // marcó hecho en la misma tizada. Clampeado en el contador, no rechazo en silencio.
+    // Trabajo NULL (nunca se usó) no es 0: sin dato no hay tope, se deja el de `total`.
+    const trabajadasTz = tizada.PiezasTrabajadas != null ? parseInt(tizada.PiezasTrabajadas) : null;
+    const tope = esControl && trabajadasTz != null ? Math.min(total || trabajadasTz, trabajadasTz) : total;
 
     const commit = async (nextVal) => {
-        const val = Math.max(0, Math.min(total || nextVal, nextVal));
+        const val = Math.max(0, Math.min(tope || nextVal, nextVal));
         const previo = count;
         setLoading(true);
         setCount(val); // optimista
@@ -123,7 +131,8 @@ const TizadaAvanceCard = ({ tizada, ordenId, service, campo, onChanged, bloquead
         let val = parseInt(draft, 10);
         if (isNaN(val)) { setDraft(String(count)); return; }
         if (val < 0) val = 0;
-        if (total > 0 && val > total) val = total;
+        if (tope > 0 && val > tope) val = tope;
+        else if (total > 0 && val > total) val = total;
         if (val === count) { setDraft(String(val)); return; }
         commit(val);
     };
@@ -234,62 +243,46 @@ const TizadaAvanceCard = ({ tizada, ordenId, service, campo, onChanged, bloquead
 // por uno, la orden completa ES la unidad a contar.
 const ControlPrendaCard = ({ order, service, onChanged }) => {
     const total = parseFloat(order.MagnitudEfectiva || order.Magnitud) || 0;
-    const [count, setCount] = useState(parseFloat(order.CantidadControlada) || 0);
-    const [draft, setDraft] = useState(String(parseFloat(order.CantidadControlada) || 0));
+    // Spec 39 (validación cruzada): no se puede controlar más de lo que Trabajo marcó hecho.
+    const trabajado = order.CantidadTerminada != null ? (parseFloat(order.CantidadTerminada) || 0) : null;
+    const tope = trabajado != null ? Math.min(total > 0 ? total : trabajado, trabajado) : total;
+    const count = parseFloat(order.CantidadControlada) || 0;
+    // Patrón de 3 campos (pedido del usuario, 10-sep): "controlás ahora" / "llevás" / "total".
+    // El campo SIEMPRE arranca en blanco (es un incremento, no el acumulado); un negativo corrige
+    // de más sin tener que deshacer de a una.
+    const [incInput, setIncInput] = useState('');
     const [loading, setLoading] = useState(false);
-
-    useEffect(() => {
-        const c = parseFloat(order.CantidadControlada) || 0;
-        setCount(c);
-        setDraft(String(c));
-    }, [order.OrdenID, order.CantidadControlada]);
+    useEffect(() => { setIncInput(''); }, [order.OrdenID]);
 
     const isCompleted = total > 0 && count >= total;
 
-    const commit = async (nextVal) => {
-        const val = Math.max(0, Math.min(total || nextVal, nextVal));
+    const guardar = async () => {
+        const inc = parseFloat(incInput);
+        if (isNaN(inc) || inc === 0) return toast.error('Ingresá cuánto controlás ahora (podés poner un negativo para corregir de más).');
+        const nuevo = count + inc;
+        if (nuevo < 0) return toast.error(`Eso dejaría el total en negativo (llevás ${count}).`);
+        const topeReal = tope > 0 ? tope : total;
+        if (topeReal > 0 && nuevo > topeReal) {
+            return toast.error(tope < total
+                ? `No podés controlar más de lo trabajado (${tope}). Como mucho podés sumar ${tope - count}.`
+                : `Llevás ${count} de ${total}: como mucho podés sumar ${total - count}.`);
+        }
         setLoading(true);
-        setCount(val); // optimista
         try {
-            await service.setProgresoControl(order.OrdenID, val || 1);
-            onChanged?.(val);
+            await service.setProgresoControl(order.OrdenID, nuevo);
+            onChanged?.(nuevo);
+            setIncInput('');
+            toast.success(`${inc > 0 ? 'Sumaste' : 'Restaste'} ${Math.abs(inc)}. Llevás ${nuevo} de ${total}.`);
         } catch (e) {
-            setCount(count); // revertir
-            setDraft(String(count));
             toast.error(e?.response?.data?.error || 'Error al guardar el conteo');
         } finally {
             setLoading(false);
         }
     };
 
-    const handleIncrement = (e) => {
-        e.stopPropagation();
-        if (loading || isCompleted) return;
-        const next = count + 1;
-        setDraft(String(next));
-        commit(next);
-    };
-
-    const handleUndo = (e) => {
-        e.stopPropagation();
-        if (loading || count === 0) return;
-        const next = count - 1;
-        setDraft(String(next));
-        commit(next);
-    };
-
-    const commitDraft = () => {
-        if (loading) return;
-        let val = parseInt(draft, 10);
-        if (isNaN(val)) { setDraft(String(count)); return; }
-        if (val < 0) val = 0;
-        if (total > 0 && val > total) val = total;
-        if (val === count) { setDraft(String(val)); return; }
-        commit(val);
-    };
-
     return (
-        <div className={`relative flex items-center gap-4 p-3 rounded-xl border transition-all ${isCompleted ? 'bg-emerald-50 border-emerald-300' : 'bg-white border-zinc-200'}`}>
+        <div className={`rounded-xl border transition-all ${isCompleted ? 'bg-emerald-50 border-emerald-300' : 'bg-white border-zinc-200'}`}>
+        <div className="relative flex items-center gap-3 p-3">
             <div className="w-14 h-14 shrink-0 rounded-lg bg-zinc-50 border border-zinc-100 flex items-center justify-center overflow-hidden">
                 {order.PreviewUrl ? (
                     <img src={order.PreviewUrl} alt="" className="w-full h-full object-cover"
@@ -303,50 +296,52 @@ const ControlPrendaCard = ({ order, service, onChanged }) => {
                 <div className="text-xs text-zinc-400 truncate">{order.Material}</div>
             </div>
 
-            <div className="text-right shrink-0">
-                <span className="text-[9px] font-black text-zinc-300 uppercase leading-none mb-0.5 tracking-wider block">Prendas</span>
-                {total > 1 && !isCompleted ? (
-                    <div className="flex items-baseline justify-end gap-0.5 leading-none">
+            {/* Con total >= 1 se cuenta. Antes era "> 1": una orden de UNA sola prenda mostraba
+                "0/1" sin casillero ni botón y no había forma de controlarla (BOR-20947 2/2). */}
+            {total >= 1 ? (
+                <div className="flex items-end gap-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
+                    <div>
+                        <label className="block text-[8px] font-black text-emerald-500 uppercase tracking-wide mb-0.5">Controlás</label>
                         <input
-                            type="number" min={0} max={total}
-                            value={draft}
+                            type="number"
+                            value={incInput}
                             disabled={loading}
-                            onClick={(e) => e.stopPropagation()}
-                            onChange={(e) => setDraft(e.target.value)}
-                            onBlur={commitDraft}
-                            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur(); } }}
-                            title="Escribí la cantidad controlada"
-                            className="w-12 text-right text-xl font-black text-zinc-700 bg-zinc-50 border border-zinc-200 rounded-md px-1 py-0.5 outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-400/20 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                            onChange={(e) => setIncInput(e.target.value)}
+                            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); guardar(); } }}
+                            placeholder="0"
+                            title="Cuánto controlaste desde la última vez que guardaste (negativo para corregir de más)"
+                            className="w-14 text-center text-sm font-black border border-emerald-400/50 bg-emerald-50 rounded-md px-1 py-1 outline-none focus:border-emerald-500 disabled:bg-zinc-100 disabled:text-zinc-400 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                         />
-                        <span className="text-sm text-zinc-300 font-bold">/{total}</span>
                     </div>
-                ) : (
+                    <div>
+                        <label className="block text-[8px] font-black text-zinc-400 uppercase tracking-wide mb-0.5">Llevás</label>
+                        <div className="w-12 text-center text-sm font-bold text-zinc-600 bg-zinc-50 border border-zinc-200 rounded-md px-1 py-1">{count}</div>
+                    </div>
+                    <span className="text-zinc-300 text-xs pb-1.5">/</span>
+                    <div className="w-12 text-center text-sm font-bold text-zinc-600 bg-zinc-50 border border-zinc-200 rounded-md px-1 py-1 mb-0">{total}</div>
+                    <button
+                        onClick={guardar}
+                        disabled={loading}
+                        title="Guardar"
+                        className={`w-8 h-8 rounded-lg flex items-center justify-center transition-all active:scale-95 ${loading ? 'bg-zinc-100 text-zinc-400' : 'bg-emerald-500 hover:bg-emerald-600 text-white'}`}
+                    >
+                        {loading ? <RefreshCw size={14} className="animate-spin" /> : <Check size={16} />}
+                    </button>
+                </div>
+            ) : (
+                <div className="text-right shrink-0">
+                    <span className="text-[9px] font-black text-zinc-300 uppercase leading-none mb-0.5 tracking-wider block">Prendas</span>
                     <div className={`text-xl font-black leading-none ${isCompleted ? 'text-emerald-600' : 'text-zinc-700'}`}>
                         {count}<span className="text-sm text-zinc-300 font-bold">/{total || '?'}</span>
                     </div>
-                )}
+                </div>
+            )}
             </div>
-
-            <div className="w-11 h-11 shrink-0">
-                {isCompleted ? (
-                    <button
-                        onClick={handleUndo}
-                        disabled={loading}
-                        title="Deshacer (restar una prenda)"
-                        className="w-full h-full rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center hover:bg-emerald-500 hover:text-white transition-colors active:scale-95"
-                    >
-                        {loading ? <RefreshCw size={16} className="animate-spin" /> : <Check size={18} />}
-                    </button>
-                ) : (
-                    <button
-                        onClick={handleIncrement}
-                        disabled={loading}
-                        className={`w-full h-full rounded-full flex items-center justify-center shadow-sm transition-all active:scale-95 ${loading ? 'bg-zinc-100 text-zinc-400' : 'bg-emerald-500 hover:bg-emerald-600 text-white shadow-emerald-200'}`}
-                    >
-                        {loading ? <RefreshCw size={16} className="animate-spin" /> : <Plus size={18} />}
-                    </button>
-                )}
+        {tope < total && (
+            <div className="text-[10px] font-bold text-amber-600 bg-amber-50 border-t border-amber-200 rounded-b-xl px-3 py-1.5">
+                Tope: no podés controlar más de lo trabajado ({trabajado ?? tope})
             </div>
+        )}
         </div>
     );
 };
@@ -377,6 +372,17 @@ export default function EmbBandeja({ area = 'EMB', fase = 'trabajo', onSelectOrd
     const [search, setSearch] = useState('');
     const [selectedId, setSelectedId] = useState(null);
     const [completedOrderData, setCompletedOrderData] = useState(null);
+    // Spec 39: modal de falla/faltante y refresco del panel "lo que falta de este pedido"
+    const [fallaOpen, setFallaOpen] = useState(false);
+    const [pendRefresh, setPendRefresh] = useState(0);
+    // Spec 39: "aprobar por tandas" en Control solo está disponible en áreas con envío
+    // parcial habilitado (mismo interruptor que el despacho — AREAS_DESPACHO_PARCIAL).
+    const [permiteParcial, setPermiteParcial] = useState(false);
+    useEffect(() => {
+        logisticsService.getLibroConfig()
+            .then(cfg => setPermiteParcial((cfg?.areasParcial || []).includes(String(area).toUpperCase())))
+            .catch(() => setPermiteParcial(false));
+    }, [area]);
 
     // Notas del panel de detalle
     const [notas, setNotas] = useState([]);
@@ -522,36 +528,66 @@ export default function EmbBandeja({ area = 'EMB', fase = 'trabajo', onSelectOrd
     };
 
     // Progreso de trabajo — cuántas prendas ya trabajadas, para el % de avance (fase trabajo).
+    // Patrón de 3 campos (pedido del usuario, 10-sep): "sumás ahora" / "llevás" / "total" —
+    // ej. tipeás 5, ves 20 y 30, guardás y queda 0, 25, 30. El campo SIEMPRE arranca en blanco
+    // (es un incremento, no el acumulado) — para corregir un error de más, sumá un negativo.
     const [progresoInput, setProgresoInput] = useState('');
-    useEffect(() => { setProgresoInput(selected?.CantidadTerminada ?? ''); }, [selectedId]); // eslint-disable-line
+    useEffect(() => { setProgresoInput(''); }, [selectedId]);
     const handleGuardarProgreso = async (o) => {
-        const cant = parseFloat(progresoInput);
+        const inc = parseFloat(progresoInput);
+        const actual = parseFloat(o.CantidadTerminada) || 0;
         const total = parseFloat(o.MagnitudEfectiva || o.Magnitud) || 0;
-        if (isNaN(cant)) return toast.error('Cantidad inválida.');
-        if (cant < 1) return toast.error('La cantidad trabajada debe ser al menos 1.');
-        if (cant > total) return toast.error(`No puede superar la cantidad total de prendas (${total}).`);
-        updateLocal(o.OrdenID, { CantidadTerminada: cant });
-        try { await service.setProgreso(o.OrdenID, cant); toast.success('Progreso guardado.'); }
-        catch (e) { toast.error(e?.response?.data?.error || 'Error al guardar el progreso'); load(); }
+        if (isNaN(inc) || inc === 0) return toast.error('Ingresá cuánto sumás ahora (podés poner un negativo para corregir de más).');
+        const nuevo = actual + inc;
+        if (nuevo < 0) return toast.error(`Eso dejaría el total en negativo (llevás ${actual}).`);
+        if (total > 0 && nuevo > total) return toast.error(`Llevás ${actual} de ${total}: como mucho podés sumar ${total - actual}.`);
+        updateLocal(o.OrdenID, { CantidadTerminada: nuevo });
+        setProgresoInput('');
+        try { await service.setProgreso(o.OrdenID, nuevo); toast.success(`${inc > 0 ? 'Sumaste' : 'Restaste'} ${Math.abs(inc)}. Llevás ${nuevo} de ${total}.`); }
+        catch (e) { toast.error(e?.response?.data?.error || 'Error al guardar el progreso'); setProgresoInput(String(inc)); load(); }
     };
 
     // Aprobar Control: pide la cantidad de bultos con un prompt explícito (no un campo que
     // se puede pasar por alto) y, al aprobar, abre la impresión de etiquetas — igual patrón
     // que Terminaciones ECOUV (EcoUvFinishing.handleFinishOrder + printLabelsHelper).
     const [aprobando, setAprobando] = useState(null);
-    const handleAprobarControl = async (o) => {
+    // Spec 39: `parcial=true` aprueba solo lo YA controlado (ej. 10 de 30) y genera bultos
+    // para esa tanda; la orden sigue en producción para el resto, no pasa a Pronto.
+    const handleAprobarControl = async (o, parcial = false) => {
         if (aprobando) return;
         const total = parseFloat(o.MagnitudEfectiva || o.Magnitud) || 0;
         const controlado = parseFloat(o.CantidadControlada) || 0;
-        if (total > 0 && controlado < total) {
+        if (!parcial && total > 0 && controlado < total) {
             return toast.error(`Controlaste ${controlado} de ${total} prenda(s): completá el conteo antes de aprobar.`);
         }
-        const respuesta = window.prompt(`¿Cuántos bultos salen de la orden ${o.CodigoOrden}? Se genera una etiqueta por cada uno.`, '1');
+        if (parcial) {
+            if (!(controlado > 0)) return toast.error('Contá al menos una prenda antes de aprobar una tanda.');
+            // Nuevo en ESTA tanda = lo controlado ahora menos lo que ya se había aprobado en
+            // tandas anteriores (no confundir con el total controlado acumulado).
+            const aprobadoPrevio = parseFloat(o.CantidadAprobadaBultos) || 0;
+            // [CONTROL] Con prendas en reposición solo se aprueban las sanas (total − en reposición).
+            const cantRepos = Number(o.ReposicionesAbiertas) > 0 ? (Number(o.CantidadEnReposicion) || 0) : 0;
+            const aprobable = cantRepos > 0 && total > 0 ? Math.max(0, Math.min(controlado, total - cantRepos)) : controlado;
+            const nuevo = aprobable - aprobadoPrevio;
+            const previoTxt = aprobadoPrevio > 0 ? ` (ya habías aprobado ${aprobadoPrevio} en tanda(s) anterior(es))` : '';
+            const ok = window.confirm(cantRepos > 0
+                ? `Vas a aprobar ${nuevo} prenda(s) sanas de ${o.CodigoOrden}${previoTxt}: se generan sus bultos. Las ${cantRepos} en reposición se aprueban cuando lleguen; la orden sigue en Control. ¿Confirmás?`
+                : `Vas a aprobar ${nuevo} prenda(s) NUEVAS de ${o.CodigoOrden}${previoTxt}: se generan sus bultos. Llevás ${controlado} de ${total} controladas en total; quedan ${total - controlado} por controlar. ¿Confirmás?`);
+            if (!ok) return;
+        }
+        const respuesta = window.prompt(`¿Cuántos bultos salen de ${parcial ? 'esta tanda de' : ''} la orden ${o.CodigoOrden}? Se genera una etiqueta por cada uno.`, '1');
         if (respuesta === null) return; // canceló
         const bultos = Math.max(1, parseInt(respuesta, 10) || 1);
         setAprobando(o.OrdenID);
         try {
-            const res = await service.aprobarControl(o.OrdenID, bultos);
+            const res = await service.aprobarControl(o.OrdenID, bultos, parcial);
+            if (res.parcial) {
+                // Tanda parcial: la orden sigue viva (no pasa a Pronto). No se saca de la
+                // lista; se recarga para que refleje el nuevo estado y el resto por controlar.
+                toast.success(res.message || `Tanda aprobada: ${bultos} bulto(s).`, { duration: 6000 });
+                load();
+                return;
+            }
             setOrders(prev => prev.filter(x => x.OrdenID !== o.OrdenID));
             if (selectedId === o.OrdenID) setSelectedId(null);
             load();
@@ -652,6 +688,13 @@ export default function EmbBandeja({ area = 'EMB', fase = 'trabajo', onSelectOrd
                                     {(o.Tizadas || []).length > 0
                                         ? `${o.MagnitudEfectiva || o.Magnitud} piezas`
                                         : `${o.MagnitudEfectiva || o.Magnitud} u.`}
+                                </span>
+                            )}
+                            {/* Spec 39: de un vistazo en la lista — ya salió una tanda, sin
+                                tener que abrir la orden para enterarse. */}
+                            {parseFloat(o.CantidadAprobadaBultos) > 0 && (
+                                <span className="bg-amber-50 text-amber-700 px-2 py-0.5 rounded text-[10px] font-bold border border-amber-200" title="Ya se aprobaron y enviaron tandas de esta orden">
+                                    {o.CantidadAprobadaBultos} enviadas
                                 </span>
                             )}
                             {/* Señalética minimalista: punto + fecha proyectada, contra la fecha
@@ -779,13 +822,33 @@ export default function EmbBandeja({ area = 'EMB', fase = 'trabajo', onSelectOrd
                                 <p className="text-zinc-600 font-medium">{selected.Cliente}</p>
                                 <p className="text-sm text-zinc-400">{selected.Material} · {selected.MagnitudEfectiva || selected.Magnitud} prenda(s)</p>
                             </div>
-                            <button
-                                onClick={() => onSelectOrder?.({ id: selected.OrdenID, area, codigo: selected.CodigoOrden, cliente: selected.Cliente })}
-                                className="shrink-0 flex items-center gap-1.5 text-xs font-bold text-brand-cyan hover:bg-brand-cyan/5 border border-brand-cyan/30 rounded-lg px-3 py-2 transition-colors"
-                            >
-                                <ExternalLink size={13} /> Ficha completa
-                            </button>
+                            <div className="shrink-0 flex flex-col gap-1.5 items-end">
+                                <button
+                                    onClick={() => onSelectOrder?.({ id: selected.OrdenID, area, codigo: selected.CodigoOrden, cliente: selected.Cliente })}
+                                    className="flex items-center gap-1.5 text-xs font-bold text-brand-cyan hover:bg-brand-cyan/5 border border-brand-cyan/30 rounded-lg px-3 py-2 transition-colors"
+                                >
+                                    <ExternalLink size={13} /> Ficha completa
+                                </button>
+                                {/* Spec 39: falla propia o faltante de insumo, con el mismo botón (antes las bandejas no podían reportar) */}
+                                <button
+                                    onClick={() => setFallaOpen(true)}
+                                    title="Reportar una falla de esta área o un faltante del insumo que vino de un área anterior"
+                                    className="flex items-center gap-1.5 text-xs font-bold text-[#BD0C7E] hover:bg-pink-50 border border-pink-300 rounded-lg px-3 py-2 transition-colors"
+                                >
+                                    <FlagTriangleRight size={13} /> Reportar falla / faltante
+                                </button>
+                            </div>
                         </div>
+
+                        {/* Spec 39: retenida por una falla o faltante reportado — sigue operable con lo que tiene */}
+                        {String(selected.EstadoenArea || '').trim() === 'Retenido' && (
+                            <div className="bg-pink-50 border border-pink-200 text-[#8a0a5c] text-sm rounded-xl p-3 mb-5 flex items-center gap-2">
+                                <Lock size={14} /> Retenida: hay una reposición en proceso para esta orden. Podés seguir trabajando con lo que tenés; se libera sola cuando llegue.
+                            </div>
+                        )}
+
+                        {/* Spec 39: lo que falta de este pedido (libro de entregas de las áreas anteriores) */}
+                        <PendientesPedidoPanel ordenId={selected.OrdenID} service={service} area={area} refreshKey={pendRefresh} />
 
                         {/* Nota general del pedido (Ordenes.Nota — la del ingreso, distinta de las
                             Notas de producción de abajo, que son un historial aditivo aparte) */}
@@ -864,7 +927,9 @@ export default function EmbBandeja({ area = 'EMB', fase = 'trabajo', onSelectOrd
                                             disabled={finalizando === selected.OrdenID || !yaIniciada}
                                             title={!yaIniciada
                                                 ? 'Primero iniciá el trabajo: no se puede finalizar una orden que nunca se empezó.'
-                                                : 'Finalizar Tarea (pasa a Control y Calidad)'}
+                                                : permiteParcial
+                                                    ? 'Pasar a Control: ahí podés aprobar todo, o solo la tanda que ya llevás controlada y seguir con el resto después.'
+                                                    : 'Finalizar Tarea (pasa a Control y Calidad)'}
                                             className={`w-8 h-8 rounded flex items-center justify-center transition-all ${!yaIniciada ? 'text-zinc-300 cursor-not-allowed' : 'text-rose-500 hover:bg-rose-50'} disabled:opacity-40`}
                                         ><FlagTriangleRight size={14} /></button>
                                     </div>
@@ -874,6 +939,23 @@ export default function EmbBandeja({ area = 'EMB', fase = 'trabajo', onSelectOrd
                                     {selected.EstadoTrabajoEmb === 'PAUSADO' && <span className="text-amber-500 font-bold">● Pausado</span>}
                                     {!selected.EstadoTrabajoEmb && <span className="text-zinc-400">Sin iniciar</span>}
                                 </div>
+                                {permiteParcial && yaIniciada && (() => {
+                                    // Spec 39: mismo desglose que en Control, pero visible acá en Trabajo
+                                    // — el que corta/produce también tiene que ver cuánto ya salió en
+                                    // tandas anteriores, no solo el que controla calidad.
+                                    const totalTr = parseFloat(selected.MagnitudEfectiva || selected.Magnitud) || 0;
+                                    const aprobadoTr = parseFloat(selected.CantidadAprobadaBultos) || 0;
+                                    return aprobadoTr > 0 ? (
+                                        <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1.5 mb-2 font-bold">
+                                            Ya salieron {aprobadoTr}{totalTr > 0 ? ` de ${totalTr}` : ''} en tanda(s) anteriores.
+                                            {totalTr > 0 && ` Faltan ${Math.max(totalTr - aprobadoTr, 0)} por producir y aprobar.`}
+                                        </p>
+                                    ) : (
+                                        <p className="text-[11px] text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1.5 mb-2">
+                                            Esta área permite mandar tandas: tocá la banderita para pasar a Control y ahí vas a poder aprobar solo lo que ya controlaste, sin terminar toda la orden.
+                                        </p>
+                                    );
+                                })()}
 
                                 {/* Aviso claro de por qué está todo trabado */}
                                 {sinAsignar && (
@@ -924,28 +1006,39 @@ export default function EmbBandeja({ area = 'EMB', fase = 'trabajo', onSelectOrd
                                             <div className="w-full h-2 bg-zinc-100 rounded-full overflow-hidden mb-2">
                                                 <div className="h-full bg-brand-cyan transition-all" style={{ width: `${pct}%` }} />
                                             </div>
-                                            <div className="flex items-center gap-2">
-                                                <input
-                                                    type="number"
-                                                    min="1"
-                                                    max={total || undefined}
-                                                    value={progresoInput}
-                                                    onChange={(e) => setProgresoInput(e.target.value)}
-                                                    placeholder="1"
-                                                    disabled={sinAsignar}
-                                                    title={sinAsignar ? textoFalta : undefined}
-                                                    className="w-24 text-sm border border-zinc-200 rounded-lg px-2 py-1.5 focus:outline-none focus:border-brand-cyan disabled:bg-zinc-100 disabled:text-zinc-400 disabled:cursor-not-allowed"
-                                                />
-                                                <span className="text-xs text-zinc-400">de {total} prendas trabajadas ({pct}%)</span>
+                                            <div className="flex items-end gap-2">
+                                                <div>
+                                                    <label className="block text-[9px] font-black text-brand-cyan uppercase tracking-wide mb-0.5">Sumás ahora</label>
+                                                    <input
+                                                        type="number"
+                                                        value={progresoInput}
+                                                        onChange={(e) => setProgresoInput(e.target.value)}
+                                                        onKeyDown={(e) => { if (e.key === 'Enter' && !sinAsignar) handleGuardarProgreso(selected); }}
+                                                        placeholder="0"
+                                                        disabled={sinAsignar}
+                                                        title={sinAsignar ? textoFalta : 'Cuánto hiciste desde la última vez que guardaste (negativo para corregir de más)'}
+                                                        className="w-20 text-sm font-black text-center border border-brand-cyan/40 bg-brand-cyan/5 rounded-lg px-2 py-1.5 focus:outline-none focus:border-brand-cyan disabled:bg-zinc-100 disabled:text-zinc-400 disabled:cursor-not-allowed disabled:border-zinc-200"
+                                                    />
+                                                </div>
+                                                <div>
+                                                    <label className="block text-[9px] font-black text-zinc-400 uppercase tracking-wide mb-0.5">Llevás</label>
+                                                    <div className="w-16 text-sm font-bold text-center text-zinc-600 bg-zinc-50 border border-zinc-200 rounded-lg px-2 py-1.5">{parseFloat(selected.CantidadTerminada) || 0}</div>
+                                                </div>
+                                                <span className="text-zinc-300 text-xs pb-2">/</span>
+                                                <div>
+                                                    <label className="block text-[9px] font-black text-zinc-400 uppercase tracking-wide mb-0.5">Total</label>
+                                                    <div className="w-16 text-sm font-bold text-center text-zinc-600 bg-zinc-50 border border-zinc-200 rounded-lg px-2 py-1.5">{total || '?'}</div>
+                                                </div>
                                                 <button
                                                     onClick={() => handleGuardarProgreso(selected)}
                                                     disabled={sinAsignar}
                                                     title={sinAsignar ? textoFalta : undefined}
-                                                    className="ml-auto text-xs font-bold text-brand-cyan hover:bg-brand-cyan/5 border border-brand-cyan/30 rounded-lg px-3 py-1.5 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+                                                    className="ml-auto h-[34px] text-xs font-bold text-brand-cyan hover:bg-brand-cyan/5 border border-brand-cyan/30 rounded-lg px-3 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
                                                 >
                                                     Guardar
                                                 </button>
                                             </div>
+                                            <div className="text-[10px] text-zinc-400 mt-1">{pct}% trabajado</div>
                                         </>
                                     );
                                 })()}
@@ -953,20 +1046,50 @@ export default function EmbBandeja({ area = 'EMB', fase = 'trabajo', onSelectOrd
                         );
                         })()}
 
-                        {/* CONTROL: tarjeta de conteo estilo FileControlCard (+1 circular) —
-                            contador de prendas controladas, aparte del de trabajo. "Aprobar
-                            Control" pregunta la cantidad de bultos con un prompt (no un campo
-                            que se puede pasar por alto) y ahí genera las etiquetas + abre la
-                            impresión. */}
+                        {/* CONTROL: contador de prendas controladas (3 campos: sumás ahora /
+                            llevás / total — igual patrón que Trabajo), aparte del de trabajo.
+                            "Aprobar Control" pregunta la cantidad de bultos con un prompt (no
+                            un campo que se puede pasar por alto) y ahí genera las etiquetas +
+                            abre la impresión. */}
                         {fase === 'control' && (() => {
                             const total = parseFloat(selected.MagnitudEfectiva || selected.Magnitud) || 0;
                             const controlado = parseFloat(selected.CantidadControlada) || 0;
-                            const conteoCompleto = total === 0 || controlado >= total;
+                            // [CONTROL] Con prendas en reposición no se aprueba el total: aunque el conteo
+                            // esté completo, se ofrece la tanda de las sanas (total − en reposición).
+                            const enReposicion = Number(selected.ReposicionesAbiertas) > 0;
+                            const cantRepos = Number(selected.CantidadEnReposicion) || 0;
+                            const conteoCompleto = !enReposicion && (total === 0 || controlado >= total);
+                            // Spec 39: cuánto de lo controlado todavía no se aprobó en ninguna tanda anterior.
+                            const aprobadoPrevio = parseFloat(selected.CantidadAprobadaBultos) || 0;
+                            const aprobable = enReposicion && total > 0 && cantRepos > 0 ? Math.max(0, Math.min(controlado, total - cantRepos)) : controlado;
+                            const nuevoParaTanda = aprobable - aprobadoPrevio;
                             return (
                                 <div className="bg-white border border-zinc-200 rounded-2xl p-4 mb-5">
                                     <h3 className="text-xs font-black text-emerald-600 uppercase tracking-wide mb-3">
                                         Control de Calidad
                                     </h3>
+
+                                    {/* [CONTROL] Falla reportada desde acá y todavía sin reponer: la orden
+                                        sigue en Control para aprobar lo sano por tandas; el total recién
+                                        cuando llegue la reposición (el backend lo bloquea igual). */}
+                                    {Number(selected.ReposicionesAbiertas) > 0 && (
+                                        <div className="mb-3 text-[11px] bg-amber-50 border border-amber-300 rounded-lg px-3 py-2 text-amber-800">
+                                            <b>Esperando reposición{Number(selected.CantidadEnReposicion) > 0 ? ` de ${Number(selected.CantidadEnReposicion)} prenda(s)` : ''}.</b>{' '}
+                                            Contá solo las prendas sanas y aprobalas como tanda (salen con su bulto).
+                                            La orden completa se aprueba cuando llegue la reposición y la controles.
+                                        </div>
+                                    )}
+
+                                    {/* Spec 39: desglose fijo de tandas — cuánto ya se aprobó en tandas
+                                        anteriores, cuánto es nuevo para aprobar ahora, y cuánto falta
+                                        contar. Visible siempre (no solo en el cartel de confirmación). */}
+                                    {aprobadoPrevio > 0 && (
+                                        <div className="mb-3 text-[11px] bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-600">
+                                            Ya aprobaste <span className="font-bold text-emerald-600">{aprobadoPrevio}</span> en tanda(s) anterior(es).
+                                            {' '}{nuevoParaTanda > 0 ? <>Tenés <span className="font-bold text-amber-600">{nuevoParaTanda}</span> nueva(s) para aprobar ahora.</> : 'Contá más para tener una tanda nueva.'}
+                                            {' '}Faltan <span className="font-bold">{Math.max(total - controlado, 0)}</span> por controlar.
+                                        </div>
+                                    )}
 
                                     {/* CORTE: se controla TIZADA POR TIZADA (cada archivo con sus
                                         piezas). El resto de las áreas cuenta la orden entera. */}
@@ -1007,9 +1130,41 @@ export default function EmbBandeja({ area = 'EMB', fase = 'trabajo', onSelectOrd
                                                 <CheckCircle2 size={14} /> Aprobar Control
                                             </button>
                                         ) : (
-                                            <p className="text-xs font-bold text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-                                                Contá todas las prendas para aprobar ({controlado}/{total})
-                                            </p>
+                                            <>
+                                                {/* Un solo mensaje de estado — el panel de arriba (aprobadoPrevio > 0) ya
+                                                    explica "cuánto aprobaste / cuánto falta"; acá no se repite. */}
+                                                {aprobadoPrevio === 0 && !enReposicion && (
+                                                    <p className="text-xs font-bold text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 flex-1">
+                                                        Contá todas las prendas para aprobar ({controlado}/{total})
+                                                    </p>
+                                                )}
+                                                {/* Spec 39: aprobar por tandas — solo en áreas con envío parcial habilitado,
+                                                    y solo si hay algo nuevo controlado desde la última tanda aprobada. */}
+                                                {permiteParcial && nuevoParaTanda > 0 && (
+                                                    <button
+                                                        onClick={() => handleAprobarControl(selected, true)}
+                                                        disabled={aprobando === selected.OrdenID}
+                                                        title={enReposicion
+                                                            ? `Genera bultos para las ${nuevoParaTanda} prenda(s) sanas; las ${cantRepos} en reposición se aprueban cuando lleguen`
+                                                            : `Genera bultos para las ${nuevoParaTanda} prenda(s) nuevas controladas y la orden sigue en producción por el resto`}
+                                                        className="bg-white hover:bg-amber-50 text-amber-700 border border-amber-300 px-3 py-2 rounded-lg text-xs font-bold shadow-sm transition-all flex items-center gap-1.5 disabled:opacity-50"
+                                                    >
+                                                        <CheckCircle2 size={13} /> Aprobar esta tanda ({nuevoParaTanda})
+                                                    </button>
+                                                )}
+                                                {enReposicion && permiteParcial && nuevoParaTanda <= 0 && (
+                                                    <p className="text-xs font-bold text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 flex-1">
+                                                        {aprobadoPrevio > 0 ? 'Ya aprobaste todas las prendas sanas. El resto se aprueba cuando llegue la reposición.' : 'Contá las prendas sanas para aprobarlas como tanda.'}
+                                                    </p>
+                                                )}
+                                                {/* Claridad máxima: si no aparece el botón de tanda, decir por qué —
+                                                    no dejarlo en un silencio que parezca un error. */}
+                                                {!permiteParcial && controlado > 0 && (
+                                                    <p className="text-[10px] text-zinc-400 w-full">
+                                                        Esta área no tiene habilitado el envío por tandas: hay que controlar y aprobar las {total} de una vez.
+                                                    </p>
+                                                )}
+                                            </>
                                         )}
                                     </div>
                                 </div>
@@ -1072,6 +1227,14 @@ export default function EmbBandeja({ area = 'EMB', fase = 'trabajo', onSelectOrd
                 if (id) printLabelsHelper(null, { id });
             }}
             onClose={() => setCompletedOrderData(null)}
+        />
+        <ReportarFallaModal
+            open={fallaOpen}
+            onClose={() => setFallaOpen(false)}
+            orden={selected}
+            area={area}
+            service={service}
+            onDone={() => { setPendRefresh(k => k + 1); load(); }}
         />
         </>
     );

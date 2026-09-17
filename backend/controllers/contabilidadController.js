@@ -757,10 +757,13 @@ exports.registrarPagoAnticipado = async (req, res) => {
  * → FAVOR: acredita (SALDO_INICIAL) e imputa deudas existentes por PEPS.
  * → DEUDA: debita (SALDO_INICIAL_DEUDOR) Y crea el DeudaDocumento pendiente,
  *          todo en una transacción, para que quede imputable por PEPS y en antigüedad.
- * Body: { CliIdCliente, MonIdMoneda: 1|2, Sentido: 'FAVOR'|'DEUDA', MovImporte, MovConcepto?, Referencia? }
+ * → Si viene CueIdCuenta, el saldo entra en ESA cuenta de la billetera (el cliente
+ *   puede tener varias cuentas de la misma moneda); si no viene, se usa/crea la
+ *   principal de la moneda elegida, como siempre.
+ * Body: { CliIdCliente, MonIdMoneda: 1|2, Sentido: 'FAVOR'|'DEUDA', MovImporte, MovConcepto?, Referencia?, CueIdCuenta? }
  */
 exports.registrarSaldoInicial = async (req, res) => {
-  const { CliIdCliente, MonIdMoneda, Sentido, MovImporte, MovConcepto, Referencia } = req.body;
+  const { CliIdCliente, MonIdMoneda, Sentido, MovImporte, MovConcepto, Referencia, CueIdCuenta } = req.body;
   const UsuarioAlta = req.user?.id ?? 1;
 
   const importe = parseFloat(MovImporte);
@@ -772,8 +775,29 @@ exports.registrarSaldoInicial = async (req, res) => {
     return res.status(400).json({ success: false, error: "Sentido debe ser 'FAVOR' o 'DEUDA'." });
 
   try {
-    const cueTipo  = monId === 2 ? 'DINERO_USD' : 'DINERO_UYU';
-    const cueId    = await svc.obtenerOCrearCuenta(parseInt(CliIdCliente), cueTipo, { MonIdMoneda: monId, UsuarioAlta });
+    let cueId;
+    if (CueIdCuenta) {
+      // Cuenta elegida a mano en la billetera: se valida que sea de este cliente,
+      // que esté abierta y que sea de dinero (las de recurso llevan metros, no plata).
+      const poolCta = await getPool();
+      const ctaRes  = await poolCta.request()
+        .input('C', sql.Int, parseInt(CueIdCuenta))
+        .query(`SELECT CueIdCuenta, CliIdCliente, CueTipo, MonIdMoneda, ProIdProducto, CueActiva, CueNombre
+                FROM   dbo.CuentasCliente WHERE CueIdCuenta = @C`);
+      const cta = ctaRes.recordset[0];
+      if (!cta)
+        return res.status(400).json({ success: false, error: 'La cuenta elegida no existe.' });
+      if (Number(cta.CliIdCliente) !== parseInt(CliIdCliente))
+        return res.status(400).json({ success: false, error: 'La cuenta elegida no es de este cliente.' });
+      if (cta.CueActiva === false || cta.CueActiva === 0)
+        return res.status(400).json({ success: false, error: `La cuenta "${cta.CueNombre || '#' + cta.CueIdCuenta}" está cerrada: reabrila antes de cargarle el saldo inicial.` });
+      if (cta.ProIdProducto != null || !['DINERO_USD', 'DINERO_UYU'].includes(String(cta.CueTipo || '').toUpperCase()))
+        return res.status(400).json({ success: false, error: 'El saldo inicial solo se carga en cuentas de dinero, no en cuentas de recurso.' });
+      cueId = cta.CueIdCuenta;
+    } else {
+      const cueTipo = monId === 2 ? 'DINERO_USD' : 'DINERO_UYU';
+      cueId = await svc.obtenerOCrearCuenta(parseInt(CliIdCliente), cueTipo, { MonIdMoneda: monId, UsuarioAlta });
+    }
     const concepto = (MovConcepto && MovConcepto.trim())
       || (Sentido === 'FAVOR' ? 'Saldo inicial a favor' : 'Saldo inicial deudor');
 
@@ -1650,7 +1674,9 @@ exports.guardarPrecios = async (req, res) => {
       // Leer registro actual incluyendo el Subtotal vigente (para el delta)
       const detRes = await mk()
         .input('ID', sql.Int, id)
-        .query(`SELECT PedidoCobranzaID, LogPrecioAplicado, Subtotal FROM dbo.PedidosCobranzaDetalle WHERE ID = @ID`);
+        .query(`SELECT PedidoCobranzaID, LogPrecioAplicado, Subtotal,
+                       PrecioLista, DescuentoTipo, DescuentoPct, DescuentoImporte, DescuentoOrigen, RecargoPct, RecargoImporte, RecargoOrigen
+                FROM dbo.PedidosCobranzaDetalle WHERE ID = @ID`);
 
       if (detRes.recordset.length === 0) continue;
 
@@ -1662,15 +1688,34 @@ exports.guardarPrecios = async (req, res) => {
       let nuevoLog = LogPrecioAplicado || '';
       if (!nuevoLog.includes(logTag)) nuevoLog += ` ${logTag}`;
 
-      // Actualizar PrecioUnitario y Subtotal
+      // Desglose (lista / descuento / recargo) coherente con el nuevo neto: la lista se
+      // conserva y la diferencia queda como descuento/recargo manual (o el editado en la
+      // pre-factura si vino). Sin lista guardada no se toca.
+      const { desgloseTrasEdicionManual } = require('../services/desgloseLineaPedido');
+      const dz = desgloseTrasEdicionManual(detRes.recordset[0], d.PrecioUnitario,
+        { descUnit: d.DescUnit, recUnit: d.RecUnit, descPct: d.DescPct, recPct: d.RecPct, descTexto: d.DescTexto, recTexto: d.RecTexto }, 'Ajuste manual en la pre-factura');
+
+      // Actualizar PrecioUnitario y Subtotal (+ desglose)
       await mk()
         .input('ID',       sql.Int,             id)
         .input('Precio',   sql.Decimal(18, 4),   d.PrecioUnitario)
         .input('Subtotal', sql.Decimal(18, 4),   d.Subtotal)
         .input('Log',      sql.NVarChar(sql.MAX), nuevoLog)
+        .input('DTipo',    sql.VarChar(12),      dz ? dz.DescuentoTipo : null)
+        .input('DPct',     sql.Decimal(9, 4),    dz ? dz.DescuentoPct : null)
+        .input('DImp',     sql.Decimal(18, 4),   dz ? dz.DescuentoImporte : null)
+        .input('DOrig',    sql.NVarChar(150),    dz ? dz.DescuentoOrigen : null)
+        .input('RPct',     sql.Decimal(9, 4),    dz ? dz.RecargoPct : null)
+        .input('RImp',     sql.Decimal(18, 4),   dz ? dz.RecargoImporte : null)
+        .input('ROrig',    sql.NVarChar(200),    dz ? dz.RecargoOrigen : null)
+        .input('Limpiar',  sql.Bit,              dz && dz.limpiarRegla ? 1 : 0)
         .query(`
           UPDATE dbo.PedidosCobranzaDetalle
           SET PrecioUnitario = @Precio, Subtotal = @Subtotal, LogPrecioAplicado = @Log
+              ${dz ? `, DescuentoTipo = @DTipo, DescuentoPct = @DPct, DescuentoImporte = @DImp, DescuentoOrigen = @DOrig,
+                DescuentoPerfilId = CASE WHEN @Limpiar = 1 THEN NULL ELSE DescuentoPerfilId END,
+                DescuentoReglaId  = CASE WHEN @Limpiar = 1 THEN NULL ELSE DescuentoReglaId END,
+                RecargoPct = @RPct, RecargoImporte = @RImp, RecargoOrigen = @ROrig` : ''}
           WHERE ID = @ID
         `);
 
@@ -3358,6 +3403,8 @@ exports.getOrdenesAnticipo = async (req, res) => {
                           d.ProIdProducto,
                           ISNULL(a.CodArticulo, aod.CodArticulo) AS CodArticulo,
                           d.Cantidad, d.PrecioUnitario, d.Subtotal, d.LogPrecioAplicado,
+                          d.PrecioLista, d.DescuentoTipo, d.DescuentoPct, d.DescuentoImporte, d.DescuentoOrigen,
+                          d.RecargoPct, d.RecargoImporte, d.RecargoOrigen,
                           COALESCE(
                               NULLIF(NULLIF(LTRIM(RTRIM(a.Descripcion)), 'Articulos User'), 'Articulos User USD'),
                               NULLIF(NULLIF(LTRIM(RTRIM(aod.Descripcion)), 'Articulos User'), 'Articulos User USD'),
@@ -4412,12 +4459,25 @@ exports.consumirDesdeSaldo = async (req, res) => {
     const cot = parseFloat(cotRes.recordset[0]?.CotDolar) || 40;
     const r2 = (n) => Math.round(n * 100) / 100;
     const conv = (c) => { const monCta = Number(c.MonIdMoneda) === 2 ? 2 : 1; return monCta === monOrden ? importeOrden : (monOrden === 2 ? r2(importeOrden * cot) : r2(importeOrden / cot)); };
+    // BENEFICIOS (specs/40 INV-BEN.03): la bolsa de un beneficio solo paga pedidos cotizados
+    // con ESE beneficio (marca Ordenes.BclIdBeneficioCliente); cualquier otra orden, no.
+    const bolsasCli = new Map(); let bclOrden = null;
+    try {
+      if (await svc.tablaBeneficiosExiste(pool)) {
+        const benSvc = require('../services/beneficiosService');
+        for (const b of await benSvc.bolsasDelCliente(pool, mov.CliIdCliente)) bolsasCli.set(b.CueIdCuenta, { bclId: b.BclIdBeneficioCliente, nombre: String(b.BenNombre || '').trim() });
+        const bo = await benSvc.bolsaDeOrden(pool, { OrdIdOrden: mov.OrdIdOrden, CodigoOrden: mov.OrdCodigoOrden });
+        bclOrden = bo ? bo.BclIdBeneficioCliente : null;
+      }
+    } catch (eB) { logger.warn(`[CONSUMO_SALDO] chequeo de bolsas de beneficio: ${eB.message}`); }
     const cuentas = ctasRes.recordset.map(c => {
       const saldo = Number(c.SaldoReal) || 0;
       const aDescontar = conv(c);
       const monCta = Number(c.MonIdMoneda) === 2 ? 'US$' : '$';
       let motivoNo = null;
-      if (!c.PermiteArticulo) motivoNo = 'restringida: no permite el artículo de esta orden';
+      const bolsaC = bolsasCli.get(c.CueIdCuenta);
+      if (bolsaC && Number(bolsaC.bclId) !== Number(bclOrden)) motivoNo = `bolsa del beneficio «${bolsaC.nombre}»: solo paga los pedidos cotizados con ese beneficio`;
+      else if (!c.PermiteArticulo) motivoNo = 'restringida: no permite el artículo de esta orden';
       else if (saldo + 0.001 < aDescontar && !(c.CuePuedeNegativo && !c.CueEsPrincipal)) motivoNo = `saldo insuficiente (disponible ${monCta} ${saldo.toFixed(2)}, necesita ${monCta} ${aDescontar.toFixed(2)})`;
       return {
         CueIdCuenta: c.CueIdCuenta, CueNombre: c.CueNombre, CueEsPrincipal: !!c.CueEsPrincipal, CueRestringida: !!c.CueRestringida,
@@ -4810,6 +4870,15 @@ exports.consumoManualCuenta = async (req, res) => {
         .query('SELECT 1 AS ok FROM dbo.CuentasClienteArticulosPermitidos WHERE CueIdCuenta = @C AND ProIdProducto = @P')).recordset.length;
       if (!ok) return res.status(400).json({ success: false, error: `"${nomCta}" es restringida y no permite el artículo de ${codigo} (${od.Articulo || 'artículo #' + od.ProIdProducto}).` });
     }
+    // BENEFICIOS (specs/40 INV-BEN.03): la bolsa de un beneficio solo consume pedidos cotizados con él
+    try {
+      const bolsaM = (await svc.tablaBeneficiosExiste(pool)) ? await require('../services/beneficiosService').bolsaPorCuenta(pool, cueId) : null;
+      if (bolsaM) {
+        const bo = await require('../services/beneficiosService').bolsaDeOrden(pool, { OrdIdOrden: od?.OrdIdOrden || null, CodigoOrden: codigo });
+        if (!bo || Number(bo.BclIdBeneficioCliente) !== Number(bolsaM.BclIdBeneficioCliente))
+          return res.status(400).json({ success: false, error: `"${nomCta}" es la bolsa del beneficio «${String(bolsaM.BenNombre).trim()}»: solo consume pedidos cotizados con ese beneficio, y ${codigo} no lo fue.` });
+      }
+    } catch (eB) { logger.warn(`[CONSUMO_MANUAL] chequeo de bolsa de beneficio: ${eB.message}`); }
     const saldo = await svc.getSaldoRealCuenta(cueId);
     if (saldo + 0.001 < imp && !(c.CuePuedeNegativo && !c.CueEsPrincipal))
       return res.status(400).json({ success: false, error: `Saldo insuficiente en "${nomCta}": disponible ${sim} ${saldo.toFixed(2)}, se intentó consumir ${sim} ${imp.toFixed(2)}${c.CueEsPrincipal ? '' : ' (la cuenta no acepta negativo)'}.` });
@@ -4973,6 +5042,12 @@ exports.cargaPrepago = async (req, res) => {
       SELECT CueIdCuenta, CliIdCliente, CueTipo, MonIdMoneda, CueNombre, CueActiva, CueModalidadFiscal, CueEsPrincipal
       FROM dbo.CuentasCliente WHERE CueIdCuenta = @C`)).recordset[0];
     if (!cta || !cta.CueActiva || !String(cta.CueTipo).startsWith('DINERO')) return res.status(400).json({ success: false, error: 'La cuenta no es una cuenta de dinero activa.' });
+    // BENEFICIOS (specs/40 RN-BEN.15): la bolsa de un beneficio nace con su propia carga
+    // facturada (activación); no admite una venta de saldo común encima.
+    try {
+      const bolsaB = (await svc.tablaBeneficiosExiste(pool)) ? await require('../services/beneficiosService').bolsaPorCuenta(pool, cueId) : null;
+      if (bolsaB) return res.status(400).json({ success: false, error: `"${cta.CueNombre || '#' + cueId}" es la bolsa del beneficio «${String(bolsaB.BenNombre).trim()}»: no admite recarga común. Un beneficio se carga una sola vez, al activarlo.` });
+    } catch (eB) { logger.warn(`[VENTA_SALDO] chequeo de bolsa de beneficio: ${eB.message}`); }
     if (cta.CueModalidadFiscal !== 'PREPAGO_FACTURADO') return res.status(400).json({ success: false, error: `"${cta.CueNombre || '#' + cueId}" no es una cuenta prepago facturada. La Venta de saldo carga solo cuentas de esa modalidad.` });
     const doc = (await pool.request().input('D', sql.Int, docId).query(`
       SELECT DocIdDocumento, CliIdCliente, DocTotal, DocSerie, DocNumero, DocTipo, MonIdMoneda, DocEstado FROM dbo.DocumentosContables WHERE DocIdDocumento = @D`)).recordset[0];
@@ -5095,6 +5170,7 @@ exports.cubrirRetiroConBilletera = async (req, res) => {
       WHERE cc.CliIdCliente = @Cli AND cc.CueActiva = 1 AND cc.CueTipo LIKE 'DINERO%'
         AND cc.CueEsPrincipal = 0
         AND ISNULL(cc.CueModalidadFiscal,'ANTICIPO_A_FACTURAR') = 'PREPAGO_FACTURADO'
+        ${(await svc.tablaBeneficiosExiste(pool)) ? "AND NOT EXISTS (SELECT 1 FROM dbo.BeneficiosCliente bx WITH(NOLOCK) WHERE bx.CueIdCuenta = cc.CueIdCuenta) -- bolsas de beneficio: solo pagan sus pedidos, al ingreso" : ''}
       ORDER BY cc.CueIdCuenta`)).recordset
       .map(c => ({ id: c.CueIdCuenta, nombre: (c.CueNombre || `cuenta #${c.CueIdCuenta}`).trim(),
                    mon: Number(c.MonIdMoneda) === 2 ? 2 : 1, restringida: !!c.CueRestringida,

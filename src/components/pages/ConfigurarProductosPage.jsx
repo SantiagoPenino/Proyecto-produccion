@@ -176,6 +176,22 @@ const ToolCard = ({ icon, iconBg, title, subtitle, onClick, footer }) => (
     </button>
 );
 
+// ── Posición del aplique: pieza del nomenclador + detalle libre ──────────
+// En la base sigue siendo UNA sola columna de texto (ProductoApliques.Posicion),
+// escrita como "Frente" o "Frente — pecho izquierdo". Acá se parte en dos para
+// poder elegir la pieza de una lista y escribir el detalle aparte. Lo que ya
+// estaba cargado a mano se sigue leyendo tal cual (queda como pieza suelta).
+const SEP_POSICION = ' — ';
+const partirPosicion = (txt) => {
+    const s = String(txt || '').trim();
+    const i = s.indexOf('—');
+    return i < 0
+        ? { pieza: s, detalle: '' }
+        : { pieza: s.slice(0, i).trim(), detalle: s.slice(i + 1).trim() };
+};
+const unirPosicion = (pieza, detalle) =>
+    [String(pieza || '').trim(), String(detalle || '').trim()].filter(Boolean).join(SEP_POSICION);
+
 // ── Ficha → estado del editor ────────────────────────────────────────────
 const fichaToForm = (d) => ({
     proId: d.ProIdProducto,
@@ -210,7 +226,7 @@ const fichaToForm = (d) => ({
     surtido: new Set((d.surtido || []).map(s => s.WmsVarianteId)),
     componentes: new Map((d.componentes || []).map(c => [c.OpcionID, !!c.EsDefault])),
     apliques: (d.apliques || []).map(a => ({
-        posicion: a.Posicion, areaId: a.AreaID, tecnicaOpcionId: a.TecnicaOpcionID || '',
+        ...partirPosicion(a.Posicion), areaId: a.AreaID, tecnicaOpcionId: a.TecnicaOpcionID || '',
         cantidad: a.Cantidad || 1, incluido: !!a.Incluido
     })),
     comboItems: (d.comboItems || []).map(it => ({
@@ -256,11 +272,14 @@ const formToPayload = (f) => ({
     opcionesPermitidas: [...f.opcionesPermitidas],
     surtido: [...f.surtido],
     componentes: [...f.componentes.entries()].map(([opcionId, esDefault]) => ({ opcionId, esDefault })),
-    apliques: f.apliques.filter(a => (a.posicion || '').trim()).map(a => ({
-        posicion: a.posicion.trim(), areaId: a.areaId,
-        tecnicaOpcionId: a.tecnicaOpcionId || null,
-        cantidad: Number(a.cantidad) || 1, incluido: a.incluido,
-    })),
+    apliques: f.apliques
+        .map(a => ({ ...a, posicion: unirPosicion(a.pieza, a.detalle) }))
+        .filter(a => a.posicion)
+        .map(a => ({
+            posicion: a.posicion, areaId: a.areaId,
+            tecnicaOpcionId: a.tecnicaOpcionId || null,
+            cantidad: Number(a.cantidad) || 1, incluido: a.incluido,
+        })),
     comboItems: (f.esCombo ? f.comboItems : []).filter(it => it.itemProIdProducto).map(it => ({
         itemProIdProducto: Number(it.itemProIdProducto),
         wmsVarianteId: it.wmsVarianteId || null,
@@ -294,6 +313,7 @@ export default function ConfigurarProductosPage() {
     const [productos, setProductos] = useState([]);
     const [tecnicasCat, setTecnicasCat] = useState([]);       // TecnicaOpciones (all)
     const [componentesCat, setComponentesCat] = useState([]); // ComponenteOpciones (all)
+    const [piezasCat, setPiezasCat] = useState([]);           // PiezasPrenda (nomenclador de piezas)
     const [costurasIsoCat, setCosturasIsoCat] = useState([]); // CosturasISO (catálogo chico, ficha de diseño)
     const [locales, setLocales] = useState([]);               // productos del local
     const [stockDisponible, setStockDisponible] = useState(true);
@@ -344,14 +364,16 @@ export default function ConfigurarProductosPage() {
 
     const loadCatalogos = useCallback(async () => {
         try {
-            const [t, c, iso] = await Promise.all([
+            const [t, c, iso, pz] = await Promise.all([
                 api.get(`${API}/tecnicas?all=1`),
                 api.get(`${API}/componentes?all=1`),
                 api.get(`${API}/costuras-iso`),
+                api.get(`${API}/piezas?all=1`),
             ]);
             setTecnicasCat(t.data?.data || []);
             setComponentesCat(c.data?.data || []);
             setCosturasIsoCat(iso.data?.data || []);
+            setPiezasCat(pz.data?.data || []);
         } catch (e) {
             toast.error('Error cargando catálogos: ' + (e.response?.data?.error || e.message));
         }
@@ -714,6 +736,7 @@ export default function ConfigurarProductosPage() {
                             ['combos', '📦 Combos y Promos', combosFiltrados.length],
                             ['tecnicas', 'Catálogo de técnicas', null],
                             ['componentes', 'Componentes (confección)', null],
+                            ['piezas', 'Piezas de la prenda', null],
                         ].map(([id, label, count]) => (
                             <button key={id} onClick={() => setVista(id)}
                                 className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition-colors ${vista === id ? 'bg-slate-800 text-white' : 'text-slate-500 hover:bg-slate-100'}`}>
@@ -1344,13 +1367,32 @@ export default function ConfigurarProductosPage() {
                                                     </div>
 
                                                     <div className="border border-slate-200 rounded-xl p-4">
-                                                        <p className="text-[11px] font-black uppercase tracking-wider text-slate-400 mb-3">Apliques — posición · técnica · cantidad</p>
+                                                        <p className="text-[11px] font-black uppercase tracking-wider text-slate-400 mb-1">Apliques — posición · técnica · cantidad</p>
+                                                        <p className="text-[11px] text-slate-400 mb-3">La pieza sale del nomenclador (pestaña “Piezas de la prenda”). El detalle es libre: dónde exactamente dentro de esa pieza.</p>
                                                         <div className="space-y-2">
                                                             {form.apliques.map((ap, i) => (
                                                                 <div key={i} className="flex flex-wrap items-center gap-2 border border-slate-200 rounded-lg px-3 py-2">
-                                                                    <input value={ap.posicion} placeholder="Posición (ej. Escudo — pecho izq.)"
-                                                                        onChange={e => { const next = [...form.apliques]; next[i] = { ...ap, posicion: e.target.value }; setF({ apliques: next }); }}
-                                                                        className="flex-1 min-w-[160px] border border-slate-200 rounded-lg px-2.5 py-1.5 text-sm" />
+                                                                    {(() => {
+                                                                        // Piezas del nomenclador que admiten aplique, de esta familia (o de todas).
+                                                                        // Si el aplique ya tenía una posición escrita a mano que no está en el
+                                                                        // nomenclador, se agrega arriba para no perderla al guardar.
+                                                                        const delCatalogo = piezasCat
+                                                                            .filter(p => p.Activo && p.AdmiteAplique && (!p.Familia || p.Familia === form.categoria))
+                                                                            .map(p => p.Nombre);
+                                                                        const opciones = ap.pieza && !delCatalogo.includes(ap.pieza)
+                                                                            ? [ap.pieza, ...delCatalogo] : delCatalogo;
+                                                                        return (
+                                                                            <select value={ap.pieza || ''} title="¿En qué pieza de la prenda va?"
+                                                                                onChange={e => { const next = [...form.apliques]; next[i] = { ...ap, pieza: e.target.value }; setF({ apliques: next }); }}
+                                                                                className="min-w-[150px] border border-slate-200 rounded-lg px-2 py-1.5 text-sm font-bold">
+                                                                                <option value="">¿En qué pieza va?</option>
+                                                                                {opciones.map(n => <option key={n} value={n}>{n}</option>)}
+                                                                            </select>
+                                                                        );
+                                                                    })()}
+                                                                    <input value={ap.detalle || ''} placeholder="Detalle (ej. pecho izquierdo)"
+                                                                        onChange={e => { const next = [...form.apliques]; next[i] = { ...ap, detalle: e.target.value }; setF({ apliques: next }); }}
+                                                                        className="flex-1 min-w-[140px] border border-slate-200 rounded-lg px-2.5 py-1.5 text-sm" />
                                                                     <select value={ap.areaId}
                                                                         onChange={e => { const next = [...form.apliques]; next[i] = { ...ap, areaId: e.target.value, tecnicaOpcionId: '' }; setF({ apliques: next }); }}
                                                                         className="border border-slate-200 rounded-lg px-2 py-1.5 text-xs font-bold">
@@ -1379,7 +1421,7 @@ export default function ConfigurarProductosPage() {
                                                             ))}
                                                         </div>
                                                         <button type="button"
-                                                            onClick={() => setF({ apliques: [...form.apliques, { posicion: '', areaId: 'EMB', tecnicaOpcionId: '', cantidad: 1, incluido: true }] })}
+                                                            onClick={() => setF({ apliques: [...form.apliques, { pieza: '', detalle: '', areaId: 'EMB', tecnicaOpcionId: '', cantidad: 1, incluido: true }] })}
                                                             className="mt-2 border border-dashed border-slate-300 rounded-lg px-3 py-1.5 text-xs font-bold text-slate-500 hover:border-slate-400">
                                                             + Agregar aplique
                                                         </button>
@@ -1804,6 +1846,11 @@ export default function ConfigurarProductosPage() {
                     {vista === 'componentes' && (
                         <CatalogoComponentes componentes={componentesCat} onReload={loadCatalogos} />
                     )}
+
+                    {/* ── NOMENCLADOR DE PIEZAS ── */}
+                    {vista === 'piezas' && (
+                        <CatalogoPiezas piezas={piezasCat} familias={familiasCat} onReload={loadCatalogos} />
+                    )}
                 </div>
             )}
         </div>
@@ -2169,6 +2216,124 @@ function CatalogoComponentes({ componentes, onReload }) {
                     </div>
                 );
             })}
+        </div>
+    );
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+//  Nomenclador de piezas de la prenda (Frente / Espalda / Mangas / ...)
+//  De esta lista sale el combo de Posición del aplique. "Admite aplique"
+//  apagado = la pieza sigue en el nomenclador pero no aparece en ese combo.
+// ═════════════════════════════════════════════════════════════════════════
+function CatalogoPiezas({ piezas, familias, onReload }) {
+    const [edits, setEdits] = useState({});
+    const [savingId, setSavingId] = useState(null);
+    const [nueva, setNueva] = useState({ codigo: '', nombre: '', familia: '' });
+    const [creando, setCreando] = useState(false);
+
+    const val = (p, k, orig) => edits[p.PiezaID]?.[k] ?? (orig ?? '');
+    const setVal = (id, k, v) => setEdits(prev => ({ ...prev, [id]: { ...prev[id], [k]: v } }));
+
+    const guardarFila = async (p) => {
+        const e = edits[p.PiezaID];
+        if (!e) return;
+        setSavingId(p.PiezaID);
+        try {
+            await api.put(`${API}/piezas/${p.PiezaID}`, e);
+            toast.success('✅ Pieza guardada');
+            setEdits(prev => { const n = { ...prev }; delete n[p.PiezaID]; return n; });
+            onReload();
+        } catch (err) {
+            toast.error('Error: ' + (err.response?.data?.error || err.message));
+        } finally { setSavingId(null); }
+    };
+
+    const togglePieza = async (p, campo, valor) => {
+        try {
+            await api.put(`${API}/piezas/${p.PiezaID}`, { [campo]: valor });
+            onReload();
+        } catch (err) { toast.error('Error: ' + (err.response?.data?.error || err.message)); }
+    };
+
+    const crear = async () => {
+        if (!nueva.codigo.trim()) return toast.error('Poné el código de la pieza (ej. PZ-10).');
+        if (!nueva.nombre.trim()) return toast.error('Poné el nombre de la pieza.');
+        setCreando(true);
+        try {
+            await api.post(`${API}/piezas`, { ...nueva, familia: nueva.familia || null });
+            toast.success('✅ Pieza creada');
+            setNueva({ codigo: '', nombre: '', familia: '' });
+            onReload();
+        } catch (err) {
+            toast.error('Error: ' + (err.response?.data?.error || err.message));
+        } finally { setCreando(false); }
+    };
+
+    return (
+        <div className="space-y-4">
+            <p className="text-xs text-slate-400 max-w-3xl">
+                Las piezas de las que está hecha una prenda. De acá sale la lista de Posición cuando se agrega un
+                aplique (bordado, DTF, TPU, grifa) a un producto, para que nadie tenga que escribirla a mano.
+                Sin familia, la pieza sirve para todas las prendas; con familia, aparece solo en esa.
+            </p>
+
+            <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+                <div className="hidden md:grid grid-cols-[90px_1fr_180px_150px_100px_90px] gap-2 px-4 py-2 text-[10px] font-black uppercase tracking-wider text-slate-400 border-b border-slate-100">
+                    <span>Código</span><span>Nombre</span><span>Familia</span><span>¿Admite aplique?</span><span></span><span></span>
+                </div>
+                <div className="divide-y divide-slate-50">
+                    {piezas.map(p => (
+                        <div key={p.PiezaID} className={`grid md:grid-cols-[90px_1fr_180px_150px_100px_90px] gap-2 px-4 py-2 items-center ${!p.Activo ? 'opacity-50' : ''}`}>
+                            <span className="text-xs font-mono font-bold text-slate-400">{p.Codigo}</span>
+                            <input value={val(p, 'nombre', p.Nombre)} onChange={e => setVal(p.PiezaID, 'nombre', e.target.value)}
+                                className="border border-slate-200 rounded-lg px-2.5 py-1.5 text-sm font-bold" />
+                            <select value={val(p, 'familia', p.Familia)} onChange={e => setVal(p.PiezaID, 'familia', e.target.value)}
+                                className="border border-slate-200 rounded-lg px-2 py-1.5 text-xs">
+                                <option value="">Todas las prendas</option>
+                                {(familias || []).map(f => <option key={f.CodStock} value={f.Articulo}>{f.Articulo}</option>)}
+                            </select>
+                            <button onClick={() => togglePieza(p, 'admiteAplique', !p.AdmiteAplique)}
+                                title="Si está en sí, la pieza aparece en la lista de Posición del aplique"
+                                className="text-xs font-bold text-slate-500 hover:text-slate-800 text-left">
+                                <i className={`fa-solid ${p.AdmiteAplique ? 'fa-circle-check text-emerald-500' : 'fa-circle-xmark text-slate-300'} mr-1.5`}></i>
+                                {p.AdmiteAplique ? 'sí, se puede marcar' : 'no se marca'}
+                            </button>
+                            <button onClick={() => togglePieza(p, 'activo', !p.Activo)} title={p.Activo ? 'Desactivar' : 'Activar'}
+                                className="text-xs font-bold text-slate-400 hover:text-slate-600 text-left">
+                                <i className={`fa-solid ${p.Activo ? 'fa-eye' : 'fa-eye-slash'} mr-1`}></i>{p.Activo ? 'activa' : 'inactiva'}
+                            </button>
+                            {edits[p.PiezaID] ? (
+                                <button onClick={() => guardarFila(p)} disabled={savingId === p.PiezaID}
+                                    className="bg-slate-800 text-white rounded-lg px-2.5 py-1.5 text-xs font-bold disabled:opacity-50">
+                                    {savingId === p.PiezaID ? '…' : 'Guardar'}
+                                </button>
+                            ) : <span></span>}
+                        </div>
+                    ))}
+                    {piezas.length === 0 && (
+                        <p className="px-4 py-6 text-sm text-slate-400">
+                            El nomenclador está vacío: falta correr el script configurador_nomenclador_piezas.sql.
+                        </p>
+                    )}
+                </div>
+                <div className="flex flex-wrap gap-2 px-4 py-3 border-t border-slate-100 bg-slate-50/60">
+                    <input value={nueva.codigo} onChange={e => setNueva({ ...nueva, codigo: e.target.value })}
+                        placeholder="PZ-10" className="w-24 border border-slate-200 rounded-lg px-3 py-2 text-sm font-mono" />
+                    <input value={nueva.nombre} onChange={e => setNueva({ ...nueva, nombre: e.target.value })}
+                        onKeyDown={e => e.key === 'Enter' && crear()}
+                        placeholder="Nueva pieza (ej. Bolsillo delantero)"
+                        className="flex-1 min-w-[200px] border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+                    <select value={nueva.familia} onChange={e => setNueva({ ...nueva, familia: e.target.value })}
+                        className="border border-slate-200 rounded-lg px-2 py-2 text-xs">
+                        <option value="">Todas las prendas</option>
+                        {(familias || []).map(f => <option key={f.CodStock} value={f.Articulo}>{f.Articulo}</option>)}
+                    </select>
+                    <button onClick={crear} disabled={creando}
+                        className="bg-slate-800 text-white rounded-lg px-4 py-2 text-xs font-bold disabled:opacity-50">
+                        {creando ? '…' : '+ Agregar pieza'}
+                    </button>
+                </div>
+            </div>
         </div>
     );
 }

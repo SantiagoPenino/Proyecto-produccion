@@ -25,6 +25,14 @@ function createBandejaRoutes(area) {
     router.put('/orders/:ordenId/archivos/:archivoId/progreso-control', verifyToken, embBoardController.setProgresoControlArchivo);
     router.post('/orders/:ordenId/aprobar-control', verifyToken, embBoardController.aprobarControl);
 
+    // Spec 39: reportar falla o faltante desde la bandeja (3 pasos) + lo que falta del pedido
+    const fallaBandeja = require('../controllers/fallaBandejaController');
+    router.get('/orders/:ordenId/falla/pendientes', verifyToken, fallaBandeja.getPendientes);
+    router.post('/orders/:ordenId/falla/es-lo-pendiente', verifyToken, fallaBandeja.esLoPendiente);
+    router.post('/orders/:ordenId/falla/proponer', verifyToken, fallaBandeja.proponer);
+    router.post('/orders/:ordenId/falla', verifyToken, fallaBandeja.reportar);
+    router.get('/orders/:ordenId/reposiciones', verifyToken, fallaBandeja.getReposicionesOrden);
+
     return router;
 }
 

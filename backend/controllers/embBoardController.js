@@ -70,10 +70,39 @@ const CAMPOS_ENRIQUECIDOS = `
         ELSE pro.Magnitud
     END AS MagnitudEfectiva
 `;
+// [PRENDAS] La orden PRO de la que una orden de decoración toma su cantidad de prendas
+// (cuando su propia Magnitud está en 0). Antes era un LEFT JOIN a "la PRO del pedido",
+// que asumía UNA sola: con "Comprar y personalizar" hay una PRO por artículo del carrito,
+// y el Bordado salía repetido una vez por cada PRO (3 tarjetas iguales en la bandeja, cada
+// una con la cantidad de otro artículo — caso BOR-20947). Ahora se toma UNA:
+//   1) la ancla de retiro VEN- de SU MISMO grupo (ComboItemID): es el artículo que
+//      realmente se borda, con su cantidad real (vale para combos y para el carrito);
+//   2) si no hay ancla, la orden madre del pedido (PRO sin ComboItemID);
+//   3) en último caso, cualquier PRO del pedido — nunca más de una fila.
+const APPLY_PRO_DE_LA_ORDEN = `
+    OUTER APPLY (
+        SELECT TOP 1 p.Magnitud
+        FROM Ordenes p
+        WHERE (
+                o.ComboItemID IS NOT NULL
+                AND p.ComboItemID = o.ComboItemID
+                AND p.EstadoDependencia = 'VENTA_DIRECTA'
+                AND LTRIM(RTRIM(p.ComboPedidoNoDocERP)) = LTRIM(RTRIM(CAST(o.NoDocERP AS VARCHAR(50))))
+              )
+           OR (LTRIM(RTRIM(p.NoDocERP)) = LTRIM(RTRIM(o.NoDocERP)) AND p.AreaID = 'PRO')
+        ORDER BY
+            CASE WHEN o.ComboItemID IS NOT NULL AND p.ComboItemID = o.ComboItemID
+                      AND p.EstadoDependencia = 'VENTA_DIRECTA' THEN 0
+                 WHEN p.ComboItemID IS NULL THEN 1
+                 ELSE 2 END,
+            p.OrdenID
+    ) pro
+`;
+
 const JOINS_ENRIQUECIDOS = `
     LEFT JOIN ConfigEquipos m ON m.EquipoID = o.MaquinaID
     LEFT JOIN Usuarios u ON u.IdUsuario = o.OperarioAsignadoID
-    LEFT JOIN Ordenes pro ON pro.NoDocERP = o.NoDocERP AND pro.AreaID = 'PRO'
+    ${APPLY_PRO_DE_LA_ORDEN}
 `;
 
 // [ESTAMPADO] Cuando hay DTF y TPU activos a la vez, se crean DOS órdenes de Estampado
@@ -99,6 +128,9 @@ const getArea = (req) => (req.query?.area || req.body?.area || 'EMB').toString()
 // [PRENDAS] Cantidad real de prendas de la orden: si es hermana de una orden madre PRO
 // (Magnitud propia en '0' a propósito, ver prendasOrdersController.js), sale de ahí.
 // Compartida por setProgreso / setProgresoControl / aprobarControl para no repetir el JOIN.
+// Exportada para libroEntregasController (Spec 39, envío por orden): necesita la MISMA
+// magnitud efectiva que usa esta bandeja para saber si una orden sigue en producción.
+exports.getMagnitudEfectiva = getMagnitudEfectiva;
 async function getMagnitudEfectiva(pool, ordenId) {
     const r = await pool.request()
         .input('OID', sql.Int, ordenId)
@@ -114,7 +146,7 @@ async function getMagnitudEfectiva(pool, ordenId) {
                 ELSE pro.Magnitud
             END AS MagnitudEfectiva
             FROM Ordenes o
-            LEFT JOIN Ordenes pro ON pro.NoDocERP = o.NoDocERP AND pro.AreaID = 'PRO'
+            ${APPLY_PRO_DE_LA_ORDEN}
             WHERE o.OrdenID = @OID
         `);
     if (!r.recordset.length) return null;
@@ -170,6 +202,73 @@ function enriquecerPreview(row) {
 
 // [CORTE] Sincroniza el total de la ORDEN con la suma del avance de sus tizadas: el gate de
 // "Aprobar Control" y el % de la tarjeta siguen leyendo CantidadTerminada/CantidadControlada.
+/**
+ * Spec 39 (extensión "aprobar por tandas"): cuánto llegó realmente del área INMEDIATAMENTE
+ * anterior del pedido — el límite físico real para el avance de Trabajo. Si no hay área
+ * anterior (primera de la cadena), o esa área no declara cantidad en una unidad comparable
+ * (ej. Sublimación mide metros, no prendas — cantidad queda null), no hay con qué validar y
+ * se deja como antes (solo contra la magnitud total de la orden).
+ */
+async function getRecibidoDeAreaAnterior(pool, ordenId) {
+    const o = await new sql.Request(pool).input('id', sql.Int, ordenId)
+        .query(`SELECT AreaID, LTRIM(RTRIM(CAST(NoDocERP AS VARCHAR(50)))) AS NoDoc FROM Ordenes WHERE OrdenID = @id`);
+    const row = o.recordset[0];
+    if (!row?.NoDoc) return null;
+
+    // [VENTA/COMBO] Si la orden sale de una venta de retiro (ancla VEN- de su mismo grupo,
+    // ComboItemID) y esa venta la tiene como PRIMER paso físico, lo que "llegó del área
+    // anterior" es ese retiro — no lo que diga el libro de entregas. El libro ordena las
+    // áreas del pedido entero, sin separar por prenda: en un pedido con Short (Bordado) y
+    // Gorro (Bordado → Estampado) le tomaba Estampado del Gorro como área anterior al
+    // Bordado del Short, no encontraba nada llegado y trababa el trabajo en 0 aunque el
+    // bulto de la venta ya estaba en Bordado (caso BOR-20947 / VEN-2405).
+    try {
+        const g = await new sql.Request(pool).input('id', sql.Int, ordenId).query(`
+            SELECT TOP 1 a.Magnitud AS AnclaMagnitud,
+                   (SELECT COUNT(*) FROM Logistica_Bultos b WHERE b.OrdenID = a.OrdenID) AS BultosAncla,
+                   (SELECT COUNT(DISTINCT b.BultoID)
+                      FROM Logistica_Bultos b
+                      JOIN MovimientosLogistica m ON m.CodigoBulto = b.CodigoEtiqueta
+                                                 AND m.EsRecepcion = 1 AND m.AreaID = o.AreaID
+                     WHERE b.OrdenID = a.OrdenID) AS BultosRecibidos
+            FROM Ordenes o
+            JOIN Ordenes a ON a.EstadoDependencia = 'VENTA_DIRECTA'
+                          AND a.ComboItemID = o.ComboItemID
+                          AND LTRIM(RTRIM(a.ComboPedidoNoDocERP)) = LTRIM(RTRIM(CAST(o.NoDocERP AS VARCHAR(50))))
+                          AND UPPER(LTRIM(RTRIM(a.ProximoServicio))) = UPPER(LTRIM(RTRIM(o.AreaID)))
+            WHERE o.OrdenID = @id AND o.ComboItemID IS NOT NULL
+        `);
+        if (g.recordset.length) {
+            const { AnclaMagnitud, BultosAncla, BultosRecibidos } = g.recordset[0];
+            // No llegó ningún bulto de la venta: de verdad no hay nada para trabajar.
+            if (!BultosRecibidos) return 0;
+            // Llegó una parte de los bultos: no se sabe cuántas prendas trae cada uno, así que
+            // no se inventa un número — se deja pasar (mismo criterio que "unidad no comparable").
+            if (BultosAncla > 0 && BultosRecibidos < BultosAncla) return null;
+            // Llegó todo: la cantidad es la de la venta de retiro.
+            return parseFloat(AnclaMagnitud) || null;
+        }
+    } catch (e) { logger.warn('[Bandeja] getRecibidoDeAreaAnterior (retiro): ' + e.message); }
+
+    try {
+        const libro = require('../services/libroEntregasService');
+        // Mirado desde ESTA orden: en un pedido con varias prendas solo cuentan las órdenes
+        // que le mandan prendas a ella (getPendientesParaOrden); sin prendas separadas, igual
+        // que antes.
+        const pendientes = await libro.getPendientesParaOrden(ordenId, row.NoDoc, row.AreaID, pool);
+        const anteriores = pendientes.anteriores || [];
+        if (!anteriores.length) return null;
+        const inmediata = anteriores[anteriores.length - 1];
+        const deInmediata = (pendientes.ordenes || []).filter(p => p.AreaID === inmediata);
+        if (!deInmediata.length) return null;
+        // Si todavía no llegó NADA (0 envíos), es 0 de verdad — se valida contra 0. Si llegó
+        // algo pero esa área no declaró cantidad (unidad no comparable, ej. metros), no hay
+        // con qué validar y se deja pasar (null).
+        if (deInmediata.some(p => (p.recibido?.envios || 0) > 0 && p.recibido?.cantidad == null)) return null;
+        return deInmediata.reduce((s, p) => s + Number(p.recibido?.cantidad || 0), 0);
+    } catch (e) { logger.warn('[Bandeja] getRecibidoDeAreaAnterior: ' + e.message); return null; }
+}
+
 async function recalcularAvanceDesdeArchivos(pool, ordenId) {
     await pool.request()
         .input('OID', sql.Int, ordenId)
@@ -229,6 +328,31 @@ async function setAvanceArchivo(req, res, campo, etiqueta) {
         if (total > 0 && cantidad > total) {
             return res.status(400).json({ error: `No puede superar las ${total} piezas de esta tizada.` });
         }
+        // Spec 39 (extensión "aprobar por tandas"): Control no puede declarar más piezas de
+        // ESTA tizada que las que Trabajo ya marcó como cortadas.
+        if (etiqueta === 'control') {
+            const tr = await pool.request().input('AID', sql.Int, archivoId)
+                .query(`SELECT PiezasTrabajadas FROM ArchivosOrden WHERE ArchivoID = @AID`);
+            const trabajadas = tr.recordset[0]?.PiezasTrabajadas;
+            // NULL (esta tizada nunca registró avance de Trabajo) no es lo mismo que 0: sin
+            // dato no hay con qué comparar, se deja pasar.
+            if (trabajadas != null && cantidad > trabajadas) {
+                return res.status(400).json({ error: `No podés controlar más de lo que se trabajó en esta tizada (${trabajadas}).` });
+            }
+        }
+        // Trabajo no puede superar lo que realmente llegó del área anterior del pedido
+        // (cuando esa área declara cantidad en una unidad comparable).
+        if (etiqueta === 'trabajo') {
+            const recibido = await getRecibidoDeAreaAnterior(pool, ordenId);
+            if (recibido != null) {
+                const otras = await pool.request().input('OID', sql.Int, ordenId).input('AID', sql.Int, archivoId)
+                    .query(`SELECT ISNULL(SUM(ISNULL(PiezasTrabajadas, 0)), 0) AS Suma FROM ArchivosOrden WHERE OrdenID = @OID AND ArchivoID <> @AID AND Piezas IS NOT NULL`);
+                const nuevoTotal = (otras.recordset[0]?.Suma || 0) + cantidad;
+                if (nuevoTotal > recibido) {
+                    return res.status(400).json({ error: `No podés trabajar más de lo que llegó del área anterior (${recibido} en total de la orden). Si te falta, reportá un faltante.` });
+                }
+            }
+        }
 
         await pool.request()
             .input('AID', sql.Int, archivoId)
@@ -255,7 +379,15 @@ exports.getEmbOrders = async (req, res) => {
             ? `
                 SELECT o.OrdenID, o.CodigoOrden, o.Cliente, o.DescripcionTrabajo, o.Material, o.Variante, o.Nota,
                        o.Magnitud, o.Prioridad, o.FechaIngreso, o.Estado, o.EstadoenArea, o.NoDocERP,
-                       o.MaquinaID, o.OperarioAsignadoID, o.EstadoTrabajoEmb, o.CantidadTerminada, o.CantidadControlada, ${CAMPOS_ENRIQUECIDOS}
+                       o.MaquinaID, o.OperarioAsignadoID, o.EstadoTrabajoEmb, o.CantidadTerminada, o.CantidadControlada, o.CantidadAprobadaBultos, ${CAMPOS_ENRIQUECIDOS},
+                       -- [CONTROL] Falla reportada desde acá que todavía no se repuso: la pantalla
+                       -- avisa que solo se puede aprobar por tandas hasta que llegue.
+                       (SELECT COUNT(*) FROM Reposiciones rp
+                         WHERE rp.OrdenReportaID = o.OrdenID
+                           AND rp.Estado IN ('ESPERANDO_INSUMO','BLOQUEADA','PENDIENTE','EN_PRODUCCION','ENVIADA')) AS ReposicionesAbiertas,
+                       (SELECT ISNULL(SUM(ISNULL(rp.Cantidad, 0)), 0) FROM Reposiciones rp
+                         WHERE rp.OrdenReportaID = o.OrdenID
+                           AND rp.Estado IN ('ESPERANDO_INSUMO','BLOQUEADA','PENDIENTE','EN_PRODUCCION','ENVIADA')) AS CantidadEnReposicion
                 FROM Ordenes o
                 ${JOINS_ENRIQUECIDOS}
                 WHERE o.AreaID = @Area AND o.Estado NOT IN ('Cancelado')
@@ -265,14 +397,17 @@ exports.getEmbOrders = async (req, res) => {
             : `
                 SELECT o.OrdenID, o.CodigoOrden, o.Cliente, o.DescripcionTrabajo, o.Material, o.Variante, o.Nota,
                        o.Magnitud, o.Prioridad, o.FechaIngreso, o.Estado, o.EstadoenArea, o.NoDocERP,
-                       o.MaquinaID, o.OperarioAsignadoID, o.EstadoTrabajoEmb, o.CantidadTerminada,
+                       o.MaquinaID, o.OperarioAsignadoID, o.EstadoTrabajoEmb, o.CantidadTerminada, o.CantidadAprobadaBultos,
                        CONVERT(VARCHAR(10), ISNULL(o.FechaCompromiso, o.FechaEstimadaEntrega), 23) AS FechaPrometidaEfectiva,
                        ${CAMPOS_ENRIQUECIDOS}
                 FROM Ordenes o
                 ${JOINS_ENRIQUECIDOS}
                 WHERE o.AreaID = @Area
                   AND o.Estado NOT IN ('Cancelado', 'Finalizado', 'Entregado', 'Pronto')
-                  AND ISNULL(o.EstadoenArea, '') NOT IN ('Pronto', 'Control y Calidad')
+                  -- 'Recibido en Destino' / 'En transito': la orden ya se mandó completa (en camino o ya llegó) a su
+                  -- próximo servicio (ver recibidasIntermedias en logisticsController) — tan
+                  -- terminada como 'Pronto', no puede seguir "por trabajar" acá.
+                  AND ISNULL(o.EstadoenArea, '') NOT IN ('Pronto', 'Control y Calidad', 'Recibido en Destino', 'En transito')
                   AND (o.EstadoDependencia IS NULL OR o.EstadoDependencia = 'OK')
                   AND ${SQL_TRANSFER_LLEGO}
                   AND NOT EXISTS (
@@ -340,7 +475,7 @@ exports.getEmbOrdersBloqueadas = async (req, res) => {
                 ON cum.OrdenID = o.OrdenID AND cum.RequisitoID = req.RequisitoID AND cum.Estado = 'CUMPLIDO'
             WHERE o.AreaID = @Area
               AND o.Estado NOT IN ('Cancelado', 'Finalizado', 'Entregado', 'Pronto')
-              AND ISNULL(o.EstadoenArea, '') <> 'Pronto'
+              AND ISNULL(o.EstadoenArea, '') NOT IN ('Pronto', 'Recibido en Destino', 'En transito')
               AND (o.EstadoDependencia IS NULL OR o.EstadoDependencia = 'OK')
               AND ${SQL_TRANSFER_LLEGO}
               AND cum.OrdenID IS NULL
@@ -357,7 +492,7 @@ exports.getEmbOrdersBloqueadas = async (req, res) => {
             FROM Ordenes o
             WHERE o.AreaID = @Area
               AND o.Estado NOT IN ('Cancelado', 'Finalizado', 'Entregado', 'Pronto')
-              AND ISNULL(o.EstadoenArea, '') <> 'Pronto'
+              AND ISNULL(o.EstadoenArea, '') NOT IN ('Pronto', 'Recibido en Destino', 'En transito')
               AND (o.EstadoDependencia IS NULL OR o.EstadoDependencia = 'OK')
               AND NOT (${SQL_TRANSFER_LLEGO})
 
@@ -375,13 +510,16 @@ exports.getEmbOrdersBloqueadas = async (req, res) => {
                        WHEN 'ESPERANDO_IMPRESION' THEN CONCAT('Esperando que termine ',
                            ISNULL(NULLIF(LTRIM(RTRIM(fuente.AreaID)), ''), 'su origen'), ' (', ISNULL(fuente.CodigoOrden, '—'), ')')
                        WHEN 'ESPERANDO_RETIRO_WMS' THEN 'Esperando que se confirme el retiro del depósito (WMS)'
+                       -- Spec 39: eslabón de una cadena de reposición: se libera cuando llega la reposición del área anterior
+                       WHEN 'ESPERANDO_REPOSICION' THEN CONCAT('Esperando la reposición del área anterior ',
+                           ISNULL(NULLIF(LTRIM(RTRIM(fuente.AreaID)), ''), ''), ' (', ISNULL(fuente.CodigoOrden, '—'), ')')
                        ELSE CONCAT('Esperando: ', o.EstadoDependencia)
                    END AS FaltantePendiente
             FROM Ordenes o
             LEFT JOIN Ordenes fuente ON fuente.OrdenID = o.LiberaCuandoOrdenID
             WHERE o.AreaID = @Area
               AND o.Estado NOT IN ('Cancelado', 'Finalizado', 'Entregado', 'Pronto')
-              AND ISNULL(o.EstadoenArea, '') <> 'Pronto'
+              AND ISNULL(o.EstadoenArea, '') NOT IN ('Pronto', 'Recibido en Destino', 'En transito')
               AND o.EstadoDependencia IS NOT NULL AND o.EstadoDependencia <> 'OK'
 
             ORDER BY FechaIngreso ASC
@@ -512,6 +650,12 @@ exports.setProgreso = async (req, res) => {
         if (cantidad > magnitud) {
             return res.status(400).json({ error: `No puede superar la cantidad total de prendas (${magnitud}).` });
         }
+        // Spec 39 (extensión "aprobar por tandas"): no se puede trabajar más de lo que
+        // realmente llegó del área anterior del pedido (cuando esa área declara cantidad).
+        const recibido = await getRecibidoDeAreaAnterior(pool, ordenId);
+        if (recibido != null && cantidad > recibido) {
+            return res.status(400).json({ error: `No podés trabajar más de lo que llegó del área anterior (${recibido}). Si te falta, reportá un faltante.` });
+        }
 
         await pool.request()
             .input('OID', sql.Int, ordenId)
@@ -577,6 +721,17 @@ exports.setProgresoControl = async (req, res) => {
         if (cantidad > magnitud) {
             return res.status(400).json({ error: `No puede superar la cantidad total de prendas (${magnitud}).` });
         }
+        // Spec 39 (extensión "aprobar por tandas"): Control no puede declarar más prendas
+        // controladas que las que Trabajo dice hechas — son contadores independientes, pero
+        // Calidad no puede verificar lo que todavía no se produjo. Si Trabajo nunca se usó
+        // para esta orden (NULL — ej. una -F que llega a Control por otro camino), no hay con
+        // qué comparar y se deja pasar, igual que con "recibido" cuando la unidad no aplica.
+        const trab = await pool.request().input('OID', sql.Int, ordenId)
+            .query('SELECT CantidadTerminada FROM Ordenes WHERE OrdenID = @OID');
+        const trabajado = trab.recordset[0]?.CantidadTerminada;
+        if (trabajado != null && cantidad > parseFloat(trabajado)) {
+            return res.status(400).json({ error: `No podés controlar más de lo que se trabajó (${trabajado}).` });
+        }
 
         await pool.request()
             .input('OID', sql.Int, ordenId)
@@ -598,6 +753,11 @@ exports.setProgresoControl = async (req, res) => {
 exports.aprobarControl = async (req, res) => {
     const ordenId = parseInt(req.params.ordenId, 10);
     const cantBultos = Math.max(1, parseInt(req.body?.bultos, 10) || 1);
+    // Spec 39 (RN-FLT extensión, 10-sep-2026): aprobar por TANDAS — mandar lo ya controlado
+    // (ej. 10 de 30 prendas) sin terminar de controlar el resto, en áreas con envío parcial
+    // habilitado. `parcial: true` en el body lo pide explícitamente; sin eso, el comportamiento
+    // es EXACTAMENTE el de siempre (exige el 100% controlado).
+    const quiereParcial = req.body?.parcial === true;
     if (!ordenId) return res.status(400).json({ error: 'ordenId inválido.' });
     try {
         const pool = await getPool();
@@ -605,7 +765,7 @@ exports.aprobarControl = async (req, res) => {
         const ordRes = await pool.request()
             .input('OID', sql.Int, ordenId)
             .query(`
-                SELECT o.CantidadControlada, o.AreaID, o.ProximoServicio,
+                SELECT o.CantidadControlada, o.CantidadAprobadaBultos, o.CantidadTerminada, o.AreaID, o.ProximoServicio, o.EstadoTrabajoEmb,
                        LTRIM(RTRIM(CAST(o.NoDocERP AS VARCHAR(50)))) AS NoDoc,
                        CASE
                            -- [CORTE] el control cuenta PIEZAS de las tizadas medidas, no metros
@@ -617,37 +777,113 @@ exports.aprobarControl = async (req, res) => {
                            ELSE pro.Magnitud
                        END AS MagnitudEfectiva
                 FROM Ordenes o
-                LEFT JOIN Ordenes pro ON pro.NoDocERP = o.NoDocERP AND pro.AreaID = 'PRO'
+                ${APPLY_PRO_DE_LA_ORDEN}
                 WHERE o.OrdenID = @OID
             `);
         if (!ordRes.recordset.length) return res.status(404).json({ error: 'Orden no encontrada.' });
         const ordenRow = ordRes.recordset[0];
         const magnitud = parseFloat(ordenRow.MagnitudEfectiva) || 0;
         const controlado = parseFloat(ordenRow.CantidadControlada) || 0;
-        if (magnitud > 0 && controlado < magnitud) {
+        // NULL (nunca se usó Trabajo para esta orden — ej. una -F que llega a Control por otro
+        // camino) no es lo mismo que 0: sin dato no hay con qué comparar, se deja pasar.
+        const trabajadoRaw = ordenRow.CantidadTerminada;
+        const trabajado = trabajadoRaw != null ? parseFloat(trabajadoRaw) : null;
+        const aprobadoPrevio = parseFloat(ordenRow.CantidadAprobadaBultos) || 0;
+        let esUltimaTanda = magnitud === 0 || controlado >= magnitud;
+        // Lo que se puede aprobar: lo controlado, salvo que haya prendas en reposición (ver abajo).
+        let controladoAprobable = controlado;
+
+        // Candado defensivo: si quedó un Control mayor al Trabajo (dato guardado antes de esta
+        // validación, o corregido a mano), no se aprueba hasta que se reconcilien los conteos.
+        if (magnitud > 0 && trabajado != null && controlado > trabajado) {
+            return res.status(400).json({ error: `El control (${controlado}) quedó por encima de lo trabajado (${trabajado}). Corregí el conteo de Control antes de aprobar — no puede ser mayor a lo que Trabajo marca hecho.` });
+        }
+
+        // [CONTROL] Con una reposición abierta (se reportó una falla y la prenda todavía no llegó)
+        // no se puede aprobar el TOTAL: la orden no está completa. Sí se aprueban tandas de lo sano.
+        if (esUltimaTanda) {
+            const repAb = await pool.request().input('OID', sql.Int, ordenId).query(`
+                SELECT COUNT(*) AS n, ISNULL(SUM(ISNULL(Cantidad, 0)), 0) AS cant FROM Reposiciones
+                WHERE OrdenReportaID = @OID AND Estado IN ('ESPERANDO_INSUMO','BLOQUEADA','PENDIENTE','EN_PRODUCCION','ENVIADA')`);
+            const nRep = repAb.recordset[0]?.n || 0;
+            if (nRep > 0) {
+                const cantRep = parseFloat(repAb.recordset[0]?.cant) || 0;
+                if (!quiereParcial) {
+                    return res.status(400).json({ error: `Esta orden tiene ${cantRep > 0 ? cantRep + ' prenda(s)' : 'una falla'} en reposición: todavía no se puede aprobar completa. Aprobá lo sano con "Aprobar esta tanda"; el resto se aprueba cuando llegue la reposición.` });
+                }
+                // Tanda con el conteo completo: se aprueban solo las sanas (total − en reposición).
+                esUltimaTanda = false;
+                if (magnitud > 0 && cantRep > 0) controladoAprobable = Math.max(0, Math.min(controlado, magnitud - cantRep));
+            }
+        }
+        const nuevoEnEstaTanda = controladoAprobable - aprobadoPrevio;
+
+        if (!esUltimaTanda && !quiereParcial) {
             return res.status(400).json({ error: `Controlaste ${controlado} de ${magnitud} prenda(s): completá el conteo antes de aprobar.` });
+        }
+        if (!esUltimaTanda) {
+            const libro = require('../services/libroEntregasService');
+            const areaE = (ordenRow.AreaID || '').trim().toUpperCase();
+            if (!(await libro.areasConParcial(pool)).includes(areaE)) {
+                return res.status(400).json({ error: `Aprobar por tandas no está habilitado para ${areaE}. Completá el conteo (${controlado}/${magnitud}) para aprobar todo junto.` });
+            }
+            if (nuevoEnEstaTanda <= 0) {
+                return res.status(400).json({ error: 'Ya aprobaste todo lo que controlaste hasta ahora. Contá más prendas para aprobar una tanda nueva.' });
+            }
         }
 
         const tx = new sql.Transaction(pool);
         await tx.begin();
+        let reposicionCerrada = null;
         try {
-            await changeOrderState(tx, {
-                target : { type: 'ORDER', id: ordenId },
-                estado : 'Pronto',
-                userObj: req.user || 'Sistema',
-                detalle: 'Control aprobado',
-                io     : req.app.get('socketio'),
-            });
+            if (esUltimaTanda) {
+                await changeOrderState(tx, {
+                    target : { type: 'ORDER', id: ordenId },
+                    estado : 'Pronto',
+                    userObj: req.user || 'Sistema',
+                    detalle: aprobadoPrevio > 0 ? `Control aprobado (última tanda: ${nuevoEnEstaTanda} de ${magnitud}, ya se habían aprobado ${aprobadoPrevio})` : 'Control aprobado',
+                    io     : req.app.get('socketio'),
+                });
+                // Spec 39: si es una orden de falla con reposición registrada, decidir si su material se
+                // incorpora a la madre (misma área, madre sin envío parcial → CERRADA) o viaja como complemento.
+                try {
+                    const reposiciones = require('../services/reposicionesService');
+                    reposicionCerrada = await reposiciones.alTerminarOrdenFalla(tx, ordenId, req.user || 'Sistema', req.app.get('socketio'));
+                } catch (eRep) { logger.warn('[Bandeja] aprobarControl reposiciones: ' + eRep.message); }
+            } else {
+                // Tanda parcial: NO se marca Pronto. Vuelve al estado de trabajo (mismo
+                // vocabulario que setEstadoTrabajo) para seguir controlando/produciendo el resto.
+                // [CONTROL] Si Trabajo ya terminó todas las prendas, el resto solo falta controlarlo:
+                // la orden se queda en Control y Calidad (no vuelve a la Bandeja de trabajo).
+                const yaTrabajadoTodo = magnitud > 0 && ((trabajado != null && trabajado >= magnitud) || controlado >= magnitud);
+                const estadoenArea = yaTrabajadoTodo ? 'Control y Calidad' : ordenRow.EstadoTrabajoEmb === 'EN_PROCESO' ? 'En Maquina' : 'Pendiente';
+                await changeOrderState(tx, {
+                    target : { type: 'ORDER', id: ordenId },
+                    estado : estadoenArea,
+                    userObj: req.user || 'Sistema',
+                    detalle: `Tanda aprobada: ${nuevoEnEstaTanda} de ${magnitud} (van ${controladoAprobable} aprobables de ${controlado} controladas). ${yaTrabajadoTodo ? 'Sigue en Control por el resto.' : 'Sigue en producción por el resto.'}`,
+                    io     : req.app.get('socketio'),
+                });
+            }
+            await new sql.Request(tx).input('OID', sql.Int, ordenId).input('Ap', sql.Decimal(12, 2), controladoAprobable)
+                .query('UPDATE Ordenes SET CantidadAprobadaBultos = @Ap WHERE OrdenID = @OID');
             await tx.commit();
         } catch (e) { await tx.rollback(); throw e; }
+        // Reposición cerrada en la misma área: el material se incorpora a la madre, no se etiqueta aparte.
+        if (reposicionCerrada && reposicionCerrada.viaja === false) {
+            return res.json({ success: true, totalBultos: 0, esperandoHermanaEst: false, areaID: ordenRow.AreaID, proximoServicio: ordenRow.ProximoServicio || null,
+                              reposicion: { estado: 'CERRADA', madre: reposicionCerrada.CodigoMadre }, message: `Reposición terminada: su material se incorpora a la orden ${reposicionCerrada.CodigoMadre}. No lleva bultos propios.` });
+        }
 
         // [PRENDAS] Estampado puede tener varias hermanas para el MISMO pedido (una por
         // cada DTF/TPU activo), todas trabajando sobre la MISMA prenda física — si cada
         // una generara su propio bulto "producto terminado" al aprobarse, quedarían N
         // sets de bultos para una sola prenda. Mientras quede alguna hermana EST sin
         // aprobar, esta NO genera bulto: el bulto final lo genera la ÚLTIMA en aprobarse.
+        // Solo aplica a la aprobación FINAL: una tanda parcial siempre genera su bulto,
+        // porque es material en camino, no el consolidado final de la prenda.
         let esperandoHermanaEst = false;
-        if ((ordenRow.AreaID || '').trim().toUpperCase() === 'EST' && ordenRow.NoDoc) {
+        if (esUltimaTanda && (ordenRow.AreaID || '').trim().toUpperCase() === 'EST' && ordenRow.NoDoc) {
             const sibRes = await pool.request()
                 .input('ND', sql.VarChar, ordenRow.NoDoc)
                 .input('OID', sql.Int, ordenId)
@@ -656,7 +892,7 @@ exports.aprobarControl = async (req, res) => {
                     FROM Ordenes
                     WHERE LTRIM(RTRIM(CAST(NoDocERP AS VARCHAR(50)))) = @ND
                       AND AreaID = 'EST' AND OrdenID <> @OID
-                      AND (EstadoenArea IS NULL OR UPPER(LTRIM(RTRIM(EstadoenArea))) <> 'PRONTO')
+                      AND (EstadoenArea IS NULL OR UPPER(LTRIM(RTRIM(EstadoenArea))) NOT IN ('PRONTO', 'RECIBIDO EN DESTINO'))
                       AND (Estado IS NULL OR UPPER(LTRIM(RTRIM(Estado))) <> 'CANCELADO')
                 `);
             esperandoHermanaEst = (sibRes.recordset[0]?.Pendientes || 0) > 0;
@@ -669,9 +905,11 @@ exports.aprobarControl = async (req, res) => {
                 // Tipo de bulto según destino real (igual criterio que addOneBulto): si el
                 // próximo paso NO es Depósito (ej. Bordado que todavía va a Estampado), es
                 // material EN_PROCESO, no producto terminado — si no, nunca deja de "esperar
-                // bultos" en el gate de Depósito porque ese bulto jamás llega ahí.
+                // bultos" en el gate de Depósito porque ese bulto jamás llega ahí. Una tanda
+                // parcial NUNCA es PROD_TERMINADO aunque el próximo paso sea Depósito: todavía
+                // queda producción de esta misma orden sin controlar (invariante RN-FLT.02).
                 const prox = (ordenRow.ProximoServicio || 'DEPOSITO').trim().toUpperCase();
-                const esUltimoServicio = prox.includes('DEPOSITO') || prox === '';
+                const esUltimoServicio = esUltimaTanda && (prox.includes('DEPOSITO') || prox === '');
                 // Sin `ubicacion` explícita: addBultosTerminados usa o.AreaID por default —
                 // así el bulto queda en la ubicación real de la orden (EMB o EST), no fija.
                 const lr = await LabelGenerationService.addBultosTerminados(
@@ -687,10 +925,15 @@ exports.aprobarControl = async (req, res) => {
             logger.info(`[Bandeja] aprobarControl: orden ${ordenId} aprobada; bulto final pendiente de otra hermana EST del mismo pedido.`);
         }
 
+        const message = !esUltimaTanda
+            ? `Tanda aprobada: ${totalBultos} bulto(s) con ${nuevoEnEstaTanda} de ${magnitud} prenda(s). Quedan ${magnitud - controladoAprobable} por aprobar; ${magnitud > 0 && ((trabajado != null && trabajado >= magnitud) || controlado >= magnitud) ? 'la orden sigue en Control.' : 'la orden sigue en producción.'}`
+            : undefined;
         res.json({
-            success: true, totalBultos, esperandoHermanaEst,
+            success: true, totalBultos, esperandoHermanaEst, parcial: !esUltimaTanda,
+            pendiente: !esUltimaTanda ? (magnitud - controladoAprobable) : 0,
             areaID: ordenRow.AreaID,
             proximoServicio: ordenRow.ProximoServicio || null,
+            message,
         });
     } catch (err) {
         logger.error('[Bandeja] aprobarControl: ' + err.message);

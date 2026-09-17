@@ -43,8 +43,11 @@ const ClienteBilletera = ({ clienteId, clienteNombre, agrupado = false, onElegir
   const mCuentas = cuentas.filter(c => ['USD', 'UYU', 'DINERO_USD', 'DINERO_UYU', 'CORRIENTE', 'CREDITO'].includes(c.CueTipo?.toUpperCase()));
   // Billetera: puede haber varias cuentas por moneda — el chip grande muestra la PRINCIPAL;
   // las secundarias (con nombre / restringidas) van en chips propios más abajo.
-  const dineroUYU = mCuentas.filter(c => c.CueTipo?.includes('UYU') || c.MonIdMoneda === 1);
-  const dineroUSD = mCuentas.filter(c => c.CueTipo?.includes('USD') || c.MonIdMoneda === 2);
+  // BENEFICIOS (specs/40 RN-BEN.32): la bolsa de un beneficio es una cuenta más del cliente,
+  // pero NO se suma al saldo común: va en su propio chip.
+  const bolsas = mCuentas.filter(c => c.BclIdBeneficioCliente);
+  const dineroUYU = mCuentas.filter(c => !c.BclIdBeneficioCliente && (c.CueTipo?.includes('UYU') || c.MonIdMoneda === 1));
+  const dineroUSD = mCuentas.filter(c => !c.BclIdBeneficioCliente && (c.CueTipo?.includes('USD') || c.MonIdMoneda === 2));
   const ctaUYU = dineroUYU.find(c => c.CueEsPrincipal) || dineroUYU[0];
   const ctaUSD = dineroUSD.find(c => c.CueEsPrincipal) || dineroUSD[0];
   const cuentasSecundarias = mCuentas.filter(c => c !== ctaUYU && c !== ctaUSD && (c.CueNombre || c.CueRestringida || !c.CueEsPrincipal));
@@ -234,6 +237,14 @@ const ClienteBilletera = ({ clienteId, clienteNombre, agrupado = false, onElegir
           {loading && <Loader2 className="animate-spin text-indigo-500 shrink-0" size={14} />}
           {chipBilletera('UYU', dineroUYU, totalUYU, '$', 'bg-brand-cyan/10 border-brand-cyan/20 text-brand-cyan')}
           {chipBilletera('USD', dineroUSD, totalUSD, 'US$', 'bg-emerald-50 border-emerald-100 text-emerald-700')}
+          {bolsas.length > 0 && (
+            <button type="button" onClick={() => toggle('BEN')}
+              title="Beneficios pactados del cliente: cada uno es una cuenta propia, separada del saldo común. Clic para ver cada uno."
+              className={`flex items-center gap-2 px-4 py-2 rounded-2xl border border-violet-200 bg-violet-50 text-violet-700 shadow-sm transition-all ${expandido === 'BEN' ? 'ring-2 ring-cyan-400/40' : ''}`}>
+              <span className="text-[10px] font-black uppercase tracking-tighter">Beneficios · {bolsas.filter(b => b.BclEstado === 'ACTIVO').length} activo{bolsas.filter(b => b.BclEstado === 'ACTIVO').length !== 1 ? 's' : ''}</span>
+              <ChevronDown size={13} className={`opacity-60 transition-transform ${expandido === 'BEN' ? 'rotate-180' : ''}`} />
+            </button>
+          )}
           {saldoChips.find(ch => ch?.key === 'pend')}
           {saldoChips.find(ch => ch?.key === 'deudas')}
           {recursosList.length > 0 && (
@@ -247,6 +258,29 @@ const ClienteBilletera = ({ clienteId, clienteNombre, agrupado = false, onElegir
             </button>
           )}
         </div>
+
+        {/* Desplegable: beneficios (bolsas propias, separadas del saldo común) */}
+        {expandido === 'BEN' && (
+          <div className="max-w-md bg-white border border-violet-200 rounded-xl shadow-sm p-1.5 flex flex-col gap-0.5">
+            <span className="px-3 pt-1 pb-0.5 text-[9px] font-black uppercase tracking-widest text-violet-500">
+              Beneficios pactados — cada uno con su cuenta; clic para ver su libro abajo
+            </span>
+            {bolsas.map(c => (
+              <button key={c.CueIdCuenta} type="button" onClick={() => elegir('D', c.CueIdCuenta)} title="Ver la cuenta de este beneficio en el estado de cuenta de abajo"
+                className="w-full flex items-center justify-between gap-3 px-3 py-1.5 rounded-lg hover:bg-violet-50 transition-colors text-left">
+                <span className="text-xs font-bold text-slate-700 truncate">
+                  <span className="font-mono text-[9px] text-violet-500 mr-1.5">{codigoCuenta(c)}</span>
+                  {nombreCta(c)}
+                  <span className={`ml-1.5 text-[9px] font-black uppercase ${c.BclEstado === 'ACTIVO' ? 'text-emerald-600' : c.BclEstado === 'PAUSADO' ? 'text-amber-600' : 'text-slate-400'}`}>{c.BclEstado === 'ACTIVO' ? 'habilitado' : c.BclEstado === 'PAUSADO' ? 'en pausa' : String(c.BclEstado || '').toLowerCase()}</span>
+                  {c.BclFechaVencimiento && <span className="ml-1 text-[9px] text-slate-400">vence {String(c.BclFechaVencimiento).slice(0, 10).split('-').reverse().join('/')}</span>}
+                </span>
+                <span className={`text-xs font-black font-mono tabular-nums ${Number(c.CueSaldoActual || 0) < 0 ? 'text-rose-600' : 'text-slate-800'}`}>
+                  {c.CueTipo?.includes('USD') ? 'US$' : '$'} {fmt(c.CueSaldoActual)}
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
 
         {/* Desplegable: cuentas de la moneda elegida / recursos en metros */}
         {(expandido === 'UYU' || expandido === 'USD') && (

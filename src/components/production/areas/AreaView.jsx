@@ -18,9 +18,9 @@ import FilePrintControl from "../../pages/FilePrintControl";
 import EcoUvFinishing from "../../pages/EcoUvFinishing";
 import LogisticsDashboard from "../../logistics/LogisticsDashboard";
 import PlaneacionTrabajo from "../../pages/PlaneacionTrabajo";
+import PlanificacionPage from "../../pages/PlanificacionPage";
 import ImportadorManualView from "../ImportadorManualView";
 import EmbBandeja from "../EmbBandeja";
-import ControlPedidosPRO from "../ControlPedidosPRO";
 
 // Modales y Sidebars
 import NewOrderModal from "../../modals/NewOrderModal";
@@ -30,8 +30,7 @@ import LogisticsCartModal from "../../modals/LogisticsCartModal";
 import RollAssignmentModal from "../../modals/RollAssignmentModal";
 // [PRO] Herramientas propias del área Producción (prendas): rutas de producción,
 // cotizaciones del área y ficha de productos terminados.
-import ConfigFlowsModal from "../../modals/config/ConfigFlowsModal";
-import NuevoProductoTerminadoModal from "../../modals/config/NuevoProductoTerminadoModal";
+import ProBandeja from "../ProBandeja";
 import QuotationView from "../../logistics/QuotationView";
 import RollSidebar from "../../layout/RollSidebar";
 import MatrixSidebar from "../../layout/MatrixSidebar";
@@ -187,10 +186,6 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
     const [isCartOpen, setIsCartOpen] = useState(false);
     const [isRollModalOpen, setIsRollModalOpen] = useState(false);
     const [isImportModalOpen, setIsImportModalOpen] = useState(false);
-    // [PRO] Modales propios del área Producción (prendas)
-    const [isFlowsModalOpen, setIsFlowsModalOpen] = useState(false);
-    const [isQuotationModalOpen, setIsQuotationModalOpen] = useState(false);
-    const [isProductosModalOpen, setIsProductosModalOpen] = useState(false);
     const [flashingRows, setFlashingRows] = useState([]);
     const [showCancelled, setShowCancelled] = useState(false);
     const [cancelledOrders, setCancelledOrders] = useState([]);
@@ -1024,30 +1019,10 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
             <LogisticsCartModal isOpen={isCartOpen} onClose={() => setIsCartOpen(false)} areaName={areaConfig.name} areaCode={areaKey} onSuccess={() => refetch()} />
             <RollAssignmentModal isOpen={isRollModalOpen} onClose={() => setIsRollModalOpen(false)} selectedIds={selectedIds} areaCode={areaKey} onSuccess={() => { setSelectedIds([]); refetch(); }} />
 
-            {/* [PRO] Modales del área Producción (prendas) */}
-            {isPro && (
-                <>
-                    <ConfigFlowsModal isOpen={isFlowsModalOpen} onClose={() => setIsFlowsModalOpen(false)} />
-                    {isProductosModalOpen && (
-                        <NuevoProductoTerminadoModal isOpen={true} onClose={() => setIsProductosModalOpen(false)} onCreated={() => refetch()} />
-                    )}
-                    {isQuotationModalOpen && (
-                        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 animate-fade-in">
-                            <div className="bg-white w-full max-w-7xl h-[95vh] rounded-xl overflow-hidden shadow-2xl flex flex-col relative">
-                                <button
-                                    className="absolute top-4 right-6 text-slate-500 hover:text-slate-800 z-10 bg-white hover:bg-slate-200 p-2 rounded-full transition"
-                                    onClick={() => { setIsQuotationModalOpen(false); refetch(); }}
-                                >
-                                    <i className="fa-solid fa-xmark text-xl"></i>
-                                </button>
-                                <div className="flex-1 overflow-hidden">
-                                    <QuotationView areaFilter={areaKey} />
-                                </div>
-                            </div>
-                        </div>
-                    )}
-                </>
-            )}
+            {/* [PRO] "Confirmación de Cotización" dejó de ser modal: ahora es la pestaña/ruta
+                "cotizacion" (más abajo, junto a Bandeja/Logística), igual que el resto de las
+                vistas del área. El buscador de "cualquier área" vive DENTRO de esa página
+                (QuotationView), no acá como modal aparte. */}
 
             {isImportModalOpen && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 animate-fade-in">
@@ -1092,16 +1067,15 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
                             </button>
                         )}
                         <button className={`${btnBaseClass} px-3 h-8 text-xs tablet:px-2 tablet:h-7 tablet:text-[11px] ${isActive('') ? btnPrimaryClass : btnSecondaryClass}`} onClick={() => goTo('')}><LayoutGrid size={14} /> Planilla</button>
-                        {/* Pantalla general de capacidad/agenda (/produccion/planificacion, fuera
-                            de AreaView) — ruta ABSOLUTA a propósito, no goTo(subPath) (que arma
-                            rutas relativas al área actual, basePath/subPath). Se le pasa el área
-                            actual por query param para que cargue directo ahí (en vez de que el
-                            usuario tenga que volver a elegirla adentro) — PlanificacionPage la
-                            usa como selección inicial si es válida, y sigue funcionando igual
-                            entrando por cualquier otro lado sin el parámetro. */}
+                        {/* Agenda/capacidad: pestaña más del área (antes navegaba a la ruta
+                            ABSOLUTA /produccion/planificacion, fuera de AreaView, y se perdía
+                            la barra de botones de arriba) — se le sigue pasando el área actual
+                            por query param para que cargue directo ahí, PlanificacionPage sigue
+                            funcionando igual entrando por cualquier otro lado sin el parámetro
+                            (menú general, u otra área). */}
                         <button
-                            className={`${btnBaseClass} px-3 h-8 text-xs tablet:px-2 tablet:h-7 tablet:text-[11px] ${btnSecondaryClass}`}
-                            onClick={() => navigate(`/produccion/planificacion?area=${areaKey}`)}
+                            className={`${btnBaseClass} px-3 h-8 text-xs tablet:px-2 tablet:h-7 tablet:text-[11px] ${isActive('agenda') ? btnPrimaryClass : btnSecondaryClass}`}
+                            onClick={() => goTo(`agenda?area=${areaKey}`)}
                             title="Ver la capacidad de planta y la agenda de trabajo por día"
                         >
                             <CalendarClock size={14} /> <span className="tablet:hidden">Agenda de Trabajo</span><span className="hidden tablet:inline">Agenda</span>
@@ -1109,28 +1083,27 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
                         {isPro ? (
                             <>
                                 <button
-                                    className={`${btnBaseClass} px-3 h-8 text-xs tablet:px-2 tablet:h-7 tablet:text-[11px] ${btnSecondaryClass}`}
-                                    onClick={() => setIsFlowsModalOpen(true)}
-                                    title="Gestionar las rutas de producción (secuencia de áreas)"
+                                    className={`${btnBaseClass} px-3 h-8 text-xs tablet:px-2 tablet:h-7 tablet:text-[11px] ${isActive('bandeja') ? btnPrimaryClass : btnSecondaryClass}`}
+                                    onClick={() => goTo('bandeja')}
+                                    title="Ver los pedidos en Producción y su flujo completo"
                                 >
-                                    <i className="fa-solid fa-diagram-project"></i> <span className="tablet:hidden">Modificar Flujo</span><span className="hidden tablet:inline">Flujo</span>
+                                    <ListChecks size={14} /> Bandeja
                                 </button>
                                 <button
-                                    className={`${btnBaseClass} px-3 h-8 text-xs tablet:px-2 tablet:h-7 tablet:text-[11px] ${btnSecondaryClass}`}
-                                    onClick={() => setIsQuotationModalOpen(true)}
+                                    className={`${btnBaseClass} px-3 h-8 text-xs tablet:px-2 tablet:h-7 tablet:text-[11px] ${isActive('cotizacion') ? btnPrimaryClass : btnSecondaryClass}`}
+                                    onClick={() => goTo('cotizacion')}
                                     title="Revisar y ajustar las cotizaciones pendientes del área"
                                 >
                                     <i className="fa-solid fa-file-invoice-dollar"></i> <span className="tablet:hidden">Editar Cotización</span><span className="hidden tablet:inline">Cotización</span>
                                 </button>
                                 <button
                                     className={`${btnBaseClass} px-3 h-8 text-xs tablet:px-2 tablet:h-7 tablet:text-[11px] ${btnSecondaryClass}`}
-                                    onClick={() => setIsProductosModalOpen(true)}
+                                    onClick={() => navigate('/configurar-productos')}
                                     title="Configurar la ficha de los productos terminados"
                                 >
                                     <i className="fa-solid fa-cube"></i> <span className="tablet:hidden">Configurar Productos</span><span className="hidden tablet:inline">Productos</span>
                                 </button>
                                 <button className={`${btnBaseClass} px-3 h-8 text-xs tablet:px-2 tablet:h-7 tablet:text-[11px] ${isActive('logistica') ? btnPrimaryClass : btnSecondaryClass}`} onClick={() => goTo('logistica')}><Truck size={14} /> Logística</button>
-                                <button className={`${btnBaseClass} px-3 h-8 text-xs tablet:px-2 tablet:h-7 tablet:text-[11px] ${isActive('control') ? btnPrimaryClass : btnSecondaryClass}`} onClick={() => goTo('control')}><ScanLine size={14} /> Control</button>
                             </>
                         ) : (
                             <>
@@ -1187,7 +1160,7 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
             <div className="flex flex-1 overflow-hidden">
 
 
-                <main className={`flex-1 bg-zinc-50 overflow-hidden flex flex-col h-full items-stretch ${isActive('') || isActive('tabla') || isActive('planeacion') || isActive('bandeja') || isActive('control') || isActive('logistica') ? 'p-0' : 'p-6'}`}>
+                <main className={`flex-1 bg-zinc-50 overflow-hidden flex flex-col h-full items-stretch ${isActive('') || isActive('tabla') || isActive('planeacion') || isActive('bandeja') || isActive('control') || isActive('logistica') || isActive('agenda') || isActive('cotizacion') ? 'p-0' : 'p-6'}`}>
                     <Routes>
                         <Route index element={<ProductionTable rowData={filteredOrders} onRowSelected={setSelectedIds} selectedRowIds={selectedIds} onRowClick={setSelectedOrder} columnDefs={areaConfig.defaultColDefs} toolbarContent={tableToolbar} flashingRowIds={flashingRows} />} />
                         <Route path="tabla" element={<ProductionTable rowData={filteredOrders} onRowSelected={setSelectedIds} selectedRowIds={selectedIds} onRowClick={setSelectedOrder} columnDefs={areaConfig.defaultColDefs} toolbarContent={tableToolbar} flashingRowIds={flashingRows} />} />
@@ -1200,16 +1173,23 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
                             comparten la misma Bandeja/Control genérica (sin lotes). El resto de
                             las áreas usa el control de archivos de siempre. */}
                         <Route path="bandeja" element={
-                            AREAS_BANDEJA_SIN_LOTES.includes(areaKey) ? <EmbBandeja area={areaKey} fase="trabajo" onSelectOrder={setSelectedOrder} /> : <EcoUvFinishing />
+                            areaKey === 'PRO' ? <ProBandeja />
+                                : AREAS_BANDEJA_SIN_LOTES.includes(areaKey) ? <EmbBandeja area={areaKey} fase="trabajo" onSelectOrder={setSelectedOrder} /> : <EcoUvFinishing />
                         } />
                         <Route path="control" element={
-                            areaKey === 'PRO' ? <ControlPedidosPRO />
+                            // Control de Producción quedó absorbido por la Bandeja (mismo
+                            // "Aprobar Control", más el estado 'esperando' y el reporte de
+                            // falla que Control no tenía) — un bookmark viejo a esta URL
+                            // redirige en vez de mostrar la pantalla vieja duplicada.
+                            areaKey === 'PRO' ? <Navigate to="../bandeja" replace />
                                 : areaKey === 'TERMINAC' ? <EcoUvFinishing fase="control" />
                                 : AREAS_BANDEJA_SIN_LOTES.includes(areaKey) ? <EmbBandeja area={areaKey} fase="control" onSelectOrder={setSelectedOrder} />
                                 : <FilePrintControl areaCode={areaKey} />
                         } />
                         <Route path="planeacion" element={<PlaneacionTrabajo AreaID={areaKey} />} />
+                        <Route path="agenda" element={<PlanificacionPage />} />
                         <Route path="logistica" element={<LogisticsDashboard areaCode={areaKey} />} />
+                        {isPro && <Route path="cotizacion" element={<QuotationView areaFilter={areaKey} />} />}
 
                         <Route path="*" element={<Navigate to="." replace />} />
                     </Routes>

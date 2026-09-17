@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { areasService, planificacionService } from '../../services/api';
+import { areasService, planificacionService, ordersService } from '../../services/api';
+import PlanillaAlertas from '../production/components/PlanillaAlertas';
+import OrderDetailModal from '../production/components/OrderDetailModal';
 
 const MESES = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
 
@@ -136,6 +138,13 @@ const PlanificacionPage = () => {
     const [agenda, setAgenda] = useState(null);
     const [capacidad, setCapacidad] = useState(null);
     const [loading, setLoading] = useState(false);
+    // Misma pantalla, dos formas de ver la agenda: 'calendario' (capacidad + prorrateo por
+    // día, de siempre) o 'planilla' (una fila por orden con semáforo de vencimiento, al estilo
+    // de la planilla de alertas de entrega). Comparten área/selector — solo cambia el contenido.
+    const [vista, setVista] = useState('calendario');
+    const [ordenesPlanilla, setOrdenesPlanilla] = useState([]);
+    const [loadingPlanilla, setLoadingPlanilla] = useState(false);
+    const [selectedOrder, setSelectedOrder] = useState(null);
     // Qué grupo (de agruparAvance) está expandido mostrando el detalle — clave compuesta
     // "fecha-del-día-del-calendario|clave-del-grupo" para no mezclar la expansión entre días
     // distintos de la grilla. Solo uno abierto a la vez.
@@ -332,6 +341,27 @@ const PlanificacionPage = () => {
 
     useEffect(() => { cargarAgenda(); }, [cargarAgenda]);
 
+    // Vista Planilla: misma fuente que la Planilla del área (Ordenes activas, con
+    // FechaEstimadaEntrega ya calculada) — no reusa la simulación de capacidad, solo compara
+    // esa fecha compromiso contra "ahora" para el semáforo (ver PlanillaAlertas).
+    const cargarPlanilla = useCallback(async () => {
+        if (!areaId) return;
+        setLoadingPlanilla(true);
+        try {
+            const data = await ordersService.getByArea(areaId, 'active');
+            setOrdenesPlanilla(data || []);
+        } catch (e) {
+            console.error(e);
+            setOrdenesPlanilla([]);
+        } finally {
+            setLoadingPlanilla(false);
+        }
+    }, [areaId]);
+
+    useEffect(() => {
+        if (vista === 'planilla') cargarPlanilla();
+    }, [vista, cargarPlanilla]);
+
     return (
         <div className="min-h-screen bg-slate-50 p-8 font-sans text-slate-800">
         <div className="flex gap-6 items-start">
@@ -364,29 +394,61 @@ const PlanificacionPage = () => {
                             ></i>
                         )}
                     </div>
-                    <button
-                        onClick={() => setDesde(addDiasStr(desde, -14))}
-                        className="w-9 h-9 flex items-center justify-center rounded-lg bg-white border border-slate-200 text-slate-500 hover:bg-slate-100 shadow-sm"
-                        title="14 días antes"
-                    >
-                        <i className="fa-solid fa-chevron-left"></i>
-                    </button>
-                    <button
-                        onClick={() => setDesde(hoyStr())}
-                        className="px-3 h-9 flex items-center justify-center rounded-lg bg-white border border-slate-200 text-slate-500 hover:bg-slate-100 shadow-sm text-xs font-bold uppercase"
-                    >
-                        Hoy
-                    </button>
-                    <button
-                        onClick={() => setDesde(addDiasStr(desde, 14))}
-                        className="w-9 h-9 flex items-center justify-center rounded-lg bg-white border border-slate-200 text-slate-500 hover:bg-slate-100 shadow-sm"
-                        title="14 días después"
-                    >
-                        <i className="fa-solid fa-chevron-right"></i>
-                    </button>
+
+                    {/* Dos formas de ver la misma agenda: Calendario (capacidad + prorrateo por
+                        día) o Planilla (una fila por orden, semáforo de vencimiento). */}
+                    <div className="flex items-center bg-white border border-slate-200 rounded-lg shadow-sm p-0.5">
+                        <button
+                            onClick={() => setVista('calendario')}
+                            className={`px-3 h-8 rounded-md text-xs font-bold uppercase flex items-center gap-1.5 transition-colors ${vista === 'calendario' ? 'bg-teal-500 text-white' : 'text-slate-500 hover:text-teal-600'}`}
+                        >
+                            <i className="fa-solid fa-calendar-days"></i> Calendario
+                        </button>
+                        <button
+                            onClick={() => setVista('planilla')}
+                            className={`px-3 h-8 rounded-md text-xs font-bold uppercase flex items-center gap-1.5 transition-colors ${vista === 'planilla' ? 'bg-teal-500 text-white' : 'text-slate-500 hover:text-teal-600'}`}
+                        >
+                            <i className="fa-solid fa-table-list"></i> Planilla
+                        </button>
+                    </div>
+
+                    {vista === 'calendario' && (
+                        <>
+                            <button
+                                onClick={() => setDesde(addDiasStr(desde, -14))}
+                                className="w-9 h-9 flex items-center justify-center rounded-lg bg-white border border-slate-200 text-slate-500 hover:bg-slate-100 shadow-sm"
+                                title="14 días antes"
+                            >
+                                <i className="fa-solid fa-chevron-left"></i>
+                            </button>
+                            <button
+                                onClick={() => setDesde(hoyStr())}
+                                className="px-3 h-9 flex items-center justify-center rounded-lg bg-white border border-slate-200 text-slate-500 hover:bg-slate-100 shadow-sm text-xs font-bold uppercase"
+                            >
+                                Hoy
+                            </button>
+                            <button
+                                onClick={() => setDesde(addDiasStr(desde, 14))}
+                                className="w-9 h-9 flex items-center justify-center rounded-lg bg-white border border-slate-200 text-slate-500 hover:bg-slate-100 shadow-sm"
+                                title="14 días después"
+                            >
+                                <i className="fa-solid fa-chevron-right"></i>
+                            </button>
+                        </>
+                    )}
                 </div>
             </div>
 
+            {vista === 'planilla' ? (
+                <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden" style={{ height: 'calc(100vh - 220px)' }}>
+                    {loadingPlanilla ? (
+                        <div className="text-center py-20 text-slate-400"><i className="fa-solid fa-spinner fa-spin text-2xl"></i></div>
+                    ) : (
+                        <PlanillaAlertas rowData={ordenesPlanilla} onRowClick={setSelectedOrder} />
+                    )}
+                </div>
+            ) : (
+            <>
             {!agenda?.tieneHorarioConfigurado && agenda && (
                 <div className="mb-6 px-4 py-3 rounded-lg bg-amber-50 border border-amber-200 text-amber-700 text-sm flex items-center gap-2">
                     <i className="fa-solid fa-triangle-exclamation"></i>
@@ -556,6 +618,8 @@ const PlanificacionPage = () => {
                     })}
                 </div>
             )}
+            </>
+            )}
 
         </div>
 
@@ -656,6 +720,11 @@ const PlanificacionPage = () => {
         )}
         </div>
 
+        <OrderDetailModal
+            order={selectedOrder}
+            onClose={() => setSelectedOrder(null)}
+            onOrderUpdated={() => { setSelectedOrder(null); cargarPlanilla(); }}
+        />
         </div>
     );
 };

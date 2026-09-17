@@ -276,27 +276,48 @@ export default function CierreCicloPreviewModal({
     });
   };
 
-  const handleEditDetalle = (detalleId, nuevoPrecio, cant, descValor = 0, descTipo = '%') => {
-    const p = Number(nuevoPrecio);
-    const c = Number(cant);
-    const v = Number(descValor);
+  // ── Desglose de una línea del pedido (lista / descuento / recargo congelados) ────────
+  // Pedidos anteriores al desglose no tienen PrecioLista: se toma el neto como lista y no
+  // hay descuento ni recargo que editar (se muestran bloqueados).
+  const r4c = n => Math.round((Number(n || 0) + Number.EPSILON) * 10000) / 10000;
+  // El % se muestra con 2 decimales como máximo (el guardado puede traer 4: 36,3636); lo que
+  // se está tipeando no se toca para no comerse el punto decimal.
+  const pct2 = v => { if (v == null || v === '') return ''; const s = String(v); const m = s.match(/^-?\d+[.,](\d+)$/); return (m && m[1].length > 2) ? Math.round(Number(s.replace(',', '.')) * 100) / 100 : v; };
+  // lista 0 = sin lista (línea sin catálogo): se trata como neto, sin descuento ni recargo
+  const listaDetalle = d => (Number(d.PrecioLista) > 0 ? Number(d.PrecioLista) : (Number(d.PrecioUnitario) || 0));
+  const descUnitDetalle = d => (Number(d.PrecioLista) > 0 ? (Number(d.DescuentoImporte) || 0) : 0);
+  const recUnitDetalle = d => (Number(d.PrecioLista) > 0 ? (Number(d.RecargoImporte) || 0) : 0);
 
-    let subt = p * c;
-    if (descTipo === '%') {
-      subt = subt * (1 - v / 100);
-    } else {
-      const equivalentPorc = (p * c) > 0 ? (v / (p * c)) : 0;
-      subt = subt * (1 - equivalentPorc);
-    }
+  // Edición de una línea de la pre-factura: SOLO descuento y recargo (en % o en importe
+  // por unidad). La lista viene congelada del pedido; el neto y el subtotal se recalculan:
+  // neto = lista − descuento + recargo; subtotal = neto × cantidad.
+  const handleEditDetalle = (d, cambios = {}) => {
+    const prevEd = detallesEditados[d.DetalleID];
+    const lista = Number(cambios.Lista ?? (prevEd ? prevEd.Lista : listaDetalle(d)));
+    const c = Number(cambios.Cantidad ?? (prevEd ? prevEd.Cantidad : d.Cantidad)) || 0;
+    const descU = Math.max(0, Number(cambios.DescUnit ?? (prevEd ? prevEd.DescUnit : descUnitDetalle(d))) || 0);
+    const recU = Math.max(0, Number(cambios.RecUnit ?? (prevEd ? prevEd.RecUnit : recUnitDetalle(d))) || 0);
+    const descPct = cambios.DescPct !== undefined ? Number(cambios.DescPct) || 0 : (prevEd ? prevEd.DescPct : (lista > 0 ? r4c(descU / lista * 100) : 0));
+    const recPct = cambios.RecPct !== undefined ? Number(cambios.RecPct) || 0 : (prevEd ? prevEd.RecPct : (lista > 0 ? r4c(recU / lista * 100) : 0));
+    const neto = Math.max(0, r4c(lista - descU + recU));
 
     setDetallesEditados(prev => ({
       ...prev,
-      [detalleId]: {
-        PrecioUnitario: p,
+      [d.DetalleID]: {
+        Lista: lista,
+        PrecioUnitario: neto,
         Cantidad: c,
-        DescValor: v,
-        DescTipo: descTipo,
-        Subtotal: subt,
+        DescUnit: descU,
+        RecUnit: recU,
+        DescPct: descPct,
+        RecPct: recPct,
+        // texto que ve el cliente en la factura: vacío = automático; '-' = sin texto
+        DescTexto: cambios.DescTexto !== undefined ? cambios.DescTexto : (prevEd ? (prevEd.DescTexto || '') : ''),
+        RecTexto: cambios.RecTexto !== undefined ? cambios.RecTexto : (prevEd ? (prevEd.RecTexto || '') : ''),
+        // compatibilidad con el backend (descuento en % sobre la lista)
+        DescValor: descPct,
+        DescTipo: '%',
+        Subtotal: r4c(neto * c),
         Editado: true
       }
     }));
@@ -419,6 +440,13 @@ export default function CierreCicloPreviewModal({
       PrecioUnitario: detallesEditados[id].PrecioUnitario,
       Cantidad: detallesEditados[id].Cantidad,
       Subtotal: detallesEditados[id].Subtotal,
+      // desglose editado (descuento / recargo por unidad y %), para que el pedido quede coherente
+      DescUnit: detallesEditados[id].DescUnit,
+      RecUnit: detallesEditados[id].RecUnit,
+      DescPct: detallesEditados[id].DescPct,
+      RecPct: detallesEditados[id].RecPct,
+      DescTexto: (detallesEditados[id].DescTexto || '').trim(),
+      RecTexto: (detallesEditados[id].RecTexto || '').trim(),
     }));
     setGuardando(true);
     try {
@@ -548,7 +576,13 @@ export default function CierreCicloPreviewModal({
       PrecioUnitario: detallesEditados[id].PrecioUnitario,
       Subtotal: detallesEditados[id].Subtotal,
       DescValor: detallesEditados[id].DescValor || 0,
-      DescTipo: detallesEditados[id].DescTipo || '%'
+      DescTipo: detallesEditados[id].DescTipo || '%',
+      DescUnit: detallesEditados[id].DescUnit,
+      RecUnit: detallesEditados[id].RecUnit,
+      DescPct: detallesEditados[id].DescPct,
+      RecPct: detallesEditados[id].RecPct,
+      DescTexto: (detallesEditados[id].DescTexto || '').trim(),
+      RecTexto: (detallesEditados[id].RecTexto || '').trim()
     }));
 
     // El backend espera el descuento global en la moneda base de la cuenta
@@ -608,7 +642,12 @@ export default function CierreCicloPreviewModal({
         }
         const monBase = Number(cuenta?.MonIdMoneda) === 2 ? 'USD' : 'UYU';
         const codsInc = movs.filter(m => !excluidos.has(m.MovIdMovimiento)).map(m => m.OrdCodigoOrden).filter(Boolean);
-        const codsTxt = codsInc.slice(0, 3).join(', ') + (codsInc.length > 3 ? ` y ${codsInc.length - 3} más` : '');
+        // Concepto CORTO: enumerar las órdenes acá dejaba el libro de la cuenta ilegible
+        // (un cierre con 12 órdenes se cortaba en "SUB-19458, SUB-19068, SUB-1…"). El
+        // número de la factura se vincula enseguida y cada orden se ve en "ver detalle".
+        const codsTxt = codsInc.length === 0 ? ''
+          : codsInc.length === 1 ? codsInc[0]
+          : `${codsInc.length} órdenes del ciclo`;
         try {
           const trf = await api.post('/contabilidad/cuentas/transferir', {
             CueOrigen: cuentaElegida.CueIdCuenta,
@@ -811,29 +850,43 @@ export default function CierreCicloPreviewModal({
             // Criterio único: moneda del congelado (d.Moneda) > orden > cuenta — ver monedaDetalle
             const rate = rateDetalle(m, d);
             const finalSub = r2conv(sub * rate);
-            // Usar precio y descuento editados (no el precio original de DB)
-            const editedPrice = ed ? ed.PrecioUnitario : (d.PrecioUnitario || (d.Subtotal / d.Cantidad));
             const editedCant  = ed?.Cantidad ?? d.Cantidad;
-            const editedDescPct = (ed && ed.DescTipo === '%') ? ed.DescValor : 0;
-            const unitario = r2conv(editedPrice * rate);
-            const descItem = r2conv(editedPrice * editedCant * (editedDescPct / 100) * rate);
+            // Desglose congelado del pedido (o editado acá): lista − descuento + recargo = neto.
+            // Línea de la factura (todo con IVA): lista × cant − descuento + recargo = importe;
+            // el importe del descuento absorbe el redondeo.
+            const lista = ed ? ed.Lista : listaDetalle(d);
+            const descU = ed ? ed.DescUnit : descUnitDetalle(d);
+            const recU  = ed ? ed.RecUnit  : recUnitDetalle(d);
+            const descPctL = ed ? ed.DescPct : (d.PrecioLista != null && d.DescuentoPct != null ? Number(d.DescuentoPct) : null);
+            const recPctL  = ed ? ed.RecPct  : (d.PrecioLista != null && d.RecargoPct  != null ? Number(d.RecargoPct)  : null);
+            const unitario = r2conv(lista * rate);
+            const bruto = r2conv(lista * editedCant * rate);
+            const recItem = recU > 0 ? r2conv(recU * editedCant * rate) : 0;
+            const descItem = descU > 0 ? Math.max(0, r2conv(bruto + recItem - finalSub)) : 0;
             orderSubtotal += finalSub;
 
-            const descArticulo = `${d.ArticuloNombre ? d.ArticuloNombre.trim() + ' - ' : ''}${(d.Descripcion || d.LogPrecioAplicado || 'Servicio').trim()}`;
-            const descOrden = `${m.OrdCodigoOrden || m.MovConcepto}${m.OrdNombreTrabajo ? ` - ${m.OrdNombreTrabajo}` : ''}${(esOrdenUrgente(m) || tieneRecargoUrgencia(d.LogPrecioAplicado)) ? ' (Urgencia)' : ''}`;
+            const descArticulo = `${d.ArticuloNombre ? d.ArticuloNombre.trim() + ' - ' : ''}${(d.Descripcion || 'Servicio').trim()}`;
+            const descOrden = `${m.OrdCodigoOrden || m.MovConcepto}${m.OrdNombreTrabajo ? ` - ${m.OrdNombreTrabajo}` : ''}`;
+            const editoDesc = !!(ed && ed.Editado && Math.abs((ed.DescUnit || 0) - descUnitDetalle(d)) > 0.00005);
+            const editoRec  = !!(ed && ed.Editado && Math.abs((ed.RecUnit  || 0) - recUnitDetalle(d))  > 0.00005);
+            const origenDesc = (ed && (ed.DescTexto || '').trim()) || (editoDesc ? 'Ajuste manual en la pre-factura' : (d.DescuentoOrigen || (descU > 0 ? 'Descuento' : null)));
+            const origenRec  = (ed && (ed.RecTexto  || '').trim()) || (editoRec  ? 'Ajuste manual en la pre-factura' : (d.RecargoOrigen  || (recU  > 0 ? 'Recargo'  : null)));
 
             detallesParaPDF.push({
               OrdCodigoOrden: m.OrdCodigoOrden || null,
               DcdNomItem: descArticulo,
               DcdDscItem: descOrden,
-              // Cantidad editada (no la original): el importe y el descuento ya se calculan
-              // con editedCant, si acá va la original el P. Unitario del PDF sale mal.
               DcdCantidad: editedCant,
               DcdPrecioUnitario: unitario,
               DcdTotalDescuentos: descItem > 0.01 ? descItem : null,
               // El % va explícito: si se deja que el PDF lo recalcule desde los importes
               // (redondeados a 2 decimales al guardar) un 10% sale impreso como 10,03%.
-              DcdDescuentoPct: editedDescPct > 0 ? editedDescPct : null,
+              DcdDescuentoPct: descItem > 0.01 && descPctL > 0 ? descPctL : null,
+              DcdDescuentoStr: descItem > 0.01 ? origenDesc : null,
+              DcdDescuentoOrigen: descItem > 0.01 ? origenDesc : null,
+              DcdTotalRecargos: recItem > 0.01 ? recItem : null,
+              DcdRecargoPct: recItem > 0.01 && recPctL > 0 ? recPctL : null,
+              DcdRecargoStr: recItem > 0.01 ? origenRec : null,
               DcdSubtotal: finalSub
             });
           });
@@ -1247,9 +1300,10 @@ export default function CierreCicloPreviewModal({
                   </th>
                   <th className="px-4 py-3">Descripción del Item</th>
                   <th className="px-4 py-3 text-center">Cant.</th>
-                  <th className="px-4 py-3 text-right">P. Unitario</th>
-                  <th className="px-4 py-3 text-right">% Desc.</th>
-                  <th className="px-4 py-3 text-right">P.U. Neto</th>
+                  <th className="px-4 py-3 text-right" title="Precio de lista congelado en el pedido (antes de descuento y recargo)">P. Lista</th>
+                  <th className="px-4 py-3 text-right" title="Descuento: % sobre la lista e importe por unidad. Editable.">Descuento</th>
+                  <th className="px-4 py-3 text-right" title="Recargo (urgencia, tinta, manual): % sobre la lista e importe por unidad. Editable.">Recargo</th>
+                  <th className="px-4 py-3 text-right" title="Neto por unidad = lista − descuento + recargo">P. Unitario</th>
                   <th className="px-4 py-3 text-right">Subtotal</th>
                 </tr>
               </thead>
@@ -1303,6 +1357,7 @@ export default function CierreCicloPreviewModal({
                             })()}
                           </td>
                           <td className="px-4 py-2.5 text-center">0</td>
+                          <td></td>
                           <td className="px-4 py-2.5 text-right font-mono font-bold text-slate-700">
                             {(() => {
                                const importe = Math.abs(Number(m.MovImporte));
@@ -1317,68 +1372,98 @@ export default function CierreCicloPreviewModal({
 
                       {!isExcluido && m.detalles?.map(d => {
                         const ed = detallesEditados[d.DetalleID];
-                        const punit = ed ? ed.PrecioUnitario : d.PrecioUnitario;
+                        const sinLista = !(Number(d.PrecioLista) > 0);
+                        const lista = ed ? ed.Lista : listaDetalle(d);
                         const cant  = ed?.Cantidad ?? d.Cantidad;
-                        // Descuento siempre en % (sin toggle)
-                        const descPct = ed ? (ed.DescTipo === '%' ? ed.DescValor : 0) : 0;
+                        const descU = ed ? ed.DescUnit : descUnitDetalle(d);
+                        const recU  = ed ? ed.RecUnit  : recUnitDetalle(d);
+                        const descPct = ed ? ed.DescPct : (!sinLista && d.DescuentoPct != null ? Number(d.DescuentoPct) : (lista > 0 && descU > 0 ? r4c(descU / lista * 100) : 0));
+                        const recPct  = ed ? ed.RecPct  : (!sinLista && d.RecargoPct  != null ? Number(d.RecargoPct)  : (lista > 0 && recU  > 0 ? r4c(recU  / lista * 100) : 0));
+                        const neto = ed ? ed.PrecioUnitario : (sinLista ? (Number(d.PrecioUnitario) || 0) : r4c(lista - descU + recU));
                         const subt  = ed ? ed.Subtotal : d.Subtotal;
 
                         // Conversión visual: moneda del congelado (d.Moneda) primero — ver monedaDetalle
                         const rate = rateDetalle(m, d);
-                        const vPunit  = r2conv(punit * rate);
-                        const vSubt   = r2conv(subt  * rate);
-                        const puNeto  = punit * (1 - descPct / 100);
-                        const vPuNeto = r2conv(puNeto * rate);
+                        const origen = [d.DescuentoOrigen, d.RecargoOrigen].filter(Boolean).join(' · ');
+                        const inputCls = "w-16 bg-white border border-slate-200 hover:border-slate-300 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 text-right outline-none font-mono text-[11px] text-slate-700 rounded py-0.5 px-1 shadow-sm font-bold disabled:bg-slate-50 disabled:text-slate-300 disabled:shadow-none";
+                        // % → importe por unidad; importe (en la moneda de la factura) → por unidad en la moneda del pedido
+                        const onDescPct = v => { const p = Math.min(100, Math.max(0, Number(v) || 0)); handleEditDetalle(d, { DescUnit: r4c(lista * p / 100), DescPct: p }); };
+                        const onDescImp = v => { const u = Math.max(0, (Number(v) || 0) / (rate || 1)); handleEditDetalle(d, { DescUnit: u, DescPct: lista > 0 ? r4c(u / lista * 100) : 0 }); };
+                        const onRecPct  = v => { const p = Math.max(0, Number(v) || 0); handleEditDetalle(d, { RecUnit: r4c(lista * p / 100), RecPct: p }); };
+                        const onRecImp  = v => { const u = Math.max(0, (Number(v) || 0) / (rate || 1)); handleEditDetalle(d, { RecUnit: u, RecPct: lista > 0 ? r4c(u / lista * 100) : 0 }); };
 
                         return (
                           <tr key={d.DetalleID} className="group hover:bg-slate-50 text-[13px]">
                             <td></td>
-                            <td className="px-6 py-2.5 text-slate-500 pl-8 flex items-center gap-2">
-                              <div className="w-1.5 h-1.5 rounded-full bg-slate-300"></div>
-                              {d.ArticuloNombre ? d.ArticuloNombre.trim() + ' - ' : ''}
-                              {d.Descripcion || d.LogPrecioAplicado || 'Servicio'}
+                            <td className="px-6 py-2.5 text-slate-500 pl-8">
+                              <div className="flex items-center gap-2">
+                                <div className="w-1.5 h-1.5 rounded-full bg-slate-300"></div>
+                                {d.ArticuloNombre ? d.ArticuloNombre.trim() + ' - ' : ''}
+                                {d.Descripcion || 'Servicio'}
+                              </div>
+                              {!sinLista && (descU > 0 || recU > 0) && (() => {
+                                // texto que ve el cliente: vacío = automático (el del pedido, o 'Ajuste manual…' si se editó el %); '-' = sin texto
+                                const autoDesc = (ed && Math.abs(descU - descUnitDetalle(d)) > 0.00005) ? 'Ajuste manual en la pre-factura' : (d.DescuentoOrigen || 'Descuento');
+                                const autoRec  = (ed && Math.abs(recU  - recUnitDetalle(d))  > 0.00005) ? 'Ajuste manual en la pre-factura' : (d.RecargoOrigen  || 'Recargo');
+                                const txtCls = 'w-48 bg-white border border-slate-200 focus:border-indigo-500 outline-none text-[10px] text-indigo-600 rounded py-0.5 px-1.5 placeholder-slate-300';
+                                return (
+                                  <div className="flex flex-wrap gap-1 pl-3.5 mt-0.5">
+                                    {descU > 0 && (
+                                      <input type="text" value={ed ? (ed.DescTexto || '') : ''} placeholder={autoDesc}
+                                        title="Texto que ve el cliente en la factura junto al descuento. Vacío = el texto automático (en gris). Un guion (-) = sin texto."
+                                        onChange={e => handleEditDetalle(d, { DescTexto: e.target.value })} className={txtCls} />
+                                    )}
+                                    {recU > 0 && (
+                                      <input type="text" value={ed ? (ed.RecTexto || '') : ''} placeholder={autoRec}
+                                        title="Texto que ve el cliente en la factura junto al recargo. Vacío = el texto automático (en gris). Un guion (-) = sin texto."
+                                        onChange={e => handleEditDetalle(d, { RecTexto: e.target.value })} className={txtCls} />
+                                    )}
+                                  </div>
+                                );
+                              })()}
+                              {sinLista && origen && (
+                                <div className="text-[10px] text-indigo-500 pl-3.5">{origen}</div>
+                              )}
+                              {sinLista && (
+                                <div className="text-[10px] text-slate-400 pl-3.5" title="Pedido anterior al desglose: no tiene lista guardada, no se puede editar descuento ni recargo acá">
+                                  sin desglose de lista
+                                </div>
+                              )}
                             </td>
-                            <td className="px-4 py-2.5 text-center">
-                              <SimpleInput
-                                value={cant}
-                                onChange={val => handleEditDetalle(d.DetalleID, punit, val, descPct, '%')}
-                                placeholder={String(d.Cantidad)}
-                              />
-                            </td>
+                            <td className="px-4 py-2.5 text-center font-mono text-[12px] text-slate-600" title="La cantidad se corrige en la orden, no en la pre-factura">{cant}</td>
+                            <td className="px-4 py-2.5 text-right font-mono text-[12px] text-slate-700">{simbolo} {fmt(r2conv(lista * rate))}</td>
                             <td className="px-4 py-2.5 text-right">
-                              <SimpleInput
-                                value={vPunit}
-                                onChange={val => {
-                                  const rawVal = val / rate;
-                                  handleEditDetalle(d.DetalleID, rawVal, cant, descPct, '%');
-                                }}
-                              />
-                            </td>
-                            <td className="px-4 py-2.5 text-right">
-                              <div className="flex items-center justify-end gap-0.5">
-                                <input
-                                  type="number"
-                                  min="0"
-                                  max="100"
-                                  value={descPct || ''}
-                                  placeholder="0"
-                                  onChange={e => {
-                                    const pct = Math.min(100, Math.max(0, Number(e.target.value)));
-                                    handleEditDetalle(d.DetalleID, punit, cant, pct, '%');
-                                  }}
-                                  className="w-16 bg-white border border-slate-200 hover:border-slate-300 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 text-right outline-none font-mono text-slate-700 rounded py-0.5 px-1.5 shadow-sm font-bold"
-                                />
-                                <span className="text-[10px] font-bold text-slate-400">%</span>
+                              <div className="flex flex-col items-end gap-0.5">
+                                <div className="flex items-center gap-0.5">
+                                  <input type="number" min="0" max="100" step="any" disabled={sinLista} value={descPct ? pct2(descPct) : ''} placeholder="0" onChange={e => onDescPct(e.target.value)} className={inputCls} />
+                                  <span className="text-[10px] font-bold text-slate-400 w-4">%</span>
+                                </div>
+                                <div className="flex items-center gap-0.5">
+                                  <input type="number" min="0" step="any" disabled={sinLista} value={descU > 0 ? r2conv(descU * rate) : ''} placeholder="0" onChange={e => onDescImp(e.target.value)} className={inputCls} />
+                                  <span className="text-[10px] font-bold text-slate-400 w-4">{simbolo}</span>
+                                </div>
                               </div>
                             </td>
                             <td className="px-4 py-2.5 text-right">
-                              <span className={`font-mono text-sm font-bold ${descPct > 0 ? 'text-emerald-600' : 'text-slate-500'}`}>
-                                {simbolo} {fmt(vPuNeto)}
+                              <div className="flex flex-col items-end gap-0.5">
+                                <div className="flex items-center gap-0.5">
+                                  <input type="number" min="0" step="any" disabled={sinLista} value={recPct ? pct2(recPct) : ''} placeholder="0" onChange={e => onRecPct(e.target.value)} className={inputCls} />
+                                  <span className="text-[10px] font-bold text-slate-400 w-4">%</span>
+                                </div>
+                                <div className="flex items-center gap-0.5">
+                                  <input type="number" min="0" step="any" disabled={sinLista} value={recU > 0 ? r2conv(recU * rate) : ''} placeholder="0" onChange={e => onRecImp(e.target.value)} className={inputCls} />
+                                  <span className="text-[10px] font-bold text-slate-400 w-4">{simbolo}</span>
+                                </div>
+                              </div>
+                            </td>
+                            <td className="px-4 py-2.5 text-right">
+                              <span className={`font-mono text-sm font-bold ${descU > 0 ? 'text-emerald-600' : 'text-slate-500'}`}>
+                                {simbolo} {fmt(r2conv(neto * rate))}
                               </span>
                             </td>
                             <td className="px-4 py-2.5 text-right">
-                              <span className={`font-mono text-sm font-bold ${descPct > 0 ? 'text-emerald-600' : 'text-slate-800'}`}>
-                                {simbolo} {fmt(vSubt)}
+                              <span className="font-mono text-sm font-bold text-slate-800">
+                                {simbolo} {fmt(r2conv(subt * rate))}
                               </span>
                             </td>
                           </tr>

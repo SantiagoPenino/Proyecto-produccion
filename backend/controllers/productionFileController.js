@@ -1,6 +1,25 @@
 const { sql, getPool } = require('../config/db');
 const PricingService = require('../services/pricingService');
 const LabelGenerationService = require('../services/LabelGenerationService');
+
+// [PRENDAS] ¿La orden es trabajo interno de un pedido con orden madre PRO (el Bordado, DTF,
+// TPU, Estampado, Corte o Costura de una prenda comprada o fabricada)? Esas órdenes NO tienen
+// línea de cotización propia a propósito — el precio viaja en la PRO, o la personalización
+// directamente no se cobra — así que el chequeo "sin cantidad cotizada no hay etiquetas" las
+// dejaba SIN etiqueta ni bulto, y sin bulto no se puede mandar al área siguiente (caso
+// DTF-20947: pronta para Estampado y sin etiqueta; cargarle metros a la orden no alcanzaba,
+// porque lo que se mira es la cotización). LabelGenerationService ya las acepta (mismo
+// criterio, esHermanaPrendaLbl); lo que cortaba antes era este chequeo previo.
+async function esTrabajoInternoDePedidoConPro(pool, ordenId) {
+    const r = await pool.request().input('OID', sql.Int, ordenId).query(`
+        SELECT TOP 1 1 AS X
+        FROM Ordenes o
+        JOIN Ordenes pro ON LTRIM(RTRIM(pro.NoDocERP)) = LTRIM(RTRIM(o.NoDocERP)) AND pro.AreaID = 'PRO'
+        WHERE o.OrdenID = @OID
+          AND UPPER(LTRIM(RTRIM(o.AreaID))) IN ('EMB', 'DF', 'TPU', 'EST', 'TWC', 'TWT', 'SB')
+    `);
+    return r.recordset.length > 0;
+}
 const driveService = require('../services/driveService');
 const logger = require('../utils/logger');
 const { changeOrderState } = require('../services/stateManagerService');
@@ -1425,7 +1444,9 @@ const postControlArchivo = async (req, res) => {
 
                     const magVal = parseFloat(checkMag.recordset[0]?.TotalCantidad) || 0;
 
-                    if (magVal > 0) {
+                    // Trabajo interno de un pedido con PRO: sin cotización propia a propósito.
+                    const sinCotizacionPropia = magVal > 0 ? false : await esTrabajoInternoDePedidoConPro(pool, ordenId);
+                    if (magVal > 0 || sinCotizacionPropia) {
                         logger.info(`[postControlArchivo] Llamando LabelGenerationService para Orden ${ordenId}...`);
                         const labelResult = await LabelGenerationService.regenerateLabelsForOrder(ordenId, (req.user?.id || 1), (req.user?.usuario || 'Sistema'));
                         if (labelResult.success) {
@@ -2393,13 +2414,26 @@ async function completarOrden(req, res) {
         // no finalizaba, no curaba a la madre ni a los eslabones previos.
         const isFallaOrder = /-F\d+(-\d+)?$/.test(codigoOrden);
 
+        // Spec 39: una orden de falla con reposición registrada que tiene que VIAJAR (nació en otra
+        // área por un faltante, o su madre ya salió en envío parcial) se termina como una orden
+        // común (Pronto → etiqueta → complemento de la madre), no se guarda en el canasto de
+        // reposiciones. Las fallas de siempre (sin registro) siguen exactamente igual.
+        let fallaViajaComoComplemento = false;
+        if (isFallaOrder && !tieneFallas) {
+            try {
+                const rep = await require('../services/reposicionesService').alTerminarOrdenFalla(transaction, ordenId, req.user || 'Sistema', req.app.get('socketio'));
+                fallaViajaComoComplemento = !!(rep && rep.viaja);
+            } catch (eRep) { logger.warn(`[completarOrden] reposiciones (Spec 39): ${eRep.message}`); }
+        }
+
         // -F (falla interna) completada sin fallas → Finalizado (su material se incorpora a la
         // madre, no se despacha sola). Orden/reposición común → Pronto.
-        const nuevoEstado     = tieneFallas ? 'Retenido' : (isFallaOrder ? 'Finalizado' : 'Pronto');
-        const nuevoEstadoArea = tieneFallas ? 'Retenido' : (isFallaOrder ? 'Finalizado' : 'Pronto');
+        const cierraEnCanasto = isFallaOrder && !fallaViajaComoComplemento;
+        const nuevoEstado     = tieneFallas ? 'Retenido' : (cierraEnCanasto ? 'Finalizado' : 'Pronto');
+        const nuevoEstadoArea = tieneFallas ? 'Retenido' : (cierraEnCanasto ? 'Finalizado' : 'Pronto');
         let estadoLogistica = tieneFallas
             ? 'Esperando Reposición'
-            : (isFallaOrder ? 'Canasto Reposiciones' : 'Canasto Produccion');
+            : (cierraEnCanasto ? 'Canasto Reposiciones' : 'Canasto Produccion');
 
         // ── PEDIDO COMPLETO EN ÁREA: órdenes hermanas divididas por tela (mismo NoDocERP) ──
         // Si al pasar esta orden a Pronto todavía quedan hermanas del mismo pedido en el área
@@ -2591,7 +2625,9 @@ async function completarOrden(req, res) {
                 const prioridadStr = (prioridadRes.recordset[0]?.Prioridad || '').toUpperCase();
                 const esReposicion = codigoOrden.includes('-R') || prioridadStr === 'REPOSICIÓN' || prioridadStr === 'REPOSICION';
 
-                if (magVal > 0 || esReposicion) {
+                // Trabajo interno de un pedido con PRO: sin cotización propia a propósito.
+                const sinCotizacionPropia = (magVal > 0 || esReposicion) ? false : await esTrabajoInternoDePedidoConPro(pool, ordenId);
+                if (magVal > 0 || esReposicion || sinCotizacionPropia) {
                     const labelResult = await LabelGenerationService.regenerateLabelsForOrder(
                         ordenId, (req.user?.id || 1), (req.user?.usuario || 'Sistema')
                     );

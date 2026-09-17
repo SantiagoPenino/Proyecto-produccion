@@ -4,19 +4,12 @@ import { fmtFecha } from '../../utils/fechas';
 import {
     Landmark, ChevronRight, Search, RefreshCw, Download,
     PieChart as PieChartIcon, FileCheck2, CheckCircle2, XCircle, Wallet, BookText, Eye,
-    Users, Package, BarChart3, Settings2, FolderTree, ChevronDown, Check, LayoutDashboard,
+    Users, Package, BarChart3, Settings2, FolderTree, ChevronDown, Check,
 } from 'lucide-react';
-import ProduccionPanelSection from './ProduccionPanelSection';
 
 // ─── Reportes disponibles ────────────────────────────────────────────────────
+// El Dashboard de Producción vive en Reportes (producción, /reportes), no acá.
 const REPORTS = [
-    {
-        id: 'dashboard',
-        label: 'Dashboard de Producción',
-        icon: LayoutDashboard,
-        desc: 'Panel de producción: cumplimiento, órdenes en proceso y en cola, fallas, máquinas y producción por sector',
-        color: 'text-indigo-500',
-    },
     {
         id: 'ventas-area',
         label: 'Ventas por Área',
@@ -71,7 +64,7 @@ const REPORTS = [
 
 // Reportes que manejan sus propios filtros y carga (no usan los filtros genéricos
 // del encabezado ni el fetch automático de la página).
-const REPORTES_AUTONOMOS = ['libro-contador', 'top-clientes', 'top-productos', 'resumen-mensual', 'catalogo', 'dashboard'];
+const REPORTES_AUTONOMOS = ['libro-contador', 'top-clientes', 'top-productos', 'resumen-mensual', 'catalogo'];
 
 // ─── Utilidades de fecha (mismo patrón que ReportesPage.jsx) ─────────────────
 const FECHA_PRESETS = [
@@ -1809,6 +1802,7 @@ export default function ContabilidadReportesPage() {
     const [filters, setFilters]           = useState({
         ambito: 'Todas', fechaPreset: '30d', fechaDesde: '', fechaHasta: '',
         moneda: 'Todas', articuloId: null, articuloNombre: '',
+        dgi: 'TODO', // 'SIN_DGI' | 'TODO' | 'DGI' — estado DGI de los documentos que entran
     });
 
     const [areaData, setAreaData]   = useState([]);
@@ -1880,6 +1874,7 @@ export default function ContabilidadReportesPage() {
                 ...(dateRange.desde && { fechaDesde: toISO(dateRange.desde) }),
                 ...(dateRange.hasta && { fechaHasta: toISO(dateRange.hasta) }),
                 ...(filters.articuloId && { articulo: filters.articuloId }),
+                ...(filters.dgi !== 'TODO' && { dgi: filters.dgi }),
             };
 
             if (activeReport === 'ventas-area') {
@@ -2075,6 +2070,27 @@ export default function ContabilidadReportesPage() {
                                     className="text-xs border border-slate-300 rounded-lg px-2 py-1 focus:ring-2 focus:ring-brand-cyan/30 outline-none" />
                             </div>
                         )}
+
+                        <div className="h-4 w-px bg-slate-200 hidden sm:block" />
+
+                        {/* Estado DGI de los documentos que entran al reporte. TODO = como siempre
+                            (enviados + no enviados + Pedidos Caja); DGI = solo CFE aceptados por DGI;
+                            SIN DGI = lo que todavía no está en DGI (incluye Pedidos Caja). */}
+                        <div className="flex items-center gap-2">
+                            <span className="text-[11px] font-bold text-slate-500 shrink-0 tracking-wide">DGI</span>
+                            {[
+                                { value: 'SIN_DGI', label: 'Sin DGI', title: 'Solo documentos que NO están aceptados por DGI (incluye Pedidos Caja)' },
+                                { value: 'TODO',    label: 'Todo',    title: 'Todos los documentos de venta, estén o no en DGI' },
+                                { value: 'DGI',     label: 'DGI',     title: 'Solo documentos aceptados por DGI' },
+                            ].map(o => (
+                                <button key={o.value} onClick={() => setF({ dgi: o.value })} title={o.title}
+                                    className={`px-3 py-1 rounded-full text-xs font-medium transition-all ${
+                                        filters.dgi === o.value ? 'bg-brand-cyan text-white shadow-sm' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                                    }`}>
+                                    {o.label}
+                                </button>
+                            ))}
+                        </div>
                     </div>
 
                     {/* Fila 3: VER POR — el mismo control que el resto de los reportes */}
@@ -2140,8 +2156,6 @@ export default function ContabilidadReportesPage() {
                                 Reintentar
                             </button>
                         </div>
-                    ) : activeReport === 'dashboard' ? (
-                        <ProduccionPanelSection />
                     ) : activeReport === 'catalogo' ? (
                         <CatalogoSectoresSection />
                     ) : activeReport === 'libro-contador' ? (

@@ -127,12 +127,38 @@ const actionTypes = {
     UPDATE_UPLOAD_PROGRESS: 'UPDATE_UPLOAD_PROGRESS',
     UPLOAD_SUCCESS: 'UPLOAD_SUCCESS',
     UPLOAD_ERROR: 'UPLOAD_ERROR',
+    PATCH_COMBO_SERVICIO: 'PATCH_COMBO_SERVICIO',
 };
 
 function orderFormReducer(state, action) {
     switch (action.type) {
         case actionTypes.SET_FIELD:
             return { ...state, [action.field]: action.value };
+
+        // Cambio sobre UN servicio de UN componente/artículo, calculado contra el estado
+        // ACTUAL del reducer. Antes los updaters leían `state` del render en que se crearon:
+        // si se llamaban desde una respuesta async (el nomenclador de variantes/materiales
+        // que se pide al prender Bordado), pisaban comboServicios con una foto VIEJA — el
+        // servicio recién prendido volvía sin `archivos` y el formulario reventaba al
+        // dibujarlo (ponchadoFiles.length sobre undefined).
+        case actionTypes.PATCH_COMBO_SERVICIO: {
+            const comp = state.comboServicios?.[action.comboItemId];
+            if (!comp) return state;
+            const current = comp.servicios?.[action.areaId];
+            // Un patch async no resucita un servicio que el usuario apagó mientras tanto.
+            if (!current && !action.crearSiFalta) return state;
+            const base = current || { active: true, archivos: [], boceto: null };
+            return {
+                ...state,
+                comboServicios: {
+                    ...state.comboServicios,
+                    [action.comboItemId]: {
+                        ...comp,
+                        servicios: { ...comp.servicios, [action.areaId]: { ...base, ...action.patch } },
+                    },
+                },
+            };
+        }
 
         case actionTypes.RESET_FORM:
             return {
@@ -827,20 +853,14 @@ export const usePrendaOrderForm = (serviceId, overrides = {}) => {
         setField('comboServicios', { ...state.comboServicios, [comboItemId]: { ...comp, servicios: newServicios } });
     };
 
+    // Los tres updaters van por PATCH_COMBO_SERVICIO: el cambio se calcula en el reducer
+    // contra el estado actual, no contra la foto del render (ver el comentario del case).
     const updateComboServicioArchivos = (comboItemId, areaId, archivos) => {
-        const comp = state.comboServicios[comboItemId];
-        if (!comp) return;
-        const current = comp.servicios[areaId] || { active: true };
-        const newServicios = { ...comp.servicios, [areaId]: { ...current, archivos } };
-        setField('comboServicios', { ...state.comboServicios, [comboItemId]: { ...comp, servicios: newServicios } });
+        dispatch({ type: actionTypes.PATCH_COMBO_SERVICIO, comboItemId, areaId, patch: { archivos }, crearSiFalta: true });
     };
 
     const updateComboServicioBoceto = (comboItemId, areaId, boceto) => {
-        const comp = state.comboServicios[comboItemId];
-        if (!comp) return;
-        const current = comp.servicios[areaId] || { active: true };
-        const newServicios = { ...comp.servicios, [areaId]: { ...current, boceto } };
-        setField('comboServicios', { ...state.comboServicios, [comboItemId]: { ...comp, servicios: newServicios } });
+        dispatch({ type: actionTypes.PATCH_COMBO_SERVICIO, comboItemId, areaId, patch: { boceto }, crearSiFalta: true });
     };
 
     // [COMBOS] Patcher genérico para campos sueltos del servicio de un componente
@@ -848,11 +868,9 @@ export const usePrendaOrderForm = (serviceId, overrides = {}) => {
     // "opción libre" — cada componente tiene SU PROPIO nomenclador, a diferencia
     // del servicio simple que usa un solo bordadoVariant/tpuVariant global).
     const updateComboServicioCampo = (comboItemId, areaId, patch) => {
-        const comp = state.comboServicios[comboItemId];
-        if (!comp) return;
-        const current = comp.servicios[areaId] || { active: true };
-        const newServicios = { ...comp.servicios, [areaId]: { ...current, ...patch } };
-        setField('comboServicios', { ...state.comboServicios, [comboItemId]: { ...comp, servicios: newServicios } });
+        // Suele llegar desde una respuesta async (nomenclador): si el servicio ya se apagó,
+        // no se lo vuelve a crear.
+        dispatch({ type: actionTypes.PATCH_COMBO_SERVICIO, comboItemId, areaId, patch, crearSiFalta: false });
     };
 
     const addTizadaFiles = (files) => {

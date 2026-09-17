@@ -248,6 +248,80 @@ const SERVICE_TO_AREA_MAP = {
 // antes de descontar del WMS (puede variar del pedido original por faltante de stock).
 const ESTADOS_RETIRO_WMS = ['ESPERANDO_RETIRO_WMS', 'EN_PREPARACION_WMS'];
 
+// ══════════════════════════════════════════════════════════════════════════
+// [CONFIGURADOR] Qué personalización admite cada ARTÍCULO DE STOCK
+// ══════════════════════════════════════════════════════════════════════════
+// Un artículo del stock del local (Gorro de lana, Pet Film, Tinta...) no tiene servicios
+// propios: lo que se le puede hacer lo define el Configurador a través de los productos
+// con origen "Producto del local" (OrigenTipo LOCAL, o AMBOS = local o del cliente) que
+// apuntan a él por ProductoVentaConfig.OrigenProIdProducto. Si existe "Gorro de lana
+// bordado" con origen = Gorro de lana y Bordado habilitado, el Gorro de lana admite
+// Bordado. Lo que ningún producto del Configurador habilita para ese artículo, no se
+// puede pedir — así un Pet Film no puede bordarse ni estamparse.
+//
+// Devuelve { [ProIdProducto]: ['EMB', 'DF', ...] }; un artículo sin nada queda con [].
+// Estampado (EST) no se lista: no se elige suelto, lo arrastra DTF o TPU.
+const AREAS_DECORACION = ['EMB', 'DF', 'TPU'];
+
+// Regla PROVISORIA (16-09-2026, pedida por el usuario) mientras los artículos del local no
+// estén cargados en el Configurador: se personaliza la ropa y los productos del local, no
+// los insumos ni los materiales. Se decide por la familia de stock del artículo:
+//   2.2.1.2 → productos del local (shorts, gorros, cuellos, medias...) → admiten todo
+//   2.2.1.1 → insumos (Pet Film, tintas)                                → nada
+//   1.x     → materiales (telas, lonas, vinilos, papel)                 → nada
+// OJO: 2.2.1.2 también tiene artículos que no son ropa (hoy: Caña, Auriculares); esos
+// quedan habilitados hasta que se carguen en el Configurador o se muevan de familia.
+const CODSTOCK_PERSONALIZABLE = ['2.2.1.2'];
+
+async function personalizacionAdmitidaPorArticulo(pool, proIds) {
+    const ids = [...new Set((proIds || []).map(n => parseInt(n, 10)).filter(Number.isFinite))];
+    const mapa = {};
+    ids.forEach(id => { mapa[id] = []; });
+    if (!ids.length) return mapa;
+    // ids ya son enteros parseados: se pueden interpolar sin riesgo.
+
+    // 1) Lo que dice el Configurador (productos "del local" que salen de ese artículo).
+    const r = await pool.request().query(`
+        SELECT DISTINCT vc.OrigenProIdProducto AS ProId, UPPER(LTRIM(RTRIM(s.AreaID))) AS AreaID
+        FROM dbo.ProductoVentaConfig vc
+        INNER JOIN dbo.ProductoTerminadoServicios s ON s.ProIdProducto = vc.ProIdProducto
+        WHERE vc.OrigenTipo IN ('LOCAL', 'AMBOS')
+          AND vc.OrigenProIdProducto IN (${ids.join(',')})
+          AND UPPER(LTRIM(RTRIM(s.AreaID))) IN ('${AREAS_DECORACION.join("','")}')
+    `);
+    const enConfigurador = new Set();
+    r.recordset.forEach(row => {
+        enConfigurador.add(row.ProId);
+        if (!mapa[row.ProId]) mapa[row.ProId] = [];
+        if (!mapa[row.ProId].includes(row.AreaID)) mapa[row.ProId].push(row.AreaID);
+    });
+
+    // 2) Lo que NO está en el Configurador: regla provisoria por familia de stock.
+    const sinConfig = ids.filter(id => !enConfigurador.has(id));
+    if (sinConfig.length) {
+        const fam = await pool.request().query(`
+            SELECT ProIdProducto, LTRIM(RTRIM(CodStock)) AS CodStock
+            FROM dbo.Articulos WHERE ProIdProducto IN (${sinConfig.join(',')})
+        `);
+        fam.recordset.forEach(row => {
+            if (CODSTOCK_PERSONALIZABLE.includes(row.CodStock)) mapa[row.ProIdProducto] = [...AREAS_DECORACION];
+        });
+    }
+    return mapa;
+}
+
+// GET /api/prendas-orders/personalizacion-admitida?ids=474,440
+exports.getPersonalizacionAdmitida = async (req, res) => {
+    try {
+        const pool = await getPool();
+        const ids = String(req.query.ids || '').split(',');
+        res.json({ success: true, data: await personalizacionAdmitidaPorArticulo(pool, ids) });
+    } catch (e) {
+        logger.error('[Prendas] getPersonalizacionAdmitida:', e.message);
+        res.status(500).json({ error: e.message });
+    }
+};
+
 // GET /api/prendas-orders/retiros-wms-pendientes
 exports.getRetirosWmsPendientes = async (req, res) => {
     try {
@@ -364,13 +438,21 @@ exports.confirmarRetiroWms = async (req, res) => {
         await transaction.begin();
         try {
             const { changeOrderState } = require('../services/stateManagerService');
+            // [VENTA x ITEM] Un retiro NUNCA libera a otro retiro. Con servicios por artículo
+            // un mismo pedido puede tener varios artículos del carrito esperando retiro a la
+            // vez (la Tinta y el Gorro, cada uno el suyo) y los dos son PRO con ComboItemID
+            // NULL: sin este corte, confirmar el de la Tinta le sacaba el candado al del
+            // Gorro y su stock nunca se descontaba. Las hermanas de verdad son los servicios
+            // de decoración, que no se retiran de ningún lado (WmsVarianteId NULL).
             const hermanas = await new sql.Request(transaction)
                 .input('NoDoc', sql.VarChar, String(orden.NoDocERP))
                 .input('ComboItemID', sql.Int, orden.ComboItemID || null)
+                .input('OID', sql.Int, orden.OrdenID)
                 .query(`
                     SELECT OrdenID, AreaID FROM Ordenes
                     WHERE NoDocERP = @NoDoc AND EstadoDependencia IN ('${ESTADOS_RETIRO_WMS.join("','")}')
                       AND (ComboItemID = @ComboItemID OR (@ComboItemID IS NULL AND ComboItemID IS NULL))
+                      AND (OrdenID = @OID OR WmsVarianteId IS NULL)
                 `);
             for (const h of hermanas.recordset) {
                 await new sql.Request(transaction)
@@ -490,6 +572,74 @@ exports.createWebOrder = async (req, res) => {
     }
 
     const pool = await getPool();
+
+    // [CONFIGURADOR] Defensa de fondo: el formulario ya no ofrece lo que el Configurador no
+    // habilita, pero un payload viejo o armado a mano no pasa por ahí. Se chequea ANTES de
+    // reservar el número de pedido, para que un rechazo no queme un número.
+    //  · "Comprar y personalizar": cada servicio de un artículo del carrito tiene que estar
+    //    admitido para ESE artículo (personalizacionAdmitidaPorArticulo).
+    //  · Producto terminado (no combo): los servicios sueltos tienen que estar entre los
+    //    que el Configurador marcó para el producto (ProductoTerminadoServicios).
+    // Si la consulta misma falla no se bloquea el pedido: el formulario es la primera
+    // barrera y la creación falla igual si la base no responde.
+    try {
+        const srvBody = Array.isArray(req.body.servicios) ? req.body.servicios : [];
+        const areaDe = (s) => String(s.areaId || '').trim().toUpperCase();
+        const rechazos = [];
+
+        // Artículos del carrito: viajan en articulosVenta de la PRO única (antes, una PRO por
+        // artículo con grupoItemId). Los servicios de cada artículo llegan con comboItemId =
+        // su wms_variante_id.
+        const articulosCarrito = srvBody
+            .filter(s => Array.isArray(s.articulosVenta))
+            .flatMap(s => s.articulosVenta)
+            .filter(x => x && x.proIdProducto && x.wmsVarianteId);
+        if (articulosCarrito.length) {
+            // [VENTA UNA LÍNEA] Todo artículo de un pedido personalizado tiene que llevar al menos
+            // un servicio: el pedido sale entero por una sola PRO, así que uno sin personalizar
+            // (una tinta) quedaría retenido hasta que esté lista la personalización del resto.
+            // Lo que no se personaliza se vende en otro pedido.
+            const sinServicio = articulosCarrito.filter(art =>
+                !srvBody.some(s => !s.esPrincipal && String(s.comboItemId) === String(art.wmsVarianteId)
+                    && AREAS_DECORACION.includes(areaDe(s))));
+            if (sinServicio.length) {
+                return res.status(400).json({
+                    error: `No se puede confirmar: ${sinServicio.map(a => `"${a.descripcion || 'artículo'}"`).join(', ')} no lleva personalización. En un pedido personalizado todos los artículos se entregan juntos; lo que no se personaliza se vende en otro pedido.`
+                });
+            }
+            const admitidos = await personalizacionAdmitidaPorArticulo(pool, articulosCarrito.map(x => x.proIdProducto));
+            for (const art of articulosCarrito) {
+                const permitidas = admitidos[parseInt(art.proIdProducto, 10)] || [];
+                srvBody
+                    .filter(s => !s.esPrincipal && String(s.comboItemId) === String(art.wmsVarianteId) && AREAS_DECORACION.includes(areaDe(s)))
+                    .filter(s => !permitidas.includes(areaDe(s)))
+                    .forEach(s => rechazos.push(`${art.descripcion || 'artículo'} no admite ${areaDe(s)}`));
+            }
+        }
+
+        // Producto terminado simple: la PRO esProductoFabricado con artículo y SIN servicios
+        // agrupados (un combo agrupa por componente y tiene sus propias reglas).
+        const proTerminado = srvBody.find(s => s.esProductoFabricado && s.cabecera?.proIdProducto);
+        const esCombo = srvBody.some(s => s.comboItemId) || combosRetiroBody.length > 0;
+        if (proTerminado && !esCombo) {
+            const permRes = await pool.request()
+                .input('PID', sql.Int, parseInt(proTerminado.cabecera.proIdProducto, 10))
+                .query(`SELECT UPPER(LTRIM(RTRIM(AreaID))) AS AreaID FROM dbo.ProductoTerminadoServicios WHERE ProIdProducto = @PID`);
+            const permitidas = permRes.recordset.map(r => r.AreaID);
+            srvBody
+                .filter(s => !s.esPrincipal && !s.grupoItemId && AREAS_DECORACION.includes(areaDe(s)))
+                .filter(s => !permitidas.includes(areaDe(s)))
+                .forEach(s => rechazos.push(`${proTerminado.cabecera.material || 'el producto'} no incluye ${areaDe(s)}`));
+        }
+
+        if (rechazos.length) {
+            return res.status(400).json({
+                error: `No se puede confirmar: ${[...new Set(rechazos)].join('; ')}. Lo que se puede hacer a cada artículo se define en el Configurador de Productos.`
+            });
+        }
+    } catch (eConf) {
+        logger.warn(`[Prendas] No se pudo validar la personalización contra el Configurador: ${eConf.message}`);
+    }
 
     try {
         // --- 2. RESERVAR NRO PEDIDO ---
@@ -769,6 +919,30 @@ exports.createWebOrder = async (req, res) => {
                     // y guarda su wms_variante_id para poder descontar el stock correcto.
                     esProductoComprado: !!srv.esProductoComprado,
                     wmsVarianteId: cabecera.wmsVarianteId || null,
+                    // [VENTA x ITEM] "Comprar y personalizar" con servicios POR ARTÍCULO del
+                    // carrito: agrupa las órdenes de un mismo artículo (el Short con SU bordado,
+                    // el Gorro con SU estampado) igual que comboItemId agrupa un componente de
+                    // combo. Vale el wms_variante_id, que el carrito ya garantiza único por
+                    // línea (addItemToCart suma cantidades sobre la línea existente).
+                    //
+                    // Es un campo aparte de comboItemId a propósito: comboItemId se PERSISTE en
+                    // Ordenes.ComboItemID, y ahí "PRO con ComboItemID NULL" significa "orden
+                    // madre del pedido" (quotationController lo usa para el filtro del área PRO
+                    // y para el marcador de modo de facturación). La PRO de cada artículo del
+                    // carrito SIGUE siendo orden madre, así que no puede llevar ComboItemID:
+                    // agrupa solo en memoria, para rutear. Quienes sí lo persisten son sus
+                    // servicios y su ancla de retiro, que nunca son orden madre.
+                    grupoItemId: srv.grupoItemId || null,
+                    // [PRENDA CLIENTE] Línea de prendas que el cliente entregó en Recepción y
+                    // que esta orden va a trabajar. Análogo exacto de BobinaTelaID en tela de
+                    // cliente: es lo que descuenta el saldo (vw_PrendasClienteDisponibles resta
+                    // lo tomado por las órdenes vivas) y lo que deja cumplir solo el requisito
+                    // PRENDA cuando el bulto llega al área.
+                    prendaClienteId: srv.prendaClienteId || null,
+                    // [VENTA UNA LÍNEA] Artículos del carrito de "Comprar y personalizar" que
+                    // cobra ESTA orden PRO (la única del pedido). Se guardan como líneas extra
+                    // de la orden — ver el insert después de crearla.
+                    articulosVenta: Array.isArray(srv.articulosVenta) && srv.articulosVenta.length ? srv.articulosVenta : null,
                     // [PRENDAS] "Fabricar a Medida" con Producto Terminado: análogo a
                     // esProductoComprado, pero la prenda NO sale de un depósito WMS — se arma
                     // acá mismo (Sublimación → Corte → Costura). No dispara el gate de retiro
@@ -1141,7 +1315,12 @@ exports.createWebOrder = async (req, res) => {
             // sin esto, dos componentes con la MISMA área (ej. dos Bordados) se pisarían el
             // OrdenID entre sí y un Estampado encadenaría con el DTF/TPU del OTRO componente.
             // Sin comboItemId (caso de siempre), la clave es igual a la de hoy (solo areaId).
-            const claveOrdenArea = (comboItemId, areaId) => comboItemId ? `${comboItemId}|${areaId}` : areaId;
+            // La clave tiene que separar por GRUPO, no solo por combo: si dos grupos del
+            // mismo pedido tienen DTF (dos prendas del cliente, cada una con el suyo), sin el
+            // grupo las dos claves serían "DF" y el Estampado de la segunda quedaría
+            // encadenado al DTF de la primera.
+            const claveOrdenArea = (grupoId, areaId) => grupoId ? `${grupoId}|${areaId}` : areaId;
+            const grupoDeExec = (e) => e.comboItemId || e.grupoItemId || null;
 
 
             for (let idx = 0; idx < pendingOrderExecutions.length; idx++) {
@@ -1198,8 +1377,14 @@ exports.createWebOrder = async (req, res) => {
                 // su propia venta VEN-, aparte) — solo la PRO de precio (esProductoFabricado) y
                 // los servicios de decoración, igual que un producto simple. Sin comboItemId
                 // (caso de siempre), el filtro de areasActivas es un no-op.
-                const loteDelComponente = exec.comboItemId
-                    ? pendingOrderExecutions.filter(e => e.comboItemId === exec.comboItemId)
+                // [VENTA x ITEM] El grupo de una orden es su componente de combo (comboItemId)
+                // o, en "Comprar y personalizar" con servicios por artículo, el artículo del
+                // carrito (grupoItemId). Mismo efecto: el Bordado del Gorro no ve el Estampado
+                // del Short al decidir su próximo paso. Sin ninguno de los dos (caso de
+                // siempre), el filtro es un no-op.
+                const grupoExec = grupoDeExec(exec);
+                const loteDelComponente = grupoExec
+                    ? pendingOrderExecutions.filter(e => String(grupoDeExec(e)) === String(grupoExec))
                     : pendingOrderExecutions;
                 const esProductoFabricadoEnLote = pendingOrderExecutions.some(e => e.esProductoFabricado);
                 const hayOrdenMadrePro = pendingOrderExecutions.some(e => e.esProductoComprado || e.esProductoFabricado);
@@ -1249,7 +1434,15 @@ exports.createWebOrder = async (req, res) => {
                     } else {
                         switch (exec.areaID) {
                             case 'PRO':
-                                proximoServicio = areasActivas.has('EMB') ? 'EMB' : (hayEstampado ? 'EST' : 'DEPOSITO');
+                                // [VENTA x ITEM] Con servicios por artículo, la PRO del artículo
+                                // ya NO es el paso físico: el recorrido real (ir a Bordado, a
+                                // Estampado o derecho a Depósito) lo lleva su ancla de retiro
+                                // VEN-, que se crea más abajo y calcula su propio destino. Acá
+                                // la PRO queda solo como la línea de precio del artículo —
+                                // mismo rol que la PRO de precio de un combo.
+                                proximoServicio = exec.grupoItemId
+                                    ? 'DEPOSITO'
+                                    : (areasActivas.has('EMB') ? 'EMB' : (hayEstampado ? 'EST' : 'DEPOSITO'));
                                 break;
                             case 'EMB':
                                 proximoServicio = hayEstampado ? 'EST' : 'DEPOSITO';
@@ -1362,7 +1555,7 @@ exports.createWebOrder = async (req, res) => {
                 let estadoDependenciaExec = null;
                 let liberaCuandoOrdenIDExec = null;
                 if (exec.chainedAfterAreaId) {
-                    liberaCuandoOrdenIDExec = insertedOrdenIdByAreaId[claveOrdenArea(exec.comboItemId, exec.chainedAfterAreaId.toUpperCase())] || null;
+                    liberaCuandoOrdenIDExec = insertedOrdenIdByAreaId[claveOrdenArea(grupoDeExec(exec), exec.chainedAfterAreaId.toUpperCase())] || null;
                     // [REQUISITOS] 'ESPERANDO_IMPRESION' solo tiene sentido (y solo se libera)
                     // para Estampado esperando su DTF/TPU — el evento de release está
                     // hardcodeado a esas dos áreas en productionFileController.js. Para el
@@ -1387,6 +1580,24 @@ exports.createWebOrder = async (req, res) => {
                     // confirma esa VEN-, no desde confirmarRetiroWms (que es para "Comprar y
                     // Personalizar", donde el retiro vive en este mismo NoDocERP).
                     estadoDependenciaExec = 'ESPERANDO_RETIRO_WMS';
+                } else if (exec.grupoItemId) {
+                    // [VENTA x ITEM] PRO de un artículo del carrito de "Comprar y personalizar".
+                    // Hay dos formas según si el artículo se personaliza o no, y el frontend las
+                    // distingue mandando (o no) el wmsVarianteId en esta orden:
+                    //
+                    //  · SE PERSONALIZA → el retiro vive en su ancla VEN- (combosRetiro), igual
+                    //    que un componente de combo. Esta PRO es solo la línea de precio: sin
+                    //    wmsVarianteId y sin candado, porque no hay nada que ella espere.
+                    //  · NO SE PERSONALIZA (una tinta, un insumo) → no hay ancla ni servicios:
+                    //    esta PRO ES el retiro, con su wmsVarianteId, y espera a que el
+                    //    almacenero lo confirme en Logística WMS ("Retiros de prendas").
+                    //
+                    // El candado se decide acá y NO por hayProductoTerminadoEnLote, que mira
+                    // StockArt.TipoStock a través del CodStock: las líneas del carrito viajan
+                    // sin CodStock (solo nombre, ProIdProducto y wms_variante_id), así que ese
+                    // chequeo daba falso SIEMPRE y el artículo nacía sin candado — no aparecía
+                    // en ninguna pantalla de retiro y su stock no lo descontaba nadie.
+                    estadoDependenciaExec = exec.wmsVarianteId ? 'ESPERANDO_RETIRO_WMS' : null;
                 } else if (hayProductoTerminadoEnLote && !esProductoFabricadoEnLote && (exec.esProductoComprado || esProductoTerminado || ['EMB', 'DF', 'TPU'].includes(exec.areaID.toUpperCase()))) {
                     estadoDependenciaExec = 'ESPERANDO_RETIRO_WMS';
                 }
@@ -1439,6 +1650,7 @@ exports.createWebOrder = async (req, res) => {
                     // [COMBOS] Qué componente del combo es esta orden (Gorro/Short...). NULL =
                     // producto simple o "Comprar y Personalizar" — comportamiento de siempre.
                     .input('ComboItemID', sql.Int, exec.comboItemId ? parseInt(exec.comboItemId) : null)
+                    .input('PrendaCliID', sql.Int, exec.prendaClienteId ? parseInt(exec.prendaClienteId) : null)
                     .query(`
                         INSERT INTO Ordenes (
                             AreaID, Cliente, CodCliente, IdClienteReact, DescripcionTrabajo, Prioridad,
@@ -1446,7 +1658,7 @@ exports.createWebOrder = async (req, res) => {
                             CodigoOrden, NoDocERP, Nota, Magnitud, ProximoServicio, UM, Estado, EstadoenArea,
                             CodArticulo, IdProductoReact, ProIdProducto, CliIdCliente, FechaEntradaSector,
                             BobinaTelaID, DisenadorID, Tinta, EstadoDependencia, LiberaCuandoOrdenID, WmsVarianteId,
-                            ComboItemID
+                            ComboItemID, PrendaClienteID
                         )
                         OUTPUT INSERTED.OrdenID
                         VALUES (
@@ -1455,7 +1667,7 @@ exports.createWebOrder = async (req, res) => {
                             @Cod, @ERP, @Nota, @Mag, @Prox, @UM, @Estado, @Estado,
                             @CodArt, @IdProdReact, @ProIdProducto, @CliIdCliente, @F_EntSec,
                             @BobID, @DisenadorID, @Tinta, @EstadoDep, @LiberaCuando, @WmsVarianteId,
-                            @ComboItemID
+                            @ComboItemID, @PrendaCliID
                         )
                     `);
 
@@ -1470,9 +1682,86 @@ exports.createWebOrder = async (req, res) => {
                 // [PRENDAS] Guarda el primer OrdenID insertado para esta área (o para esta
                 // área DE ESTE COMPONENTE, si es un combo) — es lo que usa una Orden
                 // encadenada más adelante en el loop (ej. Estampado → su DTF/TPU).
-                const claveArea = claveOrdenArea(exec.comboItemId, exec.areaID.toUpperCase());
+                const claveArea = claveOrdenArea(grupoDeExec(exec), exec.areaID.toUpperCase());
                 if (!insertedOrdenIdByAreaId[claveArea]) {
                     insertedOrdenIdByAreaId[claveArea] = newOID;
+                }
+
+                // [VENTA UNA LÍNEA] Cada artículo del carrito como línea extra de la PRO única:
+                // ServiciosExtraOrden es lo que la cotización (erpSyncService) ya cotiza por
+                // artículo y suma en la misma orden — así el pedido tiene UNA fila en depósito
+                // con el total. Nacen con Estado 'OK': esas filas también cuentan para "¿la orden
+                // está completa?" (pedidoCompletoService) y un artículo comprado no se controla
+                // como un servicio; sin esto la PRO nunca quedaría completa.
+                if (exec.articulosVenta) {
+                    for (const art of exec.articulosVenta) {
+                        const proId = parseInt(art.proIdProducto, 10);
+                        if (!proId) continue;
+                        const a = await new sql.Request(transaction).input('PID', sql.Int, proId)
+                            .query(`SELECT TOP 1 LTRIM(RTRIM(CodArticulo)) AS CodArt, LTRIM(RTRIM(CodStock)) AS CodStock,
+                                           LTRIM(RTRIM(Descripcion)) AS Descripcion FROM Articulos WHERE ProIdProducto = @PID`);
+                        const artRow = a.recordset[0];
+                        if (!artRow?.CodArt) {
+                            logger.warn(`[VENTA] ${exec.codigoOrden}: el artículo ${proId} no tiene CodArticulo — no se agrega su línea de precio.`);
+                            continue;
+                        }
+                        await new sql.Request(transaction)
+                            .input('OID', sql.Int, newOID)
+                            .input('Cod', sql.VarChar(50), artRow.CodArt)
+                            .input('Stk', sql.VarChar(50), artRow.CodStock || null)
+                            .input('Desc', sql.NVarChar(300), String(art.descripcion || artRow.Descripcion || '').slice(0, 300))
+                            .input('Cant', sql.Decimal(18, 2), parseFloat(art.cantidad) || 1)
+                            .query(`INSERT INTO ServiciosExtraOrden
+                                        (OrdenID, CodArt, CodStock, Descripcion, Cantidad, PrecioUnitario, TotalLinea, Observacion, FechaRegistro, Estado)
+                                    VALUES (@OID, @Cod, @Stk, @Desc, @Cant, 0, 0, '[ARTICULO VENTA]', GETDATE(), 'OK')`);
+                    }
+                }
+
+                // [PRENDA CLIENTE] AUTO-FULFILL DEL REQUISITO "PRENDA" — calco del mismo bloque
+                // en webOrdersController.js (flujo de Bordado). Si la prenda que esta orden va a
+                // trabajar YA está físicamente en esta área (llegó por remito interno antes de
+                // que se creara el pedido), el requisito nace CUMPLIDO con el detalle de qué
+                // prenda es. Si todavía está en Recepción o en tránsito, acá no pasa nada: se
+                // cumple solo cuando se reciba el remito (AUTO-FULFILL PRENDA DE CLIENTE en
+                // logisticsController.receiveDispatch). Best-effort: sin esto la orden igual
+                // existe, solo que el operario tiene que tildar el requisito a mano.
+                if (exec.prendaClienteId) {
+                    try {
+                        const prendaRes = await new sql.Request(transaction)
+                            .input('PID', sql.Int, parseInt(exec.prendaClienteId))
+                            .input('Area', sql.VarChar(20), exec.areaID)
+                            .query(`
+                                SELECT p.Descripcion, p.Talle, p.Color, r.Codigo AS CodigoRecepcion
+                                FROM InventarioPrendasCliente p
+                                LEFT JOIN Recepciones r ON r.RecepcionID = p.RecepcionID
+                                LEFT JOIN Logistica_Bultos b ON (b.CodigoEtiqueta = r.Codigo OR b.CodigoEtiqueta LIKE r.Codigo + '-%')
+                                WHERE p.PrendaClienteID = @PID AND b.UbicacionActual = @Area
+                            `);
+                        if (prendaRes.recordset.length) {
+                            const { Descripcion, Talle, Color, CodigoRecepcion } = prendaRes.recordset[0];
+                            const reqPrenda = await new sql.Request(transaction)
+                                .input('Area', sql.VarChar(20), exec.areaID)
+                                .query(`SELECT RequisitoID FROM ConfigRequisitosProduccion WHERE AreaID = @Area AND CodigoRequisito = 'PRENDA'`);
+                            if (reqPrenda.recordset.length) {
+                                const partes = [Descripcion || 'prenda del cliente'];
+                                if (Talle) partes.push(`talle ${Talle}`);
+                                if (Color) partes.push(Color);
+                                const obsPrenda = `Asignado: ${partes.join(' — ')}${CodigoRecepcion ? ` [${CodigoRecepcion.trim()}]` : ''}`;
+                                await new sql.Request(transaction)
+                                    .input('OID', sql.Int, newOID)
+                                    .input('Area', sql.VarChar(20), exec.areaID)
+                                    .input('RID', sql.Int, reqPrenda.recordset[0].RequisitoID)
+                                    .input('Obs', sql.NVarChar(500), obsPrenda)
+                                    .query(`
+                                        IF NOT EXISTS (SELECT 1 FROM OrdenCumplimientoRequisitos WHERE OrdenID = @OID AND RequisitoID = @RID)
+                                            INSERT INTO OrdenCumplimientoRequisitos (OrdenID, AreaID, RequisitoID, Estado, FechaCumplimiento, Observaciones)
+                                            VALUES (@OID, @Area, @RID, 'CUMPLIDO', GETDATE(), @Obs)
+                                    `);
+                            }
+                        }
+                    } catch (reqErr) {
+                        logger.warn(`[PRENDA CLIENTE] Orden ${newOID}: no se pudo auto-cumplir el requisito PRENDA: ${reqErr.message}`);
+                    }
                 }
 
                 // TPU trabajo nuevo: cobrar la matriz (artículo 156 = US$15) como línea de facturación.
@@ -1566,9 +1855,20 @@ exports.createWebOrder = async (req, res) => {
                             : pendingOrderExecutions;
                         if (loteEst.some(e => (e.areaID || '').toUpperCase() === 'EMB')) canalReal = 'PRENDA';
                     }
+                    // [PRENDAS] En este formulario SIEMPRE hay una prenda física detrás (comprada,
+                    // fabricada, de combo o del cliente — el lote trae orden madre PRO): el
+                    // Estampado necesita el transfer Y la prenda. La regla "1 de 3" viene del
+                    // portal, donde un Estampado sale de un solo canal; acá marcar PRENDA como
+                    // "no aplica" dejaba al Estampado listo para trabajar con el transfer recibido
+                    // mientras la prenda seguía en Bordado sin remito (caso EST-20947: PRENDA
+                    // cumplida 07:00 al crear el pedido, el short todavía en EMB). La prenda se
+                    // cumple sola al recibir el remito del área que la trae (Bordado, Costura, o
+                    // la venta de retiro desde PRO).
+                    const hayPrendaFisica = pendingOrderExecutions.some(e => e.esProductoComprado || e.esProductoFabricado);
                     if (canalReal) {
                         for (const cod of ['PRENDA', 'DTF', 'TPU']) {
                             if (cod === canalReal) continue;
+                            if (cod === 'PRENDA' && hayPrendaFisica) continue;
                             await marcarRequisitoNoAplica(transaction, {
                                 ordenId: newOID, areaId: exec.areaID, codigoRequisito: cod,
                                 observaciones: `No aplica — el canal real de este Estampado es ${canalReal}`
@@ -2130,7 +2430,11 @@ exports.createWebOrder = async (req, res) => {
                 // Mismo criterio que el switch de ProximoServicio de arriba: Bordado trabaja
                 // sobre la prenda (va primero); si no hay Bordado pero sí DTF/TPU, la prenda va
                 // directo a Estampado (ahí se prensa el transfer, no antes).
-                const proximoAncla = areasComponente.has('EMB') ? 'EMB' : (areasComponente.has('EST') ? 'EST' : 'DEPOSITO');
+                // [VENTA UNA LÍNEA] Un artículo del carrito que no se personaliza no tiene áreas:
+                // va a PRO (destinoSinServicios) a juntarse con el resto del pedido, no a Depósito
+                // suelto como una venta aparte.
+                const proximoAncla = areasComponente.has('EMB') ? 'EMB'
+                    : (areasComponente.has('EST') ? 'EST' : (item.destinoSinServicios || 'DEPOSITO'));
 
                 const maxVenRes = await new sql.Request(transaction).query(`
                     SELECT ISNULL(MAX(CAST(SUBSTRING(NoDocERP, 5, LEN(NoDocERP)) AS INT)), 0) + 1 as NextID
@@ -2151,7 +2455,10 @@ exports.createWebOrder = async (req, res) => {
                 const insertAncla = await new sql.Request(transaction)
                     .input('Cliente', sql.NVarChar(200), nombreCliente)
                     .input('CliId', sql.Int, cliIdCliente || null)
-                    .input('Desc', sql.NVarChar(300), `RETIRO COMBO — ${item.descripcion}`)
+                    // [VENTA x ITEM] La misma ancla sirve para un componente de combo y para un
+                    // artículo del carrito de "Comprar y personalizar" — solo cambia cómo se
+                    // llama en la pantalla de Logística.
+                    .input('Desc', sql.NVarChar(300), `${item.etiqueta || 'RETIRO COMBO'} — ${item.descripcion}`)
                     .input('Mat', sql.VarChar(255), item.descripcion || 'Combo')
                     .input('Cod', sql.VarChar(50), codigoVenta)
                     .input('Doc', sql.VarChar(50), codigoVenta)

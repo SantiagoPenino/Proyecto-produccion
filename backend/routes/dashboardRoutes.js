@@ -8,7 +8,7 @@ const {
     getFiltros,
 } = require('../controllers/productionAnalyticsController');
 const { generarInforme } = require('../controllers/informeProduccionController');
-const { getPanel, getPanelConfig, putPanelConfig } = require('../controllers/produccionPanelController');
+const { getPanel, getCumplimientoDetalle, getPanelConfig, putPanelConfig } = require('../controllers/produccionPanelController');
 
 router.get('/deposito', verifyToken, getDepositoDashboard);
 
@@ -20,6 +20,7 @@ router.post('/produccion/informe',  verifyToken, generarInforme);
 
 // Panel de Producción (Reportes de Contabilidad → Dashboard)
 router.get('/produccion/panel',        verifyToken, getPanel);
+router.get('/produccion/panel/cumplimiento-detalle', verifyToken, getCumplimientoDetalle);
 router.get('/produccion/panel/config', verifyToken, getPanelConfig);
 router.put('/produccion/panel/config', verifyToken, putPanelConfig);
 

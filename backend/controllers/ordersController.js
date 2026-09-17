@@ -1246,6 +1246,52 @@ exports.getOrdersByArea = async (req, res) => {
             })) : []
         }));
 
+        // [PRENDAS] Cantidad de PRENDAS para Bordado / Estampado de pedidos de prendas (Comprar y
+        // personalizar, combos, fabricar a medida, prenda del cliente). Esas órdenes guardan
+        // Magnitud '0' A PROPÓSITO — si tuvieran cantidad propia la cotización las cobraría por
+        // su cuenta en vez de sumarlas dentro del total del pedido — y la planilla mostraba
+        // "0 punt", que no dice nada. Es SOLO lo que se muestra (campos nuevos `prendas` y
+        // `puntadas`): el dato guardado no se toca. La cantidad sale de la misma fuente que usa la
+        // bandeja: la venta de retiro de SU prenda o, si no hay, la orden madre PRO del pedido.
+        // Las -F (fallas) sí guardan en Magnitud las prendas a rehacer: se toman tal cual.
+        try {
+            const idsPrendas = result.recordset
+                .filter(o => ['EMB', 'EST'].includes(String(o.AreaID || '').trim().toUpperCase()))
+                .map(o => parseInt(o.OrdenID, 10)).filter(Number.isFinite);
+            if (idsPrendas.length) {
+                const pr = await pool.request().query(`
+                    SELECT o.OrdenID,
+                           CASE WHEN TRY_CAST(o.Magnitud AS FLOAT) > 0 THEN TRY_CAST(o.Magnitud AS FLOAT)
+                                ELSE TRY_CAST(pro.Magnitud AS FLOAT) END AS Prendas,
+                           (SELECT SUM(ISNULL(s.Puntadas, 0)) FROM ServiciosExtraOrden s WHERE s.OrdenID = o.OrdenID) AS Puntadas
+                    FROM Ordenes o
+                    OUTER APPLY (
+                        SELECT TOP 1 p.Magnitud
+                        FROM Ordenes p
+                        WHERE (o.ComboItemID IS NOT NULL AND p.ComboItemID = o.ComboItemID
+                               AND p.EstadoDependencia = 'VENTA_DIRECTA'
+                               AND LTRIM(RTRIM(p.ComboPedidoNoDocERP)) = LTRIM(RTRIM(CAST(o.NoDocERP AS VARCHAR(50)))))
+                           OR (LTRIM(RTRIM(p.NoDocERP)) = LTRIM(RTRIM(o.NoDocERP)) AND p.AreaID = 'PRO'
+                               AND ISNULL(p.EstadoDependencia, '') <> 'VENTA_DIRECTA')
+                        ORDER BY CASE WHEN o.ComboItemID IS NOT NULL AND p.ComboItemID = o.ComboItemID THEN 0 ELSE 1 END, p.OrdenID
+                    ) pro
+                    WHERE o.OrdenID IN (${idsPrendas.join(',')})
+                      -- Solo pedidos de prendas: con orden madre PRO en el pedido.
+                      AND EXISTS (SELECT 1 FROM Ordenes m WHERE LTRIM(RTRIM(m.NoDocERP)) = LTRIM(RTRIM(o.NoDocERP))
+                                  AND m.AreaID = 'PRO' AND ISNULL(m.EstadoDependencia, '') <> 'VENTA_DIRECTA')
+                `);
+                const porId = new Map(pr.recordset.map(x => [x.OrdenID, x]));
+                result.recordset.forEach((o, i) => {
+                    const x = porId.get(o.OrdenID);
+                    if (!x || !(x.Prendas > 0)) return;
+                    orders[i].prendas = x.Prendas;
+                    orders[i].puntadas = x.Puntadas > 0 ? x.Puntadas : null;
+                });
+            }
+        } catch (ePrendas) {
+            logger.warn('[getOrdersByArea] No se pudo calcular la cantidad de prendas: ' + ePrendas.message);
+        }
+
         res.json(orders);
 
     } catch (err) {
@@ -2292,12 +2338,24 @@ exports.getIntegralPedidoDetailsV2 = async (req, res) => {
             (o.NoDocERP || '').trim() === ref.trim()
         ) || first;
 
+        // Notas de las órdenes del pedido: cada orden carga su propia Nota, y algunas
+        // son puro marcador interno ([FACTURA POR AREA], [COMBO: ...], etc. — ver
+        // erpSyncService.js / prendasOrdersController.js). Se descartan las que quedan
+        // vacías después de sacar los marcadores entre corchetes (nada que mostrarle a
+        // alguien controlando el pedido), quedando solo lo que escribió el cliente u
+        // operador. Se conserva el texto ORIGINAL (con marcador y todo) — no se inventa
+        // una versión "limpia" que podría comerse contexto real.
+        const notas = orders
+            .map(o => ({ areaId: o.AreaID, codigoOrden: o.CodigoOrden, nota: (o.Nota || '').trim() }))
+            .filter(n => n.nota && n.nota.replace(/\[[^\]]*\]/g, '').trim());
+
         const header = {
             pedidoRef: first.NoDocERP || ref,
             cliente: first.Cliente,
             descripcion: first.DescripcionTrabajo,
             avance: avance,
-            estadoGlobal: matchedOrder.Estado || 'PENDIENTE'
+            estadoGlobal: matchedOrder.Estado || 'PENDIENTE',
+            notas
         };
 
         // 3. Mapear Órdenes para la tabla
@@ -2368,10 +2426,12 @@ exports.getIntegralPedidoDetailsV2 = async (req, res) => {
             const bResult = await pool.request().query(bQuery);
             bultosData = bResult.recordset;
 
-            // C. Archivos de Impresión y Producción
-            const prodFilesQ = `SELECT *, 'produccion' as Categoria FROM ArchivosOrden WHERE OrdenID IN (${safeIds})`;
-            const refFilesQ = `SELECT *, 'referencia' as Categoria FROM ArchivosReferencia WHERE OrdenID IN (${safeIds})`;
-            const servQ = `SELECT *, 'servicio' as Categoria FROM ServiciosExtraOrden WHERE OrdenID IN (${safeIds})`;
+            // C. Archivos de Impresión y Producción — se etiqueta cada fila con el
+            // CodigoOrden/AreaID de la orden dueña (join contra Ordenes) para poder
+            // agruparlos por área en el detalle (ej. Bandeja de Producción, Spec 39).
+            const prodFilesQ = `SELECT AO.*, O.CodigoOrden AS OrdenCodigoOrden, O.AreaID AS OrdenAreaID, 'produccion' as Categoria FROM ArchivosOrden AO JOIN Ordenes O ON O.OrdenID = AO.OrdenID WHERE AO.OrdenID IN (${safeIds})`;
+            const refFilesQ = `SELECT AR.*, O.CodigoOrden AS OrdenCodigoOrden, O.AreaID AS OrdenAreaID, 'referencia' as Categoria FROM ArchivosReferencia AR JOIN Ordenes O ON O.OrdenID = AR.OrdenID WHERE AR.OrdenID IN (${safeIds})`;
+            const servQ = `SELECT S.*, O.CodigoOrden AS OrdenCodigoOrden, O.AreaID AS OrdenAreaID, 'servicio' as Categoria FROM ServiciosExtraOrden S JOIN Ordenes O ON O.OrdenID = S.OrdenID WHERE S.OrdenID IN (${safeIds})`;
 
             const [pRes, rRes, sRes] = await Promise.all([
                 pool.request().query(prodFilesQ),
@@ -2493,6 +2553,25 @@ exports.getIntegralPedidoDetailsV2 = async (req, res) => {
             logger.warn(`[IntegralV2] Error consultando OrdenesDeposito: ${depoErr.message}`);
         }
 
+        // --- Pre-consulta Reposiciones del pedido (para el badge de falla del grafo) ---
+        // Cuánto se repuso por área (AreaProduce) y si esa reposición ya CERRÓ o sigue
+        // abierta — el badge se pinta rojo mientras haya algo pendiente, verde si ya cerró.
+        let reposicionesPedido = [];
+        try {
+            const docsRep = [...new Set(orders.map(o => o.NoDocERP).filter(Boolean))].map(d => String(d).trim());
+            if (docsRep.length) {
+                const inList = docsRep.map((_, i) => `@d${i}`).join(',');
+                const repReq = pool.request();
+                docsRep.forEach((d, i) => repReq.input(`d${i}`, sql.NChar, d));
+                const repRes = await repReq.query(`
+                    SELECT ReposicionID, AreaProduce, Estado, Cantidad
+                    FROM Reposiciones WHERE LTRIM(RTRIM(NoDocERP)) IN (${inList})`);
+                reposicionesPedido = repRes.recordset;
+            }
+        } catch (repErr) {
+            logger.warn(`[IntegralV2] Error consultando Reposiciones: ${repErr.message}`);
+        }
+
         const ruta = Array.from(areaSteps.values()).map(step => {
             let stepStatus = 'PENDIENTE';
 
@@ -2534,12 +2613,41 @@ exports.getIntegralPedidoDetailsV2 = async (req, res) => {
                     .filter(Boolean)
             )];
 
+            // [PRENDAS] Cuántas de las órdenes de este paso nacieron de una falla/reposición
+            // (código con "-F#"/"-R#", mismo criterio que libroEntregasService.getHermanas) —
+            // el paso ya se resolvía por "la orden más atrasada" entre todas las hermanas de
+            // esta área, pero eso quedaba invisible: no se veía que hubo un incidente encadenado
+            // detrás del estado mostrado. fallaCantidad sale de Reposiciones.Cantidad (la
+            // producida por ESTA área, AreaProduce) y fallaPendiente marca si alguna todavía
+            // no cerró (Estado != CERRADA/CANCELADA) — el front pinta el badge rojo/verde con eso.
+            const fallaOrdenes = step.orders.filter(o => /-[FR]\d/i.test((o.CodigoOrden || '').toString().trim()));
+            const fallaCount = fallaOrdenes.length;
+            const areaIdUpper = (step.id || '').toString().trim().toUpperCase();
+            const reposicionesArea = reposicionesPedido.filter(r => (r.AreaProduce || '').toString().trim().toUpperCase() === areaIdUpper);
+            let fallaCantidad = null;
+            let fallaPendiente = false;
+            if (reposicionesArea.length) {
+                const cantidades = reposicionesArea.map(r => r.Cantidad).filter(c => c != null).map(Number);
+                fallaCantidad = cantidades.length ? cantidades.reduce((a, b) => a + b, 0) : null;
+                fallaPendiente = reposicionesArea.some(r => !['CERRADA', 'CANCELADA'].includes((r.Estado || '').toString().trim().toUpperCase()));
+            } else if (fallaOrdenes.length) {
+                // Sin match en Reposiciones (dato legado sin esa fila): se estima con la
+                // Magnitud de las propias órdenes -F y su EstadoenArea.
+                const magnitudes = fallaOrdenes.map(o => parseFloat(o.Magnitud)).filter(n => Number.isFinite(n) && n > 0);
+                fallaCantidad = magnitudes.length ? magnitudes.reduce((a, b) => a + b, 0) : null;
+                const ESTADOS_FINALES = ['PRONTO', 'FINALIZADO', 'RECIBIDO EN DESTINO', 'INGRESADO', 'ENTREGADO', 'AVISADO'];
+                fallaPendiente = fallaOrdenes.some(o => !ESTADOS_FINALES.includes((o.EstadoenArea || o.Estado || '').toString().trim().toUpperCase()));
+            }
+
             return {
                 id: step.id,
                 label: step.label,
                 status: stepStatus,
                 date: step.date,
                 count: step.orders.length,
+                fallaCount,
+                fallaCantidad,
+                fallaPendiente,
                 nextAreas
             };
         });

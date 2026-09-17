@@ -9,6 +9,8 @@ router.post('/crear', verifyToken, createOrdenRetiro);
 
 // Rutas de edición administrativa de órdenes
 router.post('/caja/orden/editar',      verifyToken, editarCostoOrden);
+// Desglose lista / descuento / recargo de las órdenes del retiro (modal "Editar órdenes")
+router.get('/caja/orden/desglose',     verifyToken, require('../controllers/ordenesRetiroController').getDesgloseOrdenesCaja);
 router.post('/caja/orden/desvincular', verifyToken, desvincularOrdenRetiro);
 router.post('/caja/orden/cancelar',    verifyToken, cancelarOrdenCaja);
 router.post('/caja/orden/exonerar',    verifyToken, exonerarOrdenCaja);

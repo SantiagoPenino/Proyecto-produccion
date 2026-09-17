@@ -194,7 +194,14 @@ export const FileUploadZone = ({ id, onFileSelected, selectedFile, label, icon: 
     const [isOver, setIsOver] = useState(false);
     const [modalAbierto, setModalAbierto] = useState(false);
     const [flamear, setFlamear] = useState(false);
-    const uniqueId = `file-input-${id}-${label.replace(/\s+/g, '-')}`;
+    // El id armado solo con `id` + label se REPETÍA cuando la misma zona aparece más de una vez
+    // en la página (un bloque de DTF por cada prenda del pedido): el click hacía
+    // document.getElementById, que devuelve el PRIMERO, y el archivo del Short adulto terminaba
+    // cargado en el Short niño. Ahora el click va por ref a SU propio input, y el id lleva un
+    // sufijo propio de esta instancia para que tampoco choque en el DOM.
+    const inputRef = useRef(null);
+    const sufijoInstancia = useRef(Math.random().toString(36).slice(2, 8)).current;
+    const uniqueId = `file-input-${id}-${label.replace(/\s+/g, '-')}-${sufijoInstancia}`;
 
     // ── Vista previa del archivo ──────────────────────────────────────────────
     // `selectedFile` viene en dos formas:
@@ -330,10 +337,11 @@ export const FileUploadZone = ({ id, onFileSelected, selectedFile, label, icon: 
             onDragOver={(e) => { e.preventDefault(); setIsOver(true); }}
             onDragLeave={() => setIsOver(false)}
             onDrop={handleDrop}
-            onClick={() => document.getElementById(uniqueId).click()}
+            onClick={() => inputRef.current?.click()}
         >
             <input
                 id={uniqueId}
+                ref={inputRef}
                 type="file"
                 multiple={multiple}
                 // Filtro del explorador de archivos (opcional): las áreas que aceptan

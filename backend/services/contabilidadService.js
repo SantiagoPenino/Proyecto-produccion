@@ -1213,6 +1213,9 @@ async function hookEntregaMetros(params) {
  */
 async function getSaldoCliente(CliIdCliente, { incluirCerradas = false } = {}) {
   const pool = await getPool();
+  // BENEFICIOS (specs/40): si la bolsa pertenece a un beneficio, la fila lo dice (para que el
+  // front la muestre aparte del saldo común). Solo si la tabla existe (script SQL corrido).
+  const hayBen = await tablaBeneficiosExiste(pool);
 
   const result = await pool.request()
     .input('CliIdCliente', sql.Int, CliIdCliente)
@@ -1239,6 +1242,7 @@ async function getSaldoCliente(CliIdCliente, { incluirCerradas = false } = {}) {
         cc.CuePuedeNegativo,
         cc.CueDiasCiclo,
         cc.CueCicloActivo,
+        ${hayBen ? 'bc.BclIdBeneficioCliente, bc.BenIdBeneficio, bc.BclEstado, bc.BclFechaVencimiento,' : 'CAST(NULL AS INT) AS BclIdBeneficioCliente,'}
         RTRIM(art.Descripcion)          AS NombreArticulo,
         u.UniDescripcionUnidad          AS UniNombreCompleto,
         u.[UniNotación]                 AS UniSimbolo,
@@ -1273,6 +1277,7 @@ async function getSaldoCliente(CliIdCliente, { incluirCerradas = false } = {}) {
       LEFT JOIN dbo.Unidades        u   ON u.UniIdUnidad     = art.UniIdUnidad
       LEFT JOIN dbo.Monedas         mon ON mon.MonIdMoneda   = cc.MonIdMoneda
       LEFT JOIN dbo.CondicionesPago cp  ON cp.CPaIdCondicion = cc.CPaIdCondicion
+      ${hayBen ? 'LEFT JOIN dbo.BeneficiosCliente bc WITH(NOLOCK) ON bc.CueIdCuenta = cc.CueIdCuenta' : ''}
       WHERE cc.CliIdCliente = @CliIdCliente
         AND (
           cc.CueActiva = 1
@@ -1291,6 +1296,412 @@ async function getSaldoCliente(CliIdCliente, { incluirCerradas = false } = {}) {
     `);
 
   return result.recordset;
+}
+
+/**
+ * analizarLogPrecio
+ * Lee la traza que deja el motor de precios en PedidosCobranzaDetalle.LogPrecioAplicado
+ * y devuelve SOLO los ajustes reales (recargo o descuento) con el perfil que los aplicó.
+ * Un precio sin ajuste (solo "Base") devuelve null: no hay perfil que mostrar.
+ *
+ * Formato real de la traza:
+ *   Base: USD 22.00
+ *   Recargo: +USD 5.50 (Recargo 25% [Recargo por Urgencias])
+ *   Total Unit. Calculado: USD 27.50
+ *
+ * @returns {null|{perfiles: string[], base: number|null, detalle: string}}
+ */
+function analizarLogPrecio(log, perfilAplicado = null, etiquetas = null) {
+  if (!log) return null;
+  const texto = String(log);
+  const perfiles = [];
+  const chips    = [];
+  const partes   = [];
+  // "Excepción Cliente" es el nombre interno de la regla; en pantalla el motor de
+  // precios la llama "Excepción del cliente" (pricingService.origenRegla).
+  const nombreVisible = (n) => {
+    const limpio = (n || '').trim();
+    if (!limpio) return '';
+    if (/^excepci[oó]n cliente$/i.test(limpio)) return 'Excepción del cliente';
+    const etq = etiquetas && etiquetas.get(limpio.toLowerCase());
+    return (etq || limpio).trim();
+  };
+  for (const linea of texto.split(/\r?\n/)) {
+    if (!/^\s*(Descuento|Recargo)\s*:/i.test(linea)) continue;
+    const tipo   = /descuento/i.test(linea) ? 'Descuento' : 'Recargo';
+    const nombre = ((linea.match(/\[([^\]]+)\]/) || [])[1] || '').trim();
+    const pct    = (linea.match(/(\d+(?:[.,]\d+)?)\s*%/) || [])[1];
+    const etiqueta = nombreVisible(nombre || perfilAplicado);
+    if (!etiqueta) continue;
+    if (!perfiles.includes(etiqueta)) perfiles.push(etiqueta);
+    // Chip tal como lo arma el motor de precios: "Urgencia 25 %".
+    const pctTxt = pct ? ` ${String(pct).replace('.', ',').replace(/,00$/, '')} %` : '';
+    const texto2 = `${etiqueta}${pctTxt}`;
+    if (!chips.some(c => c.texto === texto2)) chips.push({ texto: texto2, tipo });
+    partes.push(`${tipo}${pct ? ` ${pct}%` : ''}${etiqueta ? ` · ${etiqueta}` : ''}`);
+  }
+  if (!perfiles.length) return null;
+  const base = (texto.match(/Base:\s*[A-Za-z$]*\s*([\d.]+)/) || [])[1];
+  return { perfiles, chips, base: base ? Number(base) : null, detalle: partes.join(' · ') };
+}
+
+/**
+ * adjuntarDetalleDePagos
+ * BILLETERA · qué se pagó con cada "pago con saldo" y cómo se compone el importe.
+ *
+ * El concepto guardado dice solo "Pago de deudas con saldo de <cuenta>": en el libro
+ * de la billetera no se veía QUÉ trabajo se pagó ni de dónde salía la cifra. Acá se
+ * arma ese detalle LEYENDO las imputaciones del pago (cada deuda cancelada = una
+ * orden o un documento), con su cantidad y su precio unitario. No toca nada guardado:
+ * agrega a cada movimiento `DetallePago` (array) y `ConceptoDetalle` (texto corto).
+ *
+ * @param {object} pool
+ * @param {Array}  records  filas de getMovimientos (se mutan en el lugar)
+ */
+async function adjuntarDetalleDePagos(pool, records) {
+  const pagosIds = [...new Set(
+    records
+      .filter(m => m.PagIdPago && ['PAGO_SALDO', 'PAGO', 'TRANSFERENCIA_SALIDA'].includes(m.MovTipo))
+      .map(m => parseInt(m.PagIdPago))
+      .filter(Boolean),
+  )].slice(0, 300);
+  // Pago de un cierre: el movimiento NO tiene pago, tiene el DOCUMENTO que se pagó
+  // (la transferencia hacia la cuenta del ciclo, vinculada a la factura al emitirla).
+  const movsPorDoc = records.filter(m => !m.PagIdPago && m.DocIdDocumento
+    && ['PAGO_SALDO', 'TRANSFERENCIA_SALIDA', 'TRANSFERENCIA_ENTRADA', 'PAGO'].includes(m.MovTipo));
+  const hayConsumos = records.some(m => m.MovTipo === 'CONSUMO_CUENTA' && !m.MovAnulado);
+  if (!pagosIds.length && !movsPorDoc.length && !hayConsumos) return;
+
+  // 1) Las deudas que canceló cada pago, con la orden (cantidad + costo) detrás
+  const impRes = pagosIds.length ? await pool.request().query(`
+    SELECT ip.PagIdPago, ip.ImpIdImputacion, ip.ImpImporte,
+           dd.DocIdDocumento,
+           COALESCE(od.OrdCodigoOrden, o.CodigoOrden)                          AS Codigo,
+           RTRIM(COALESCE(od.OrdNombreTrabajo, o.DescripcionTrabajo))          AS Trabajo,
+           COALESCE(od.OrdCantidad, TRY_CONVERT(DECIMAL(18,2), o.Magnitud))    AS Cantidad,
+           RTRIM(COALESCE(u.[UniNotación], o.UM))                              AS Unidad,
+           COALESCE(od.OrdCostoFinal, o.CostoTotal)                            AS ImporteOrden,
+           RTRIM(ISNULL(ar.Nombre, ''))                                        AS Area,
+           dc.DocTipo, dc.DocSerie, dc.DocNumero
+    FROM      dbo.ImputacionPago   ip WITH(NOLOCK)
+    JOIN      dbo.DeudaDocumento   dd WITH(NOLOCK) ON dd.DDeIdDocumento = ip.DDeIdDocumento
+    LEFT JOIN dbo.OrdenesDeposito  od WITH(NOLOCK) ON od.OrdIdOrden     = dd.OrdIdOrden
+    LEFT JOIN dbo.Ordenes          o  WITH(NOLOCK) ON o.OrdenID         = dd.OrdIdOrden
+    LEFT JOIN dbo.Articulos       art WITH(NOLOCK) ON art.ProIdProducto = COALESCE(od.ProIdProducto, o.ProIdProducto)
+    LEFT JOIN dbo.Unidades          u WITH(NOLOCK) ON u.UniIdUnidad     = art.UniIdUnidad
+    LEFT JOIN dbo.Areas            ar WITH(NOLOCK) ON ar.AreaID         = o.AreaID
+    LEFT JOIN dbo.DocumentosContables dc WITH(NOLOCK) ON dc.DocIdDocumento = dd.DocIdDocumento
+    WHERE ip.PagIdPago IN (${pagosIds.join(',')})
+    ORDER BY ip.PagIdPago, ip.ImpIdImputacion
+  `) : { recordset: [] };
+
+  // 2) Si la deuda era un documento (factura/pedido de caja), sus líneas cantidad × precio
+  const docIds = [...new Set([
+    ...impRes.recordset.map(r => r.DocIdDocumento),
+    ...movsPorDoc.map(m => m.DocIdDocumento),
+  ].filter(Boolean).map(Number))].slice(0, 300);
+  const lineasPorDoc = new Map();
+  if (docIds.length) {
+    const linRes = await pool.request().query(`
+      SELECT d.DocIdDocumento, RTRIM(ISNULL(d.OrdCodigoOrden, '')) AS OrdCodigoOrden,
+             RTRIM(ISNULL(d.DcdNomItem, '')) AS Item,
+             d.DcdCantidad, d.DcdPrecioUnitario, d.DcdTotal,
+             -- Área de la línea (SP_EstamparAreaLineasDocumento): con ella se agrupa
+             -- un documento de 150 líneas en "Sublimación 140 · DTF 5 · Bordado 5".
+             RTRIM(ISNULL(d.DcdArea, '')) AS Area,
+             -- Nombre del trabajo de esa orden (la línea trae el artículo, no el trabajo)
+             (SELECT TOP 1 RTRIM(o2.DescripcionTrabajo) FROM dbo.Ordenes o2 WITH(NOLOCK)
+               WHERE o2.CodigoOrden = d.OrdCodigoOrden) AS Trabajo
+      FROM   dbo.DocumentosContablesDetalle d WITH(NOLOCK)
+      WHERE  d.DocIdDocumento IN (${docIds.join(',')})
+      ORDER  BY d.DocIdDocumento, d.DcdIdDetalle
+    `);
+    for (const l of linRes.recordset) {
+      if (!lineasPorDoc.has(l.DocIdDocumento)) lineasPorDoc.set(l.DocIdDocumento, []);
+      lineasPorDoc.get(l.DocIdDocumento).push(l);
+    }
+  }
+
+  const r2n = (n) => Math.round(Number(n || 0) * 100) / 100;
+  const porPago = new Map();
+  for (const imp of impRes.recordset) {
+    const items = [];
+    const lineasDoc = imp.DocIdDocumento ? (lineasPorDoc.get(imp.DocIdDocumento) || []) : [];
+    if (lineasDoc.length) {
+      // Documento: una fila por línea facturada (su propia cantidad y precio)
+      for (const l of lineasDoc) {
+        const cant = Number(l.DcdCantidad) || 0;
+        items.push({
+          codigo:  l.OrdCodigoOrden || `${imp.DocTipo || ''} ${imp.DocSerie || ''}-${imp.DocNumero || ''}`.trim(),
+          tipo:    (l.Area || '').trim() || null,
+          trabajo: (l.Trabajo || '').trim() || l.Item || null,
+          cantidad: cant || null,
+          unidad:   null,
+          precioUnitario: Number(l.DcdPrecioUnitario) || (cant ? r2n(Number(l.DcdTotal) / cant) : null),
+          importe:  r2n(l.DcdTotal),
+        });
+      }
+    } else {
+      // Deuda por ORDEN (el caso de la billetera): cantidad de la orden × su precio
+      const cant = Number(imp.Cantidad) || 0;
+      const total = r2n(imp.ImporteOrden || imp.ImpImporte);
+      items.push({
+        tipo:    (imp.Area || '').trim() || null,
+        codigo:  (imp.Codigo || '').trim() || (imp.DocSerie ? `${imp.DocTipo || ''} ${imp.DocSerie}-${imp.DocNumero}`.trim() : '—'),
+        trabajo: (imp.Trabajo || '').trim() || null,
+        cantidad: cant || null,
+        unidad:   (imp.Unidad || '').trim() || null,
+        precioUnitario: cant ? r2n(total / cant) : null,
+        importe:  total,
+      });
+    }
+    // Lo realmente pagado por esta imputación (puede ser parcial)
+    items[0].imputado = r2n(imp.ImpImporte);
+    if (!porPago.has(imp.PagIdPago)) porPago.set(imp.PagIdPago, []);
+    porPago.get(imp.PagIdPago).push(...items);
+  }
+
+  // 3) Pagos SIN imputación (cobros contado, o anteriores a la traza de imputaciones):
+  //    las órdenes se resuelven por el retiro de la transacción o por el pago estampado
+  //    en la orden — las dos mismas fuentes que usa el concepto de los movimientos PAGO.
+  const sinImputar = pagosIds.filter(id => !porPago.has(id));
+  if (sinImputar.length) {
+    const cont = sinImputar.join(',');
+    const ordRes = await pool.request().query(`
+      SELECT PagIdPago, Codigo, Trabajo, Cantidad, Unidad, ImporteOrden, Area FROM (
+        SELECT p.PagIdPago,
+               RTRIM(od.OrdCodigoOrden) AS Codigo, RTRIM(od.OrdNombreTrabajo) AS Trabajo,
+               od.OrdCantidad AS Cantidad, RTRIM(u.[UniNotación]) AS Unidad, od.OrdCostoFinal AS ImporteOrden,
+               -- Área del trabajo, para poder agrupar el pago por área
+               (SELECT TOP 1 RTRIM(ar2.Nombre) FROM dbo.Ordenes o2 WITH(NOLOCK)
+                  JOIN dbo.Areas ar2 WITH(NOLOCK) ON ar2.AreaID = o2.AreaID
+                 WHERE o2.CodigoOrden = od.OrdCodigoOrden) AS Area
+        FROM      dbo.Pagos              p  WITH(NOLOCK)
+        JOIN      dbo.TransaccionDetalle td WITH(NOLOCK) ON td.TcaIdTransaccion = p.PagTcaIdTransaccion AND td.TdeTipoReferencia = 'ORDEN_RETIRO'
+        JOIN      dbo.OrdenesDeposito    od WITH(NOLOCK) ON od.OReIdOrdenRetiro = td.TdeReferenciaId
+        LEFT JOIN dbo.Articulos         art WITH(NOLOCK) ON art.ProIdProducto   = od.ProIdProducto
+        LEFT JOIN dbo.Unidades            u WITH(NOLOCK) ON u.UniIdUnidad       = art.UniIdUnidad
+        WHERE p.PagIdPago IN (${cont})
+        UNION
+        SELECT od.PagIdPago,
+               RTRIM(od.OrdCodigoOrden), RTRIM(od.OrdNombreTrabajo),
+               od.OrdCantidad, RTRIM(u.[UniNotación]), od.OrdCostoFinal,
+               (SELECT TOP 1 RTRIM(ar2.Nombre) FROM dbo.Ordenes o2 WITH(NOLOCK)
+                  JOIN dbo.Areas ar2 WITH(NOLOCK) ON ar2.AreaID = o2.AreaID
+                 WHERE o2.CodigoOrden = od.OrdCodigoOrden)
+        FROM      dbo.OrdenesDeposito od WITH(NOLOCK)
+        LEFT JOIN dbo.Articulos      art WITH(NOLOCK) ON art.ProIdProducto = od.ProIdProducto
+        LEFT JOIN dbo.Unidades         u WITH(NOLOCK) ON u.UniIdUnidad     = art.UniIdUnidad
+        WHERE od.PagIdPago IN (${cont})
+      ) x
+      ORDER BY PagIdPago, Codigo
+    `);
+    for (const o of ordRes.recordset) {
+      const cant = Number(o.Cantidad) || 0;
+      const total = r2n(o.ImporteOrden);
+      if (!porPago.has(o.PagIdPago)) porPago.set(o.PagIdPago, []);
+      porPago.get(o.PagIdPago).push({
+        tipo:    (o.Area || '').trim() || null,
+        codigo:  (o.Codigo || '').trim() || '—',
+        trabajo: (o.Trabajo || '').trim() || null,
+        cantidad: cant || null,
+        unidad:   (o.Unidad || '').trim() || null,
+        precioUnitario: cant ? r2n(total / cant) : null,
+        importe:  total,
+        imputado: null,
+      });
+    }
+  }
+
+  // 3 bis) Movimientos atados a un DOCUMENTO (el pago del cierre): el detalle sale de
+  //        las líneas de esa factura, que ya vienen orden por orden con su precio.
+  const porDocumento = new Map();
+  for (const m of movsPorDoc) {
+    const lineas = lineasPorDoc.get(Number(m.DocIdDocumento)) || [];
+    if (!lineas.length) continue;
+    porDocumento.set(m.MovIdMovimiento, lineas.map(l => {
+      const cant = Number(l.DcdCantidad) || 0;
+      return {
+        codigo:  (l.OrdCodigoOrden || '').trim() || '—',
+        tipo:    (l.Area || '').trim() || null,
+        trabajo: (l.Trabajo || '').trim() || l.Item || null,
+        cantidad: cant || null,
+        unidad:   null,
+        precioUnitario: Number(l.DcdPrecioUnitario) || (cant ? r2n(Number(l.DcdTotal) / cant) : null),
+        importe:  r2n(l.DcdTotal),
+        imputado: null,
+      };
+    }));
+  }
+
+  // 3 ter) CONSUMO_CUENTA: cada consumo es UNA orden. El concepto trae el trabajo pero
+  //        no de dónde sale el importe, así que se busca la cantidad y el precio de esa
+  //        orden (es lo mismo que muestra el detalle de los pagos, con una sola línea).
+  const codigoDeMov = (m) => (m.OrdCodigoOrden || '').trim()
+    || (((m.MovConcepto || '').match(/^([A-Z]{2,8}-\d+)/) || [])[1] || '');
+  const consumos = records.filter(m => m.MovTipo === 'CONSUMO_CUENTA' && !m.MovAnulado && codigoDeMov(m));
+  const porConsumo = new Map();
+  if (consumos.length) {
+    const codsCons = [...new Set(consumos.map(codigoDeMov))].slice(0, 300);
+    const enListaC = codsCons.map(c => `'${c.replace(/'/g, "''")}'`).join(',');
+    const ordRes2 = await pool.request().query(`
+      SELECT Codigo, Prioridad, Trabajo, Cantidad, Unidad, Importe FROM (
+        SELECT RTRIM(od.OrdCodigoOrden) AS Codigo, 1 AS Prioridad,
+               RTRIM(od.OrdNombreTrabajo) AS Trabajo, od.OrdCantidad AS Cantidad,
+               RTRIM(u.[UniNotación]) AS Unidad, od.OrdCostoFinal AS Importe
+        FROM      dbo.OrdenesDeposito od WITH(NOLOCK)
+        LEFT JOIN dbo.Articulos      art WITH(NOLOCK) ON art.ProIdProducto = od.ProIdProducto
+        LEFT JOIN dbo.Unidades         u WITH(NOLOCK) ON u.UniIdUnidad     = art.UniIdUnidad
+        WHERE od.OrdCodigoOrden IN (${enListaC})
+        UNION ALL
+        SELECT RTRIM(o.CodigoOrden), 2,
+               RTRIM(o.DescripcionTrabajo), TRY_CONVERT(DECIMAL(18,2), o.Magnitud),
+               RTRIM(o.UM), o.CostoTotal
+        FROM dbo.Ordenes o WITH(NOLOCK)
+        WHERE o.CodigoOrden IN (${enListaC})
+      ) x
+      ORDER BY Codigo, Prioridad
+    `);
+    const datosOrden = new Map();
+    for (const row of ordRes2.recordset) {
+      if (!datosOrden.has(row.Codigo)) datosOrden.set(row.Codigo, row);   // gana la de depósito
+    }
+    for (const m of consumos) {
+      const o = datosOrden.get(codigoDeMov(m));
+      if (!o) continue;
+      const cant = Number(o.Cantidad) || 0;
+      // El importe es el del MOVIMIENTO (lo que salió de la cuenta) y el precio se
+      // deriva de ahí: así cantidad × precio siempre da la columna Debe. El costo
+      // guardado en la orden puede haber quedado viejo (el precio se edita en el
+      // cierre y la orden no siempre se actualiza: SUB-19920 dice 286,52 y el
+      // consumo fue 197,08) — mostrarlo hacía dudar de qué precio era cuál.
+      const total = r2n(Math.abs(Number(m.MovImporte || 0)));
+      if (!cant && !total) continue;
+      porConsumo.set(m.MovIdMovimiento, [{
+        codigo:  codigoDeMov(m),
+        trabajo: (o.Trabajo || '').trim() || null,
+        cantidad: cant || null,
+        unidad:   (o.Unidad || '').trim() || null,
+        precioUnitario: cant ? r2n(total / cant) : null,
+        importe:  total,
+        imputado: null,
+      }]);
+    }
+  }
+
+  // 4) Perfil de precio: SOLO cuando la orden tuvo recargo o descuento. El motor de
+  //    precios deja la traza en PedidosCobranzaDetalle.LogPrecioAplicado, con el nombre
+  //    del perfil entre corchetes ("Recargo: +USD 5.50 (Recargo 25% [Recargo por
+  //    Urgencias])"). Si el precio salió liso (solo "Base"), no se muestra nada.
+  const codigos = [...new Set(
+    [...porPago.values(), ...porDocumento.values(), ...porConsumo.values()].flat().map(d => (d.codigo || '').trim()).filter(c => c && c !== '—'),
+  )].slice(0, 300);
+  if (codigos.length) {
+    const enLista = codigos.map(c => `'${c.replace(/'/g, "''")}'`).join(',');
+    const pcdRes = await pool.request().query(`
+      SELECT RTRIM(o.CodigoOrden) AS Codigo, d.PerfilAplicado, d.LogPrecioAplicado,
+             -- Desglose congelado con números (specs/09 INV-PRE.03, 11-sep-2026): el
+             -- origen ya viene con la etiqueta del perfil y el % ("Urgencia 25 %").
+             d.PrecioLista, d.DescuentoOrigen, d.RecargoOrigen
+      FROM      dbo.Ordenes                 o WITH(NOLOCK)
+      JOIN      dbo.PedidosCobranzaDetalle  d WITH(NOLOCK) ON d.OrdenID = o.OrdenID
+      -- Sin RTRIM sobre la columna: SQL ignora los espacios finales al comparar y así
+      -- entra por índice (con RTRIM escanea la tabla: 203 ms contra 21 ms medidos).
+      WHERE o.CodigoOrden IN (${enLista})
+    `);
+    // Nombre corto del perfil, el mismo que sale en la factura (PerfilesPrecios.
+    // EtiquetaFactura): "Urgencia" en vez de "Recargo por Urgencias ". Si la etiqueta
+    // está vacía se usa el nombre del perfil tal cual.
+    const etiquetas = new Map();
+    try {
+      const perfRes = await pool.request().query('SELECT Nombre, EtiquetaFactura FROM dbo.PerfilesPrecios WITH(NOLOCK)');
+      for (const p of perfRes.recordset) {
+        const nom = (p.Nombre || '').trim();
+        if (nom) etiquetas.set(nom.toLowerCase(), (p.EtiquetaFactura || '').trim() || nom);
+      }
+    } catch (ePerf) { /* sin etiquetas: se muestra el nombre del perfil */ }
+
+    // El desglose congelado manda; el texto del log queda de respaldo para las líneas
+    // viejas, anteriores a INV-PRE.03 (o sin backfill).
+    const desdeDesglose = (row) => {
+      const chips = [];
+      const partes = [];
+      const agregar = (texto, tipo) => {
+        const t = String(texto || '').trim();
+        if (!t || chips.some(c => c.texto === t)) return;
+        chips.push({ texto: t, tipo });
+        partes.push(`${tipo} · ${t}`);
+      };
+      agregar(row.DescuentoOrigen, 'Descuento');
+      agregar(row.RecargoOrigen, 'Recargo');
+      if (!chips.length) return null;
+      return {
+        perfiles: chips.map(c => c.texto),
+        chips,
+        base: row.PrecioLista != null ? Number(row.PrecioLista) : null,
+        detalle: partes.join(' · '),
+      };
+    };
+
+    const porCodigo = new Map();
+    for (const row of pcdRes.recordset) {
+      const info = desdeDesglose(row) || analizarLogPrecio(row.LogPrecioAplicado, row.PerfilAplicado, etiquetas);
+      if (!info) continue;
+      const prev = porCodigo.get(row.Codigo);
+      if (!prev) porCodigo.set(row.Codigo, info);
+      else {
+        prev.perfiles = [...new Set([...prev.perfiles, ...info.perfiles])];
+        for (const c of info.chips) if (!prev.chips.some(x => x.texto === c.texto)) prev.chips.push(c);
+      }
+    }
+    for (const d of [...porPago.values(), ...porDocumento.values(), ...porConsumo.values()].flat()) {
+      const info = porCodigo.get((d.codigo || '').trim());
+      if (!info) continue;
+      d.perfiles     = info.perfiles;
+      d.chips        = info.chips;
+      d.precioBase   = info.base;
+      d.ajusteDetalle = info.detalle;
+    }
+  }
+
+  for (const m of records) {
+    const detConsumo = porConsumo.get(m.MovIdMovimiento);
+    const det = porPago.get(parseInt(m.PagIdPago)) || porDocumento.get(m.MovIdMovimiento) || detConsumo;
+    if (!det || !det.length) continue;
+    m.DetallePago = det;
+    // El consumo ya muestra su trabajo en el concepto: solo se le agrega el cálculo,
+    // no se le reescribe el texto.
+    if (det === detConsumo) continue;
+    const doc = `${String(m.DocSerie || '').trim()}${m.DocNumero ? `-${String(m.DocNumero).trim()}` : ''}`.trim();
+    // Una sola orden: se nombra, con su trabajo.
+    if (det.length === 1) {
+      m.ConceptoDetalle = `${det[0].codigo || ''}${det[0].trabajo ? ` (${det[0].trabajo})` : ''}`.trim();
+    }
+
+    // NUNCA se listan las órdenes: una factura o un pedido de caja pueden traer 150
+    // líneas y no hay quien lo lea. Se agrupa por ÁREA (la que estampa la línea; si no
+    // hay, el prefijo del código) con cuántas órdenes y cuánto suma cada una. El detalle
+    // orden por orden queda en la tabla que se despliega en pantalla, a pedido.
+    if (det.length > 1) {
+      const grupos = new Map();
+      for (const d of det) {
+        const clave = (d.tipo || '').trim()
+          || ((String(d.codigo || '').match(/^([A-Z]{2,8})-/) || [])[1] || 'Otros');
+        const g = grupos.get(clave) || { tipo: clave, ordenes: 0, importe: 0 };
+        g.ordenes += 1;
+        g.importe = r2n(g.importe + Number(d.importe || 0));
+        grupos.set(clave, g);
+      }
+      const resumen = [...grupos.values()].sort((a, b) => b.ordenes - a.ordenes || b.importe - a.importe);
+      if (resumen.length === 1) {
+        // Una sola área: entra en el propio renglón ("PC-3950 · 3 órdenes de Sublimacion")
+        m.ConceptoDetalle = `${doc ? `${doc} · ` : ''}${det.length} órdenes de ${resumen[0].tipo}`;
+      } else {
+        m.ConceptoDetalle = `${doc ? `${doc} · ` : ''}${det.length} órdenes`;
+        m.ResumenDetalle = resumen;
+      }
+    }
+  }
 }
 
 /**
@@ -1414,6 +1825,8 @@ async function getMovimientos(CueIdCuenta, FechaDesde = null, FechaHasta = null,
       COALESCE(dc.DocSerie, dcPago.DocSerie, tca.TcaSerieDoc, '') AS DocSerie,
       COALESCE(CAST(dc.DocNumero AS VARCHAR(50)), CAST(dcPago.DocNumero AS VARCHAR(50)), tca.TcaNumeroDoc, '') AS DocNumero,
       COALESCE(dc.CfeEstado, dcPago.CfeEstado) AS CfeEstado,
+      -- N° oficial de DGI (texto crudo): el PDF del estado de cuenta lo imprime igual que la pantalla
+      COALESCE(dc.CfeNumeroOficial, dcPago.CfeNumeroOficial) AS CfeNumeroOficial,
       COALESCE(dc.DocIdDocumento, dcPago.DocIdDocumento) AS DocIdDocumento,
       COALESCE(dc.DocPagado, dcPago.DocPagado, 0) AS DocPagado,
       COALESCE(dc.DocEstado, dcPago.DocEstado) AS DocEstado,
@@ -1437,7 +1850,8 @@ async function getMovimientos(CueIdCuenta, FechaDesde = null, FechaHasta = null,
       oa.CodigoOrdenStr AS OrdCodigoOrden,
       oa.NombreTrabajo AS OrdNombreTrabajo,
       (
-         SELECT d.ID AS DetalleID, a.CodArticulo, d.Cantidad, d.PrecioUnitario, d.Subtotal, d.LogPrecioAplicado, a.Descripcion, pc.Moneda, a.CodStock, sa.Articulo AS ArticuloNombre
+         SELECT d.ID AS DetalleID, a.CodArticulo, d.Cantidad, d.PrecioUnitario, d.Subtotal, d.LogPrecioAplicado, a.Descripcion, pc.Moneda, a.CodStock, sa.Articulo AS ArticuloNombre,
+                d.PrecioLista, d.DescuentoTipo, d.DescuentoPct, d.DescuentoImporte, d.DescuentoOrigen, d.RecargoPct, d.RecargoImporte, d.RecargoOrigen
          FROM dbo.PedidosCobranza pc WITH(NOLOCK)
          JOIN dbo.PedidosCobranzaDetalle d WITH(NOLOCK) ON pc.ID = d.PedidoCobranzaID
          LEFT JOIN dbo.Articulos a WITH(NOLOCK) ON a.ProIdProducto = d.ProIdProducto
@@ -1510,6 +1924,14 @@ async function getMovimientos(CueIdCuenta, FechaDesde = null, FechaHasta = null,
         ${FechaDesde ? 'AND CAST(MovFecha AS DATE) >= @FechaDesdeR' : ''}
     `);
     saldoArrastre += Number(cortRes.recordset[0]?.SaldoRecorte ?? 0);
+  }
+
+  // Billetera: detalle de los pagos hechos con el saldo (qué trabajo y cantidad × precio).
+  // Si algo falla acá, el libro se muestra igual: es información extra, no el saldo.
+  try {
+    await adjuntarDetalleDePagos(pool, records);
+  } catch (eDet) {
+    logger.warn(`[CONTABILIDAD] Detalle de pagos no adjuntado (cuenta ${CueIdCuenta}): ${eDet.message}`);
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -2102,7 +2524,15 @@ async function getResumenDocumentos(CliIdCliente, desde = null, hasta = null) {
     AJUSTE_NEG: 'Ajuste manual',
     TRANSFERENCIA_SALIDA: 'Transferencia enviada a otra cuenta',
     PAGO_SALDO: 'Pago con saldo de cuenta',
-    CONSUMO_CUENTA: 'Consumo de orden (cuenta restringida)',
+    CONSUMO_CUENTA: 'Consumo de orden',
+  };
+  // El consumo dice DE QUÉ CUENTA salió: el texto era siempre "(cuenta restringida)"
+  // aunque la cuenta fuera una billetera libre (caso "FONDO", prepaga con descuento
+  // automático), y hacía pensar que había una restricción que no existe.
+  const etiquetaConsumoCuenta = (p) => {
+    const nombre = (p.CueNombre || '').trim();
+    const detalle = [nombre || null, p.CueRestringida ? 'restringida' : null].filter(Boolean).join(' · ');
+    return detalle ? `Consumo de orden (${detalle})` : 'Consumo de orden';
   };
   const pagos = pagosRes.recordset.map(p => {
     // Documento al que se aplicó: preferir la referencia real; si no, la orden; y como
@@ -2128,6 +2558,7 @@ async function getResumenDocumentos(CliIdCliente, desde = null, hasta = null) {
       // (pago de factura/deuda con el saldo de una cuenta) — etiquetarla como tal.
       tipo: (/^pago\b/i.test(p.Concepto || '') && p.MovTipo === 'TRANSFERENCIA_SALIDA') ? 'Pago con saldo de cuenta'
           : (/^pago\b/i.test(p.Concepto || '') && p.MovTipo === 'TRANSFERENCIA_ENTRADA') ? 'Pago recibido de otra cuenta'
+          : (esConsumo && p.MovTipo === 'CONSUMO_CUENTA') ? etiquetaConsumoCuenta(p)
           : esConsumo ? (TIPO_CONSUMO_LABEL[p.MovTipo] || TIPO_PAGO_LABEL[p.MovTipo] || p.MovTipo)
                       : (TIPO_PAGO_LABEL[p.MovTipo] || p.MovTipo),
       esFavor,
@@ -2575,7 +3006,8 @@ async function getCicloMovimientos(CicIdCiclo) {
              s.Articulo AS ProSubFamilia,
              s.CodStock AS ProCodStock,
               (
-                 SELECT d.ID AS DetalleID, a.CodArticulo, d.Cantidad, d.PrecioUnitario, d.Subtotal, d.LogPrecioAplicado, a.Descripcion, pc.Moneda, a.CodStock, sa.Articulo AS ArticuloNombre
+                 SELECT d.ID AS DetalleID, a.CodArticulo, d.Cantidad, d.PrecioUnitario, d.Subtotal, d.LogPrecioAplicado, a.Descripcion, pc.Moneda, a.CodStock, sa.Articulo AS ArticuloNombre,
+                d.PrecioLista, d.DescuentoTipo, d.DescuentoPct, d.DescuentoImporte, d.DescuentoOrigen, d.RecargoPct, d.RecargoImporte, d.RecargoOrigen
                  FROM dbo.PedidosCobranza pc WITH(NOLOCK)
                  JOIN dbo.PedidosCobranzaDetalle d WITH(NOLOCK) ON pc.ID = d.PedidoCobranzaID
                  LEFT JOIN dbo.Articulos a WITH(NOLOCK) ON a.ProIdProducto = d.ProIdProducto
@@ -2745,28 +3177,48 @@ async function cerrarCicloCompleto({
     for (const d of detallesEditados) {
       // 1. Obtener el PedidoCobranzaID y los valores actuales
       const detRes = await pool.request().input('ID', sql.Int, d.DetalleID).query(`
-        SELECT PedidoCobranzaID, PrecioUnitarioOriginal, SubtotalOriginal, LogPrecioAplicado
+        SELECT PedidoCobranzaID, PrecioUnitarioOriginal, SubtotalOriginal, LogPrecioAplicado,
+               PrecioLista, DescuentoTipo, DescuentoPct, DescuentoImporte, DescuentoOrigen, RecargoPct, RecargoImporte, RecargoOrigen
         FROM dbo.PedidosCobranzaDetalle WHERE ID = @ID
       `);
       if (detRes.recordset.length > 0) {
         const { PedidoCobranzaID, LogPrecioAplicado } = detRes.recordset[0];
-        
+
         // Agregar etiqueta al log
         const logTag = '[Ajuste manual Cierre Ciclo]';
         let nuevoLog = LogPrecioAplicado ? LogPrecioAplicado : '';
         if (!nuevoLog.includes(logTag)) {
           nuevoLog += ` ${logTag}`;
         }
-        
-        // 2. Actualizar detalle
+
+        // Desglose (lista / descuento / recargo) coherente con el nuevo neto: la lista se
+        // conserva y la diferencia queda como descuento/recargo manual (o el editado en la
+        // pre-factura si vino). Sin lista guardada no se toca (ver desgloseLineaPedido.js).
+        const { desgloseTrasEdicionManual } = require('./desgloseLineaPedido');
+        const dz = desgloseTrasEdicionManual(detRes.recordset[0], d.PrecioUnitario,
+          { descUnit: d.DescUnit, recUnit: d.RecUnit, descPct: d.DescPct, recPct: d.RecPct, descTexto: d.DescTexto, recTexto: d.RecTexto }, 'Ajuste manual en la pre-factura');
+
+        // 2. Actualizar detalle (+ desglose)
         await pool.request()
           .input('ID', sql.Int, d.DetalleID)
           .input('Precio', sql.Decimal(18,4), d.PrecioUnitario)
           .input('Subtotal', sql.Decimal(18,4), d.Subtotal)
           .input('Log', sql.NVarChar(sql.MAX), nuevoLog)
+          .input('DTipo', sql.VarChar(12), dz ? dz.DescuentoTipo : null)
+          .input('DPct', sql.Decimal(9,4), dz ? dz.DescuentoPct : null)
+          .input('DImp', sql.Decimal(18,4), dz ? dz.DescuentoImporte : null)
+          .input('DOrig', sql.NVarChar(150), dz ? dz.DescuentoOrigen : null)
+          .input('RPct', sql.Decimal(9,4), dz ? dz.RecargoPct : null)
+          .input('RImp', sql.Decimal(18,4), dz ? dz.RecargoImporte : null)
+          .input('ROrig', sql.NVarChar(200), dz ? dz.RecargoOrigen : null)
+          .input('Limpiar', sql.Bit, dz && dz.limpiarRegla ? 1 : 0)
           .query(`
             UPDATE dbo.PedidosCobranzaDetalle
             SET PrecioUnitario = @Precio, Subtotal = @Subtotal, LogPrecioAplicado = @Log
+                ${dz ? `, DescuentoTipo = @DTipo, DescuentoPct = @DPct, DescuentoImporte = @DImp, DescuentoOrigen = @DOrig,
+                  DescuentoPerfilId = CASE WHEN @Limpiar = 1 THEN NULL ELSE DescuentoPerfilId END,
+                  DescuentoReglaId  = CASE WHEN @Limpiar = 1 THEN NULL ELSE DescuentoReglaId END,
+                  RecargoPct = @RPct, RecargoImporte = @RImp, RecargoOrigen = @ROrig` : ''}
             WHERE ID = @ID
           `);
           
@@ -3114,7 +3566,12 @@ async function cerrarCicloCompleto({
             totalDescuentos: d.DcdTotalDescuentos || 0,
             descuentoStr: d.DcdDescuentoStr || null,
             // % exacto tipeado en la pre-factura (no recalculado desde importes redondeados)
-            descuentoPct: d.DcdDescuentoPct != null ? Number(d.DcdDescuentoPct) : null
+            descuentoPct: d.DcdDescuentoPct != null ? Number(d.DcdDescuentoPct) : null,
+            // Recargo y origen de la línea (desglose lista / descuento / recargo)
+            descuentoOrigen: d.DcdDescuentoOrigen || null,
+            totalRecargos: d.DcdTotalRecargos || 0,
+            recargoPct: d.DcdRecargoPct != null ? Number(d.DcdRecargoPct) : null,
+            recargoStr: d.DcdRecargoStr || null
           });
         }
       }
@@ -3649,13 +4106,13 @@ async function anularMovimiento(movId, obs, transaction = null) {
   // Leer el movimiento antes de anular para revertir el saldo
   const movRes = await req
     .input('MovId', sql.Int, movId)
-    .query(`SELECT CueIdCuenta, MovImporte FROM dbo.MovimientosCuenta WHERE MovIdMovimiento = @MovId AND (MovAnulado IS NULL OR MovAnulado = 0)`);
+    .query(`SELECT CueIdCuenta, MovImporte, MovTipo FROM dbo.MovimientosCuenta WHERE MovIdMovimiento = @MovId AND (MovAnulado IS NULL OR MovAnulado = 0)`);
 
   if (!movRes.recordset.length) {
     logger.warn(`[CONTAB] anularMovimiento: MovId=${movId} no encontrado o ya anulado`);
     return;
   }
-  const { CueIdCuenta, MovImporte } = movRes.recordset[0];
+  const { CueIdCuenta, MovImporte, MovTipo } = movRes.recordset[0];
 
   const req2 = transaction ? new sql.Request(transaction) : pool.request();
   await req2
@@ -3663,14 +4120,23 @@ async function anularMovimiento(movId, obs, transaction = null) {
     .input('Obs',   sql.NVarChar(500), obs || 'Anulado por sistema')
     .query(`UPDATE dbo.MovimientosCuenta SET MovAnulado = 1, MovObservaciones = ISNULL(MovObservaciones + ' | ', '') + @Obs WHERE MovIdMovimiento = @MovId`);
 
-  // Revertir el impacto en CueSaldoActual
-  const req3 = transaction ? new sql.Request(transaction) : pool.request();
-  await req3
-    .input('CueId',   sql.Int,          CueIdCuenta)
-    .input('Importe', sql.Decimal(18,4), MovImporte)
-    .query(`UPDATE dbo.CuentasCliente SET CueSaldoActual = CueSaldoActual - @Importe WHERE CueIdCuenta = @CueId`);
-
-  logger.info(`[CONTAB] anularMovimiento: MovId=${movId} anulado. Saldo revertido en CueId=${CueIdCuenta} por ${MovImporte}`);
+  // [PRENDAS] Fix 14-sep-2026: ORDEN/ORDEN_ANTICIPO NO mueven CueSaldoActual — mismo
+  // criterio que SP_RegistrarMovimiento (05-09-2026: "se cobran al facturar, si se
+  // restaban acá Y otra vez al facturar la deuda se contaba dos veces"). Antes esta
+  // función revertía el saldo de CUALQUIER movimiento sin mirar el tipo — para una
+  // ORDEN eso movía un saldo que la creación original nunca tocó, dejando un crédito
+  // fantasma (visto en vivo: +2.32 en la cuenta de un cliente sin que nadie le pagara
+  // nada). Se salta el ajuste de saldo para ese tipo; para el resto sigue igual.
+  if (!['ORDEN', 'ORDEN_ANTICIPO'].includes(MovTipo)) {
+    const req3 = transaction ? new sql.Request(transaction) : pool.request();
+    await req3
+      .input('CueId',   sql.Int,          CueIdCuenta)
+      .input('Importe', sql.Decimal(18,4), MovImporte)
+      .query(`UPDATE dbo.CuentasCliente SET CueSaldoActual = CueSaldoActual - @Importe WHERE CueIdCuenta = @CueId`);
+    logger.info(`[CONTAB] anularMovimiento: MovId=${movId} anulado. Saldo revertido en CueId=${CueIdCuenta} por ${MovImporte}`);
+  } else {
+    logger.info(`[CONTAB] anularMovimiento: MovId=${movId} (${MovTipo}) anulado. No se toca CueSaldoActual — este tipo nunca lo mueve.`);
+  }
 }
 
 /**
@@ -4322,6 +4788,21 @@ async function getSaldoRealCuenta(CueIdCuenta, transaction = null) {
  *
  * @returns {Promise<null|{CueIdCuenta, CueNombre, MonIdMoneda, CueTipo, CueRestringida, CuePuedeNegativo, ProIdProductoUsado, OrdIdDeposito}>}
  */
+/**
+ * puedeQuedarEnRojo — ¿el switch "acepta negativo" de una billetera tiene efecto para este cliente?
+ * Regla 31-ago-2026: SEMANALES sí. Ampliación 17-sep-2026 (pedido del usuario, caso Cabala_uy /
+ * cuenta 6346): también ROLLO POR ADELANTADO (tipo 3), "calco del rollo en metros": la cuenta
+ * queda en rojo y la próxima Venta de saldo la absorbe. Es una señal APARTE de "esSemanal"
+ * porque esa señal además apaga el descuento al ingreso de las billeteras libres, y eso NO
+ * cambia para los rollo. Un cliente Común sigue sin poder quedar en negativo.
+ */
+async function puedeQuedarEnRojo(requestFactory, CliIdCliente, esSemanal) {
+  if (esSemanal) return true;
+  const r = await requestFactory().input('CliRollo', sql.Int, CliIdCliente)
+    .query('SELECT TOP 1 1 AS R FROM dbo.Clientes c WITH(NOLOCK) WHERE c.CliIdCliente = @CliRollo AND c.TClIdTipoCliente = 3');
+  return r.recordset.length > 0;
+}
+
 async function buscarCuentaAutoConsumoParaOrden(pool, { CliIdCliente, ProIdProducto = null, OrdIdOrden = null, CodigoOrden = null, MonIdMoneda = null }) {
   if (!CliIdCliente) return null;
 
@@ -4373,6 +4854,33 @@ async function buscarCuentaAutoConsumoParaOrden(pool, { CliIdCliente, ProIdProdu
     proId = r.recordset[0]?.ProIdProducto || null;
   }
 
+  // ── BENEFICIOS PACTADOS (specs/40 RN-BEN.23): "la cotización decide, el consumo obedece".
+  // Si la orden se cotizó con un beneficio (marca Ordenes.BclIdBeneficioCliente), paga SU
+  // bolsa y ninguna otra. Una orden sin marca nunca toca una bolsa (exclusión de abajo).
+  const hayTablaBen = await tablaBeneficiosExiste(pool);
+  if (hayTablaBen) {
+    try {
+      const benSvc = require('./beneficiosService');
+      if (await require('../utils/beneficiosFlag').beneficiosActivos(pool)) {
+        const bolsa = await benSvc.bolsaDeOrden(pool, { OrdIdOrden, CodigoOrden });
+        if (bolsa && Number(bolsa.CliIdCliente) === Number(CliIdCliente)) {
+          if (bolsa.BclEstado === 'ACTIVO' && bolsa.CueActiva) {
+            return {
+              CueIdCuenta: bolsa.CueIdCuenta, CueNombre: bolsa.CueNombre, MonIdMoneda: bolsa.MonIdMoneda, CueTipo: bolsa.CueTipo,
+              CueRestringida: true, CuePuedeNegativo: false, EsClienteSemanal: esSemanal,
+              ProIdProductoUsado: proId, OrdIdDeposito: ordIdDeposito,
+              EsBeneficio: true, BclId: bolsa.BclIdBeneficioCliente, BenNombre: String(bolsa.BenNombre || '').trim(),
+            };
+          }
+          logger.info(`[MOTOR] Orden ${CodigoOrden || OrdIdOrden} cotizada con el beneficio #${bolsa.BclIdBeneficioCliente} pero la bolsa está ${bolsa.BclEstado}${bolsa.CueActiva ? '' : ' (cuenta cerrada)'}: sigue el camino normal sin bolsas.`);
+        }
+      }
+    } catch (eBen) {
+      logger.warn(`[MOTOR] Beneficios: no se pudo resolver la bolsa de ${CodigoOrden || OrdIdOrden} (${eBen.message}); sigue el camino normal.`);
+    }
+  }
+  const exclBolsas = hayTablaBen ? 'AND NOT EXISTS (SELECT 1 FROM dbo.BeneficiosCliente bx WITH(NOLOCK) WHERE bx.CueIdCuenta = cc.CueIdCuenta)' : '';
+
   const res = await pool.request()
     .input('Cli', sql.Int, CliIdCliente)
     .input('Pro', sql.Int, proId)
@@ -4387,6 +4895,7 @@ async function buscarCuentaAutoConsumoParaOrden(pool, { CliIdCliente, ProIdProdu
         AND  cc.CueEsPrincipal = 0
         AND  cc.CueAutoConsumo = 1
         AND  cc.CueTipo LIKE 'DINERO%'
+        ${exclBolsas}
         AND  (
                cc.CueRestringida = 0
             OR (@Pro IS NOT NULL AND EXISTS (SELECT 1 FROM dbo.CuentasClienteArticulosPermitidos ap WITH(NOLOCK)
@@ -4401,11 +4910,13 @@ async function buscarCuentaAutoConsumoParaOrden(pool, { CliIdCliente, ProIdProdu
     `);
   if (!res.recordset.length) return null;
   // Regla 31-ago-2026: "acepta negativo" tiene efecto SOLO para clientes SEMANALES
-  // (rollo: queda en rojo y se compensa con la próxima carga). Para un común, aunque
-  // la cuenta tenga el flag prendido, el consumo automático nunca la deja en negativo.
+  // (queda en rojo y se compensa con la próxima carga). Ampliación 17-sep-2026: también
+  // ROLLO POR ADELANTADO (ver puedeQuedarEnRojo). Para un común, aunque la cuenta tenga
+  // el flag prendido, el consumo automático nunca la deja en negativo.
+  const rojoOk = !!res.recordset[0].CuePuedeNegativo && await puedeQuedarEnRojo(() => pool.request(), CliIdCliente, esSemanal);
   return {
     ...res.recordset[0],
-    CuePuedeNegativo: !!res.recordset[0].CuePuedeNegativo && esSemanal,
+    CuePuedeNegativo: rojoOk,
     CueRestringida: !!res.recordset[0].CueRestringida,
     EsClienteSemanal: esSemanal,
     ProIdProductoUsado: proId,
@@ -4472,7 +4983,8 @@ async function consumirPrepagoDelCiclo(pool, {
       AND cc.CueAutoConsumo = 1 AND cc.CueTipo LIKE 'DINERO%'
       -- SOLO cuentas PREPAGO FACTURADO: su plata ya tiene factura, por eso el consumo
       -- no genera documento. Las de anticipo van por su circuito (Facturar consumos).
-      AND ISNULL(cc.CueModalidadFiscal, 'ANTICIPO_A_FACTURAR') = 'PREPAGO_FACTURADO'`);
+      AND ISNULL(cc.CueModalidadFiscal, 'ANTICIPO_A_FACTURAR') = 'PREPAGO_FACTURADO'
+      ${(await tablaBeneficiosExiste(pool)) ? "AND NOT EXISTS (SELECT 1 FROM dbo.BeneficiosCliente bx WITH(NOLOCK) WHERE bx.CueIdCuenta = cc.CueIdCuenta) -- bolsas de beneficio: solo pagan sus pedidos, al ingreso" : ''}`);
   if (!ctasRes.recordset.length) return null;
 
   const semRes = await pool.request().input('Cli', sql.Int, CliIdCliente).query(`
@@ -4482,11 +4994,13 @@ async function consumirPrepagoDelCiclo(pool, {
            OR EXISTS (SELECT 1 FROM dbo.CuentasCliente x WITH(NOLOCK)
                       WHERE x.CliIdCliente = c.CliIdCliente AND x.CueEsPrincipal = 1 AND ISNULL(x.CueDiasCiclo, 0) > 0))`);
   const esSemanal = semRes.recordset.length > 0;
+  // "acepta negativo" vale para SEMANAL y ROLLO POR ADELANTADO (17-sep-2026, ver puedeQuedarEnRojo)
+  const rojoOk = await puedeQuedarEnRojo(() => pool.request(), CliIdCliente, esSemanal);
 
   const cuentas = ctasRes.recordset.map(c => ({
     id: c.CueIdCuenta, nombre: (c.CueNombre || `cuenta #${c.CueIdCuenta}`).trim(),
     mon: Number(c.MonIdMoneda) === 2 ? 2 : 1, restringida: !!c.CueRestringida,
-    negativo: !!c.CuePuedeNegativo && esSemanal, disp: r2(Number(c.Saldo)),
+    negativo: !!c.CuePuedeNegativo && rojoOk, disp: r2(Number(c.Saldo)),
   })).filter(c => c.negativo || c.disp > 0.009);
   if (!cuentas.length) return null;
 
@@ -4737,15 +5251,17 @@ async function resincronizarConsumosBilletera({ OrdIdOrden, UsuarioAlta = 70, nu
            OR EXISTS (SELECT 1 FROM dbo.CuentasCliente x WITH(NOLOCK)
                       WHERE x.CliIdCliente = c.CliIdCliente AND x.CueEsPrincipal = 1 AND ISNULL(x.CueDiasCiclo, 0) > 0))`);
   const esSemanal = semRes.recordset.length > 0;
+  // "acepta negativo" vale para SEMANAL y ROLLO POR ADELANTADO (17-sep-2026, ver puedeQuedarEnRojo)
+  const rojoOk = await puedeQuedarEnRojo(rq, od.CliIdCliente, esSemanal);
 
   const detalle = [];
   const tagObs = (viejo, nuevo) => ` [resync ${viejo.toFixed(2)} → ${nuevo.toFixed(2)}: ${motivo}]`;
 
   if (delta > 0.009) {
     // SUBIÓ el precio: la diferencia sale de la billetera (consumo más reciente),
-    // hasta el saldo real — negativo solo si la cuenta lo permite Y el cliente es semanal.
+    // hasta el saldo real — negativo solo si la cuenta lo permite Y el cliente es semanal o rollo.
     const c = consumos[0];
-    const capacidadCta = (c.puedeNegativo && esSemanal)
+    const capacidadCta = (c.puedeNegativo && rojoOk)
       ? Infinity
       : Math.max(0, await getSaldoRealCuenta(c.cueId, transaction));
     const tomaCta = r2(Math.min(c.aCta(delta), capacidadCta));
@@ -4832,9 +5348,12 @@ async function resincronizarConsumosBilletera({ OrdIdOrden, UsuarioAlta = 70, nu
         await rq().input('M', sql.Int, m0.MovIdMovimiento).input('Imp', sql.Decimal(18, 4), -nuevoImp)
           .query('UPDATE dbo.MovimientosCuenta SET MovImporte = @Imp WHERE MovIdMovimiento = @M');
       }
-      // Espejo de saldo en la principal (la ORDEN resta: más resto = menos saldo)
-      await rq().input('C', sql.Int, m0.CueIdCuenta).input('D', sql.Decimal(18, 4), aplicado)
-        .query('UPDATE dbo.CuentasCliente SET CueSaldoActual = ISNULL(CueSaldoActual,0) - @D WHERE CueIdCuenta = @C');
+      // [PRENDAS] Fix 14-sep-2026: m0 es un movimiento tipo ORDEN — esas NO mueven
+      // CueSaldoActual (mismo criterio que SP_RegistrarMovimiento, 05-sep: "se cobran al
+      // facturar; si se restan acá Y otra vez al facturar, la deuda se cuenta dos veces").
+      // Este "espejo de saldo" era inconsistente con el resto de esta misma función unas
+      // líneas más abajo (la creación de una ORDEN nueva SÍ pasa por el SP, que ya respeta
+      // la regla) — acá se hacía a mano, salteando el SP. Se saca; solo queda la deuda.
       await ajustarDeuda(aplicado);
       if (m0.CicIdCiclo) await recalcCiclo(m0.CicIdCiclo);
     } else if (deltaResto > 0) {
@@ -4860,14 +5379,13 @@ async function resincronizarConsumosBilletera({ OrdIdOrden, UsuarioAlta = 70, nu
   }
 
   // 5) Espejo marcado en la principal (consumo manual / cierre F2): acompaña lo cubierto
+  // [PRENDAS] Fix 14-sep-2026: mm también es tipo ORDEN (marcada CUBIERTO) — no mueve saldo.
   if (marcadosMovs.length === 1) {
     const mm = marcadosMovs[0];
     const oldAbs = r2(Math.abs(Number(mm.MovImporte)));
     if (Math.abs(oldAbs - cubiertoDespues) > 0.009 && cubiertoDespues > 0.009) {
       await rq().input('M', sql.Int, mm.MovIdMovimiento).input('Imp', sql.Decimal(18, 4), -cubiertoDespues)
         .query('UPDATE dbo.MovimientosCuenta SET MovImporte = @Imp WHERE MovIdMovimiento = @M');
-      await rq().input('C', sql.Int, mm.CueIdCuenta).input('D', sql.Decimal(18, 4), r2(cubiertoDespues - oldAbs))
-        .query('UPDATE dbo.CuentasCliente SET CueSaldoActual = ISNULL(CueSaldoActual,0) - @D WHERE CueIdCuenta = @C');
     }
   } else if (marcadosMovs.length > 1) {
     logger.warn(`[BILLETERA] resync ${od.OrdCodigoOrden}: ${marcadosMovs.length} ORDEN marcadas CUBIERTO — no se ajustan (revisar a mano).`);
@@ -4912,7 +5430,56 @@ async function resincronizarConsumosBilletera({ OrdIdOrden, UsuarioAlta = 70, nu
  * @param {number} UsuarioAlta
  * @returns {{ referencia, importeOrigen, importeDestino, saldoOrigen, saldoDestino }}
  */
-async function transferirEntreCuentas({ CueOrigen, CueDestino, Importe, Cotizacion = null, Observaciones = '', UsuarioAlta = 1, ConceptoOrigen = null, ConceptoDestino = null }) {
+// ── BENEFICIOS (specs/40): ¿existe la tabla de bolsas? Si el script add_beneficios.sql no
+// se corrió todavía, los candados y exclusiones de bolsas se omiten en vez de romper
+// el motor de billetera. Se evalúa una vez por proceso.
+let _benTablaCache = null;
+async function tablaBeneficiosExiste(pool) {
+  if (_benTablaCache !== null) return _benTablaCache;
+  try {
+    const r = await pool.request().query("SELECT OBJECT_ID('dbo.BeneficiosCliente', 'U') AS id");
+    _benTablaCache = !!r.recordset[0]?.id;
+  } catch (e) { _benTablaCache = false; }
+  if (!_benTablaCache) logger.warn('[BILLETERA] dbo.BeneficiosCliente no existe: falta correr scripts/add_beneficios.sql (los beneficios quedan inactivos).');
+  return _benTablaCache;
+}
+
+/**
+ * planPartesParcialBeneficio — PURA. Cascada de la última orden de un BENEFICIO
+ * (specs/40 RN-BEN.24): la orden vale ENTERA al precio pactado; la plata se reparte
+ * bolsa (siempre primero) → billetera común (misma moneda primero) → lo que falte
+ * sigue a la cuenta principal como pendiente. Nunca salta a otra bolsa.
+ * @param {Array} fuentes [{id, nombre, mon, disp}] — la PRIMERA es la bolsa del beneficio
+ * @returns {{partes: Array, restante: number}} restante en la moneda de la orden
+ */
+function planPartesParcialBeneficio({ fuentes, monOrden, importe, cot }) {
+  const r2 = (n) => Math.round(n * 100) / 100;
+  let rem = r2(Number(importe));
+  const [bolsa, ...resto] = (fuentes || []);
+  const restoOrd = resto.filter(f => Number(f.disp) > 0.009).sort((a, b) => {
+    const am = Number(a.mon) === Number(monOrden) ? 0 : 1, bm = Number(b.mon) === Number(monOrden) ? 0 : 1;
+    return am - bm || Number(b.disp) - Number(a.disp);
+  });
+  const ordenadas = [bolsa, ...restoOrd].filter(f => f && Number(f.disp) > 0.009);
+  const partes = [];
+  for (const f of ordenadas) {
+    if (rem <= 0.009) break;
+    const monF = Number(f.mon) === 2 ? 2 : 1;
+    let importeCta, importeOrden, cruzada;
+    if (monF === Number(monOrden)) { cruzada = false; importeOrden = r2(Math.min(f.disp, rem)); importeCta = importeOrden; }
+    else {
+      cruzada = true;
+      const dispEnOrden = monF === 2 ? r2(f.disp * cot) : r2(f.disp / cot);
+      importeOrden = r2(Math.min(rem, dispEnOrden));
+      importeCta = importeOrden >= dispEnOrden - 0.005 ? r2(f.disp) : (Number(monOrden) === 2 ? r2(importeOrden * cot) : r2(importeOrden / cot));
+    }
+    if (importeCta > 0.009) partes.push({ cueIdCuenta: f.id, cuenta: f.nombre, mon: monF, importeCta, importeOrden, cruzada });
+    rem = r2(rem - importeOrden);
+  }
+  return { partes, restante: Math.max(0, rem) };
+}
+
+async function transferirEntreCuentas({ CueOrigen, CueDestino, Importe, Cotizacion = null, Observaciones = '', UsuarioAlta = 1, ConceptoOrigen = null, ConceptoDestino = null, cierreBeneficio = false }) {
   const pool = await getPool();
   const origenId  = parseInt(CueOrigen);
   const destinoId = parseInt(CueDestino);
@@ -4922,6 +5489,21 @@ async function transferirEntreCuentas({ CueOrigen, CueDestino, Importe, Cotizaci
     throw new Error('Cuenta de origen y destino deben ser distintas.');
   if (!importe || importe <= 0)
     throw new Error('El importe a transferir debe ser mayor a 0.');
+
+  // ── BENEFICIOS (specs/40 RN-BEN.15/28): a la bolsa de un beneficio NUNCA entra una
+  // transferencia (la activación es solo una carga facturada) y de ella solo sale la
+  // transferencia de CIERRE hacia la billetera común (cierreBeneficio=true, la hace el servicio).
+  if (await tablaBeneficiosExiste(pool)) {
+    const bolsas = await pool.request().input('A', sql.Int, origenId).input('B', sql.Int, destinoId).query(`
+      SELECT bc.CueIdCuenta, bc.BclEstado, b.BenNombre FROM dbo.BeneficiosCliente bc WITH(NOLOCK)
+      JOIN dbo.Beneficios b WITH(NOLOCK) ON b.BenIdBeneficio = bc.BenIdBeneficio WHERE bc.CueIdCuenta IN (@A, @B)`);
+    const bolsaDestino = bolsas.recordset.find(x => x.CueIdCuenta === destinoId);
+    const bolsaOrigen  = bolsas.recordset.find(x => x.CueIdCuenta === origenId);
+    if (bolsaDestino)
+      throw new Error(`La cuenta destino es la bolsa del beneficio «${String(bolsaDestino.BenNombre).trim()}»: un beneficio solo se carga con una carga facturada (venta de saldo o recarga del portal), nunca por transferencia.`);
+    if (bolsaOrigen && !cierreBeneficio)
+      throw new Error(`La cuenta origen es la bolsa del beneficio «${String(bolsaOrigen.BenNombre).trim()}»: su saldo solo sale consumiendo pedidos del beneficio o al cerrarlo desde el 360 (pasa a la billetera común).`);
+  }
 
   const ctas = await pool.request()
     .input('A', sql.Int, origenId)
@@ -5009,6 +5591,8 @@ async function transferirEntreCuentas({ CueOrigen, CueDestino, Importe, Cotizaci
       cotizacion:     cotUsada,
       saldoOrigen:    salida.SaldoResultante,
       saldoDestino:   entrada.SaldoResultante,
+      MovIdSalida:    salida.MovIdGenerado,
+      MovIdEntrada:   entrada.MovIdGenerado,
     };
   } catch (err) {
     try { await transaction.rollback(); } catch (_) { /* ya rollbackeada */ }
@@ -5126,7 +5710,10 @@ module.exports = {
   getSaldoRealCuenta,
   transferirEntreCuentas,
   planPartesConsumoBilletera,
+  planPartesParcialBeneficio,
+  tablaBeneficiosExiste,
   buscarCuentaAutoConsumoParaOrden,
+  puedeQuedarEnRojo,
   consumirPrepagoDelCiclo,
   resincronizarConsumosBilletera,
 
@@ -5282,12 +5869,16 @@ async function procesarEventoContable(evtCodigo, data) {
           // CONSUMO sobre la misma orden. Si ni sumando alcanza, sigue el camino de
           // siempre (parcial + resto a la principal).
           let partesExtra = null;
+          let partesParciales = null;   // BENEFICIO: bolsa + común no alcanzan → el resto sigue a la principal
           if (!ctaAuto.CuePuedeNegativo) {
             const saldoCta = await getSaldoRealCuenta(ctaAuto.CueIdCuenta);
             if (saldoCta <= 0.001 || saldoCta + 0.001 < importeCta) {
-              if (!ctaAuto.CueRestringida) {
+              // Libres: reparto entre billeteras. BOLSA de beneficio: cascada bolsa → común
+              // (specs/40 RN-BEN.24); semanal: la común no descuenta al ingreso (va al cierre).
+              if (!ctaAuto.CueRestringida || ctaAuto.EsBeneficio) {
                 try {
-                  const otras = (await pool.request()
+                  const exclBolsasOtras = (await tablaBeneficiosExiste(pool)) ? 'AND NOT EXISTS (SELECT 1 FROM dbo.BeneficiosCliente bx WITH(NOLOCK) WHERE bx.CueIdCuenta = cc.CueIdCuenta)' : '';
+                  const otras = (ctaAuto.EsBeneficio && ctaAuto.EsClienteSemanal) ? [] : (await pool.request()
                     .input('Cli', sql.Int, CliIdCliente)
                     .input('Cue', sql.Int, ctaAuto.CueIdCuenta)
                     .query(`
@@ -5296,7 +5887,7 @@ async function procesarEventoContable(evtCodigo, data) {
                                 WHERE m.CueIdCuenta = cc.CueIdCuenta AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)
                                   AND m.MovTipo NOT IN ('ORDEN','ORDEN_ANTICIPO')), 0) AS Saldo
                       FROM dbo.CuentasCliente cc WITH(NOLOCK)
-                      WHERE cc.CliIdCliente = @Cli AND cc.CueIdCuenta <> @Cue
+                      WHERE cc.CliIdCliente = @Cli AND cc.CueIdCuenta <> @Cue ${exclBolsasOtras}
                         AND cc.CueActiva = 1 AND cc.CueEsPrincipal = 0 AND cc.CueRestringida = 0
                         AND cc.CueAutoConsumo = 1 AND cc.CueTipo LIKE 'DINERO%'
                         AND ISNULL(cc.CueModalidadFiscal,'ANTICIPO_A_FACTURAR') =
@@ -5310,14 +5901,21 @@ async function procesarEventoContable(evtCodigo, data) {
                     const cotiRes2 = await pool.request().query('SELECT TOP 1 CotDolar FROM dbo.Cotizaciones WITH(NOLOCK) ORDER BY CotFecha DESC');
                     cotUsada = parseFloat(cotiRes2.recordset[0]?.CotDolar) || 40;
                   }
-                  const planP = planPartesConsumoBilletera({ fuentes, monOrden: MonIdMoneda, importe: importeOrdenAbs, cot: cotUsada || 40 });
-                  if (planP && planP.length > 1) partesExtra = planP;
+                  if (ctaAuto.EsBeneficio) {
+                    // La BOLSA va siempre primero; después la común; lo que falte, a la principal.
+                    const planB = planPartesParcialBeneficio({ fuentes, monOrden: MonIdMoneda, importe: importeOrdenAbs, cot: cotUsada || 40 });
+                    if (planB.restante <= 0.009 && planB.partes.length > 1) partesExtra = planB.partes;
+                    else if (planB.partes.length >= 1 && planB.restante > 0.009) partesParciales = planB;
+                  } else {
+                    const planP = planPartesConsumoBilletera({ fuentes, monOrden: MonIdMoneda, importe: importeOrdenAbs, cot: cotUsada || 40 });
+                    if (planP && planP.length > 1) partesExtra = planP;
+                  }
                 } catch (ePartes) {
                   logger.error(`[MOTOR] ${evtCodigo}: reparto entre billeteras para ${CodigoOrden} falló: ${ePartes.message}. Sigue el camino normal.`);
                   partesExtra = null;
                 }
               }
-              if (!partesExtra) {
+              if (!partesExtra && !partesParciales) {
                 if (saldoCta <= 0.001) {
                   importeCta = 0;
                 } else {
@@ -5329,7 +5927,34 @@ async function procesarEventoContable(evtCodigo, data) {
           }
 
           const nomCta = ctaAuto.CueNombre || `cuenta #${ctaAuto.CueIdCuenta}`;
-          if (partesExtra) {
+          const refrescarBolsa = async () => {
+            if (!ctaAuto.EsBeneficio) return;
+            try { await require('./beneficiosService').refrescarEstadoBolsa(pool, ctaAuto.BclId); }
+            catch (eR) { logger.warn(`[MOTOR] No se pudo refrescar el estado de la bolsa #${ctaAuto.BclId}: ${eR.message}`); }
+          };
+          if (partesParciales) {
+            // BENEFICIO, última orden (specs/40 RN-BEN.24): la orden vale ENTERA al precio
+            // pactado; paga la bolsa hasta 0 y la billetera común, y el resto sigue a la
+            // cuenta principal como pendiente. Nunca se parten tarifas ni se toca otra bolsa.
+            const n = partesParciales.partes.length;
+            for (let i = 0; i < n; i++) {
+              const parte = partesParciales.partes[i];
+              resSubmayor = await registrarMovimiento({
+                CueIdCuenta:      parte.cueIdCuenta,
+                MovTipo:          'CONSUMO_CUENTA',
+                MovConcepto:      `${CodigoOrden} ${NombreTrabajo}`.trim() || 'Consumo de orden',
+                MovImporte:       -Math.abs(parte.importeCta),
+                MovUsuarioAlta:   UsuarioAlta,
+                OrdIdOrden:       ctaAuto.OrdIdDeposito || OrdIdOrden,
+                OReIdOrdenRetiro,
+                MovObservaciones: `CUBIERTO_PARCIAL_CUENTA_${parte.cueIdCuenta}${parte.cruzada ? ` @ cot. ${cotUsada}` : ''} — ${parte.cuenta} (parte ${i + 1} de ${n}, BENEFICIO_${ctaAuto.BclId}; el resto va a la cuenta principal)`,
+              });
+            }
+            resSubmayor.cuentaAutoConsumo = ctaAuto.CueIdCuenta;
+            Importe = partesParciales.restante;
+            logger.info(`[MOTOR] ${evtCodigo}: Orden ${CodigoOrden} (beneficio #${ctaAuto.BclId} "${ctaAuto.BenNombre}") cubierta PARCIALMENTE en ${n} parte(s): ${partesParciales.partes.map(p => `"${p.cuenta}" -${p.mon === 2 ? 'US$' : '$'} ${p.importeCta}`).join(' + ')}; quedan ${partesParciales.restante} (moneda de la orden) para la cuenta principal.`);
+            await refrescarBolsa();
+          } else if (partesExtra) {
             // Orden cubierta ENTERA repartida entre billeteras (un CONSUMO por cuenta,
             // cada uno con la marca): primero la de la moneda de la orden hasta 0,
             // el remanente @ cot desde la(s) otra(s).
@@ -5343,10 +5968,11 @@ async function procesarEventoContable(evtCodigo, data) {
                 MovUsuarioAlta:   UsuarioAlta,
                 OrdIdOrden:       ctaAuto.OrdIdDeposito || OrdIdOrden,
                 OReIdOrdenRetiro,
-                MovObservaciones: `CUBIERTO_CUENTA_${parte.cueIdCuenta}${parte.cruzada ? ` @ cot. ${cotUsada}` : ''} — ${parte.cuenta} (parte ${i + 1} de ${partesExtra.length})`,
+                MovObservaciones: `CUBIERTO_CUENTA_${parte.cueIdCuenta}${parte.cruzada ? ` @ cot. ${cotUsada}` : ''} — ${parte.cuenta} (parte ${i + 1} de ${partesExtra.length}${ctaAuto.EsBeneficio ? `, BENEFICIO_${ctaAuto.BclId}` : ''})`,
               });
             }
             resSubmayor.cuentaAutoConsumo = partesExtra[0].cueIdCuenta;
+            await refrescarBolsa();
             resSubmayor.cubiertoPorSaldo = true;
             saltarDinero = true;
             logger.info(`[MOTOR] ${evtCodigo}: Orden ${CodigoOrden} cubierta ENTERA repartida entre ${partesExtra.length} billeteras: ${partesExtra.map(p => `"${p.cuenta}" -${p.mon === 2 ? 'US$' : '$'} ${p.importeCta.toFixed(2)}`).join(' + ')}${cotUsada ? ` (@ cot. ${cotUsada})` : ''}. Sin deuda en la principal.`);
@@ -5366,9 +5992,10 @@ async function procesarEventoContable(evtCodigo, data) {
               // Preferir el OrdIdOrden REAL de OrdenesDeposito: es el que usan el retiro y las reversas
               OrdIdOrden:       ctaAuto.OrdIdDeposito || OrdIdOrden,
               OReIdOrdenRetiro,
-              MovObservaciones: `${marca}_${ctaAuto.CueIdCuenta}${cotUsada ? ` @ cot. ${cotUsada}` : ''} — ${nomCta}${parcial ? ' (sin saldo para el total, el resto va a la cuenta principal)' : ''}`,
+              MovObservaciones: `${marca}_${ctaAuto.CueIdCuenta}${cotUsada ? ` @ cot. ${cotUsada}` : ''} — ${nomCta}${parcial ? ' (sin saldo para el total, el resto va a la cuenta principal)' : ''}${ctaAuto.EsBeneficio ? ` · BENEFICIO_${ctaAuto.BclId}` : ''}`,
             });
             resSubmayor.cuentaAutoConsumo = ctaAuto.CueIdCuenta;
+            await refrescarBolsa();
 
             if (!parcial) {
               resSubmayor.cubiertoPorSaldo = true;
@@ -5440,7 +6067,25 @@ async function procesarEventoContable(evtCodigo, data) {
           ? saldoLibroCta - Math.abs(Importe)
           : saldoLibroCta;
 
-        if (evt.EvtGeneraDeuda && saldoConEstaOrden < 0) {
+        // REGLA (usuario, 15-sep-2026): para el cliente SIN ciclo (Común / Rollo / Deudor)
+        // el saldo a favor de la cuenta PRINCIPAL nunca paga una orden solo. Solo una
+        // BILLETERA (cuenta secundaria con descuento automático, resuelta más arriba con
+        // CONSUMO_CUENTA) puede dejar la orden paga al entrar. Motivo: el motor marcaba
+        // órdenes como pagas (estado 7) contra "a favor" que eran pesos crudos dentro de la
+        // cuenta de dólares u otros restos de bugs (99 cuentas US$ con 236 mil falsos el
+        // 15-sep; ya había 9 órdenes de 4 clientes entregadas gratis). La deuda nace por el
+        // TOTAL, PENDIENTE, y sin auto-consumo de anticipos (aplicarSaldoAFavor=false): el
+        // a favor real lo aplica caja a la vista, con recibo. Tampoco se cruza moneda: el
+        // cruce también es plata de una cuenta principal. Semanal (ciclo) sigue igual.
+        if (evt.EvtGeneraDeuda && !cicloActivoEvt) {
+          await crearDeudaDocumento({
+             CueIdCuenta: cueId, OrdIdOrden,
+             Importe: Math.abs(Importe),
+             ImportePendiente: Math.abs(Importe),
+             aplicarSaldoAFavor: false
+          });
+          logger.info(`[MOTOR] ${evtCodigo}: Orden ${CodigoOrden} (cliente sin ciclo) → deuda por el total ${Math.abs(Importe).toFixed(2)}, PENDIENTE. La cuenta principal no paga sola (saldo libro ${saldoLibroCta.toFixed(2)}); se cobra o se imputa en caja.`);
+        } else if (evt.EvtGeneraDeuda && saldoConEstaOrden < 0) {
            let deudaReal = Math.min(Math.abs(Importe), Math.max(0, -saldoConEstaOrden));
 
            if (deudaReal > 0.01) {

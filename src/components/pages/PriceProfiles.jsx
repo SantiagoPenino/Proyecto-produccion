@@ -281,7 +281,9 @@ const BulkAddModal = ({ onAdd, onCancel, profileName }) => {
                                             >
                                                 <option value="fixed_price">Precio Fijo Exacto ($)</option>
                                                 <option value="percentage_discount">Descuento Porcentual (%)</option>
+                                                <option value="amount_discount">Descuento por Importe ($)</option>
                                                 <option value="percentage_surcharge">Recargo Porcentual (%)</option>
+                                                <option value="amount_surcharge">Recargo por Importe ($)</option>
                                             </select>
                                         </div>
 
@@ -1032,7 +1034,8 @@ const TieredPriceTable = ({ items, onUpdate, catalog }) => {
                         // Detect common type
                         const currentType = (rules[0] && rules[0].TipoRegla) || 'fixed_price';
                         const currentCurrency = (rules[0] && rules[0].Moneda) || 'UYU';
-                        const isPercentage = currentType.includes('percentage') || (currentType.includes('discount') && !currentType.includes('fixed'));
+                        // Solo las reglas "percentage_*" son en %; amount_discount / amount_surcharge van en moneda
+                        const isPercentage = currentType.includes('percentage');
                         const symbol = isPercentage ? '%' : (currentCurrency === 'USD' ? 'U$S' : '$');
 
                         return (
@@ -1050,7 +1053,9 @@ const TieredPriceTable = ({ items, onUpdate, catalog }) => {
                                     >
                                         <option value="fixed_price">Precio Fijo</option>
                                         <option value="percentage_discount">Descuento (%)</option>
+                                        <option value="amount_discount">Descuento ($)</option>
                                         <option value="percentage_surcharge">Recargo (%)</option>
+                                        <option value="amount_surcharge">Recargo ($)</option>
                                     </select>
 
                                     {!isPercentage && (
@@ -1117,6 +1122,8 @@ const TieredPriceTable = ({ items, onUpdate, catalog }) => {
 const ProfileEditor = ({ profile, onSave, onBack }) => {
     const [name, setName] = useState(profile?.Nombre || '');
     const [desc, setDesc] = useState(profile?.Descripcion || '');
+    // Texto que ve el CLIENTE en la factura cuando este perfil aplica (vacío = nombre del perfil)
+    const [etiqueta, setEtiqueta] = useState(profile?.EtiquetaFactura || '');
     const [categoria, setCategoria] = useState(profile?.Categoria || 'Todos');
     const [esGlobal, setEsGlobal] = useState(profile?.EsGlobal || false);
     const [showBulk, setShowBulk] = useState(false);
@@ -1222,6 +1229,7 @@ const ProfileEditor = ({ profile, onSave, onBack }) => {
     useEffect(() => {
         setName(profile?.Nombre || '');
         setDesc(profile?.Descripcion || '');
+        setEtiqueta(profile?.EtiquetaFactura || '');
         setCategoria(profile?.Categoria || 'Todos');
         setEsGlobal(profile?.EsGlobal || false);
         setItems((profile?.items || []).map((i, idx) => ({ ...i, _tempId: idx })));
@@ -1376,7 +1384,7 @@ const ProfileEditor = ({ profile, onSave, onBack }) => {
                     <h2 className="text-xl font-bold text-slate-800">{profile?.ID ? 'Editar Perfil' : 'Nuevo Perfil'}</h2>
                 </div>
                 <button
-                    onClick={() => onSave({ id: profile?.ID, nombre: name, descripcion: desc, items, esGlobal, categoria })}
+                    onClick={() => onSave({ id: profile?.ID, nombre: name, descripcion: desc, etiquetaFactura: etiqueta, items, esGlobal, categoria })}
                     className="btn-primary px-6 py-2 shadow-md hover:shadow-lg transition-all"
                 >
                     <i className="fa-solid fa-save mr-2"></i> Guardar Perfil
@@ -1403,6 +1411,19 @@ const ProfileEditor = ({ profile, onSave, onBack }) => {
                             onChange={e => setDesc(e.target.value)}
                             placeholder="Ej: 20% descuento en toda la tienda"
                         />
+                    </div>
+                    <div>
+                        <label className="block text-xs font-bold text-slate-500 uppercase mb-1" title="Texto que ve el cliente en la factura y en la cotización cuando este perfil descuenta o recarga. Vacío = se usa el nombre del perfil. Un guion (-) = sin texto, queda solo el % o el importe.">
+                            Etiqueta en la factura
+                        </label>
+                        <input
+                            className="w-full border border-slate-300 rounded p-2 focus:ring-2 focus:ring-indigo-100 outline-none text-slate-600"
+                            value={etiqueta}
+                            maxLength={60}
+                            onChange={e => setEtiqueta(e.target.value)}
+                            placeholder="Ej: Urgencia · Tinta UV · Descuento por volumen · - (sin texto)"
+                        />
+                        <p className="text-[10px] text-slate-400 mt-1">Vacío: se imprime el nombre del perfil. Un guion (-): no se imprime texto, solo el % o el importe. Aplica a lo que se cotice de acá en más.</p>
                     </div>
                 </div>
                 <div className="space-y-4">
@@ -1447,18 +1468,36 @@ const ProfileEditor = ({ profile, onSave, onBack }) => {
                                 );
                             })}
                         </div>
-                        {selectedCats.length > 0 && (
-                            <p className="text-[11px] text-indigo-600 mt-1 flex items-center gap-1">
-                                <i className="fa-solid fa-circle-info"></i>
-                                Urgencia activa solo en: <strong>{selectedCats.map(cat => {
-                                    const found = allAreas.find(a =>
-                                        a.CodArea.toUpperCase() === cat.toUpperCase() ||
-                                        (a.AreaNombre || '').toUpperCase() === cat.toUpperCase()
-                                    );
-                                    return found ? (found.AreaNombre || found.CodArea) : cat;
-                                }).join(', ')}</strong>
-                            </p>
-                        )}
+                        {/* El texto decía "Urgencia activa solo en" para CUALQUIER perfil (se
+                            escribió para el perfil de urgencia). Y hay algo más importante: el
+                            motor de precios (pricingService) solo filtra por categoría a los
+                            perfiles GLOBALES. Un perfil asignado a clientes se aplica igual a
+                            todo, tenga las categorías que tenga — hay que decirlo, no sugerir un
+                            límite que no existe. */}
+                        {selectedCats.length > 0 && (() => {
+                            const nombres = selectedCats.map(cat => {
+                                const found = allAreas.find(a =>
+                                    a.CodArea.toUpperCase() === cat.toUpperCase() ||
+                                    (a.AreaNombre || '').toUpperCase() === cat.toUpperCase()
+                                );
+                                return found ? (found.AreaNombre || found.CodArea) : cat;
+                            }).join(', ');
+                            return esGlobal ? (
+                                <p className="text-[11px] text-indigo-600 mt-1 flex items-center gap-1">
+                                    <i className="fa-solid fa-circle-info"></i>
+                                    Este perfil se aplica solo en: <strong>{nombres}</strong>
+                                </p>
+                            ) : (
+                                <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1 mt-1 flex items-start gap-1">
+                                    <i className="fa-solid fa-triangle-exclamation mt-0.5"></i>
+                                    <span>
+                                        Marcaste <strong>{nombres}</strong>, pero este perfil no es global: a los clientes
+                                        que lo tienen asignado se les aplica en <strong>todas</strong> las áreas igual.
+                                        Hoy las categorías solo limitan a los perfiles globales.
+                                    </span>
+                                </p>
+                            );
+                        })()}
                     </div>
                     <label className="flex items-center gap-3 p-4 border rounded bg-white cursor-pointer hover:border-indigo-300 transition-colors shadow-sm w-full">
                         <input

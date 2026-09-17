@@ -77,9 +77,18 @@ ANULADO (solo si NUNCA llegó a DGI)
   fallback a la cotización del día si no hay cobro o si la implícita cae fuera de ±25% —
   se prefiere que el cuadre pre-DGI frene el envío antes que fabricar una línea que lo
   disimule.
-- **RN-FAC.10** **Descuento por línea**: el unitario guardado es el **bruto** y el % se
-  guarda aparte tal como lo tipeó el usuario (recalcularlo desde importes redondeados da
-  10,03% donde había 10%). Al editar, el descuento viaja siempre o se pierde.
+- **RN-FAC.10** **Descuento y recargo por línea**: el unitario guardado es el **precio de
+  lista** (bruto, con IVA) y aparte van el descuento (importe y % tal como lo tipeó el
+  usuario o lo fijó la regla) y el **recargo** (importe y %), más el **origen** de cada
+  uno en palabras del cliente ("Precio especial 30 %", "Urgencia 25 %"). Convención:
+  `cantidad × lista − descuento + recargo = importe`; el importe del descuento absorbe el
+  redondeo (recalcular el % desde importes redondeados da 10,03% donde había 10%). Al
+  editar, descuento y recargo viajan siempre o se pierden. La línea que viene de una
+  orden toma lista, descuento y recargo **del pedido congelado** (por número de pedido y
+  orden, nunca por el código con prefijo) y solo si ese pedido explica exactamente el
+  importe cobrado; si no, sale como neto sin desglose. **El CFE no cambia**: viaja el
+  unitario neto y el importe de siempre; la transparencia vive en el documento y en su
+  representación impresa, cuyo "P. Unitario" sigue siendo el neto del CFE.
 
 ## 4. Facturación manual
 
@@ -118,7 +127,23 @@ ANULADO (solo si NUNCA llegó a DGI)
   los pagos nunca mataban.
 - **RN-FAC.16** Al nacer una deuda se **auto-consume el saldo a favor** del cliente
   (pago sintético de anticipo aplicado), con el saldo **recalculado desde los
-  movimientos** — nunca desde el acumulado guardado.
+  movimientos** — nunca desde el acumulado guardado. **Excepción (RN-FAC.30):** la deuda
+  **por orden** de un cliente sin ciclo nace sin ese auto-consumo.
+- **RN-FAC.30** (15-sep-2026) Para el cliente **sin ciclo** (Común / Rollo / Deudor) el
+  saldo a favor de la **cuenta principal nunca deja una orden paga** al entrar: la deuda
+  por orden nace por el **total**, PENDIENTE, y no se cruza moneda. Solo una **billetera**
+  (cuenta secundaria con descuento automático) puede cubrirla al ingreso. El a favor real
+  se aplica en caja, a la vista y con recibo. Motivo: el motor marcaba órdenes pagas contra
+  "a favor" falsos (pesos crudos en la cuenta de dólares) y salían sin cobrar. Semanal
+  (ciclo) no cambia.
+- **RN-FAC.31** (17-sep-2026) El switch **"acepta saldo negativo"** de una billetera
+  (descuento automático) solo tiene efecto para clientes **Semanal** (regla 31-ago) **o
+  Rollo por adelantado** (tipo 3): la orden se descuenta entera aunque no alcance y la
+  cuenta queda **en rojo** hasta la próxima carga, calco del rollo en metros. Para un
+  cliente **Común** el flag se ignora: la billetera se vacía hasta 0 y el resto pasa a la
+  principal. Es una señal **aparte** de "es semanal": para el rollo las billeteras libres
+  siguen descontando al ingreso. Rige en el ingreso de la orden, en el reparto entre
+  billeteras y en el resync de precio. Caso origen: Cabala_uy, cuenta 6346.
 - **RN-FAC.17** Cobros: selección de varias deudas y varios medios; moneda base = la de
   las deudas; imputación por antigüedad; excedente a saldo a favor; a crédito no se exige
   medio; recibo correlativo; reintentos seguros ante bloqueo (la transacción entera se

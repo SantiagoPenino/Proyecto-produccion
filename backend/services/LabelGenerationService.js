@@ -1,7 +1,7 @@
 const { sql, getPool } = require('../config/db');
 const logger = require('../utils/logger');
 const ERPSyncService = require('./erpSyncService');
-const { totalesCobranzaDeOrden } = require('../utils/montoTotalPedido');
+const { importeOrdenParaDeposito } = require('../utils/montoTotalPedido');
 
 class LabelGenerationService {
 
@@ -30,7 +30,9 @@ class LabelGenerationService {
             // Las líneas se suman CONVERTIDAS a la moneda del pedido: con impresión en USD y
             // terminaciones en UYU, sumar en crudo mandaba a la etiqueta el importe inflado
             // ~40x (EUV-13767: 859.75 en vez de 40.30).
-            const pcd = await totalesCobranzaDeOrden(pool, ordenId);
+            // [POR ÁREA] mismo importe con el que la orden entra a depósito (en la PRO madre de un
+            // pedido por área: el total del pedido), para que el QR y el depósito no difieran.
+            const pcd = await importeOrdenParaDeposito(pool, ordenId);
 
             const magnitudValor = parseFloat(pcd.Cant) || 0;
             // Importe y producto de ESTA orden (sus líneas de detalle), para armar el QR por orden

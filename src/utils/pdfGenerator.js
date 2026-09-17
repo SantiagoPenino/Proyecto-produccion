@@ -5,6 +5,8 @@ import QRCode from 'qrcode';
 // diga exactamente lo mismo que la pantalla.
 import { getTipoDocName } from './tiposDocumento';
 import { codigoCuenta } from './cuentaCodigo';
+import { descripcionLineaCorta } from './descripcionLineaFactura';
+import { lineasConceptoPdf } from './detalleMovimientoCuenta';
 
 /** Escribe un texto centrado achicando la fuente si no entra en el ancho dado. */
 function textoAjustado(pdf, texto, x, y, anchoMax, tamBase = 10) {
@@ -357,48 +359,75 @@ export const generarPdfFacturaDGI = async (doc, detalles, opciones = {}) => {
 
             const lineCantidad = Number(d.DcdCantidad) || 1;
             const descBruto = Number(d.DcdTotalDescuentos || 0);
-            // lineTotal es el total de la línea YA con el descuento aplicado.
-            // El bruto original (antes del descuento) = neto facturado + descuento.
-            const originalSub = lineTotal + descBruto;
-            const pUnitario = lineCantidad > 0 ? (originalSub / lineCantidad) : 0;
+            const recBruto = Number(d.DcdTotalRecargos || 0);
+            // Estructura de la línea (todo con IVA): Lista × Cantidad − Descuento + Recargo = Importe.
+            // lineTotal es el importe cobrado (el mismo que lleva el CFE); la LISTA se deriva de
+            // él con el descuento y el recargo guardados, así la fila siempre cierra al centavo
+            // aunque el unitario guardado tenga otra semántica (documentos viejos).
+            const originalSub = lineTotal + descBruto - recBruto;
+            const pLista = lineCantidad > 0 ? (originalSub / lineCantidad) : 0;
+            const puNeto = lineCantidad > 0 ? (lineTotal / lineCantidad) : 0;
 
-            let descPct = '';
-            let descImp = '';
+            // Celda Descuento: "% arriba, importe abajo". Si el % quedó guardado se imprime tal
+            // cual; en documentos viejos se deduce de los importes y se acomoda al medio punto.
+            let descCell = '';
             if (descBruto > 0.01) {
-                // Si el % quedó guardado, se imprime tal cual se tipeó. Recalcularlo desde los
-                // importes (redondeados a 2 decimales) convierte un 10% en 10,03%.
                 const pctGuardado = d.DcdDescuentoPct != null ? Number(d.DcdDescuentoPct) : null;
                 let pct;
                 if (pctGuardado != null && pctGuardado > 0) {
                     pct = pctGuardado;
                 } else {
-                    // Documento viejo, sin el % guardado: se deduce de los importes y se lo
-                    // acomoda al medio punto más cercano si la diferencia es solo el redondeo
-                    // (10,03 → 10; 12,49 → 12,5). Si la distancia es mayor se deja el calculado.
                     const crudo = originalSub > 0 ? (descBruto / originalSub) * 100 : 0;
                     const redondo = Math.round(crudo * 2) / 2;
                     pct = Math.abs(crudo - redondo) <= 0.06 ? redondo : crudo;
                 }
-                descPct = `${fmtNum(pct)}%`;
-                descImp = fmtNum(descBruto);
+                // Precio pactado (sin %): solo el importe
+                const esPactado = /pactado/i.test(String(d.DcdDescuentoStr || d.DcdDescuentoOrigen || ''));
+                descCell = esPactado ? fmtNum(descBruto) : `${fmtNum(pct)} %\n${fmtNum(descBruto)}`;
             } else if (d.DcdDescuentoStr) {
-                descImp = d.DcdDescuentoStr;
+                descCell = d.DcdDescuentoStr;
+            }
+            let recCell = '';
+            if (recBruto > 0.01) {
+                const recPct = d.DcdRecargoPct != null ? Number(d.DcdRecargoPct) : null;
+                recCell = recPct != null && recPct > 0 ? `${fmtNum(recPct)} %\n${fmtNum(recBruto)}` : fmtNum(recBruto);
             }
 
-            const puNeto = pUnitario - (descBruto / lineCantidad);
-
-            const currencySymbol = doc.MonIdMoneda === 2 ? 'U$S' : '$';
-            const descText = d.DcdNomItem + (d.DcdDscItem ? `\n${d.DcdDscItem}` : '') + ` (Neto: ${currencySymbol} ${fmtNum(lineNeto)})`;
+            // Descripción corta para ganar lugar en el papel (11-sep-2026): sin las
+            // palabras "Orden:" / "Retiro" ni el sufijo "(Neto: $ x)" — el neto de la línea
+            // ya está en el pie (Gravado) y el resto de los importes va en columnas.
+            // Como el PDF se genera cada vez desde las líneas guardadas, aplica también a
+            // los documentos ya emitidos al reimprimirlos.
+            // También se saca la línea con el nombre del cliente (la pega la caja de
+            // mostrador cuando el resolvedor no encuentra el pedido): ya está en el cabezal.
+            const dscCorta = descripcionLineaCorta(d.DcdDscItem, [
+                doc.DocCliNombre, doc.CliRazonSocial, doc.CliNombreFantasia, doc.DocCliNombreFantasia, doc.CliNombre, doc.Nombre
+            ]);
+            // Origen del descuento y del recargo, en palabras del cliente ("Precio especial 30 %",
+            // "Urgencia 25 %"): tercera línea de la descripción.
+            // Un guion ("-") como texto significa "no imprimir nada" (se edita en la factura o
+            // en la etiqueta del perfil).
+            // Los % dentro del texto se imprimen con 2 decimales como máximo ("45.4545 %" → "45.45 %"),
+            // aunque el texto guardado traiga más (líneas rellenadas desde el log viejo).
+            const pctADos = s => s.replace(/(\d+)[.,](\d{3,})\s*%/g, (m, ent, dec) => {
+                const v = Number(`${ent}.${dec}`);
+                return `${(Number.isInteger(v) ? String(v) : v.toFixed(2).replace(/0+$/, '').replace(/\.$/, ''))} %`;
+            });
+            const origenes = [
+                descBruto > 0.01 ? (d.DcdDescuentoStr || d.DcdDescuentoOrigen || '') : '',
+                recBruto > 0.01 ? (d.DcdRecargoStr || '') : ''
+            ].map(s => pctADos(String(s || '').trim())).filter(s => s && s !== '-').join(' · ');
+            const descText = d.DcdNomItem + (dscCorta ? `\n${dscCorta}` : '') + (origenes ? `\n${origenes}` : '');
 
             return [
                 index + 1,
                 descText,
                 `${lineRate}%`,
-                fmtNum(pUnitario),   // P. Unitario (bruto con IVA)
+                fmtNum(pLista),      // P. Lista (bruto con IVA, antes de descuento y recargo)
                 fmtNum(lineCantidad),
-                descPct,             // % descuento
-                descImp,             // $ descuento
-                fmtNum(puNeto),      // P.U. Neto
+                descCell,            // Descuento: % e importe
+                recCell,             // Recargo: % e importe
+                fmtNum(puNeto),      // P. Unitario (neto, el mismo que lleva el CFE)
                 fmtNum(lineTotal)    // Importe
             ];
         });
@@ -409,7 +438,7 @@ export const generarPdfFacturaDGI = async (doc, detalles, opciones = {}) => {
 
     autoTable(pdf, {
         startY: startY,
-        head: [['No.', 'Descripción', 'IVA', 'P. Unitario', 'Cantidad', '%', 'Descuento', 'P.U. Neto', 'Importe']],
+        head: [['No.', 'Descripción', 'IVA', 'P. Lista', 'Cantidad', 'Descuento', 'Recargo', 'P. Unitario', 'Importe']],
         body: tableBody,
         theme: 'grid',
         headStyles: {
@@ -710,6 +739,18 @@ export const generarPdfFacturaDGI = async (doc, detalles, opciones = {}) => {
     pdf.save(`${nombreArchivo}.pdf`);
 };
 
+// Extrae el N° oficial que asignó DGI del texto crudo que guarda CfeNumeroOficial
+// (ej. "Nro. de CAE 90260001010 Serie B 27614 / 1000" o el formato simple "B-27614").
+// Misma lógica que ClienteVista360.jsx#parseNroOficialDgi — solo el número.
+const parseNroOficialDgiPdf = (texto) => {
+    if (!texto) return null;
+    const matchCae = String(texto).match(/Nro\.\s+de\s+CAE\s+\d+\s+Serie\s+[A-Za-z]+\s+(\d+)/i);
+    if (matchCae) return matchCae[1];
+    const matchSimple = String(texto).match(/(?:Serie\s+)?[A-Za-z]+-(\d+)/i);
+    if (matchSimple) return matchSimple[1];
+    return null;
+};
+
 export const generarPdfEstadoCuenta = (cliente, cuentas, secciones, planes, desde, hasta) => {
     const pdf = new jsPDF({ format: 'a4' });
     const fmtNum = (n) => new Intl.NumberFormat('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n);
@@ -790,7 +831,15 @@ export const generarPdfEstadoCuenta = (cliente, cuentas, secciones, planes, desd
         const cuentaLabel = c.NombreArticulo
             ? `${codigoCuenta(c)} · ${c.UnidadLabel || c.CueTipo} — ${c.NombreArticulo}`
             : `${codigoCuenta(c)} · ${c.UnidadLabel || c.CueTipo}${nombreBilletera ? ` — ${nombreBilletera}` : ''}`;
-        pdf.text(`Cuenta: ${cuentaLabel} - Saldo Actual: ${saldoStr}${suffix}`, 14, currentY);
+        // La cuenta en una línea y el saldo DEBAJO: todo junto se salía del ancho útil
+        // y el saldo (lo que se busca primero) quedaba escondido al final del renglón.
+        pdf.text(`Cuenta: ${cuentaLabel}`, 14, currentY);
+        currentY += 6;
+        pdf.setFontSize(11);
+        pdf.setTextColor(...(saldo < 0 ? [190, 30, 45] : COLOR_PRIMARY));
+        pdf.text(`Saldo actual: ${saldoStr}${suffix}`, 14, currentY);
+        pdf.setTextColor(0, 0, 0);
+        pdf.setFontSize(12);
         currentY += 6;
 
         // (Se eliminó el subtitulo Pendiente de facturar de la cabecera)
@@ -828,6 +877,10 @@ export const generarPdfEstadoCuenta = (cliente, cuentas, secciones, planes, desd
         const movsAsc = [...movs].reverse();
         let runningSaldo = arrastre;
 
+        // Por fila: N° oficial de DGI (se dibuja en negrita a mano en didDrawCell) y el código
+        // interno que va debajo en peso normal. null = la celda se imprime como siempre.
+        const docOficialPorFila = [];
+
         const tableBody = movsAsc.map(m => {
             const importe = m.visualImporte !== undefined ? Number(m.visualImporte) : Number(m.MovImporte);
 
@@ -842,9 +895,14 @@ export const generarPdfEstadoCuenta = (cliente, cuentas, secciones, planes, desd
 
             // Mismo resolver que el resto: el DocTipo crudo viene truncado y no sirve de rótulo
             const dTipoLabel2 = m.DocTipo ? getTipoDocName(m.DocTipo).toUpperCase() : null;
+            // Igual que la pantalla: con el CFE aceptado por DGI, el N° oficial va primero
+            // ("N° 51666") y el código interno queda debajo como referencia (ET-6272).
+            const nroOficial = m.CfeEstado === 'ACEPTADO_DGI' ? parseNroOficialDgiPdf(m.CfeNumeroOficial) : null;
+            const docInterno = dTipoLabel2 ? `${dTipoLabel2} ${m.DocSerie || ''}-${m.DocNumero || ''}` : null;
+            docOficialPorFila.push(nroOficial && dTipoLabel2 ? { nro: `N° ${nroOficial}`, interno: docInterno } : null);
             const docFull = dTipoLabel2
-                ? `${dTipoLabel2} ${m.DocSerie || ''}-${m.DocNumero || ''}`
-                : (m.CodigoOrdenStr 
+                ? (nroOficial ? `N° ${nroOficial}\n${docInterno}` : docInterno)
+                : (m.CodigoOrdenStr
                     ? m.CodigoOrdenStr 
                     : (m.OReIdOrdenRetiro 
                         ? `RET: ${m.OReIdOrdenRetiro}` 
@@ -878,7 +936,9 @@ export const generarPdfEstadoCuenta = (cliente, cuentas, secciones, planes, desd
                 fmtFecha(m.MovFecha),
                 TIPO_PDF[m.MovTipo] || m.MovTipo,
                 docFull,
-                m.MovConcepto || '—',
+                // Mismo texto que el libro en pantalla: trabajo, cantidad × precio y
+                // los perfiles que movieron el precio (si los hubo).
+                lineasConceptoPdf(m, esRecurso ? unidadLabel : (c.MonSimbolo || '$')).join('\n'),
                 saldoIniStr,
                 debeStr,
                 haberStr,
@@ -899,19 +959,46 @@ export const generarPdfEstadoCuenta = (cliente, cuentas, secciones, planes, desd
             styles: {
                 font: 'helvetica',
                 fontSize: 8,
-                cellPadding: 3
+                // Padding 2: con 3 se iban 6mm por columna en aire y el Concepto (el
+                // texto que de verdad hay que leer) quedaba en ~26mm partido en 5 líneas.
+                cellPadding: 2,
+                valign: 'top'
             },
             columnStyles: {
-                // Fecha en 22mm: a fontSize 8, "20/7/2026" no entra en 16mm y se
-                // parte en 2 líneas — 22mm le da margen sin tocar el resto.
-                0: { cellWidth: 22 },
-                1: { cellWidth: 18 },
-                2: { cellWidth: 32 },
-                3: { cellWidth: 'auto' },
-                4: { cellWidth: 22, halign: 'right' },
-                5: { cellWidth: 20, halign: 'right' },
-                6: { cellWidth: 20, halign: 'right' },
-                7: { cellWidth: 22, halign: 'right' }
+                // Anchos ajustados al contenido real para que Concepto se lleve el resto:
+                // fecha "11/09/2026", tipo "CONSUMO" y documento "SUB-19920" entran justos.
+                // Medidos con jsPDF a 8pt + 4mm de padding: "11/09/2026" 14,0mm,
+                // "CONSUMO" 14,7mm, "SUB-19920" 14,4mm, "31.792,38" 12,4mm.
+                0: { cellWidth: 18 },
+                1: { cellWidth: 19 },
+                2: { cellWidth: 24 },
+                3: { cellWidth: 'auto' },   // Concepto: ~55mm, el doble que antes
+                4: { cellWidth: 17, halign: 'right' },
+                5: { cellWidth: 16, halign: 'right' },
+                6: { cellWidth: 16, halign: 'right' },
+                7: { cellWidth: 17, halign: 'right' }
+            },
+            // N° oficial de DGI en NEGRITA: la celda Documento se deja vacía al dibujar (el
+            // alto ya quedó calculado con el texto completo) y se escribe a mano: primera
+            // línea "N° 51666" en negrita, debajo el código interno en peso normal.
+            willDrawCell: (data) => {
+                if (data.section === 'body' && data.column.index === 2 && docOficialPorFila[data.row.index]) data.cell.text = [];
+            },
+            didDrawCell: (data) => {
+                if (data.section !== 'body' || data.column.index !== 2) return;
+                const of = docOficialPorFila[data.row.index];
+                if (!of) return;
+                const padL = data.cell.padding('left');
+                const x = data.cell.x + padL;
+                let y = data.cell.y + data.cell.padding('top');
+                const lineH = pdf.getLineHeight() / pdf.internal.scaleFactor;   // en mm
+                pdf.setFontSize(8);
+                pdf.setTextColor(20);
+                pdf.setFont('helvetica', 'bold');
+                pdf.text(of.nro, x, y, { baseline: 'top' });
+                pdf.setFont('helvetica', 'normal');
+                const ancho = data.cell.width - padL - data.cell.padding('right');
+                pdf.splitTextToSize(of.interno, ancho).forEach(l => { y += lineH; pdf.text(l, x, y, { baseline: 'top' }); });
             }
             });
 
@@ -1106,7 +1193,11 @@ export const generarPdfEstadoCuentaResumen = (cliente, documentos = [], ordenesP
         currentY += 3;
 
         const body = grupo.map(d => {
-            const docCell = d.factura ? `${d.documento}\n${d.factura}` : d.documento;
+            // Igual que la pantalla: con el CFE aceptado por DGI, el N° oficial va primero y el
+            // código interno queda debajo como referencia.
+            const nroOf = d.cfeEstado === 'ACEPTADO_DGI' ? parseNroOficialDgiPdf(d.cfeNumeroOficial) : null;
+            const docBase = nroOf ? `N° ${nroOf}\n${d.documento}` : d.documento;
+            const docCell = d.factura ? `${docBase}\n${d.factura}` : docBase;
             const anulado = d.estado === 'ANULADO';
             const impStr = `${sym} ${fmt(d.total)}`;
             const pagoStr = anulado

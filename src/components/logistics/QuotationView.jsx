@@ -67,8 +67,48 @@ export default function QuotationView({ areaFilter }) {
     const [error, setError] = useState('');
     const [search, setSearch] = useState('');
     const [editingDoc, setEditingDoc] = useState(null);
+    // true cuando editingDoc se abrió desde el buscador de "cualquier área": ese pedido
+    // puede no tener ninguna línea de esta área, así que se edita completo (areaFilter
+    // "TODOS"), no acotado al área actual.
+    const [editingDocOtraArea, setEditingDocOtraArea] = useState(false);
     const [refreshKey, setRefreshKey] = useState(0);
     const [viewMode, setViewMode] = useState('card');
+
+    // [PRO] Buscador de "cualquier área": la lista de arriba (esta área) solo trae
+    // pedidos con línea facturable de esta área — en PRO eso excluye los que solo tienen
+    // orden PRO como madre sin costo propio. Antes esto era un modal aparte
+    // (BuscadorCotizacionOtraArea); el usuario pidió que viva en la misma página.
+    const esPro = String(areaFilter || '').toUpperCase() === 'PRO';
+    const [otraAreaTexto, setOtraAreaTexto] = useState('');
+    const [otraAreaResultados, setOtraAreaResultados] = useState([]);
+    const [otraAreaBuscando, setOtraAreaBuscando] = useState(false);
+    const [otraAreaError, setOtraAreaError] = useState('');
+
+    useEffect(() => {
+        if (!esPro) return;
+        const q = otraAreaTexto.trim();
+        if (q.length < 2) { setOtraAreaResultados([]); setOtraAreaError(''); return; }
+        let vigente = true;
+        setOtraAreaBuscando(true);
+        const t = setTimeout(() => {
+            api.get('/quotation/list', { params: { q } })
+                .then(res => {
+                    if (!vigente) return;
+                    setOtraAreaResultados(Array.isArray(res.data) ? res.data : []);
+                    setOtraAreaError('');
+                })
+                .catch(err => { if (vigente) setOtraAreaError(err.response?.data?.error || err.message); })
+                .finally(() => { if (vigente) setOtraAreaBuscando(false); });
+        }, 500);
+        return () => { vigente = false; clearTimeout(t); };
+    }, [otraAreaTexto, esPro]);
+
+    const abrirOtraArea = (noDocERP) => {
+        setEditingDocOtraArea(true);
+        setEditingDoc(String(noDocERP || '').trim());
+        setOtraAreaTexto('');
+        setOtraAreaResultados([]);
+    };
 
     const fetchOrders = useCallback(async () => {
         setLoading(true);
@@ -134,15 +174,64 @@ export default function QuotationView({ areaFilter }) {
                     </div>
                 </div>
 
-                {/* Buscador */}
-                <div className="mt-3 relative">
-                    <i className="fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm" />
-                    <input
-                        value={search}
-                        onChange={e => setSearch(e.target.value)}
-                        placeholder="Buscar por número de documento, trabajo o código..."
-                        className="w-full pl-9 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-indigo-300"
-                    />
+                {/* Buscadores: el de esta área (lista de abajo) + el de cualquier área
+                    (PRO), uno al lado del otro en la misma página — antes este segundo era
+                    un modal aparte (BuscadorCotizacionOtraArea). */}
+                <div className={`mt-3 grid gap-2 ${esPro ? 'grid-cols-1 tablet:grid-cols-2' : 'grid-cols-1'}`}>
+                    <div className="relative">
+                        <i className="fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm" />
+                        <input
+                            value={search}
+                            onChange={e => setSearch(e.target.value)}
+                            placeholder="Buscar en esta área por número de documento, trabajo o código..."
+                            className="w-full pl-9 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-indigo-300"
+                        />
+                    </div>
+
+                    {esPro && (
+                        <div className="relative">
+                            {otraAreaBuscando
+                                ? <i className="fa-solid fa-spinner fa-spin absolute left-3 top-1/2 -translate-y-1/2 text-indigo-400 text-sm" />
+                                : <i className="fa-solid fa-globe absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm" />}
+                            <input
+                                value={otraAreaTexto}
+                                onChange={e => setOtraAreaTexto(e.target.value)}
+                                placeholder="Buscar en CUALQUIER área (pedido, código, cliente o trabajo)..."
+                                className="w-full pl-9 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-indigo-300"
+                            />
+                            {otraAreaTexto.trim().length >= 2 && (
+                                <div className="absolute z-30 mt-1.5 w-full bg-white border border-slate-200 rounded-xl shadow-lg max-h-80 overflow-y-auto divide-y divide-slate-100">
+                                    {otraAreaError && <p className="text-xs text-rose-600 font-bold p-3">{otraAreaError}</p>}
+                                    {!otraAreaBuscando && !otraAreaError && otraAreaResultados.length === 0 && (
+                                        <p className="text-xs text-slate-400 p-4 text-center">Ningún pedido coincide con "{otraAreaTexto.trim()}".</p>
+                                    )}
+                                    {otraAreaResultados.map(r => (
+                                        <button
+                                            key={r.ID}
+                                            onClick={() => abrirOtraArea(r.NoDocERP)}
+                                            className="w-full text-left px-3 py-2.5 hover:bg-slate-50 flex items-center gap-3"
+                                        >
+                                            <div className="min-w-0 flex-1">
+                                                <div className="flex items-center gap-2">
+                                                    <span className="font-mono text-xs font-black text-slate-700">{String(r.NoDocERP || '').trim()}</span>
+                                                    {(r.Areas || []).map(a => (
+                                                        <span key={a} className="text-[9px] font-black uppercase bg-slate-100 text-slate-600 border border-slate-200 px-1.5 py-0.5 rounded">{a}</span>
+                                                    ))}
+                                                </div>
+                                                <p className="text-sm font-bold text-slate-800 truncate">{r.Cliente || 'Sin cliente'}</p>
+                                                <p className="text-[11px] text-slate-500 italic truncate">{r.QR_Trabajo || '—'}</p>
+                                            </div>
+                                            <div className="text-right shrink-0">
+                                                <div className="font-mono text-sm font-black text-slate-700">
+                                                    {r.Moneda === 'USD' ? 'USD' : '$'} {Number(r.MontoTotal || 0).toFixed(2)}
+                                                </div>
+                                            </div>
+                                        </button>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+                    )}
                 </div>
             </div>
 
@@ -174,7 +263,7 @@ export default function QuotationView({ areaFilter }) {
                 {!loading && orders.length > 0 && viewMode === 'card' && (
                     <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
                         {orders.map(order => (
-                            <QuotationCard key={order.ID} order={order} onOpen={setEditingDoc} onDelete={handleDeleteBundle} />
+                            <QuotationCard key={order.ID} order={order} onOpen={(id) => { setEditingDocOtraArea(false); setEditingDoc(id); }} onDelete={handleDeleteBundle} />
                         ))}
                     </div>
                 )}
@@ -216,7 +305,7 @@ export default function QuotationView({ areaFilter }) {
                                             </td>
                                             <td className="px-4 py-2 text-center">
                                                 <div className="flex items-center gap-1">
-                                                    <button onClick={() => setEditingDoc(order.NoDocERP)} className="w-full text-indigo-600 hover:text-white bg-indigo-50 hover:bg-indigo-600 border border-indigo-200 hover:border-transparent px-3 py-1.5 rounded transition-all text-xs font-bold">
+                                                    <button onClick={() => { setEditingDocOtraArea(false); setEditingDoc(order.NoDocERP); }} className="w-full text-indigo-600 hover:text-white bg-indigo-50 hover:bg-indigo-600 border border-indigo-200 hover:border-transparent px-3 py-1.5 rounded transition-all text-xs font-bold">
                                                         Editar
                                                     </button>
                                                     <button onClick={() => handleDeleteBundle(order.NoDocERP)} className="w-8 shrink-0 text-rose-500 hover:text-white bg-rose-50 hover:bg-rose-500 border border-rose-200 hover:border-transparent px-0 py-1.5 rounded transition-all text-xs font-bold" title="Eliminar Cotización Completa">
@@ -233,13 +322,19 @@ export default function QuotationView({ areaFilter }) {
                 )}
             </div>
 
-            {/* Modal editor */}
+            {/* Modal editor. Si se abrió desde el buscador de "cualquier área", se edita el
+                pedido COMPLETO (areaFilter "TODOS") — puede no tener ninguna línea de esta
+                área. */}
             {editingDoc && (
                 <QuotationEditModal
                     noDocERP={editingDoc}
                     currentUser={user}
-                    areaFilter={areaFilter}
-                    onClose={() => setEditingDoc(null)}
+                    areaFilter={editingDocOtraArea ? 'TODOS' : areaFilter}
+                    /* "Reconstruir líneas" sólo en Logística (esta vista sin área) y en PRO.
+                       Dentro de la bandeja de un área (AreaView → acá con areaFilter='DF',
+                       'SUB'...) queda oculto. */
+                    permitirReconstruir={editingDocOtraArea || !areaFilter || ['TODOS', 'PRO'].includes(String(areaFilter).toUpperCase())}
+                    onClose={() => { setEditingDoc(null); setEditingDocOtraArea(false); }}
                     onSaved={handleSaved}
                 />
             )}

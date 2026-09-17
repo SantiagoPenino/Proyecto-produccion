@@ -174,6 +174,17 @@ const WmsReceiveSalesView = () => {
                 // completar "Depósito + Aviso" (el ProximoServicio de la ancla es fijo, no se
                 // desbloquea solo). No seguir con receivePreparedOrder: siempre fallaría con
                 // el guard y el mensaje sería confuso.
+                // [REPOSICIÓN] VEN interna por falla: ya salió con remito al área que reportó.
+                if (res1.reposicion) {
+                    const r = res1.reposicion;
+                    const destinoRep = r.areas?.[0];
+                    const nombre = AREA_LABELS[destinoRep] || destinoRep || 'el área';
+                    if (r.errores?.length) toast.warning(`Enviado a ${nombre}, pero el remito no se pudo armar solo. Armalo desde Despacho de PRO.`);
+                    else toast.success(`Reposición enviada a ${nombre}${r.remitos?.length ? ` con el remito ${r.remitos.join(', ')}` : ''}. Falta recibirlo en ${nombre}.`);
+                    loadOrders();
+                    if (expandedOrder === order.id) loadEventos(order.id);
+                    return;
+                }
                 if (res1.hermanasLiberadas > 0) {
                     const destinoCombo = destinoPendiente(order);
                     toast.success(destinoCombo
@@ -237,7 +248,7 @@ const WmsReceiveSalesView = () => {
     // El retiro de un combo (ENVIADO_PRODUCCION) nunca pasa por "Depósito + Aviso" —
     // el 3er paso cambia de nombre para ese caso puntual, no queda mostrando algo que
     // en realidad no pasó.
-    const stepLabelsFor = (estado) => estado === 'ENVIADO_PRODUCCION'
+    const stepLabelsFor = (estado, order) => estado === 'ENVIADO_PRODUCCION' || order?.esReposicion
         ? ['Preparación', 'Stock descontado', 'Enviado a Producción']
         : ['Preparación', 'Stock descontado', 'Depósito + Aviso'];
     // Paso "actual" según el estado del pedido (los anteriores se muestran hechos)
@@ -248,9 +259,9 @@ const WmsReceiveSalesView = () => {
         return 2; // PREPARADO: falta solo el ingreso a depósito + aviso
     };
 
-    const Stepper = ({ estado }) => {
+    const Stepper = ({ estado, order }) => {
         const current = stepIndexOf(estado);
-        const STEP_LABELS = stepLabelsFor(estado);
+        const STEP_LABELS = stepLabelsFor(estado, order);
         return (
             <div className="flex items-center gap-0">
                 {STEP_LABELS.map((label, i) => {
@@ -602,7 +613,7 @@ const WmsReceiveSalesView = () => {
                                         {/* Stepper (los cancelados no lo muestran) */}
                                         {order.estado !== 'CANCELADO' && (
                                             <div className="hidden md:block shrink-0">
-                                                <Stepper estado={order.estado} />
+                                                <Stepper estado={order.estado} order={order} />
                                             </div>
                                         )}
 
@@ -640,7 +651,7 @@ const WmsReceiveSalesView = () => {
                                             {/* Stepper visible en mobile */}
                                             {order.estado !== 'CANCELADO' && (
                                                 <div className="md:hidden mb-4 flex justify-center">
-                                                    <Stepper estado={order.estado} />
+                                                    <Stepper estado={order.estado} order={order} />
                                                 </div>
                                             )}
 
@@ -831,7 +842,9 @@ const WmsReceiveSalesView = () => {
                                                             : "El stock ya fue descontado — solo ingresa a Depósito y programa el aviso"}
                                                     >
                                                         <CheckCircle size={20} />
-                                                        {destinoOrder
+                                                        {destinoOrder && order.esReposicion
+                                                            ? `Enviar a ${AREA_LABELS[destinoOrder] || destinoOrder}`
+                                                            : destinoOrder
                                                             ? `Pendiente: falta pasar por ${AREA_LABELS[destinoOrder] || destinoOrder}`
                                                             : 'Confirmar Ingreso a Depósito y Avisar'}
                                                     </button>

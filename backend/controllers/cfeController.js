@@ -817,8 +817,12 @@ exports.crearFacturaManual = async (req, res) => {
             // para poder imprimirlo tal cual se tipeó.
             const descPct = Math.min(100, Math.max(0, parseFloat(linea.descPct) || 0));
             const bruto = cant * precio;
-            const descMonto = bruto * (descPct / 100);
-            const lineTotal = bruto - descMonto;
+            // Descuento y recargo por línea: en % (sobre el bruto) o por importe (de la
+            // línea, con IVA). Si vienen los dos, manda el importe.
+            const descMonto = linea.descMonto != null && linea.descMonto !== '' ? Math.max(0, parseFloat(linea.descMonto) || 0) : bruto * (descPct / 100);
+            const recPct = Math.max(0, parseFloat(linea.recPct) || 0);
+            const recMonto = linea.recMonto != null && linea.recMonto !== '' ? Math.max(0, parseFloat(linea.recMonto) || 0) : bruto * (recPct / 100);
+            const lineTotal = bruto - descMonto + recMonto;
             const lineNeto = lineTotal / (1 + ivaRate / 100);
             const lineIva = lineTotal - lineNeto;
             return {
@@ -829,8 +833,13 @@ exports.crearFacturaManual = async (req, res) => {
                 subtotal: lineNeto,
                 impuestos: lineIva,
                 total: lineTotal,
-                totalDescuentos: descPct > 0 ? descMonto : 0,
-                descuentoPct: descPct > 0 ? descPct : null
+                totalDescuentos: descMonto > 0.001 ? descMonto : 0,
+                descuentoPct: descMonto > 0.001 && descPct > 0 ? descPct : null,
+                descuentoStr: descMonto > 0.001 ? (linea.descuentoStr || linea.DcdDescuentoStr || null) : null,
+                descuentoOrigen: descMonto > 0.001 ? (linea.descuentoOrigen || linea.DcdDescuentoOrigen || 'Manual') : null,
+                totalRecargos: recMonto > 0.001 ? recMonto : 0,
+                recargoPct: recMonto > 0.001 && recPct > 0 ? recPct : null,
+                recargoStr: recMonto > 0.001 ? (linea.recargoStr || linea.DcdRecargoStr || 'Recargo manual') : null
             };
         });
 
@@ -1539,6 +1548,11 @@ exports.editarFactura = async (req, res) => {
                 const descPct = (linea.DcdDescuentoPct != null && Number(linea.DcdDescuentoPct) > 0)
                     ? Number(linea.DcdDescuentoPct)
                     : null;
+                // Recargo y origen viajan igual que el descuento: si no se reinsertan se pierden.
+                const recMonto = parseFloat(linea.DcdTotalRecargos) || 0;
+                const recPct = (linea.DcdRecargoPct != null && Number(linea.DcdRecargoPct) > 0)
+                    ? Number(linea.DcdRecargoPct)
+                    : null;
                 await transaction.request()
                     .input('docId', sql.Int, id)
                     .input('ordCod', sql.VarChar(100), String(linea.OrdCodigoOrden || '').trim().substring(0, 100) || null)
@@ -1555,10 +1569,14 @@ exports.editarFactura = async (req, res) => {
                     .input('desc', sql.Decimal(18, 2), descMonto > 0.001 ? descMonto : null)
                     .input('descStr', sql.VarChar(100), linea.DcdDescuentoStr || null)
                     .input('descPct', sql.Decimal(9, 4), descPct)
+                    .input('rec', sql.Decimal(18, 2), recMonto > 0.001 ? recMonto : null)
+                    .input('recPct', sql.Decimal(9, 4), recPct)
+                    .input('recStr', sql.VarChar(200), linea.DcdRecargoStr ? String(linea.DcdRecargoStr).substring(0, 200) : null)
+                    .input('descOrig', sql.NVarChar(150), linea.DcdDescuentoOrigen ? String(linea.DcdDescuentoOrigen).substring(0, 150) : null)
                     .query(`
                         INSERT INTO DocumentosContablesDetalle
-                            (DocIdDocumento, OrdCodigoOrden, DcdNomItem, DcdDscItem, DcdCantidad, DcdPrecioUnitario, DcdSubtotal, DcdImpuestos, DcdTotal, DcdTotalDescuentos, DcdDescuentoStr, DcdDescuentoPct)
-                        VALUES (@docId, @ordCod, @nom, @dsc, @cant, @precio, @sub, @imp, @tot, @desc, @descStr, @descPct)
+                            (DocIdDocumento, OrdCodigoOrden, DcdNomItem, DcdDscItem, DcdCantidad, DcdPrecioUnitario, DcdSubtotal, DcdImpuestos, DcdTotal, DcdTotalDescuentos, DcdDescuentoStr, DcdDescuentoPct, DcdTotalRecargos, DcdRecargoPct, DcdRecargoStr, DcdDescuentoOrigen)
+                        VALUES (@docId, @ordCod, @nom, @dsc, @cant, @precio, @sub, @imp, @tot, @desc, @descStr, @descPct, @rec, @recPct, @recStr, @descOrig)
                     `);
             }
         }
@@ -2219,7 +2237,11 @@ exports.getDetalleFactura = async (req, res) => {
                     DcdTotal,
                     DcdTotalDescuentos,
                     DcdDescuentoStr,
-                    DcdDescuentoPct
+                    DcdDescuentoPct,
+                    DcdTotalRecargos,
+                    DcdRecargoPct,
+                    DcdRecargoStr,
+                    DcdDescuentoOrigen
                 FROM DocumentosContablesDetalle
                 WHERE DocIdDocumento = @docId
             `);
