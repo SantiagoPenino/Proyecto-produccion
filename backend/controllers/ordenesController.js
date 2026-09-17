@@ -2,7 +2,7 @@ const { getPool, sql } = require('../config/db');
 const logger = require('../utils/logger');
 const contabilidadService = require('../services/contabilidadService');
 const ordenesExternasSvc = require('../services/ordenesExternasService');
-const { totalesCobranzaDeOrden } = require('../utils/montoTotalPedido');
+const { totalesCobranzaDeOrden, totalDelPedido, importeOrdenParaDeposito } = require('../utils/montoTotalPedido');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // COSTO CON QUE ENTRA UNA ORDEN A DEPÓSITO
@@ -41,13 +41,32 @@ const costoParaDeposito = async (pool, codigoOrden, importeQR, monIdMoneda) => {
 
         const ordRes = await pool.request()
             .input('Cod', sql.VarChar(100), cod)
-            .query(`SELECT TOP 1 OrdenID FROM Ordenes WITH(NOLOCK)
+            .query(`SELECT TOP 1 OrdenID, AreaID, ComboItemID, NoDocERP FROM Ordenes WITH(NOLOCK)
                     WHERE LTRIM(RTRIM(CodigoOrden)) = @Cod ORDER BY OrdenID DESC`);
-        const ordenId = ordRes.recordset[0]?.OrdenID;
+        const ordenRow = ordRes.recordset[0];
+        const ordenId = ordenRow?.OrdenID;
         if (!ordenId) return qr;
 
-        const lin = await totalesCobranzaDeOrden(pool, ordenId, mon === 2 ? 'USD' : 'UYU');
-        const delPedido = parseFloat(lin?.Imp);
+        const monedaObjetivo = mon === 2 ? 'USD' : 'UYU';
+        // [POR ÁREA] la PRO madre de un pedido por área entra con el total del pedido
+        const lin = await importeOrdenParaDeposito(pool, ordenId, monedaObjetivo);
+        let delPedido = parseFloat(lin?.Imp);
+
+        // [PRENDAS] "Comprar y personalizar" facturado "por área" ([FACTURA POR AREA]):
+        // cada área cobra su propia línea y la de Producción —la ÚNICA que el cliente
+        // retira físicamente por Depósito— queda a propósito en $0. Sin esto el cliente
+        // se llevaba el pedido sin pagar nada (su propia línea está vacía, aunque el
+        // pedido sí vale algo en sus hermanas). Acotado a la orden ancla de Producción
+        // (sin ComboItemID: las PRO de retiro por componente de un combo real cotizan
+        // en 0 a propósito y no deben "heredar" el total de otro componente).
+        if (!(delPedido > 0) && String(ordenRow?.AreaID || '').trim().toUpperCase() === 'PRO' && !ordenRow?.ComboItemID && ordenRow?.NoDocERP) {
+            const pedido = await totalDelPedido(pool, ordenRow.NoDocERP, monedaObjetivo);
+            if (parseFloat(pedido?.Imp) > 0) {
+                delPedido = parseFloat(pedido.Imp);
+                logger.info(`[INGRESO] ${codigoOrden}: línea propia en 0 (facturado por área) — se usa el total del pedido (${delPedido.toFixed(2)}).`);
+            }
+        }
+
         if (!(delPedido > 0)) return qr;
 
         if (Math.abs(delPedido - qr) > 0.01) {

@@ -1,7 +1,8 @@
 // =============================================================================
-// Panel de Producción — sección "Dashboard" de Reportes de Contabilidad.
-// Es la maqueta dashboard_produccion_2.html pasada a React, alimentada por
-// GET /api/dashboard/produccion/panel (datos reales de SecureAppDB).
+// Panel de Producción — sección "Dashboard de Producción" de Reportes (producción).
+// Es la maqueta dashboard_produccion_2.html (+ el panel "Capacidad consumida" de la
+// _3) pasada a React, alimentada por GET /api/dashboard/produccion/panel (datos
+// reales de SecureAppDB).
 //
 // Cada tarjeta dice de dónde sale el dato. Lo que todavía NO tiene fuente
 // (tiempo de inactividad) se muestra con "—" y la leyenda "sin fuente todavía".
@@ -160,6 +161,20 @@ const CSS = `
 .viz-drawer .cfg-egrp .edot.n{background:#16a34a;} .viz-drawer .cfg-egrp .edot.u{background:#f97316;}
 .viz-drawer .cfg-msg{font-size:12px;margin-right:auto;}
 .viz-drawer select.cfg-sel{background:#fff;border:1px solid rgba(20,24,40,0.09);border-radius:8px;padding:8px 10px;font-size:12.5px;font-family:inherit;font-weight:600;color:#1e2430;}
+/* Capacidad consumida (misma maqueta, dashboard_produccion_3) */
+.viz-root .cap-sum{display:flex;align-items:center;gap:24px;margin-bottom:14px;flex-wrap:wrap;}
+.viz-root .cap-list{display:grid;grid-template-columns:1fr 1fr;gap:12px 34px;}
+.viz-root .cap-row{display:flex;align-items:center;gap:12px;}
+.viz-root .cap-row.sel .cap-name{color:var(--brand);}
+.viz-root .cap-name{width:135px;flex:none;font-size:12.5px;font-weight:600;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.viz-root .cap-track{flex:1;height:20px;border-radius:7px;background:var(--grid);overflow:hidden;}
+.viz-root .cap-fill{display:block;height:100%;border-radius:7px;transition:width .5s ease;}
+.viz-root .cap-val{width:170px;flex:none;text-align:right;font-size:12.5px;font-variant-numeric:tabular-nums;display:flex;flex-direction:column;line-height:1.15;}
+.viz-root .cap-val .cap-sub{color:var(--muted);font-size:10.5px;font-weight:600;}
+.viz-root .cap-nocap{font-size:11px;color:var(--muted);font-weight:600;}
+@media(max-width:760px){ .viz-root .cap-list{grid-template-columns:1fr;} }
+.viz-drawer .cfg-cap-in{width:110px;background:#fff;border:1px solid rgba(20,24,40,0.09);border-radius:8px;padding:6px 9px;font-size:13px;font-family:inherit;font-weight:700;text-align:right;color:#1e2430;}
+.viz-drawer .cfg-cap-in:focus{outline:2px solid #5b53d6;outline-offset:1px;}
 @media(max-width:1050px){ .viz-root .kpi{grid-column:span 6;} .viz-root .col-cumpl,.viz-root .col-gauge,.viz-root .col-fallas,.viz-root .col-sector{grid-column:span 12;} .viz-root .controls{margin-left:0;} }
 @media(max-width:620px){ .viz-root .kpi{grid-column:span 12;} .viz-root select{min-width:100%;} }
 `;
@@ -189,6 +204,8 @@ function getDateRange(preset) {
 // Fecha local → 'YYYY-MM-DD' (sin pasar por UTC, para no correr un día)
 const toYMD = d => d ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}` : '';
 const fmtDMY = s => (s ? s.split('-').reverse().join('/') : '');
+// Avance de la jornada (barra del panel de capacidad): 0 a las 6 h, 1 a las 22 h — misma ventana que la maqueta
+const progresoJornada = d => { const h = d.getHours() + d.getMinutes() / 60; return Math.max(0, Math.min(1, (h - 6) / 16)); };
 
 const Chip = ({ active, onClick, children, title }) => (
     <button onClick={onClick} title={title}
@@ -221,7 +238,7 @@ function makeTip(tipEl) {
 }
 
 // ─── Gráficos (SVG imperativo, mismo dibujo que la maqueta) ──────────────────
-function renderLine(svg, serie, meta, bindTip) {
+function renderLine(svg, serie, meta, bindTip, onNodeClick) {
     clear(svg);
     const W = 720, H = 260, m = { t: 16, r: 14, b: 34, l: 34 };
     const d = serie.puntos, iw = W - m.l - m.r, ih = H - m.t - m.b;
@@ -250,8 +267,9 @@ function renderLine(svg, serie, meta, bindTip) {
         if (i % lstep === 0) svg.appendChild(txt({ x: x(i), y: H - 12, 'text-anchor': 'middle', class: 'axis-txt' }, p.label));
         if (p.valor == null) return;
         if (showMarks) svg.appendChild(el('circle', { cx: x(i), cy: y(p.valor), r: 4.5, fill: COLORS.surface, stroke: statusColor(p.valor, meta), 'stroke-width': 2.5 }));
-        const hit = el('circle', { cx: x(i), cy: y(p.valor), r: 13, fill: 'transparent' });
-        bindTip(hit, `<span class="t-lbl">${serie.modo === 'hora' ? p.label : 'Día ' + p.label}</span><br><b>${p.valor}%</b> en tiempo · ${nf(p.n)} órdenes prontas`);
+        const hit = el('circle', { cx: x(i), cy: y(p.valor), r: 13, fill: 'transparent', class: onNodeClick ? 'bar-hit' : undefined, style: onNodeClick ? 'cursor:pointer' : undefined });
+        bindTip(hit, `<span class="t-lbl">${serie.modo === 'hora' ? p.label : 'Día ' + p.label}</span><br><b>${p.valor}%</b> en tiempo · ${nf(p.n)} órdenes prontas${onNodeClick ? '<br><span class="t-lbl">clic para ver el detalle</span>' : ''}`);
+        if (onNodeClick) hit.addEventListener('click', () => onNodeClick(p));
         svg.appendChild(hit);
     });
 }
@@ -430,6 +448,13 @@ export default function ProduccionPanelSection() {
     const [modal, setModal]     = useState(null); // 'proc' | 'cola' | null
     const [reloj, setReloj]     = useState(new Date());
     const [calidadLeg, setCalidadLeg] = useState([]);
+
+    // Detalle de un nodo del gráfico de cumplimiento (clic en un punto): se pide bajo
+    // demanda, no viaja con el panel entero (el rango puede tener miles de prontas).
+    const [nodoInfo, setNodoInfo]         = useState(null); // { label, valor, n, dia, hora }
+    const [nodoOrdenes, setNodoOrdenes]   = useState([]);
+    const [nodoLoading, setNodoLoading]   = useState(false);
+    const [nodoError, setNodoError]       = useState(null);
     // Switch global "MEDIR EN": Órdenes (cantidad) | Volumen (suma de Magnitud). Está en la barra de
     // filtros y aplica a los gráficos que el usuario indique (hoy: por sector y top 10 materiales).
     const [medida, setMedida] = useState('ordenes'); // 'ordenes' | 'volumen'
@@ -468,6 +493,7 @@ export default function ProduccionPanelSection() {
     const [cfgLoading, setCfgLoading] = useState(false);
     const [cfgMsg, setCfgMsg]     = useState(null);       // { tipo: 'ok'|'error', texto }
     const [metaInput, setMetaInput] = useState('');
+    const [capInput, setCapInput]   = useState({}); // { areaCode: '' | número } capacidad diaria editable por área
     const [nuevoTipo, setNuevoTipo] = useState({ areaCode: '', titulo: '' });
     const [tiposPendientes, setTiposPendientes] = useState([]); // [{ areaCode, area, titulo }] a crear al aplicar
     const [timesOpen, setTimesOpen] = useState(false);
@@ -479,6 +505,7 @@ export default function ProduccionPanelSection() {
             const { data: c } = await api.get('/dashboard/produccion/panel/config');
             setCfg(c);
             setMetaInput(String(c.meta));
+            setCapInput(Object.fromEntries((c.capacidad || []).map(x => [x.areaCode, x.capacidad ?? ''])));
             setTiposPendientes([]);
             setNuevoTipo(n => ({ areaCode: n.areaCode || (c.areas[0]?.code || ''), titulo: '' }));
         } catch (e) {
@@ -504,10 +531,25 @@ export default function ProduccionPanelSection() {
         if (!cfg) return;
         const meta = Number(String(metaInput).replace(',', '.'));
         if (!(meta > 0 && meta <= 100)) { setCfgMsg({ tipo: 'error', texto: 'La meta de cumplimiento debe ser un porcentaje entre 1 y 100.' }); return; }
+        // Capacidad diaria: solo las áreas cuyo valor cambió respecto a lo guardado (vacío = borrar)
+        const capCambios = {};
+        for (const c of (cfg.capacidad || [])) {
+            const raw = capInput[c.areaCode];
+            const vacio = raw === undefined || raw === null || String(raw).trim() === '';
+            const nuevo = vacio ? null : Number(String(raw).replace(',', '.'));
+            if (!vacio && !(nuevo >= 0)) { setCfgMsg({ tipo: 'error', texto: `La capacidad de ${c.area} debe ser un número mayor o igual a 0.` }); return; }
+            const actual = c.capacidad ?? null;
+            if ((nuevo || null) !== actual) capCambios[c.areaCode] = nuevo;
+        }
         setGuardando(true); setCfgMsg(null);
         const hechos = [];
         try {
-            if (meta !== cfg.meta) { await api.put('/dashboard/produccion/panel/config', { meta }); hechos.push(`meta ${meta}%`); }
+            const cambiaMeta = meta !== cfg.meta, cambiaCap = Object.keys(capCambios).length > 0;
+            if (cambiaMeta || cambiaCap) {
+                await api.put('/dashboard/produccion/panel/config', { ...(cambiaMeta && { meta }), ...(cambiaCap && { capacidad: capCambios }) });
+                if (cambiaMeta) hechos.push(`meta ${meta}%`);
+                if (cambiaCap) hechos.push(`capacidad diaria de ${Object.keys(capCambios).map(code => cfg.capacidad.find(x => x.areaCode === code)?.area || code).join(', ')}`);
+            }
             for (const t of tiposPendientes) {
                 await api.post('/failures/titles', { areaId: t.areaCode, titulo: t.titulo }); // mismo endpoint que el alta de fallas
                 hechos.push(`tipo de falla "${t.titulo}" (${t.area})`);
@@ -557,7 +599,7 @@ export default function ProduccionPanelSection() {
         if (!data || !refs.tip.current) return;
         const bindTip = makeTip(refs.tip.current);
         const k = data.kpis;
-        renderLine(refs.line.current, data.serie, data.meta, bindTip);
+        renderLine(refs.line.current, data.serie, data.meta, bindTip, abrirNodoCumplimiento);
         renderRing(refs.gauge.current, k.cumplimiento, data.meta);
         renderDaily(refs.daily.current, data.daily, bindTip);
         dibujarFallas(data, medida, bindTip);
@@ -606,8 +648,29 @@ export default function ProduccionPanelSection() {
     const abrirModal = (kind, tab) => { setFTxt(''); setFArea(''); setFEstado(''); if (tab) setFallasTab(tab); setModal(kind); };
     const cambiarTab = t => { setFallasTab(t); setFTxt(''); setFArea(''); setFEstado(''); };
 
+    // Clic en un punto del gráfico de cumplimiento: pide las órdenes de ese día (u hora)
+    // al backend y las muestra en el modal genérico, con los mismos filtros que el resto.
+    const abrirNodoCumplimiento = async (punto) => {
+        if (punto.n === 0) return; // nada que mostrar en un balde vacío
+        setFTxt(''); setFArea(''); setFEstado('');
+        setNodoInfo(punto); setNodoOrdenes([]); setNodoError(null); setNodoLoading(true);
+        setModal('cumplNodo');
+        try {
+            const params = { dia: punto.dia };
+            if (punto.hora != null) params.hora = punto.hora;
+            if (ambito.startsWith('S:')) params.sector = ambito.slice(2);
+            if (ambito.startsWith('A:')) params.area = ambito.slice(2);
+            const { data: d } = await api.get('/dashboard/produccion/panel/cumplimiento-detalle', { params });
+            setNodoOrdenes((d.ordenes || []).map(o => ({ ...o, cumplioTxt: o.aTiempo == null ? 'Sin fecha prometida' : o.aTiempo ? 'A tiempo' : 'Fuera de plazo' })));
+        } catch (e) {
+            setNodoError(e.response?.data?.message || e.message);
+        } finally { setNodoLoading(false); }
+    };
+
     // Qué lista muestra cada modal y por qué campos filtra
-    const vistaModal = modal === 'fallas' && fallasTab === 'fallas'
+    const vistaModal = modal === 'cumplNodo'
+        ? { lista: nodoOrdenes, txt: ['id', 'trabajo', 'cliente'], area: 'area', estado: 'cumplioTxt', estadoLbl: 'Cumplimiento', unidad: 'órdenes' }
+        : modal === 'fallas' && fallasTab === 'fallas'
         ? { lista: data?.fallasDetalle || [], txt: ['orden', 'trabajo', 'cliente', 'observaciones', 'equipo', 'tipo'], area: 'area', estado: 'tipo', estadoLbl: 'Tipo de falla', unidad: 'fallas' }
         : modal === 'fallas'
         ? { lista: data?.reposiciones || [], txt: ['id', 'trabajo', 'cliente', 'origen'], area: 'area', estado: 'tipo', estadoLbl: 'Tipo', unidad: 'órdenes' }
@@ -627,12 +690,14 @@ export default function ProduccionPanelSection() {
     const totalBase = vistaModal.lista.length;
     const hayFiltro = !!(fArea || fEstado || txtNorm);
     const fmtHora = s => (s ? new Date(s).toLocaleString('es-UY', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—');
-    const TITULOS_MODAL = { proc: 'Órdenes en proceso', cola: 'Órdenes en cola', transito: 'Órdenes en tránsito', fallas: 'Fallas y reposiciones', deposito: 'Órdenes ingresadas a depósito' };
+    const TITULOS_MODAL = { proc: 'Órdenes en proceso', cola: 'Órdenes en cola', transito: 'Órdenes en tránsito', fallas: 'Fallas y reposiciones', deposito: 'Órdenes ingresadas a depósito',
+        cumplNodo: nodoInfo ? (nodoInfo.hora != null ? `Órdenes prontas · ${fmtDMY(nodoInfo.dia)} ${nodoInfo.label}` : `Órdenes prontas · ${fmtDMY(nodoInfo.dia)}`) : 'Órdenes prontas' };
     const DEF_MODAL = {
         proc: ' · órdenes con estado general "Produccion", sin contar las que están en tránsito',
         cola: ' · órdenes activas con estado "Pendiente"',
         transito: ' · estado de área "En transito" · origen, destino y remito del último envío (Logística)',
         deposito: ' · envíos de Logística con destino DEPOSITO recibidos dentro del período (fecha de llegada) · cada orden cuenta una vez',
+        cumplNodo: nodoInfo ? ` · ${nodoInfo.valor}% en tiempo en este balde · fecha prometida = compromiso de Bordado del portal, o la fecha estimada de entrega para el resto` : '',
     };
     const totalModal = listaModal.reduce((s, o) => s + o.metros, 0);
     const haySectores = (data?.sectores || []).length > 0;
@@ -655,7 +720,7 @@ export default function ProduccionPanelSection() {
                 </div>
                 <div className="hero-right">
                     <span className="upd">{data ? 'Actualizado: ' + new Date(data.generadoEn).toLocaleTimeString('es-UY') : '—'}</span>
-                    <button className="btn" onClick={abrirConfig} title="Meta de cumplimiento, tipos de falla y tiempos de entrega">{ICONS.sliders}Configurar</button>
+                    <button className="btn" onClick={abrirConfig} title="Meta de cumplimiento, capacidad diaria por área, tipos de falla y tiempos de entrega">{ICONS.sliders}Configurar</button>
                 </div>
             </div>
 
@@ -777,9 +842,57 @@ export default function ProduccionPanelSection() {
                     value={k ? <>{nf(k.deposito)}<small> órdenes</small></> : '—'}
                     foot={k ? <><Delta actual={k.deposito} previo={k.depositoPrev} etiqueta={`${prevLbl} (${nf(k.depositoPrev)})`} /> · {nf2(k.depositoMetros)} {k.depositoUm === 'mixta' ? 'unid. mixtas' : k.depositoUm} · <span className="link">ver detalle ›</span></> : ''} />
 
+                {/* Capacidad consumida hoy (maqueta dashboard_produccion_3): producido hoy vs. capacidad
+                    diaria configurada por área en "Configurar". No depende de la fecha ni del turno. */}
+                <section className="card col-top">
+                    <h2>Capacidad de producción consumida — tiempo real</h2>
+                    <div className="hint">
+                        Producción marcada "Pronto" hoy vs. capacidad diaria configurada por área (Configurar → Capacidad de producción diaria) · no depende de la fecha ni del turno elegidos ·
+                        {verPor === 'area' ? ' por área productiva' : ' por sector comercial (capacidad = suma de sus áreas)'} · la selección se resalta · la barra de jornada avanza de 6 a 22 h
+                    </div>
+                    {(() => {
+                        const c = data?.capacidad;
+                        if (!c || !c.grupos?.length) return <div className="empty">Sin producción hoy todavía y sin capacidades configuradas</div>;
+                        const prog = progresoJornada(reloj);
+                        const colDe = u => (u == null ? COLORS.muted : u > 100 ? COLORS.critical : u >= 85 ? COLORS.warning : COLORS.good);
+                        const gCol = colDe(c.utilizacionGlobal);
+                        const umsTot = [...new Set(c.grupos.map(g => g.um).filter(Boolean))];
+                        const umTot = umsTot.length === 1 && umsTot[0] !== 'mixta' ? ' ' + umsTot[0] : '';
+                        return (
+                            <>
+                                <div className="cap-sum">
+                                    <div className="maq-stat"><span className="n" style={{ color: gCol }}>{c.utilizacionGlobal == null ? '—' : Math.round(c.utilizacionGlobal) + '%'}</span><span className="l">consumo global</span></div>
+                                    <div className="maq-stat"><span className="n">{nf2(c.producidoHoy)}{umTot}</span><span className="l">producido hoy</span></div>
+                                    <div className="maq-stat"><span className="n">{c.capacidadDia ? nf2(c.capacidadDia) + umTot : '—'}</span><span className="l">capacidad / día</span></div>
+                                    <div className="maq-util" style={{ marginLeft: 'auto' }}><div className="ubar"><i style={{ width: Math.round(prog * 100) + '%', background: COLORS.brand }}></i></div><span>{Math.round(prog * 100)}% de la jornada</span></div>
+                                </div>
+                                <div className="cap-list">
+                                    {c.grupos.map(g => {
+                                        const u = g.utilizacion, col = colDe(u), sel = ambito === g.id;
+                                        return (
+                                            <div className={'cap-row' + (sel ? ' sel' : '')} key={g.id}
+                                                title={`${g.nombre} · ${nf(g.ordenes)} órdenes prontas hoy · ${nf2(g.producido)} ${umTxt(g.um)}${g.capacidad ? ` de ${nf2(g.capacidad)} de capacidad diaria` : ' · sin capacidad configurada'}${g.areas?.length > 1 ? ' · ' + g.areas.join(' + ') : ''}`}>
+                                                <span className="cap-name">{g.nombre}</span>
+                                                <span className="cap-track"><i className="cap-fill" style={{ width: (u == null ? 0 : Math.min(u, 100).toFixed(1)) + '%', background: col }}></i></span>
+                                                <span className="cap-val">
+                                                    {u == null ? <span className="cap-nocap">sin capacidad configurada</span> : <b style={{ color: col }}>{Math.round(u)}%</b>}
+                                                    <span className="cap-sub">{nf2(g.producido)}{g.capacidad ? ' / ' + nf2(g.capacidad) : ''} {umTxt(g.um)}</span>
+                                                </span>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                                {c.utilizacionGlobal != null && c.producidoHoy !== c.producidoConCapacidad && (
+                                    <div className="hint" style={{ marginTop: 10, marginBottom: 0 }}>El % global compara solo los grupos con capacidad configurada ({nf2(c.producidoConCapacidad)} de {nf2(c.capacidadDia)}).</div>
+                                )}
+                            </>
+                        );
+                    })()}
+                </section>
+
                 <section className="card col-cumpl">
                     <h2>Cumplimiento de tiempos de preparación</h2>
-                    <div className="hint">{data?.serie?.modo === 'hora' ? '% de órdenes prontas antes de su fecha prometida, por hora del día' : '% de órdenes prontas antes de su fecha prometida, por día · ' + rangoLbl.toLowerCase()} · fecha prometida = compromiso de Bordado del portal, o la fecha estimada de entrega para el resto</div>
+                    <div className="hint">{data?.serie?.modo === 'hora' ? '% de órdenes prontas antes de su fecha prometida, por hora del día' : '% de órdenes prontas antes de su fecha prometida, por día · ' + rangoLbl.toLowerCase()} · fecha prometida = compromiso de Bordado del portal, o la fecha estimada de entrega para el resto · hacé clic en un punto para ver las órdenes</div>
                     <svg ref={refs.line} className="chart" viewBox="0 0 720 260" preserveAspectRatio="none"></svg>
                     <div className="legend">
                         <span><span className="swatch" style={{ background: COLORS.s1 }}></span>Cumplimiento</span>
@@ -894,7 +1007,7 @@ export default function ProduccionPanelSection() {
                     <div className="drawer-ov" onClick={() => setCfgOpen(false)}></div>
                     <aside className="drawer-panel">
                         <div className="drawer-head">
-                            <div><h3>Configuración de parámetros</h3><div className="drawer-sub">Meta de cumplimiento · tipos de falla por área · tiempos de entrega</div></div>
+                            <div><h3>Configuración de parámetros</h3><div className="drawer-sub">Meta de cumplimiento · capacidad diaria por área · tipos de falla por área · tiempos de entrega</div></div>
                             <button className="modal-close" onClick={() => setCfgOpen(false)}>✕</button>
                         </div>
                         <div className="drawer-body">
@@ -904,6 +1017,22 @@ export default function ProduccionPanelSection() {
                                         <div className="cfg-t">Meta de cumplimiento</div>
                                         <div className="cfg-hint">% objetivo de órdenes prontas antes de su fecha prometida (compromiso de Bordado del portal, o la fecha estimada de entrega para el resto). Se usa en el gráfico de cumplimiento y en el gauge. Se guarda en ConfiguracionGlobal (clave {cfg.clave}); si no está, vale {cfg.metaDefault}%.</div>
                                         <div className="cfg-row"><input type="number" min="1" max="100" step="0.5" className="cfg-num" value={metaInput} onChange={e => setMetaInput(e.target.value)} /><span style={{ fontSize: 13, color: '#5b6472' }}>% · actual: <b>{cfg.meta}%</b></span></div>
+                                    </div>
+
+                                    <div className="cfg-sec">
+                                        <div className="cfg-t">Capacidad de producción diaria</div>
+                                        <div className="cfg-hint">Capacidad objetivo de cada área por día, en la unidad en que esa área mide su producción (metros, m², unidades…). Define el panel "Capacidad consumida". Vacío = sin capacidad configurada (el área no entra al % global). Se guarda en ConfiguracionGlobal (clave {cfg.claveCapacidad}, una fila por área).</div>
+                                        {(cfg.capacidad || []).map(c => (
+                                            <div className="cfg-erow" key={c.areaCode}>
+                                                <span className="cfg-sname">{c.area}</span>
+                                                <div className="cfg-egrp">
+                                                    <label><input type="number" min="0" step="1" className="cfg-cap-in" placeholder="—"
+                                                        value={capInput[c.areaCode] ?? ''}
+                                                        onChange={e => setCapInput(x => ({ ...x, [c.areaCode]: e.target.value }))} /> / día</label>
+                                                </div>
+                                            </div>
+                                        ))}
+                                        {(cfg.capacidad || []).length === 0 && <div className="cfg-hint">Sin áreas productivas mapeadas (ConfigMapeoERP).</div>}
                                     </div>
 
                                     <div className="cfg-sec">
@@ -980,14 +1109,16 @@ export default function ProduccionPanelSection() {
                         )}
 
                         <div className="modal-sub">
+                            {modal === 'cumplNodo' && nodoLoading ? 'Cargando…' : <>
                             <b>{nf(listaModal.length)}</b>{hayFiltro ? <> de {nf(totalBase)}</> : null} {vistaModal.unidad}
-                            {modal !== 'fallas' && <> · <b>{nf2(totalModal)}</b> de magnitud</>}
+                            {modal !== 'fallas' && modal !== 'cumplNodo' && <> · <b>{nf2(totalModal)}</b> de magnitud</>}
                             {totalBase === 0 ? ' — sin datos para la selección actual' : ''}
                             {modal === 'fallas'
                                 ? (fallasTab === 'fallas'
                                     ? ' · fallas registradas en producción dentro del período (fecha de la falla)'
                                     : ' · órdenes de reposición (-R#) y de falla (-F#####) ingresadas dentro del período')
                                 : DEF_MODAL[modal]}
+                            </>}
                         </div>
 
                         {/* Filtros del detalle: texto libre, área y estado/tipo (se aplican sobre la lista ya cargada) */}
@@ -1006,8 +1137,30 @@ export default function ProduccionPanelSection() {
                         </div>
 
                         <div className="modal-body">
+                            {modal === 'cumplNodo' && nodoLoading ? (
+                                <div style={{ color: '#98a0ad', fontSize: 13, padding: '24px 0', textAlign: 'center' }}>Cargando órdenes…</div>
+                            ) : modal === 'cumplNodo' && nodoError ? (
+                                <div style={{ color: '#b91c1c', fontSize: 13, padding: '24px 0', textAlign: 'center' }}>Error al cargar el detalle: {nodoError}</div>
+                            ) : (
                             <table className="ord">
-                                {modal === 'fallas' && fallasTab === 'fallas' ? (
+                                {modal === 'cumplNodo' ? (
+                                    <>
+                                        <thead><tr><th>N° orden</th><th>Trabajo</th><th>Área</th><th>Fecha prometida</th><th>Quedó pronta</th><th>Cumplimiento</th><th style={{ textAlign: 'right' }}>Magnitud</th></tr></thead>
+                                        <tbody>
+                                            {listaModal.map(o => (
+                                                <tr key={o.ordenId}>
+                                                    <td>{o.id}</td>
+                                                    <td>{o.trabajo || '—'}<br /><span className="cli">{o.cliente}</span></td>
+                                                    <td>{o.area}</td>
+                                                    <td>{fmtHora(o.fechaPrometida)}</td>
+                                                    <td>{fmtHora(o.fechaPronto)}</td>
+                                                    <td><span className="estado-tag" style={o.aTiempo === false ? { color: '#b91c1c', background: '#fdeaea' } : o.aTiempo === true ? { color: '#16a34a', background: '#e6f6ec' } : undefined}>{o.cumplioTxt}</span></td>
+                                                    <td className="num">{nf2(o.metros)} {o.um}</td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </>
+                                ) : modal === 'fallas' && fallasTab === 'fallas' ? (
                                     <>
                                         <thead><tr><th>Fecha</th><th>N° orden</th><th>Trabajo</th><th>Área</th><th>Tipo de falla</th><th>Máquina</th><th>Observaciones</th><th style={{ textAlign: 'right' }}>Cant.</th></tr></thead>
                                         <tbody>
@@ -1096,7 +1249,9 @@ export default function ProduccionPanelSection() {
                                     </>
                                 )}
                             </table>
-                            {listaModal.length === 0 && totalBase > 0 && <div className="empty" style={{ fontSize: 12, color: '#98a0ad', padding: '24px 0', textAlign: 'center' }}>Ningún registro coincide con los filtros.</div>}
+                            )}
+                            {modal !== 'cumplNodo' && listaModal.length === 0 && totalBase > 0 && <div className="empty" style={{ fontSize: 12, color: '#98a0ad', padding: '24px 0', textAlign: 'center' }}>Ningún registro coincide con los filtros.</div>}
+                            {modal === 'cumplNodo' && !nodoLoading && !nodoError && listaModal.length === 0 && totalBase > 0 && <div className="empty" style={{ fontSize: 12, color: '#98a0ad', padding: '24px 0', textAlign: 'center' }}>Ningún registro coincide con los filtros.</div>}
                         </div>
                     </div>
                 </div>

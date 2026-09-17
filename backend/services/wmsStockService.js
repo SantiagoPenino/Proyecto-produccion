@@ -69,25 +69,45 @@ async function descontarStockWmsExterno(items, ref = {}) {
                 continue;
             }
 
-            // Crear remito de egreso vía INSERT (evita el trigger del UPDATE directo)
-            const remitoCode = 'WEB-' + Date.now().toString().slice(-6) + Math.floor(Math.random() * 100);
-            await sqlFetch(`
-                INSERT INTO wms_remitos_internos (numeracion, deposito_origen_id, deposito_destino_id, creado_por, estado)
-                VALUES ('${remitoCode}', ${depositoId}, ${depositoId}, 'venta', 'EGRESO_WEB');
-                DECLARE @RemId INT = SCOPE_IDENTITY();
-                INSERT INTO Stock_Movimientos (etiqueta_id, tipo_movimiento, cantidad_afectada, deposito_origen_id, remito_id, usuario_id)
-                SELECT TOP 1 id, 'egreso_venta_web', ${Math.min(cantidad, totalDisponible)}, ${depositoId}, @RemId, 'venta'
-                FROM Stock_Etiquetas
-                WHERE variante_id = ${varianteId} AND deposito_id = ${depositoId} AND estado = 'activo'
-                ORDER BY id ASC;
-            `);
-
-            logger.info(`✅ Egreso registrado: variante ${varianteId} x ${cantidad} (dep.${depositoId}) | remito: ${remitoCode}`);
-
-            if (totalDisponible < cantidad) {
-                wmsErrors.push(`variante ${varianteId}: stock parcial (disponible: ${totalDisponible}, pedido: ${cantidad})`);
+            // Reparto FIFO entre las etiquetas que REALMENTE tienen saldo. Antes iba UN
+            // solo movimiento contra la etiqueta más vieja (SELECT TOP 1) por la cantidad
+            // entera: si esa etiqueta no alcanzaba, el trigger del WMS
+            // (trg_StockMovimientos_AfterInsert) la restaba igual y la dejaba EN NEGATIVO,
+            // mientras las etiquetas nuevas — las que tienen la mercadería de verdad —
+            // quedaban intactas. Como la tienda suma solo las etiquetas con
+            // cantidad_actual > 0, el negativo quedaba escondido y se seguía ofreciendo
+            // stock ya vendido (10/09/2026: 42 etiquetas y 222 unidades así en el dep. 5).
+            // Ahora se toma de cada etiqueta solo lo que tiene y se sigue con la siguiente.
+            const plan = [];
+            let restante = cantidad;
+            for (const e of etiquetas) {
+                if (restante <= 0) break;
+                const toma = Math.min(restante, Number(e.cantidad_actual));
+                if (toma > 0) { plan.push({ etiquetaId: e.id, toma }); restante -= toma; }
             }
 
+            // Crear remito de egreso vía INSERT (evita el trigger del UPDATE directo).
+            // La referencia del pedido viaja en observaciones_generales: sin eso el egreso
+            // queda anónimo del lado del WMS (numeración 'WEB-123456', usuario 'venta') y
+            // para auditar qué venta lo generó hay que cruzar por hora a mano.
+            const remitoCode = 'WEB-' + Date.now().toString().slice(-6) + Math.floor(Math.random() * 100);
+            const refTxt = [ref.refDoc, ref.refTipo, ref.refId].filter(Boolean).join(' ') || 'sin referencia';
+            await sqlFetch(`
+                INSERT INTO wms_remitos_internos (numeracion, deposito_origen_id, deposito_destino_id, creado_por, estado, observaciones_generales)
+                VALUES ('${remitoCode}', ${depositoId}, ${depositoId}, 'venta', 'EGRESO_WEB', '${String(refTxt).replace(/'/g, "''")}');
+                DECLARE @RemId INT = SCOPE_IDENTITY();
+                ${plan.map(p => `INSERT INTO Stock_Movimientos (etiqueta_id, tipo_movimiento, cantidad_afectada, deposito_origen_id, remito_id, usuario_id)
+                VALUES (${p.etiquetaId}, 'egreso_venta_web', ${p.toma}, ${depositoId}, @RemId, 'venta');`).join('\n                ')}
+            `);
+
+            const descontado = cantidad - restante;
+            logger.info(`✅ Egreso registrado: variante ${varianteId} x ${descontado} en ${plan.length} etiqueta(s) [${plan.map(p => `#${p.etiquetaId}:${p.toma}`).join(', ')}] (dep.${depositoId}) | remito: ${remitoCode} | ${refTxt}`);
+
+            // Lo que no había NO se fuerza contra ninguna etiqueta: se avisa. Forzarlo era
+            // exactamente lo que generaba los negativos.
+            if (restante > 0) {
+                wmsErrors.push(`variante ${varianteId}: stock parcial (disponible: ${totalDisponible}, pedido: ${cantidad}) — quedaron ${restante} SIN descontar`);
+            }
         } catch (e) {
             if (e.message.includes('WMS no disponible')) {
                 wmsDisponible = false;

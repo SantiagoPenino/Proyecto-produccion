@@ -1,5 +1,5 @@
 // =============================================================================
-// Panel de Producción (Reportes de Contabilidad → Dashboard)
+// Panel de Producción (Reportes → Dashboard de Producción)
 // GET /api/dashboard/produccion/panel?sector=&turno=&rango=
 //
 // Devuelve TODO lo que muestra el panel en una sola respuesta, ya filtrado por
@@ -28,6 +28,9 @@ const safe = async (fn, fallback, label) => {
 
 const META_CUMPLIMIENTO = 90; // % objetivo por defecto (editable desde "Configurar" → ConfiguracionGlobal)
 const CLAVE_META = 'PANEL_PRODUCCION_META_CUMPLIMIENTO';
+// Capacidad diaria de producción por área (panel "Capacidad consumida"): una fila por área en
+// ConfiguracionGlobal (PK = Clave + AreaID), valor = magnitud/día en la unidad de esa área.
+const CLAVE_CAPACIDAD = 'PANEL_PRODUCCION_CAPACIDAD_DIA';
 
 // Meta configurada en dbo.ConfiguracionGlobal (si no existe la clave, vale META_CUMPLIMIENTO)
 const leerMeta = async (pool) => {
@@ -39,33 +42,53 @@ const leerMeta = async (pool) => {
     } catch { return META_CUMPLIMIENTO; }
 };
 
+// Capacidad diaria configurada por área → { [AreaID]: número } (solo las áreas con valor > 0)
+const leerCapacidades = async (pool) => {
+    try {
+        const r = await pool.request().input('clave', sql.VarChar(50), CLAVE_CAPACIDAD)
+            .query(`SELECT RTRIM(AreaID) AS AreaID, Valor FROM dbo.ConfiguracionGlobal WITH(NOLOCK) WHERE Clave = @clave`);
+        const out = {};
+        for (const row of r.recordset) {
+            const v = Number(String(row.Valor ?? '').replace(',', '.'));
+            if (v > 0) out[String(row.AreaID).trim()] = v;
+        }
+        return out;
+    } catch { return {}; }
+};
+
 // Upsert de una clave en ConfiguracionGlobal. Misma técnica que cfeController.asegurarClaveConfigGlobal:
-// la tabla tiene columnas NOT NULL que varían por instalación (AreaID → 'ADMIN' para claves globales).
-const guardarClaveGlobal = async (pool, clave, valor) => {
-    const existe = await pool.request().input('clave', sql.VarChar(50), clave)
-        .query(`SELECT 1 AS x FROM dbo.ConfiguracionGlobal WITH(NOLOCK) WHERE Clave = @clave`);
+// la tabla tiene columnas NOT NULL que varían por instalación. AreaID = 'ADMIN' para claves
+// globales (meta); las claves por área (capacidad) pasan el código del área.
+const guardarClaveGlobal = async (pool, clave, valor, areaId = 'ADMIN') => {
+    const existe = await pool.request().input('clave', sql.VarChar(50), clave).input('areaId', sql.NVarChar(10), areaId)
+        .query(`SELECT 1 AS x FROM dbo.ConfiguracionGlobal WITH(NOLOCK) WHERE Clave = @clave AND AreaID = @areaId`);
     if (existe.recordset.length > 0) {
-        await pool.request().input('clave', sql.VarChar(50), clave).input('valor', sql.NVarChar(100), String(valor))
-            .query(`UPDATE dbo.ConfiguracionGlobal SET Valor = @valor WHERE Clave = @clave`);
+        await pool.request().input('clave', sql.VarChar(50), clave).input('areaId', sql.NVarChar(10), areaId).input('valor', sql.NVarChar(100), String(valor))
+            .query(`UPDATE dbo.ConfiguracionGlobal SET Valor = @valor WHERE Clave = @clave AND AreaID = @areaId`);
         return;
     }
     const colsRes = await pool.request().query(`
         SELECT COLUMN_NAME, IS_NULLABLE, COLUMN_DEFAULT, DATA_TYPE
         FROM INFORMATION_SCHEMA.COLUMNS
         WHERE TABLE_SCHEMA = 'dbo' AND TABLE_NAME = 'ConfiguracionGlobal'`);
-    const nombres = ['[Clave]', '[Valor]'], valores = ['@clave', '@valor'];
+    const nombres = ['[Clave]', '[AreaID]', '[Valor]'], valores = ['@clave', '@areaId', '@valor'];
     for (const c of colsRes.recordset) {
-        if (c.COLUMN_NAME === 'Clave' || c.COLUMN_NAME === 'Valor') continue;
+        if (c.COLUMN_NAME === 'Clave' || c.COLUMN_NAME === 'Valor' || c.COLUMN_NAME === 'AreaID') continue;
         if (c.IS_NULLABLE === 'NO' && c.COLUMN_DEFAULT == null) {
             const t = String(c.DATA_TYPE || '').toLowerCase();
             nombres.push(`[${c.COLUMN_NAME}]`);
             if (['int', 'bigint', 'smallint', 'tinyint', 'decimal', 'numeric', 'float', 'real', 'money', 'bit'].includes(t)) valores.push('0');
             else if (t.includes('date') || t.includes('time')) valores.push('GETDATE()');
-            else valores.push(c.COLUMN_NAME === 'AreaID' ? "'ADMIN'" : "''");
+            else valores.push("''");
         }
     }
-    await pool.request().input('clave', sql.VarChar(50), clave).input('valor', sql.NVarChar(100), String(valor))
+    await pool.request().input('clave', sql.VarChar(50), clave).input('areaId', sql.NVarChar(10), areaId).input('valor', sql.NVarChar(100), String(valor))
         .query(`INSERT INTO dbo.ConfiguracionGlobal (${nombres.join(', ')}) VALUES (${valores.join(', ')})`);
+};
+
+const borrarClaveGlobal = async (pool, clave, areaId) => {
+    await pool.request().input('clave', sql.VarChar(50), clave).input('areaId', sql.NVarChar(10), areaId)
+        .query(`DELETE FROM dbo.ConfiguracionGlobal WHERE Clave = @clave AND AreaID = @areaId`);
 };
 const HORA_CORTE_TURNO  = 14; // Turno 1 = antes de las 14 h, Turno 2 = desde las 14 h (misma regla que analytics)
 
@@ -168,9 +191,10 @@ exports.getPanel = async (req, res) => {
         const rango     = req.query.rango ? String(req.query.rango).trim() : 'hoy';
         const R = resolverRango(rango, req.query.desde, req.query.hasta);
 
-        const [mapa, meta] = await Promise.all([
+        const [mapa, meta, capacidades] = await Promise.all([
             safe(() => cargarSectores(pool), { sectores: [], codigoASector: {}, codigoANombre: {}, nombreACodigo: {}, areas: [] }, 'sectores'),
             leerMeta(pool),
+            leerCapacidades(pool),
         ]);
         const sectorSel = sectorId ? mapa.sectores.find(s => s.id === sectorId) : null;
         const areaSel   = !sectorSel && areaNom ? (mapa.areas.find(a => a.nombre === areaNom) || { nombre: areaNom, codigos: [] }) : null;
@@ -189,6 +213,7 @@ exports.getPanel = async (req, res) => {
             r.input('desdePrev', sql.DateTime, R.desdePrev);
             const d14 = inicioDia(new Date()); d14.setDate(d14.getDate() - 13);
             r.input('desde14',   sql.DateTime, d14);
+            r.input('hoy0',      sql.DateTime, inicioDia(new Date()));
             return r;
         };
 
@@ -202,7 +227,7 @@ exports.getPanel = async (req, res) => {
             )`;
 
         const [
-            resActivas, resTransito, resKpis, resSerie, resDaily, resPorArea, resTop, resDepKpi, resDepDet, resFallasDet, resRepos, resFallaOrdMetros, resFallas, resMaquinas, resEntrega,
+            resActivas, resTransito, resKpis, resSerie, resDaily, resPorArea, resTop, resDepKpi, resDepDet, resFallasDet, resRepos, resFallaOrdMetros, resFallas, resMaquinas, resEntrega, resHoyArea,
         ] = await Promise.all([
 
             // 1. Órdenes activas (estado actual) — sirve para en proceso / en cola / en tránsito y el modal
@@ -425,6 +450,19 @@ exports.getPanel = async (req, res) => {
                 WHERE 1 = 1 ${areaFcol('t.AreaID')}
                 ORDER BY t.AreaID, t.Prioridad
             `), { recordset: [] }, 'entrega'),
+
+            // 10. Producción acumulada HOY por área (panel "Capacidad consumida — tiempo real").
+            //     Órdenes con su primer "Pronto" hoy, TODAS las áreas (el panel muestra todos los
+            //     sectores y resalta el elegido), sin filtro de fecha ni de turno: es el día completo
+            //     contra la capacidad diaria configurada. Mismo criterio que la barra "Hoy" de
+            //     "Producción diaria (14 días)".
+            safe(() => base().query(`
+                ${CTE_PRONTAS('@hoy0')}
+                SELECT o.AreaID, COUNT(*) AS n, SUM(${magnitudExpr()}) AS metros,
+                       MAX(LTRIM(RTRIM(ISNULL(o.UM,'')))) AS umMax, MIN(LTRIM(RTRIM(ISNULL(o.UM,'')))) AS umMin
+                FROM p JOIN dbo.Ordenes o WITH(NOLOCK) ON o.OrdenID = p.OrdenID
+                GROUP BY o.AreaID
+            `), { recordset: [] }, 'hoyPorArea'),
         ]);
 
         // ── Activas → en proceso / en cola / en tránsito ─────────────────────
@@ -510,13 +548,14 @@ exports.getPanel = async (req, res) => {
 
         // ── Serie de cumplimiento ────────────────────────────────────────────
         let serie;
+        const diaBase = `${R.desde.getFullYear()}-${pad2(R.desde.getMonth() + 1)}-${pad2(R.desde.getDate())}`;
         if (R.modo === 'hora') {
             const porHora = Object.fromEntries(resSerie.recordset.map(r => [Number(r.k), r]));
             const hIni = turno === '2' ? HORA_CORTE_TURNO : 6, hFin = turno === '1' ? HORA_CORTE_TURNO - 1 : 22;
-            serie = { modo: 'hora', puntos: [] };
+            serie = { modo: 'hora', dia: diaBase, puntos: [] };
             for (let h = hIni; h <= hFin; h++) {
                 const r = porHora[h];
-                serie.puntos.push({ label: `${pad2(h)}:00`, valor: r ? pct(r.enTiempo, r.conFecha) : null, n: r ? r.n : 0 });
+                serie.puntos.push({ label: `${pad2(h)}:00`, valor: r ? pct(r.enTiempo, r.conFecha) : null, n: r ? r.n : 0, dia: diaBase, hora: h });
             }
         } else {
             const porDia = {};
@@ -526,7 +565,7 @@ exports.getPanel = async (req, res) => {
                 const d = new Date(); d.setDate(d.getDate() - i);
                 const key = `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
                 const r = porDia[key];
-                serie.puntos.push({ label: lblDia(d), valor: r ? pct(r.enTiempo, r.conFecha) : null, n: r ? r.n : 0 });
+                serie.puntos.push({ label: lblDia(d), valor: r ? pct(r.enTiempo, r.conFecha) : null, n: r ? r.n : 0, dia: key });
             }
         }
 
@@ -559,6 +598,58 @@ exports.getPanel = async (req, res) => {
         }
         const porSector = Object.values(porSectorMap).sort((a, b) => b.unidades - a.unidades)
             .map(({ ums, ...x }) => ({ ...x, metros: Math.round(x.metros * 100) / 100, um: ums.size === 1 ? [...ums][0] : (ums.size ? 'mixta' : '') }));
+
+        // ── Capacidad consumida hoy: producido hoy vs. capacidad diaria configurada ──
+        // Se agrupa igual que "por sector" (VER POR): sector comercial o área productiva.
+        // La capacidad de un sector es la suma de las capacidades configuradas de sus áreas;
+        // un grupo sin ninguna capacidad configurada devuelve capacidad null (no se puede
+        // calcular el %, el panel lo muestra como "sin capacidad configurada").
+        const hoyPorArea = Object.fromEntries(resHoyArea.recordset.map(r => [String(r.AreaID || '').trim(), r]));
+        const areasConfiguradas = Object.keys(mapa.codigoANombre);
+        const gruposCap = {};
+        const agregarAGrupo = (key, nombre, id, cod) => {
+            const g = gruposCap[key] = gruposCap[key] || { id, nombre, producido: 0, ordenes: 0, capacidad: null, ums: new Set(), areas: [] };
+            const r = hoyPorArea[cod];
+            if (r) {
+                g.producido += Number(r.metros || 0); g.ordenes += Number(r.n || 0);
+                if (r.umMax) g.ums.add(r.umMax); if (r.umMin) g.ums.add(r.umMin);
+            }
+            if (capacidades[cod] > 0) g.capacidad = (g.capacidad || 0) + capacidades[cod];
+            const nombreArea = mapa.codigoANombre[cod] || cod;
+            if (!g.areas.includes(nombreArea)) g.areas.push(nombreArea);
+        };
+        if (verPor === 'area') {
+            for (const a of mapa.areas) for (const cod of a.codigos) agregarAGrupo('A:' + a.nombre, a.nombre, 'A:' + a.nombre, cod);
+        } else {
+            for (const s of mapa.sectores) for (const cod of s.areas) agregarAGrupo('S:' + s.id, s.nombre, 'S:' + s.id, cod);
+            for (const cod of areasConfiguradas) if (!mapa.codigoASector[cod]) agregarAGrupo('SIN_SECTOR', 'Sin sector', 'SIN_SECTOR', cod);
+        }
+        // Áreas con producción hoy que no están en ConfigMapeoERP: se muestran con su código
+        // (mismo criterio que "Cantidades de producción por sector"), no se descartan.
+        for (const cod of Object.keys(hoyPorArea)) {
+            if (mapa.codigoANombre[cod]) continue;
+            if (verPor === 'area') agregarAGrupo('A:' + cod, cod, 'A:' + cod, cod);
+            else agregarAGrupo('SIN_SECTOR', 'Sin sector', 'SIN_SECTOR', cod);
+        }
+        const capacidadGrupos = Object.values(gruposCap)
+            .filter(g => g.ordenes > 0 || g.producido > 0 || g.capacidad != null)
+            .map(({ ums, ...g }) => ({
+                ...g,
+                producido: Math.round(g.producido * 100) / 100,
+                um: ums.size === 1 ? [...ums][0] : (ums.size ? 'mixta' : ''),
+                utilizacion: g.capacidad ? round1(g.producido / g.capacidad * 100) : null,
+            }));
+        const conCap = capacidadGrupos.filter(g => g.capacidad);
+        const capacidad = {
+            hoy: `${inicioDia(new Date()).getFullYear()}-${pad2(new Date().getMonth() + 1)}-${pad2(new Date().getDate())}`,
+            grupos: capacidadGrupos,
+            producidoHoy: Math.round(capacidadGrupos.reduce((s, g) => s + g.producido, 0) * 100) / 100,
+            // El % global solo compara los grupos que tienen capacidad configurada
+            producidoConCapacidad: Math.round(conCap.reduce((s, g) => s + g.producido, 0) * 100) / 100,
+            capacidadDia: conCap.reduce((s, g) => s + g.capacidad, 0),
+            utilizacionGlobal: conCap.length ? round1(conCap.reduce((s, g) => s + g.producido, 0) / conCap.reduce((s, g) => s + g.capacidad, 0) * 100) : null,
+            areasSinCapacidad: areasConfiguradas.filter(cod => !(capacidades[cod] > 0)).map(cod => mapa.codigoANombre[cod]),
+        };
 
         // ── Fallas por tipo (período actual) ─────────────────────────────────
         const fallasPorTipo = resFallas.recordset.filter(r => r.per === 'cur')
@@ -663,9 +754,84 @@ exports.getPanel = async (req, res) => {
             })),
             fallasTotales: resFallasDet.recordset.length,
             entrega,
+            capacidad,
         });
     } catch (err) {
         logger.error('[PROD-PANEL] getPanel:', err);
+        res.status(500).json({ success: false, message: err.message });
+    }
+};
+
+// =============================================================================
+// Detalle de un punto del gráfico "Cumplimiento de tiempos de preparación"
+//   GET /api/dashboard/produccion/panel/cumplimiento-detalle?dia=YYYY-MM-DD[&hora=0-23]&sector=&area=&turno=
+// Un punto del gráfico es un día (o una hora, en modo "hoy") — este endpoint devuelve
+// las órdenes prontas que caen justo en ese balde, con si cumplieron o no. Se pide bajo
+// demanda al hacer clic en un nodo, no viaja con el panel completo (el rango puede
+// tener miles de prontas y la mayoría de las veces nadie hace clic en nada).
+// =============================================================================
+exports.getCumplimientoDetalle = async (req, res) => {
+    try {
+        const dia = req.query.dia ? String(req.query.dia).trim() : '';
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(dia)) return res.status(400).json({ success: false, message: 'Falta o es inválido el parámetro dia (YYYY-MM-DD).' });
+        const horaStr = req.query.hora;
+        const hora = horaStr !== undefined && horaStr !== '' ? parseInt(horaStr, 10) : null;
+
+        const pool = await getPool();
+        const sectorId = req.query.sector ? String(req.query.sector).trim() : '';
+        const areaNom  = req.query.area ? String(req.query.area).trim() : '';
+        const turno    = req.query.turno ? String(req.query.turno).trim() : '';
+
+        const mapa = await safe(() => cargarSectores(pool), { sectores: [], codigoASector: {}, codigoANombre: {}, nombreACodigo: {}, areas: [] }, 'sectores');
+        const sectorSel = sectorId ? mapa.sectores.find(s => s.id === sectorId) : null;
+        const areaSel   = !sectorSel && areaNom ? (mapa.areas.find(a => a.nombre === areaNom) || { nombre: areaNom, codigos: [] }) : null;
+        let areaF = '';
+        if (sectorSel)    areaF = sectorSel.areas.length ? `AND o.AreaID IN (${listaSql(sectorSel.areas)})` : 'AND 1 = 0';
+        else if (areaSel) areaF = areaSel.codigos.length ? `AND o.AreaID IN (${listaSql(areaSel.codigos)})` : 'AND 1 = 0';
+
+        // Comparación 100% en SQL contra el DATE y la HORA (sin construir un DateTime en JS):
+        // así no depende de cómo el driver serialice zonas horarias (useUTC difiere entre
+        // local y producción, ver el comentario en config/db.js) y queda igual de exacto que
+        // la agregación que arma la serie (CAST(...AS DATE) / DATEPART(HOUR,...)).
+        const r = pool.request();
+        r.input('dia', sql.Date, dia);
+        r.input('hora', sql.Int, hora);
+        const result = await r.query(`
+            WITH p AS (
+                SELECT h.OrdenID, MIN(h.FechaInicio) AS f
+                FROM dbo.HistorialOrdenes h WITH(NOLOCK)
+                WHERE UPPER(LTRIM(RTRIM(h.Estado))) = 'PRONTO'
+                GROUP BY h.OrdenID
+            )
+            SELECT o.OrdenID, o.CodigoOrden, o.DescripcionTrabajo, o.Cliente, o.AreaID, o.Estado, o.EstadoenArea,
+                   ${magnitudExpr()} AS metros, LTRIM(RTRIM(ISNULL(o.UM, ''))) AS um,
+                   p.f AS fechaPronto, ISNULL(o.FechaCompromiso, o.FechaEstimadaEntrega) AS fechaPrometida
+            FROM p JOIN dbo.Ordenes o WITH(NOLOCK) ON o.OrdenID = p.OrdenID
+            WHERE CAST(p.f AS DATE) = @dia
+              AND (@hora IS NULL OR DATEPART(HOUR, p.f) = @hora)
+              ${areaF} ${turnoWhere(turno, 'p.f')}
+            ORDER BY p.f
+        `);
+
+        res.json({
+            success: true,
+            dia, hora,
+            ordenes: result.recordset.map(o => ({
+                ordenId: o.OrdenID,
+                id: (o.CodigoOrden || `#${o.OrdenID}`).trim(),
+                trabajo: (o.DescripcionTrabajo || '').trim(),
+                cliente: (o.Cliente || '').trim(),
+                area: mapa.codigoANombre[String(o.AreaID || '').trim()] || o.AreaID,
+                estado: o.EstadoenArea || o.Estado || '',
+                metros: Math.round((o.metros || 0) * 100) / 100,
+                um: o.um || '',
+                fechaPronto: o.fechaPronto,
+                fechaPrometida: o.fechaPrometida,
+                aTiempo: o.fechaPrometida ? (new Date(o.fechaPronto) <= new Date(o.fechaPrometida)) : null,
+            })),
+        });
+    } catch (err) {
+        logger.error('[PROD-PANEL] getCumplimientoDetalle:', err);
         res.status(500).json({ success: false, message: err.message });
     }
 };
@@ -680,21 +846,26 @@ exports.getPanel = async (req, res) => {
 exports.getPanelConfig = async (req, res) => {
     try {
         const pool = await getPool();
-        const [mapa, meta, resTipos, resEntrega] = await Promise.all([
+        const [mapa, meta, capacidades, resTipos, resEntrega] = await Promise.all([
             safe(() => cargarSectores(pool), { sectores: [], codigoASector: {}, codigoANombre: {}, nombreACodigo: {}, areas: [] }, 'sectores'),
             leerMeta(pool),
+            leerCapacidades(pool),
             safe(() => pool.request().query(`SELECT FallaID, AreaID, Titulo, EsFrecuente FROM dbo.TiposFallas WITH(NOLOCK) ORDER BY AreaID, EsFrecuente DESC, Titulo`), { recordset: [] }, 'tiposFalla'),
             safe(() => pool.request().query(`SELECT ConfigID, AreaID, Prioridad, Horas, Dias, Texto FROM dbo.ConfiguracionTiemposEntrega WITH(NOLOCK) ORDER BY AreaID, Prioridad`), { recordset: [] }, 'entrega'),
         ]);
         const nombreArea = cod => mapa.codigoANombre[String(cod || '').trim()] || String(cod || '').trim();
+        const areas = Object.entries(mapa.codigoANombre).map(([code, nombre]) => ({ code, nombre })).sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'));
         res.json({
             success: true,
             meta,
             metaDefault: META_CUMPLIMIENTO,
             clave: CLAVE_META,
+            claveCapacidad: CLAVE_CAPACIDAD,
             horaCorteTurno: HORA_CORTE_TURNO,
             // Áreas productivas con su código interno (para dar de alta tipos de falla)
-            areas: Object.entries(mapa.codigoANombre).map(([code, nombre]) => ({ code, nombre })).sort((a, b) => a.nombre.localeCompare(b.nombre, 'es')),
+            areas,
+            // Capacidad diaria por área (null = sin configurar)
+            capacidad: areas.map(a => ({ areaCode: a.code, area: a.nombre, capacidad: capacidades[a.code] ?? null })),
             tiposFalla: resTipos.recordset.map(t => ({ id: t.FallaID, areaCode: String(t.AreaID || '').trim(), area: nombreArea(t.AreaID), titulo: t.Titulo, frecuente: !!t.EsFrecuente })),
             entrega: resEntrega.recordset.map(t => ({
                 id: t.ConfigID, areaCode: String(t.AreaID || '').trim(), area: nombreArea(t.AreaID), prioridad: t.Prioridad,
@@ -708,13 +879,42 @@ exports.getPanelConfig = async (req, res) => {
     }
 };
 
+// Body: { meta?: number, capacidad?: { [areaCode]: number | null } } — se guarda lo que venga.
+// capacidad[area] = null / 0 / '' borra la fila (el área queda "sin capacidad configurada").
 exports.putPanelConfig = async (req, res) => {
     try {
-        const meta = Number(String(req.body?.meta ?? '').replace(',', '.'));
-        if (!(meta > 0 && meta <= 100)) return res.status(400).json({ success: false, message: 'La meta de cumplimiento debe ser un porcentaje entre 1 y 100.' });
+        const body = req.body || {};
+        const tieneMeta = body.meta !== undefined && body.meta !== null && body.meta !== '';
+        const tieneCap  = body.capacidad && typeof body.capacidad === 'object';
+        if (!tieneMeta && !tieneCap) return res.status(400).json({ success: false, message: 'No hay nada para guardar (meta o capacidad).' });
+
+        let meta = null;
+        if (tieneMeta) {
+            meta = Number(String(body.meta).replace(',', '.'));
+            if (!(meta > 0 && meta <= 100)) return res.status(400).json({ success: false, message: 'La meta de cumplimiento debe ser un porcentaje entre 1 y 100.' });
+            meta = Math.round(meta * 10) / 10;
+        }
+
         const pool = await getPool();
-        await guardarClaveGlobal(pool, CLAVE_META, Math.round(meta * 10) / 10);
-        res.json({ success: true, meta: Math.round(meta * 10) / 10 });
+        let capacidadGuardada = {};
+        if (tieneCap) {
+            const mapa = await safe(() => cargarSectores(pool), { codigoANombre: {} }, 'sectores');
+            for (const [code, valRaw] of Object.entries(body.capacidad)) {
+                const cod = String(code || '').trim();
+                if (!mapa.codigoANombre[cod]) return res.status(400).json({ success: false, message: `Área desconocida: "${cod}".` });
+                const vacio = valRaw === null || valRaw === undefined || String(valRaw).trim() === '';
+                const v = vacio ? 0 : Number(String(valRaw).replace(',', '.'));
+                if (!vacio && !(v >= 0) ) return res.status(400).json({ success: false, message: `La capacidad de ${mapa.codigoANombre[cod]} debe ser un número mayor o igual a 0.` });
+                capacidadGuardada[cod] = v > 0 ? v : null;
+            }
+        }
+
+        if (meta !== null) await guardarClaveGlobal(pool, CLAVE_META, meta);
+        for (const [cod, v] of Object.entries(capacidadGuardada)) {
+            if (v === null) await borrarClaveGlobal(pool, CLAVE_CAPACIDAD, cod);
+            else await guardarClaveGlobal(pool, CLAVE_CAPACIDAD, v, cod);
+        }
+        res.json({ success: true, meta, capacidad: capacidadGuardada });
     } catch (err) {
         logger.error('[PROD-PANEL] putPanelConfig:', err);
         res.status(500).json({ success: false, message: err.message });

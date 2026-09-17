@@ -249,31 +249,17 @@ const CorteStandalone = ({ tizadaFiles, setTizadaFiles, handleMultipleSpecialize
                                                     ))}
                                                 </div>
 
+                                                {/* Una tizada de prenda suele traer varios talles: la lista de talles
+                                                    va en la Planilla de Pedido, no en un único selector acá. */}
                                                 {tf.tipoCorte === 'PRENDA' && (
-                                                    <div className="mt-3">
-                                                        <label className="block text-[9px] uppercase font-black text-zinc-500 mb-1.5 tracking-widest">
-                                                            Talle <span className="text-red-400">*</span>
-                                                        </label>
-                                                        <CustomSelect
-                                                            name={`talle-${i}`}
-                                                            aria-label="Talle de la prenda"
-                                                            value={tf.talle || ''}
-                                                            onChange={(v) => setTizadaFiles(tizadaFiles.map((f, idx) => idx === i ? Object.assign(f, { talle: v }) : f))}
-                                                            options={TALLES_PRENDA.map(t => ({ value: t, label: t }))}
-                                                            placeholder="Elegí el talle..."
-                                                            variant="black"
-                                                        />
-                                                    </div>
+                                                    <p className="mt-2 text-[10px] font-bold text-zinc-400 flex items-center gap-1.5">
+                                                        Los talles y cantidades van en la Planilla de Pedido (abajo).
+                                                    </p>
                                                 )}
 
                                                 {!tf.tipoCorte && (
                                                     <p className="mt-2 text-[10px] font-bold text-amber-400/90 flex items-center gap-1.5">
                                                         <AlertTriangle size={12} className="shrink-0" /> Elegí si esta tizada es una pieza o una prenda.
-                                                    </p>
-                                                )}
-                                                {tf.tipoCorte === 'PRENDA' && !tf.talle && (
-                                                    <p className="mt-2 text-[10px] font-bold text-amber-400/90 flex items-center gap-1.5">
-                                                        <AlertTriangle size={12} className="shrink-0" /> Falta el talle de la prenda.
                                                     </p>
                                                 )}
                                             </div>

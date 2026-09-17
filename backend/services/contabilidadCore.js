@@ -219,6 +219,219 @@ const desglosarIVA = (totalMonto, tasaIVA = 22) => {
  * la facturación sigue funcionando igual que antes — simplemente no guarda el tipo
  * de cambio — en vez de romperse entera por una columna que falta.
  */
+// ¿Existen las columnas del desglose en la línea de factura (DcdTotalRecargos, DcdRecargoPct,
+// DcdRecargoStr, DcdDescuentoOrigen; script add_recargos_DocumentosContablesDetalle.sql)?
+// Se consulta una vez por proceso; sin las columnas se factura como antes.
+let _colsDesglose = null;
+const existenColsDesglose = async (nuevoReq) => {
+  if (_colsDesglose !== null) return _colsDesglose;
+  try {
+    const r = await nuevoReq().query(`SELECT COL_LENGTH('dbo.DocumentosContablesDetalle', 'DcdTotalRecargos') AS L`);
+    _colsDesglose = r.recordset[0]?.L != null;
+  } catch {
+    _colsDesglose = false;
+  }
+  if (!_colsDesglose) {
+    logger.warn('[CONTABILIDAD] Faltan las columnas de recargo/origen en DocumentosContablesDetalle (correr backend/scripts/add_recargos_DocumentosContablesDetalle.sql): las líneas se guardan sin recargo ni origen.');
+  }
+  return _colsDesglose;
+};
+
+// Redondeos del desglose: importes a 2 decimales, unitarios a 4.
+const r2 = n => Math.round((Number(n || 0) + Number.EPSILON) * 100) / 100;
+const r4 = n => Math.round((Number(n || 0) + Number.EPSILON) * 10000) / 10000;
+
+// ── Desglose lista / descuento / recargo de una línea de factura, a partir de la línea
+// congelada del pedido (specs/09 INV-PRE.03, plan motor-precios-transparencia). ─────────
+// `l` = línea de factura { cantidad, total (con IVA, en la moneda del documento) };
+// `p` = fila de PedidosCobranzaDetalle. Devuelve los campos a completar, o null cuando el
+// pedido no explica el importe cobrado (la línea sale como neto, sin desglose).
+// Regla: lista × cant − descuento + recargo = total; el importe del descuento absorbe el
+// redondeo (sin descuento, lo absorbe el recargo).
+const aplicarDesglosePcd = (l, p, docMon) => {
+  const total = Number(l.total) || 0;
+  const sub = Number(p.Subtotal) || 0;
+  const cant = Number(l.cantidad) || 0;
+  if (!(total > 0) || !(sub > 0) || !(cant > 0) || p.PrecioLista == null) return null;
+  const monLinea = (p.Moneda || 'UYU').toUpperCase().trim();
+  let f = 1;
+  if (monLinea !== (docMon || 'UYU').toUpperCase().trim()) f = total / sub;   // cotización implícita ya aplicada
+  else if (Math.abs(sub - total) > 0.0101) return null;                        // la factura no cobró lo del pedido
+  const lista = r4(Number(p.PrecioLista) * f);
+  if (!(lista > 0)) return null;
+  const bruto = r2(cant * lista);
+  const descImpU = Number(p.DescuentoImporte) || 0;
+  const recImpU  = Number(p.RecargoImporte)  || 0;
+  let totalRec = r2(recImpU * cant * f);
+  let totalDesc = 0;
+  if (p.DescuentoTipo && descImpU > 0) {
+    totalDesc = r2(bruto + totalRec - total);
+    if (totalDesc < 0) return null;
+  } else if (recImpU > 0) {
+    totalRec = r2(total - bruto);
+    if (totalRec < 0) return null;
+  } else if (Math.abs(bruto - total) > 0.0101) {
+    return null;
+  } else {
+    totalRec = 0;
+  }
+  return {
+    precioUnitario: lista,
+    totalDescuentos: totalDesc,
+    descuentoPct: totalDesc > 0 && p.DescuentoPct != null ? Number(p.DescuentoPct) : null,
+    descuentoStr: totalDesc > 0 ? (p.DescuentoOrigen || null) : null,
+    descuentoOrigen: totalDesc > 0 ? (p.DescuentoOrigen || null) : null,
+    totalRecargos: totalRec,
+    recargoPct: totalRec > 0 && p.RecargoPct != null ? Number(p.RecargoPct) : null,
+    recargoStr: totalRec > 0 ? (p.RecargoOrigen || null) : null,
+  };
+};
+
+const SQL_PCD_DESGLOSE_COLS = `pcd.ID AS PcdID, pcd.Cantidad, pcd.PrecioUnitario, pcd.Subtotal, pcd.Moneda,
+             pcd.PrecioLista, pcd.DescuentoTipo, pcd.DescuentoPct, pcd.DescuentoImporte, pcd.DescuentoOrigen,
+             pcd.RecargoPct, pcd.RecargoImporte, pcd.RecargoOrigen`;
+
+// Líneas congeladas del pedido: por ID de línea (cuando la consulta de la factura ya la
+// encontró: VEN-/EMB-, NoDocERP = código) y por código de orden vía Ordenes.NoDocERP +
+// OrdenID (SUB-/DTF-/EUV-...: el código lleva prefijo y NoDocERP es el número).
+const buscarLineasPedido = async (makeReq, { pcdIds = [], codigos = [] }) => {
+  const porId = {}, porCodigo = {};
+  const ids = pcdIds.map(Number).filter(n => n > 0);
+  if (ids.length) {
+    const q = await makeReq().query(`SELECT ${SQL_PCD_DESGLOSE_COLS} FROM dbo.PedidosCobranzaDetalle pcd WITH(NOLOCK)
+      WHERE pcd.ID IN (${ids.join(',')}) AND pcd.PrecioLista > 0`);
+    q.recordset.forEach(r => { porId[r.PcdID] = r; });
+  }
+  if (codigos.length) {
+    const req = makeReq();
+    const params = codigos.map((c, i) => { req.input(`c${i}`, sql.VarChar(100), c); return `@c${i}`; });
+    const q = await req.query(`
+      SELECT LTRIM(RTRIM(o.CodigoOrden)) AS Codigo, ${SQL_PCD_DESGLOSE_COLS}
+      FROM dbo.Ordenes o WITH(NOLOCK)
+      JOIN dbo.PedidosCobranza pc WITH(NOLOCK)
+        ON LTRIM(RTRIM(CAST(pc.NoDocERP AS VARCHAR(100)))) = LTRIM(RTRIM(CAST(o.NoDocERP AS VARCHAR(100))))
+      JOIN dbo.PedidosCobranzaDetalle pcd WITH(NOLOCK)
+        ON pcd.PedidoCobranzaID = pc.ID AND pcd.OrdenID = o.OrdenID
+      WHERE LTRIM(RTRIM(o.CodigoOrden)) IN (${params.join(',')})
+        AND ISNULL(pcd.EsHermanaConsolidada, 0) = 0
+        AND ISNULL(pcd.EsFacturable, 1) = 1
+        AND pcd.PrecioLista > 0`);
+    q.recordset.forEach(r => { (porCodigo[r.Codigo] = porCodigo[r.Codigo] || []).push(r); });
+  }
+  return { porId, porCodigo };
+};
+
+// Llave: ConfiguracionGlobal PRECIOS_DESGLOSE_EN_FACTURA = '0' apaga el desglose en
+// factura (ausente = encendido).
+const leerFlagDesglose = async (makeReq) => {
+  try {
+    const fr = await makeReq().query("SELECT TOP 1 Valor FROM dbo.ConfiguracionGlobal WITH(NOLOCK) WHERE Clave = 'PRECIOS_DESGLOSE_EN_FACTURA'");
+    return !(fr.recordset.length && String(fr.recordset[0].Valor || '').trim() === '0');
+  } catch { return true; }
+};
+
+// Descripción sin la cola que pegaba el fallback (nombre del cliente del carrito o texto
+// del motor): queda "Orden: X (trabajo) - Retiro RW-n" y, si hay, la línea "Tecnico: ...".
+const limpiarDscDesglose = (s) => {
+  const ls = String(s || '').split(/\r?\n/);
+  if (ls.length <= 1) return s;
+  return [ls[0], ...ls.slice(1).filter(x => /^\s*Tecnico:/i.test(x))].join('\r\n');
+};
+
+// [POR ÁREA] "Comprar y personalizar" / prenda del cliente cobrado por área: lo único que pasa
+// por Depósito es la PRO madre, así que la factura sale con UNA línea genérica por el total del
+// pedido. La línea se deja así (importe, cantidad y producto no cambian: cuadra contra lo cobrado
+// y DGI), pero a la descripción se le agrega el detalle de lo facturado: una fila por cada línea
+// facturable de la cotización ("Bordado sobre prenda 100% hilo: 3 × 100,00 = 300,00").
+const fmtNum = (n) => Number(n || 0).toLocaleString('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const agregarDetallePorArea = async (makeReq, lineas) => {
+  const codigos = [...new Set(lineas.map(l => String(l.ordCodigoOrden || '').trim()).filter(Boolean))];
+  if (!codigos.length) return lineas;
+  try {
+    const req = makeReq();
+    const params = codigos.map((c, i) => { req.input(`pa${i}`, sql.VarChar(100), c); return `@pa${i}`; });
+    const q = await req.query(`
+      SELECT LTRIM(RTRIM(o.CodigoOrden)) AS Codigo, pcd.ID, pcd.Cantidad, pcd.PrecioUnitario, pcd.Subtotal, pcd.Moneda,
+             LTRIM(RTRIM(ISNULL(a.Descripcion, pcd.CodArticulo))) AS Articulo, LTRIM(RTRIM(ISNULL(ar.Nombre, ol.AreaID))) AS Area
+      FROM dbo.Ordenes o WITH(NOLOCK)
+      JOIN dbo.PedidosCobranza pc WITH(NOLOCK)
+        ON LTRIM(RTRIM(CAST(pc.NoDocERP AS VARCHAR(100)))) = LTRIM(RTRIM(CAST(o.NoDocERP AS VARCHAR(100))))
+      JOIN dbo.PedidosCobranzaDetalle pcd WITH(NOLOCK) ON pcd.PedidoCobranzaID = pc.ID
+      LEFT JOIN dbo.Articulos a WITH(NOLOCK) ON a.ProIdProducto = pcd.ProIdProducto
+      LEFT JOIN dbo.Ordenes ol WITH(NOLOCK) ON ol.OrdenID = pcd.OrdenID
+      LEFT JOIN dbo.Areas ar WITH(NOLOCK) ON LTRIM(RTRIM(ar.AreaID)) = LTRIM(RTRIM(ol.AreaID))
+      WHERE LTRIM(RTRIM(o.CodigoOrden)) IN (${params.join(',')})
+        AND o.AreaID = 'PRO' AND o.ComboItemID IS NULL AND ISNULL(o.EstadoDependencia, '') <> 'VENTA_DIRECTA'
+        AND o.Nota LIKE '%[[]FACTURA POR AREA]%'
+        AND ISNULL(pcd.EsHermanaConsolidada, 0) = 0
+        AND ISNULL(pcd.EsFacturable, 1) = 1
+        AND ISNULL(pcd.Subtotal, 0) > 0
+      ORDER BY pc.ID DESC, pcd.ID`);
+    if (!q.recordset.length) return lineas;
+    const porCodigo = {};
+    q.recordset.forEach(r => { (porCodigo[r.Codigo] = porCodigo[r.Codigo] || []).push(r); });
+    return lineas.map(l => {
+      const det = porCodigo[String(l.ordCodigoOrden || '').trim()];
+      if (!det || !det.length) return l;
+      const filas = det.map(d => `- ${d.Area ? d.Area + ': ' : ''}${d.Articulo || 'Servicio'}: ${Number(d.Cantidad) % 1 === 0 ? Number(d.Cantidad) : fmtNum(d.Cantidad)} × ${fmtNum(d.PrecioUnitario)} = ${String(d.Moneda || '').trim()} ${fmtNum(d.Subtotal)}`);
+      const extra = `\r\nDetalle facturado:\r\n${filas.join('\r\n')}`;
+      return { ...l, dscItem: (String(l.dscItem || '') + extra).substring(0, 1000) };
+    });
+  } catch (e) {
+    logger.warn('[resolverLineasDetalle] Detalle por área no disponible: ' + e.message);
+    return lineas;
+  }
+};
+
+/**
+ * Completa el desglose (lista / descuento / recargo) en las líneas YA insertadas de un
+ * documento, buscando la línea congelada del pedido por código de orden. Para los flujos
+ * que insertan sus líneas con SQL propio (Pedido Caja por pago de deuda). Solo toca líneas
+ * sin descuento ni recargo; nunca cambia DcdTotal. Devuelve cuántas líneas completó.
+ */
+const enriquecerLineasDocumento = async (docId, transaction = null) => {
+  const pool = transaction ? null : await getPool();
+  const makeReq = () => (transaction ? new sql.Request(transaction) : pool.request());
+  if (!(await existenColsDesglose(makeReq))) return 0;
+  if (!(await leerFlagDesglose(makeReq))) return 0;
+  const cab = await makeReq().input('id', sql.Int, docId).query('SELECT MonIdMoneda FROM dbo.DocumentosContables WHERE DocIdDocumento = @id');
+  if (!cab.recordset.length) return 0;
+  const docMon = cab.recordset[0].MonIdMoneda === 2 ? 'USD' : 'UYU';
+  const lin = await makeReq().input('id', sql.Int, docId).query(`
+    SELECT DcdIdDetalle, OrdCodigoOrden, DcdCantidad, DcdTotal, DcdDscItem
+    FROM dbo.DocumentosContablesDetalle
+    WHERE DocIdDocumento = @id AND OrdCodigoOrden IS NOT NULL
+      AND ISNULL(DcdTotalDescuentos, 0) = 0 AND ISNULL(DcdTotalRecargos, 0) = 0`);
+  const codigos = [...new Set(lin.recordset.map(r => String(r.OrdCodigoOrden || '').trim()).filter(Boolean))];
+  if (!codigos.length) return 0;
+  const idx = await buscarLineasPedido(makeReq, { codigos });
+  let n = 0;
+  for (const r of lin.recordset) {
+    const cands = idx.porCodigo[String(r.OrdCodigoOrden || '').trim()];
+    if (!cands || cands.length !== 1) continue;
+    const dz = aplicarDesglosePcd({ cantidad: Number(r.DcdCantidad), total: Number(r.DcdTotal) }, cands[0], docMon);
+    if (!dz) continue;
+    await makeReq()
+      .input('id', sql.Int, r.DcdIdDetalle)
+      .input('pu', sql.Decimal(18, 4), dz.precioUnitario)
+      .input('desc', sql.Decimal(18, 4), dz.totalDescuentos)
+      .input('descPct', sql.Decimal(9, 4), dz.descuentoPct)
+      .input('descStr', sql.VarChar(100), dz.descuentoStr ? String(dz.descuentoStr).substring(0, 100) : null)
+      .input('descOrig', sql.NVarChar(150), dz.descuentoOrigen ? String(dz.descuentoOrigen).substring(0, 150) : null)
+      .input('rec', sql.Decimal(18, 2), dz.totalRecargos)
+      .input('recPct', sql.Decimal(9, 4), dz.recargoPct)
+      .input('recStr', sql.VarChar(200), dz.recargoStr ? String(dz.recargoStr).substring(0, 200) : null)
+      .input('dsc', sql.NVarChar(1000), limpiarDscDesglose(r.DcdDscItem) || null)
+      .query(`UPDATE dbo.DocumentosContablesDetalle
+              SET DcdPrecioUnitario = @pu, DcdTotalDescuentos = @desc, DcdDescuentoPct = @descPct, DcdDescuentoStr = @descStr,
+                  DcdDescuentoOrigen = @descOrig, DcdTotalRecargos = @rec, DcdRecargoPct = @recPct, DcdRecargoStr = @recStr,
+                  DcdDscItem = @dsc
+              WHERE DcdIdDetalle = @id`);
+    n++;
+  }
+  return n;
+};
+
 let _colDocCotizacion = null;
 const existeColDocCotizacion = async (nuevoReq) => {
   if (_colDocCotizacion !== null) return _colDocCotizacion;
@@ -368,8 +581,16 @@ const crearDocumentoContable = async ({ header, lineas }, transaction = null) =>
       const lineDescuentoPct = (linea.descuentoPct !== undefined && linea.descuentoPct !== null && Number(linea.descuentoPct) > 0)
         ? Number(linea.descuentoPct)
         : null;
+      // Recargo por línea (urgencia, tinta, manual) y origen del descuento. Convención de la
+      // línea (todo con IVA): DcdCantidad × DcdPrecioUnitario(lista) − DcdTotalDescuentos +
+      // DcdTotalRecargos = DcdTotal. Columnas del script add_recargos_DocumentosContablesDetalle.sql.
+      const conDesglose = await existenColsDesglose(nuevoReq);
+      const lineTotalRecargos = (linea.totalRecargos !== undefined && linea.totalRecargos !== null) ? Number(linea.totalRecargos) : 0;
+      const lineRecargoPct = (linea.recargoPct !== undefined && linea.recargoPct !== null && Number(linea.recargoPct) > 0) ? Number(linea.recargoPct) : null;
+      const lineRecargoStr = linea.recargoStr !== undefined && linea.recargoStr !== null ? String(linea.recargoStr).substring(0, 200) : null;
+      const lineDescuentoOrigen = linea.descuentoOrigen !== undefined && linea.descuentoOrigen !== null ? String(linea.descuentoOrigen).substring(0, 150) : null;
 
-      await reqLine
+      reqLine
         .input('DocId', sql.Int, docId)
         .input('OrdCod', sql.VarChar(100), ordCodigoOrden)
         .input('Nom', sql.NVarChar(255), linea.nomItem.substring(0, 255))
@@ -381,12 +602,19 @@ const crearDocumentoContable = async ({ header, lineas }, transaction = null) =>
         .input('Tot', sql.Decimal(18, 2), linea.total)
         .input('TotalDesc', sql.Decimal(18, 4), lineTotalDescuentos)
         .input('DescStr', sql.VarChar(100), lineDescuentoStr)
-        .input('DescPct', sql.Decimal(9, 4), lineDescuentoPct)
-        .query(`
+        .input('DescPct', sql.Decimal(9, 4), lineDescuentoPct);
+      if (conDesglose) {
+        reqLine
+          .input('TotalRec', sql.Decimal(18, 2), lineTotalRecargos)
+          .input('RecPct', sql.Decimal(9, 4), lineRecargoPct)
+          .input('RecStr', sql.VarChar(200), lineRecargoStr)
+          .input('DescOrig', sql.NVarChar(150), lineDescuentoOrigen);
+      }
+      await reqLine.query(`
           INSERT INTO dbo.DocumentosContablesDetalle
-            (DocIdDocumento, OrdCodigoOrden, DcdNomItem, DcdDscItem, DcdCantidad, DcdPrecioUnitario, DcdSubtotal, DcdImpuestos, DcdTotal, DcdTotalDescuentos, DcdDescuentoStr, DcdDescuentoPct)
+            (DocIdDocumento, OrdCodigoOrden, DcdNomItem, DcdDscItem, DcdCantidad, DcdPrecioUnitario, DcdSubtotal, DcdImpuestos, DcdTotal, DcdTotalDescuentos, DcdDescuentoStr, DcdDescuentoPct${conDesglose ? ', DcdTotalRecargos, DcdRecargoPct, DcdRecargoStr, DcdDescuentoOrigen' : ''})
           VALUES
-            (@DocId, @OrdCod, @Nom, @Dsc, @Cant, @Precio, @Sub, @Imp, @Tot, @TotalDesc, @DescStr, @DescPct)
+            (@DocId, @OrdCod, @Nom, @Dsc, @Cant, @Precio, @Sub, @Imp, @Tot, @TotalDesc, @DescStr, @DescPct${conDesglose ? ', @TotalRec, @RecPct, @RecStr, @DescOrig' : ''})
         `);
     }
 
@@ -470,6 +698,7 @@ const resolverLineasDetalle = async ({ tcaIdTransaccion, orderIds, monedaFactura
   const mapLinea = (r) => {
     const f = r._factor || 1;
     return {
+      _pcdId:         r.PcdID || null,      // línea del pedido ya encontrada por la consulta (VEN-/EMB-)
       ordCodigoOrden: r.OrdCodigoOrden  || null,
       nomItem:        (r.NomItem        || 'Servicio').substring(0, 80),
       dscItem:        (r.DscItem        || '').substring(0, 1000),
@@ -481,12 +710,52 @@ const resolverLineasDetalle = async ({ tcaIdTransaccion, orderIds, monedaFactura
     };
   };
 
+  // ── DESGLOSE lista / descuento / recargo (specs/09 §5, plan motor-precios-transparencia) ──
+  // Las consultas de arriba NO cambian (importes, cantidad y total siguen siendo los de
+  // siempre: es lo que cuadra contra lo cobrado y contra DGI). Acá, a posteriori, se busca
+  // la línea congelada del pedido de cada orden por Ordenes.NoDocERP + OrdenID (el cruce
+  // por código con prefijo nunca la encontraba) y, SOLO si esa línea explica exactamente el
+  // importe de la factura, se completa: unitario = LISTA, descuento (importe, %, origen) y
+  // recargo (importe, %, texto). El importe del descuento absorbe el redondeo. Si la orden
+  // tiene varias líneas (material + servicios), o el pedido no cierra contra el importe,
+  // la línea sale como hoy (neto, sin desglose). Llave: ConfiguracionGlobal
+  // PRECIOS_DESGLOSE_EN_FACTURA = '0' lo apaga (ausente = encendido).
+  const docMonDesglose = (monedaFactura || 'UYU').toUpperCase().trim();
+  const enriquecerConDesglose = async (lineas) => {
+    if (!lineas.length) return lineas;
+    const sinId = (l) => { const { _pcdId, ...resto } = l; return resto; };
+    if (!(await leerFlagDesglose(makeReq))) return lineas.map(sinId);
+    const pcdIds = [...new Set(lineas.map(l => l._pcdId).filter(Boolean))];
+    const codigos = [...new Set(lineas.filter(l => !l._pcdId).map(l => String(l.ordCodigoOrden || '').trim()).filter(Boolean))];
+    if (!pcdIds.length && !codigos.length) return lineas.map(sinId);
+    let idx;
+    try {
+      idx = await buscarLineasPedido(makeReq, { pcdIds, codigos });
+    } catch (e) {
+      logger.warn('[resolverLineasDetalle] Desglose no disponible (¿faltan columnas de add_desglose_PedidosCobranzaDetalle.sql?): ' + e.message);
+      return lineas.map(sinId);
+    }
+    return lineas.map(l => {
+      let p = null;
+      if (l._pcdId) {
+        p = idx.porId[l._pcdId] || null;
+      } else {
+        const cands = idx.porCodigo[String(l.ordCodigoOrden || '').trim()];
+        if (cands && cands.length === 1) p = cands[0];       // varias líneas (material + servicios): sin desglose
+      }
+      const dz = p ? aplicarDesglosePcd(l, p, docMonDesglose) : null;
+      if (!dz) return sinId(l);
+      return { ...sinId(l), dscItem: limpiarDscDesglose(l.dscItem), ...dz };
+    });
+  };
+
   // ── MODO 1: desde TransaccionDetalle ──────────────────────────────────────
   if (tcaIdTransaccion) {
     const res = await makeReq()
       .input('tcaId', sql.Int, tcaIdTransaccion)
       .query(`
         SELECT
+          pcd.ID AS PcdID,
           ISNULL(od.OrdCodigoOrden, td.TdeCodigoReferencia) AS OrdCodigoOrden,
           LEFT(COALESCE(
                NULLIF(NULLIF(LTRIM(RTRIM(art.Descripcion)), 'Articulos User'), 'Articulos User USD'),
@@ -541,7 +810,7 @@ const resolverLineasDetalle = async ({ tcaIdTransaccion, orderIds, monedaFactura
         -- sus hermanas EMB/DF/TPU/EST (guardadas para detalle futuro, EsHermanaConsolidada=1,
         -- ya sumadas DENTRO del subtotal de PRO). Sin este filtro, el join fanea a una fila
         -- por cada línea del pedido y duplica el ítem de la factura.
-        LEFT JOIN dbo.PedidosCobranzaDetalle pcd ON pcd.PedidoCobranzaID = pc.ID AND ISNULL(pcd.EsHermanaConsolidada, 0) = 0
+        LEFT JOIN dbo.PedidosCobranzaDetalle pcd ON pcd.PedidoCobranzaID = pc.ID AND ISNULL(pcd.EsHermanaConsolidada, 0) = 0 AND ISNULL(pcd.EsFacturable, 1) = 1
         LEFT JOIN dbo.Articulos art    ON art.ProIdProducto   = ISNULL(pcd.ProIdProducto, od.ProIdProducto)
         LEFT JOIN dbo.Articulos artod  ON artod.ProIdProducto = od.ProIdProducto
         WHERE td.TcaIdTransaccion = @tcaId
@@ -580,7 +849,7 @@ const resolverLineasDetalle = async ({ tcaIdTransaccion, orderIds, monedaFactura
     const totalCobrado = parseFloat(totRes.recordset[0]?.Total);
 
     const withCot = await aplicarCotizacion(res.recordset, totalCobrado);
-    return withCot.map(mapLinea);
+    return await agregarDetallePorArea(makeReq, await enriquecerConDesglose(withCot.map(mapLinea)));
   }
 
   // ── MODO 2: desde array de OrdIdOrden (generarCFEDesdeOrdenesDirectas) ────
@@ -590,6 +859,7 @@ const resolverLineasDetalle = async ({ tcaIdTransaccion, orderIds, monedaFactura
 
     const res = await makeReq().query(`
       SELECT
+        pcd.ID AS PcdID,
         od.OrdCodigoOrden,
         LEFT(COALESCE(
             NULLIF(NULLIF(LTRIM(RTRIM(art_pcd.Descripcion)), 'Articulos User'), 'Articulos User USD'),
@@ -624,7 +894,7 @@ const resolverLineasDetalle = async ({ tcaIdTransaccion, orderIds, monedaFactura
       LEFT JOIN dbo.PedidosCobranza pc          ON LTRIM(RTRIM(pc.NoDocERP)) = od.OrdCodigoOrden
       -- Ver nota de MODO 1: excluir hermanas consolidadas (EMB/DF/TPU/EST de "Comprar y
       -- personalizar") para que el join no faneé a más de una fila por pedido.
-      LEFT JOIN dbo.PedidosCobranzaDetalle pcd  ON pcd.PedidoCobranzaID = pc.ID AND ISNULL(pcd.EsHermanaConsolidada, 0) = 0
+      LEFT JOIN dbo.PedidosCobranzaDetalle pcd  ON pcd.PedidoCobranzaID = pc.ID AND ISNULL(pcd.EsHermanaConsolidada, 0) = 0 AND ISNULL(pcd.EsFacturable, 1) = 1
       LEFT JOIN dbo.Articulos art               ON art.ProIdProducto    = od.ProIdProducto
       LEFT JOIN dbo.Articulos art_pcd           ON art_pcd.ProIdProducto = pcd.ProIdProducto
       WHERE od.OrdIdOrden IN (${idList})
@@ -643,7 +913,7 @@ const resolverLineasDetalle = async ({ tcaIdTransaccion, orderIds, monedaFactura
     `);
 
     const withCot = await aplicarCotizacion(res.recordset);
-    return withCot.map(mapLinea);
+    return await agregarDetallePorArea(makeReq, await enriquecerConDesglose(withCot.map(mapLinea)));
   }
 
   return [];
@@ -710,6 +980,8 @@ module.exports = {
   generarAsientoCompleto,
   resolverLineasDesdeMotor,
   resolverLineasDetalle,
+  enriquecerLineasDocumento,
+  aplicarDesglosePcd,
   desglosarIVA,
   getCuentaId,
   crearDocumentoContable,

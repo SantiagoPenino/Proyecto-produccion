@@ -63,6 +63,7 @@ import { EstampadoTechnicalUI } from './order-form/components/EstampadoTechnical
 import DtfTechnicalUI from './order-form/components/DtfTechnicalUI';
 import TpuTechnicalUI from './order-form/components/TpuTechnicalUI';
 import EcouvTerminacionesUI from './EcouvTerminacionesUI';
+import PrendaClienteSelector from './order-form/components/PrendaClienteSelector';
 
 const ServiceAccordion = ({ title, subtitle, isActive, onToggle, children, icon: Icon, main = false, optional = false }) => {
     return (
@@ -99,6 +100,31 @@ const ServiceAccordion = ({ title, subtitle, isActive, onToggle, children, icon:
         </div>
     );
 };
+
+// Nombre visible de cada área de personalización — se usa tanto en el bloque por
+// componente de combo como en el de por artículo del carrito.
+const AREA_LABELS_PERS = { EMB: 'Bordado', DF: 'DTF', TPU: 'TPU', EST: 'Estampado' };
+
+// En este formulario la prioridad no se elige: todo pedido de prendas entra como
+// "Normal" (sin el recargo del 25% de Urgente). Se oculta el selector y el pedido
+// viaja con 'Normal' fijo. Para volver a mostrarlo, poner esto en true — el bloque
+// del selector sigue intacto más abajo.
+const MOSTRAR_PRIORIDAD = false;
+
+// Variante que se estampa en la orden del área PRO según de dónde salió el pedido.
+// Es lo que PRO ve de un vistazo para saber qué tiene entre manos, sin abrir nada.
+const VARIANTE_PRO = {
+    PRENDA_CLIENTE:      'PRENDA CLIENTE PERSONALIZADA',  // la prenda la trajo el cliente (recepción)
+    COMPRA_PERSONALIZADA:'COMPRA PRENDA PERSONALIZADA',   // se compró del stock y se personaliza
+    FABRICA_TERMINADO:   'FABRICA PRODUCTO TERMINADO',    // producto terminado del catálogo
+    FABRICA_PERSONALIZADO:'FABRICA PRODUCTO PERSONALIZADO',// prenda personalizada, sin catálogo
+    COMBO:               'COMBO PRODUCTOS',               // combo del Configurador
+};
+
+// [VENTA x ITEM] Servicios que el vendedor puede prender/apagar por artículo del carrito.
+// Estampado NO está en la lista a propósito: no se elige suelto, lo arrastra DTF o TPU
+// (es la prensa que pega el transfer que esos imprimen).
+const SERVICIOS_POR_ITEM = ['EMB', 'DF', 'TPU'];
 
 // [PRENDAS] Mismo contenido (Talles/Bocetos/Servicios/Confirmar), dos envoltorios:
 // en "Fabricar a medida" va siempre visible; en "Comprar" queda adentro de un
@@ -238,7 +264,16 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
     //   COMPRAR            → prenda de stock (catálogo WMS); personalizar es un paso
     //                         opcional DESPUÉS de comprar, no un modo aparte.
     //   FABRICAR_A_MEDIDA  → desde cero: sublimación → corte → costura
+    //   PRENDA_CLIENTE     → la prenda la trajo el cliente y entró por Recepción; no se
+    //                         compra ni se fabrica, solo se personaliza.
     const [queDesea, setQueDesea] = useState('COMPRAR');
+
+    // [PRENDA CLIENTE] Líneas que el cliente entregó en Recepción y todavía tienen saldo
+    // libre (vw_PrendasClienteDisponibles). Se elige la LÍNEA ("12 gorros negros talle M"),
+    // no el remito entero: un mismo PRE puede traer prendas distintas.
+    const [prendasClienteDisp, setPrendasClienteDisp] = useState([]);
+    // Las líneas que el vendedor ya sumó a ESTE pedido, con la cantidad a trabajar.
+    const [prendasElegidas, setPrendasElegidas] = useState([]);
 
     // [PRENDAS] El catálogo WMS embebido arranca colapsado, igual que Costura/Bordado/etc.
     const [catalogoAbierto, setCatalogoAbierto] = useState(false);
@@ -336,6 +371,21 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
     const [productosTerminadosConf, setProductosTerminadosConf] = useState([]);
     const [productoTerminadoSel, setProductoTerminadoSel] = useState('');
     const [serviciosObligatorios, setServiciosObligatorios] = useState(new Set());
+    // [CONFIGURADOR] Qué servicios de decoración habilitó el Configurador para el producto
+    // terminado elegido. `null` = no hay producto elegido → sin restricción (el vendedor
+    // arma lo que quiera, como siempre). Un Set = SOLO esos: si el producto no tiene
+    // Bordado, el botón de Bordado no se ofrece y tampoco se puede prender por otro lado.
+    const [serviciosPermitidos, setServiciosPermitidos] = useState(null);
+
+    // [CONFIGURADOR] ¿Este servicio se puede pedir? Con un producto terminado elegido manda
+    // SIEMPRE lo que definió el Configurador; sin producto no hay lista y vale todo, que es
+    // el comportamiento de siempre para los pedidos que no salen de un producto.
+    const servicioPermitido = (areaId) =>
+        !serviciosPermitidos || serviciosPermitidos.has(String(areaId || '').trim().toUpperCase());
+
+    // Los servicios de decoración que realmente se ofrecen en la fila de botones: si el
+    // producto no lleva Bordado, el botón de Bordado directamente no está.
+    const opcionesDecoracion = visibleComplementaryOptions.filter(opt => servicioPermitido(opt.id));
     // [PRENDAS] Tipo de fabricación (pedido 4/8): TERMINADO = producto del catálogo (con
     // sus servicios incluidos) / PERSONALIZADO = prenda del cliente sin catálogo, flujo
     // libre de siempre (sublimación + corte/costura/decoración a mano). Default =
@@ -359,8 +409,11 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
         // Prendas confeccionadas + Combos (ej. "Gorro y short") — los producto-terminado de
         // ECOUV (Cuadros Canvas, Roll Up, etc.) no aplican a este flujo. Dos llamadas y fusión
         // en el front: no se toca el contrato del endpoint (un solo `categoria` por llamada).
+        // Las prendas ya no están todas en una sola categoría: el configurador las partió en
+        // familias reales (Camisetas, Remeras, Shorts, ...), todas bajo el Grupo '2.1' de
+        // StockArt. Por eso se pide por grupo y no por nombre de categoría, que traía vacío.
         Promise.all([
-            apiClient.get(`/prendas-orders/productos-terminados?categoria=${encodeURIComponent('Prendas Confeccionadas')}`),
+            apiClient.get(`/prendas-orders/productos-terminados?grupo=${encodeURIComponent('2.1')}`),
             apiClient.get(`/prendas-orders/productos-terminados?categoria=${encodeURIComponent('Combos y Promos')}`),
         ]).then(([conf, combos]) => {
             // esCombo: se pierde la categoría al fusionar los dos arrays — se marca acá para
@@ -373,10 +426,17 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
     }, [queDesea]);
 
     useEffect(() => {
-        if (!productoTerminadoSel) { setServiciosObligatorios(new Set()); actions.setComboServicios({}); return; }
+        if (!productoTerminadoSel) { setServiciosObligatorios(new Set()); setServiciosPermitidos(null); actions.setComboServicios({}); return; }
         apiClient.get(`/prendas-orders/productos-terminados/${productoTerminadoSel}/servicios`).then(res => {
             const servicios = res.data || [];
-            setServiciosObligatorios(new Set(servicios.filter(s => s.Obligatorio).map(s => s.AreaID)));
+            const areaDe = (s) => String(s.AreaID || '').trim().toUpperCase();
+            setServiciosObligatorios(new Set(servicios.filter(s => s.Obligatorio).map(areaDe)));
+            // [CONFIGURADOR] La lista es cerrada: lo que el Configurador no marcó para este
+            // producto, no se puede pedir. Estampado (EST) entra si entra DTF o TPU — no es
+            // una técnica que se elija suelta, es la prensa que pega el transfer de esas dos.
+            const permitidos = new Set(servicios.map(areaDe));
+            if (permitidos.has('DF') || permitidos.has('TPU')) permitidos.add('EST');
+            setServiciosPermitidos(permitidos);
 
             // [COMBOS] Cada componente lleva SUS PROPIOS servicios (ej. el Gorro borda, el
             // Short estampa) — van a comboServicios, namespaced por comboItemId, NO a
@@ -454,29 +514,244 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
             // (selectedComplementary). Corte/Costura NO: tienen su propio interruptor
             // (enableCorte/enableCostura) — no se tocan acá.
             const newSelection = { ...selectedComplementary };
-            servicios.filter(s => ['EMB', 'DF', 'TPU'].includes(s.AreaID)).forEach(s => {
-                newSelection[s.AreaID] = { ...(newSelection[s.AreaID] || {}), active: true };
+            // [CONFIGURADOR] Primero se BARRE lo que este producto no habilita. Sin esto, un
+            // servicio que el vendedor había prendido antes de elegir el producto (o con otro
+            // producto elegido) quedaba activo: el botón desaparecía de la fila, pero la orden
+            // igual se creaba al confirmar.
+            Object.keys(newSelection).forEach(areaId => {
+                if (!permitidos.has(String(areaId).trim().toUpperCase())) delete newSelection[areaId];
+            });
+            servicios.filter(s => ['EMB', 'DF', 'TPU'].includes(areaDe(s))).forEach(s => {
+                newSelection[areaDe(s)] = { ...(newSelection[areaDe(s)] || {}), active: true };
                 // DTF/TPU llevan Estampado de la mano, mismo criterio que el toggle manual.
-                if (s.AreaID === 'DF' || s.AreaID === 'TPU') newSelection['EST'] = { active: true };
+                if (areaDe(s) === 'DF' || areaDe(s) === 'TPU') newSelection['EST'] = { active: true };
             });
             actions.setSelectedComplementary(newSelection);
-            if (servicios.some(s => s.AreaID === 'DF')) {
+            if (servicios.some(s => areaDe(s) === 'DF')) {
                 actions.setDtfVariant('DTF Textil');
                 actions.setEstampadoOrigin('Stock User');
             }
 
             // Corte / Costura: su propio interruptor, no la barra de arriba.
-            if (servicios.some(s => s.AreaID === 'TWC')) actions.setEnableCorte(true);
-            if (servicios.some(s => s.AreaID === 'TWT')) actions.setEnableCostura(true);
+            if (servicios.some(s => areaDe(s) === 'TWC')) actions.setEnableCorte(true);
+            if (servicios.some(s => areaDe(s) === 'TWT')) actions.setEnableCostura(true);
         }).catch(e => console.error('Error cargando servicios del producto', e));
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [productoTerminadoSel]);
 
+    // [PRENDA CLIENTE] Traer las entregas del cliente con saldo libre. Mismo endpoint que
+    // usa el form de Bordado; acá el cliente lo elige el vendedor arriba, así que se manda
+    // explícito (en el portal el backend lo saca del token).
+    useEffect(() => {
+        if (queDesea !== 'PRENDA_CLIENTE' || !clienteIdPedido) {
+            setPrendasClienteDisp([]);
+            return;
+        }
+        apiClient.get(`/inventory/prendas-cliente/disponible?clienteId=${encodeURIComponent(clienteIdPedido)}`)
+            .then(res => setPrendasClienteDisp(res?.data || []))
+            .catch(e => { console.warn('Error cargando prendas del cliente', e); setPrendasClienteDisp([]); });
+    }, [queDesea, clienteIdPedido]);
+
+    // Al cambiar de modo o de cliente, lo elegido para otro cliente no puede quedar colgado.
+    useEffect(() => {
+        setPrendasElegidas([]);
+    }, [queDesea, clienteIdPedido]);
+
+    // Cuántas prendas de cada línea ya tomaron las OTRAS líneas elegidas de este pedido —
+    // el saldo del selector las descuenta en vivo, para no comprometer dos veces lo mismo.
+    const comprometidoPorLinea = prendasElegidas.reduce((acc, p) => {
+        acc[p.PrendaClienteID] = (acc[p.PrendaClienteID] || 0) + (parseInt(p.cantidad) || 0);
+        return acc;
+    }, {});
+
+    const agregarPrendaCliente = (p) => {
+        if (prendasElegidas.some(x => x.PrendaClienteID === p.PrendaClienteID)) {
+            addToast('Esa entrega ya está en el pedido — cambiale la cantidad abajo.', 'error');
+            return;
+        }
+        setPrendasElegidas(prev => [...prev, {
+            PrendaClienteID: p.PrendaClienteID,
+            Descripcion: p.Descripcion,
+            Talle: p.Talle,
+            Color: p.Color,
+            CodigoRecepcion: p.CodigoRecepcion,
+            disponible: parseInt(p.CantidadDisponible) || 0,
+            cantidad: parseInt(p.CantidadDisponible) || 1,
+        }]);
+    };
+
+    const nombrePrendaCliente = (p) => [
+        p.Descripcion || 'Prenda del cliente',
+        p.Color || null,
+        p.Talle ? `talle ${p.Talle}` : null,
+    ].filter(Boolean).join(' — ');
+
+    // [PRENDA CLIENTE] Cada línea elegida entra al MISMO mecanismo por artículo que el
+    // carrito: su bloque de servicios, su ruteo propio. La diferencia es que no hay retiro
+    // de stock que esperar — la prenda ya es del cliente y ya está en casa — así que en vez
+    // de una venta VEN- lleva su PrendaClienteID, que es lo que descuenta el saldo y cumple
+    // solo el requisito PRENDA cuando el bulto llega al área.
+    useEffect(() => {
+        if (queDesea !== 'PRENDA_CLIENTE') {
+            if (Object.values(comboServicios).some(c => c.esPrendaCliente)) actions.setComboServicios({});
+            return;
+        }
+        const nuevo = {};
+        prendasElegidas.forEach(p => {
+            const key = String(p.PrendaClienteID);
+            nuevo[key] = {
+                esPrendaCliente: true,
+                prendaClienteId: p.PrendaClienteID,
+                descripcion: nombrePrendaCliente(p),
+                cantidad: parseInt(p.cantidad) || 1,
+                servicios: comboServicios[key]?.servicios || {},
+            };
+        });
+        const igual = JSON.stringify(Object.keys(nuevo).sort()) === JSON.stringify(Object.keys(comboServicios).sort())
+            && Object.keys(nuevo).every(k => comboServicios[k]?.cantidad === nuevo[k].cantidad);
+        if (!igual) actions.setComboServicios(nuevo);
+        if (Object.keys(nuevo).length > 0 && Object.keys(selectedComplementary || {}).length > 0) {
+            actions.setSelectedComplementary({});
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [queDesea, prendasElegidas]);
+
+    // [CONFIGURADOR] Qué personalización admite cada artículo del carrito: { ProIdProducto:
+    // ['EMB','DF'] }. Sale de los productos "del local" del Configurador que apuntan a ese
+    // artículo — ver personalizacionAdmitidaPorArticulo en prendasOrdersController. Un
+    // artículo que no aparece todavía = se está consultando; con [] = no admite nada (un
+    // Pet Film, una tinta): se vende tal cual y no se le ofrece ningún botón.
+    const [personalizacionAdmitida, setPersonalizacionAdmitida] = useState({});
+    const idsCarritoKey = [...new Set(cartItems.map(i => i.ProIdProducto).filter(Boolean))].sort().join(',');
+    useEffect(() => {
+        if (!(queDesea === 'COMPRAR' && personalizar) || !idsCarritoKey) return;
+        const faltan = idsCarritoKey.split(',').filter(id => personalizacionAdmitida[id] === undefined);
+        if (!faltan.length) return;
+        apiClient.get(`/prendas-orders/personalizacion-admitida?ids=${faltan.join(',')}`)
+            .then(res => setPersonalizacionAdmitida(prev => ({ ...prev, ...(res?.data || {}) })))
+            .catch(e => {
+                console.warn('Error consultando la personalización admitida', e);
+                // Sin respuesta no se ofrece nada: mejor no dejar pedir lo que quizá no se puede.
+                setPersonalizacionAdmitida(prev => ({ ...prev, ...Object.fromEntries(faltan.map(id => [id, []])) }));
+            });
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [queDesea, personalizar, idsCarritoKey]);
+
+    // Servicios que se le pueden ofrecer a un bloque por artículo. Prenda del cliente no
+    // tiene artículo de catálogo que consultar: ahí se ofrecen todos, como hasta ahora.
+    const serviciosOfrecidos = (comp) => {
+        if (!comp?.esItemCarrito) return SERVICIOS_POR_ITEM;
+        const admitidos = personalizacionAdmitida[String(comp.itemProIdProducto)];
+        return admitidos === undefined ? null : SERVICIOS_POR_ITEM.filter(a => admitidos.includes(a));
+    };
+
+    // [VENTA x ITEM] "Comprar y personalizar": cada artículo del carrito elige SUS PROPIOS
+    // servicios (el Short se borda, el Gorro se estampa, la Tinta no se personaliza y se
+    // vende y listo). Se reusa el MISMO estado que los combos (comboServicios), namespaced
+    // por wms_variante_id en vez de por comboItemId: el carrito ya garantiza una sola línea
+    // por variante, así que sirve de identificador estable del artículo dentro del pedido.
+    //
+    // Diferencia con el combo: ahí los servicios vienen fijos del Configurador (chips con
+    // candado); acá los elige el vendedor (chips clickeables) y arrancan TODOS apagados —
+    // un artículo sin ningún servicio es una venta pura, no entra a producción.
+    useEffect(() => {
+        if (!(queDesea === 'COMPRAR' && personalizar)) {
+            // Al salir del flujo (o apagar "personalizar") se limpia lo que puso este efecto,
+            // nunca un combo real: esos solo existen en FABRICAR_A_MEDIDA.
+            if (Object.values(comboServicios).some(c => c.esItemCarrito)) actions.setComboServicios({});
+            return;
+        }
+        const nuevo = {};
+        cartItems.forEach(item => {
+            const key = String(item.wms_variante_id);
+            const previo = comboServicios[key];
+            nuevo[key] = {
+                esItemCarrito: true,
+                itemProIdProducto: item.ProIdProducto,
+                descripcion: item.nombre,
+                wmsVarianteId: item.wms_variante_id,
+                cantidad: item.cantidad,
+                // Se preservan los servicios ya elegidos: cambiar la cantidad de un artículo
+                // en el carrito no puede borrar el bordado que ya se configuró para él.
+                servicios: previo?.servicios || {},
+            };
+        });
+        const igual = JSON.stringify(Object.keys(nuevo).sort()) === JSON.stringify(Object.keys(comboServicios).sort())
+            && Object.keys(nuevo).every(k => comboServicios[k]?.cantidad === nuevo[k].cantidad);
+        if (!igual) actions.setComboServicios(nuevo);
+        // Mismo criterio que el combo: mientras haya bloques por artículo, la fila global de
+        // "Servicios de Decoración" no se muestra y no debe quedar nada prendido ahí — si no,
+        // el submit crearía ADEMÁS una orden global de ese servicio, duplicando el trabajo.
+        if (Object.keys(nuevo).length > 0 && Object.keys(selectedComplementary || {}).length > 0) {
+            actions.setSelectedComplementary({});
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [queDesea, personalizar, cartItems]);
+
+    // [VENTA x ITEM] Prender/apagar un servicio de UN artículo del carrito. Mismo criterio
+    // que el toggle global (toggleComplementary): DTF/TPU arrastran Estampado, y al prender
+    // una técnica "libre" hay que traerle SU PROPIO nomenclador (variante + material), no el
+    // global — dos artículos con la misma técnica guardan elecciones distintas.
+    const toggleServicioItemCarrito = (itemId, areaId) => {
+        const comp = comboServicios[itemId];
+        if (!comp) return;
+        const servicios = { ...(comp.servicios || {}) };
+        const estabaActivo = !!servicios[areaId];
+        // [CONFIGURADOR] Solo se prende lo que el artículo admite (apagar siempre se puede).
+        if (!estabaActivo && !(serviciosOfrecidos(comp) || []).includes(areaId)) {
+            addToast(`"${comp.descripcion}" no admite ${AREA_LABELS_PERS[areaId] || areaId}.`, 'error');
+            return;
+        }
+
+        if (estabaActivo) {
+            delete servicios[areaId];
+            // Estampado solo existe para prensar el transfer de un DTF/TPU: si se apaga el
+            // último de los dos, se va con él.
+            if ((areaId === 'DF' || areaId === 'TPU') && !servicios['DF'] && !servicios['TPU']) delete servicios['EST'];
+        } else {
+            servicios[areaId] = { active: true, archivos: [], boceto: null, variant: '', material: '', variantOptions: [], materialOptions: [] };
+            if (areaId === 'DF' || areaId === 'TPU') servicios['EST'] = { active: true, archivos: [], boceto: null };
+        }
+        actions.setComboServicios({ ...comboServicios, [itemId]: { ...comp, servicios } });
+
+        if (estabaActivo) return;
+        // Nomenclador propio del artículo (copia del mismo bloque que usa el combo para sus
+        // servicios en "opción libre").
+        if (areaId === 'DF') {
+            actions.setDtfVariant('DTF Textil');
+            actions.setEstampadoOrigin('Stock User');
+            apiClient.get(`/nomenclators/materials/DF/${encodeURIComponent('DTF Textil')}`).then(mRes => {
+                if (!mRes.success || !mRes.data?.length) return;
+                actions.updateComboServicioCampo(itemId, 'DF', { materialOptions: mRes.data, material: mRes.data[0].Material });
+            }).catch(e => console.warn('Error cargando materiales DTF del artículo', e));
+            return;
+        }
+        if (areaId !== 'EMB' && areaId !== 'TPU') return;
+        apiClient.get(`/nomenclators/variants/${areaId}`).then(vRes => {
+            if (!vRes.success || !vRes.data?.length) return;
+            const variants = vRes.data.map(v => v.Variante);
+            const firstVariant = variants[0];
+            actions.updateComboServicioCampo(itemId, areaId, { variantOptions: variants, variant: firstVariant });
+            apiClient.get(`/nomenclators/materials/${areaId}/${encodeURIComponent(firstVariant)}`).then(mRes => {
+                if (!mRes.success || !mRes.data?.length) return;
+                actions.updateComboServicioCampo(itemId, areaId, { materialOptions: mRes.data, material: mRes.data[0].Material });
+            });
+        }).catch(e => console.warn('Error cargando nomenclador del artículo', e));
+    };
+
     // [PRENDAS] Resumen de servicios de personalización para mostrar en el carrito —
     // sin precio (no son parte de la venta WMS), solo qué se activó y cuántas prendas.
-    const personalizacionResumen = visibleComplementaryOptions
-        .filter(opt => !!selectedComplementary[opt.id])
-        .map(opt => ({ label: opt.label, cantidad: garmentQuantity }));
+    // [VENTA x ITEM] Con servicios por artículo el resumen sale de ahí: un renglón por
+    // artículo×servicio, para que en el carrito se vea qué le toca a cada uno.
+    const personalizacionResumen = Object.values(comboServicios).some(c => c.esItemCarrito)
+        ? Object.values(comboServicios).flatMap(comp =>
+            Object.keys(comp.servicios || {}).map(areaId => ({
+                label: `${AREA_LABELS_PERS[areaId] || areaId} — ${comp.descripcion}`,
+                cantidad: comp.cantidad,
+            })))
+        : opcionesDecoracion
+            .filter(opt => !!selectedComplementary[opt.id])
+            .map(opt => ({ label: opt.label, cantidad: garmentQuantity }));
 
     // Helper for TPU Service logic
     const currentMaterials = dynamicMaterials.length > 0 ? dynamicMaterials : (serviceInfo?.materials || []);
@@ -1094,8 +1369,75 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
 
         // [PRENDAS] "Comprar" + personalizar: tiene que haber al menos un servicio de
         // decoración activo (si no, no hay nada que confirmar en este acordeón).
-        if (queDesea === 'COMPRAR' && personalizar && Object.keys(selectedComplementary || {}).filter(id => selectedComplementary[id]?.active).length === 0) {
-            return addToast('Activá al menos un servicio de personalización (Bordado, Estampado, DTF o TPU) antes de confirmar.', 'error');
+        // [VENTA x ITEM] Con servicios por artículo alcanza con que UN artículo tenga alguno:
+        // el resto (la tinta, un insumo) se vende sin personalizar y eso es válido. Si no hay
+        // ninguno en ningún artículo, esto es una compra común y va por "Comprar" a secas.
+        if (queDesea === 'COMPRAR' && personalizar) {
+            const itemsCarrito = Object.values(comboServicios).filter(c => c.esItemCarrito);
+            const hayServicio = itemsCarrito.length > 0
+                ? itemsCarrito.some(c => Object.keys(c.servicios || {}).length > 0)
+                : Object.keys(selectedComplementary || {}).filter(id => selectedComplementary[id]?.active).length > 0;
+            if (!hayServicio) {
+                // [CONFIGURADOR] Si ningún artículo admite nada, decirlo tal cual: no es que
+                // falte elegir, es que esta compra no se puede personalizar.
+                const ningunoAdmite = itemsCarrito.length > 0
+                    && itemsCarrito.every(c => (serviciosOfrecidos(c) || []).length === 0);
+                return addToast(ningunoAdmite
+                    ? 'Ninguno de estos artículos admite personalización. Apagá "Personalizar esta compra" y confirmá como compra común.'
+                    : 'Elegí al menos un servicio (Bordado, DTF o TPU) en alguno de los artículos. Si no querés personalizar nada, apagá "Personalizar esta compra".', 'error');
+            }
+            // [VENTA UNA LÍNEA] No se mezclan artículos personalizados con otros que no: el
+            // pedido sale entero por UNA orden PRO, así que un artículo sin personalizar (una
+            // tinta) quedaría retenido hasta que estén listos los shorts bordados y no se podría
+            // entregar antes. Lo que no se personaliza va en otro pedido, con "Comprar" a secas.
+            const sinPersonalizar = itemsCarrito.filter(c => Object.keys(c.servicios || {}).length === 0);
+            if (sinPersonalizar.length) {
+                const nombres = sinPersonalizar.map(c => `"${c.descripcion}"`).join(', ');
+                return addToast(`${nombres} no ${sinPersonalizar.length === 1 ? 'lleva' : 'llevan'} personalización. En un pedido personalizado todos los artículos se entregan juntos, así que ${sinPersonalizar.length === 1 ? 'quedaría retenido' : 'quedarían retenidos'} hasta que esté lista la personalización. Sacá${sinPersonalizar.length === 1 ? 'lo' : 'los'} del carrito y vendé${sinPersonalizar.length === 1 ? 'lo' : 'los'} en otro pedido, o elegí qué personalizarle${sinPersonalizar.length === 1 ? '' : 's'}.`, 'error');
+            }
+            // [CONFIGURADOR] Nada prendido fuera de lo que admite cada artículo.
+            for (const c of itemsCarrito) {
+                const ofrecidos = serviciosOfrecidos(c) || [];
+                const fuera = Object.keys(c.servicios || {}).filter(a => a !== 'EST' && !ofrecidos.includes(a));
+                if (fuera.length) {
+                    return addToast(`"${c.descripcion}" no admite ${fuera.map(a => AREA_LABELS_PERS[a] || a).join(', ')} — sacalo antes de confirmar.`, 'error');
+                }
+            }
+        }
+
+        // [PRENDA CLIENTE] Tiene que haber al menos una entrega elegida, cada una con una
+        // cantidad que no se pase del saldo, y TODAS con algún servicio: acá no existe el
+        // caso "la traigo y no le hago nada" — para eso la prenda se queda en Recepción.
+        if (queDesea === 'PRENDA_CLIENTE') {
+            if (prendasElegidas.length === 0) {
+                return addToast('Elegí al menos una entrega del cliente para trabajar.', 'error');
+            }
+            for (const p of prendasElegidas) {
+                const cant = parseInt(p.cantidad) || 0;
+                if (cant <= 0) {
+                    return addToast(`Poné cuántas prendas se trabajan de "${nombrePrendaCliente(p)}".`, 'error');
+                }
+                if (cant > p.disponible) {
+                    return addToast(`De "${nombrePrendaCliente(p)}" hay ${p.disponible} sin usar y estás pidiendo ${cant}.`, 'error');
+                }
+                const comp = comboServicios[String(p.PrendaClienteID)];
+                if (!Object.values(comp?.servicios || {}).some(s => s?.active)) {
+                    return addToast(`Elegí qué se le hace a "${nombrePrendaCliente(p)}" (Bordado, DTF o TPU), o sacala del pedido.`, 'error');
+                }
+            }
+        }
+
+        // [CONFIGURADOR] Última red antes de enviar: ningún servicio activo puede quedar
+        // fuera de lo que el Configurador habilitó para el producto elegido. La fila de
+        // botones ya no los ofrece y el efecto barre lo viejo, así que llegar acá significa
+        // que algo se coló — mejor frenar que crear una orden que el producto no lleva.
+        {
+            const noPermitido = Object.keys(selectedComplementary || {})
+                .filter(id => selectedComplementary[id]?.active && !servicioPermitido(id));
+            if (noPermitido.length > 0) {
+                const nombres = noPermitido.map(a => AREA_LABELS_PERS[a] || a).join(', ');
+                return addToast(`El producto elegido no incluye ${nombres} — sacalo del pedido o cambiá el producto en el Configurador.`, 'error');
+            }
         }
 
         // [PRENDAS] DTF/TPU son estampado fusionado: la impresión (archivo) Y el estampado
@@ -1121,8 +1463,13 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
         // también bloquea esto (defensa de fondo), pero acá se avisa ANTES de intentar
         // enviar, no después de que el pedido ya se rechazó.
         for (const [comboItemId, comp] of Object.entries(comboServicios)) {
+            // [PRENDA CLIENTE] No aplica: no hay venta de retiro que armar — la prenda ya
+            // está en casa y se identifica por su PrendaClienteID, no por una variante de WMS.
+            if (comp.esPrendaCliente) continue;
             if (!comp.wmsVarianteId) {
-                return addToast(`"${comp.descripcion}" no tiene una variante de WMS vinculada en el Configurador — avisá antes de confirmar este combo.`, 'error');
+                return addToast(comp.esItemCarrito
+                    ? `"${comp.descripcion}" no tiene variante de WMS — no se puede armar su retiro de stock. Sacalo del carrito o avisá.`
+                    : `"${comp.descripcion}" no tiene una variante de WMS vinculada en el Configurador — avisá antes de confirmar este combo.`, 'error');
             }
         }
 
@@ -1556,11 +1903,18 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
             // la arma la cadena real (Sublimación → Corte → Costura → Bordado → Estampado).
             // Sin CodArt/CodStock en la cabecera (igual que "Comprar y personalizar") para que
             // NO se marque "PROD-" — el precio sale de PreciosBase por ProIdProducto.
-            if (queDesea === 'FABRICAR_A_MEDIDA' && productoTerminadoSel) {
+            // [VENTA x ITEM] El bloque de abajo (retiro + servicios por componente) es el
+            // mismo para un combo y para los artículos del carrito de "Comprar y
+            // personalizar": los dos viven en comboServicios y los dos necesitan su VEN- de
+            // retiro y sus servicios escopados. Lo único exclusivo del combo es la orden PRO
+            // de precio, que queda guardada bajo su condición de siempre.
+            const esComboDeProductoTerminado = queDesea === 'FABRICAR_A_MEDIDA' && !!productoTerminadoSel;
+            const comboEntries = Object.entries(comboServicios);
+            if (esComboDeProductoTerminado || comboEntries.length > 0) {
                 const productoSel = productosTerminadosConf.find(p => String(p.ProIdProducto) === String(productoTerminadoSel));
-                const comboEntries = Object.entries(comboServicios);
 
                 if (comboEntries.length > 0) {
+                    if (esComboDeProductoTerminado) {
                     // [COMBOS] UNA sola orden PRO "de precio" (factura el combo completo, no
                     // la suma de sus partes). El retiro de stock de cada componente YA NO nace
                     // acá adentro (Fase 2, esProductoComprado) — ahora es una venta VEN-
@@ -1573,27 +1927,54 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                         esPrincipal: true,
                         areaId: 'PRO',
                         esProductoFabricado: true,
-                        cabecera: { material: productoSel?.Descripcion || 'Combo', proIdProducto: productoSel ? Number(productoSel.ProIdProducto) : null },
+                        cabecera: {
+                            material: productoSel?.Descripcion || 'Combo',
+                            proIdProducto: productoSel ? Number(productoSel.ProIdProducto) : null,
+                            variante: VARIANTE_PRO.COMBO,
+                        },
                         archivos: [],
                         items: [{ cantidad: parseFloat(garmentQuantity) || 1 }],
                         metadata: {},
                         notas: `[COMBO: ${productoSel?.Descripcion || 'Combo'}]`,
                     });
+                    }
 
                     comboEntries.forEach(([comboItemId, comp]) => {
-                        const cantidadComponente = (parseFloat(garmentQuantity) || 0) * (comp.cantidad || 1);
+                        // [VENTA x ITEM] El componente de un combo lleva un multiplicador
+                        // (cantidad de combos × lo que el combo trae de ese componente); el
+                        // artículo del carrito ya viene con su cantidad absoluta.
+                        const cantidadComponente = (comp.esItemCarrito || comp.esPrendaCliente)
+                            ? (parseFloat(comp.cantidad) || 1)
+                            : (parseFloat(garmentQuantity) || 0) * (comp.cantidad || 1);
                         // [COMBOS] Datos del retiro de ESTE componente — el backend arma su VEN-
                         // + ancla a partir de esto, calculando el destino real (EMB/DF/EST) desde
                         // los servicios que ya creó para el mismo comboItemId más abajo.
-                        combosRetiro.push({
-                            comboItemId,
-                            wmsVarianteId: comp.wmsVarianteId || null,
-                            // [COMBOS] El nombre del artículo en la tarjeta de la venta (Logística)
-                            // sale de resolver este ID contra Articulos — sin él queda "null - ...".
-                            itemProIdProducto: comp.itemProIdProducto || null,
-                            descripcion: comp.descripcion,
-                            cantidad: cantidadComponente || 1,
-                        });
+                        //
+                        // [VENTA UNA LÍNEA] TODO artículo del carrito sale del WMS por su propia
+                        // venta de retiro, se personalice o no: el pedido tiene UNA sola orden PRO
+                        // (ver más abajo) y ya no hay una PRO por artículo que haga de retiro. El
+                        // que no se personaliza va directo a PRO (destinoSinServicios), donde se
+                        // junta con el resto y sale a Depósito como un solo pedido. Los componentes
+                        // de un combo siempre tienen servicios: para ellos nada cambia.
+                        // [PRENDA CLIENTE] No lleva ancla: la prenda ya es del cliente y ya está en
+                        // casa, no hay stock que retirar. Lo que engancha el trabajo con la prenda
+                        // es el PrendaClienteID de cada orden.
+                        const tieneServicios = Object.values(comp.servicios || {}).some(s => s?.active);
+                        if ((tieneServicios || comp.esItemCarrito) && !comp.esPrendaCliente) {
+                            combosRetiro.push({
+                                comboItemId,
+                                wmsVarianteId: comp.wmsVarianteId || null,
+                                // [COMBOS] El nombre del artículo en la tarjeta de la venta (Logística)
+                                // sale de resolver este ID contra Articulos — sin él queda "null - ...".
+                                itemProIdProducto: comp.itemProIdProducto || null,
+                                descripcion: comp.descripcion,
+                                cantidad: cantidadComponente || 1,
+                                // Cómo se llama el ancla en la pantalla de Logística.
+                                etiqueta: comp.esItemCarrito ? 'RETIRO VENTA' : 'RETIRO COMBO',
+                                // Sin ningún servicio, a dónde va la prenda retirada.
+                                ...(comp.esItemCarrito ? { destinoSinServicios: 'PRO' } : {}),
+                            });
+                        }
 
                         Object.entries(comp.servicios || {}).forEach(([areaId, srv]) => {
                             if (!srv.active) return;
@@ -1640,7 +2021,15 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                             listaServicios.push({
                                 esPrincipal: false,
                                 areaId,
-                                comboItemId,
+                                // [PRENDA CLIENTE] Va por grupoItemId y NO por comboItemId: el
+                                // comboItemId le pone a la orden el candado ESPERANDO_RETIRO_WMS,
+                                // que solo se abre confirmando una venta VEN- de retiro. Acá no
+                                // hay ninguna, así que con comboItemId el trabajo quedaría
+                                // trabado para siempre. El grupo igual escopa el ruteo, y lo que
+                                // ata el trabajo a la prenda es el PrendaClienteID.
+                                ...(comp.esPrendaCliente
+                                    ? { grupoItemId: comboItemId, prendaClienteId: comp.prendaClienteId }
+                                    : { comboItemId }),
                                 cabecera,
                                 archivos: archivosSrv,
                                 items: itemsProduccion,
@@ -1648,7 +2037,7 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                                 // (el dato técnico que agrega el backend) sin indicar de qué
                                 // prenda del combo se trata — el operario no podía saber si el
                                 // bordado que tenía delante era del Gorro o de otro componente.
-                                notas: `[COMBO: ${comp.descripcion}]`,
+                                notas: `[${comp.esPrendaCliente ? 'PRENDA CLIENTE' : (comp.esItemCarrito ? 'VENTA' : 'COMBO')}: ${comp.descripcion}]`,
                                 metadata: { prendas: cantidadComponente },
                                 chainedAfterAreaId: areaId === 'EST' ? (comp.servicios['DF'] ? 'DF' : (comp.servicios['TPU'] ? 'TPU' : null)) : null,
                             });
@@ -1659,7 +2048,11 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                         esPrincipal: true,
                         areaId: 'PRO',
                         esProductoFabricado: true,
-                        cabecera: { material: productoSel?.Descripcion || 'Prenda a Medida', proIdProducto: productoSel ? Number(productoSel.ProIdProducto) : null },
+                        cabecera: {
+                            material: productoSel?.Descripcion || 'Prenda a Medida',
+                            proIdProducto: productoSel ? Number(productoSel.ProIdProducto) : null,
+                            variante: VARIANTE_PRO.FABRICA_TERMINADO,
+                        },
                         archivos: [],
                         items: [{ cantidad: parseFloat(garmentQuantity) || 1 }],
                         metadata: {},
@@ -1683,11 +2076,40 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                     areaId: 'PRO',
                     esProductoFabricado: true,
                     esPrendaPersonalizada: true,
-                    cabecera: { material: 'Prenda Personalizada' },
+                    cabecera: { material: 'Prenda Personalizada', variante: VARIANTE_PRO.FABRICA_PERSONALIZADO },
                     archivos: [],
                     items: [{ cantidad: parseFloat(garmentQuantity) || 1 }],
                     metadata: {},
                     notas: `[PRENDA PERSONALIZADA] ${marcadorPrecio}`,
+                });
+            }
+
+            // [PRENDA CLIENTE] Orden madre PRO del pedido — una sola, no una por prenda.
+            // La prenda no se vende (ya es del cliente), así que esta orden no lleva
+            // artículo: cotiza 0 y el pedido se cobra POR ÁREA, que es lo único que
+            // facturamos acá (el bordado, el estampado...). De ahí el marcador
+            // [FACTURA POR AREA], que lee erpSyncService de la nota de la madre: sin él,
+            // las personalizaciones se consolidarían DENTRO de esta PRO en $0 y el pedido
+            // entero saldría gratis.
+            //
+            // Es una sola y no una por prenda justamente por eso: con varias PRO en $0, el
+            // ingreso por QR a Depósito le daría a CADA una el total del pedido (ver el
+            // fallback de "línea propia en 0" en ordenesController) y se cobraría de más.
+            if (queDesea === 'PRENDA_CLIENTE' && prendasElegidas.length > 0) {
+                const totalPrendas = prendasElegidas.reduce((s, p) => s + (parseInt(p.cantidad) || 0), 0);
+                listaServicios.push({
+                    esPrincipal: true,
+                    areaId: 'PRO',
+                    // No la fabricamos nosotros, pero cumple el mismo rol que la madre de
+                    // "Fabricar a medida": es el pilar que agrupa el pedido y avisa al
+                    // cliente, no un paso físico. El backend usa esta marca para rutearla
+                    // así (PRO → Depósito) en vez de mandarla a un área.
+                    esProductoFabricado: true,
+                    cabecera: { material: 'Prenda del Cliente', variante: VARIANTE_PRO.PRENDA_CLIENTE },
+                    archivos: [],
+                    items: [{ cantidad: totalPrendas || 1 }],
+                    metadata: {},
+                    notas: '[PRENDA CLIENTE] [FACTURA POR AREA]',
                 });
             }
 
@@ -1856,24 +2278,46 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
             // cada orden se calcula como el siguiente área distinta en el array, así que PRO
             // tiene que ser la primera para que apunte a la primera personalización — si
             // quedara al final, la última personalización terminaría apuntando de vuelta a PRO.
+            //
+            //
+            // [VENTA UNA LÍNEA] UNA sola orden PRO para todo el carrito (antes era una por
+            // artículo). Con varias PRO el pedido se partía en varias filas de depósito, varios
+            // WhatsApp, y el cobro "consolidado" —que supone una sola PRO madre— dejaba
+            // artículos sin deuda (pedido 20947: los shorts no se cargaron en cuenta).
+            //
+            // Esta PRO es el pilar del pedido, igual que la de "Prenda del cliente": artículo
+            // genérico PPERS en $0 (esPrendaPersonalizada), y cada artículo del carrito viaja en
+            // `articulosVenta`: el backend los guarda como líneas extra de ESTA orden, la
+            // cotización les pone precio a cada uno y todo suma en la misma orden → una fila en
+            // depósito, una deuda y un aviso. El retiro físico de cada artículo es su venta VEN-
+            // (combosRetiro, más arriba), personalizado o no. No lleva comboItemId: es la madre.
             if (queDesea === 'COMPRAR' && personalizar && cartItems.length > 0) {
-                const serviciosPrenda = cartItems.map(item => ({
+                const totalPrendas = cartItems.reduce((s, i) => s + (parseFloat(i.cantidad) || 0), 0);
+                listaServicios.unshift({
                     esPrincipal: true,
                     areaId: 'PRO',
-                    esProductoComprado: true, // [PRENDAS] backend: gate "ESPERANDO_RETIRO_WMS" + pantalla de retiros
+                    esProductoFabricado: true,     // pilar del pedido, no un paso físico
+                    esPrendaPersonalizada: true,   // backend: artículo genérico PPERS ($0)
                     cabecera: {
-                        material: item.nombre,
-                        proIdProducto: item.ProIdProducto,
-                        // wms_variante_id: hace falta para poder descontar el stock correcto
-                        // cuando el almacenero confirme el retiro (ver Ordenes.WmsVarianteId).
-                        wmsVarianteId: item.wms_variante_id,
+                        material: 'Compra personalizada',
+                        variante: VARIANTE_PRO.COMPRA_PERSONALIZADA,
                     },
+                    articulosVenta: cartItems.map(i => ({
+                        proIdProducto: i.ProIdProducto,
+                        wmsVarianteId: i.wms_variante_id,
+                        descripcion: i.nombre,
+                        cantidad: parseFloat(i.cantidad) || 1,
+                    })),
                     archivos: [],
-                    items: [{ cantidad: item.cantidad }],
+                    items: [{ cantidad: totalPrendas || 1 }],
                     metadata: {},
-                    notas: '[PRODUCTO COMPRADO — WMS]',
-                }));
-                listaServicios.unshift(...serviciosPrenda);
+                    // [POR ÁREA] Productos del local + personalización NO es un precio cerrado
+                    // (eso es un combo): cada cosa cobra lo suyo — el artículo su precio, el bordado
+                    // el suyo, el DTF y el estampado los suyos. El marcador lo lee erpSyncService
+                    // (no consolida en PRO) y la cotización lo muestra como "Por área". El pedido
+                    // igual entra a depósito como UNA línea con el total (importeOrdenParaDeposito).
+                    notas: '[PRODUCTO COMPRADO — WMS] [FACTURA POR AREA]',
+                });
             }
 
             // [PRENDAS] "Comprar y personalizar": la prenda se compra por el carrito WMS de
@@ -1895,7 +2339,10 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
             const payload = {
                 idServicioBase: serviceId,
                 nombreTrabajo: jobName,
-                prioridad: urgency,
+                // Prioridad fija: en este formulario no se elige (ver MOSTRAR_PRIORIDAD).
+                // Va el literal y no `urgency` para que no dependa de qué prioridad quedó
+                // primera en la lista de la base ni del momento en que terminó de cargar.
+                prioridad: MOSTRAR_PRIORIDAD ? urgency : 'Normal',
                 notasGenerales: generalNote,
 
                 // Tinta de impresión (ECOUV) — el backend la guarda en Ordenes.Tinta
@@ -2094,6 +2541,7 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                         <div className="md:col-span-2">
                             <FormInput label="Nombre del Proyecto / Trabajo *" placeholder="Ej: Camisetas Verano 2024" value={jobName} onChange={(e) => actions.setJobName(e.target.value)} required />
                         </div>
+                        {MOSTRAR_PRIORIDAD && (
                         <div>
                             <p className="block text-sm font-medium text-zinc-400 mb-2">Prioridad *</p>
                             <div className="flex bg-brand-dark p-1 rounded-lg gap-1 border border-zinc-700">
@@ -2126,6 +2574,7 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                             )}
 
                         </div>
+                        )}
 
                         {/* [PRENDAS] Qué desea. Mismo patrón que los botones de Prioridad. */}
                         <div className="md:col-span-2">
@@ -2135,6 +2584,10 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                                     { id: 'COMPRAR',           combos: false, label: 'Comprar prendas' },
                                     { id: 'FABRICAR_A_MEDIDA', combos: false, label: 'Fabricar prendas a la medida' },
                                     { id: 'FABRICAR_A_MEDIDA', combos: true,  label: 'Combos y Promos' },
+                                    // [PRENDA CLIENTE] La prenda no se compra ni se fabrica: la trajo
+                                    // el cliente y ya está en casa (entró por Recepción). Acá solo se
+                                    // elige cuál de sus entregas se trabaja y qué se le hace.
+                                    { id: 'PRENDA_CLIENTE',    combos: false, label: 'Personalizar prenda del cliente' },
                                 ].map((t, i) => {
                                     const isSelected = queDesea === t.id && soloCombos === t.combos;
                                     return (
@@ -2164,6 +2617,84 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                         optional={true}
                     >
                         <WmsOrderPage ref={wmsRef} embedded initialClient={selectedClient} onCartChange={setCartItems} personalizacionResumen={personalizacionResumen} showOwnCheckout={false} />
+                    </ServiceAccordion>
+                )}
+
+                {/* [PRENDA CLIENTE] Las prendas no se compran: ya están en casa, entraron por
+                    Recepción con su remito. Acá se elige de cuál de esas entregas se trabaja y
+                    cuántas — el saldo sale de vw_PrendasClienteDisponibles y descuenta en vivo
+                    lo que ya tomaron las otras líneas de ESTE pedido. Los servicios de cada una
+                    se eligen más abajo, en su propio bloque. */}
+                {queDesea === 'PRENDA_CLIENTE' && (
+                    <ServiceAccordion
+                        title="Prendas del Cliente"
+                        isActive={true}
+                        onToggle={() => { }}
+                        icon={Layers}
+                        main={true}
+                    >
+                        <div className="space-y-4">
+                            {!clienteIdPedido ? (
+                                <p className="text-[11px] font-bold text-amber-500/90">
+                                    Elegí primero el cliente, arriba: las prendas disponibles son las que ÉL entregó.
+                                </p>
+                            ) : (
+                                <>
+                                    <div>
+                                        <p className="block text-xs font-bold uppercase text-zinc-400 mb-2">
+                                            Entregas disponibles — tocá una para sumarla al pedido
+                                        </p>
+                                        <PrendaClienteSelector
+                                            prendasDisponibles={prendasClienteDisp}
+                                            selectedPrendaId={null}
+                                            onSelect={(p) => p && agregarPrendaCliente(p)}
+                                            yaComprometido={comprometidoPorLinea}
+                                        />
+                                    </div>
+
+                                    {prendasElegidas.length > 0 && (
+                                        <div>
+                                            <p className="block text-xs font-bold uppercase text-zinc-400 mb-2">
+                                                En este pedido ({prendasElegidas.length})
+                                            </p>
+                                            <div className="space-y-2">
+                                                {prendasElegidas.map(p => (
+                                                    <div key={p.PrendaClienteID} className="flex items-center gap-3 p-3 rounded-xl border border-zinc-700/50 bg-zinc-900/40">
+                                                        <div className="min-w-0 flex-1">
+                                                            <p className="text-sm font-black text-zinc-100 truncate">{nombrePrendaCliente(p)}</p>
+                                                            <p className="text-[10px] font-bold text-zinc-500">
+                                                                {p.CodigoRecepcion ? `${String(p.CodigoRecepcion).trim()} · ` : ''}{p.disponible} sin usar
+                                                            </p>
+                                                        </div>
+                                                        <div className="shrink-0">
+                                                            <label className="block text-[9px] font-black uppercase text-zinc-500 mb-1">Cantidad</label>
+                                                            <input
+                                                                type="number" min="1" max={p.disponible}
+                                                                value={p.cantidad}
+                                                                onChange={(e) => {
+                                                                    const v = e.target.value;
+                                                                    setPrendasElegidas(prev => prev.map(x =>
+                                                                        x.PrendaClienteID === p.PrendaClienteID ? { ...x, cantidad: v } : x));
+                                                                }}
+                                                                className="w-20 p-2 bg-custom-dark border border-zinc-700 rounded-lg text-sm text-zinc-200 text-center outline-none focus:border-cyan-500"
+                                                            />
+                                                        </div>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => setPrendasElegidas(prev => prev.filter(x => x.PrendaClienteID !== p.PrendaClienteID))}
+                                                            className="p-2 text-zinc-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors shrink-0"
+                                                            title="Sacar esta entrega del pedido"
+                                                        >
+                                                            <Trash2 size={16} />
+                                                        </button>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    )}
+                                </>
+                            )}
+                        </div>
                     </ServiceAccordion>
                 )}
 
@@ -2963,11 +3494,11 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                         componente" de más abajo (comboServicios) — esta fila global no aplica,
                         queda vacía por diseño (el useEffect que puebla comboServicios limpia
                         selectedComplementary). */}
-                    {visibleComplementaryOptions.length > 0 && Object.keys(comboServicios).length === 0 && (
+                    {opcionesDecoracion.length > 0 && Object.keys(comboServicios).length === 0 && (
                     <div className="md:!rounded-3xl !rounded-none border-y !border-x-0 md:!border border-zinc-700/50 bg-custom-dark/60 -mx-4 md:mx-0 p-4 md:p-6">
                         <p className="text-xs font-bold text-zinc-500 uppercase tracking-widest mb-3">Servicios de Decoración</p>
                         <div className="flex flex-wrap gap-2">
-                            {visibleComplementaryOptions.map(opt => {
+                            {opcionesDecoracion.map(opt => {
                                 const isActive = !!selectedComplementary[opt.id];
                                 const esObligatorio = serviciosObligatorios.has(opt.id);
                                 return (
@@ -3025,7 +3556,7 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                     </div>
                     )}
 
-                    {Object.keys(comboServicios).length === 0 && visibleComplementaryOptions
+                    {Object.keys(comboServicios).length === 0 && opcionesDecoracion
                         .filter(opt => !!selectedComplementary[opt.id])
                         // [PRENDAS] EST fusionado en DTF/TPU: si alguno de los dos está activo,
                         // el panel de Estampado no se muestra aparte (queda vacío si no).
@@ -3156,16 +3687,97 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                         cambian los callbacks (escriben en comboServicios[comboItemId] en vez
                         de en los campos globales). Cantidad no editable acá: se deriva de
                         garmentQuantity (cantidad de combos) × comboItem.cantidad. */}
+                    {/* [VENTA UNA LÍNEA] La regla, dicha antes de que el vendedor arme todo:
+                        en un pedido personalizado no se mezclan artículos que no se personalizan. */}
+                    {Object.values(comboServicios).some(c => c.esItemCarrito) && (
+                        <div className="md:!rounded-2xl !rounded-none border-y !border-x-0 md:!border border-amber-500/30 bg-amber-500/10 -mx-4 md:mx-0 px-4 py-3 text-[12px] text-amber-200 flex gap-2">
+                            <AlertTriangle size={16} className="shrink-0 mt-0.5 text-amber-400" />
+                            <span>
+                                <strong>Todos los artículos de este pedido tienen que llevar personalización.</strong>{' '}
+                                El pedido se entrega completo: si mezclás, por ejemplo, un short bordado con una tinta,
+                                la tinta no se puede entregar hasta que el short esté bordado. Lo que no se personaliza,
+                                sacalo del carrito y vendelo en otro pedido con "Comprar" (sin personalizar).
+                            </span>
+                        </div>
+                    )}
+
                     {Object.entries(comboServicios).map(([comboItemId, comp]) => {
-                        const AREA_LABELS = { EMB: 'Bordado', DF: 'DTF', TPU: 'TPU', EST: 'Estampado' };
-                        const cantidadComponente = String((parseFloat(garmentQuantity) || 0) * (comp.cantidad || 1));
+                        // [VENTA UNA LÍNEA] Un artículo del carrito que no admite ninguna
+                        // personalización (Pet Film, tintas) no puede ir en este pedido: se muestra
+                        // solo para decir eso, así el vendedor entiende por qué no puede confirmar.
+                        const ofrecidosBloque = serviciosOfrecidos(comp);
+                        if (comp.esItemCarrito && Array.isArray(ofrecidosBloque) && ofrecidosBloque.length === 0) {
+                            return (
+                                <div key={comboItemId} className="md:!rounded-2xl !rounded-none border-y !border-x-0 md:!border border-rose-500/30 bg-rose-500/10 -mx-4 md:mx-0 px-4 py-3 text-[12px] text-rose-200">
+                                    <strong>{comp.descripcion}</strong> no admite personalización, así que no puede ir en este pedido.
+                                    Sacalo del carrito y vendelo aparte con "Comprar" (sin personalizar).
+                                </div>
+                            );
+                        }
+                        const AREA_LABELS = AREA_LABELS_PERS;
+                        // [VENTA x ITEM] En un combo la cantidad del componente se deriva
+                        // (cantidad de combos × lo que el combo lleva de ese componente); un
+                        // artículo del carrito ya trae su cantidad absoluta.
+                        const esPorItem = comp.esItemCarrito || comp.esPrendaCliente;
+                        const cantidadComponente = esPorItem
+                            ? String(comp.cantidad || 1)
+                            : String((parseFloat(garmentQuantity) || 0) * (comp.cantidad || 1));
                         const areasDelComponente = Object.keys(comp.servicios || {});
                         return (
                         <div key={comboItemId} className="md:!rounded-3xl !rounded-none border-y !border-x-0 md:!border border-zinc-700/50 bg-custom-dark/60 -mx-4 md:mx-0 p-4 md:p-6 space-y-4">
                             <div>
                                 <p className="text-xs font-bold text-zinc-500 uppercase tracking-widest mb-1">Servicios de {comp.descripcion}</p>
-                                <p className="text-[10px] text-zinc-600">Cantidad: {cantidadComponente} (combo × {comp.cantidad})</p>
+                                <p className="text-[10px] text-zinc-600">
+                                    {esPorItem
+                                        ? `Cantidad: ${cantidadComponente}`
+                                        : `Cantidad: ${cantidadComponente} (combo × ${comp.cantidad})`}
+                                </p>
                             </div>
+                            {esPorItem ? (
+                                /* [VENTA x ITEM] Servicios elegibles por artículo: prendidos =
+                                   este artículo pasa por esa área; ninguno prendido = se vende
+                                   tal cual, no entra a producción (ej. una tinta). */
+                                <>
+                                    <div className="flex flex-wrap gap-2">
+                                        {/* [CONFIGURADOR] Solo los botones que el artículo admite.
+                                            null = todavía consultando: no se ofrece nada. */}
+                                        {serviciosOfrecidos(comp) === null && (
+                                            <span className="text-[11px] text-zinc-500 italic">Consultando qué admite este artículo…</span>
+                                        )}
+                                        {(serviciosOfrecidos(comp) || []).map(areaId => {
+                                            const activo = !!comp.servicios?.[areaId];
+                                            return (
+                                                <button
+                                                    key={areaId}
+                                                    type="button"
+                                                    onClick={() => toggleServicioItemCarrito(comboItemId, areaId)}
+                                                    title={activo
+                                                        ? `Sacar ${AREA_LABELS[areaId]} de "${comp.descripcion}"`
+                                                        : `Mandar "${comp.descripcion}" a ${AREA_LABELS[areaId]}`}
+                                                    className={`px-4 py-2.5 rounded-lg text-sm font-bold border transition-all ${activo
+                                                        ? 'bg-cyan-400/20 text-cyan-300 border-cyan-500/30'
+                                                        : 'bg-zinc-800/60 text-zinc-400 border-zinc-700 hover:border-cyan-500/40 hover:text-zinc-200'}`}
+                                                >
+                                                    {AREA_LABELS[areaId] || areaId}
+                                                </button>
+                                            );
+                                        })}
+                                        {areasDelComponente.includes('EST') && (
+                                            <span className="px-4 py-2.5 rounded-lg text-sm font-bold bg-cyan-400/20 text-cyan-300 border border-cyan-500/30 flex items-center gap-1.5">
+                                                Estampado
+                                                <Lock size={12} className="opacity-70" title="Va de la mano con DTF/TPU: es la prensa que pega el transfer" />
+                                            </span>
+                                        )}
+                                    </div>
+                                    {areasDelComponente.length === 0 && serviciosOfrecidos(comp) !== null && (
+                                        <p className="text-[11px] text-zinc-500 italic">
+                                            {comp.esPrendaCliente
+                                                ? 'Elegí al menos un servicio: una prenda del cliente sin nada que hacerle no tiene por qué entrar al pedido.'
+                                                : 'Elegí qué se le hace (Bordado, DTF o TPU). Si este artículo no se personaliza, sacalo del carrito y vendelo en otro pedido.'}
+                                        </p>
+                                    )}
+                                </>
+                            ) : (
                             <div className="flex flex-wrap gap-2">
                                 {areasDelComponente.map(areaId => (
                                     <span key={areaId} className="px-4 py-2.5 rounded-lg text-sm font-bold bg-cyan-400/20 text-cyan-300 border border-cyan-500/30 flex items-center gap-1.5">
@@ -3174,12 +3786,13 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                                     </span>
                                 ))}
                             </div>
+                            )}
 
                             {areasDelComponente.includes('EMB') && (
                                 <BordadoTechnicalUI
                                     garmentQuantity={cantidadComponente} setGarmentQuantity={() => {}} lockedQuantity={true}
                                     bocetoFile={comp.servicios.EMB.boceto} setBocetoFile={(f) => actions.updateComboServicioBoceto(comboItemId, 'EMB', f)}
-                                    ponchadoFiles={comp.servicios.EMB.archivos} setPonchadoFiles={(arr) => actions.updateComboServicioArchivos(comboItemId, 'EMB', arr)}
+                                    ponchadoFiles={comp.servicios.EMB.archivos || []} setPonchadoFiles={(arr) => actions.updateComboServicioArchivos(comboItemId, 'EMB', arr)}
                                     globalMaterial={globalMaterial} handleGlobalMaterialChange={actions.setGlobalMaterial}
                                     serviceInfo={serviceInfo} userStock={userStock}
                                     handleSpecializedFileUpload={(f) => handleSpecializedFileUpload((file) => actions.updateComboServicioBoceto(comboItemId, 'EMB', file), f)}
@@ -3194,7 +3807,7 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                             {areasDelComponente.includes('DF') && (
                                 <DtfTechnicalUI
                                     garmentQuantity={cantidadComponente} setGarmentQuantity={() => {}} lockedQuantity={true}
-                                    dtfArchivos={comp.servicios.DF.archivos} removeDtfArchivo={(idx) => actions.updateComboServicioArchivos(comboItemId, 'DF', comp.servicios.DF.archivos.filter((_, i) => i !== idx))}
+                                    dtfArchivos={comp.servicios.DF.archivos || []} removeDtfArchivo={(idx) => actions.updateComboServicioArchivos(comboItemId, 'DF', (comp.servicios.DF.archivos || []).filter((_, i) => i !== idx))}
                                     dtfBocetoFile={comp.servicios.DF.boceto} setDtfBocetoFile={(f) => actions.updateComboServicioBoceto(comboItemId, 'DF', f)}
                                     lockedSpec={comp.servicios.DF.tecnicaOpcionNombre || ''}
                                     dtfMaterial={comp.servicios.DF.material} dtfMaterials={comp.servicios.DF.materialOptions} setDtfMaterial={(m) => actions.updateComboServicioCampo(comboItemId, 'DF', { material: m })}
@@ -3207,7 +3820,7 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                             {areasDelComponente.includes('TPU') && (
                                 <TpuTechnicalUI
                                     garmentQuantity={cantidadComponente} setGarmentQuantity={() => {}} lockedQuantity={true}
-                                    tpuArchivos={comp.servicios.TPU.archivos} removeTpuArchivo={(idx) => actions.updateComboServicioArchivos(comboItemId, 'TPU', comp.servicios.TPU.archivos.filter((_, i) => i !== idx))}
+                                    tpuArchivos={comp.servicios.TPU.archivos || []} removeTpuArchivo={(idx) => actions.updateComboServicioArchivos(comboItemId, 'TPU', (comp.servicios.TPU.archivos || []).filter((_, i) => i !== idx))}
                                     tpuBocetoFile={comp.servicios.TPU.boceto} setTpuBocetoFile={(f) => actions.updateComboServicioBoceto(comboItemId, 'TPU', f)}
                                     lockedSpec={comp.servicios.TPU.tecnicaOpcionNombre || ''}
                                     tpuVariant={comp.servicios.TPU.variant} tpuVariants={comp.servicios.TPU.variantOptions} handleTpuVariantChange={(v) => handleComboVarianteChange(comboItemId, 'TPU', v)}
@@ -3239,7 +3852,11 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                     <div className="bg-custom-dark text-white p-8 md:rounded-3xl rounded-none shadow-2xl shadow-black/30 flex flex-col md:flex-row items-center justify-between gap-8 border-y border-x-0 md:border-x border-zinc-700/50 -mx-4 md:mx-0">
                         <div className="flex gap-10 flex-wrap">
                             <div><p className="text-[11px] uppercase font-bold text-zinc-500">Servicio</p><p className="text-xl font-bold text-zinc-100">{serviceInfo?.label}</p></div>
-                            <div><p className="text-[11px] uppercase font-bold text-zinc-500">Prioridad</p><p className={`text-xl font-bold ${urgency?.toLowerCase() === 'urgente' ? 'text-custom-magenta' : 'text-cyan-400'}`}>{urgency}</p></div>
+                            {/* Con el selector oculto el pedido va siempre Normal: el resumen
+                                muestra lo que realmente se envía, no el estado interno. */}
+                            {(() => { const prio = MOSTRAR_PRIORIDAD ? urgency : 'Normal'; return (
+                            <div><p className="text-[11px] uppercase font-bold text-zinc-500">Prioridad</p><p className={`text-xl font-bold ${prio?.toLowerCase() === 'urgente' ? 'text-custom-magenta' : 'text-cyan-400'}`}>{prio}</p></div>
+                            ); })()}
                             <div><p className="text-[11px] uppercase font-bold text-zinc-500">Items (Total)</p><p className="text-2xl font-black text-zinc-100">{items.length}</p></div>
                             <div><p className="text-[11px] uppercase font-bold text-zinc-500">Largo Total</p><p className="text-2xl font-black text-cyan-400">{items.reduce((acc, it) => {
                                 const h = it.printSettings?.finalHeightM || (it.file?.unit === 'meters' ? it.file?.height : (it.file?.height ? (it.file.height / 300) * 0.0254 : 0)) || 0;

@@ -55,6 +55,9 @@ const ReceptionPage = () => {
 
     // ── Búsqueda de cliente estilo CAJA ──────────────────────────────
     const [clienteObj,       setClienteObj]       = useState(null);   // objeto completo del cliente
+    // Spec 39: solicitudes de insumo abiertas del cliente ("¿esta PRE repone una solicitud?")
+    const [solicitudesAbiertas, setSolicitudesAbiertas] = useState([]);
+    const [solicitudRepone, setSolicitudRepone] = useState('');
     const [qCliente,         setQCliente]         = useState('');
     const [clienteResultados,setClienteResultados]= useState([]);
     const [buscandoCli,      setBuscandoCli]      = useState(false);
@@ -146,8 +149,21 @@ const ReceptionPage = () => {
         }
     }, [formData.clienteId, formData.tipo]);
 
+    // ── Spec 39: solicitudes de insumo abiertas del cliente seleccionado ──
+    useEffect(() => {
+        const cli = formData.clienteId?.trim();
+        if (!clienteObj || !cli) { setSolicitudesAbiertas([]); setSolicitudRepone(''); return; }
+        let cancel = false;
+        api.get('/solicitudes-insumo/abiertas-cliente', { params: { clienteId: cli } })
+            .then(r => { if (!cancel) setSolicitudesAbiertas(Array.isArray(r.data) ? r.data : []); })
+            .catch(() => { if (!cancel) setSolicitudesAbiertas([]); });
+        return () => { cancel = true; };
+    }, [clienteObj, formData.clienteId]);
+
     const limpiarCliente = () => {
         setClienteObj(null);
+        setSolicitudesAbiertas([]);
+        setSolicitudRepone('');
         setFormData(prev => ({ ...prev, clienteId: '', telaCliente: '' }));
         setQCliente('');
         setClienteResultados([]);
@@ -314,13 +330,16 @@ const ReceptionPage = () => {
                 bultos: esTelaPago ? formData.bobinas.length : formData.bultos,
                 // Pasar si está sumando a tela existente
                 sumaTelaExistente: sumarAExistente === true && telaSeleccionada ? telaSeleccionada.TipoTela : null,
+                // Spec 39: si repone una solicitud de insumo, el backend crea la orden de falla con esta PRE
+                solicitudId: solicitudRepone ? parseInt(solicitudRepone, 10) : null,
             };
             const res = await receptionService.createReception(payload);
 
             if (res.success) {
                 // Nombre del operario: usar el que devuelve el backend, o el local
                 const operadorFinal = res.operario || operarioNombre;
-                setMessage({ type: 'success', text: `Orden ${res.ordenAsignada} guardada. Operario: ${operadorFinal}` });
+                setMessage({ type: res.solicitud?.error ? 'warning' : 'success', text: `Orden ${res.ordenAsignada} guardada. Operario: ${operadorFinal}` + (res.solicitud?.message ? ` · ${res.solicitud.message}` : res.solicitud?.error ? ` · ATENCIÓN: no se pudo vincular a la solicitud (${res.solicitud.error})` : '') });
+                setSolicitudRepone('');
                 const nombreCliente = clienteObj?.NombreFantasia || clienteObj?.Nombre || clienteObj?.RazonSocial || payload.clienteId;
                 const areaLabelResuelto = areasList.find(a => a.AreaID === payload.areaDestino)?.Nombre || payload.areaDestino || 'Recepción';
                 const printData = {
@@ -772,6 +791,26 @@ const ReceptionPage = () => {
                                             {(clienteObj.Telefono || clienteObj.TelefonoTrabajo) && <div>Teléfono: <span className="font-mono text-slate-700">{clienteObj.Telefono || clienteObj.TelefonoTrabajo}</span></div>}
                                             {(clienteObj.Direccion || clienteObj.DireccionTrabajo) && <div>Dirección: <span className="text-slate-700">{clienteObj.Direccion || clienteObj.DireccionTrabajo}</span></div>}
                                         </div>
+
+                                        {/* ── Spec 39: ¿esta PRE repone una solicitud de insumo abierta? ── */}
+                                        {solicitudesAbiertas.length > 0 && (
+                                            <div className="border-t border-slate-200/60 pt-2.5">
+                                                <p className="text-[9px] font-black text-amber-600 uppercase tracking-widest mb-1">¿Repone una solicitud de insumo abierta?</p>
+                                                <select
+                                                    value={solicitudRepone}
+                                                    onChange={e => setSolicitudRepone(e.target.value)}
+                                                    className="w-full p-2 border border-amber-300 bg-amber-50 rounded-xl text-xs font-bold text-slate-700 outline-none"
+                                                >
+                                                    <option value="">No, es un ingreso común</option>
+                                                    {solicitudesAbiertas.map(s => (
+                                                        <option key={s.SolicitudID} value={s.SolicitudID}>
+                                                            Sí: solicitud #{s.SolicitudID} · {s.CodigoMadre} · {s.Tipo === 'PRENDA_CLIENTE' ? 'prendas' : 'tela'} dañada ({s.Cantidad != null ? `${Number(s.Cantidad)} ${String(s.Unidad || '').trim()}` : s.Motivo})
+                                                        </option>
+                                                    ))}
+                                                </select>
+                                                {solicitudRepone && <p className="text-[10px] text-amber-700 mt-1">Al guardar, la orden de falla nace con esta PRE y la solicitud #{solicitudRepone} pasa a Resuelta.</p>}
+                                            </div>
+                                        )}
 
                                         {/* ── Badges informativos de tela (solo display, compactos) ── */}
                                         {formData.tipo === 'TELA DE CLIENTE' && saldosTela.length > 0 && (

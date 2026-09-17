@@ -102,9 +102,32 @@ estos momentos:
 Fuerzan precio 0 al congelar: reposiciones/fallas sin cargo, retiros de componentes de
 combo, y líneas 100% cubiertas por plan prepago.
 
+- **RN-PRE.29** (15-sep-2026) **Reeditar la cotización baja el precio nuevo a depósito y
+  caja, mientras la orden no esté facturada.** Al guardar la cotización de un pedido —desde
+  cualquier pantalla que use el editor: el área, Logística, Prendas o Administración de
+  Órdenes— cada orden del pedido que **ya tenga fila en depósito** queda con el precio,
+  la cantidad y la moneda nuevos, y con ellos se recuadran el movimiento de cuenta del
+  cliente, la deuda viva, el ciclo y el total del retiro (la misma cadena de RN-CAJA.47).
+  Dos excepciones, orden por orden: la que **todavía no llegó a depósito** no se toca
+  (nace con el precio correcto cuando llegue) y la que **ya fue facturada** tampoco —ahí
+  manda el documento emitido (punto 5 de arriba), y cambiar el precio de depósito dejaría
+  a caja cobrando una cosa y a la DGI declarada otra. La pantalla dice cuántas órdenes
+  actualizó y cuáles salteó por estar facturadas.
 - **INV-PRE.02** Un documento histórico conserva sus precios congelados para siempre:
   cambiar la lista de precios, el perfil o la ficha del cliente **jamás** altera documentos
   ya emitidos.
+- **INV-PRE.03** (11-sep-2026) El desglose del precio se congela **con números**, no solo
+  con texto: cada línea de pedido guarda **precio de lista** (después de la tarifa
+  técnica), **descuento** (tipo % / importe / precio pactado / manual, %, importe unitario,
+  origen y regla) y **recargos** (suma de % e importe, y el detalle de cada uno), y cumple
+  `lista − descuento + Σ recargos = precio unitario` a 2 decimales. El **importe del
+  descuento absorbe el redondeo**; el % es el de la regla y nunca se recalcula. Varios
+  recargos (urgencia + tinta) se calculan cada uno sobre la lista y **se suman**. Un
+  precio tipeado a mano conserva la lista y deja la diferencia como descuento o recargo
+  **manual**; una reposición sin cargo es lista + descuento 100 % con origen
+  "Reposición". El perfil que aplicó y las reglas que compitieron y perdieron quedan
+  registradas en la línea. Cada perfil puede llevar una **etiqueta para el cliente**
+  (texto que se imprime en lugar del nombre interno).
 
 ## 6. Formación de precios (costeo y márgenes) — to-be
 

@@ -4,7 +4,7 @@ import api from '../apiClient';
 // Nació para Bordado (EMB) y se generalizó para Estampado (EST): mismo controlador del
 // lado del backend, cada área pega a su propio prefijo (/emb o /est) y el backend fuerza
 // el área ahí (estRoutes.js), así que del lado del cliente no hace falta mandarla aparte.
-const createBandejaService = (basePath) => ({
+export const createBandejaService = (basePath) => ({
     getOrders: async (fase = 'trabajo') => {
         const response = await api.get(`${basePath}/orders`, { params: { fase } });
         return response.data?.data || [];
@@ -54,11 +54,18 @@ const createBandejaService = (basePath) => ({
         const response = await api.put(`${basePath}/orders/${ordenId}/archivos/${archivoId}/progreso-control`, { cantidad });
         return response.data;
     },
-    // Aprobar Control: pasa a Pronto y genera `bultos` etiquetas.
-    aprobarControl: async (ordenId, bultos) => {
-        const response = await api.post(`${basePath}/orders/${ordenId}/aprobar-control`, { bultos });
+    // Aprobar Control: pasa a Pronto y genera `bultos` etiquetas. Spec 39: `parcial=true`
+    // aprueba solo lo ya controlado (menos que el total) y la orden sigue en producción.
+    aprobarControl: async (ordenId, bultos, parcial = false) => {
+        const response = await api.post(`${basePath}/orders/${ordenId}/aprobar-control`, { bultos, ...(parcial ? { parcial: true } : {}) });
         return response.data;
     },
+    // Spec 39: reportar falla o faltante (3 pasos) y lo que falta del pedido
+    getFallaPendientes: async (ordenId) => (await api.get(`${basePath}/orders/${ordenId}/falla/pendientes`)).data,
+    fallaEsLoPendiente: (ordenId) => api.post(`${basePath}/orders/${ordenId}/falla/es-lo-pendiente`),
+    fallaProponer: async (ordenId, payload) => (await api.post(`${basePath}/orders/${ordenId}/falla/proponer`, payload)).data,
+    reportarFalla: async (ordenId, payload) => (await api.post(`${basePath}/orders/${ordenId}/falla`, payload)).data,
+    getReposicionesOrden: async (ordenId) => (await api.get(`${basePath}/orders/${ordenId}/reposiciones`)).data,
 });
 
 export const embBoardService = createBandejaService('/emb');

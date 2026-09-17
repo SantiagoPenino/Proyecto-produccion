@@ -535,6 +535,12 @@ async function validarCarritoTienda(pool, items) {
             cantidad,
             precioOriginal: precio,
             monedaOriginal: moneda === 'USD' ? 'USD' : 'UYU',
+            // Lista del artículo (PreciosBase) en la moneda de la línea: con ella la factura
+            // muestra "lista − precio especial" cuando la variante tiene precio de excepción.
+            // Si la lista está en otra moneda que el precio, no se inventa una conversión.
+            precioListaOriginal: (prod.PrecioBase != null
+                && ((prod.MonedaBase || 'UYU').trim() || 'UYU') === (moneda === 'USD' ? 'USD' : 'UYU'))
+                ? parseFloat(prod.PrecioBase) : null,
         });
     }
 
@@ -554,6 +560,17 @@ async function validarCarritoTienda(pool, items) {
         l.precio = l.monedaOriginal === monedaPedido ? l.precioOriginal
             : (monedaPedido === 'USD' ? l.precioOriginal / cotizacion : l.precioOriginal * cotizacion);
         l.precio = Math.round(l.precio * 100) / 100;
+        // Lista en la moneda del pedido (misma conversión que el precio). Si el precio
+        // especial fuera mayor que la lista, la lista es el propio precio (sin descuento).
+        if (l.precioListaOriginal != null) {
+            const lst = l.monedaOriginal === monedaPedido ? l.precioListaOriginal
+                : (monedaPedido === 'USD' ? l.precioListaOriginal / cotizacion : l.precioListaOriginal * cotizacion);
+            l.precioLista = Math.round(lst * 10000) / 10000;
+            if (l.precioLista + 0.00005 < l.precio) l.precioLista = l.precio;
+        } else {
+            l.precioLista = l.precio;
+        }
+        l.descuentoTienda = Math.round((l.precioLista - l.precio) * 10000) / 10000;
     });
     const total = Math.round(lineas.reduce((s, l) => s + l.precio * l.cantidad, 0) * 100) / 100;
 
@@ -627,11 +644,19 @@ async function crearVentaTienda(pool, { cliIdCliente, clienteNombre, lineas, mon
                 .input('PrecioUnitarioOriginal', sql.Decimal(18, 2), l.precioOriginal)
                 .input('SubtotalOriginal', sql.Decimal(18, 2), Math.round(l.precioOriginal * l.cantidad * 100) / 100)
                 .input('MonedaOriginal', sql.VarChar, l.monedaOriginal)
+                // Desglose: lista del artículo y, si la variante tiene precio de excepción,
+                // la diferencia como descuento de precio pactado ("Precio especial (tienda)").
+                .input('PLista', sql.Decimal(18, 4), l.precioLista != null ? l.precioLista : l.precio)
+                .input('DTipo', sql.VarChar(12), l.descuentoTienda > 0.00005 ? 'FIJO' : null)
+                .input('DImp', sql.Decimal(18, 4), l.descuentoTienda > 0.00005 ? l.descuentoTienda : null)
+                .input('DOrig', sql.NVarChar(150), l.descuentoTienda > 0.00005 ? 'Precio especial (tienda)' : null)
                 .query(`
                     INSERT INTO PedidosCobranzaDetalle
-                    (PedidoCobranzaID, OrdenID, ProIdProducto, CodArticulo, Cantidad, PrecioUnitario, Subtotal, Moneda, DatoTecnico, PrecioUnitarioOriginal, SubtotalOriginal, MonedaOriginal)
+                    (PedidoCobranzaID, OrdenID, ProIdProducto, CodArticulo, Cantidad, PrecioUnitario, Subtotal, Moneda, DatoTecnico, PrecioUnitarioOriginal, SubtotalOriginal, MonedaOriginal,
+                     PrecioLista, DescuentoTipo, DescuentoImporte, DescuentoOrigen)
                     VALUES
-                    (@PedidoCobranzaID, @OrdenID, @ProIdProducto, @CodArticulo, @Cantidad, @PrecioUnitario, @Subtotal, @Moneda, 0, @PrecioUnitarioOriginal, @SubtotalOriginal, @MonedaOriginal)
+                    (@PedidoCobranzaID, @OrdenID, @ProIdProducto, @CodArticulo, @Cantidad, @PrecioUnitario, @Subtotal, @Moneda, 0, @PrecioUnitarioOriginal, @SubtotalOriginal, @MonedaOriginal,
+                     @PLista, @DTipo, @DImp, @DOrig)
                 `);
             ordenIndex++;
         }

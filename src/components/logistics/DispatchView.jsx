@@ -7,6 +7,103 @@ import QRCode from "react-qr-code";
 import { toast } from 'sonner';
 import Swal from 'sweetalert2';
 
+const MOTIVOS_PENDIENTE = {
+    FALLA_EN_PROCESO: 'Queda una falla en proceso (reposición)',
+    RESTO_EN_PRODUCCION: 'El resto sigue en producción',
+};
+
+/**
+ * Spec 39 — bloque "Envío por orden": dice si el envío es parcial y por qué, deja declarar la
+ * cantidad solo cuando se conoce (obligatoria donde se cuentan prendas o unidades) y no permite
+ * marcar la orden como completa mientras tenga una reposición abierta.
+ */
+const EnvioPorOrden = ({ orden, info, linea, restantes, onChange }) => {
+    if (!info || !linea) return null;
+    const abiertas = info.reposicionesAbiertas || [];
+    // Spec 39 (extensión "aprobar por tandas"): si la orden madre todavía tiene menos
+    // aprobado en Control que su magnitud total, sigue produciéndose — este bulto es una
+    // tanda, no puede completarla aunque no tenga ninguna reposición abierta.
+    const puedeCompletar = abiertas.length === 0 && !info.siguEnProduccion;
+    const um = info.um || '';
+    const set = (patch) => onChange({ ...linea, ...patch });
+    return (
+        <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs">
+            <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Envío por orden · {info.codigoMadre}</div>
+            {info.esComplemento && (
+                <div className="mb-2 px-2 py-1.5 rounded-lg bg-fuchsia-50 border border-fuchsia-200 text-fuchsia-800 font-bold">
+                    Complemento: este bulto es la reposición {info.codigo} de la orden {info.codigoMadre}.
+                </div>
+            )}
+            {abiertas.length > 0 && (
+                <div className="mb-2 px-2 py-1.5 rounded-lg bg-amber-50 border border-amber-200 text-amber-800">
+                    <div className="font-bold">Queda en proceso:</div>
+                    {abiertas.map((r, i) => <div key={i}>{r.codigo || 'reposición sin orden'} · {r.descripcion}</div>)}
+                </div>
+            )}
+            {abiertas.length === 0 && info.siguEnProduccion && (
+                <div className="mb-2 px-2 py-1.5 rounded-lg bg-amber-50 border border-amber-200 text-amber-800 font-bold">
+                    Esto es una tanda: se aprobaron {info.aprobadoBultos} de {info.magnitudMadre} en Control. El resto de {info.codigoMadre} sigue en producción.
+                </div>
+            )}
+            <label className={`flex items-start gap-2 py-1 ${puedeCompletar ? 'cursor-pointer' : 'opacity-60 cursor-not-allowed'}`}>
+                <input type="radio" className="mt-0.5" checked={!!linea.completaOrden} disabled={!puedeCompletar} onChange={() => set({ completaOrden: true })} />
+                <span>
+                    <span className="font-bold text-slate-700">Este envío completa la orden {info.codigoMadre}</span>
+                    {restantes > 0 && (
+                        <span className="block text-amber-700 font-bold">Ojo: quedan {restantes} bultos de esta orden en el área sin seleccionar.</span>
+                    )}
+                    {!puedeCompletar && abiertas.length > 0 && <span className="block text-amber-700 font-bold">No se puede marcar como completa: hay una reposición abierta.</span>}
+                    {!puedeCompletar && abiertas.length === 0 && info.siguEnProduccion && (
+                        <span className="block text-amber-700 font-bold">No se puede marcar como completa: en Control se aprobaron {info.aprobadoBultos} de {info.magnitudMadre} — el resto todavía se está produciendo.</span>
+                    )}
+                </span>
+            </label>
+            {/* Si ya está todo listo para completar (nada abierto, nada en producción) y no
+                queda ningún otro bulto de esta orden en el área para un envío posterior,
+                "parcial" no tiene sentido — se deshabilita para no dejarla incompleta sin
+                motivo. Cuando SÍ quedan bultos sin seleccionar, sigue siendo una opción válida
+                (mandar en varias tandas aunque la producción ya haya terminado). */}
+            {(() => {
+                const parcialInnecesario = puedeCompletar && restantes === 0;
+                return (
+                    <label className={`flex items-start gap-2 py-1 ${parcialInnecesario ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'}`}>
+                        <input type="radio" className="mt-0.5" checked={!linea.completaOrden} disabled={parcialInnecesario} onChange={() => set({ completaOrden: false })} />
+                        <span>
+                            <span className="font-bold text-slate-700">Envío parcial</span>
+                            <span className="block text-slate-500">{info.codigoMadre} sigue en el área hasta el envío que la complete.</span>
+                            {parcialInnecesario && (
+                                <span className="block text-amber-700 font-bold">No hace falta: {info.codigoMadre} ya está lista y este es el último bulto — se manda completa.</span>
+                            )}
+                        </span>
+                    </label>
+                );
+            })()}
+            {!linea.completaOrden && (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-2">
+                    <div>
+                        <div className="text-[10px] font-bold text-slate-500 uppercase mb-1">Motivo del pendiente</div>
+                        <select className="w-full p-2 border border-slate-200 rounded-lg bg-white font-bold text-slate-700" value={linea.motivoPendiente || ''} onChange={e => set({ motivoPendiente: e.target.value })}>
+                            {Object.entries(MOTIVOS_PENDIENTE).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                        </select>
+                    </div>
+                    <div>
+                        <div className="text-[10px] font-bold text-slate-500 uppercase mb-1">
+                            Cantidad de este envío {info.cuentaUnidades ? '· obligatoria' : '· opcional, solo si la conocés'}{um ? ` (${um})` : ''}
+                        </div>
+                        <input type="number" min="0" step="0.01" className="w-full p-2 border border-slate-200 rounded-lg bg-white font-mono font-bold text-slate-700" placeholder={info.cuentaUnidades ? `p. ej. 40 de ${info.cantidadEsperada ?? '?'}` : 'dejar vacío si no se sabe'} value={linea.cantidad ?? ''} onChange={e => set({ cantidad: e.target.value })} />
+                        {info.cuentaUnidades && info.cantidadEsperada != null && (
+                            <div className="text-[10px] text-slate-500 mt-1">Esperado {info.cantidadEsperada} {um}{info.cantidadEnviada != null ? ` · ya salieron ${info.cantidadEnviada}` : ''}.</div>
+                        )}
+                        {info.cantidadSugerida != null && (
+                            <div className="text-[10px] text-emerald-600 font-bold mt-1">Precargado con lo aprobado en Control ({info.aprobadoBultos}) menos lo ya enviado. Corregilo si no coincide con lo que realmente sale.</div>
+                        )}
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+};
+
 const DispatchView = ({ selectedOrders: initialOrders = [], areaFilter, originArea, onClose, onSuccess, mode: viewMode = 'create', onActionOverride, selectedStockItems: extSelectedStockItems, setSelectedStockItems: extSetSelectedStockItems }) => {
     const { user } = useAuth();
     const currentArea = areaFilter || originArea || user?.areaKey || user?.areaId;
@@ -47,6 +144,13 @@ const DispatchView = ({ selectedOrders: initialOrders = [], areaFilter, originAr
     const [logs, setLogs] = useState([]);
     const [credentials, setCredentials] = useState({ username: '', password: '' });
     const [targetDestinations, setTargetDestinations] = useState({});
+
+    // --- Spec 39: envío parcial / libro de entregas ---
+    const { data: libroConfig } = useQuery({ queryKey: ['libro-config'], queryFn: () => logisticsService.getLibroConfig(), staleTime: 60000 });
+    const areaPermiteParcial = !!libroConfig?.areasParcial?.includes(String(currentArea || '').trim().toUpperCase());
+    const destPermiteParcial = (dest) => areaPermiteParcial && String(dest || '').trim().toUpperCase() !== 'DEPOSITO';
+    const [envioInfo, setEnvioInfo] = useState({}); // ordenId -> info del libro (madre, reposiciones abiertas, unidades)
+    const [lineas, setLineas] = useState({});       // madreId -> { completaOrden, cantidad, motivoPendiente }
 
     // --- QUERY STOCK (Step 0) ---
     const { data: areaStock, isLoading: loadingStock, refetch: refetchStock } = useQuery({
@@ -187,6 +291,74 @@ const DispatchView = ({ selectedOrders: initialOrders = [], areaFilter, originAr
         return groups;
     }, [selectedOrders]);
 
+    // Spec 39: al pasar a revisión/confirmación, traer el libro de cada orden seleccionada y
+    // proponer la línea por orden (completa si no quedan bultos ni reposiciones abiertas).
+    useEffect(() => {
+        if (!(step === 1 || step === 2) || !areaPermiteParcial) return;
+        const ids = [...new Set(selectedOrders.map(o => o.id).filter(Boolean))];
+        if (!ids.length) { setEnvioInfo({}); return; }
+        let cancel = false;
+        logisticsService.getEnvioInfo(ids, currentArea, null).then(res => {
+            if (cancel) return;
+            const map = {};
+            (res?.ordenes || []).forEach(x => { map[x.ordenId] = x; });
+            setEnvioInfo(map);
+            setLineas(prev => {
+                const next = { ...prev };
+                (res?.ordenes || []).forEach(x => {
+                    if (next[x.madreId]) return;
+                    const restantes = (stockRows || []).filter(r => r.OrdenID === x.ordenId && !selectedStockItems.some(s => s.BultoID === r.BultoID)).length;
+                    // Spec 39 (extensión "aprobar por tandas"): si hay una cantidad sugerida
+                    // (lo aprobado en Control menos lo ya declarado en remitos anteriores), la
+                    // precarga — el operario la ve y la puede corregir, no arranca en blanco.
+                    next[x.madreId] = {
+                        completaOrden: x.puedeCompletar && restantes === 0,
+                        cantidad: x.cantidadSugerida != null ? String(x.cantidadSugerida) : '',
+                        motivoPendiente: (x.reposicionesAbiertas || []).length ? 'FALLA_EN_PROCESO' : 'RESTO_EN_PRODUCCION',
+                    };
+                });
+                return next;
+            });
+        }).catch(e => console.warn('[DispatchView] envio-info', e?.message || e));
+        return () => { cancel = true; };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [step, selectedOrders, areaPermiteParcial, currentArea]);
+
+    // Bultos de la orden que quedan en el área sin seleccionar (para el aviso del bloque)
+    const restantesDe = (ordenId) => (stockRows || []).filter(r => r.OrdenID === ordenId && !selectedStockItems.some(s => s.BultoID === r.BultoID)).length;
+
+    // Líneas por orden a mandar para un grupo de órdenes (una por orden madre)
+    const lineasPara = (orders) => {
+        const out = []; const madres = new Set();
+        orders.forEach(o => {
+            const info = envioInfo[o.id];
+            if (!info || madres.has(info.madreId)) return;
+            madres.add(info.madreId);
+            const l = lineas[info.madreId];
+            if (!l) return;
+            out.push({ ordenId: info.madreId, completaOrden: !!l.completaOrden, cantidad: l.cantidad === '' || l.cantidad == null ? null : Number(l.cantidad), motivoPendiente: l.completaOrden ? null : l.motivoPendiente, info });
+        });
+        return out;
+    };
+
+    // Texto exacto de lo que va a pasar (claridad máxima)
+    const resumenEnvio = useMemo(() => {
+        if (!areaPermiteParcial) return [];
+        const frases = [];
+        Object.keys(dispatchGroups).forEach(key => {
+            const dest = targetDestinations[key] || key;
+            if (!destPermiteParcial(dest)) return;
+            lineasPara(dispatchGroups[key]).forEach(l => {
+                const bultos = dispatchGroups[key].filter(o => envioInfo[o.id]?.madreId === l.info.madreId).reduce((s, o) => s + (o.bultos?.length || 0), 0);
+                if (l.completaOrden) frases.push(`Este envío completa ${l.info.codigoMadre}: ${bultos} bultos a ${dest}. La orden pasa a En tránsito.`);
+                else frases.push(`Vas a mandar ${bultos} bultos de ${l.info.codigoMadre} a ${dest} como envío parcial${l.cantidad != null ? ` (${l.cantidad} ${l.info.um})` : ''}. ${l.info.reposicionesAbiertas?.length ? 'Queda en proceso: ' + l.info.reposicionesAbiertas.map(r => `${r.codigo || 'reposición'} (${r.descripcion})`).join(', ') + '.' : MOTIVOS_PENDIENTE[l.motivoPendiente] + '.'} ${l.info.codigoMadre} no pasa a En tránsito hasta el envío que la complete.`);
+            });
+        });
+        return frases;
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [dispatchGroups, targetDestinations, envioInfo, lineas, areaPermiteParcial]);
+
+
     // --- SMART SELECTION (Scan Logic) ---
     const toggleRow = async (row) => {
         // 1. Hermanos = mismo baseCode (para producto terminado, TODO el pedido / NoDocERP)
@@ -316,6 +488,19 @@ const DispatchView = ({ selectedOrders: initialOrders = [], areaFilter, originAr
 
                 if (bultosIds.length === 0 && newBultos.length === 0) continue;
 
+                // Spec 39: líneas por orden (solo si el área tiene envío parcial y el destino no es Depósito)
+                let lineasOrden = [];
+                if (destPermiteParcial(finalDest)) {
+                    const ls = lineasPara(orders);
+                    const faltaCantidad = ls.find(l => !l.completaOrden && l.info.cuentaUnidades && l.cantidad == null);
+                    if (faltaCantidad) {
+                        toast.error(`${faltaCantidad.info.codigoMadre}: en ${currentArea} la cantidad del envío parcial es obligatoria (se cuentan ${faltaCantidad.info.um || 'unidades'}).`);
+                        setLoading(false);
+                        return;
+                    }
+                    lineasOrden = ls.map(({ info, ...l }) => l);
+                }
+
                 const payload = {
                     codigoRemito: 'AUTO',
                     areaOrigen: currentArea || 'PRODUCCION',
@@ -323,6 +508,7 @@ const DispatchView = ({ selectedOrders: initialOrders = [], areaFilter, originAr
                     usuarioId: authUser.id,
                     transportista: authUser.username,
                     bultosIds, newBultos,
+                    lineasOrden,
                     observations: `Generado por ${authUser.username || authUser.nombre || 'Sistema'}`
                 };
 
@@ -399,7 +585,9 @@ const DispatchView = ({ selectedOrders: initialOrders = [], areaFilter, originAr
 
         // Si tenemos órdenes con destino 'LOGISTICA', pasamos al Paso 1 para obligar a elegir destino.
         // Si ya están todas mapeadas (ej. DEPOSITO), saltamos la pantalla de Review directamente a Firmar (Paso 2).
-        if (destinations.includes('LOGISTICA')) {
+        // Spec 39: si el área tiene envío parcial y algún destino no es Depósito, siempre pasa por la
+        // revisión, para declarar por orden si el envío es parcial o completa la orden.
+        if (destinations.includes('LOGISTICA') || destinations.some(d => destPermiteParcial(d))) {
             setStep(1);
         } else {
             setStep(2);
@@ -658,7 +846,14 @@ const DispatchView = ({ selectedOrders: initialOrders = [], areaFilter, originAr
                                                         <div className="font-bold font-mono text-slate-800">{row.displayCode}</div>
                                                     </td>
                                                     <td className="p-4">
-                                                        <span className="font-bold text-brand-cyan">{row.orderCode || '-'}</span>
+                                                        {row.EsComplemento ? (
+                                                            <>
+                                                                <span className="font-bold text-brand-cyan">{row.CodigoOrdenMadre || row.orderCode}</span>
+                                                                <div className="text-[10px] font-black uppercase text-fuchsia-700 mt-0.5">Reposición {row.orderCode} · viaja como complemento</div>
+                                                            </>
+                                                        ) : (
+                                                            <span className="font-bold text-brand-cyan">{row.orderCode || '-'}</span>
+                                                        )}
                                                     </td>
                                                     <td className="p-4">
                                                         {row.IDCliente ? (
@@ -690,8 +885,13 @@ const DispatchView = ({ selectedOrders: initialOrders = [], areaFilter, originAr
                                                         {row.date ? new Date(row.date).toLocaleDateString() : '-'}
                                                     </td>
                                                     <td className="p-4 text-right">
-                                                        <span className="bg-brand-cyan/10 text-brand-cyan px-3 py-1 rounded-full text-[10px] font-bold uppercase border border-brand-cyan/20">
-                                                            EN STOCK
+                                                        {row.EstadoEnvio === 'PARCIAL' && (
+                                                            <span className="mr-1 bg-amber-50 text-amber-700 px-2 py-1 rounded-full text-[10px] font-bold uppercase border border-amber-200" title="Esta orden ya salió en parte: el próximo remito puede completarla">
+                                                                ENVÍO PARCIAL
+                                                            </span>
+                                                        )}
+                                                        <span className={`${row.EsComplemento ? 'bg-fuchsia-50 text-fuchsia-700 border-fuchsia-200' : 'bg-brand-cyan/10 text-brand-cyan border-brand-cyan/20'} px-3 py-1 rounded-full text-[10px] font-bold uppercase border`}>
+                                                            {row.EsComplemento ? 'REPOSICIÓN' : 'EN STOCK'}
                                                         </span>
                                                     </td>
                                                 </tr>
@@ -746,15 +946,42 @@ const DispatchView = ({ selectedOrders: initialOrders = [], areaFilter, originAr
                         <div className="flex-1 flex flex-col overflow-hidden bg-slate-50">
                             <div className="px-6 py-3 border-b border-slate-200 bg-white text-xs font-black text-slate-400 uppercase tracking-widest">Review Items</div>
                             <div className="flex-1 overflow-y-auto">
-                                {selectedOrders.map((o, i) => (
-                                    <div key={i} className="px-6 py-4 border-b border-slate-100 bg-white flex justify-between items-center hover:bg-slate-50 transition-colors">
-                                        <div>
-                                            <div className="font-bold text-slate-800 text-sm">{o.code}</div>
-                                            <div className="text-xs text-slate-400 mt-0.5">{o.desc}</div>
+                                {selectedOrders.map((o, i) => {
+                                    const dest = targetDestinations[o.destino || 'LOGISTICA'] || o.destino || 'LOGISTICA';
+                                    const info = envioInfo[o.id];
+                                    // Si ya no hay ninguna decisión real que tomar (nada abierto, nada en
+                                    // producción, y este es el último bulto) "parcial" no tiene sentido —
+                                    // mismo criterio que ya usa el radio de abajo (línea ~90) y el default
+                                    // de completaOrden al cargar (línea ~315). Sin nada que elegir, la
+                                    // orden se muestra como una fila simple, igual que las que van directo
+                                    // a Depósito (que tampoco ofrecen esta elección).
+                                    const puedeCompletarInfo = info && (info.reposicionesAbiertas || []).length === 0 && !info.siguEnProduccion;
+                                    const parcialInnecesario = puedeCompletarInfo && restantesDe(o.id) === 0;
+                                    const conBloque = destPermiteParcial(dest) && info && lineas[info.madreId] && !parcialInnecesario;
+                                    return (
+                                        <div key={i} className="px-6 py-4 border-b border-slate-100 bg-white hover:bg-slate-50 transition-colors">
+                                            <div className="flex justify-between items-center">
+                                                <div>
+                                                    <div className="font-bold text-slate-800 text-sm">{o.code}{info?.esComplemento && <span className="ml-2 text-[10px] font-black uppercase text-fuchsia-700 bg-fuchsia-50 border border-fuchsia-200 px-2 py-0.5 rounded-full">Reposición de {info.codigoMadre}</span>}</div>
+                                                    <div className="text-xs text-slate-400 mt-0.5">{o.desc}</div>
+                                                </div>
+                                                <span className="text-xs font-bold bg-slate-100 text-slate-600 px-3 py-1 rounded border border-slate-200">{o.bultos.length} Bultos</span>
+                                            </div>
+                                            {conBloque && (
+                                                <EnvioPorOrden
+                                                    orden={o}
+                                                    info={info}
+                                                    linea={lineas[info.madreId]}
+                                                    restantes={restantesDe(o.id)}
+                                                    onChange={(l) => setLineas(prev => ({ ...prev, [info.madreId]: l }))}
+                                                />
+                                            )}
+                                            {destPermiteParcial(dest) && !info && (
+                                                <div className="mt-2 text-[11px] text-slate-400"><i className="fa-solid fa-circle-notch fa-spin mr-1"></i>Cargando el libro de entregas de esta orden...</div>
+                                            )}
                                         </div>
-                                        <span className="text-xs font-bold bg-slate-100 text-slate-600 px-3 py-1 rounded border border-slate-200">{o.bultos.length} Bultos</span>
-                                    </div>
-                                ))}
+                                    );
+                                })}
                             </div>
                         </div>
                     </div>
@@ -776,6 +1003,11 @@ const DispatchView = ({ selectedOrders: initialOrders = [], areaFilter, originAr
                             <p className="text-sm text-slate-500 mt-2">Autorizar salida de {totalBultos} bultos</p>
                         </div>
                         <div className="px-8 pb-8 space-y-4">
+                            {resumenEnvio.length > 0 && (
+                                <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-900 space-y-2 text-left">
+                                    {resumenEnvio.map((f, i) => <p key={i}>{f}</p>)}
+                                </div>
+                            )}
                             {logs.length > 0 && <div className="p-3 bg-slate-900 text-emerald-400 text-xs rounded-lg font-mono text-center">{logs[logs.length - 1]}</div>}
                             <button onClick={handleCreateBatch} disabled={loading} className="w-full py-4 bg-brand-cyan text-white rounded-xl font-bold hover:brightness-110 transition-all shadow-md text-lg flex justify-center items-center gap-2">
                                 {loading ? <i className="fa-solid fa-circle-notch fa-spin"></i> : <><i className="fa-solid fa-truck-fast"></i> Confirmar Salida</>}

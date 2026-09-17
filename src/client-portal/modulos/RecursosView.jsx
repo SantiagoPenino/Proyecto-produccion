@@ -546,6 +546,350 @@ function ModalConsumoTela({ tela, onClose }) {
  * aceptando negativo — eso lo decide administración), la recarga por Handy /
  * MercadoPago y ve su estado de cuenta. Todo por token, con candado de pertenencia.
  * ──────────────────────────────────────────────────────────────────────────── */
+// BENEFICIOS (specs/40): beneficios pactados con el vendedor o predefinidos. Un beneficio queda
+// habilitado RECIÉN cuando la pasarela confirma la carga (webhook → factura + cuenta propia):
+// hasta entonces no aplica ningún precio. La cuenta que crea NO se suma al saldo común.
+function SeccionBeneficios() {
+    const [data, setData] = useState(null);
+    const [cargando, setCargando] = useState(true);
+    const [act, setAct] = useState(null);       // { ben, importe, comprobante, documentoFiscal, nombreFiscal }
+    const [busy, setBusy] = useState(false);
+    const [msg, setMsg] = useState(null);
+    const [compDe, setCompDe] = useState(null); // benId con la comparación de precios desplegada
+    const [umbralCedula, setUmbralCedula] = useState({ UYU: 65000, USD: 1600 });
+    const [movsDe, setMovsDe] = useState(null); // beneficio (activo o ya agotado/vencido) cuyo estado de cuenta se muestra
+    const [movs, setMovs] = useState([]);
+
+    const cargar = useCallback(() => apiClient.get('/web-orders/mis-beneficios')
+        .then(r => { setData(r || null); if (r?.umbralCedula) setUmbralCedula(r.umbralCedula); })
+        .catch(() => setData(null))
+        .finally(() => setCargando(false)), []);
+    useEffect(() => { cargar(); }, [cargar]);
+
+    if (cargando || !data || data.habilitada === false || data.activo === false) return null;
+    const activos = data.activos || [];
+    const disponibles = data.disponibles || [];
+    if (activos.length === 0 && disponibles.length === 0) return null;
+
+    const sym = (m) => m === 'USD' ? 'US$' : '$';
+    const fVence = (v) => v ? String(v).slice(0, 10).split('-').reverse().join('/') : null;
+    // El estado real de la bolsa (no solo ACTIVO/no-ACTIVO): agotada o vencida NO es lo
+    // mismo que pausada por administración, y decirle al cliente lo contrario confunde.
+    const estadoBen = (e) => ({
+        ACTIVO: { texto: 'aplicando precios pactados', cls: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20' },
+        PAUSADO: { texto: 'en pausa por administración', cls: 'text-amber-400 bg-amber-500/10 border-amber-500/20' },
+        AGOTADO: { texto: 'agotado: volviste a tu tarifa normal', cls: 'text-zinc-400 bg-zinc-500/10 border-zinc-500/20' },
+        VENCIDO: { texto: 'vencido', cls: 'text-zinc-400 bg-zinc-500/10 border-zinc-500/20' },
+        CERRADO: { texto: 'cerrado', cls: 'text-zinc-400 bg-zinc-500/10 border-zinc-500/20' },
+    }[e] || { texto: e, cls: 'text-zinc-400 bg-zinc-500/10 border-zinc-500/20' });
+    const topeCedula = (m) => Number(umbralCedula[m] || umbralCedula.UYU) || 65000;
+    const inputCls = "w-full bg-custom-dark border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-100 outline-none focus:border-custom-cyan";
+    const importeDe = (a) => { const b = a?.ben; if (!b) return 0; const imp = parseFloat(a.importe); return b.cargaEsMinimo && imp >= Number(b.carga) ? imp : Number(b.carga); };
+
+    const iniciar = async (gateway) => {
+        const b = act?.ben; if (!b) return;
+        if (b.cargaEsMinimo && !(parseFloat(act.importe) >= Number(b.carga))) { setMsg({ tipo: 'err', texto: `La carga mínima de este beneficio es ${sym(b.moneda)} ${fmtNum(b.carga)}.` }); return; }
+        const imp = importeDe(act);
+        const comprobante = act.comprobante === 'e-factura' ? 'e-factura' : 'e-ticket';
+        const docFiscal = normalizarDocumento(act.documentoFiscal);
+        if (comprobante === 'e-factura') {
+            const v = validarDocumentoUY(docFiscal);
+            if (!v.valido || v.tipo !== 'RUT') { setMsg({ tipo: 'err', texto: v.tipo === 'RUT' ? v.motivo : 'La e-Factura necesita un RUT válido de 12 dígitos (sin puntos ni guiones).' }); return; }
+            if (String(act.nombreFiscal || '').trim().length < 3) { setMsg({ tipo: 'err', texto: 'Poné la razón social que va en la e-Factura.' }); return; }
+        } else {
+            if (imp >= topeCedula(b.moneda) && !docFiscal) { setMsg({ tipo: 'err', texto: `Para cargas de ${sym(b.moneda)} ${fmtNum(topeCedula(b.moneda), 0)} o más, DGI exige identificar al receptor: poné tu cédula (o elegí e-Factura con RUT).` }); return; }
+            if (docFiscal) { const v = validarDocumentoUY(docFiscal); if (!v.valido) { setMsg({ tipo: 'err', texto: v.motivo }); return; } }
+        }
+        const payWindow = window.open('about:blank', '_blank');
+        setBusy(true); setMsg(null);
+        try {
+            const r = await apiClient.post(`/web-orders/mis-beneficios/${b.benId}/recargar`, { gateway, importe: imp, comprobante, documentoFiscal: docFiscal, nombreFiscal: String(act.nombreFiscal || '').trim() });
+            if (r?.success && r.url) {
+                if (payWindow) payWindow.location.href = r.url;
+                setAct(null);
+                setMsg({ tipo: 'ok', texto: `Completá el pago en la pestaña que se abrió. Cuando la pasarela confirme, el beneficio «${b.nombre}» queda habilitado y su cuenta aparece en "Mi billetera" — actualizá esta página para verlo.` });
+            } else {
+                if (payWindow) payWindow.close();
+                setMsg({ tipo: 'err', texto: r?.error || 'No se pudo generar el link de pago.' });
+            }
+        } catch (e) {
+            if (payWindow) payWindow.close();
+            setMsg({ tipo: 'err', texto: e?.response?.data?.error || e.message || 'No se pudo iniciar la carga.' });
+        } finally { setBusy(false); }
+    };
+
+    // Estado de cuenta del beneficio: misma cuenta CueIdCuenta de siempre (la bolsa),
+    // así que reutiliza el endpoint genérico de "Mi billetera" — funciona igual
+    // esté ACTIVO, PAUSADO, AGOTADO o VENCIDO (no se borra, solo deja de sumar saldo).
+    const abrirMovs = (b) => {
+        setMovsDe(b); setMovs([]);
+        apiClient.get(`/web-orders/mis-cuentas/${b.cuentaId}/movimientos`).then(r => setMovs(r?.data || [])).catch(() => setMovs([]));
+    };
+    const descargarComprobante = async (b, docId) => {
+        try {
+            const data = await apiClient.get(`/web-orders/mis-cuentas/${b.cuentaId}/comprobantes/${docId}`);
+            if (!data?.doc) throw new Error('No se pudo leer el comprobante.');
+            await generarPdfFacturaDGI(data.doc, data.detalles || []);
+        } catch (e) { setMsg({ tipo: 'err', texto: e?.response?.data?.error || e.message || 'No se pudo descargar el comprobante.' }); }
+    };
+
+    return (
+        <div className="space-y-2">
+            <TituloSeccion icon={Zap}>Mis beneficios</TituloSeccion>
+            <div className="overflow-hidden rounded-xl border border-zinc-800 bg-brand-dark">
+                <div className="px-4 py-3 bg-custom-dark border-b border-zinc-800">
+                    <span className="text-[11px] text-zinc-500">Precios pactados que se habilitan cargando su saldo. Cada beneficio tiene su propia cuenta, separada de tu billetera común: cuando se agota o vence, volvés a tu tarifa de siempre.</span>
+                </div>
+                {msg && (
+                    <div className={`px-4 py-2 text-xs font-semibold border-b border-zinc-800 ${msg.tipo === 'ok' ? 'text-emerald-400 bg-emerald-500/5' : 'text-rose-400 bg-rose-500/5'}`}>{msg.texto}</div>
+                )}
+
+                {activos.length > 0 && (
+                    <div className="divide-y divide-zinc-800/60">
+                        <div className="px-4 py-1.5 text-[10px] font-black uppercase tracking-widest text-emerald-400/80 bg-emerald-500/5">Habilitados</div>
+                        {activos.map(b => (
+                            <div key={b.bclId} className="px-4 py-3 flex flex-wrap items-center gap-3">
+                                <div className="flex-1 min-w-[200px]">
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                        <span className="font-black text-zinc-100">{b.nombre}</span>
+                                        <span className={`text-[10px] font-bold rounded px-1.5 py-0.5 border ${estadoBen(b.estado).cls}`}>{estadoBen(b.estado).texto}</span>
+                                        {b.vence && <span className="text-[10px] font-bold text-zinc-500 bg-zinc-800 border border-zinc-700 rounded px-1.5 py-0.5">vence {fVence(b.vence)}</span>}
+                                    </div>
+                                    <div className="text-[11px] text-zinc-400 mt-0.5">{(b.reglasTexto || []).join(' · ')}</div>
+                                    <div className="text-[10px] text-zinc-600">Cargaste {sym(b.moneda)} {fmtNum(b.cargado)} el {fmtFechaCorta(b.fechaActivacion)}{b.aproxUnidades != null ? ` · te quedan ≈ ${b.aproxUnidades} unidades al precio pactado` : ''} · {b.consumos} pedido{b.consumos !== 1 ? 's' : ''} descontado{b.consumos !== 1 ? 's' : ''}</div>
+                                </div>
+                                <div className="text-right">
+                                    <div className={`font-black tabular-nums ${Number(b.saldo) > 0 ? 'text-emerald-400' : 'text-zinc-500'}`}>{sym(b.moneda)} {fmtNum(b.saldo)}</div>
+                                    <div className="text-[10px] text-zinc-600">saldo del beneficio</div>
+                                </div>
+                                <button onClick={() => abrirMovs(b)}
+                                    className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-bold text-zinc-300 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-lg transition-colors shrink-0">
+                                    <History size={12} /> Movimientos
+                                </button>
+                            </div>
+                        ))}
+                    </div>
+                )}
+
+                {disponibles.length > 0 && (
+                    <div className="divide-y divide-zinc-800/60 border-t border-zinc-800">
+                        <div className="px-4 py-1.5 text-[10px] font-black uppercase tracking-widest text-custom-cyan/80 bg-brand-cyan/5">Para activar · se habilitan al confirmarse la carga</div>
+                        {disponibles.map(d => (
+                            <div key={d.benId} className="px-4 py-3 space-y-2">
+                                <div className="flex flex-wrap items-center gap-3">
+                                    <div className="flex-1 min-w-[200px]">
+                                        <div className="flex items-center gap-2 flex-wrap">
+                                            <span className="font-black text-zinc-100">{d.nombre}</span>
+                                            <span className={`text-[10px] font-bold rounded px-1.5 py-0.5 border ${d.tipo === 'PACTO' ? 'text-indigo-300 bg-indigo-500/10 border-indigo-500/20' : 'text-sky-300 bg-sky-500/10 border-sky-500/20'}`}>{d.tipo === 'PACTO' ? `pactado con ${d.vendedorNombre || 'tu vendedor'}` : 'predefinido'}</span>
+                                        </div>
+                                        <div className="text-[11px] text-zinc-400 mt-0.5">{(d.reglasTexto || []).join(' · ')}</div>
+                                        <div className="text-[10px] text-zinc-600">Carga {d.cargaEsMinimo ? 'mínima' : 'fija'} {sym(d.moneda)} {fmtNum(d.carga)} · {d.vigenciaTexto}{d.descripcion ? ` · ${d.descripcion}` : ''}</div>
+                                        {d.alertas?.peores > 0 && (
+                                            <div className="mt-1 text-[11px] text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-2 py-1">
+                                                Ojo: {d.alertas.peores} precio{d.alertas.peores !== 1 ? 's' : ''} de este beneficio {d.alertas.peores !== 1 ? 'son peores' : 'es peor'} que tu tarifa actual{(d.alertas.detalle || []).length ? `: ${d.alertas.detalle.slice(0, 3).map(x => `${x.articulo} hoy ${fmtNum(x.actual)} / pactado ${fmtNum(x.pactado)}`).join('; ')}` : ''}.
+                                            </div>
+                                        )}
+                                    </div>
+                                    <div className="flex items-center gap-1.5">
+                                        {(d.comparacion || []).length > 0 && (
+                                            <button onClick={() => setCompDe(compDe === d.benId ? null : d.benId)}
+                                                className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-bold text-zinc-300 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-lg transition-colors">
+                                                <ChevronDown size={12} className={compDe === d.benId ? 'rotate-180' : ''} /> Comparar precios
+                                            </button>
+                                        )}
+                                        <button onClick={() => { setAct({ ben: d, importe: String(d.carga), comprobante: 'e-ticket', documentoFiscal: '', nombreFiscal: '' }); setMsg(null); }}
+                                            className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-bold text-white bg-emerald-600/90 hover:bg-emerald-600 rounded-lg transition-colors">
+                                            <CreditCard size={12} /> Activar cargando {sym(d.moneda)} {fmtNum(d.carga)}{d.cargaEsMinimo ? ' o más' : ''}
+                                        </button>
+                                    </div>
+                                </div>
+                                {compDe === d.benId && (
+                                    <div className="overflow-x-auto rounded-lg border border-zinc-800">
+                                        <table className="w-full text-[11px]">
+                                            <thead className="bg-custom-dark text-zinc-500"><tr><th className="text-left px-2 py-1 font-bold">Alcance</th><th className="text-right px-2 py-1 font-bold">Precio de lista</th><th className="text-right px-2 py-1 font-bold">Tu precio hoy</th><th className="text-right px-2 py-1 font-bold">Con el beneficio</th></tr></thead>
+                                            <tbody>
+                                                {d.comparacion.map((x, i) => (
+                                                    <tr key={i} className="border-t border-zinc-800/60">
+                                                        <td className="px-2 py-1 text-zinc-300">{x.texto}</td>
+                                                        <td className="px-2 py-1 text-right tabular-nums text-zinc-500">{x.lista != null ? fmtNum(x.lista) : '—'}</td>
+                                                        <td className="px-2 py-1 text-right tabular-nums text-zinc-300">{x.actual != null ? fmtNum(x.actual) : '—'}</td>
+                                                        <td className={`px-2 py-1 text-right tabular-nums font-black ${x.peor ? 'text-amber-400' : 'text-emerald-400'}`}>{x.pactado != null ? fmtNum(x.pactado) : '—'}{x.peor ? ' ⚠' : ''}</td>
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                )}
+                            </div>
+                        ))}
+                    </div>
+                )}
+            </div>
+
+            {/* Modal activar: misma pasarela y mismo comprobante que la recarga prepago */}
+            {act && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={e => e.target === e.currentTarget && setAct(null)}>
+                    <div className="bg-brand-dark border border-zinc-700 rounded-2xl w-full max-w-md p-5 space-y-4">
+                        <div className="flex items-center justify-between">
+                            <h3 className="text-zinc-100 font-black">Activar «{act.ben.nombre}»</h3>
+                            <button onClick={() => setAct(null)} className="text-zinc-500 hover:text-zinc-200"><X size={18} /></button>
+                        </div>
+                        <div className="text-[11px] text-zinc-400 bg-custom-dark/50 border border-zinc-800 rounded-xl p-3 space-y-1">
+                            <div>{(act.ben.reglasTexto || []).join(' · ')}</div>
+                            <div className="text-zinc-500">{act.ben.vigenciaTexto}. El saldo cargado se usa solo en los pedidos de este beneficio y no se suma a tu billetera común.</div>
+                        </div>
+                        {act.ben.cargaEsMinimo ? (
+                            <div>
+                                <label className="block text-[11px] font-bold text-zinc-400 mb-1">Importe a cargar ({sym(act.ben.moneda)}) — mínimo {fmtNum(act.ben.carga)}</label>
+                                <input type="number" min={act.ben.carga} step="0.01" value={act.importe} onChange={e => setAct(x => ({ ...x, importe: e.target.value }))} className={inputCls} />
+                            </div>
+                        ) : (
+                            <div className="text-sm text-zinc-200"><span className="text-[11px] font-bold text-zinc-400">Importe a cargar: </span><span className="font-black tabular-nums">{sym(act.ben.moneda)} {fmtNum(act.ben.carga)}</span> <span className="text-[11px] text-zinc-500">(fijo: es la carga pactada)</span></div>
+                        )}
+                        <div className="space-y-3 border border-zinc-800 rounded-xl p-3 bg-custom-dark/50">
+                            <p className="text-[11px] font-bold text-zinc-300">Tu comprobante (se emite solo al acreditarse el pago):</p>
+                            <div className="grid grid-cols-2 gap-2">
+                                <button type="button" onClick={() => setAct(x => ({ ...x, comprobante: 'e-ticket' }))}
+                                    className={`px-2 py-2 rounded-lg text-[11px] font-bold border transition-colors ${act.comprobante !== 'e-factura' ? 'text-custom-cyan bg-brand-cyan/10 border-brand-cyan/40' : 'text-zinc-400 bg-zinc-800/60 border-zinc-700'}`}>
+                                    e-Ticket<span className="block font-normal text-[10px] text-zinc-500">consumidor final</span>
+                                </button>
+                                <button type="button" onClick={() => setAct(x => ({ ...x, comprobante: 'e-factura' }))}
+                                    className={`px-2 py-2 rounded-lg text-[11px] font-bold border transition-colors ${act.comprobante === 'e-factura' ? 'text-custom-cyan bg-brand-cyan/10 border-brand-cyan/40' : 'text-zinc-400 bg-zinc-800/60 border-zinc-700'}`}>
+                                    e-Factura<span className="block font-normal text-[10px] text-zinc-500">con RUT de empresa</span>
+                                </button>
+                            </div>
+                            {act.comprobante === 'e-factura' ? (
+                                <>
+                                    <div>
+                                        <label className="block text-[11px] font-bold text-zinc-400 mb-1">RUT (12 dígitos, sin puntos ni guiones)</label>
+                                        <input type="text" inputMode="numeric" maxLength={12} value={act.documentoFiscal} onChange={e => setAct(x => ({ ...x, documentoFiscal: e.target.value.replace(/\D/g, '') }))} placeholder="21XXXXXXXXXX" className={inputCls} />
+                                    </div>
+                                    <div>
+                                        <label className="block text-[11px] font-bold text-zinc-400 mb-1">Razón social (como va en la e-Factura)</label>
+                                        <input type="text" maxLength={100} value={act.nombreFiscal} onChange={e => setAct(x => ({ ...x, nombreFiscal: e.target.value }))} placeholder="Mi Empresa S.A." className={inputCls} />
+                                    </div>
+                                </>
+                            ) : (
+                                <div>
+                                    <label className="block text-[11px] font-bold text-zinc-400 mb-1">
+                                        Cédula {importeDe(act) >= topeCedula(act.ben.moneda)
+                                            ? <span className="text-amber-400">(obligatoria: DGI la exige para este importe)</span>
+                                            : <span className="text-zinc-500">(opcional para cargas menores a {sym(act.ben.moneda)} {fmtNum(topeCedula(act.ben.moneda), 0)})</span>}
+                                    </label>
+                                    <input type="text" inputMode="numeric" maxLength={8} value={act.documentoFiscal} onChange={e => setAct(x => ({ ...x, documentoFiscal: e.target.value.replace(/\D/g, '') }))} placeholder="Sin puntos ni guion" className={inputCls} />
+                                </div>
+                            )}
+                        </div>
+                        <p className="text-[11px] text-zinc-500">Cuando la pasarela confirme el pago se emite tu {act.comprobante === 'e-factura' ? 'e-Factura' : 'e-Ticket'}, se crea la cuenta «Beneficio: {act.ben.nombre}» con {sym(act.ben.moneda)} {fmtNum(importeDe(act))} y los precios pactados empiezan a aplicar. Hasta entonces el beneficio NO está habilitado.</p>
+                        <div className="grid grid-cols-2 gap-2">
+                            <button onClick={() => iniciar('handy')} disabled={busy} className="px-3 py-3 rounded-xl text-sm font-black text-white bg-[#722efa] hover:opacity-90 disabled:opacity-50 transition-opacity">Pagar con Handy</button>
+                            <button onClick={() => iniciar('mercadopago')} disabled={busy} className="px-3 py-3 rounded-xl text-sm font-black text-zinc-900 bg-[#ffe600] hover:opacity-90 disabled:opacity-50 transition-opacity">MercadoPago</button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Modal estado de cuenta del beneficio — mismo formato que "Mi billetera",
+                válido tanto para uno habilitado como para uno agotado/vencido/pausado. */}
+            {movsDe && (() => {
+                const s = sym(movsDe.moneda);
+                const saldoFinal = movs.length ? movs[0].saldoFn : Number(movsDe.saldo || 0);
+                return (
+                    <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-start justify-center px-2 sm:px-4 pt-10 pb-4"
+                        onClick={() => setMovsDe(null)}>
+                        <div className="bg-custom-dark border border-zinc-700/50 rounded-xl shadow-2xl w-[97vw] max-w-5xl max-h-[calc(100vh-4rem)] flex flex-col overflow-hidden"
+                            onClick={e => e.stopPropagation()}>
+                            <div className="flex items-center justify-between px-5 py-3 border-b border-zinc-800 shrink-0">
+                                <div className="flex items-center gap-2.5 min-w-0">
+                                    <Zap size={16} className="text-custom-cyan shrink-0" />
+                                    <div className="min-w-0">
+                                        <h3 className="text-sm font-black leading-tight truncate text-zinc-100">Estado de cuenta · Beneficio «{movsDe.nombre}»</h3>
+                                        <p className="text-[11px] text-zinc-500">{estadoBen(movsDe.estado).texto} · cargaste {s} {fmtNum(movsDe.cargado)} el {fmtFechaCorta(movsDe.fechaActivacion)}</p>
+                                    </div>
+                                </div>
+                                <button onClick={() => setMovsDe(null)} title="Cerrar el estado de cuenta"
+                                    className="p-2 rounded-lg text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 transition-colors shrink-0">
+                                    <X size={18} />
+                                </button>
+                            </div>
+                            <div className="px-5 py-3 bg-brand-dark border-b border-zinc-800 flex flex-wrap items-center gap-x-6 gap-y-2 shrink-0">
+                                <div className="flex items-baseline gap-2">
+                                    <span className="text-[10px] font-black uppercase tracking-widest text-zinc-500">Saldo actual</span>
+                                    <span className={`text-sm font-black ${saldoFinal < 0 ? 'text-rose-400' : 'text-custom-cyan'}`}>{s} {fmtNum(saldoFinal)}</span>
+                                </div>
+                                <div className="flex items-baseline gap-2 sm:ml-auto">
+                                    <span className="text-[11px] text-zinc-500">{movs.length} movimientos</span>
+                                </div>
+                            </div>
+                            <div className="flex-1 min-h-0 overflow-auto">
+                                {movs.length === 0 ? (
+                                    <p className="text-center text-zinc-500 text-sm py-12">Este beneficio todavía no tiene movimientos.</p>
+                                ) : (
+                                    <table className="w-full text-xs">
+                                        <thead className="sticky top-0 z-10">
+                                            <tr className="text-[10px] text-zinc-500 uppercase bg-custom-dark border-b border-zinc-800">
+                                                <th className="px-3 py-2 text-left font-semibold">Fecha</th>
+                                                <th className="px-3 py-2 text-left font-semibold">Tipo</th>
+                                                <th className="px-3 py-2 text-left font-semibold">Documento</th>
+                                                <th className="px-3 py-2 text-left font-semibold">Concepto</th>
+                                                <th className="px-3 py-2 text-right font-semibold">Saldo Ini.</th>
+                                                <th className="px-3 py-2 text-right font-semibold">Debe</th>
+                                                <th className="px-3 py-2 text-right font-semibold">Haber</th>
+                                                <th className="px-3 py-2 text-right font-semibold">Saldo Fn.</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-zinc-800/60">
+                                            {movs.map(m => (
+                                                <tr key={m.id} className={`hover:bg-zinc-800/20 transition-colors ${m.anulado ? 'opacity-40' : ''}`}>
+                                                    <td className="px-3 py-2 text-zinc-500 whitespace-nowrap">{fmtFechaCorta(m.fecha)}</td>
+                                                    <td className="px-3 py-2 whitespace-nowrap">
+                                                        <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${
+                                                            m.anulado ? 'bg-zinc-700/30 text-zinc-500'
+                                                                : m.importe >= 0 ? 'bg-emerald-500/10 text-emerald-400'
+                                                                    : 'bg-brand-cyan/10 text-custom-cyan'
+                                                        }`}>
+                                                            {m.anulado ? `${m.tipo} (anulado)` : m.tipo}
+                                                        </span>
+                                                    </td>
+                                                    <td className="px-3 py-2 font-bold text-zinc-200 whitespace-nowrap">
+                                                        {m.documento || '—'}
+                                                        {m.docId && !m.anulado && (
+                                                            <button onClick={() => descargarComprobante(movsDe, m.docId)}
+                                                                title={`Descargar el comprobante ${m.documento || ''} en PDF`}
+                                                                className="ml-1.5 inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] font-bold text-custom-cyan bg-brand-cyan/10 hover:bg-brand-cyan/20 border border-brand-cyan/30 rounded transition-colors align-middle">
+                                                                <FileText size={10} /> PDF
+                                                            </button>
+                                                        )}
+                                                    </td>
+                                                    <td className="px-3 py-2 text-zinc-400 max-w-[240px] truncate" title={m.concepto}>{m.concepto || '—'}</td>
+                                                    <td className="px-3 py-2 text-right text-zinc-500 whitespace-nowrap">{s} {fmtNum(m.saldoIn)}</td>
+                                                    <td className={`px-3 py-2 text-right whitespace-nowrap font-semibold ${m.debe > 0 ? 'text-rose-400' : 'text-zinc-700'}`}>
+                                                        {m.debe > 0 ? `${s} ${fmtNum(m.debe)}` : '—'}
+                                                    </td>
+                                                    <td className={`px-3 py-2 text-right whitespace-nowrap font-semibold ${m.haber > 0 ? 'text-emerald-400' : 'text-zinc-700'}`}>
+                                                        {m.haber > 0 ? `${s} ${fmtNum(m.haber)}` : '—'}
+                                                    </td>
+                                                    <td className={`px-3 py-2 text-right font-bold whitespace-nowrap ${m.saldoFn < 0 ? 'text-rose-400' : 'text-custom-cyan'}`}>
+                                                        {s} {fmtNum(m.saldoFn)}
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                )}
+                            </div>
+                            <div className="px-5 py-2.5 border-t border-zinc-800 bg-brand-dark flex items-center justify-between gap-3 shrink-0">
+                                <span className="text-[11px] text-zinc-500">Vista de consulta: acá no se puede editar ni revertir ningún movimiento.</span>
+                                <button onClick={() => setMovsDe(null)} className="px-3 py-1.5 rounded-lg text-[11px] font-bold text-zinc-300 bg-zinc-800 hover:bg-zinc-700 transition-colors">Cerrar</button>
+                            </div>
+                        </div>
+                    </div>
+                );
+            })()}
+        </div>
+    );
+}
+
 function SeccionCuentasSaldo() {
     const [cuentas, setCuentas] = useState([]);
     const [cargando, setCargando] = useState(true);
@@ -692,6 +1036,13 @@ function SeccionCuentasSaldo() {
                                             ? <span className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-1.5 py-0.5"><Zap size={10} /> descuenta tus pedidos en automático</span>
                                             : <span className="text-[10px] font-bold text-zinc-500 bg-zinc-800 border border-zinc-700 rounded px-1.5 py-0.5">se usa cuando vos lo elegís</span>}
                                         {c.restringida && <span className="text-[10px] font-bold text-violet-400 bg-violet-500/10 border border-violet-500/20 rounded px-1.5 py-0.5">🔒 solo ciertos artículos</span>}
+                                        {/* BENEFICIOS (specs/40): la cuenta de un beneficio se ve aparte del saldo común */}
+                                        {c.beneficio && (
+                                            <span title={`Cuenta propia del beneficio «${c.beneficio.nombre}». ${(c.beneficio.reglasTexto || []).join(' · ')}. No se suma a tu saldo común y no se recarga: se usa hasta agotarla o vencer.`}
+                                                className={`text-[10px] font-bold rounded px-1.5 py-0.5 border ${c.beneficio.estado === 'ACTIVO' ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20' : 'text-amber-400 bg-amber-500/10 border-amber-500/20'}`}>
+                                                🎁 beneficio · {c.beneficio.estado === 'ACTIVO' ? 'habilitado' : c.beneficio.estado === 'PAUSADO' ? 'en pausa' : String(c.beneficio.estado || '').toLowerCase()}{c.beneficio.vence ? ` · vence ${String(c.beneficio.vence).slice(0, 10).split('-').reverse().join('/')}` : ''}
+                                            </span>
+                                        )}
                                     </div>
                                     <span className="text-[10px] text-zinc-600">Creada {fmtFechaCorta(c.fechaAlta)}</span>
                                 </div>
@@ -1240,6 +1591,8 @@ export const RecursosView = () => {
                 <>
                     {/* Billetera: cuentas de saldo del cliente (crear / recargar / movimientos) */}
                     <SeccionCuentasSaldo />
+                    {/* BENEFICIOS (specs/40): precios pactados que se habilitan cargando su saldo */}
+                    <SeccionBeneficios />
                     {sinNada ? (
                         <div className="text-center py-16 text-zinc-500">
                             <Layers size={40} strokeWidth={1} className="mx-auto mb-3 text-zinc-600" />

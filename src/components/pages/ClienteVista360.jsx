@@ -47,6 +47,7 @@ import CajaVentaDirectaTab from './CajaVentaDirectaTab';
 // Menú "Más": Bandeja CFE del cliente + Nueva Factura Manual (reuso directo)
 import ContabilidadBandejaCFE from './ContabilidadBandejaCFE';
 import FacturacionManualModal from './FacturacionManualModal';
+import SpecialPrices from './SpecialPrices';
 
 const TIPOS_MONETARIOS = ['USD', 'UYU', 'ARS', 'EUR', 'PYG', 'BRL', 'CORRIENTE', 'CREDITO', 'DEBITO', 'CAJA', 'DINERO_USD', 'DINERO_UYU'];
 const esRecurso = (c) => c.ProIdProducto != null || !TIPOS_MONETARIOS.includes(c.CueTipo?.toUpperCase());
@@ -63,6 +64,10 @@ const parseNroOficialDgi = (texto) => {
   if (matchSimple) return matchSimple[1];
   return null;
 };
+
+// Nombre visible de una cuenta de dinero (mismo criterio que el selector "Ver"
+// del Estado de Cuenta): el nombre que le pusieron, o "Principal $/US$".
+const nombreCuentaDinero = (c) => (c.CueNombre || (c.CueEsPrincipal ? `Principal ${c.CueTipo === 'DINERO_USD' ? 'US$' : '$'}` : `Cuenta #${c.CueIdCuenta}`));
 
 /* ── Modal "Ajustar saldo" ────────────────────────────────────────────────
    Corrección manual del saldo de una cuenta de DINERO (por ahora, no aplica a
@@ -126,14 +131,14 @@ const ModalAjusteSaldo = ({ cuentas, cuentaDefaultId, clienteNombre, onClose, on
             </p>
           )}
 
-          {cuentas.length > 1 && (
+          {cuentas.length > 0 && (
             <div>
               <label className="block text-xs font-bold text-slate-600 mb-1.5">Cuenta</label>
-              <select value={cueId} onChange={e => setCueId(e.target.value)}
-                className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm font-semibold text-slate-700 outline-none focus:border-slate-400">
+              <select value={cueId} onChange={e => setCueId(e.target.value)} disabled={cuentas.length === 1}
+                className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm font-semibold text-slate-700 outline-none focus:border-slate-400 disabled:opacity-70">
                 {cuentas.map(c => (
                   <option key={c.CueIdCuenta} value={c.CueIdCuenta}>
-                    {c.MonSimbolo || (c.CueTipo === 'DINERO_USD' ? 'US$' : '$')} — saldo actual {fmtMoney(Number(c.CueSaldoActual || 0))}
+                    {codigoCuenta(c)} · {nombreCuentaDinero(c)}{c.CueEsPrincipal ? ' (principal)' : ''}{c.CueRestringida ? ' 🔒' : ''} — saldo actual {c.MonSimbolo || (c.CueTipo === 'DINERO_USD' ? 'US$' : '$')} {fmtMoney(Number(c.CueSaldoActual || 0))}
                   </option>
                 ))}
               </select>
@@ -184,7 +189,9 @@ const ModalAjusteSaldo = ({ cuentas, cuentaDefaultId, clienteNombre, onClose, on
 
           {cuenta && importe > 0 && (
             <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-xs">
-              <p className="text-slate-500">El saldo de <strong>{clienteNombre}</strong> ({simbolo}) pasa de</p>
+              <p className="text-slate-500">
+                El saldo de <strong>{clienteNombre}</strong> en <strong>{codigoCuenta(cuenta)} · {nombreCuentaDinero(cuenta)}</strong> ({simbolo}) pasa de
+              </p>
               <p className="font-black text-sm text-slate-800 mt-0.5">
                 {simbolo} {fmtMoney(Math.abs(saldoActual))}{saldoActual < 0 ? ' (a favor)' : ''}
                 {' → '}
@@ -676,9 +683,9 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
         />
       )}
 
-      {/* Sub-pestañas: Estado de cuenta / Órdenes / Recursos */}
+      {/* Sub-pestañas: Estado de cuenta / Órdenes / Recursos / Precios especiales */}
       <div className="px-4 pt-3 flex items-center gap-4 border-b border-slate-100">
-        {[['ESTADO', 'Estado de cuenta', movimientos.length], ['ORDENES', 'Órdenes', ordCargadas ? ordenesFiltradas.length : null], ['RECURSOS', 'Recursos', recursoCuentas.length || null]].map(([key, label, count]) => (
+        {[['ESTADO', 'Estado de cuenta', movimientos.length], ['ORDENES', 'Órdenes', ordCargadas ? ordenesFiltradas.length : null], ['RECURSOS', 'Recursos', recursoCuentas.length || null], ['PRECIOS', 'Precios especiales', null]].map(([key, label, count]) => (
           <button key={key} type="button" onClick={() => setVista(key)}
             className={`relative pb-2.5 text-xs font-bold transition-colors ${vista === key ? 'text-cyan-700' : 'text-slate-400 hover:text-slate-600'}`}>
             {label} {count != null && <span className="text-[10px] font-semibold text-slate-400">({count})</span>}
@@ -1247,6 +1254,19 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
           </div>
         );
       })()}
+
+      {/* ── Vista PRECIOS ESPECIALES: la misma pantalla de Precios Especiales, abierta en
+          este cliente (excepciones por artículo, perfiles asignados, excepciones de urgencia,
+          Guardar Tarifa / Quitar Cliente). ── */}
+      {vista === 'PRECIOS' && (
+        <div className="p-4">
+          <SpecialPrices
+            key={CliIdCliente}
+            embebido
+            clienteFijo={{ id: CliIdCliente, Nombre: cliente?.Nombre || cliente?.NombreFantasia || `Cliente ${CliIdCliente}` }}
+          />
+        </div>
+      )}
     </div>
   );
 }

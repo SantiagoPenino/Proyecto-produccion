@@ -598,7 +598,12 @@ const ProfileSelectionModal = ({ isOpen, onClose, allProfiles, selectedProfileId
 };
 
 // --- COMPONENTE PRINCIPAL ---
-const SpecialPrices = () => {
+// Props (opcionales, para embeber la vista en el Panel 360 del cliente):
+//   clienteFijo = { id: CliIdCliente, Nombre }  → se abre directo en ese cliente, sin la
+//                 lista de clientes de la izquierda; el resto (excepciones, perfiles,
+//                 urgencia, guardar, quitar) es exactamente la misma pantalla.
+//   embebido    = true → sin alto fijo ni scroll propio (lo maneja la página que la contiene).
+const SpecialPrices = ({ clienteFijo = null, embebido = false }) => {
     // Referencias y Listas base de la DB
     const [clients, setClients] = useState([]);
     const [selClientId, setSelClientId] = useState(null);
@@ -724,6 +729,17 @@ const SpecialPrices = () => {
         }
     }, [selClientId]);
 
+    // Embebido en el Panel 360: el cliente viene fijo. Si todavía no tiene tarifas, queda
+    // "en preparación" igual que al elegirlo desde "Buscar en DB" (se crea al Guardar Tarifa).
+    useEffect(() => {
+        if (!clienteFijo || !clienteFijo.id) return;
+        const id = clienteFijo.id;
+        const nombre = clienteFijo.Nombre || `Cliente ${id}`;
+        setClients(prev => prev.find(c => c.ClienteID === id) ? prev : [{ ClienteID: id, Nombre: nombre, CantReglas: 0 }, ...prev]);
+        setPendingNewClient({ id, Nombre: nombre });
+        setSelClientId(id);
+    }, [clienteFijo?.id]);
+
     useEffect(() => {
         if (!dbSearchTerm || dbSearchTerm.length < 2) {
             setDbSearchResults([]);
@@ -848,6 +864,7 @@ const SpecialPrices = () => {
             
             let customStr = bp > 0 ? bp.toString() : "";
             let discStr = "0";
+            let amtStr = "";     // descuento por IMPORTE fijo por unidad (regla 'subtract')
             let tipo = 'percentage';
             let active = false;
 
@@ -868,6 +885,14 @@ const SpecialPrices = () => {
                         discStr = (((bp - rv) / bp) * 100).toFixed(2);
                         if(discStr.endsWith('.00')) discStr = discStr.slice(0, -3);
                     } else discStr = "0";
+                } else if (tipo === 'subtract') {
+                    amtStr = rv.toString();
+                    if (bp > 0) {
+                        customStr = (bp - rv).toFixed(2);
+                        if(customStr.endsWith('.00')) customStr = customStr.slice(0, -3);
+                        discStr = ((rv / bp) * 100).toFixed(2);
+                        if(discStr.endsWith('.00')) discStr = discStr.slice(0, -3);
+                    } else { customStr = ""; discStr = "0"; }
                 }
             } else {
                 if (bp === 0) customStr = "";
@@ -877,6 +902,7 @@ const SpecialPrices = () => {
                 basePrice: bp,
                 customStr,
                 discStr,
+                amtStr,
                 tipoRegla: tipo,
                 isActive: active
             };
@@ -916,7 +942,7 @@ const SpecialPrices = () => {
 
             return {
                 ...prev,
-                [cod]: { ...row, customStr: strVal, discStr: dStr, tipoRegla: 'fixed', isActive: strVal !== "" }
+                [cod]: { ...row, customStr: strVal, discStr: dStr, amtStr: '', tipoRegla: 'fixed', isActive: strVal !== "" }
             };
         });
         setIsDirtyMap(true);
@@ -935,7 +961,26 @@ const SpecialPrices = () => {
 
             return {
                 ...prev,
-                [cod]: { ...row, discStr: strVal, customStr: cStr, tipoRegla: 'percentage', isActive: strVal !== "" && strVal !== "0" }
+                [cod]: { ...row, discStr: strVal, customStr: cStr, amtStr: '', tipoRegla: 'percentage', isActive: strVal !== "" && strVal !== "0" }
+            };
+        });
+        setIsDirtyMap(true);
+    };
+
+    // Descuento por IMPORTE fijo por unidad ("bonificación en $"): regla 'subtract', que el
+    // motor resta de la lista. Excluyente con el % y con el precio fijo.
+    const handleAmtStrChange = (cod, strVal) => {
+         setRowStateMap(prev => {
+            const row = prev[cod];
+            const a = parseFloat(strVal);
+            let cStr = "", dStr = "";
+            if (row.basePrice > 0 && !isNaN(a)) {
+                cStr = cleanNum(row.basePrice - a);
+                dStr = cleanNum((a / row.basePrice) * 100);
+            }
+            return {
+                ...prev,
+                [cod]: { ...row, amtStr: strVal, customStr: cStr, discStr: dStr, tipoRegla: 'subtract', isActive: strVal !== "" && strVal !== "0" }
             };
         });
         setIsDirtyMap(true);
@@ -1014,6 +1059,9 @@ const SpecialPrices = () => {
             if (row.tipoRegla === 'percentage') {
                 const d = parseFloat(row.discStr);
                 if (!isNaN(d) && d !== 0) { isConfigured = true; finalVal = d; }
+            } else if (row.tipoRegla === 'subtract') {
+                const a = parseFloat(row.amtStr);
+                if (!isNaN(a) && a > 0) { isConfigured = true; finalVal = a; }
             } else {
                 const cp = parseFloat(row.customStr);
                 // Si el precio fijo es diferente a la base, o si la base es 0 y pusieron un precio
@@ -1241,7 +1289,7 @@ const SpecialPrices = () => {
     const categoriasDropdown = ["TODAS", "ACTIVAS", ...new Set(baseProducts.filter(p => p.Grupo !== 'GLOBAL').map(p => p.Grupo).filter(Boolean))];
 
     return (
-        <div className="flex h-full bg-slate-50 overflow-hidden text-sm relative">
+        <div className={`flex bg-slate-50 text-sm relative ${embebido ? 'min-h-[70vh] rounded-xl border border-slate-200 overflow-hidden' : 'h-full overflow-hidden'}`}>
             <style>{`
                 @keyframes highlight-fade {
                     0% { background-color: rgba(253, 224, 71, 0.4); }
@@ -1270,7 +1318,8 @@ const SpecialPrices = () => {
                 onApply={handleApplyProfiles}
             />
 
-            {/* SIDEBAR CLIENTES */}
+            {/* SIDEBAR CLIENTES (no se muestra embebido en el Panel 360: el cliente ya está elegido) */}
+            {!embebido && (
             <div className="w-72 bg-white border-r border-slate-200 flex flex-col flex-shrink-0 z-10 shadow-[2px_0_10px_rgba(0,0,0,0.02)]">
                 {/* Header */}
                 <div className="p-4 border-b border-slate-100 bg-slate-50 flex items-center gap-2">
@@ -1452,6 +1501,7 @@ const SpecialPrices = () => {
                     )}
                 </div>
             </div>
+            )}
 
             {/* MAIN CONTENT V2 (CRISTAL DASHBOARD) */}
             <div className="flex-1 flex flex-col bg-[#F8FAFC]">
@@ -1862,6 +1912,7 @@ const SpecialPrices = () => {
                                             <th className="p-3 font-semibold text-slate-600 w-32 border-l border-slate-100">Precio Base</th>
                                             <th className="p-3 font-semibold text-indigo-700 w-40 bg-indigo-50/30">Nuevo Precio ($)</th>
                                             <th className="p-3 font-semibold text-emerald-700 w-32 bg-emerald-50/30">Desc. (%)</th>
+                                            <th className="p-3 font-semibold text-amber-700 w-32 bg-amber-50/30" title="Descuento por importe fijo por unidad (bonificación en $). Excluyente con el % y con el precio fijo.">Desc. ($)</th>
                                         </tr>
                                     </thead>
                                     <tbody className="divide-y divide-slate-100">
@@ -2017,6 +2068,20 @@ const SpecialPrices = () => {
                                                                 placeholder="0"
                                                             />
                                                             <span className="absolute right-3 top-1.5 text-slate-400 text-sm font-bold">%</span>
+                                                        </div>
+                                                    </td>
+                                                    <td className="p-2 bg-amber-50/10">
+                                                        <div className="relative">
+                                                            <span className="absolute left-3 top-2 text-slate-400 text-xs font-bold">{prod.Moneda !== 'UYU' ? prod.Moneda : '$'}</span>
+                                                            <input
+                                                                type="number"
+                                                                step="0.01"
+                                                                value={st.amtStr || ''}
+                                                                onChange={e => handleAmtStrChange(prod.CodArticulo, e.target.value)}
+                                                                className={`w-full pl-7 pr-3 py-1.5 border rounded font-mono outline-none transition-all ${isActive && st.tipoRegla === 'subtract' ? 'border-amber-400 bg-white shadow-[0_0_0_2px_rgba(245,158,11,0.1)]' : 'border-slate-300 bg-white/50 focus:bg-white focus:border-amber-400'}`}
+                                                                placeholder="0"
+                                                                title="Descuento por importe fijo por unidad"
+                                                            />
                                                         </div>
                                                     </td>
                                                 </tr>

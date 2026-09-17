@@ -255,7 +255,24 @@ const printEtiquetas = async (req, res) => {
               -- Un bulto CONSUMIDO ya no existe físicamente: su contenido se incorporó a
               -- otro bulto (ej. el material que entró a terminaciones y salió empaquetado).
               -- Reimprimir su etiqueta sacaría un rótulo de un paquete que no está.
-              AND ISNULL(LB.Estado, '') NOT IN ('CONSUMIDO', 'PERDIDO')
+              AND ISNULL(LB.Estado, '') NOT IN ('CONSUMIDO', 'PERDIDO', 'DESPACHADO', 'PROCESADO')
+              -- Un bulto que YA se incluyó en un remito (aunque ese remito se haya recibido
+              -- y el bulto vuelva a EN_STOCK del otro lado) no se reimprime acá: confunde al
+              -- que arma el PRÓXIMO remito con etiquetas de bultos que ya viajaron.
+              --
+              -- EXCEPCIÓN: remito todavía en ESPERANDO_RETIRO = nadie lo levantó, el paquete
+              -- sigue físicamente en el área de origen y necesita su rótulo. Pasa siempre con
+              -- las ventas de retiro (VEN-) de combos y de "Comprar y personalizar": al
+              -- confirmar el retiro se arma SOLO el remito PRO→área, en el mismo instante, y
+              -- el bulto quedaba EN_TRANSITO antes de que alguien imprimiera la etiqueta — no
+              -- se podía imprimir nunca (caso VEN-2405).
+              AND (ISNULL(LB.Estado, '') <> 'EN_TRANSITO'
+                   OR EXISTS (SELECT 1 FROM Logistica_EnvioItems ei2
+                              JOIN Logistica_Envios en2 ON en2.EnvioID = ei2.EnvioID
+                              WHERE ei2.BultoID = LB.BultoID AND en2.Estado = 'ESPERANDO_RETIRO'))
+              AND NOT EXISTS (SELECT 1 FROM Logistica_EnvioItems ei
+                              JOIN Logistica_Envios en ON en.EnvioID = ei.EnvioID
+                              WHERE ei.BultoID = LB.BultoID AND en.Estado <> 'ESPERANDO_RETIRO')
             ORDER BY E.OrdenID, E.NumeroBulto ASC
         `);
 
@@ -264,12 +281,28 @@ const printEtiquetas = async (req, res) => {
         }
 
         // Fetch all routing services for the selected orders based on NoDocERP
+        // [VENTA/COMBO] La venta de retiro (ancla VEN-) tiene su PROPIO NoDocERP: con el cruce
+        // por NoDocERP solo se encontraba a sí misma y la etiqueta decía "PRO / DEPOSITO" aunque
+        // la prenda fuera a Bordado (caso VEN-2407). Su recorrido real son las órdenes del
+        // pedido de origen (ComboPedidoNoDocERP) de SU MISMA prenda (ComboItemID). Seq ordena:
+        // primero la propia orden (de donde sale), después los servicios de la prenda.
         const routingResult = await request.query(`
-            SELECT o2.OrdenID as BaseOrdenID, o.AreaID as AreaDestino, o.Estado, o.EstadoenArea
-            FROM Ordenes o
-            JOIN Ordenes o2 ON o.NoDocERP = o2.NoDocERP AND o2.NoDocERP IS NOT NULL
-            WHERE o2.OrdenID IN (${idsStr})
-            ORDER BY o.OrdenID ASC
+            SELECT BaseOrdenID, AreaDestino, Estado, EstadoenArea FROM (
+                SELECT o2.OrdenID as BaseOrdenID, o.AreaID as AreaDestino, o.Estado, o.EstadoenArea,
+                       0 AS Seq, o.OrdenID AS OrdenRuta
+                FROM Ordenes o
+                JOIN Ordenes o2 ON o.NoDocERP = o2.NoDocERP AND o2.NoDocERP IS NOT NULL
+                WHERE o2.OrdenID IN (${idsStr})
+                UNION ALL
+                SELECT a.OrdenID, s.AreaID, s.Estado, s.EstadoenArea, 1, s.OrdenID
+                FROM Ordenes a
+                JOIN Ordenes s ON LTRIM(RTRIM(s.NoDocERP)) = LTRIM(RTRIM(a.ComboPedidoNoDocERP))
+                              AND s.ComboItemID = a.ComboItemID
+                              AND ISNULL(s.EstadoDependencia, '') <> 'VENTA_DIRECTA'
+                WHERE a.OrdenID IN (${idsStr})
+                  AND a.EstadoDependencia = 'VENTA_DIRECTA' AND a.ComboPedidoNoDocERP IS NOT NULL
+            ) R
+            ORDER BY BaseOrdenID, Seq, OrdenRuta ASC
         `);
         // RUTA DE LA ETIQUETA: un paso por ÁREA, no por orden. Un pedido puede tener
         // varias órdenes en la misma área (multitela en Sublimación, multimaterial en

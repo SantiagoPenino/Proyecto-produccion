@@ -18,6 +18,10 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import api from '../../services/api';
 import { generarPdfEstadoCuenta, generarPdfPrefactura, generarPdfFacturaDGI } from '../../utils/pdfGenerator';
 import { codigoCuenta } from '../../utils/cuentaCodigo';
+// La fecha de la cotización viene del backend como DATE en UTC: se formatea con el
+// helper que lee en UTC (el fmtFecha local de este archivo la retrocede un día).
+import { fmtFecha as fmtFechaUTC } from '../../utils/fechas';
+import { textoCalculo, tituloCalculo } from '../../utils/detalleMovimientoCuenta';
 import { exportarExcelEstadoCuenta } from '../../utils/excelGenerator';
 import CierreCicloPreviewModal from './CierreCicloPreviewModal';
 import FacturacionManualModal from './FacturacionManualModal';
@@ -1180,8 +1184,8 @@ export const ModalConfigCuenta = ({ cuenta, onClose, onSuccess }) => {
             on="ON: cuando entra una orden que esta cuenta puede pagar, se descuenta SOLA (como el rollo). No pasa por caja."
             off="OFF: nunca se descuenta sola. Solo se usa si el cajero la elige como medio de pago al cobrar." />
           <SwitchCuenta checked={neg} onChange={setNeg}
-            titulo="Acepta saldo negativo (solo clientes SEMANALES)"
-            on="ON: si no alcanza, descuenta igual y la cuenta queda en rojo (se compensa con la próxima carga). Solo tiene efecto en clientes semanales y en descuentos del sistema — como medio de pago, y para clientes comunes, el saldo nunca queda en negativo."
+            titulo="Acepta saldo negativo (clientes SEMANALES y ROLLO POR ADELANTADO)"
+            on="ON: si no alcanza, descuenta igual y la cuenta queda en rojo (se compensa con la próxima carga). Solo tiene efecto en clientes SEMANALES o ROLLO POR ADELANTADO y en descuentos del sistema — como medio de pago, y para clientes comunes, el saldo nunca queda en negativo."
             off="OFF: descuenta solo lo que hay; lo que falta sigue el camino normal y se cobra en caja." />
           <SwitchCuenta checked={restringida} onChange={setRestringida}
             titulo="Restringida a ciertos artículos"
@@ -1239,6 +1243,9 @@ export const ModalCuentasCliente = ({ cliente, onClose, onChanged }) => {
   // automático interno no cambia con este switch.
   const [portalHab, setPortalHab] = useState(null);
   const [portalBusy, setPortalBusy] = useState(false);
+  // BENEFICIOS (specs/40 RN-BEN.27/28): bolsas del cliente con interruptor pausa/reanuda y cierre
+  const [bolsas, setBolsas] = useState([]);
+  const [puedeAprobarBen, setPuedeAprobarBen] = useState(false);
   const fmtN = (n) => Number(n || 0).toLocaleString('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
   useEffect(() => {
@@ -1269,6 +1276,10 @@ export const ModalCuentasCliente = ({ cliente, onClose, onChanged }) => {
       const r = await fetchAPI(`/api/contabilidad/cuentas/${cliente.CliIdCliente}?incluirCerradas=1`);
       setCuentas((r.data || []).filter(c => String(c.CueTipo || '').startsWith('DINERO'))
         .sort((a, b) => Number(b.CueEsPrincipal || 0) - Number(a.CueEsPrincipal || 0) || Number(b.CueActiva !== false) - Number(a.CueActiva !== false) || a.CueIdCuenta - b.CueIdCuenta));
+      try {
+        const rb = await fetchAPI(`/api/beneficios/cliente/${cliente.CliIdCliente}`);
+        setBolsas(rb.data?.activos || []); setPuedeAprobarBen(!!rb.puedeAprobar);
+      } catch { setBolsas([]); }
     } catch (e) { toast.error(e.message); }
     finally { setLoading(false); }
   }, [cliente?.CliIdCliente]);
@@ -1291,6 +1302,23 @@ export const ModalCuentasCliente = ({ cliente, onClose, onChanged }) => {
   useEffect(() => { cargar(); }, [cargar]);
 
   const refrescar = async () => { await cargar(); onChanged?.(); };
+
+  // Pausar / reanudar / cerrar la bolsa de un beneficio (solo Administración). El interruptor
+  // NUNCA reemplaza la carga facturada: para habilitar un aprobado se usa Venta de saldo.
+  const accionBolsa = async (b, acc) => {
+    const nom = String(b.BenNombre || '').trim(); const s = Number(b.MonIdMoneda) === 2 ? 'US$' : '$';
+    const textos = {
+      pausar: `Pausar el beneficio «${nom}»: los pedidos de su alcance salen a la tarifa normal y el saldo (${s} ${fmtN(b.Saldo)}) queda guardado hasta reanudar o cerrar. ¿Confirmás?`,
+      reanudar: `Reanudar el beneficio «${nom}»: los precios pactados vuelven a aplicar. ¿Confirmás?`,
+      cerrar: `Cerrar el beneficio «${nom}».\n\nEl saldo remanente (${s} ${fmtN(b.Saldo)}) pasa a la billetera común del cliente, donde vale a tarifa normal y NUNCA sirve para activar otro beneficio. ¿Confirmás?`,
+    };
+    if (!window.confirm(textos[acc])) return;
+    try {
+      const r = await fetchAPI(`/api/beneficios/bolsas/${b.BclIdBeneficioCliente}/${acc}`, { method: 'POST', body: '{}' });
+      toast.success(r.message || 'Listo', { duration: 9000 });
+      await refrescar();
+    } catch (e) { toast.error(e.message, { duration: 9000 }); }
+  };
 
   return (
     <>
@@ -1384,6 +1412,48 @@ export const ModalCuentasCliente = ({ cliente, onClose, onChanged }) => {
               );
             })}
             {!loading && cuentas.length === 0 && <p className="text-sm text-slate-400 text-center py-6">Sin cuentas de dinero.</p>}
+            {/* BENEFICIOS (specs/40): bolsas del cliente — cuentas propias, separadas del saldo común */}
+            {!loading && bolsas.length > 0 && (
+              <div className="bg-white rounded-xl border border-violet-200 overflow-hidden">
+                <div className="px-4 py-2 bg-violet-50 border-b border-violet-200 flex items-center justify-between gap-2">
+                  <span className="text-[10px] font-black uppercase tracking-widest text-violet-700">Beneficios · cuentas propias, separadas del saldo común</span>
+                  <span className="text-[11px] text-violet-700">{bolsas.filter(b => b.BclEstado === 'ACTIVO').length} aplicando precios pactados</span>
+                </div>
+                {bolsas.map(b => {
+                  const s = Number(b.MonIdMoneda) === 2 ? 'US$' : '$';
+                  const vivo = ['ACTIVO', 'PAUSADO'].includes(b.BclEstado);
+                  return (
+                    <div key={b.BclIdBeneficioCliente} className="px-4 py-3 border-t border-violet-100 space-y-2">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-sm font-black text-slate-800">Beneficio: {String(b.BenNombre || '').trim()}</span>
+                        <span className="text-[10px] font-mono text-slate-400">cuenta #{b.CueIdCuenta}</span>
+                        <span className={`text-[9px] font-black uppercase px-1.5 py-0.5 rounded border ${b.BclEstado === 'ACTIVO' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : b.BclEstado === 'PAUSADO' ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-slate-100 text-slate-500 border-slate-200'}`}>{b.BclEstado === 'ACTIVO' ? 'habilitado' : b.BclEstado === 'PAUSADO' ? 'en pausa' : b.BclEstado.toLowerCase()}</span>
+                        {b.BclFechaVencimiento && <span className="text-[9px] font-bold px-1.5 py-0.5 rounded border bg-slate-50 text-slate-500 border-slate-200">vence {String(b.BclFechaVencimiento).slice(0, 10).split('-').reverse().join('/')}</span>}
+                        <span className={`ml-auto font-mono font-black text-sm ${b.Saldo > 0 ? 'text-emerald-700' : 'text-slate-400'}`}>{s} {fmtN(b.Saldo)}</span>
+                      </div>
+                      <div className="text-[11px] text-slate-500">{(b.reglasTexto || []).join(' · ')}{b.aproxUnidades != null ? ` · quedan ≈ ${b.aproxUnidades} u. al precio pactado` : ''} · {b.Consumos || 0} pedido{Number(b.Consumos) !== 1 ? 's' : ''} consumido{Number(b.Consumos) !== 1 ? 's' : ''}</div>
+                      <div className={`flex items-center justify-between gap-2 rounded-lg border px-3 py-2 ${b.BclEstado === 'ACTIVO' ? 'bg-emerald-50 border-emerald-200' : 'bg-slate-50 border-slate-200'}`}>
+                        <div className="flex items-center gap-2.5">
+                          <button type="button" onClick={() => accionBolsa(b, b.BclEstado === 'ACTIVO' ? 'pausar' : 'reanudar')} disabled={!puedeAprobarBen || !vivo}
+                            title={!puedeAprobarBen ? 'Solo Administración pausa o reanuda' : b.BclEstado === 'ACTIVO' ? 'Pausar: los pedidos salen a tarifa normal, el saldo queda guardado' : 'Reanudar: los precios pactados vuelven a aplicar'}
+                            className={`relative w-11 h-6 rounded-full transition-colors shrink-0 disabled:opacity-50 ${b.BclEstado === 'ACTIVO' ? 'bg-emerald-500' : 'bg-slate-300'}`}>
+                            <span className={`absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-all ${b.BclEstado === 'ACTIVO' ? 'left-[22px]' : 'left-0.5'}`} />
+                          </button>
+                          <div>
+                            <div className="text-xs font-bold text-slate-800">{b.BclEstado === 'ACTIVO' ? 'Aplicando precios pactados' : b.BclEstado === 'PAUSADO' ? 'En pausa por administración' : b.BclEstado === 'AGOTADO' ? 'Agotado: el cliente volvió a su tarifa' : b.BclEstado === 'VENCIDO' ? 'Vencido con saldo: cerrarlo pasa el saldo a la billetera común' : 'Cerrado'}</div>
+                            <div className="text-[11px] text-slate-500">{b.BclEstado === 'ACTIVO' ? 'Los pedidos de su alcance salen al precio pactado y se descuentan de esta cuenta.' : b.BclEstado === 'PAUSADO' ? 'Los pedidos salen a la tarifa normal y no tocan este saldo.' : ''}</div>
+                          </div>
+                        </div>
+                        {puedeAprobarBen && ['ACTIVO', 'PAUSADO', 'VENCIDO', 'AGOTADO'].includes(b.BclEstado) && (
+                          <button type="button" onClick={() => accionBolsa(b, 'cerrar')} className="px-2.5 py-1.5 text-[11px] font-bold text-amber-800 bg-white border border-amber-200 rounded-lg whitespace-nowrap shrink-0">Cerrar{b.Saldo > 0.009 ? ` · pasar ${s} ${fmtN(b.Saldo)} a la billetera común` : ''}</button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+                <div className="px-4 py-2 border-t border-violet-100 bg-violet-50/50 text-[11px] text-violet-800">El interruptor pausa o reanuda un beneficio que ya se activó con su factura. Nunca reemplaza la carga: para habilitar uno aprobado usá Venta de saldo → «Un beneficio aprobado o predefinido».</div>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -1398,12 +1468,21 @@ export const ModalCuentasCliente = ({ cliente, onClose, onChanged }) => {
 // Paso 2: se abre la factura manual ya armada (1 línea "Crédito prepago", paga).
 // Paso 3: al emitirla, /carga-prepago anota CARGA_PREPAGO en la cuenta (y la salida de la
 //         principal si la plata venía del saldo a favor).
-export const ModalVentaSaldo = ({ cliente, cuentaPreset = null, onClose, onSuccess }) => {
+export const ModalVentaSaldo = ({ cliente, cuentaPreset = null, beneficioPreset = null, onClose, onSuccess }) => {
   const [cuentas, setCuentas] = useState([]);
   const [metodoSaldoId, setMetodoSaldoId] = useState(null);
   const [cueId, setCueId] = useState(cuentaPreset?.CueIdCuenta ? String(cuentaPreset.CueIdCuenta) : '');
-  const [importe, setImporte] = useState('');
+  const [importe, setImporte] = useState(beneficioPreset?.carga ? String(beneficioPreset.carga) : '');
   const [origen, setOrigen] = useState('CAJA');
+  // BENEFICIOS (specs/40 RN-BEN.18): "¿Qué cargás?" — saldo común o un beneficio aprobado /
+  // predefinido. Con beneficio, la factura ACTIVA la bolsa (cuenta propia) por el importe pactado.
+  const [queCarga, setQueCarga] = useState(beneficioPreset ? 'BENEFICIO' : 'COMUN');
+  const [benDisp, setBenDisp] = useState([]);
+  const [benId, setBenId] = useState(beneficioPreset?.BenIdBeneficio ? String(beneficioPreset.BenIdBeneficio) : '');
+  const [benActivo, setBenActivo] = useState(true);
+  // Cargar un beneficio en caja es una excepción de Administración: lo normal es que el
+  // cliente lo active solo desde el portal. Un vendedor no ve ni esta opción.
+  const [puedeAprobarBen, setPuedeAprobarBen] = useState(false);
   const [factModal, setFactModal] = useState(null);
   // Crear la cuenta prepago acá mismo (sin salir a "Nueva Cuenta")
   const [nuevaCta, setNuevaCta] = useState(null); // { nombre, moneda: '1'|'2' }
@@ -1443,20 +1522,38 @@ export const ModalVentaSaldo = ({ cliente, cuentaPreset = null, onClose, onSucce
     }).catch(() => {});
   }, [cliente?.CliIdCliente]);
 
-  const prepagos = cuentas.filter(c => String(c.CueTipo || '').startsWith('DINERO') && !c.CueEsPrincipal && c.CueModalidadFiscal === 'PREPAGO_FACTURADO');
+  useEffect(() => {
+    if (!cliente?.CliIdCliente) return;
+    fetchAPI(`/api/beneficios/cliente/${cliente.CliIdCliente}`)
+      .then(r => { setBenDisp(r.data?.disponibles || []); setBenActivo(!!r.activo); setPuedeAprobarBen(!!r.puedeAprobar); })
+      .catch(() => { setBenDisp([]); });
+  }, [cliente?.CliIdCliente]);
+
+  const prepagos = cuentas.filter(c => String(c.CueTipo || '').startsWith('DINERO') && !c.CueEsPrincipal && c.CueModalidadFiscal === 'PREPAGO_FACTURADO' && !c.BclIdBeneficioCliente);
   const cta = prepagos.find(c => String(c.CueIdCuenta) === String(cueId));
-  const esUSD = cta?.CueTipo === 'DINERO_USD';
+  const ben = benDisp.find(b => String(b.BenIdBeneficio) === String(benId)) || null;
+  const esBen = queCarga === 'BENEFICIO';
+  const esUSD = esBen ? ben?.monedaId === 2 : cta?.CueTipo === 'DINERO_USD';
   const sim = esUSD ? 'US$' : '$';
   const principal = cta ? cuentas.find(c => c.CueEsPrincipal && c.CueTipo === cta.CueTipo) : null;
   const dispPrincipal = Number(principal?.CueSaldoActual || 0);
-  const imp = parseFloat(importe) || 0;
-  const faltaSaldo = origen === 'SALDO_PRINCIPAL' && imp > dispPrincipal + 0.001;
+  // Con beneficio el importe es el pactado (o al menos el mínimo); la plata se cobra ahora
+  const imp = esBen ? (ben ? (ben.cargaEsMinimo && parseFloat(importe) >= Number(ben.carga) ? parseFloat(importe) : Number(ben.carga)) : 0) : (parseFloat(importe) || 0);
+  const origenEf = esBen ? 'CAJA' : origen;
+  const faltaSaldo = origenEf === 'SALDO_PRINCIPAL' && imp > dispPrincipal + 0.001;
+  const venceTxt = (b) => b?.vigenciaHasta ? `hasta el ${String(b.vigenciaHasta).split('-').reverse().join('/')}` : b?.vigenciaDias ? `${b.vigenciaDias} días desde la carga` : 'hasta agotar el saldo';
 
   const continuar = () => {
-    if (!cta) { toast.error('Elegí la cuenta prepago a cargar'); return; }
-    if (!(imp > 0)) { toast.error('El importe debe ser mayor a 0'); return; }
-    if (faltaSaldo) { toast.error(`La principal tiene ${sim} ${fmtN(dispPrincipal)} a favor: no alcanza para ${sim} ${fmtN(imp)}`); return; }
-    if (origen === 'SALDO_PRINCIPAL' && !metodoSaldoId) { toast.error('Falta el medio de pago "Saldo de cuenta" (corré el script SQL de billetera).'); return; }
+    if (esBen) {
+      if (!ben) { toast.error('Elegí el beneficio a activar'); return; }
+      if (!benActivo) { toast.error('Los beneficios están apagados en la configuración general (BENEFICIOS_ACTIVOS): no se puede activar ninguno todavía.'); return; }
+      if (!(imp > 0)) { toast.error('El importe debe ser mayor a 0'); return; }
+    } else {
+      if (!cta) { toast.error('Elegí la cuenta prepago a cargar'); return; }
+      if (!(imp > 0)) { toast.error('El importe debe ser mayor a 0'); return; }
+      if (faltaSaldo) { toast.error(`La principal tiene ${sim} ${fmtN(dispPrincipal)} a favor: no alcanza para ${sim} ${fmtN(imp)}`); return; }
+      if (origen === 'SALDO_PRINCIPAL' && !metodoSaldoId) { toast.error('Falta el medio de pago "Saldo de cuenta" (corré el script SQL de billetera).'); return; }
+    }
     const monId = esUSD ? 2 : 1;
     setFactModal({
       initialData: {
@@ -1465,8 +1562,8 @@ export const ModalVentaSaldo = ({ cliente, cuentaPreset = null, onClose, onSucce
         // Tipo por defecto: e-Factura contado si hay RUT, si no e-Ticket contado (se puede cambiar en el modal)
         DocTipo: (cliente.CioRuc && String(cliente.CioRuc).replace(/\D/g, '').length === 12) ? '01' : '07',
         MonIdMoneda: monId, lockMoneda: true, DocPagado: true,
-        ...(origen === 'SALDO_PRINCIPAL' ? { MetodoPagoId: String(metodoSaldoId), lockMedioPago: true, pagos: [{ metodoPagoId: metodoSaldoId, monedaId: monId, monto: imp.toFixed(2) }] } : {}),
-        lineas: [{ DcdNomItem: `Crédito prepago de servicios — carga de saldo "${cta.CueNombre || '#' + cta.CueIdCuenta}"`, DcdCantidad: 1, DcdTotal: imp, DcdSubtotal: imp / 1.22, DcdImpuestos: imp - imp / 1.22 }],
+        ...(origenEf === 'SALDO_PRINCIPAL' ? { MetodoPagoId: String(metodoSaldoId), lockMedioPago: true, pagos: [{ metodoPagoId: metodoSaldoId, monedaId: monId, monto: imp.toFixed(2) }] } : {}),
+        lineas: [{ DcdNomItem: esBen ? `Crédito prepago de servicios — Beneficio «${ben.nombre}»` : `Crédito prepago de servicios — carga de saldo "${cta.CueNombre || '#' + cta.CueIdCuenta}"`, DcdCantidad: 1, DcdTotal: imp, DcdSubtotal: imp / 1.22, DcdImpuestos: imp - imp / 1.22 }],
       },
     });
   };
@@ -1474,8 +1571,10 @@ export const ModalVentaSaldo = ({ cliente, cuentaPreset = null, onClose, onSucce
     const docId = resp?.docId;
     if (!docId) { toast.warning('La factura se emitió pero no devolvió su número interno. NO la vuelvas a emitir: cargala desde el libro de la cuenta con "Vincular factura emitida".', { duration: 30000 }); setFactModal(null); onSuccess?.(); onClose(); return; }
     try {
-      const r = await fetchAPI(`/api/contabilidad/cuentas/${cta.CueIdCuenta}/carga-prepago`, { method: 'POST', body: JSON.stringify({ DocIdDocumento: docId, origen }) });
-      toast.success(r.message || 'Saldo cargado');
+      const r = esBen
+        ? await fetchAPI('/api/beneficios/activar', { method: 'POST', body: JSON.stringify({ BenIdBeneficio: ben.BenIdBeneficio, CliIdCliente: cliente.CliIdCliente, DocIdDocumento: docId }) })
+        : await fetchAPI(`/api/contabilidad/cuentas/${cta.CueIdCuenta}/carga-prepago`, { method: 'POST', body: JSON.stringify({ DocIdDocumento: docId, origen }) });
+      toast.success(r.message || 'Saldo cargado', { duration: 10000 });
       onSuccess?.(); onClose();
     } catch (e) {
       // La factura YA existe: se cierra todo para que no se pueda volver a emitir desde acá.
@@ -1502,7 +1601,45 @@ export const ModalVentaSaldo = ({ cliente, cuentaPreset = null, onClose, onSucce
               <p className="text-[11px] text-slate-600 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">
                 Como la venta de rollo, pero en plata: se emite una <strong>factura general</strong> por el importe y ese saldo queda en la cuenta prepago. Lo que se consuma de esa cuenta <strong>no se vuelve a facturar</strong>.
               </p>
+              {puedeAprobarBen && (
               <div>
+                <label className="block text-xs font-semibold text-slate-600 mb-2">¿Qué cargás?</label>
+                <div className="space-y-1.5">
+                  <label className={`flex items-start gap-3 rounded-xl border px-3 py-2.5 cursor-pointer ${!esBen ? 'border-emerald-400 bg-emerald-50' : 'border-slate-200 bg-white'}`}>
+                    <input type="radio" checked={!esBen} onChange={() => setQueCarga('COMUN')} className="mt-1" />
+                    <span><span className="text-sm font-bold text-slate-800">Saldo común de la billetera</span><span className="block text-[11px] text-slate-500">Va a una cuenta prepago del cliente. Importe libre. Se usa en cualquier pedido a la tarifa de siempre.</span></span>
+                  </label>
+                  <label className={`flex items-start gap-3 rounded-xl border px-3 py-2.5 cursor-pointer ${esBen ? 'border-emerald-400 bg-emerald-50' : 'border-slate-200 bg-white'}`}>
+                    <input type="radio" checked={esBen} onChange={() => setQueCarga('BENEFICIO')} className="mt-1" />
+                    <span><span className="text-sm font-bold text-slate-800">Un beneficio aprobado o predefinido</span><span className="block text-[11px] text-slate-500">Excepción de Administración: crea la cuenta propia del beneficio con el importe pactado. Lo normal es que el cliente lo active solo, desde su portal.</span></span>
+                  </label>
+                </div>
+              </div>
+              )}
+              {esBen && puedeAprobarBen && (
+                <div>
+                  <label className="block text-xs font-semibold text-slate-600 mb-2">Beneficio a activar</label>
+                  {!benActivo && <p className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-2">Los beneficios están apagados en la configuración general: no se puede activar ninguno todavía.</p>}
+                  {benDisp.length === 0 && <p className="text-sm text-slate-500 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">Este cliente no tiene pactos aprobados sin activar y no hay plantillas publicadas.</p>}
+                  <div className="space-y-1.5">
+                    {benDisp.map(b => (
+                      <label key={b.BenIdBeneficio} className={`flex items-start gap-3 rounded-xl border px-3 py-2.5 cursor-pointer ${String(benId) === String(b.BenIdBeneficio) ? 'border-indigo-400 bg-indigo-50' : 'border-slate-200 bg-white'}`}>
+                        <input type="radio" checked={String(benId) === String(b.BenIdBeneficio)} onChange={() => { setBenId(String(b.BenIdBeneficio)); setImporte(String(b.carga)); }} className="mt-1" />
+                        <span className="flex-1">
+                          <span className="flex items-center gap-2 flex-wrap"><span className="text-sm font-bold text-slate-800">{b.nombre}</span><span className={`text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full border ${b.tipo === 'PACTO' ? 'bg-indigo-50 text-indigo-700 border-indigo-200' : 'bg-sky-50 text-sky-700 border-sky-200'}`}>{b.tipo === 'PACTO' ? 'Aprobado · sin activar' : 'Predefinido'}</span></span>
+                          <span className="block text-[11px] text-slate-500">{(b.reglasTexto || []).join(' · ')} · carga {b.monedaId === 2 ? 'US$' : '$'} {fmtN(b.carga)}{b.cargaEsMinimo ? ' mínima' : ' fija'} · {venceTxt(b)}{b.vendedorNombre ? ` · pactado por ${b.vendedorNombre}` : ''}</span>
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                  {ben && (
+                    <p className="text-[11px] text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 mt-2">
+                      Al emitir y cobrar la factura se crea la cuenta <strong>«Beneficio: {ben.nombre}»</strong> con {sim} {fmtN(imp)} y el beneficio queda <strong>habilitado</strong> ({venceTxt(ben)}). El saldo común no se toca. La plata se cobra ahora, en el panel de pago de la factura.
+                    </p>
+                  )}
+                </div>
+              )}
+              <div className={esBen ? 'hidden' : ''}>
                 <div className="flex items-center justify-between mb-2">
                   <label className="block text-xs font-semibold text-slate-600">Cuenta prepago a cargar</label>
                   {!nuevaCta && (
@@ -1541,12 +1678,12 @@ export const ModalVentaSaldo = ({ cliente, cuentaPreset = null, onClose, onSucce
                   </select>
                 )}
               </div>
-              <div>
-                <label className="block text-xs font-semibold text-slate-600 mb-2">Importe a cargar {cta ? `(${sim})` : ''}</label>
+              <div className={esBen && !ben?.cargaEsMinimo ? 'hidden' : ''}>
+                <label className="block text-xs font-semibold text-slate-600 mb-2">Importe a cargar {(cta || ben) ? `(${sim})` : ''}{esBen && ben?.cargaEsMinimo ? ` — mínimo ${sim} ${fmtN(ben.carga)}` : ''}</label>
                 <input type="number" step="0.01" min="0" value={importe} onChange={e => setImporte(e.target.value)}
                   className="w-full text-sm border border-slate-200 rounded-lg px-3 py-2 bg-white font-mono focus:outline-none focus:ring-2 focus:ring-emerald-400/30" />
               </div>
-              <div>
+              <div className={esBen ? 'hidden' : ''}>
                 <label className="block text-xs font-semibold text-slate-600 mb-2">¿De dónde sale la plata?</label>
                 <div className="space-y-1.5">
                   <label className={`flex items-start gap-3 rounded-xl border px-3 py-2.5 cursor-pointer ${origen === 'CAJA' ? 'border-emerald-400 bg-emerald-50' : 'border-slate-200 bg-white'}`}>
@@ -1564,7 +1701,7 @@ export const ModalVentaSaldo = ({ cliente, cuentaPreset = null, onClose, onSucce
               </div>
               <div className="flex gap-2 pt-1">
                 <button type="button" onClick={onClose} className="flex-1 px-4 py-2.5 text-xs font-bold uppercase tracking-widest bg-slate-100 text-slate-600 rounded-lg hover:bg-slate-200">Cancelar</button>
-                <button type="button" onClick={continuar} disabled={!cta || !(imp > 0) || faltaSaldo}
+                <button type="button" onClick={continuar} disabled={esBen ? (!ben || !(imp > 0) || !benActivo) : (!cta || !(imp > 0) || faltaSaldo)}
                   className="flex-1 px-4 py-2.5 text-xs font-bold uppercase tracking-widest bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50">Armar la factura →</button>
               </div>
             </div>
@@ -1654,6 +1791,7 @@ export const LibroCuentaDinero = ({ cuenta, cliente, desde, hasta, onChanged, oc
     setFactModal(null); await cargar(); onChanged?.();
   };
   const [editar, setEditar] = useState(null);       // { mov, importe }
+  const [abiertos, setAbiertos] = useState(() => new Set()); // filas con el detalle del pago desplegado
   const [confirmar, setConfirmar] = useState(null); // { mov, modo: 'REVERTIR' | 'ELIMINAR' }
   const [nueva, setNueva] = useState(null);         // "+ Nueva orden": { codigoOrden, nombreTrabajo, importe }
   const [working, setWorking] = useState(false);
@@ -1671,6 +1809,26 @@ export const LibroCuentaDinero = ({ cuenta, cliente, desde, hasta, onChanged, oc
     finally { setWorking(false); }
   };
   const fmtN = (n) => Number(n || 0).toLocaleString('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+  // Perfiles que movieron el precio, con el mismo chip que usa la factura:
+  // "Excepción del cliente 10 %", "Urgencia 25 %". Si el precio salió liso, nada.
+  const chipsPerfil = (d) => {
+    const chips = d?.chips?.length ? d.chips : (d?.perfiles || []).map(p => ({ texto: p, tipo: null }));
+    if (!chips.length) return null;
+    // Uno DEBAJO del otro: en fila se pegaban entre sí y con dos o tres perfiles la
+    // celda se volvía una tira ilegible.
+    return (
+      <span className="mt-0.5 flex flex-col items-start gap-0.5">
+        {chips.map((c, i) => (
+          <span key={i}
+            title={`${c.tipo || 'Ajuste'} aplicado por el motor de precios${d.precioBase ? ` · precio de lista ${sim} ${fmtN(d.precioBase)}` : ''}`}
+            className="text-[9px] font-bold text-white bg-emerald-600 rounded px-1.5 py-0.5 leading-none whitespace-nowrap">
+            {c.texto}
+          </span>
+        ))}
+      </span>
+    );
+  };
 
   const cargar = useCallback(async () => {
     if (!cuenta?.CueIdCuenta) return;
@@ -1932,19 +2090,48 @@ export const LibroCuentaDinero = ({ cuenta, cliente, desde, hasta, onChanged, oc
                 : (esPagoConSaldo && m.MovTipo === 'TRANSFERENCIA_ENTRADA') ? ['PAGO RECIBIDO', 'bg-sky-50 text-sky-700']
                 : (TIPO[m.MovTipo] || [m.MovTipo, 'bg-slate-100 text-slate-600']);
               const esConsumo = m.MovTipo === 'CONSUMO_CUENTA' && !m.MovAnulado;
+              // Pago con saldo: el concepto guardado no dice qué trabajo pagó. El backend
+              // manda las deudas que canceló (orden, cantidad y precio) y acá se muestran.
+              const detalle = Array.isArray(m.DetallePago) ? m.DetallePago : null;
+              const abierto = abiertos.has(m.MovIdMovimiento);
               return (
-                <tr key={m.MovIdMovimiento} className={`hover:bg-slate-50/50 transition-colors ${m.MovAnulado ? 'opacity-50 line-through' : ''}`}>
+                <React.Fragment key={m.MovIdMovimiento}>
+                <tr className={`hover:bg-slate-50/50 transition-colors ${m.MovAnulado ? 'opacity-50 line-through' : ''}`}>
                   <td className="px-3 py-2 text-slate-500 whitespace-nowrap">{fmtFecha(m.MovFecha)}</td>
                   <td className="px-3 py-2"><span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${cls}`}>{lbl}{m.MovAnulado ? ' (anulado)' : ''}</span></td>
                   <td className="px-3 py-2 font-bold text-slate-700 whitespace-nowrap">{codigoDe(m)}</td>
                   <td className="px-3 py-2 text-slate-600 max-w-[260px]" title={`${m.MovConcepto || ''}${m.MovObservaciones ? ' · ' + m.MovObservaciones : ''}`}>
-                    <span className="truncate block">{descDe(m)}</span>
-                    {m.MovTipo === 'CONSUMO_CUENTA' && !m.MovAnulado && (
+                    <span className="truncate block">{m.ConceptoDetalle || descDe(m)}</span>
+                    {/* Una sola orden (el caso del consumo): el cálculo va en la misma
+                        fila, sin desplegar nada. Varias: queda el botón de detalle. */}
+                    {detalle && detalle.length === 1 && textoCalculo(detalle[0], sim) && (
+                      <span className="block text-[10px] text-slate-500">
+                        <span title={tituloCalculo(detalle[0], sim)}>{textoCalculo(detalle[0], sim)}</span>
+                        {chipsPerfil(detalle[0])}
+                      </span>
+                    )}
+                    {/* Documento grande: cuántas órdenes de cada área, no la lista */}
+                    {Array.isArray(m.ResumenDetalle) && m.ResumenDetalle.length > 0 && (
+                      <span className="block text-[10px] text-slate-500 leading-tight">
+                        {m.ResumenDetalle.map((g, i) => (
+                          <span key={i} className="block">
+                            {g.tipo}: <strong className="text-slate-600">{g.ordenes}</strong> {g.ordenes === 1 ? 'orden' : 'órdenes'} · {sim} {fmtN(g.importe)}
+                          </span>
+                        ))}
+                      </span>
+                    )}
+                    {detalle && detalle.length > 1 && (
+                      <button type="button"
+                        onClick={() => setAbiertos(s => { const n = new Set(s); n.has(m.MovIdMovimiento) ? n.delete(m.MovIdMovimiento) : n.add(m.MovIdMovimiento); return n; })}
+                        title="Ver de dónde sale el importe: cada trabajo con su cantidad y su precio"
+                        className="mt-0.5 inline-flex items-center gap-1 text-[10px] font-bold text-violet-600 hover:text-violet-800">
+                        {abierto ? '▾ ocultar detalle' : `▸ ver detalle (${detalle.length})`}
+                      </button>
+                    )}
+                    {m.MovTipo === 'CONSUMO_CUENTA' && !m.MovAnulado && !esPrepago && (
                       m.DocIdDocumento
                         ? <span className="text-[9px] font-bold text-cyan-700 bg-cyan-50 border border-cyan-200 rounded px-1" title="Este consumo ya está en una factura">Facturada</span>
-                        : esPrepago
-                          ? <span className="text-[9px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded px-1" title="Prepago: se facturó al cargar la plata">Facturada al cargar</span>
-                          : <span className="text-[9px] font-bold text-amber-700 bg-amber-50 border border-amber-200 rounded px-1" title='Pendiente: usá "Facturar consumos"'>Sin facturar</span>
+                        : <span className="text-[9px] font-bold text-amber-700 bg-amber-50 border border-amber-200 rounded px-1" title='Pendiente: usá "Facturar consumos"'>Sin facturar</span>
                     )}
                   </td>
                   <td className="px-3 py-2 text-right text-slate-500 whitespace-nowrap">{sim} {fmtN(m._ini)}</td>
@@ -1964,6 +2151,49 @@ export const LibroCuentaDinero = ({ cuenta, cliente, desde, hasta, onChanged, oc
                     ) : <span className="text-slate-300 text-[10px] block text-right" title={m.MovTipo === 'ANTICIPO' ? 'Es dinero que entró por caja con recibo: se deshace anulando el recibo, no desde acá' : ''}>—</span>}
                   </td>
                 </tr>
+                {detalle && abierto && (
+                  <tr className="bg-violet-50/40">
+                    <td colSpan={9} className="px-6 py-3">
+                      <p className="text-[10px] font-black uppercase tracking-wider text-violet-700 mb-1.5">
+                        Deudas que canceló este pago
+                      </p>
+                      <table className="w-full text-[11px]">
+                        <thead>
+                          <tr className="text-[9px] uppercase text-slate-400 border-b border-violet-100">
+                            <th className="px-2 py-1 text-left font-semibold">Orden</th>
+                            <th className="px-2 py-1 text-left font-semibold">Trabajo</th>
+                            <th className="px-2 py-1 text-left font-semibold">Cálculo</th>
+                            <th className="px-2 py-1 text-right font-semibold">Importe</th>
+                            <th className="px-2 py-1 text-right font-semibold">Pagado acá</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {detalle.slice(0, 60).map((d, i) => (
+                            <tr key={i} className="border-b border-violet-50 last:border-0">
+                              <td className="px-2 py-1 font-bold text-slate-700 whitespace-nowrap">{d.codigo || '—'}</td>
+                              <td className="px-2 py-1 text-slate-600">{d.trabajo || '—'}</td>
+                              <td className="px-2 py-1 text-slate-600 whitespace-nowrap">
+                                {d.cantidad && d.precioUnitario
+                                  ? `(${fmtN(d.cantidad)}${d.unidad ? ` ${d.unidad}` : ''} × ${sim} ${fmtN(d.precioUnitario)})`
+                                  : '—'}
+                                {chipsPerfil(d)}
+                              </td>
+                              <td className="px-2 py-1 text-right font-semibold text-slate-700 whitespace-nowrap">{sim} {fmtN(d.importe)}</td>
+                              <td className={`px-2 py-1 text-right font-mono whitespace-nowrap ${d.imputado != null && Math.abs(Number(d.imputado) - Number(d.importe)) > 0.009 ? 'text-amber-700 font-bold' : 'text-slate-500'}`}
+                                title={d.imputado != null && Math.abs(Number(d.imputado) - Number(d.importe)) > 0.009 ? 'Este pago cubrió solo una parte de esa deuda' : ''}>
+                                {d.imputado != null ? `${sim} ${fmtN(d.imputado)}` : '—'}
+                              </td>
+                            </tr>
+                          ))}
+                          {detalle.length > 60 && (
+                            <tr><td colSpan={5} className="px-2 py-1 text-slate-400 italic">y {detalle.length - 60} órdenes más (el resumen de arriba las incluye a todas)</td></tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </td>
+                  </tr>
+                )}
+                </React.Fragment>
               );
             })}
           </tbody>
@@ -2220,8 +2450,8 @@ export const ModalNuevaCuenta = ({ cliente, onClose, onSuccess }) => {
             on="ON: cuando entra una orden que esta cuenta puede pagar, se descuenta SOLA (como el rollo). No pasa por caja."
             off="OFF: nunca se descuenta sola. Solo se usa si el cajero la elige como medio de pago al cobrar." />
           <SwitchCuenta checked={form.CuePuedeNegativo} onChange={v => setForm(f => ({ ...f, CuePuedeNegativo: v }))}
-            titulo="Acepta saldo negativo (solo clientes SEMANALES)"
-            on="ON: si no alcanza, descuenta igual y la cuenta queda en rojo (se compensa con la próxima carga). Solo tiene efecto en clientes semanales y en descuentos del sistema — como medio de pago, y para clientes comunes, el saldo nunca queda en negativo."
+            titulo="Acepta saldo negativo (clientes SEMANALES y ROLLO POR ADELANTADO)"
+            on="ON: si no alcanza, descuenta igual y la cuenta queda en rojo (se compensa con la próxima carga). Solo tiene efecto en clientes SEMANALES o ROLLO POR ADELANTADO y en descuentos del sistema — como medio de pago, y para clientes comunes, el saldo nunca queda en negativo."
             off="OFF: descuenta solo lo que hay; lo que falta sigue el camino normal y se cobra en caja." />
 
           {form.CueRestringida && (
@@ -2286,6 +2516,7 @@ export const ModalTransferirCuentas = ({ cliente, cuentas, onClose, onSuccess })
   const [destinoId, setDestinoId] = useState('');
   const [importe, setImporte]     = useState('');
   const [cotizacion, setCotizacion] = useState('');
+  const [cotFecha, setCotFecha]     = useState(null);
   const [obs, setObs]             = useState('');
   const [saving, setSaving]       = useState(false);
 
@@ -2294,10 +2525,17 @@ export const ModalTransferirCuentas = ({ cliente, cuentas, onClose, onSuccess })
   const cruzaMoneda = origen && destino && origen.CueTipo !== destino.CueTipo;
   const simOrigen = origen?.CueTipo === 'DINERO_USD' ? 'US$' : '$';
 
+  // Cotización del día como valor de arranque (editable). /cotizacion-hoy devuelve
+  // { fecha, compra, venta, promedio } — pedir CotDolar daba undefined y el campo
+  // quedaba vacío, así que había que tipearla a mano en cada transferencia.
   useEffect(() => {
     if (!cruzaMoneda || cotizacion) return;
     fetchAPI('/api/contabilidad/cotizacion-hoy')
-      .then(r => { const v = r?.data?.CotDolar || r?.data?.cotizacion || r?.CotDolar; if (v) setCotizacion(String(v)); })
+      .then(r => {
+        const d  = r?.data;
+        const tc = Number(d?.promedio ?? d?.venta ?? d?.compra ?? d?.CotDolar);
+        if (tc > 0) { setCotizacion(String(tc)); setCotFecha(d?.fecha || null); }
+      })
       .catch(() => {});
   }, [cruzaMoneda]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -2374,7 +2612,13 @@ export const ModalTransferirCuentas = ({ cliente, cuentas, onClose, onSuccess })
                 <div>
                   <label className="block text-xs font-semibold text-amber-700 mb-2">Cotización (pesos por dólar) — las cuentas son de distinta moneda</label>
                   <input type="number" step="0.01" min="0" value={cotizacion} onChange={e => setCotizacion(e.target.value)}
+                    placeholder="Cotización del día"
                     className="w-full text-sm border border-amber-300 rounded-lg px-3 py-2 bg-amber-50 font-mono focus:outline-none focus:ring-2 focus:ring-amber-400/30" />
+                  <p className="mt-1.5 text-[11px] text-slate-500">
+                    {cotFecha
+                      ? `Viene cargada la cotización del sistema al ${fmtFechaUTC(cotFecha)}. Podés cambiarla si esta transferencia va a otro tipo de cambio.`
+                      : 'No hay cotización cargada en el sistema: escribí el tipo de cambio de esta transferencia.'}
+                  </p>
                   {importe > 0 && cotizacion > 0 && (
                     <p className="mt-1.5 text-[11px] text-amber-700">
                       Salen {simOrigen} {Number(importe).toFixed(2)} → entran {origen?.CueTipo === 'DINERO_USD' ? '$' : 'US$'} {(origen?.CueTipo === 'DINERO_USD' ? Number(importe) * Number(cotizacion) : Number(importe) / Number(cotizacion)).toFixed(2)}
@@ -2415,18 +2659,75 @@ export const ModalSaldoInicial = ({ cliente, onClose, onSuccess }) => {
   });
   const [saving, setSaving] = useState(false);
 
+  // ── Billetera: en qué cuenta entra el saldo inicial ──────────────────────
+  // El cliente puede tener varias cuentas de dinero de la misma moneda; si no se
+  // elige, el saldo iba siempre a la principal (y nadie veía cuál era). Acá se
+  // elige la cuenta por su código y nombre, y la moneda sale de esa cuenta.
+  const [cuentasDinero, setCuentasDinero] = useState([]);
+  const [cueSel, setCueSel] = useState('');       // CueIdCuenta, o 'NUEVA_1' / 'NUEVA_2'
+  const [cargandoCtas, setCargandoCtas] = useState(true);
+
+  const nombreCta = (c) => (c.CueNombre || (c.CueEsPrincipal ? `Principal ${c.CueTipo === 'DINERO_USD' ? 'US$' : '$'}` : `Cuenta #${c.CueIdCuenta}`));
+  const monDeCta  = (c) => (c.CueTipo === 'DINERO_USD' || Number(c.MonIdMoneda) === 2 ? '2' : '1');
+
+  useEffect(() => {
+    let vivo = true;
+    (async () => {
+      try {
+        const res = await fetchAPI(`/api/contabilidad/cuentas/${cliente.CliIdCliente}`);
+        if (!vivo) return;
+        const dinero = (res.data || [])
+          .filter(c => c.ProIdProducto == null && ['DINERO_USD', 'DINERO_UYU'].includes(String(c.CueTipo || '').toUpperCase()))
+          .sort((a, b) => Number(b.CueEsPrincipal || 0) - Number(a.CueEsPrincipal || 0) || a.CueIdCuenta - b.CueIdCuenta);
+        setCuentasDinero(dinero);
+        const porDefecto = dinero.find(c => c.CueEsPrincipal && monDeCta(c) === '1') || dinero[0];
+        if (porDefecto) {
+          setCueSel(String(porDefecto.CueIdCuenta));
+          setForm(f => ({ ...f, MonIdMoneda: monDeCta(porDefecto) }));
+        } else {
+          setCueSel('NUEVA_1');
+        }
+      } catch (err) {
+        if (vivo) { setCuentasDinero([]); setCueSel('NUEVA_1'); }
+      } finally {
+        if (vivo) setCargandoCtas(false);
+      }
+    })();
+    return () => { vivo = false; };
+  }, [cliente.CliIdCliente]);
+
+  // Opciones del combo: las cuentas que ya existen + "crear la principal" de la
+  // moneda que el cliente todavía no tenga.
+  const opcionesCuenta = [
+    ...cuentasDinero.map(c => ({
+      value: String(c.CueIdCuenta),
+      mon:   monDeCta(c),
+      label: `${codigoCuenta(c)} · ${nombreCta(c)}${c.CueEsPrincipal ? ' (principal)' : ''}${c.CueRestringida ? ' 🔒' : ''} — saldo ${monDeCta(c) === '2' ? 'US$' : '$'} ${fmtNum(Number(c.CueSaldoActual || 0))}`,
+    })),
+    ...(!cuentasDinero.some(c => monDeCta(c) === '1') ? [{ value: 'NUEVA_1', mon: '1', label: 'Crear la cuenta principal en pesos ($)' }] : []),
+    ...(!cuentasDinero.some(c => monDeCta(c) === '2') ? [{ value: 'NUEVA_2', mon: '2', label: 'Crear la cuenta principal en dólares (US$)' }] : []),
+  ];
+
+  const elegirCuenta = (value) => {
+    setCueSel(value);
+    const op = opcionesCuenta.find(o => o.value === value);
+    if (op) setForm(f => ({ ...f, MonIdMoneda: op.mon }));
+  };
+
   const sim     = form.MonIdMoneda === '2' ? 'US$' : '$';
   const esDeuda = form.Sentido === 'DEUDA';
 
   const guardar = async (e) => {
     e.preventDefault();
     if (!form.MovImporte || Number(form.MovImporte) <= 0) { toast.error('El importe debe ser mayor a 0'); return; }
+    if (!cueSel) { toast.error('Elegí en qué cuenta entra el saldo inicial'); return; }
     setSaving(true);
     try {
       const res = await fetchAPI('/api/contabilidad/movimientos/saldo-inicial', {
         method: 'POST',
         body: JSON.stringify({
           CliIdCliente: cliente.CliIdCliente,
+          CueIdCuenta:  cueSel.startsWith('NUEVA_') ? null : Number(cueSel),
           MonIdMoneda:  Number(form.MonIdMoneda),
           Sentido:      form.Sentido,
           MovImporte:   Number(form.MovImporte),
@@ -2454,19 +2755,21 @@ export const ModalSaldoInicial = ({ cliente, onClose, onSuccess }) => {
         </div>
 
         <form onSubmit={guardar} className="px-6 py-5 space-y-4">
-          {/* Moneda */}
+          {/* Cuenta (la moneda sale de la cuenta elegida) */}
           <div>
-            <label className="block text-xs font-semibold text-slate-600 mb-2">Moneda</label>
-            <div className="grid grid-cols-2 gap-2">
-              {[{ v: '1', l: 'UYU  $' }, { v: '2', l: 'USD  US$' }].map(op => (
-                <button type="button" key={op.v}
-                  onClick={() => setForm(f => ({ ...f, MonIdMoneda: op.v }))}
-                  className={`px-3 py-2 rounded-lg text-xs font-semibold border transition-all
-                    ${form.MonIdMoneda === op.v ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm' : 'bg-slate-50/50 text-slate-600 border-slate-200 hover:border-indigo-300 hover:bg-indigo-50'}`}>
-                  {op.l}
-                </button>
+            <label className="block text-xs font-semibold text-slate-600 mb-2">Cuenta donde entra el saldo inicial</label>
+            <select value={cueSel} onChange={e => elegirCuenta(e.target.value)} disabled={cargandoCtas}
+              className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-400 disabled:opacity-60">
+              {cargandoCtas && <option value="">Cargando cuentas…</option>}
+              {opcionesCuenta.map(op => (
+                <option key={op.value} value={op.value}>{op.label}</option>
               ))}
-            </div>
+            </select>
+            <p className="mt-1.5 text-[11px] text-slate-500">
+              {cueSel.startsWith('NUEVA_')
+                ? `El cliente todavía no tiene cuenta en ${sim}: se crea al registrar el saldo inicial.`
+                : `El movimiento queda en esta cuenta (${sim}) y se ve en su Estado de Cuenta.`}
+            </p>
           </div>
 
           {/* Sentido */}
@@ -3327,10 +3630,19 @@ export const PlanesPanel = ({ cuenta, CliIdCliente, cliente, desde, hasta, onClo
       // Saldo REAL de la cuenta = arrastre (lo que el top=200 dejó afuera) + todos
       // los movimientos traídos. Es la única cifra que coincide con el chip de
       // recursos; el saldo corrido de cada plan es solo el de SUS movimientos.
+      // OJO: el backend excluye del arrastre los ANULADOS siempre, pero
+      // `dataMovs.data` sí puede traer un ANULADO cuyo MovTipo no sea
+      // ORDEN/ORDEN_ANTICIPO/ENTREGA (ej. una ENTRADA o un RECARGO_URGENCIA
+      // anulados) — getMovimientos solo filtra esos tres tipos por completo,
+      // el resto de los anulados queda en la lista para mostrarse (en 0) pero
+      // arrastra su MovImporte real si no se lo resta acá. Sin este filtro,
+      // un plan #127 de 1 metro anulado (Viola Marinsek, 09-sep-2026) inflaba
+      // el saldo de la cuenta en +1 contra el plan, con "el plan y la cuenta
+      // no coinciden" como único síntoma.
       const arr = Number(dataMovs.saldoArrastre || 0);
       setArrastreCta(arr);
       setTodosMovsCta(todosMovs);
-      setSaldoCta(Math.round((todosMovs.reduce((a, m) => a + Number(m.MovImporte || 0), 0) + arr) * 10000) / 10000);
+      setSaldoCta(Math.round((todosMovs.reduce((a, m) => a + (m.MovAnulado ? 0 : Number(m.MovImporte || 0)), 0) + arr) * 10000) / 10000);
       setRecorteCta(dataMovs.recortado ? { mostrados: todosMovs.length, total: dataMovs.totalMovimientos } : null);
 
       // 3. Group movements per plan

@@ -141,9 +141,20 @@ async function isPedidoCompletoFisicamenteEnArea(db, noDocERP, areaId) {
         .input('Area', sql.VarChar, areaId)
         .query(`
             SELECT COUNT(*) AS Total FROM Ordenes O
-            WHERE O.NoDocERP = @NoDoc AND ${sqlOrdenNoCancelada('O')}
-              AND UPPER(LTRIM(RTRIM(ISNULL(O.AreaID,'')))) <> 'PRO'
+            WHERE ${sqlOrdenNoCancelada('O')}
+              AND (
+                    (O.NoDocERP = @NoDoc AND UPPER(LTRIM(RTRIM(ISNULL(O.AreaID,'')))) <> 'PRO')
+                    -- [VENTA UNA LÍNEA] Venta de retiro de un artículo del pedido (ancla VEN-,
+                    -- NoDocERP propio): la prenda que no se personaliza llega a PRO por acá,
+                    -- sin pasar por ningún área. Tiene que contar para "¿llegó todo?".
+                    OR (LTRIM(RTRIM(O.ComboPedidoNoDocERP)) = LTRIM(RTRIM(@NoDoc)) AND O.EstadoDependencia = 'VENTA_DIRECTA')
+                  )
               AND UPPER(LTRIM(RTRIM(ISNULL(O.ProximoServicio,'')))) = UPPER(@Area)
+              -- [FALLAS] Una orden de falla (-F) cuya reposición ya se cerró (su material se incorporó
+              -- a la madre en la misma área, sin bulto propio) o sin reposición registrada nunca viaja
+              -- sola: no es un componente que haya que esperar. Sí cuenta si su reposición sigue abierta.
+              AND NOT (O.CodigoOrden LIKE '%-F%' AND NOT EXISTS (
+                  SELECT 1 FROM Reposiciones RP WHERE RP.OrdenFallaID = O.OrdenID AND RP.Estado NOT IN ('CERRADA','CANCELADA')))
         `);
     const totalOrdenes = totalRes.recordset[0]?.Total || 0;
     if (totalOrdenes === 0) return { completo: false, faltantes: [], totalOrdenes: 0 };
@@ -154,9 +165,20 @@ async function isPedidoCompletoFisicamenteEnArea(db, noDocERP, areaId) {
         .query(`
             SELECT O.OrdenID, O.CodigoOrden, O.AreaID, O.Estado, O.EstadoenArea
             FROM Ordenes O
-            WHERE O.NoDocERP = @NoDoc AND ${sqlOrdenNoCancelada('O')}
-              AND UPPER(LTRIM(RTRIM(ISNULL(O.AreaID,'')))) <> 'PRO'
+            WHERE ${sqlOrdenNoCancelada('O')}
+              AND (
+                    (O.NoDocERP = @NoDoc AND UPPER(LTRIM(RTRIM(ISNULL(O.AreaID,'')))) <> 'PRO')
+                    -- [VENTA UNA LÍNEA] Venta de retiro de un artículo del pedido (ancla VEN-,
+                    -- NoDocERP propio): la prenda que no se personaliza llega a PRO por acá,
+                    -- sin pasar por ningún área. Tiene que contar para "¿llegó todo?".
+                    OR (LTRIM(RTRIM(O.ComboPedidoNoDocERP)) = LTRIM(RTRIM(@NoDoc)) AND O.EstadoDependencia = 'VENTA_DIRECTA')
+                  )
               AND UPPER(LTRIM(RTRIM(ISNULL(O.ProximoServicio,'')))) = UPPER(@Area)
+              -- [FALLAS] Una orden de falla (-F) cuya reposición ya se cerró (su material se incorporó
+              -- a la madre en la misma área, sin bulto propio) o sin reposición registrada nunca viaja
+              -- sola: no es un componente que haya que esperar. Sí cuenta si su reposición sigue abierta.
+              AND NOT (O.CodigoOrden LIKE '%-F%' AND NOT EXISTS (
+                  SELECT 1 FROM Reposiciones RP WHERE RP.OrdenFallaID = O.OrdenID AND RP.Estado NOT IN ('CERRADA','CANCELADA')))
               AND NOT EXISTS (
                   SELECT 1 FROM Logistica_Bultos B
                   WHERE B.OrdenID = O.OrdenID

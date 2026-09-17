@@ -6,7 +6,10 @@ const logger = require('../utils/logger');
 const getAllProfiles = async (req, res) => {
     try {
         const pool = await getPool();
-        const result = await pool.request().query("SELECT * FROM PerfilesPrecios WHERE Activo = 1 ORDER BY Nombre");
+        // BENEFICIOS (specs/40 RN-BEN.09): los perfiles que crea un beneficio (EsBeneficio = 1) se
+        // administran desde /beneficios, no desde acá. Solo se filtra si la columna existe.
+        const hayCol = (await pool.request().query("SELECT COL_LENGTH('dbo.PerfilesPrecios', 'EsBeneficio') AS L")).recordset[0]?.L != null;
+        const result = await pool.request().query(`SELECT * FROM PerfilesPrecios WHERE Activo = 1 ${hayCol ? 'AND ISNULL(EsBeneficio, 0) = 0' : ''} ORDER BY Nombre`);
         res.json(result.recordset);
     } catch (e) {
         res.status(500).json({ error: e.message });
@@ -36,8 +39,16 @@ const getProfileDetails = async (req, res) => {
 };
 
 const saveProfile = async (req, res) => {
-    const { id, nombre, descripcion, items, esGlobal, categoria } = req.body;
+    const { id, nombre, descripcion, items, esGlobal, categoria, etiquetaFactura } = req.body;
     // items: [{ CodArticulo, TipoRegla, Valor }]
+    // etiquetaFactura: texto que ve el CLIENTE en la factura cuando este perfil aplica
+    // (columna PerfilesPrecios.EtiquetaFactura; si falta el script, se ignora).
+    const etiqueta = etiquetaFactura != null ? String(etiquetaFactura).trim().substring(0, 60) : null;
+    let tieneEtiqueta = false;
+    try {
+        const c = await (await getPool()).request().query("SELECT COL_LENGTH('dbo.PerfilesPrecios', 'EtiquetaFactura') AS L");
+        tieneEtiqueta = c.recordset[0]?.L != null;
+    } catch (eCol) { tieneEtiqueta = false; }
 
     const pool = await getPool();
     const transaction = new sql.Transaction(pool);
@@ -58,14 +69,16 @@ const saveProfile = async (req, res) => {
                 .input('Desc', sql.NVarChar, descripcion)
                 .input('Glob', sql.Bit, isGlobalBit)
                 .input('Cat', sql.VarChar, catStr)
-                .query("UPDATE PerfilesPrecios SET Nombre = @Nom, Descripcion = @Desc, EsGlobal = @Glob, Categoria = @Cat WHERE ID = @ID");
+                .input('Etq', sql.NVarChar(60), etiqueta || null)
+                .query(`UPDATE PerfilesPrecios SET Nombre = @Nom, Descripcion = @Desc, EsGlobal = @Glob, Categoria = @Cat${tieneEtiqueta ? ', EtiquetaFactura = @Etq' : ''} WHERE ID = @ID`);
         } else {
             const result = await headerReq
                 .input('Nom', sql.NVarChar, nombre)
                 .input('Desc', sql.NVarChar, descripcion)
                 .input('Glob', sql.Bit, isGlobalBit)
                 .input('Cat', sql.VarChar, catStr)
-                .query("INSERT INTO PerfilesPrecios (Nombre, Descripcion, EsGlobal, Categoria) OUTPUT INSERTED.ID VALUES (@Nom, @Desc, @Glob, @Cat)");
+                .input('Etq', sql.NVarChar(60), etiqueta || null)
+                .query(`INSERT INTO PerfilesPrecios (Nombre, Descripcion, EsGlobal, Categoria${tieneEtiqueta ? ', EtiquetaFactura' : ''}) OUTPUT INSERTED.ID VALUES (@Nom, @Desc, @Glob, @Cat${tieneEtiqueta ? ', @Etq' : ''})`);
             profileId = result.recordset[0].ID;
         }
 

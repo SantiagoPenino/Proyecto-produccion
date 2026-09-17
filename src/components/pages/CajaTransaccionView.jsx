@@ -1137,14 +1137,62 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
     });
     setEditRows(rows);
     setEditRetiro({ retiroId: s.retiroId, codigoRef: s.codigoRef || s.retiro?.ordenDeRetiro, retiro: s.retiro });
+    // Desglose (lista / descuento / recargo) congelado en el pedido de cada orden: con él la
+    // caja edita descuento y recargo y el unitario/total se recalculan solos; sin él
+    // (pedidos anteriores al desglose, varias líneas por orden) la fila se edita como siempre.
+    const ids = rows.map(r => r.orderId).filter(Boolean);
+    if (ids.length) {
+      api.get(`/apiordenesRetiro/caja/orden/desglose?ids=${ids.join(',')}`)
+        .then(res => {
+          const dzs = res.data || {};
+          setEditRows(prev => prev.map(r => {
+            const dz = dzs[r.orderId];
+            if (!dz || dz.multiple || !(Number(dz.lista) > 0)) return r;   // lista 0 = sin lista
+            if (Number(r.monedaId) !== (dz.moneda === 'USD' ? 2 : 1)) return r;
+            const lista = Number(dz.lista) || 0;
+            const descU = Number(dz.descuentoImporte) || 0;
+            const recU = Number(dz.recargoImporte) || 0;
+            const precioCalc = Math.round((lista - descU + recU) * 100) / 100;
+            // el pedido tiene que explicar el precio actual; si no, no se muestra un desglose que no cierra
+            if (Math.abs(precioCalc - (parseFloat(r.precio) || 0)) > 0.011) return r;
+            return {
+              ...r, conDesglose: true, lista, descU, recU,
+              descPct: dz.descuentoPct != null ? Number(dz.descuentoPct) : (lista > 0 ? Math.round(descU / lista * 10000) / 100 : 0),
+              recPct: dz.recargoPct != null ? Number(dz.recargoPct) : (lista > 0 ? Math.round(recU / lista * 10000) / 100 : 0),
+              // texto que ve el cliente: vacío = automático (el guardado, o 'Ajuste en caja' si se edita el %); '-' = sin texto
+              descOrigen: '', recOrigen: '', origDescOrigen: dz.descuentoOrigen || '', origRecOrigen: dz.recargoOrigen || '',
+              origDescU: descU, origRecU: recU
+            };
+          }));
+        })
+        .catch(() => { /* sin desglose: la fila se edita como siempre */ });
+    }
   };
 
   // Recalcula una fila cuando cambia cantidad, precio o total
+  // El % se muestra con 2 decimales como máximo (el guardado puede traer 4); lo que se está
+  // tipeando no se toca para no comerse el punto decimal.
+  const pct2 = v => { if (v == null || v === '') return ''; const s = String(v); const m = s.match(/^-?\d+[.,](\d+)$/); return (m && m[1].length > 2) ? Math.round(Number(s.replace(',', '.')) * 100) / 100 : v; };
   const actualizarFilaEdicion = (idx, campo, valor) => {
     setEditRows(prev => prev.map((row, i) => {
       if (i !== idx) return row;
       const next = { ...row, [campo]: valor };
       const cant   = parseFloat(next.cantidad) || 0;
+      if (next.conDesglose && ['cantidad', 'descPct', 'descImp', 'recPct', 'recImp'].includes(campo)) {
+        // Con desglose: la LISTA es fija; se editan descuento y recargo (en % sobre la lista
+        // o en importe por unidad) y el unitario y el total se recalculan:
+        // unitario = lista − descuento + recargo; total = unitario × cantidad.
+        const lista = Number(next.lista) || 0;
+        const r4 = n => Math.round((Number(n || 0) + Number.EPSILON) * 10000) / 10000;
+        if (campo === 'descPct') { const p = Math.min(100, Math.max(0, parseFloat(valor) || 0)); next.descPct = p; next.descU = r4(lista * p / 100); }
+        if (campo === 'descImp') { const u = Math.max(0, parseFloat(valor) || 0); next.descU = u; next.descPct = lista > 0 ? r4(u / lista * 100) : 0; }
+        if (campo === 'recPct')  { const p = Math.max(0, parseFloat(valor) || 0); next.recPct = p; next.recU = r4(lista * p / 100); }
+        if (campo === 'recImp')  { const u = Math.max(0, parseFloat(valor) || 0); next.recU = u; next.recPct = lista > 0 ? r4(u / lista * 100) : 0; }
+        const precio = Math.max(0, r4(lista - (next.descU || 0) + (next.recU || 0)));
+        next.precio = precio.toFixed(2);
+        next.total = (cant * precio).toFixed(2);
+        return next;
+      }
       const precio = parseFloat(next.precio)   || 0;
       const total  = parseFloat(next.total)    || 0;
       if (campo === 'cantidad' || campo === 'precio') {
@@ -1154,6 +1202,8 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
       } else if (campo === 'monedaId') {
         next.monedaId = parseInt(valor, 10) || 1;
         next.simbolo = next.monedaId === 2 ? 'US$' : '$';
+        // cambiar la moneda invalida el desglose guardado (la lista está en la moneda original)
+        next.conDesglose = false;
       }
       return next;
     }));
@@ -1168,7 +1218,9 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
       const total = parseFloat(r.total)    || 0;
       return Math.abs(cant - r.origCantidad) > 0.0001
           || Math.abs(total - r.origTotal) > 0.001
-          || Number(r.monedaId) !== Number(r.origMonedaId);
+          || Number(r.monedaId) !== Number(r.origMonedaId)
+          || (r.conDesglose && (Math.abs((r.descU || 0) - (r.origDescU || 0)) > 0.00005 || Math.abs((r.recU || 0) - (r.origRecU || 0)) > 0.00005))
+          || (r.conDesglose && (!!(r.descOrigen || '').trim() || !!(r.recOrigen || '').trim()));
     });
 
     if (cambiadas.length === 0) {
@@ -1191,6 +1243,11 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
           nuevaCantidad: parseFloat(r.cantidad),
           OReIdOrdenRetiro: editRetiro.codigoRef || editRetiro.retiroId,
         };
+        // Descuento / recargo editados sobre la lista del pedido (el backend los congela en la línea)
+        if (r.conDesglose) {
+          payload.desglose = { descuentoPct: r.descPct, descuentoImporte: r.descU, recargoPct: r.recPct, recargoImporte: r.recU, motivo: '',
+            descuentoTexto: (r.descOrigen || '').trim(), recargoTexto: (r.recOrigen || '').trim() };
+        }
         if (Number(r.monedaId) !== Number(r.origMonedaId)) payload.nuevaMoneda = Number(r.monedaId);
         await api.post('/apiordenesRetiro/caja/orden/editar', payload);
       }
@@ -3548,11 +3605,14 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
             </div>
 
             <div className="flex-1 overflow-y-auto px-6 py-4 flex flex-col gap-3">
-              <div className="grid grid-cols-[1.5fr_0.9fr_0.8fr_0.9fr_0.9fr] gap-2 px-1 text-[9px] font-black text-slate-400 uppercase tracking-wider">
+              <div className="grid grid-cols-[1.3fr_0.7fr_0.7fr_0.8fr_1.1fr_1.1fr_0.8fr_0.9fr] gap-2 px-1 text-[9px] font-black text-slate-400 uppercase tracking-wider">
                 <span>Orden</span>
                 <span className="text-center">Moneda</span>
                 <span className="text-center">Cantidad</span>
-                <span className="text-center">Precio Unit.</span>
+                <span className="text-center" title="Precio de lista del pedido (antes de descuento y recargo)">P. Lista</span>
+                <span className="text-center" title="Descuento: % sobre la lista o importe por unidad">Descuento</span>
+                <span className="text-center" title="Recargo (urgencia, tinta, manual): % sobre la lista o importe por unidad">Recargo</span>
+                <span className="text-center" title="Unitario neto = lista − descuento + recargo">Precio Unit.</span>
                 <span className="text-center">Total</span>
               </div>
 
@@ -3561,7 +3621,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                 const esMixto = cobrableFilas.some(r => Number(r.monedaId) === 1) && cobrableFilas.some(r => Number(r.monedaId) === 2);
                 const cotiz = parseFloat(cotizacion) || 0;
                 return editRows.map((row, idx) => (
-                <div key={row.orderId} className={`grid grid-cols-[1.5fr_0.9fr_0.8fr_0.9fr_0.9fr] gap-2 items-center bg-slate-50 border rounded-xl p-2.5 ${row.bloqueado ? 'border-slate-200 opacity-60' : 'border-slate-200'}`}>
+                <div key={row.orderId} className={`grid grid-cols-[1.3fr_0.7fr_0.7fr_0.8fr_1.1fr_1.1fr_0.8fr_0.9fr] gap-2 items-center bg-slate-50 border rounded-xl p-2.5 ${row.bloqueado ? 'border-slate-200 opacity-60' : 'border-slate-200'}`}>
                   <div className="min-w-0">
                     <p className="font-black text-slate-800 text-sm leading-none truncate">{row.orderNumber}</p>
                     <p className="text-[10px] text-slate-400 italic font-semibold uppercase tracking-wider mt-1 leading-none truncate">{row.nombreTrabajo}</p>
@@ -3605,10 +3665,40 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                     onChange={e => actualizarFilaEdicion(idx, 'cantidad', e.target.value)}
                     className="w-full px-2 py-1.5 text-center text-slate-800 font-black text-xs bg-white border border-slate-200 rounded-lg outline-none focus:border-brand-cyan disabled:bg-slate-100 disabled:text-slate-400"
                   />
+                  <div className="text-center font-mono text-xs text-slate-600 leading-tight" title="Precio de lista del pedido (antes de descuento y recargo)">
+                    {row.conDesglose ? `${row.simbolo} ${fmt(row.lista)}` : <span className="text-slate-300">—</span>}
+                  </div>
+                  {['desc', 'rec'].map(k => (
+                    <div key={k} className="flex flex-col gap-0.5">
+                      <div className="flex items-center bg-white border border-slate-200 rounded-lg overflow-hidden focus-within:border-brand-cyan">
+                        <input type="number" min="0" step="any" disabled={row.bloqueado || !row.conDesglose}
+                          value={row.conDesglose && row[k + 'Pct'] ? pct2(row[k + 'Pct']) : ''} placeholder="%"
+                          onChange={e => actualizarFilaEdicion(idx, k + 'Pct', e.target.value)}
+                          className="w-full px-1 py-1 text-center text-slate-800 font-black text-[11px] bg-transparent outline-none disabled:text-slate-300" />
+                        <span className="pr-1.5 text-[9px] text-slate-400 font-bold shrink-0">%</span>
+                      </div>
+                      <div className="flex items-center bg-white border border-slate-200 rounded-lg overflow-hidden focus-within:border-brand-cyan">
+                        <span className="pl-1.5 text-[9px] text-slate-400 font-bold shrink-0">{row.simbolo}</span>
+                        <input type="number" min="0" step="any" disabled={row.bloqueado || !row.conDesglose}
+                          value={row.conDesglose ? (row[k + 'U'] || '') : ''} placeholder="0"
+                          onChange={e => actualizarFilaEdicion(idx, k + 'Imp', e.target.value)}
+                          className="w-full px-1 py-1 text-center text-slate-800 font-black text-[11px] bg-transparent outline-none disabled:text-slate-300" />
+                      </div>
+                      {row.conDesglose && (row[k + 'U'] > 0) && (
+                        <input type="text" disabled={row.bloqueado}
+                          value={row[k + 'Origen'] || ''}
+                          placeholder={Math.abs((row[k + 'U'] || 0) - (row['orig' + (k === 'desc' ? 'DescU' : 'RecU')] || 0)) > 0.00005 ? 'Ajuste en caja' : (row['orig' + (k === 'desc' ? 'DescOrigen' : 'RecOrigen')] || (k === 'desc' ? 'Descuento' : 'Recargo'))}
+                          title="Texto que ve el cliente en la factura junto al descuento / recargo. Vacío = el texto automático (el que se muestra en gris). Un guion (-) = sin texto."
+                          onChange={e => actualizarFilaEdicion(idx, k + 'Origen', e.target.value)}
+                          className="w-full px-1 py-0.5 text-[8px] text-center text-slate-500 bg-white border border-slate-100 rounded-md outline-none focus:border-brand-cyan placeholder-slate-300 disabled:text-slate-300" />
+                      )}
+                    </div>
+                  ))}
                   <div className="flex items-center bg-white border border-slate-200 rounded-lg overflow-hidden focus-within:border-brand-cyan">
                     <span className="pl-2 text-[10px] text-slate-400 font-bold shrink-0">{row.simbolo}</span>
                     <input
-                      type="number" min="0" step="any" disabled={row.bloqueado}
+                      type="number" min="0" step="any" disabled={row.bloqueado || row.conDesglose}
+                      title={row.conDesglose ? 'Unitario neto = lista − descuento + recargo: editá el descuento o el recargo' : undefined}
                       value={row.precio}
                       onChange={e => actualizarFilaEdicion(idx, 'precio', e.target.value)}
                       className="w-full px-1 py-1.5 text-center text-slate-800 font-black text-xs bg-transparent outline-none disabled:text-slate-400"
@@ -3618,7 +3708,8 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                     <div className="flex items-center bg-white border border-slate-200 rounded-lg overflow-hidden focus-within:border-brand-cyan">
                       <span className="pl-2 text-[10px] text-slate-400 font-bold shrink-0">{row.simbolo}</span>
                       <input
-                        type="number" min="0" step="any" disabled={row.bloqueado}
+                        type="number" min="0" step="any" disabled={row.bloqueado || row.conDesglose}
+                        title={row.conDesglose ? 'Total = unitario neto × cantidad: editá cantidad, descuento o recargo' : undefined}
                         value={row.total}
                         onChange={e => actualizarFilaEdicion(idx, 'total', e.target.value)}
                         className="w-full px-1 py-1.5 text-center text-brand-cyan font-black text-xs bg-transparent outline-none disabled:text-slate-400"

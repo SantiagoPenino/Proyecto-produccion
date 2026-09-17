@@ -1,7 +1,104 @@
 const { sql, getPool } = require('../config/db');
 const logger = require('../utils/logger');
 
+// Etiqueta que ve el cliente por perfil (PerfilesPrecios.EtiquetaFactura). Se lee una vez por
+// minuto; si la columna todavía no existe (script add_EtiquetaFactura_PerfilesPrecios.sql sin
+// correr) se sigue con el nombre interno del perfil.
+let _etiquetasPerfilesCache = { ts: 0, map: {} };
+
+// Redondeo a 4 decimales (precisión de PreciosBase y de las columnas del desglose).
+const r4 = n => Math.round((Number(n || 0) + Number.EPSILON) * 10000) / 10000;
+
+// % para textos: entero si es entero, si no con hasta 2 decimales (36.36, no "36").
+const fmtPct = v => {
+    const n = Number(v || 0);
+    if (Number.isInteger(n)) return String(n);
+    return n.toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
+};
+
 class PricingService {
+
+    static async getEtiquetasPerfiles(pool) {
+        if (Date.now() - _etiquetasPerfilesCache.ts < 60000) return _etiquetasPerfilesCache.map;
+        const map = {};
+        try {
+            const res = await pool.request().query("SELECT ID, Nombre, EtiquetaFactura FROM PerfilesPrecios WITH(NOLOCK)");
+            res.recordset.forEach(p => {
+                map[p.ID] = { nombre: (p.Nombre || '').trim(), etiqueta: (p.EtiquetaFactura || '').trim() || null };
+            });
+        } catch (e) {
+            try {
+                const res = await pool.request().query("SELECT ID, Nombre FROM PerfilesPrecios WITH(NOLOCK)");
+                res.recordset.forEach(p => { map[p.ID] = { nombre: (p.Nombre || '').trim(), etiqueta: null }; });
+            } catch (e2) { /* sin etiquetas */ }
+        }
+        _etiquetasPerfilesCache = { ts: Date.now(), map };
+        return map;
+    }
+
+    /**
+     * Desglose de una línea cuyo precio se fijó A MANO (override del pedido, edición en la
+     * cotización o en caja). Toma la lista del desglose de referencia del motor y expresa la
+     * diferencia como descuento MANUAL (si el precio manual es menor) o recargo manual (si es
+     * mayor), así la línea sigue cumpliendo lista − descuento + recargo = neto.
+     */
+    static desgloseManual(desgloseRef, netoManual, texto = 'Precio ajustado manualmente') {
+        const lista = desgloseRef && desgloseRef.precioLista > 0 ? r4(desgloseRef.precioLista) : null;
+        const neto = r4(netoManual);
+        if (lista == null) {
+            // Sin lista real (sin catálogo, base 0): el precio tipeado es su propia lista, sin
+            // descuento ni recargo (antes quedaba lista 0 + recargo manual por el total).
+            return {
+                moneda: desgloseRef ? desgloseRef.moneda : null, precioLista: neto > 0 ? neto : null, listaSinOverride: null, override: null,
+                candidatos: (desgloseRef && desgloseRef.candidatos) || [], manual: true, listaManual: true, precioNeto: neto, precioNetoConPrepago: neto, prepago: null,
+                descuento: null, recargos: [], recargoPct: null, recargoImporte: null, recargoTexto: null
+            };
+        }
+        const diff = r4(lista - neto);
+        const base = {
+            moneda: desgloseRef.moneda,
+            precioLista: lista,
+            listaSinOverride: desgloseRef.listaSinOverride,
+            override: desgloseRef.override || null,
+            candidatos: desgloseRef.candidatos || [],
+            manual: true,
+            precioNeto: neto,
+            precioNetoConPrepago: neto,
+            prepago: null
+        };
+        if (diff >= 0) {
+            return {
+                ...base,
+                descuento: diff > 0 ? { tipo: 'MANUAL', pct: null, importeUnitario: diff, origen: 'MANUAL', perfilId: null, reglaId: null, nombre: texto, etiqueta: 'Ajuste manual', texto } : null,
+                recargos: [], recargoPct: null, recargoImporte: null, recargoTexto: null
+            };
+        }
+        return {
+            ...base,
+            descuento: null,
+            recargos: [{ pct: null, importeUnitario: r4(-diff), origen: 'MANUAL', perfilId: null, reglaId: null, nombre: texto, etiqueta: 'Ajuste manual' }],
+            recargoPct: null, recargoImporte: r4(-diff), recargoTexto: 'Ajuste manual'
+        };
+    }
+
+    /**
+     * Desglose de una línea SIN CARGO (reposición -R/-F, falla): lista del motor y descuento del
+     * 100 % con su origen, para que quede registrado cuánto valía lo que se regaló.
+     */
+    static desgloseSinCargo(desgloseRef, origen = 'REPOSICION', texto = 'Reposición sin cargo') {
+        const lista = desgloseRef && desgloseRef.precioLista != null ? r4(desgloseRef.precioLista) : null;
+        if (lista == null) return null;
+        return {
+            moneda: desgloseRef.moneda,
+            precioLista: lista,
+            listaSinOverride: desgloseRef.listaSinOverride,
+            override: desgloseRef.override || null,
+            candidatos: desgloseRef.candidatos || [],
+            descuento: { tipo: 'PCT', pct: 100, importeUnitario: lista, origen, perfilId: null, reglaId: null, nombre: texto, etiqueta: texto, texto },
+            recargos: [], recargoPct: null, recargoImporte: null, recargoTexto: null,
+            precioNeto: 0, precioNetoConPrepago: 0, prepago: null, sinCargo: true
+        };
+    }
 
     static async getExchangeRate(pool) {
         try {
@@ -92,6 +189,9 @@ class PricingService {
         const rawClientLegacy = typeof clientDescriptor === 'object' && clientDescriptor !== null ? clientDescriptor.clienteLegacy : clientDescriptor;
 
         const breakdown = [];
+        // Tarifa técnica que REEMPLAZA la lista (bordado por puntadas, estampado por bajadas):
+        // para el desglose, esa tarifa ES el precio de lista.
+        let overrideTecnico = null;
 
         // 1. Obtencion AreaID y Grupo si no vienen dados
         let resolvedAreaId = areaId ? areaId.toString().trim().toUpperCase() : null;
@@ -196,6 +296,7 @@ class PricingService {
             precioBase = toTarget(priceBordadoUYU, 'UYU');
             monedaBaseOriginal = 'UYU';
             breakdown.push({ tipo: 'OVERRIDE', valor: precioBase, desc: `Bordado por Puntadas (${totalPuntadas} p.)` });
+            overrideTecnico = { valor: precioBase, motivo: `Bordado por puntadas (${totalPuntadas} p.)` };
         }
         else if (baseRes.recordset.length > 0) {
             monedaBaseOriginal = baseRes.recordset[0].Moneda || 'UYU';
@@ -236,9 +337,10 @@ class PricingService {
                 // El motor espera el precio unitario, así que dividimos el total calculado entre la cantidad de prendas
                 const unitPriceUYU = precioTotalUYU / cantidad;
                 nuevoPrecioBase = toTarget(unitPriceUYU, 'UYU');
-                
+
                 // Sobrescribimos el tipo de regla para que reemplace el base
                 breakdown.push({ tipo: 'OVERRIDE', valor: nuevoPrecioBase, desc: descRegla });
+                overrideTecnico = { valor: nuevoPrecioBase, motivo: descRegla };
             }
         }
 
@@ -395,7 +497,19 @@ class PricingService {
                     PP.ID = PE.PerfilID OR
                     EXISTS (SELECT 1 FROM STRING_SPLIT(CAST(PE.PerfilesIDs AS VARCHAR(MAX)), ',') WHERE value = CAST(PP.ID AS VARCHAR(10)))
                 )
-                WHERE (PE.CliIdCliente IN (${possibleClientIds.length > 0 ? possibleClientIds.join(',') : '0'})
+                -- Perfil ASIGNADO al cliente: también respeta las áreas marcadas en el perfil
+                -- (Categoria). Antes solo los perfiles globales las miraban y un perfil asignado
+                -- se aplicaba en TODAS las áreas aunque tuviera áreas marcadas — "Descuento
+                -- Trabajadores 10%" con SB, DF, ECOUV descontaba también Pet Film y shorts.
+                -- Sin áreas marcadas ('Todos' o vacío) se aplica a todo, como siempre. Los
+                -- beneficios (EsBeneficio) usan Categoria 'BENEFICIO', que no es un área: no se
+                -- filtran. La lista se compara por elemento (admite 'SB, DF, ECOUV').
+                WHERE ((PE.CliIdCliente IN (${possibleClientIds.length > 0 ? possibleClientIds.join(',') : '0'})
+                        AND (ISNULL(PP.EsBeneficio, 0) = 1
+                             OR ISNULL(NULLIF(LTRIM(RTRIM(PP.Categoria)), ''), 'Todos') = 'Todos'
+                             OR EXISTS (SELECT 1 FROM STRING_SPLIT(CAST(PP.Categoria AS VARCHAR(500)), ',') cat
+                                        WHERE UPPER(LTRIM(RTRIM(cat.value))) IN (UPPER(@ResolvedAreaId), UPPER(@ResolvedCategoria), UPPER(@ResolvedAreaNombre))
+                                          AND LTRIM(RTRIM(cat.value)) <> '')))
                        OR (PP.EsGlobal = 1 AND (ISNULL(PP.Categoria, 'Todos') = 'Todos' OR PP.Categoria = '' OR PP.Categoria = @ResolvedAreaId OR PP.Categoria = @ResolvedCategoria OR PP.Categoria = @ResolvedAreaNombre))
                        OR PP.ID IN (${cleanedProfiles.length > 0 ? cleanedProfiles.join(',') : '0'}))
                 -- Filtro de volumen
@@ -510,9 +624,38 @@ class PricingService {
             breakdown.push({
                 tipo: 'DISCOUNT',
                 valor: -discFinalVal,
-                desc: `Desc. ${Math.round(parseFloat(bestDisc.Valor))}${bestDisc.TipoRegla.includes('percentage') ? '%' : ''} [${bestDisc.NombrePerfil}]`,
+                desc: `Desc. ${fmtPct(bestDisc.Valor)}${bestDisc.TipoRegla.includes('percentage') ? '%' : ''} [${bestDisc.NombrePerfil}]`,
                 profileId: bestDisc.PerfilID
             });
+        }
+
+        // ── BENEFICIOS PACTADOS (specs/40 RN-BEN.19/20): si el cliente tiene un beneficio
+        // ACTIVO, vigente y con saldo cuya regla alcanza a este artículo, esa regla PISA la
+        // competencia de arriba (lista, perfiles y excepciones del cliente) mientras dure.
+        // El % es SIEMPRE sobre el precio de LISTA, nunca sobre el especial. Con el
+        // interruptor apagado o sin beneficios no hace nada (la consulta actual no cambia).
+        let beneficioSel = null;
+        if (!variables.skipBeneficios && numericCliId) {
+            try {
+                const benSvc = require('./beneficiosService');
+                beneficioSel = await benSvc.beneficioParaPrecio(pool, { cliId: numericCliId, proId: resolvedProId, codArticulo: cleanCod, grupo: resolvedGrupo, areaId: resolvedAreaId, cantidad });
+            } catch (eBen) {
+                logger.warn('[PricingService] Beneficios: no se pudo evaluar (' + eBen.message + '); se cotiza sin beneficio.');
+                beneficioSel = null;
+            }
+        }
+        if (beneficioSel) {
+            const rg = beneficioSel.regla;
+            const monRegla = rg.monedaId === 2 ? 'USD' : 'UYU';
+            let precioBen;
+            if (rg.tipo === 'fixed') precioBen = toTarget(rg.valor, monRegla);
+            else if (rg.tipo === 'percentage') precioBen = Math.max(0, nuevoPrecioBase * (1 - rg.valor / 100));
+            else precioBen = Math.max(0, nuevoPrecioBase - toTarget(rg.valor, monRegla));
+            precioBen = Math.round(precioBen * 10000) / 10000;
+            traceDecision += `\n* BENEFICIO PACTADO [${beneficioSel.nombre}] (#${beneficioSel.bclId}, alcance ${rg.alcance}): ${rg.tipo === 'fixed' ? 'precio fijo ' + rg.valor + ' ' + monRegla : rg.tipo === 'percentage' ? rg.valor + '% sobre LISTA (' + nuevoPrecioBase.toFixed(2) + ')' : 'menos ' + rg.valor + ' ' + monRegla} → ${precioBen.toFixed(2)}. Pisa lista/perfiles/especial (${precioFinalBase.toFixed(2)}).\n`;
+            for (let i = breakdown.length - 1; i >= 0; i--) if (breakdown[i].tipo === 'OVERRIDE' || breakdown[i].tipo === 'DISCOUNT') breakdown.splice(i, 1);
+            breakdown.push({ tipo: 'OVERRIDE', valor: precioBen, desc: `Beneficio: ${beneficioSel.nombre}`, beneficioId: beneficioSel.bclId });
+            precioFinalBase = precioBen; discFinalVal = 0; appliedFixed = false; bestDisc = null; bestFixed = null;
         }
 
         traceDecision += `\n* Fase Recargos (Acumulativos):\n`;
@@ -563,6 +706,7 @@ class PricingService {
         }
 
         let totalRecargos = 0;
+        const recargosInfo = [];   // uno por recargo aplicado, para el desglose estructurado
         if (precioFinalBase <= 0) {
             traceDecision += `  Recargos omitidos: precio ya es 0 (descuento total aplicado).\n`;
         } else {
@@ -571,6 +715,7 @@ class PricingService {
                 traceDecision += `  - SUMA RECARGO [${r.NombrePerfil}]: +${val.toFixed(2)}\n`;
                 totalRecargos += val;
                 breakdown.push({ tipo: 'SURCHARGE', valor: val, desc: `Recargo ${r.TipoRegla.includes('percentage') ? r.Valor + '%' : ''} [${r.NombrePerfil}]`, profileId: r.PerfilID });
+                recargosInfo.push({ regla: r, pct: r.TipoRegla.includes('percentage') ? r4(r.Valor) : null, importeUnitario: r4(val) });
             });
         }
 
@@ -688,6 +833,7 @@ class PricingService {
         } else {
             if (appliedFixed && bestFixed) appliedSet.add(bestFixed.NombrePerfil);
             else if (bestDisc) appliedSet.add(bestDisc.NombrePerfil);
+            if (beneficioSel) appliedSet.add(`Beneficio: ${beneficioSel.nombre}`);
             surchargeRules.forEach(r => appliedSet.add(r.NombrePerfil));
         }
 
@@ -704,6 +850,101 @@ class PricingService {
             if (monedaBaseOriginal === 'USD' && cleanCurrency === 'UYU') precioOriginalCalculado = finalPU / actualExchangeRate;
         }
 
+        // ---- DESGLOSE ESTRUCTURADO (specs/09 RN-PRE.12): lo que se congela con la línea ----
+        // lista (después del override técnico) − descuento ganador + Σ recargos = neto.
+        // Cada recargo se calcula sobre la lista y se SUMA (25 % + 25 % = 50 %). El % del
+        // descuento es el de la regla (informativo); el importe es el que cierra la cuenta.
+        const etiquetas = await PricingService.getEtiquetasPerfiles(pool);
+        const origenRegla = (r) => {
+            const esExc = r.NombrePerfil === 'Excepción Cliente';
+            const info = esExc ? null : etiquetas[r.PerfilID];
+            const nombrePerfil = (info && info.nombre) || (r.NombrePerfil || '').trim();
+            // Etiqueta que ve el cliente: la del perfil si está cargada; vacía => el nombre del
+            // perfil; "-" => sin texto (queda solo el % o el importe).
+            const etqCfg = info ? info.etiqueta : null;
+            return {
+                origen: esExc ? 'EXCEPCION_CLIENTE' : `PERFIL:${r.PerfilID}`,
+                perfilId: esExc ? null : r.PerfilID,
+                reglaId: r.PerfilItemID || null,
+                nombre: esExc ? 'Excepción del cliente' : nombrePerfil,
+                etiqueta: esExc ? 'Precio especial' : (etqCfg === '-' ? '' : (etqCfg || nombrePerfil))
+            };
+        };
+        // Texto que ve el cliente: "etiqueta + valor". '-' = sin texto en la factura. Si la
+        // etiqueta ya termina con el mismo % ("Descuento Trabajadores 10%"), no se repite.
+        const conEtq = (etq, resto) => {
+            if (!etq) return '-';
+            const e = String(etq).trim();
+            const m = String(resto).match(/^([\d.,]+)\s*%$/);
+            if (m && e.replace(/\s+/g, '').toLowerCase().endsWith(m[1].replace(/\s+/g, '') + '%')) return e;
+            return `${e} ${resto}`;
+        };
+        let descuentoInfo = null;
+        if (beneficioSel) {
+            // BENEFICIO PACTADO (specs/40): pisó a la competencia normal, así que el desglose
+            // que ve el cliente/factura tiene que decir ESTO, no la regla que perdió. El
+            // origen "BENEFICIO" es distinto de "PERFIL:n" para que se distinga en la factura.
+            const rg = beneficioSel.regla;
+            const etq = `Beneficio: ${beneficioSel.nombre}`;
+            const o = { origen: 'BENEFICIO', perfilId: null, reglaId: beneficioSel.bclId || null, nombre: etq, etiqueta: etq };
+            const importeUnitario = r4(nuevoPrecioBase - precioFinalBase);
+            if (rg.tipo === 'fixed') {
+                descuentoInfo = { tipo: 'FIJO', pct: null, importeUnitario, valorRegla: parseFloat(rg.valor), ...o, texto: conEtq(etq, '(precio pactado)') };
+            } else if (rg.tipo === 'percentage') {
+                descuentoInfo = { tipo: 'PCT', pct: r4(rg.valor), importeUnitario, valorRegla: parseFloat(rg.valor), ...o, texto: conEtq(etq, `${fmtPct(rg.valor)} %`) };
+            } else {
+                descuentoInfo = { tipo: 'IMPORTE', pct: null, importeUnitario, valorRegla: parseFloat(rg.valor), ...o, texto: conEtq(etq, `${cleanCurrency} ${importeUnitario.toFixed(2)}`) };
+            }
+        } else if (appliedFixed && bestFixed) {
+            const o = origenRegla(bestFixed);
+            descuentoInfo = { tipo: 'FIJO', pct: null, importeUnitario: r4(nuevoPrecioBase - precioFinalBase), valorRegla: parseFloat(bestFixed.Valor), ...o, texto: conEtq(o.etiqueta, '(precio pactado)') };
+        } else if (bestDisc) {
+            const esPct = bestDisc.TipoRegla.includes('percentage');
+            const o = origenRegla(bestDisc);
+            descuentoInfo = {
+                tipo: esPct ? 'PCT' : 'IMPORTE', pct: esPct ? r4(bestDisc.Valor) : null, importeUnitario: r4(discFinalVal),
+                valorRegla: parseFloat(bestDisc.Valor), ...o,
+                texto: esPct ? conEtq(o.etiqueta, `${fmtPct(bestDisc.Valor)} %`) : conEtq(o.etiqueta, `${cleanCurrency} ${r4(discFinalVal).toFixed(2)}`)
+            };
+        }
+        const recargosDesglose = recargosInfo.map(x => {
+            const o = origenRegla(x.regla);
+            return { pct: x.pct, importeUnitario: x.importeUnitario, ...o, texto: x.pct != null ? conEtq(o.etiqueta, `${fmtPct(x.pct)} %`) : conEtq(o.etiqueta, `${cleanCurrency} ${x.importeUnitario.toFixed(2)}`) };
+        });
+        const ganadores = new Set([
+            ...(descuentoInfo && descuentoInfo.reglaId ? [descuentoInfo.reglaId] : []),
+            ...recargosDesglose.map(x => x.reglaId).filter(Boolean)
+        ]);
+        const desglose = {
+            moneda: cleanCurrency,
+            precioLista: r4(nuevoPrecioBase),
+            listaSinOverride: r4(precioBase),
+            override: overrideTecnico ? { valor: r4(overrideTecnico.valor), motivo: overrideTecnico.motivo } : null,
+            descuento: descuentoInfo,
+            recargos: recargosDesglose,
+            recargoPct: recargosDesglose.length ? r4(recargosDesglose.reduce((a, x) => a + (x.pct || 0), 0)) : null,
+            recargoImporte: recargosDesglose.length ? r4(totalRecargos) : null,
+            recargoTexto: recargosDesglose.length ? (recargosDesglose.map(x => x.texto).filter(t => t && t !== '-').join(' + ') || '-') : null,
+            precioNeto: r4(finalPU),
+            prepago: isPrepagoTotal
+                ? { tipo: 'TOTAL', metrosCubiertos: r4(availableMetersEfectivos), disponibles: r4(totalAvailableRaw), comprometidos: r4(totalCommitted) }
+                : (isPrepagoParcial ? { tipo: 'PARCIAL', metrosCubiertos: r4(availableMetersEfectivos), excedente: r4(cantidad - availableMetersEfectivos), disponibles: r4(totalAvailableRaw), comprometidos: r4(totalCommitted) } : null),
+            precioNetoConPrepago: r4(finalPUWithPrepago),
+            // Todas las reglas que compitieron, con la marca de cuál ganó: es lo que
+            // responde "por qué ganó el escalonado y no la excepción".
+            candidatos: todasLasReglas.map(r => ({
+                perfil: (r.NombrePerfil || '').trim(), perfilId: r.NombrePerfil === 'Excepción Cliente' ? null : r.PerfilID, reglaId: r.PerfilItemID,
+                tipo: r.TipoRegla, valor: parseFloat(r.Valor), minimo: r.CantidadMinima,
+                articulo: (r.CodArticulo || '').toString().trim() || null, grupo: r.CodGrupo || null,
+                gano: ganadores.has(r.PerfilItemID)
+            }))
+        };
+        if (!(desglose.precioLista > 0)) {
+            // Sin lista real (artículo sin precio, base 0): no hay nada que desglosar. Si después
+            // se tipea un precio, ese precio es su propia lista (ver desgloseManual).
+            Object.assign(desglose, { precioLista: null, listaSinOverride: null, descuento: null, recargos: [], recargoPct: null, recargoImporte: null, recargoTexto: null });
+        }
+
         return {
             codArticulo: cleanCod,
             proIdProducto: resolvedProId || null,
@@ -717,6 +958,10 @@ class PricingService {
             breakdown,
             txt,
             perfilesAplicados: [...appliedSet].filter(Boolean),
+            desglose,
+            // Beneficio pactado con el que se cotizó (specs/40): la línea y la orden lo guardan
+            // para que el motor contable consuma SU bolsa y para reportar margen resignado.
+            beneficioAplicado: beneficioSel ? { bclId: beneficioSel.bclId, benId: beneficioSel.benId, cueId: beneficioSel.cueId, nombre: beneficioSel.nombre } : null,
             _debug: { resolvedAreaId, cleanCod, cleanCurrency }
         };
 

@@ -306,15 +306,25 @@ const OrderForm = ({ serviceId: propServiceId }) => {
         const mat = (dynamicMaterials || []).find(m => (m.Material || '').trim() === (globalMaterial || '').trim());
         const codArt = (mat?.CodArticulo || '').trim();
         if (!codArt) { setFichaPT(null); return; }
+        // La ficha del producto ANTERIOR se borra ANTES de pedir la nueva. Si no, durante los
+        // milisegundos que tarda la consulta convivían el producto nuevo (globalMaterial, ya
+        // cambiado) con las medidas viejas (fichaPT, todavía sin actualizar) y el cartel decía
+        // "Cambiaste el producto a Roll up aluminio, cuyo arte debe medir 0,77 x 0,50 m" — el
+        // nombre del producto nuevo con la medida del anterior (caso real: columnera → roll up).
+        setFichaPT(null);
+        let vigente = true;   // si el usuario vuelve a cambiar de producto, la respuesta vieja se descarta
         apiClient.get(`/nomenclators/producto-terminado/${encodeURIComponent(codArt)}`)
             .then(res => {
+                if (!vigente) return;
                 const data = res.success ? res.data : null;
-                setFichaPT(data);
+                // Queda sellado a qué producto pertenece la ficha, para poder verificarlo.
+                setFichaPT(data ? { ...data, codArticulo: codArt, material: globalMaterial } : null);
                 // La tinta de la ficha es el punto de partida; el cliente puede cambiarla
                 // en el selector (y el recargo % de UV/Latex aplica solo vía perfil).
                 if (data?.tinta) setTintaSeleccionada(data.tinta);
             })
-            .catch(() => setFichaPT(null));
+            .catch(() => { if (vigente) setFichaPT(null); });
+        return () => { vigente = false; };
     }, [isEcouvPT, globalMaterial, dynamicMaterials]);
 
     // ── Terminaciones por archivo: manera de aplicación (ubicación) + cantidad
@@ -363,6 +373,9 @@ const OrderForm = ({ serviceId: propServiceId }) => {
     const productoValidadoRef = React.useRef(null);
     useEffect(() => {
         if (!isEcouvPT || !fichaPT?.anchoM) { productoValidadoRef.current = null; return; }
+        // La ficha tiene que ser la del producto que está elegido AHORA (ver el sellado de
+        // arriba): si no, el cartel mezclaría el nombre de uno con las medidas del otro.
+        if (fichaPT.material && fichaPT.material !== globalMaterial) return;
         const clave = `${globalMaterial}|${fichaPT.anchoM}x${fichaPT.altoM}`;
         if (productoValidadoRef.current === clave) return;   // ya avisado para este producto
         productoValidadoRef.current = clave;
@@ -1093,10 +1106,16 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                         actions.setErrorModalOpen(true);
                         return false;
                     }
-                } else if (!(isEcouvPT && fichaPT?.anchoM != null) && fileWidthRounded > maxPrintableWidth + 1e-9) {
+                } else if (!isEcouvPT && fileWidthRounded > maxPrintableWidth + 1e-9) {
                     // (Producto terminado: el "material" del combo es el PRODUCTO, no el rollo —
-                    // este tope de ancho no aplica; el PT valida contra su ficha más abajo,
+                    // este tope de ancho no aplica NUNCA; el PT valida contra su ficha más abajo,
                     // incluido el ancho imprimible del material real.)
+                    // OJO (15-sep-2026): antes la excepción pedía además que la ficha estuviera
+                    // cargada (`fichaPT?.anchoM != null`). Los productos terminados tienen
+                    // anchoimprimible = 0 en articulos, así que cada vez que la ficha NO estaba
+                    // —todavía cargando, o directamente sin fila en ProductosTerminados— el tope
+                    // quedaba en 0 − 3 cm = −0,03 m y RECHAZABA CUALQUIER ARCHIVO con
+                    // "excede el ancho imprimible (-0.03m)". No se podía subir ningún pedido.
                     const matLabel = selectedMatName || `ancho máximo ${maxWidth.toFixed(2)}m`;
                     actions.setErrorModalMessage(
                         `El ancho del archivo (${fileWidthRounded.toFixed(2)}m) excede el ancho imprimible del material "${matLabel}" (${maxPrintableWidth.toFixed(2)}m). Por favor, ajuste el archivo o seleccione otro material.`
@@ -1370,13 +1389,11 @@ const OrderForm = ({ serviceId: propServiceId }) => {
             if ((tizadaFiles || []).some(f => !f.bobinaId)) {
                 return addToast('Elegí la bobina de tela de cada tizada antes de confirmar el pedido.', 'error');
             }
-            // Pieza o prenda: obligatorio por tizada, y con talle si es prenda. Producción
-            // necesita saber qué está cortando — 20 piezas no es lo mismo que 20 prendas.
+            // Pieza o prenda: obligatorio por tizada. Producción necesita saber qué está
+            // cortando — 20 piezas no es lo mismo que 20 prendas. Los talles NO se piden acá:
+            // una tizada de prenda trae varios, y la lista va en la Planilla de Pedido.
             if ((tizadaFiles || []).some(f => !f.tipoCorte)) {
                 return addToast('Indicá si cada tizada es una pieza o una prenda.', 'error');
-            }
-            if ((tizadaFiles || []).some(f => f.tipoCorte === 'PRENDA' && !f.talle)) {
-                return addToast('Elegí el talle de cada tizada marcada como prenda.', 'error');
             }
 
             // Agrupar por bobina: una ORDEN por tela (así producción controla por bobina)
@@ -2041,7 +2058,7 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                             // ahí sí habría que agregar la columna.
                             tipoCorte: f.tipoCorte || null,
                             talle: f.talle || null,
-                            nota: `${f.tipoCorte === 'PRENDA' ? `PRENDA talle ${f.talle}` : 'PIEZA'} · ${f.medicion.piezas} piezas · ${f.medicion.metrosCorte.toFixed(2)}m de corte`
+                            nota: `${f.tipoCorte === 'PRENDA' ? 'PRENDA (talles en la planilla)' : 'PIEZA'} · ${f.medicion.piezas} piezas · ${f.medicion.metrosCorte.toFixed(2)}m de corte`
                         })),
                         // Bobina y metros de tela de ESTA orden (el backend descuenta por orden)
                         bobinaTelaId: bobinaId,

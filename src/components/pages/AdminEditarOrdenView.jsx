@@ -292,6 +292,7 @@ function TarjetaSinDeposito({ orden, currentUser, onGuardado }) {
           currentUser={currentUser}
           onSaved={onGuardado}
           propagarADeposito
+          permitirReconstruir
         />
       </div>
     </div>
@@ -327,6 +328,7 @@ function ContenedorCobranza({ codigoOrden, cobranza, currentUser, onGuardado }) 
           currentUser={currentUser}
           onSaved={onGuardado}
           propagarADeposito
+          permitirReconstruir
         />
       </div>
       {cobranza ? (

@@ -282,11 +282,13 @@ exports.createOrder = async (req, res) => {
                     .input('PrecioUnitarioOriginal', sql.Decimal(18,2), item.precioOriginal || item.precio)
                     .input('SubtotalOriginal', sql.Decimal(18,2), item.subtotalOriginal || (item.cantidad * item.precio))
                     .input('MonedaOriginal', sql.VarChar, item.monedaOriginal || moneda || 'UYU')
+                    // Venta directa de depósito: el precio es la lista (sin descuento del motor).
+                    .input('PLista', sql.Decimal(18, 4), item.precio)
                     .query(`
                         INSERT INTO PedidosCobranzaDetalle
-                        (PedidoCobranzaID, OrdenID, ProIdProducto, CodArticulo, Cantidad, PrecioUnitario, Subtotal, Moneda, DatoTecnico, PrecioUnitarioOriginal, SubtotalOriginal, MonedaOriginal)
+                        (PedidoCobranzaID, OrdenID, ProIdProducto, CodArticulo, Cantidad, PrecioUnitario, Subtotal, Moneda, DatoTecnico, PrecioUnitarioOriginal, SubtotalOriginal, MonedaOriginal, PrecioLista)
                         VALUES
-                        (@PedidoCobranzaID, @OrdenID, @ProIdProducto, @CodArticulo, @Cantidad, @PrecioUnitario, @Subtotal, @Moneda, 0, @PrecioUnitarioOriginal, @SubtotalOriginal, @MonedaOriginal)
+                        (@PedidoCobranzaID, @OrdenID, @ProIdProducto, @CodArticulo, @Cantidad, @PrecioUnitario, @Subtotal, @Moneda, 0, @PrecioUnitarioOriginal, @SubtotalOriginal, @MonedaOriginal, @PLista)
                     `);
                 ordenIndex++;
             }

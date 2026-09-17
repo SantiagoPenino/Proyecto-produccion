@@ -15,4 +15,8 @@ router.get('/:noDocERP', verifyToken, controller.getQuotation);
 // Guardar cotización editada (recalcula QR)
 router.put('/:noDocERP', verifyToken, controller.saveQuotation);
 
+// Reconstruir todas las líneas desde el origen real (Magnitud/puntadas/bajadas de cada
+// orden + motor de precios), respetando el modo de facturación guardado
+router.post('/:noDocERP/reconstruir', verifyToken, controller.reconstruirLineas);
+
 module.exports = router;

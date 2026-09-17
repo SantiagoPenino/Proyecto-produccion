@@ -3,11 +3,20 @@ import api from '../../services/apiClient';
 import {
     Printer, FileSpreadsheet, ChevronRight, Search,
     BarChart2, Package, ClipboardList, RefreshCw,
-    AlertTriangle, XCircle,
+    AlertTriangle, XCircle, LayoutDashboard,
 } from 'lucide-react';
+import ProduccionPanelSection from './ProduccionPanelSection';
 
 // ─── Reportes disponibles ────────────────────────────────────────────────────
 const REPORTS = [
+    {
+        // Panel completo con sus propios filtros (no usa el encabezado ni la tabla de esta página)
+        id: 'dashboard',
+        label: 'Dashboard de Producción',
+        icon: LayoutDashboard,
+        desc: 'Panel de producción: cumplimiento, órdenes en proceso y en cola, capacidad consumida, fallas, máquinas y producción por sector',
+        color: 'text-indigo-500',
+    },
     {
         id: 'fallas-reposiciones',
         label: 'Fallas y Reposiciones',
@@ -511,6 +520,7 @@ export default function ReportesPage() {
     }, []);
 
     const fetchReport = useCallback(async () => {
+        if (activeReport === 'dashboard') return; // el panel carga solo, con sus propios filtros
         setLoading(true);
         setError(null);
         try {
@@ -612,7 +622,7 @@ export default function ReportesPage() {
 
                 <div className="px-3 py-2.5 border-t border-slate-100">
                     <p className="text-[10px] text-slate-400 text-center">
-                        {loading ? 'Cargando...' : data.length > 0 ? `${data.length.toLocaleString()} registros` : 'Sin datos'}
+                        {activeReport === 'dashboard' ? 'Panel en vivo' : loading ? 'Cargando...' : data.length > 0 ? `${data.length.toLocaleString()} registros` : 'Sin datos'}
                     </p>
                 </div>
             </aside>
@@ -620,7 +630,8 @@ export default function ReportesPage() {
             {/* ── Contenido ───────────────────────────────────────────────── */}
             <div className="flex-1 flex flex-col overflow-hidden">
 
-                {/* ── Header filtros ──────────────────────────────────────── */}
+                {/* ── Header filtros (el dashboard trae los suyos) ────────── */}
+                {activeReport !== 'dashboard' && (
                 <div className="bg-white border-b border-slate-200 px-5 py-3 shadow-sm shrink-0 space-y-2.5">
 
                     {/* Fila 1: ÁREA + título + botones */}
@@ -749,13 +760,16 @@ export default function ReportesPage() {
                         </div>
                     </div>
                 </div>
+                )}
 
                 {/* ── KPIs ───────────────────────────────────────────────── */}
-                <KpisStrip activeReport={activeReport} totales={totales} />
+                {activeReport !== 'dashboard' && <KpisStrip activeReport={activeReport} totales={totales} />}
 
-                {/* ── Tabla ──────────────────────────────────────────────── */}
+                {/* ── Tabla / panel ──────────────────────────────────────── */}
                 <div className="flex-1 overflow-auto p-4">
-                    {loading ? (
+                    {activeReport === 'dashboard' ? (
+                        <ProduccionPanelSection />
+                    ) : loading ? (
                         <div className="flex flex-col items-center justify-center h-full gap-3">
                             <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-brand-cyan" />
                             <p className="text-sm text-slate-400">Cargando reporte...</p>

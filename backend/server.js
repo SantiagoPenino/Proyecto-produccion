@@ -100,6 +100,7 @@ app.use('/api/presupuestos', require('./routes/presupuestosRoutes'));
 app.use('/api/wms-interno', require('./routes/wmsInternoRoutes'));
 app.use('/api/workflows', require('./routes/workflowsRoutes'));
 app.use('/api/logistics', require('./routes/logisticsRoutes'));
+app.use('/api/solicitudes-insumo', require('./routes/solicitudesInsumoRoutes')); // Spec 39: insumo del cliente dañado
 app.use('/api/canastos', require('./routes/canastosRoutes'));
 app.use('/api/rolls', require('./routes/rollsRoutes'));
 app.use('/api/rest-sync', require('./routes/restSyncRoutes'));
@@ -154,6 +155,8 @@ app.use('/api/sisnet', require('./routes/sisnetRoutes'));
 try {
     app.use('/api/contabilidad', require('./routes/contabilidadRoutes'));
     app.use('/api/tesoreria', require('./routes/tesoreriaRoutes'));
+    // Beneficios pactados sobre la billetera (specs/40): catálogo, pactos, aprobación, activación, bolsas
+    app.use('/api/beneficios', require('./routes/beneficiosRoutes'));
     logger.info('✅ [MÓDULO] Contabilidad de Clientes activado en /api/contabilidad');
 } catch (e) { logger.error('❌ Error loading contabilidad routes:', e.message); }
 
@@ -567,6 +570,14 @@ if (process.env.NODE_ENV !== 'test') {
                 startConsultasVencimientoJob(io);
             } catch (e) {
                 logger.error("❌ [CRON] Error cargando ConsultasVencimiento:", e.message);
+            }
+
+            // Spec 39: solicitudes de insumo del cliente vencidas sin respuesta — 07:00 hs.
+            try {
+                const { startSolicitudesInsumoJob } = require('./jobs/solicitudesInsumo.job');
+                startSolicitudesInsumoJob();
+            } catch (e) {
+                logger.error("❌ [CRON] Error cargando SolicitudesInsumo:", e.message);
             }
 
         } catch (error) {

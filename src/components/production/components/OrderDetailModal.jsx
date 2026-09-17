@@ -2,6 +2,7 @@ import React, { useState, useEffect, Fragment } from 'react';
 import { createPortal } from 'react-dom';
 import { ordersService, fileControlService, consultasService } from '../../../services/api';
 import api from '../../../services/apiClient';
+import { logisticsService } from '../../../services/modules/logisticsService';
 import FileItem, { ActionButton } from './FileItem';
 import ReferenceItem from './ReferenceItem';
 import { toast } from 'sonner';
@@ -113,6 +114,10 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
     const [subiendoPRO, setSubiendoPRO] = useState(false);
     // [PRO] Copias del archivo de impresión (como las pide el portal al cliente).
     const [copiasPRO, setCopiasPRO] = useState('1');
+    // Spec 39: subir el archivo de reimpresión de una orden de FALLA (-F) en áreas de
+    // impresión estándar (Sublimación, DTF, Eco UV) — no tenían ningún botón de subida
+    // interna, solo llegaban archivos del portal del cliente.
+    const [subiendoFalla, setSubiendoFalla] = useState(false);
     // Notas de producción — aditivas, tabla OrdenNotasProduccion (nunca se pisan).
     const [notasProduccion, setNotasProduccion] = useState([]);
     const [loadingNotas, setLoadingNotas] = useState(false);
@@ -406,6 +411,11 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
     // integral trae el archivo de la orden madre (readonly) Y el de la reposición (editable),
     // que se ven idénticos porque heredan el mismo nombre → los etiquetamos para distinguirlos.
     const isRepoOrder = /-R\d+/i.test(String(currentOrder?.code || ''));
+    // Spec 39: una orden de FALLA (-F1, -F2, ...) es el mismo caso — hay que volver a armar y
+    // subir el archivo de reimpresión, con las mismas copias y dimensiones que el original.
+    // Se muestra el archivo de la orden madre (readonly, para leer copias/medidas) igual que
+    // en -R; vale para cualquier área de impresión (Sublimación, DTF, ECOUV, etc.).
+    const isFallaOrder = /-F\d+/i.test(String(currentOrder?.code || ''));
 
     // Archivos de Impresión = select * from ArchivosOrden, pero el integral trae los de TODAS las
     // órdenes hermanas del pedido (mismo NoDocERP, incluidas otras hermanas de bultos tipo 1/2, 2/2).
@@ -630,6 +640,57 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
             toast.error('Error al subir: ' + (e?.response?.data?.error || e?.message || ''));
         } finally {
             setSubiendoPRO(false);
+        }
+    };
+
+    // Spec 39: SOLO el archivo puntual de la madre que hay que reponer — nunca "todos los
+    // archivos de la madre/hermanas" (eso contamina cualquier descarga por lote para ripear
+    // con contenido de otras órdenes/áreas). Se pide aparte, fuera de `files`/`productionFiles`,
+    // para que estructuralmente no pueda mezclarse con lo que se manda a imprimir.
+    const [archivoOrigenFalla, setArchivoOrigenFalla] = useState(null);
+    useEffect(() => {
+        if (!isFallaOrder || !currentOrder?.id) { setArchivoOrigenFalla(null); return; }
+        let cancel = false;
+        logisticsService.getReposicionesOrden(currentOrder.id).then(reps => {
+            if (cancel) return;
+            const rep = (reps || []).find(r => String(r.OrdenFallaID) === String(currentOrder.id) && r.ArchivoOrigenNombre);
+            setArchivoOrigenFalla(rep ? {
+                nombre: rep.ArchivoOrigenNombre, copias: rep.ArchivoOrigenCopias,
+                metros: rep.ArchivoOrigenMetros, ruta: rep.ArchivoOrigenRuta, codigoMadre: rep.CodigoMadre,
+            } : null);
+        }).catch(() => { if (!cancel) setArchivoOrigenFalla(null); });
+        return () => { cancel = true; };
+    }, [isFallaOrder, currentOrder?.id]);
+
+    // Spec 39: subir el archivo de reimpresión de una orden de FALLA (-F), en áreas de
+    // impresión estándar sin la pantalla de PRO/TPU. Mismo endpoint que usa PRO, PERO SIN
+    // `procesarPortal` — eso mide el PDF Y RECOTIZA EL PEDIDO, lo cual le cobraría al cliente
+    // la reimpresión de su propia falla (RN-FLT.02: sin costo). El archivo queda adjunto
+    // "Pendiente" con sus copias; los metros se cargan como siempre al imprimir y medir
+    // (mecanismo existente de Control de Impresión, sin tocar).
+    const handleUploadFalla = async (fileList) => {
+        const archivos = Array.from(fileList || []);
+        if (archivos.length === 0 || !currentOrder?.id) return;
+        const invalidos = archivos.filter(f => {
+            const n = (f.name || '').toLowerCase();
+            return !(n.endsWith('.pdf') || n.endsWith('.plt') || f.type === 'application/pdf');
+        });
+        if (invalidos.length > 0) return toast.error('Solo se permiten archivos PDF o PLT para impresión.');
+        const copias = Math.max(1, parseInt(copiasPRO, 10) || 1);
+        setSubiendoFalla(true);
+        try {
+            for (const f of archivos) {
+                await ordersService.uploadProductionFile(currentOrder.id, f, null, 'Impresion', {
+                    copias: String(copias),
+                });
+            }
+            toast.success(`${archivos.length} archivo(s) de reimpresión subido(s), sin costo. Los metros se cargan al imprimir y medir, como siempre.`);
+            reloadFiles();
+            onOrderUpdated?.();
+        } catch (e) {
+            toast.error('Error al subir: ' + (e?.response?.data?.error || e?.message || ''));
+        } finally {
+            setSubiendoFalla(false);
         }
     };
 
@@ -1561,7 +1622,7 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                 onClick={onClose}
             ></div>
 
-            <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-[95vw] lg:max-w-7xl flex flex-col max-h-[90vh] animate-in zoom-in-95 duration-200 border border-zinc-200 overflow-hidden">
+            <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-[96vw] flex flex-col max-h-[92vh] animate-in zoom-in-95 duration-200 border border-zinc-200 overflow-hidden">
 
                 <div className="px-6 py-4 bg-zinc-50 border-b border-zinc-200 flex justify-between items-start shrink-0">
                     <div>
@@ -2252,7 +2313,59 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                                     {/* En fase boceto con el boceto ya cargado no hay nada más que subir:
                                         el siguiente paso es el botón de enviar a aprobación. DF sube el
                                         arte a mano desde acá mismo (no tiene fase de boceto). */}
-                                    {/* [PRO] Los archivos son artes/guías: no tocan la cantidad ni la cotización */}
+                                    {/* Spec 39: orden de FALLA (-F) en un área de impresión estándar (Sublimación,
+                        DTF, Eco UV — no PRO/TPU/EMB, que ya tienen su propia subida). Hay que
+                        volver a armar y subir el archivo de reimpresión con las mismas copias
+                        que el original. El original se muestra SOLO como referencia (nombre,
+                        copias, medidas) en una tarjeta aparte — a propósito FUERA de la lista
+                        de "Archivos de Impresión" de esta orden, para que nunca se cuele en una
+                        descarga por lote / RIP: eso mandaría a imprimir contenido de otra orden. */}
+                    {isFallaOrder && !isPRO && !isTPU && !isEMB && !readOnly && (
+                        <>
+                            <div className="p-3 mb-2 rounded-xl bg-fuchsia-50 border border-fuchsia-200 text-fuchsia-700 text-xs">
+                                <div className="font-bold flex items-center gap-2 mb-1">
+                                    <i className="fa-solid fa-triangle-exclamation"></i>
+                                    Orden de falla: subí el archivo de reimpresión con las mismas copias que el original.
+                                </div>
+                                {archivoOrigenFalla ? (
+                                    <div className="mt-1.5 flex items-center gap-2 bg-white/70 rounded-lg px-2.5 py-1.5 border border-fuchsia-200">
+                                        <i className="fa-solid fa-file-pdf text-fuchsia-400 shrink-0"></i>
+                                        <span className="flex-1 min-w-0 truncate font-bold text-fuchsia-800" title={archivoOrigenFalla.nombre}>{archivoOrigenFalla.nombre}</span>
+                                        <span className="shrink-0 font-mono">{archivoOrigenFalla.copias ?? '?'} copias{archivoOrigenFalla.metros != null ? ` · ${archivoOrigenFalla.metros} m` : ''}</span>
+                                        {archivoOrigenFalla.ruta && (
+                                            <a href={archivoOrigenFalla.ruta} target="_blank" rel="noreferrer" className="shrink-0 text-fuchsia-500 hover:text-fuchsia-700" title="Ver el archivo original">
+                                                <i className="fa-solid fa-arrow-up-right-from-square"></i>
+                                            </a>
+                                        )}
+                                    </div>
+                                ) : (
+                                    <div className="mt-1 text-fuchsia-500 italic">No se encontró el archivo original de referencia — fijate en {' '}
+                                        {archivoOrigenFalla === null ? 'la orden madre' : 'cargando...'}.</div>
+                                )}
+                                <div className="mt-1 text-[10px] text-fuchsia-400">Es solo de referencia: no forma parte de los archivos de esta orden ni se incluye en descargas por lote.</div>
+                            </div>
+                            <div className="flex items-center gap-2 mb-2">
+                                <div className="flex items-center gap-1 bg-white border border-fuchsia-300 rounded-lg px-2 py-1.5 shrink-0">
+                                    <label className="text-[9px] font-black text-fuchsia-400 uppercase">Copias</label>
+                                    <input
+                                        type="number" min="1" className="w-12 text-center font-bold text-sm outline-none text-zinc-700"
+                                        value={copiasPRO}
+                                        onChange={e => setCopiasPRO(e.target.value)}
+                                        disabled={subiendoFalla}
+                                    />
+                                </div>
+                                <label className={`relative overflow-hidden flex-1 flex items-center justify-center gap-2 py-3 rounded-xl border-2 border-dashed transition-colors ${subiendoFalla ? 'border-fuchsia-300 text-fuchsia-400 pointer-events-none' : 'border-fuchsia-400 text-fuchsia-600 hover:bg-fuchsia-50 cursor-pointer'}`}>
+                                    <i className={`fa-solid ${subiendoFalla ? 'fa-circle-notch fa-spin' : 'fa-plus'}`}></i>
+                                    <span className="text-xs font-bold uppercase tracking-wide">
+                                        {subiendoFalla ? 'Subiendo...' : 'Subir archivo de reimpresión (PDF/PLT)'}
+                                    </span>
+                                    <input type="file" accept="application/pdf,.pdf,.plt" className="hidden" disabled={subiendoFalla}
+                                        onChange={(e) => { handleUploadFalla(e.target.files); e.target.value = ''; }} />
+                                </label>
+                            </div>
+                        </>
+                    )}
+                    {/* [PRO] Los archivos son artes/guías: no tocan la cantidad ni la cotización */}
                     {isPRO && !readOnly && (
                         <>
                             <div className="flex items-center gap-2 p-3 mb-2 rounded-xl bg-brand-cyan/5 border border-brand-cyan/30 text-brand-cyan text-xs font-bold">
@@ -2491,6 +2604,9 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                                            (todas las áreas), no solo la línea de PRO: 'TODOS' desbloquea
                                            todas las líneas y el buscador de productos de cualquier área. */
                                         areaFilter={isPRO ? 'TODOS' : currentOrder.area}
+                                        /* "Reconstruir líneas" es herramienta de Prendas: en el
+                                           resto de las áreas no se muestra. */
+                                        permitirReconstruir={isPRO}
                                         onSaved={reloadFiles}
                                         readOnly={readOnly}
                                     />

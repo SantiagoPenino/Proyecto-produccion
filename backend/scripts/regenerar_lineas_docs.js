@@ -76,9 +76,17 @@ const f = n => Number(n||0).toFixed(2);
             .input('sub', sql.Decimal(18,4), l.subtotal)
             .input('imp', sql.Decimal(18,4), l.impuestos)
             .input('tot', sql.Decimal(18,4), l.total)
+            .input('desc', sql.Decimal(18,2), l.totalDescuentos || 0)
+            .input('descPct', sql.Decimal(9,4), l.descuentoPct != null ? l.descuentoPct : null)
+            .input('descStr', sql.VarChar(100), l.descuentoStr ? String(l.descuentoStr).substring(0,100) : null)
+            .input('descOrig', sql.NVarChar(150), l.descuentoOrigen ? String(l.descuentoOrigen).substring(0,150) : null)
+            .input('rec', sql.Decimal(18,2), l.totalRecargos || 0)
+            .input('recPct', sql.Decimal(9,4), l.recargoPct != null ? l.recargoPct : null)
+            .input('recStr', sql.VarChar(200), l.recargoStr ? String(l.recargoStr).substring(0,200) : null)
             .query(`INSERT INTO dbo.DocumentosContablesDetalle
-              (DocIdDocumento, OrdCodigoOrden, DcdNomItem, DcdDscItem, DcdCantidad, DcdPrecioUnitario, DcdSubtotal, DcdImpuestos, DcdTotal)
-              VALUES (@d, @ord, @nom, @dsc, @cant, @pu, @sub, @imp, @tot)`);
+              (DocIdDocumento, OrdCodigoOrden, DcdNomItem, DcdDscItem, DcdCantidad, DcdPrecioUnitario, DcdSubtotal, DcdImpuestos, DcdTotal,
+               DcdTotalDescuentos, DcdDescuentoPct, DcdDescuentoStr, DcdDescuentoOrigen, DcdTotalRecargos, DcdRecargoPct, DcdRecargoStr)
+              VALUES (@d, @ord, @nom, @dsc, @cant, @pu, @sub, @imp, @tot, @desc, @descPct, @descStr, @descOrig, @rec, @recPct, @recStr)`);
         }
       }
       await tx.commit();

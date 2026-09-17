@@ -21,13 +21,14 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   Search, RefreshCw, Users, Eye, Layers, Package,
   Truck, Tag, ChevronDown, ChevronRight, CheckCircle2, Clock,
-  History, X,
+  History, X, BadgePercent,
 } from 'lucide-react';
 import { toast } from 'sonner';
 
 import api from '../../services/api';
 import { fetchAPI, FilaCliente } from './ContabilidadCuentasView';
 import { fmtFechaCorta } from '../../utils/fechas';
+import TabBeneficiosCliente from '../beneficios/TabBeneficiosCliente';
 
 const fmtNum = (n, dec = 2) => new Intl.NumberFormat('es-UY', {
   minimumFractionDigits: dec, maximumFractionDigits: dec,
@@ -43,6 +44,9 @@ const TABS = [
   { key: 'TELAS',      label: 'Telas del cliente',   icon: Package },
   { key: 'DEPOSITO',   label: 'Pendiente de retirar', icon: Truck },
   { key: 'ESPECIALES', label: 'Precios especiales',  icon: Tag },
+  // Beneficios pactados (specs/40): única pestaña que PROPONE (pactar) en una vista
+  // de consulta; no cambia precios: el pacto va a aprobación y se habilita al cargar.
+  { key: 'BENEFICIOS', label: 'Beneficios',          icon: BadgePercent },
 ];
 
 /* ── Piezas chicas de UI ──────────────────────────────────────────────── */
@@ -1078,6 +1082,7 @@ export default function VendedorCliente360() {
       case 'TELAS':      return <TabTelas           key={key} CliIdCliente={clienteSel.CliIdCliente} />;
       case 'DEPOSITO':   return <TabDeposito        key={key} CliIdCliente={clienteSel.CliIdCliente} />;
       case 'ESPECIALES': return <TabPreciosEspeciales key={key} CliIdCliente={clienteSel.CliIdCliente} />;
+      case 'BENEFICIOS': return <TabBeneficiosCliente key={key} cliente={clienteSel} />;
       default:           return null;
     }
   };
@@ -1091,7 +1096,7 @@ export default function VendedorCliente360() {
         </div>
         <div className="min-w-0">
           <h1 className="text-sm font-black text-slate-800 leading-tight">Vista 360° del cliente · Vendedores</h1>
-          <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Consulta — esta pantalla no modifica nada</p>
+          <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Consulta — solo la pestaña Beneficios propone pactos, y no cambia precios</p>
         </div>
         <span className="ml-2 text-[10px] font-bold text-slate-500 bg-slate-50 border border-slate-200 px-2.5 py-1 rounded-full font-mono">
           /vendedores/cliente-360

@@ -56,12 +56,21 @@ const stepVisual = (step) => {
     const status = statusRaw.toUpperCase();
     const detail = getDetail(step);
     const logistic = step.EstadoLogistica || step.estadoLogistica || '-';
+    // [PRENDAS] Cuántas órdenes de falla/reposición (código "-F#"/"-R#") hay detrás del
+    // estado mostrado en este paso — sin esto, una reposición encadenada quedaba invisible:
+    // el paso solo mostraba "la orden más atrasada" entre todas sus hermanas de esa área.
+    // fallaCantidad viene de Reposiciones.Cantidad; fallaPendiente marca si todavía hay
+    // alguna sin cerrar (rojo) o si ya cerraron todas (verde).
+    const fallaCount = Number(step.fallaCount) || 0;
+    const fallaCantidad = step.fallaCantidad != null ? Number(step.fallaCantidad) : null;
+    const fallaPendiente = !!step.fallaPendiente;
 
     let type = 'PENDING';
-    // [PRENDAS] "Recibido en Destino"/"Ingresado": la orden ya se entregó del todo en esta
-    // área (su bulto se confirmó en la siguiente) — cuenta como terminada acá, igual que
-    // Pronto/Finalizado. "En tránsito" queda afuera a propósito: todavía está viajando.
-    if (status.includes('PRONTO') || status.includes('FINALIZADO') || status.includes('COMPLETADO') || status.includes('RECIBIDO EN DESTINO') || status.includes('INGRESADO') || status.includes('ENTREGADO')) type = 'FINISHED';
+    // [PRENDAS] "Recibido en Destino"/"Ingresado"/"Avisado": la orden ya se entregó del todo
+    // en esta área (su bulto se confirmó en la siguiente, o el cliente ya fue avisado de que
+    // está lista) — cuenta como terminada acá, igual que Pronto/Finalizado. "En tránsito"
+    // queda afuera a propósito: todavía está viajando.
+    if (status.includes('PRONTO') || status.includes('FINALIZADO') || status.includes('COMPLETADO') || status.includes('RECIBIDO EN DESTINO') || status.includes('INGRESADO') || status.includes('ENTREGADO') || status.includes('AVISADO')) type = 'FINISHED';
     else if (status.includes('CANCEL')) type = 'CANCELLED';
     else if (status.startsWith('PENDIENTE') || status === '') type = 'PENDING';
     else type = 'ACTIVE';
@@ -91,7 +100,24 @@ const stepVisual = (step) => {
         borderClass = "border-red-100 bg-red-50";
     }
 
-    return { areaName, statusRaw, detail, logistic, type, circleClass, icon, textClass, borderClass, connectorClass };
+    return { areaName, statusRaw, detail, logistic, fallaCount, fallaCantidad, fallaPendiente, type, circleClass, icon, textClass, borderClass, connectorClass };
+};
+
+// [PRENDAS] Badge de falla/reposición: se posiciona sobre la esquina del círculo del paso.
+// "F" + la cantidad repuesta en esta área (Reposiciones.Cantidad) — rojo mientras la
+// reposición sigue pendiente, verde cuando ya cerró (Reposiciones.Estado = CERRADA).
+const FallaBadge = ({ count, cantidad, pendiente }) => {
+    if (!count) return null;
+    const numero = cantidad != null
+        ? (Number.isInteger(cantidad) ? cantidad : cantidad.toFixed(2).replace(/0+$/, '').replace(/\.$/, ''))
+        : `×${count}`;
+    const colorClass = pendiente ? 'bg-red-500' : 'bg-emerald-500';
+    const titulo = `${count} orden(es) de falla/reposición en este paso · ${pendiente ? 'pendiente' : 'finalizada'}`;
+    return (
+        <div className={`absolute -top-1 -right-1 min-w-[20px] h-[18px] px-1 rounded-full ${colorClass} text-white text-[9px] font-black flex items-center justify-center border-2 border-white z-10`} title={titulo}>
+            F{numero}
+        </div>
+    );
 };
 
 // Componente de módulo (no se redefine en cada render) — necesario para que los refs
@@ -102,8 +128,9 @@ const StepCircle = React.forwardRef(({ step }, ref) => {
         // bg-white de fondo propio: sin esto, la línea del grafo pasa "por detrás" pero pegada
         // al borde de la tarjeta y da la sensación de que los pasos se tocan/unen entre sí.
         <div ref={ref} className="flex flex-col items-center relative w-[150px] bg-white rounded-xl py-2">
-            <div className={`w-14 h-14 rounded-full flex items-center justify-center text-xl transition-all box-content ${v.circleClass}`}>
+            <div className={`relative w-14 h-14 rounded-full flex items-center justify-center text-xl transition-all box-content ${v.circleClass}`}>
                 <i className={`fa-solid ${v.icon} ${v.type === 'PENDING' ? 'text-[8px]' : ''}`}></i>
+                <FallaBadge count={v.fallaCount} cantidad={v.fallaCantidad} pendiente={v.fallaPendiente} />
             </div>
             <div className="mt-3 flex flex-col items-center gap-1 w-full px-1 text-center">
                 <div className={`text-xs uppercase tracking-tight leading-tight mb-1 h-6 flex items-end ${v.textClass}`}>{v.areaName}</div>
@@ -116,6 +143,19 @@ const StepCircle = React.forwardRef(({ step }, ref) => {
         </div>
     );
 });
+
+// [PRENDAS] Marcador de "Inicio": puramente visual, sin estado ni datos reales detrás — solo
+// para que el flujo no arranque "de la nada" en el primer paso (Sublimación en un pedido de
+// tela, o Producción en un "Comprar y personalizar" sin tela detrás). No participa del cálculo
+// de aristas/capas: se agrega solo al renderizar, cuando hay más de un paso real que mostrar.
+const InicioMarker = () => (
+    <div className="flex flex-col items-center relative w-14 shrink-0">
+        <div className="w-14 h-14 rounded-full flex items-center justify-center bg-slate-50 border-2 border-dashed border-slate-200 text-slate-300">
+            <i className="fa-solid fa-flag text-sm"></i>
+        </div>
+        <div className="mt-3 text-[10px] uppercase tracking-tight font-bold text-slate-400 h-6 flex items-end">Inicio</div>
+    </div>
+);
 
 const OrderRouteTracker = ({ steps = [], title = "Hoja de Ruta (Flujo de Áreas)" }) => {
 
@@ -131,6 +171,9 @@ const OrderRouteTracker = ({ steps = [], title = "Hoja de Ruta (Flujo de Áreas)
     // render, el grafo de abajo se recalcula siempre, dispara setLines, eso re-renderiza,
     // y vuelve a arrancar — loop infinito (se cuelga la pantalla) apenas hay ramas.
     const rawSteps = useMemo(() => (Array.isArray(steps) ? [...steps] : []), [steps]);
+    // Solo tiene sentido un "Inicio" cuando hay un flujo real de varios pasos que mostrar —
+    // con un único paso no hay nada que preceder.
+    const mostrarInicio = rawSteps.length > 1;
 
     // 2. ARMAR EL GRAFO (edges + capas). Puramente derivado de rawSteps — si no viene
     // "nextAreas" (respuestas viejas del backend, u otras pantallas que reusen este
@@ -140,61 +183,78 @@ const OrderRouteTracker = ({ steps = [], title = "Hoja de Ruta (Flujo de Áreas)
         const indexByUpperId = new Map(idsUpper.map((u, i) => [u, i]));
         const proIdx = idsUpper.indexOf('PRO');
 
-        // [PRENDAS] FASE 5/6: con combos, PRO puede ser TANTO origen (de donde nacen los
-        // componentes sueltos, ej. Bordado/DTF) COMO destino (donde convergen antes de
-        // Depósito, porque cada componente "muere" en PRO) — antes de esto PRO solo podía
-        // ser origen. Si detectamos una arista real que apunta a PRO, el nodo se DUPLICA
-        // visualmente: una copia "origen" (misma posición/rol de siempre) y una copia
-        // "destino" al final del array de trabajo, con los MISMOS datos de la orden (es
-        // la misma orden real, solo se dibuja 2 veces). Sin ninguna arista real entrante a
-        // PRO (el caso de siempre, sin combos), no hay duplicación — comportamiento
-        // IDÉNTICO al de antes, fallback exacto.
-        const proTieneEntradaReal = proIdx !== -1 && rawSteps.some((s, i) => {
-            if (i === proIdx) return false;
-            const nexts = Array.isArray(s.nextAreas) ? s.nextAreas : (s.nextArea ? [s.nextArea] : []);
-            return nexts.some(n => (n || '').toString().trim().toUpperCase() === 'PRO');
-        });
-        const workingSteps = proTieneEntradaReal ? [...rawSteps, rawSteps[proIdx]] : rawSteps;
-        const proOrigenIdx = proIdx;
-        const proDestinoIdx = proTieneEntradaReal ? workingSteps.length - 1 : -1;
-
-        // Aristas "reales": ProximoServicio de cada paso, solo si el destino también es un
-        // paso visible acá. Las que apuntan a PRO van al nodo "destino" (si existe), no al
-        // de "origen" — así la flecha entra a la convergencia, no al punto de partida.
-        const realEdges = []; // [fromIdx, toIdx]
-        workingSteps.forEach((s, i) => {
-            if (i === proOrigenIdx || i === proDestinoIdx) return; // PRO: sus aristas se resuelven aparte
+        // Aristas "reales" tratando TODOS los pasos por igual (PRO incluido): el caso
+        // normal, sin combos — una sola cadena que sigue el ProximoServicio real de cada
+        // orden tal cual llega del backend.
+        const baseEdges = []; // [fromIdx, toIdx]
+        rawSteps.forEach((s, i) => {
             const nexts = Array.isArray(s.nextAreas) ? s.nextAreas : (s.nextArea ? [s.nextArea] : []);
             nexts.forEach(n => {
-                const target = (n || '').toString().trim().toUpperCase();
-                const j = target === 'PRO' && proDestinoIdx !== -1 ? proDestinoIdx : indexByUpperId.get(target);
-                if (j !== undefined && j !== i) realEdges.push([i, j]);
+                const j = indexByUpperId.get((n || '').toString().trim().toUpperCase());
+                if (j !== undefined && j !== i) baseEdges.push([i, j]);
             });
         });
-        // PRO-destino sale hacia el ProximoServicio real de la orden PRO (ej. DEPOSITO),
-        // si ese paso también es visible acá.
-        if (proDestinoIdx !== -1) {
+        const baseInDegree = new Array(rawSteps.length).fill(0);
+        baseEdges.forEach(([, j]) => { baseInDegree[j]++; });
+
+        // [PRENDAS] FASE 5/6: con combos, PRO puede ser TANTO origen (de donde nacen los
+        // componentes sueltos, ej. Bordado/DTF) COMO destino (donde convergen antes de
+        // Depósito, porque cada componente "muere" en PRO). La señal real de que ESTO es
+        // un combo (y no un pedido común que simplemente pasa por PRO) es que hay 2 o más
+        // pasos sin ningún otro paso apuntándoles — arranques genuinamente independientes.
+        // Con 0 o 1 raíz "suelta" no hay nada que combinar: tratar a PRO como pivote
+        // rompía pedidos comunes, porque "adoptaba" como hijo suyo al paso que en realidad
+        // es el INICIO real de toda la cadena (ej. Sublimación) solo porque nadie más le
+        // apunta — así el grafo entero quedaba desordenado (Bordado, Corte, Costura,
+        // Producción, Sublimación... en vez de Sublimación→Corte→Costura→Bordado→Producción).
+        const otrosRoots = proIdx === -1 ? [] : rawSteps.map((_, i) => i).filter(i => i !== proIdx && baseInDegree[i] === 0);
+        const esCombo = proIdx !== -1 && otrosRoots.length > 1;
+
+        let workingSteps, edges;
+        if (esCombo) {
+            const proOrigenIdx = proIdx;
+            workingSteps = [...rawSteps, rawSteps[proIdx]];
+            const proDestinoIdx = workingSteps.length - 1;
+
+            // Aristas "reales": ProximoServicio de cada paso, solo si el destino también es
+            // un paso visible acá. Las que apuntan a PRO van al nodo "destino", no al de
+            // "origen" — así la flecha entra a la convergencia, no al punto de partida.
+            const realEdges = [];
+            workingSteps.forEach((s, i) => {
+                if (i === proOrigenIdx || i === proDestinoIdx) return; // PRO: sus aristas se resuelven aparte
+                const nexts = Array.isArray(s.nextAreas) ? s.nextAreas : (s.nextArea ? [s.nextArea] : []);
+                nexts.forEach(n => {
+                    const target = (n || '').toString().trim().toUpperCase();
+                    const j = target === 'PRO' ? proDestinoIdx : indexByUpperId.get(target);
+                    if (j !== undefined && j !== i) realEdges.push([i, j]);
+                });
+            });
+            // PRO-destino sale hacia el ProximoServicio real de la orden PRO (ej. DEPOSITO).
             const proStep = rawSteps[proIdx];
-            const nexts = Array.isArray(proStep.nextAreas) ? proStep.nextAreas : (proStep.nextArea ? [proStep.nextArea] : []);
-            nexts.forEach(n => {
+            const nextsPro = Array.isArray(proStep.nextAreas) ? proStep.nextAreas : (proStep.nextArea ? [proStep.nextArea] : []);
+            nextsPro.forEach(n => {
                 const j = indexByUpperId.get((n || '').toString().trim().toUpperCase());
                 if (j !== undefined && j !== proDestinoIdx) realEdges.push([proDestinoIdx, j]);
             });
-        }
 
-        // Raíces derivadas: todo paso (que no sea PRO-origen ni PRO-destino) sin ninguna
-        // arista real entrante nace de PRO-origen.
-        const inDegree = new Array(workingSteps.length).fill(0);
-        realEdges.forEach(([, j]) => { inDegree[j]++; });
-        const edges = [...realEdges];
-        if (proOrigenIdx !== -1) {
+            // Raíces derivadas: todo paso (que no sea PRO-origen ni PRO-destino) sin ninguna
+            // arista real entrante nace de PRO-origen — los componentes independientes del combo.
+            const inDegree = new Array(workingSteps.length).fill(0);
+            realEdges.forEach(([, j]) => { inDegree[j]++; });
+            edges = [...realEdges];
             workingSteps.forEach((s, i) => {
                 if (i !== proOrigenIdx && i !== proDestinoIdx && inDegree[i] === 0) edges.push([proOrigenIdx, i]);
             });
+        } else {
+            // Sin combo: PRO es un paso más, sigue su propio ProximoServicio como cualquier
+            // otro — mismo resultado de siempre para "Comprar y personalizar" y para el
+            // 99% de los pedidos de una sola cadena.
+            workingSteps = rawSteps;
+            edges = baseEdges;
         }
 
-        // Sin PRO y sin ninguna arista real: no hay grafo que armar (ej. un solo paso,
-        // o datos viejos sin nextAreas) — modo lineal, como toda la vida.
+        // Sin ninguna arista real: no hay grafo que armar (ej. un solo paso, o datos viejos
+        // sin nextAreas) — modo lineal con el orden crudo, como toda la vida.
         if (edges.length === 0) return { hasBranching: false };
 
         // Capas por camino más largo desde cualquier raíz (0 aristas entrantes en el set
@@ -230,7 +290,13 @@ const OrderRouteTracker = ({ steps = [], title = "Hoja de Ruta (Flujo de Áreas)
         const numLayers = Math.max(...depth) + 1;
         const hasBranching = numLayers < workingSteps.length; // menos capas que pasos = alguna capa tiene 2+
 
-        if (!hasBranching) return { hasBranching: false };
+        if (!hasBranching) {
+            // Cadena única (sin ramas): igual se calculó el orden real vía ProximoServicio.
+            // Se usa para el modo lineal — antes se mostraban los pasos en el orden crudo en
+            // que los mandó el backend, que no tiene por qué respetar la secuencia real.
+            const linearSteps = workingSteps.map((_, i) => i).sort((a, b) => depth[a] - depth[b]).map(i => workingSteps[i]);
+            return { hasBranching: false, linearSteps };
+        }
 
         const columns = Array.from({ length: numLayers }, () => []);
         workingSteps.forEach((s, i) => columns[depth[i]].push(i));
@@ -316,6 +382,11 @@ const OrderRouteTracker = ({ steps = [], title = "Hoja de Ruta (Flujo de Áreas)
                         })}
                     </svg>
                     <div className="relative flex items-center justify-center min-w-max px-6 mx-auto gap-20" style={{ zIndex: 1 }}>
+                        {mostrarInicio && (
+                            <div className="flex flex-col gap-12 justify-center">
+                                <InicioMarker />
+                            </div>
+                        )}
                         {graph.columns.map((colIndices, colIdx) => (
                             <div key={colIdx} className="flex flex-col gap-12 justify-center">
                                 {colIndices.map(i => (
@@ -329,18 +400,28 @@ const OrderRouteTracker = ({ steps = [], title = "Hoja de Ruta (Flujo de Áreas)
                     </div>
                 </div>
             ) : (
-                // --- MODO LINEAL (de siempre): una sola fila, sin cambios ---
+                // --- MODO LINEAL: una sola fila, ordenada por la secuencia real (ProximoServicio) ---
+                (() => {
+                    const linealSteps = graph.linearSteps || rawSteps;
+                    return (
                 <div className="overflow-x-auto pb-6 pt-2">
                     <div className="flex items-start justify-center min-w-max px-4 mx-auto gap-0">
-                        {rawSteps.map((step, idx) => {
+                        {mostrarInicio && (
+                            <div className="flex flex-col items-center relative shrink-0 pr-6 group">
+                                <div className="absolute top-7 left-14 w-6 h-1 -translate-y-1/2 -z-10 bg-slate-200"></div>
+                                <InicioMarker />
+                            </div>
+                        )}
+                        {linealSteps.map((step, idx) => {
                             const v = stepVisual(step);
                             return (
                                 <div key={idx} className="flex flex-col items-center relative flex-1 min-w-[140px] group">
-                                    {idx < rawSteps.length - 1 && (
+                                    {idx < linealSteps.length - 1 && (
                                         <div className={`absolute top-7 left-1/2 w-full h-1 -translate-y-1/2 -z-10 ${v.connectorClass}`}></div>
                                     )}
-                                    <div className={`w-14 h-14 rounded-full flex items-center justify-center text-xl transition-all box-content ${v.circleClass}`}>
+                                    <div className={`relative w-14 h-14 rounded-full flex items-center justify-center text-xl transition-all box-content ${v.circleClass}`}>
                                         <i className={`fa-solid ${v.icon} ${v.type === 'PENDING' ? 'text-[8px]' : ''}`}></i>
+                                        <FallaBadge count={v.fallaCount} cantidad={v.fallaCantidad} pendiente={v.fallaPendiente} />
                                     </div>
                                     <div className="mt-3 flex flex-col items-center gap-1 w-full px-1 text-center">
                                         <div className={`text-xs uppercase tracking-tight leading-tight mb-1 h-6 flex items-end ${v.textClass}`}>{v.areaName}</div>
@@ -355,6 +436,8 @@ const OrderRouteTracker = ({ steps = [], title = "Hoja de Ruta (Flujo de Áreas)
                         })}
                     </div>
                 </div>
+                    );
+                })()
             )}
         </div>
     );

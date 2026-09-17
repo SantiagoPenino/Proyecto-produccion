@@ -49,6 +49,7 @@ const TransportControlPage = lazyWithRetry(() => import('../pages/TransportContr
 const EcoUvFinishing = lazyWithRetry(() => import('../pages/EcoUvFinishing'));
 const EcouvConfigPage = lazyWithRetry(() => import('../pages/EcouvConfigPage'));
 const ConfigurarProductosPage = lazyWithRetry(() => import('../pages/ConfigurarProductosPage')); // Configurador de productos (prendas/combos + EcoUV embebido)
+const MoldesPage = lazyWithRetry(() => import('../pages/MoldesPage')); // Moldes escalados: despiece del PDF del plotter + rotulado de piezas
 const PlanificacionPage = lazyWithRetry(() => import('../pages/PlanificacionPage')); // Agenda/calendario de capacidad por área
 const WebRetirosPage = lazyWithRetry(() => import('../logistics/WebRetirosPage'));
 const ClientsIntegration = lazyWithRetry(() => import('../pages/ClientsIntegration'));
@@ -61,9 +62,13 @@ const StockGestionPage = lazyWithRetry(() => import('../pages/StockGestionPage')
 const SpecialPrices = lazyWithRetry(() => import('../pages/SpecialPrices'));
 const BasePrices = lazyWithRetry(() => import('../pages/BasePrices'));
 const PriceProfiles = lazyWithRetry(() => import('../pages/PriceProfiles'));
+// Beneficios pactados sobre la billetera (specs/40)
+const BeneficiosPredefinidos = lazyWithRetry(() => import('../pages/BeneficiosPredefinidos'));
+const BeneficiosPactados = lazyWithRetry(() => import('../pages/BeneficiosPactados'));
 const LabelGenerationPage = lazyWithRetry(() => import('../pages/LabelGenerationPage'));
 const DepositStockPage = lazyWithRetry(() => import('../logistics/DepositStockPage'));
 const CustomerReplacementPage = lazyWithRetry(() => import('../pages/customer-service/CustomerReplacementPage'));
+const SolicitudesInsumoPage = lazyWithRetry(() => import('../pages/customer-service/SolicitudesInsumoPage')); // Spec 39
 const CustomerPriceCatalogPage = lazyWithRetry(() => import('../pages/CustomerPriceCatalogPage'));
 const IntegralOrderView = lazyWithRetry(() => import('../pages/IntegralOrderView'));
 const CargaPagosView = lazyWithRetry(() => import('../pages/CargaPagosView'));
@@ -680,6 +685,7 @@ const MainAppContent = ({ menuItems = [] }) => {
                 <Route path="/atencion-cliente/venta-rollo" element={<VentaRolloAdelantoPage />} />
                 <Route path="/atencion-cliente/despachos" element={<ActiveStockPage />} />
                 <Route path="/atencion-cliente/reposiciones" element={<CustomerReplacementPage />} />
+                <Route path="/atencion-cliente/solicitudes-insumo" element={<SolicitudesInsumoPage />} />
                 <Route path="/logistica/transporte" element={<TransportControlPage />} />
                 <Route path="/logistica/stock-deposito" element={<DepositStockPage />} />
                 <Route path="/logistica/retiros-web" element={<WebRetirosPage />} />
@@ -723,6 +729,8 @@ const MainAppContent = ({ menuItems = [] }) => {
                 <Route path="/contabilidad/cuentas"          element={<ContabilidadCuentasView />} />
                 <Route path="/contabilidad/cliente-360"      element={<ClienteVista360 />} />
                 <Route path="/vendedores/cliente-360"        element={<VendedorCliente360 />} />
+                <Route path="/beneficios/predefinidos"       element={<BeneficiosPredefinidos />} />
+                <Route path="/beneficios/pactos"             element={<BeneficiosPactados />} />
                 <Route path="/vendedores/ventas"             element={<VendedorVentasMensuales />} />
                 <Route path="/contabilidad/prefactura"        element={<PreFacturaPage />} />
                 <Route path="/contabilidad/antiguedad"        element={<ContabilidadAntiguedadView />} />
@@ -957,6 +965,9 @@ const DynamicRouter = ({ menuItems }) => {
     // Configurador de Productos (11-ago): match directo por path hasta que exista el ítem
     // de menú (backend/scripts/menu_configurar_productos.sql, cuelga de Configuración).
     if (normalizedPath === '/configurar-productos') return <ConfigurarProductosPage />;
+    // Moldes escalados (15-sep): match directo por path hasta que exista el ítem
+    // de menú (backend/scripts/menu_moldes.sql, cuelga de Configuración).
+    if (normalizedPath === '/moldes') return <MoldesPage />;
     // Planificación (13-ago): match directo por path hasta que exista el ítem de menú
     // (backend/scripts/menu_planificacion.sql, cuelga de Producción).
     if (normalizedPath === '/produccion/planificacion') return <PlanificacionPage />;
@@ -1010,6 +1021,7 @@ const DynamicRouter = ({ menuItems }) => {
     if (menuItem.Ruta === '/produccion/terminaciones' || menuItem.Ruta === '/area/ecouv/terminaciones') return <Navigate to="/area/terminac" replace />;
     if (menuItem.Ruta === '/area/ecouv/config') return <EcouvConfigPage />;
     if (menuItem.Ruta === '/configurar-productos') return <ConfigurarProductosPage />;
+    if (menuItem.Ruta === '/moldes') return <MoldesPage />;
     if (menuItem.Ruta === '/produccion/planificacion') return <PlanificacionPage />;
     if (menuItem.Ruta === '/logistica' || menuItem.Ruta.toLowerCase() === '/logistica/') return <LogisticsDashboard />;
     if (menuItem.Ruta === '/ops/inventory') return <LogisticsDashboard />;
@@ -1021,6 +1033,7 @@ const DynamicRouter = ({ menuItems }) => {
     if (menuItem.Ruta === '/atencion-cliente/control') return <LogisticsPage />;
     if (menuItem.Ruta === '/atencion-cliente/despachos') return <ActiveStockPage />;
     if (menuItem.Ruta === '/atencion-cliente/reposiciones') return <CustomerReplacementPage />;
+    if (menuItem.Ruta === '/atencion-cliente/solicitudes-insumo') return <SolicitudesInsumoPage />;
     if (menuItem.Ruta === '/atencion-cliente/entrega-pedidos') return <EntregaPedidosView />;
     if (menuItem.Ruta === '/logistica/retiros-web') return <WebRetirosPage />;
     if (menuItem.Ruta === '/logistica/dashboard-deposito') return <DepositoDashboard />;
@@ -1043,6 +1056,8 @@ const DynamicRouter = ({ menuItems }) => {
     if (menuItem.Ruta === '/contabilidad/cuentas')              return <ContabilidadCuentasView />;
     if (menuItem.Ruta === '/contabilidad/cliente-360')          return <ClienteVista360 />;
     if (menuItem.Ruta === '/vendedores/cliente-360')            return <VendedorCliente360 />;
+    if (menuItem.Ruta === '/beneficios/predefinidos')           return <BeneficiosPredefinidos />;
+    if (menuItem.Ruta === '/beneficios/pactos')                 return <BeneficiosPactados />;
     if (menuItem.Ruta === '/vendedores/ventas')                 return <VendedorVentasMensuales />;
     if (menuItem.Ruta === '/contabilidad/antiguedad')            return <ContabilidadAntiguedadView />;
     if (menuItem.Ruta === '/contabilidad/cola-estados')          return <ContabilidadColaEstadosView />;

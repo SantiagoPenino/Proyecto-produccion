@@ -100,6 +100,9 @@ router.post('/mis-cuentas/:CueIdCuenta/recargar', verifyToken, webOrdersControll
 router.get('/mis-cuentas/:CueIdCuenta/comprobantes/:DocIdDocumento', verifyToken, webOrdersController.getMiComprobante);
 router.post('/mis-cuentas/:CueIdCuenta/cerrar', verifyToken, webOrdersController.cerrarMiCuenta);
 router.post('/mis-cuentas/:CueIdCuenta/reabrir', verifyToken, webOrdersController.reabrirMiCuenta);
+// Beneficios pactados (specs/40): activos del cliente + disponibles para activar; recarga que activa un beneficio
+router.get('/mis-beneficios', verifyToken, webOrdersController.getMisBeneficios);
+router.post('/mis-beneficios/:BenIdBeneficio/recargar', verifyToken, webOrdersController.iniciarRecargaBeneficio);
 
 // POST /api/web-orders/handy-webhook (Webhook Callback desde Handy)
 router.post('/handy-webhook', webOrdersController.handyWebhook);

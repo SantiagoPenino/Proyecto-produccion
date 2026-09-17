@@ -1095,13 +1095,24 @@ async function buscarOrdenErpId(transaction, orderId) {
 }
 
 // ─── Función auxiliar: busca movimiento contable activo para una orden ────────
+// [PRENDAS] Fix 14-sep-2026: MovimientosCuenta.OrdIdOrden puede apuntar a
+// OrdenesDeposito.OrdIdOrden (orderId) O a Ordenes.OrdenID (el ID "ERP") según quién
+// haya creado el movimiento — receiveDispatch (la recepción normal de un remito) lo crea
+// con el ID de Ordenes, no el de OrdenesDeposito. Buscar solo por orderId dejaba esta
+// función sin encontrar NUNCA el movimiento real de una orden recién recibida — el
+// ajuste de cuenta/deuda no corría, en silencio (mismo bug que ya se arregló en
+// quotationController.propagarCotizacionADeposito, acá era una copia separada de la
+// misma lógica). Mismo criterio que ya usa resincronizarConsumosBilletera/checkout portal.
 async function buscarMovContable(transaction, orderId) {
+  const ordenIdErp = await buscarOrdenErpId(transaction, orderId);
   const r = await transaction.request()
     .input('OrdId', sql.Int, orderId)
+    .input('OrdIdErp', sql.Int, ordenIdErp)
     .query(`
-      SELECT TOP 1 m.MovIdMovimiento, m.MovImporte, m.CueIdCuenta, m.CicIdCiclo
+      SELECT TOP 1 m.MovIdMovimiento, m.MovImporte, m.CueIdCuenta, m.CicIdCiclo, cc.MonIdMoneda AS CuentaMonId, cc.CliIdCliente
       FROM dbo.MovimientosCuenta m
-      WHERE m.OrdIdOrden = @OrdId
+      JOIN dbo.CuentasCliente cc ON cc.CueIdCuenta = m.CueIdCuenta
+      WHERE m.OrdIdOrden IN (@OrdId, @OrdIdErp)
         AND m.MovTipo = 'ORDEN'
         AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)
         AND m.DocIdDocumento IS NULL
@@ -1110,7 +1121,10 @@ async function buscarMovContable(transaction, orderId) {
 }
 
 const editarCostoOrden = async (req, res) => {
-  const { orderId, nuevoCosto, nuevaCantidad, nuevaMoneda, OReIdOrdenRetiro } = req.body;
+  // desglose (opcional): { descuentoPct, descuentoImporte, recargoPct, recargoImporte, motivo }
+  // editados en el modal "Editar órdenes del retiro"; sin él, la diferencia contra la lista
+  // queda como ajuste manual de caja.
+  const { orderId, nuevoCosto, nuevaCantidad, nuevaMoneda, OReIdOrdenRetiro, desglose } = req.body;
   const UsuarioModif = req.user?.id || 70;
 
   if (!orderId || nuevoCosto === undefined) {
@@ -1134,10 +1148,33 @@ const editarCostoOrden = async (req, res) => {
 
     const ordenRes = await transaction.request()
       .input('OrderId', sql.Int, orderId)
-      .query('SELECT OrdCostoFinal, OrdCantidad, MonIdMoneda, OrdCodigoOrden FROM dbo.OrdenesDeposito WHERE OrdIdOrden = @OrderId');
+      .query('SELECT OrdCostoFinal, OrdCantidad, MonIdMoneda, OrdCodigoOrden, OrdEstadoActual, PagIdPago FROM dbo.OrdenesDeposito WHERE OrdIdOrden = @OrderId');
     if (!ordenRes.recordset.length) throw new Error('Orden no encontrada.');
     const costoAnterior    = parseFloat(ordenRes.recordset[0].OrdCostoFinal || 0);
     const codigoOrden      = ordenRes.recordset[0].OrdCodigoOrden || '';
+    const monedaOrdenActual = nuevaMonedaId !== null ? nuevaMonedaId : (Number(ordenRes.recordset[0].MonIdMoneda) === 2 ? 2 : 1);
+
+    // [PRENDAS] Fix 14-sep-2026: no dejar editar el precio de una orden ya entregada,
+    // cobrada o facturada — antes solo se protegía a medias (la parte contable se salteaba
+    // en silencio si estaba facturada, pero OrdCostoFinal se pisaba igual). Mismo criterio
+    // que detectarEstadosSensibles (quotationController.js) y propagarCotizacionADeposito.
+    if (ordenRes.recordset[0].OrdEstadoActual === 9) {
+      throw new Error(`${codigoOrden || 'La orden'} ya fue entregada — no se puede editar el precio desde acá.`);
+    }
+    if (ordenRes.recordset[0].PagIdPago) {
+      throw new Error(`${codigoOrden || 'La orden'} ya fue cobrada (pago #${ordenRes.recordset[0].PagIdPago}) — no se puede editar el precio desde acá.`);
+    }
+    const ordenIdErpChk = await buscarOrdenErpId(transaction, orderId);
+    const factChkRes = await transaction.request()
+      .input('OrdId', sql.Int, orderId).input('OrdIdErp', sql.Int, ordenIdErpChk)
+      .query(`
+        SELECT TOP 1 DocIdDocumento FROM dbo.MovimientosCuenta
+        WHERE OrdIdOrden IN (@OrdId, @OrdIdErp) AND MovTipo IN ('ORDEN','ORDEN_ANTICIPO')
+          AND (MovAnulado IS NULL OR MovAnulado=0) AND DocIdDocumento IS NOT NULL
+      `);
+    if (factChkRes.recordset.length) {
+      throw new Error(`${codigoOrden || 'La orden'} ya fue facturada (documento ${factChkRes.recordset[0].DocIdDocumento}) — no se puede editar el precio desde acá.`);
+    }
 
     // Actualizar OrdenesDeposito con los campos que cambiaron
     const req1 = transaction.request()
@@ -1160,16 +1197,63 @@ const editarCostoOrden = async (req, res) => {
     const mov = resyncBilletera ? null : await buscarMovContable(transaction, orderId);
     if (mov) {
       const delta = nuevoCostoNum - costoAnterior;
+      const monedaCuentaActual = Number(mov.CuentaMonId) === 2 ? 2 : 1;
 
+      if (monedaCuentaActual !== monedaOrdenActual) {
+        // [PRENDAS] Fix 14-sep-2026 (mismo criterio que quotationController.
+        // propagarCotizacionADeposito): si la moneda de la orden cambió respecto a la
+        // cuenta donde vive el cargo, NO se convierte el número a mano ahí adentro (deja
+        // un valor mintiendo sobre su propia moneda — ej. "1.68" en una cuenta de pesos
+        // cuando en realidad son 1.68 dólares). "Borrón y cuenta nueva": se anula el
+        // movimiento viejo y se recrea entero en la cuenta de la moneda correcta.
+        await contabilidadSvc.anularMovimiento(
+          mov.MovIdMovimiento,
+          `Cotización cambió de moneda (${monedaCuentaActual === 2 ? 'USD' : 'UYU'} → ${monedaOrdenActual === 2 ? 'USD' : 'UYU'}) — se recrea en la cuenta correcta (edición en Caja)`,
+          transaction
+        );
+        const cueTipoNueva = monedaOrdenActual === 2 ? 'DINERO_USD' : 'DINERO_UYU';
+        const nuevaCueId = await contabilidadSvc.obtenerOCrearCuenta(
+          mov.CliIdCliente, cueTipoNueva, { MonIdMoneda: monedaOrdenActual, CPaIdCondicion: 1, UsuarioAlta: UsuarioModif }, transaction
+        );
+        const ordenIdErpMov = await buscarOrdenErpId(transaction, orderId);
+        await contabilidadSvc.registrarMovimiento({
+          CueIdCuenta: nuevaCueId, MovTipo: 'ORDEN',
+          MovConcepto: `${codigoOrden} — recreado por cambio de moneda (edición en Caja)`,
+          MovImporte: -nuevoCostoNum, MovUsuarioAlta: UsuarioModif,
+          OrdIdOrden: ordenIdErpMov || orderId,
+        }, transaction);
+
+        // Misma dualidad de ID que MovimientosCuenta — DeudaDocumento.OrdIdOrden también
+        // puede estar en cualquiera de los dos (bug real: buscar solo por orderId dejaba
+        // esto sin encontrar la deuda vieja y creaba una nueva cada vez, duplicando).
+        const deudaViejaRes = await transaction.request()
+          .input('OrdId', sql.Int, orderId).input('OrdIdErp', sql.Int, ordenIdErpMov)
+          .query(`SELECT TOP 1 DDeIdDocumento, DDeImporteOriginal, DDeImportePendiente FROM dbo.DeudaDocumento WHERE OrdIdOrden IN (@OrdId, @OrdIdErp) AND DDeEstado NOT IN ('CANCELADA','COBRADO')`);
+        const deudaVieja = deudaViejaRes.recordset[0];
+        const tuvoPagos = deudaVieja && Number(deudaVieja.DDeImportePendiente) < Number(deudaVieja.DDeImporteOriginal) - 0.01;
+        if (deudaVieja && !tuvoPagos) {
+          await transaction.request()
+            .input('DDeId', sql.Int, deudaVieja.DDeIdDocumento)
+            .input('CueNueva', sql.Int, nuevaCueId)
+            .input('Pend', sql.Decimal(18, 4), Math.max(0, nuevoCostoNum))
+            .query(`UPDATE dbo.DeudaDocumento SET CueIdCuenta = @CueNueva, DDeImporteOriginal = @Pend, DDeImportePendiente = @Pend WHERE DDeIdDocumento = @DDeId`);
+        } else if (deudaVieja && tuvoPagos) {
+          logger.warn(`[CAJA] ${codigoOrden}: la deuda #${deudaVieja.DDeIdDocumento} ya tenía pagos parciales — no se movió a la cuenta nueva, revisar a mano.`);
+        } else if (nuevoCostoNum > 0.01) {
+          await contabilidadSvc.crearDeudaDocumento(
+            { CueIdCuenta: nuevaCueId, OrdIdOrden: ordenIdErpMov || orderId, Importe: nuevoCostoNum, ImportePendiente: nuevoCostoNum }, transaction
+          );
+        }
+        logger.info(`[CAJA] ${codigoOrden}: movimiento recreado en cuenta ${nuevaCueId} (${cueTipoNueva}) por cambio de moneda.`);
+      } else {
       await transaction.request()
         .input('MovId',       sql.Int,          mov.MovIdMovimiento)
         .input('NuevoImporte',sql.Decimal(18,4), -nuevoCostoNum)
         .query('UPDATE dbo.MovimientosCuenta SET MovImporte = @NuevoImporte WHERE MovIdMovimiento = @MovId');
 
-      await transaction.request()
-        .input('CueId', sql.Int,          mov.CueIdCuenta)
-        .input('Delta', sql.Decimal(18,4), delta)
-        .query('UPDATE dbo.CuentasCliente SET CueSaldoActual = CueSaldoActual - @Delta WHERE CueIdCuenta = @CueId');
+      // [PRENDAS] Fix 14-sep-2026: ORDEN/ORDEN_ANTICIPO NO mueven CueSaldoActual (mismo
+      // criterio que SP_RegistrarMovimiento, 05-09-2026 — se cobran al facturar; ajustarlo
+      // acá dejaba un crédito fantasma sin que el cliente pagara nada).
 
       await transaction.request()
         .input('OrdId', sql.Int,          orderId)
@@ -1199,6 +1283,7 @@ const editarCostoOrden = async (req, res) => {
             FROM dbo.CiclosCredito c WHERE c.CicIdCiclo = @CicId
           `);
       }
+      }
 
       logger.info(`[CAJA] Ajuste contable orden ${codigoOrden}: $${costoAnterior} -> $${nuevoCostoNum}`);
     }
@@ -1215,11 +1300,25 @@ const editarCostoOrden = async (req, res) => {
         .query('UPDATE dbo.OrdenesRetiro SET OReCostoTotalOrden = @Total WHERE OReIdOrdenRetiro = @RetiroId');
     }
 
-    // Actualizar PedidosCobranza / PedidosCobranzaDetalle si hay registros vinculados
+    // Actualizar PedidosCobranza / PedidosCobranzaDetalle si hay registros vinculados.
+    // El pedido se busca por código (VEN-/EMB-: NoDocERP = código) o por Ordenes.NoDocERP
+    // (SUB-/DTF-/EUV-...: el código lleva prefijo y NoDocERP es el número). Se toca SOLO la
+    // línea de ESTA orden (pcd.OrdenID). Antes se escalaba el Subtotal de TODAS las líneas
+    // del pedido por un ratio, se pisaba la Cantidad de todas y nunca se actualizaba
+    // PrecioUnitario, dejando líneas con PrecioUnitario × Cantidad ≠ Subtotal.
     if (codigoOrden) {
+      const ordRes = await transaction.request()
+        .input('Cod', sql.NVarChar(100), codigoOrden.trim())
+        .query(`SELECT TOP 1 OrdenID, LTRIM(RTRIM(CAST(NoDocERP AS VARCHAR(100)))) AS NoDoc FROM dbo.Ordenes WHERE LTRIM(RTRIM(CodigoOrden)) = @Cod`);
+      const ordErp = ordRes.recordset[0] || null;
       const pcRes = await transaction.request()
         .input('Cod', sql.NVarChar(100), codigoOrden.trim())
-        .query(`SELECT TOP 1 ID, MontoTotal FROM dbo.PedidosCobranza WHERE LTRIM(RTRIM(NoDocERP)) = @Cod`);
+        .input('NoDoc', sql.NVarChar(100), ordErp && ordErp.NoDoc ? ordErp.NoDoc : null)
+        .query(`SELECT TOP 1 ID, MontoTotal
+                FROM dbo.PedidosCobranza
+                WHERE LTRIM(RTRIM(CAST(NoDocERP AS VARCHAR(100)))) = @Cod
+                   OR (@NoDoc IS NOT NULL AND LTRIM(RTRIM(CAST(NoDocERP AS VARCHAR(100)))) = @NoDoc)
+                ORDER BY CASE WHEN LTRIM(RTRIM(CAST(NoDocERP AS VARCHAR(100)))) = @Cod THEN 0 ELSE 1 END`);
       if (pcRes.recordset.length) {
         const pcId      = pcRes.recordset[0].ID;
         const oldPCTotal = parseFloat(pcRes.recordset[0].MontoTotal || 0);
@@ -1233,29 +1332,113 @@ const editarCostoOrden = async (req, res) => {
             .query(`UPDATE dbo.PedidosCobranza SET Moneda = @Mon WHERE ID = @PID`);
         }
 
-        // Escalar subtotales de los detalles proporcionalmente al nuevo costo
-        if (oldPCTotal > 0 && Math.abs(nuevoCostoNum - oldPCTotal) > 0.001) {
-          const ratio = nuevoCostoNum / oldPCTotal;
-          await transaction.request()
-            .input('PID',   sql.Int,          pcId)
-            .input('Ratio', sql.Decimal(18,6), ratio)
-            .query(`
-              UPDATE dbo.PedidosCobranzaDetalle
-              SET Subtotal = ROUND(Subtotal * @Ratio, 4)
-              WHERE PedidoCobranzaID = @PID
-            `);
-        }
+        const lineaRes = ordErp ? await transaction.request()
+          .input('PID', sql.Int, pcId)
+          .input('OID', sql.Int, ordErp.OrdenID)
+          .query(`SELECT TOP 1 ID, Cantidad, PrecioUnitario, Subtotal, PrecioLista, DescuentoTipo, DescuentoPct, DescuentoImporte,
+                         DescuentoOrigen, RecargoPct, RecargoImporte, RecargoOrigen
+                  FROM dbo.PedidosCobranzaDetalle
+                  WHERE PedidoCobranzaID = @PID AND OrdenID = @OID AND ISNULL(EsHermanaConsolidada, 0) = 0
+                  ORDER BY CASE WHEN ISNULL(EsFacturable, 1) = 1 THEN 0 ELSE 1 END, ID`) : { recordset: [] };
 
-        // Actualizar cantidad en PedidosCobranzaDetalle si se proporcionó nueva cantidad
-        if (nuevaCantidadNum !== null) {
+        if (lineaRes.recordset.length) {
+          const ln = lineaRes.recordset[0];
+          const r4 = n => Math.round((Number(n || 0) + Number.EPSILON) * 10000) / 10000;
+          const cantFinal = nuevaCantidadNum !== null ? nuevaCantidadNum : (parseFloat(ln.Cantidad) || 1);
+          const puFinal = cantFinal > 0 ? nuevoCostoNum / cantFinal : nuevoCostoNum;
+          const pu2 = Math.round((puFinal + Number.EPSILON) * 100) / 100;
+          // Con cambio de moneda la lista guardada ya no sirve (queda sin desglose).
+          const lista = (nuevaMonedaId === null && Number(ln.PrecioLista) > 0) ? r4(ln.PrecioLista) : null;   // lista 0 = sin lista
+          const dz = (desglose && typeof desglose === 'object') ? desglose : {};
+          const motivo = dz.motivo ? String(dz.motivo).trim().substring(0, 120) : '';
+          const origenCaja = motivo ? `Caja: ${motivo}` : 'Ajuste en caja';
+          let dTipo = null, dPct = null, dImp = null, dOrig = null, rPct = null, rImp = null, rOrig = null;
+          if (lista != null) {
+            const vino = k => dz[k] != null && dz[k] !== '' && !isNaN(Number(dz[k]));
+            if (['descuentoPct', 'descuentoImporte', 'recargoPct', 'recargoImporte'].some(vino)) {
+              // La caja editó descuento y/o recargo: el importe del descuento cierra la cuenta.
+              rPct = vino('recargoPct') ? r4(dz.recargoPct) : null;
+              rImp = vino('recargoImporte') ? r4(dz.recargoImporte) : (rPct != null ? r4(lista * rPct / 100) : null);
+              if (!(rImp > 0)) { rImp = null; rPct = null; } else { rOrig = origenCaja; }
+              dPct = vino('descuentoPct') ? r4(dz.descuentoPct) : null;
+              dImp = r4(lista + (rImp || 0) - pu2);
+              if (dImp > 0) { dTipo = dPct != null ? 'PCT' : 'MANUAL'; dOrig = origenCaja; } else { dImp = null; dPct = null; }
+            } else {
+              // Solo cambió el total o la cantidad: se conserva lo que había si sigue cerrando;
+              // si no, la diferencia contra la lista queda como ajuste manual de caja.
+              const rPrev = ln.RecargoImporte != null ? r4(ln.RecargoImporte) : null;
+              const diff = r4(lista + (rPrev || 0) - pu2);
+              if (diff >= 0) {
+                rImp = rPrev; rPct = rPrev ? (ln.RecargoPct != null ? r4(ln.RecargoPct) : null) : null; rOrig = rPrev ? (ln.RecargoOrigen || null) : null;
+                if (diff > 0) {
+                  const mismoDesc = ln.DescuentoImporte != null && Math.abs(r4(ln.DescuentoImporte) - diff) < 0.00005;
+                  dImp = diff;
+                  dTipo = mismoDesc && ln.DescuentoTipo ? ln.DescuentoTipo : 'MANUAL';
+                  dPct = mismoDesc && ln.DescuentoPct != null ? r4(ln.DescuentoPct) : null;
+                  dOrig = mismoDesc ? (ln.DescuentoOrigen || null) : origenCaja;
+                }
+              } else {
+                rImp = r4((rPrev || 0) - diff); rPct = null; rOrig = origenCaja;
+              }
+            }
+          }
+          // Texto que ve el cliente en la factura, si la caja lo editó ('-' = sin texto)
+          const txtCaja = (k, max) => { const v = dz[k] != null ? String(dz[k]).trim() : ''; return v ? v.substring(0, max) : ''; };
+          if (dImp > 0 && txtCaja('descuentoTexto', 150)) dOrig = txtCaja('descuentoTexto', 150);
+          if (rImp > 0 && txtCaja('recargoTexto', 200)) rOrig = txtCaja('recargoTexto', 200);
           await transaction.request()
-            .input('PID', sql.Int,          pcId)
-            .input('Qty', sql.Decimal(18,4), nuevaCantidadNum)
-            .query(`
+            .input('LID',    sql.Int,            ln.ID)
+            .input('Cant',   sql.Decimal(18, 2), cantFinal)
+            .input('PU',     sql.Decimal(18, 2), puFinal)
+            .input('ST',     sql.Decimal(18, 2), nuevoCostoNum)
+            .input('PLista', sql.Decimal(18, 4), lista)
+            .input('DTipo',  sql.VarChar(12),    dTipo)
+            .input('DPct',   sql.Decimal(9, 4),  dPct)
+            .input('DImp',   sql.Decimal(18, 4), dImp)
+            .input('DOrig',  sql.NVarChar(150),  dOrig)
+            .input('RPct',   sql.Decimal(9, 4),  rPct)
+            .input('RImp',   sql.Decimal(18, 4), rImp)
+            .input('ROrig',  sql.NVarChar(200),  rOrig)
+            .input('Log',    sql.NVarChar(500),  `Ajuste en caja: ${cantFinal} x ${pu2.toFixed(2)} = ${nuevoCostoNum.toFixed(2)}${motivo ? ' (' + motivo + ')' : ''}`)
+            .query(`UPDATE dbo.PedidosCobranzaDetalle
+                    SET Cantidad = @Cant, PrecioUnitario = @PU, Subtotal = @ST,
+                        PrecioLista = @PLista,
+                        DescuentoTipo = @DTipo, DescuentoPct = @DPct, DescuentoImporte = @DImp, DescuentoOrigen = @DOrig,
+                        DescuentoPerfilId = CASE WHEN @DTipo IS NULL OR @DTipo = 'MANUAL' THEN NULL ELSE DescuentoPerfilId END,
+                        DescuentoReglaId  = CASE WHEN @DTipo IS NULL OR @DTipo = 'MANUAL' THEN NULL ELSE DescuentoReglaId END,
+                        RecargoPct = @RPct, RecargoImporte = @RImp, RecargoOrigen = @ROrig,
+                        LogPrecioAplicado = @Log, PricingTrace = @Log, PerfilAplicado = 'Manual/Caja'
+                    WHERE ID = @LID`);
+        } else {
+          // Pedido sin línea por orden (ventas VEN- / legacy): comportamiento anterior, pero
+          // SOLO si el pedido tiene una única línea (en multitela pisaba todas) y dejando
+          // PrecioUnitario coherente con Subtotal / Cantidad.
+          const nLinRes = await transaction.request().input('PID', sql.Int, pcId)
+            .query(`SELECT COUNT(*) AS n FROM dbo.PedidosCobranzaDetalle WHERE PedidoCobranzaID = @PID`);
+          const nLin = nLinRes.recordset[0]?.n || 0;
+          if (nLin === 1) {
+            if (oldPCTotal > 0 && Math.abs(nuevoCostoNum - oldPCTotal) > 0.001) {
+              const ratio = nuevoCostoNum / oldPCTotal;
+              await transaction.request()
+                .input('PID',   sql.Int,          pcId)
+                .input('Ratio', sql.Decimal(18,6), ratio)
+                .query(`UPDATE dbo.PedidosCobranzaDetalle SET Subtotal = ROUND(Subtotal * @Ratio, 4) WHERE PedidoCobranzaID = @PID`);
+            }
+            if (nuevaCantidadNum !== null) {
+              await transaction.request()
+                .input('PID', sql.Int,          pcId)
+                .input('Qty', sql.Decimal(18,4), nuevaCantidadNum)
+                .query(`UPDATE dbo.PedidosCobranzaDetalle SET Cantidad = @Qty WHERE PedidoCobranzaID = @PID`);
+            }
+            await transaction.request().input('PID', sql.Int, pcId).query(`
               UPDATE dbo.PedidosCobranzaDetalle
-              SET Cantidad = @Qty
-              WHERE PedidoCobranzaID = @PID
-            `);
+              SET PrecioUnitario = CASE WHEN Cantidad > 0 THEN ROUND(Subtotal / Cantidad, 2) ELSE PrecioUnitario END,
+                  PrecioLista = NULL, DescuentoTipo = NULL, DescuentoPct = NULL, DescuentoImporte = NULL, DescuentoOrigen = NULL,
+                  DescuentoPerfilId = NULL, DescuentoReglaId = NULL, RecargoPct = NULL, RecargoImporte = NULL, RecargoOrigen = NULL
+              WHERE PedidoCobranzaID = @PID`);
+          } else {
+            logger.warn(`[CAJA] ${codigoOrden}: el pedido ${pcId} tiene ${nLin} líneas y ninguna es de esta orden; PedidosCobranzaDetalle no se toca.`);
+          }
         }
 
         // Recalcular MontoTotal del pedido ("Comprar y personalizar": no sumar las líneas
@@ -1630,6 +1813,50 @@ const exonerarOrdenCaja = async (req, res) => {
   }
 };
 
+// Desglose (lista / descuento / recargo) congelado en el pedido de cada orden de un retiro,
+// para el modal "Editar órdenes del retiro". GET /caja/orden/desglose?ids=1,2,3 (OrdIdOrden).
+// Devuelve { [OrdIdOrden]: { lista, descuento*, recargo*, cantidad, precioUnitario, moneda } }
+// o { multiple: true } cuando la orden tiene varias líneas (material + servicios): ahí no
+// hay un único desglose editable y la caja edita como siempre.
+const getDesgloseOrdenesCaja = async (req, res) => {
+  const ids = String(req.query.ids || '').split(',').map(s => parseInt(s, 10)).filter(n => !isNaN(n) && n > 0);
+  if (!ids.length) return res.json({});
+  try {
+    const pool = await getPool();
+    const r = await pool.request().query(`
+      SELECT od.OrdIdOrden, pcd.PrecioLista, pcd.DescuentoTipo, pcd.DescuentoPct, pcd.DescuentoImporte, pcd.DescuentoOrigen,
+             pcd.RecargoPct, pcd.RecargoImporte, pcd.RecargoOrigen, pcd.Cantidad, pcd.PrecioUnitario, pcd.Moneda
+      FROM dbo.OrdenesDeposito od WITH(NOLOCK)
+      JOIN dbo.Ordenes o WITH(NOLOCK) ON LTRIM(RTRIM(o.CodigoOrden)) = LTRIM(RTRIM(od.OrdCodigoOrden))
+      JOIN dbo.PedidosCobranza pc WITH(NOLOCK) ON LTRIM(RTRIM(CAST(pc.NoDocERP AS VARCHAR(100)))) = LTRIM(RTRIM(CAST(o.NoDocERP AS VARCHAR(100))))
+      JOIN dbo.PedidosCobranzaDetalle pcd WITH(NOLOCK) ON pcd.PedidoCobranzaID = pc.ID AND pcd.OrdenID = o.OrdenID
+      WHERE od.OrdIdOrden IN (${ids.join(',')})
+        AND ISNULL(pcd.EsHermanaConsolidada, 0) = 0 AND ISNULL(pcd.EsFacturable, 1) = 1
+        AND pcd.PrecioLista > 0`);
+    const out = {};
+    for (const x of r.recordset) {
+      if (out[x.OrdIdOrden]) { out[x.OrdIdOrden] = { multiple: true }; continue; }
+      out[x.OrdIdOrden] = {
+        lista: Number(x.PrecioLista),
+        descuentoTipo: x.DescuentoTipo || null,
+        descuentoPct: x.DescuentoPct != null ? Number(x.DescuentoPct) : null,
+        descuentoImporte: x.DescuentoImporte != null ? Number(x.DescuentoImporte) : 0,
+        descuentoOrigen: x.DescuentoOrigen || null,
+        recargoPct: x.RecargoPct != null ? Number(x.RecargoPct) : null,
+        recargoImporte: x.RecargoImporte != null ? Number(x.RecargoImporte) : 0,
+        recargoOrigen: x.RecargoOrigen || null,
+        cantidad: Number(x.Cantidad),
+        precioUnitario: Number(x.PrecioUnitario),
+        moneda: (x.Moneda || 'UYU').toUpperCase().trim()
+      };
+    }
+    res.json(out);
+  } catch (err) {
+    logger.error('[CAJA] getDesgloseOrdenesCaja:', err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
 // Revertir la exoneración de una orden: la vuelve a dejar cobrable.
 // Solo actúa si el pago vinculado es de tipo 'EXONERACION' (nunca toca un pago real).
 const revertirExoneracionOrden = async (req, res) => {
@@ -1695,7 +1922,7 @@ module.exports = {
   createOrdenRetiro, getOrdenesRetiroPorEstados, actualizarOrdenRetiroEstado, marcarOrdenRetiroPronto,
   marcarOrdenRetiroEntregado, ordenesRetiroCaja, getOrdenesRetiroPasarPorCaja, ordenesRetiroMarcarPasarPorCaja, getOrdenesRetiroPorFecha,
   getOrdenesRetiroPorLugar, marcarDespachoEntregadoAutorizado, buscarParaMostrador, getClienteEnvioDatos, getTodasSinRetiro, backfillLugarRetiro, getOrdenesRetiroPorRemito,
-  editarCostoOrden, desvincularOrdenRetiro, cancelarOrdenCaja, exonerarOrdenCaja, revertirExoneracionOrden,
+  editarCostoOrden, desvincularOrdenRetiro, cancelarOrdenCaja, exonerarOrdenCaja, revertirExoneracionOrden, getDesgloseOrdenesCaja,
   cambiarEstadoOrden, getEstadoOrden
 };
 

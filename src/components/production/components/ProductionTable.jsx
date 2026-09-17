@@ -162,6 +162,14 @@ export default function ProductionTable({ rowData = [], onRowSelected, selectedR
         { field: 'variantCode', headerName: 'Variante', width: 110 },
         { field: 'material', headerName: 'Material', minWidth: 250 },
         { field: 'magnitude', headerName: 'Cantidad', width: 100, cellRenderer: ({ value, data }) => {
+            // [PRENDAS] Bordado/Estampado de un pedido de prendas: la orden guarda 0 a propósito
+            // (se cobra dentro del total del pedido) y "0 punt" no le decía nada al que mira la
+            // planilla. El backend manda cuántas prendas son y, si están cargadas, las puntadas.
+            if (data?.prendas > 0) {
+                const n = Number(data.prendas);
+                const txt = `${n} ${n === 1 ? 'prenda' : 'prendas'}${data.puntadas > 0 ? ` · ${Number(data.puntadas).toLocaleString('es-UY')} punt` : ''}`;
+                return <span className="text-xs tablet:text-[11px] font-bold text-zinc-700" title="Cantidad de prendas del pedido que pasan por esta área">{txt}</span>;
+            }
             const mag = data?.magnitude ?? value ?? '';
             const unit = data?.unit ?? '';
             const numStr = String(mag).replace(/[^\d.]/g, '');

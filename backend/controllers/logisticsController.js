@@ -3,7 +3,11 @@ const { getPool, sql } = require('../config/db');
 const logger = require('../utils/logger');
 const { changeOrderState } = require('../services/stateManagerService');
 const { isPedidoCompletoEnArea, isPedidoCompletoGlobal, sqlExistsHermanaNoPronta } = require('../services/pedidoCompletoService');
-const { totalesCobranzaDeOrden } = require('../utils/montoTotalPedido');
+const { totalesCobranzaDeOrden, importeOrdenParaDeposito } = require('../utils/montoTotalPedido');
+// Spec 39: libro de entregas por orden (envío parcial, complementos, candado de Depósito sobre el libro)
+const libroEntregas = require('../services/libroEntregasService');
+const linajeOrdenes = require('../services/linajeOrdenesService');
+const reposicionesService = require('../services/reposicionesService');
 
 // [PRENDAS] "Comprar y personalizar": Bordado/DTF/TPU/Estampado/Corte/Costura que cuelgan
 // de una orden madre PRO (prenda comprada + personalizaciones, un solo precio) son trabajo
@@ -116,6 +120,147 @@ const validarPedidosCompletos = async (db, ordenes, areaDestino) => {
             throw err;
         }
     }
+    // Spec 39 (RN-FLT.12 / INV-FLT.01): hacia DEPOSITO el pedido además tiene que estar
+    // completo en el LIBRO DE ENTREGAS: ninguna orden con envío parcial sin cerrar, ninguna
+    // reposición abierta, ninguna solicitud de insumo abierta. Es un motivo, no un número.
+    if (areaDestino === 'DEPOSITO') await validarLibroParaDeposito(db, ordenes);
+};
+
+/**
+ * Candado de Depósito sobre el libro de entregas (Spec 39). Lanza 400 con el detalle exacto
+ * de qué orden está incompleta y por qué (qué reposición, en qué área, en qué estado).
+ */
+const validarLibroParaDeposito = async (db, ordenes) => {
+    const pedidos = [...new Set((ordenes || []).map(o => o.NoDocERP).filter(Boolean).map(n => String(n).trim()))];
+    for (const noDoc of pedidos) {
+        const incompletas = await libroEntregas.ordenesIncompletasPedido(noDoc, db);
+        if (incompletas.length > 0) {
+            const detalle = incompletas.map(i => `${String(i.CodigoOrden).trim()} (${i.motivos.join('; ') || 'incompleta'})`).join(' · ');
+            const err = new Error(`El pedido ${noDoc} no puede ir a DEPOSITO: tiene órdenes incompletas. ${detalle}. Se libera solo cuando no quede ninguna reposición abierta y todas las órdenes tengan su último envío.`);
+            err.statusCode = 400;
+            throw err;
+        }
+    }
+};
+
+/**
+ * Arma las líneas por orden de un remito (Spec 39, RN-FLT.01 a 04).
+ *  - Una línea por orden madre de producto terminado. Un bulto de una orden de falla con registro
+ *    en Reposiciones viaja como COMPLEMENTO de su madre (línea con OrdenOrigenID/ReposicionID).
+ *  - "Completa la orden": sin parcial habilitado, sale completa salvo que tenga una reposición
+ *    abierta (nunca se marca completa con una abierta). Con parcial, manda lo que declaró el
+ *    operario; si no declaró nada, completa cuando no quedan bultos en el área ni reposiciones abiertas.
+ *  - Cantidad: opcional; obligatoria y acotada a lo esperado donde se cuentan prendas o unidades.
+ * Devuelve { lineasFinales, ordenesSinCompletar } — las madres que NO pasan a "En transito".
+ */
+const armarLineasRemito = async (transaction, { dispatchedOrders, bultosPorOrden, lineasOrden, permiteParcial, areaOrigen, areaDestino }) => {
+    const lineasFinales = [];
+    const ordenesSinCompletar = new Set();
+    if (!dispatchedOrders || dispatchedOrders.size === 0) return { lineasFinales, ordenesSinCompletar };
+    const declaradas = Array.isArray(lineasOrden) ? lineasOrden : [];
+    const err400 = (msg) => { const e = new Error(msg); e.statusCode = 400; return e; };
+
+    const infoRes = await new sql.Request(transaction).query(`
+        SELECT o.OrdenID, o.CodigoOrden, o.AreaID, o.UM, o.NoDocERP, o.EstadoEnvio, o.Magnitud, o.CantidadEsperada
+        FROM Ordenes o WHERE o.OrdenID IN (${[...dispatchedOrders].map(Number).filter(n => !isNaN(n)).join(',')})`);
+    if (!infoRes.recordset.length) return { lineasFinales, ordenesSinCompletar };
+    const areasUnidades = await libroEntregas.areasQueCuentanUnidades(transaction);
+
+    // Agrupar por orden madre: la madre misma y/o las reposiciones que viajan como complemento
+    const porMadre = new Map();
+    for (const info of infoRes.recordset) {
+        if (!(bultosPorOrden.get(info.OrdenID) > 0)) continue; // solo producto terminado
+        const rep = await linajeOrdenes.getReposicionDeFalla(info.OrdenID, transaction);
+        const madreId = rep ? Number(rep.OrdenMadreID) : Number(info.OrdenID);
+        if (!porMadre.has(madreId)) porMadre.set(madreId, { madre: null, origenes: [] });
+        const g = porMadre.get(madreId);
+        if (rep) g.origenes.push({ ordenId: info.OrdenID, reposicionId: rep.ReposicionID, codigo: info.CodigoOrden, bultos: bultosPorOrden.get(info.OrdenID) || 0 });
+        else g.madre = info;
+    }
+
+    for (const [madreId, g] of porMadre) {
+        let madre = g.madre;
+        if (!madre) {
+            const m = await new sql.Request(transaction).input('id', sql.Int, madreId)
+                .query(`SELECT OrdenID, CodigoOrden, AreaID, UM, NoDocERP, EstadoEnvio, Magnitud, CantidadEsperada FROM Ordenes WHERE OrdenID = @id`);
+            madre = m.recordset[0];
+            if (!madre) continue;
+        }
+        const codigo = String(madre.CodigoOrden || madreId).trim();
+        const declarada = declaradas.find(l => Number(l.ordenId) === madreId) || null;
+        if (declarada && areaDestino === 'DEPOSITO' && declarada.completaOrden === false) {
+            throw err400(`${codigo}: un envío parcial nunca puede tener destino DEPOSITO. A Depósito solo va el pedido completo.`);
+        }
+
+        // Reposiciones abiertas de la madre, sin contar las que viajan en este mismo remito.
+        const puede = await libroEntregas.puedeCompletar(madreId, transaction, { incluirImplicitas: permiteParcial });
+        const abiertasRestantes = puede.reposicionesAbiertas.filter(r => !g.origenes.some(o => Number(o.reposicionId) === Number(r.ReposicionID)));
+        const sinAbiertas = abiertasRestantes.length === 0;
+        const detalleAbiertas = abiertasRestantes.map(r => `${r.CodigoFalla || 'reposición sin orden'} (${libroEntregas.describirReposicion(r)})`).join(', ');
+
+        let completa;
+        if (!permiteParcial) {
+            completa = sinAbiertas;
+        } else if (declarada && declarada.completaOrden != null) {
+            completa = !!declarada.completaOrden;
+            if (completa && !sinAbiertas) {
+                throw err400(`No se puede marcar ${codigo} como completa: quedan reposiciones abiertas: ${detalleAbiertas}. Mandala como envío parcial.`);
+            }
+        } else {
+            const rem = await new sql.Request(transaction)
+                .input('OID', sql.Int, madreId).input('AreaOrig', sql.VarChar, areaOrigen || '')
+                .query(`SELECT COUNT(*) AS n FROM Logistica_Bultos WHERE OrdenID = @OID AND Tipocontenido = 'PROD_TERMINADO' AND Estado = 'EN_STOCK' AND UbicacionActual = @AreaOrig`);
+            completa = (rem.recordset[0]?.n || 0) === 0 && sinAbiertas;
+        }
+
+        // Cantidad
+        const cuentaUnidades = areasUnidades.includes(String(madre.AreaID || '').trim().toUpperCase());
+        // Complemento PURO (solo bulto(s) de reposición, sin bulto propio de la madre en este
+        // remito): su cantidad es la de LA REPOSICIÓN — una reproducción por una falla, fuera
+        // del total original de la madre — no "lo que falta para llegar a lo esperado" de ella.
+        // Validarla contra cantidadEsperada/enviada de la madre rechaza cualquier reposición
+        // sobre una madre que ya salió completa (el caso normal: la falla se descubre después).
+        const esComplementoPuro = !g.madre && g.origenes.length > 0;
+        let cantidad = declarada && declarada.cantidad != null && declarada.cantidad !== '' ? Number(declarada.cantidad) : null;
+        if (cantidad != null && !(cantidad > 0)) throw err400(`${codigo}: la cantidad del envío tiene que ser mayor que cero.`);
+        if (cuentaUnidades && !esComplementoPuro) {
+            const esperada = libroEntregas.cantidadEsperada(madre);
+            const envios = await libroEntregas.getEnviosOrden(madreId, transaction);
+            const enviada = envios.reduce((s, e) => s + (e.Cantidad != null ? Number(e.Cantidad) : 0), 0);
+            if (cantidad == null && !completa && permiteParcial) {
+                throw err400(`${codigo}: en ${String(madre.AreaID).trim()} la cantidad del envío parcial es obligatoria (se cuentan ${String(madre.UM || 'unidades').trim()}).`);
+            }
+            if (cantidad == null && completa && esperada) cantidad = Math.max(esperada - enviada, 0) || null;
+            if (cantidad != null && esperada && enviada + cantidad > esperada + 0.001) {
+                throw err400(`${codigo}: no se pueden enviar ${cantidad} ${String(madre.UM || '').trim()}: lo esperado es ${esperada} y ya salieron ${enviada}.`);
+            }
+        } else if (cuentaUnidades && esComplementoPuro && cantidad == null) {
+            // Auto-completar desde la propia orden de falla (CantidadAprobadaBultos, o su
+            // Magnitud si nunca pasó por Control) — NO desde la madre. Sin dato en ninguna,
+            // se deja null y sigue sin bloquear (mismo criterio "sin dato no se valida" que
+            // el resto del sistema), en vez de exigirle al operario que la tipee a mano.
+            let suma = 0, huboDato = false;
+            for (const o of g.origenes) {
+                const r = await new sql.Request(transaction).input('id', sql.Int, o.ordenId)
+                    .query(`SELECT CantidadAprobadaBultos, Magnitud FROM Ordenes WHERE OrdenID = @id`);
+                const row = r.recordset[0];
+                const val = row?.CantidadAprobadaBultos != null ? parseFloat(row.CantidadAprobadaBultos) : (parseFloat(row?.Magnitud) || null);
+                if (val != null) { suma += val; huboDato = true; }
+            }
+            if (huboDato && suma > 0) cantidad = suma;
+        }
+        const motivo = completa ? null : ((declarada && declarada.motivoPendiente) || (sinAbiertas ? 'RESTO_EN_PRODUCCION' : 'FALLA_EN_PROCESO'));
+
+        const lineasMadre = [];
+        if (g.madre) lineasMadre.push({ ordenId: madreId, bultos: bultosPorOrden.get(madreId) || 0 });
+        for (const o of g.origenes) lineasMadre.push({ ordenId: madreId, ordenOrigenId: o.ordenId, reposicionId: o.reposicionId, esComplemento: true, bultos: o.bultos });
+        lineasMadre.forEach((l, i) => {
+            const ultima = i === lineasMadre.length - 1;
+            lineasFinales.push({ ...l, completaOrden: completa && ultima, cantidad: ultima ? cantidad : null, unidad: madre.UM, motivoPendiente: ultima ? motivo : null });
+        });
+        if (!completa) ordenesSinCompletar.add(madreId);
+    }
+    return { lineasFinales, ordenesSinCompletar };
 };
 
 
@@ -445,7 +590,8 @@ exports.getBultoByLabel = async (req, res) => {
 // --- REMITOS (DISPATCH) ---
 
 exports.createRemito = async (req, res) => {
-    const { areaOrigen, areaDestino, usuarioId, bultosIds = [], newBultos = [], observations } = req.body;
+    // lineasOrden (Spec 39, opcional): [{ ordenId, completaOrden, cantidad, motivoPendiente }] — una por orden madre.
+    const { areaOrigen, areaDestino, usuarioId, bultosIds = [], newBultos = [], observations, lineasOrden = [] } = req.body;
 
     // Generar codigo remito
     const codigoRemito = `REM-${Date.now().toString().slice(-6)}`;
@@ -619,6 +765,7 @@ exports.createRemito = async (req, res) => {
 
             // 2. Insertar Items y Actualizar Bultos
             const dispatchedOrders = new Set();
+            const bultosPorOrden = new Map(); // OrdenID -> cantidad de bultos en este remito (para el libro)
             for (const bid of finalBultosIds) {
                 // Link
                 await new sql.Request(transaction)
@@ -660,27 +807,27 @@ exports.createRemito = async (req, res) => {
                             `);
                     } else if (row.Tipocontenido !== 'ENCOMIENDA' && row.OrdenID) {
                         dispatchedOrders.add(row.OrdenID);
+                        // Producto de la orden que viaja al área siguiente: terminado (va a Depósito) o en proceso
+                        // (va a otra área productiva). Los insumos (TELA/PRENDA) no llevan línea en el libro.
+                        if (row.Tipocontenido === 'PROD_TERMINADO' || row.Tipocontenido === 'EN_PROCESO') bultosPorOrden.set(row.OrdenID, (bultosPorOrden.get(row.OrdenID) || 0) + 1);
                     }
                 }
             }
 
+            // --- LÍNEAS POR ORDEN (Spec 39): libro de entregas ---
+            // Una línea por orden madre: motivo del pendiente, cantidad opcional (obligatoria donde se
+            // cuentan prendas/unidades) y la marca "completa la orden". Un bulto de una orden de falla
+            // con registro en Reposiciones viaja como COMPLEMENTO de su madre. Sin líneas declaradas
+            // (áreas sin parcial habilitado) la orden sale completa, como hoy.
+            const { lineasFinales, ordenesSinCompletar } = await armarLineasRemito(transaction, {
+                dispatchedOrders, bultosPorOrden, lineasOrden, permiteParcial, areaOrigen, areaDestino,
+            });
+            if (lineasFinales.length > 0) await libroEntregas.registrarLineasEnvio(transaction, envioId, lineasFinales, usuarioId);
+
             for (const oid of dispatchedOrders) {
-                // Despacho PARCIAL: la orden avanza a "En transito" recién cuando salió su ÚLTIMO bulto
-                // terminado del área de origen. Si quedan bultos en stock (otra tanda), no avanza todavía.
-                // En despacho normal el candado ya garantizó que salió completo → no quedan bultos → avanza igual.
-                if (permiteParcial) {
-                    const rem = await new sql.Request(transaction)
-                        .input('OID', sql.Int, oid)
-                        .input('AreaOrig', sql.VarChar, areaOrigen || '')
-                        .query(`
-                            SELECT COUNT(*) AS n FROM Logistica_Bultos
-                            WHERE OrdenID = @OID
-                              AND Tipocontenido = 'PROD_TERMINADO'
-                              AND Estado = 'EN_STOCK'
-                              AND UbicacionActual = @AreaOrig
-                        `);
-                    if ((rem.recordset[0]?.n || 0) > 0) continue; // quedan bultos → no avanzar aún
-                }
+                // Envío PARCIAL (Spec 39, RN-FLT.03): la orden pasa a "En transito" recién con el envío
+                // marcado "completa la orden". Mientras tanto queda en su área con envío Parcial.
+                if (ordenesSinCompletar.has(Number(oid))) continue;
 
                 await changeOrderState(transaction, {
                     target   : { type: 'ORDER', id: oid },
@@ -823,7 +970,20 @@ exports.getRemitoByCode = async (req, res) => {
                 WHERE i.EnvioID = @EID
             `);
 
-        res.json({ ...envio, items: items.recordset });
+        // Spec 39: líneas por orden del remito (envío parcial / complemento / completa la orden)
+        let lineasOrden = [];
+        try {
+            const lin = await pool.request().input('EID', sql.Int, envio.EnvioID).query(`
+                SELECT eo.*, o.CodigoOrden, o.AreaID, o.NoDocERP, f.CodigoOrden AS CodigoOrigen, r.AreaProduce, r.AreaReporta, r.Estado AS EstadoReposicion
+                FROM Logistica_EnvioOrdenes eo
+                JOIN Ordenes o ON o.OrdenID = eo.OrdenID
+                LEFT JOIN Ordenes f ON f.OrdenID = eo.OrdenOrigenID
+                LEFT JOIN Reposiciones r ON r.ReposicionID = eo.ReposicionID
+                WHERE eo.EnvioID = @EID ORDER BY eo.EnvioOrdenID`);
+            lineasOrden = lin.recordset;
+        } catch (eLin) { logger.warn('[getRemitoByCode] líneas por orden:', eLin.message); }
+
+        res.json({ ...envio, items: items.recordset, lineasOrden });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -1036,7 +1196,8 @@ exports.receiveDispatch = async (req, res) => {
                                 COALESCE(o.ComboPedidoNoDocERP, o.NoDocERP) AS NoDocERP,
                                 r.Referencias, -- Fetch raw references
                                 COALESCE(o.Cliente, r.Cliente) as Cliente,
-                                r.RecepcionID
+                                r.RecepcionID,
+                                r.Tipo AS TipoRecepcion
                             FROM Logistica_Bultos b
                             -- Encomiendas: OrdenID = N° de OrdenesRetiro → sin el filtro, el
                             -- check-in tomaba Cliente/NoDocERP de una orden NUEVA ajena.
@@ -1262,7 +1423,11 @@ exports.receiveDispatch = async (req, res) => {
                             .input('C', sql.VarChar, code)
                             .query("SELECT BobinaID, CodigoEtiqueta FROM InventarioBobinas WHERE Referencia = @C OR CodigoEtiqueta = @C");
 
-                        const isCoilCandidate = code && (code.startsWith('PRE-') || code.startsWith('BOB-'));
+                        // [BORDADO] Un PRE de PAQUETE DE PRENDAS no es tela: sin esto cada paquete de
+                        // prendas recibido en el área creaba una "bobina" fantasma de 100 m (el default)
+                        // que después aparecía en Mis Recursos y en el form de Corte como tela del cliente.
+                        const esPaquetePrendas = String(bultoInfo.TipoRecepcion || '').trim().toUpperCase() === 'PAQUETE DE PRENDAS';
+                        const isCoilCandidate = code && !esPaquetePrendas && (code.startsWith('PRE-') || code.startsWith('BOB-'));
 
                         if (invCheck.recordset.length === 0 && isCoilCandidate) {
                             // CREATE (Alta en Inventario)
@@ -1417,6 +1582,15 @@ exports.receiveDispatch = async (req, res) => {
                 });
             }
 
+            // Spec 39: si el remito traía complementos de reposición, al llegar al área que los cierra
+            // la reposición pasa a CERRADA, se libera el eslabón siguiente de la cadena y la orden que
+            // reportó vuelve a estar operable cuando no le queda nada abierto.
+            if (envioId) {
+                try {
+                    await reposicionesService.alRecibirEnvio(transaction, envioId, areaReceptora, req.user || req.body.usuario || usuarioId || 'Sistema', req.app.get('socketio'));
+                } catch (eRep) { logger.warn('[receiveDispatch] reposiciones al recibir:', eRep.message); }
+            }
+
             // Check if full reception (solo si hay remito; el forzar-puro desde la bandeja no trae envioId)
             let newStatus = 'RECIBIDO_TOTAL';
             if (envioId) {
@@ -1441,6 +1615,13 @@ exports.receiveDispatch = async (req, res) => {
             // Hasta completarse, las órdenes quedan en estado 13. Forzar una orden fuerza el pedido.
             // Cuando el pedido completa, se procesan TODAS las hermanas (también las recibidas antes).
             const forzarSet = new Set((forzarOrdenes || []).map(Number).filter(n => !isNaN(n)));
+            // Spec 39 (INV-FLT.01): "Forzar ingreso" queda solo para bultos físicos extraviados con el
+            // libro completo. Nunca saltea reposiciones abiertas, solicitudes abiertas ni envíos parciales.
+            if (areaReceptora === 'DEPOSITO' && forzarSet.size > 0) {
+                const ordsForzar = await new sql.Request(transaction).query(`
+                    SELECT OrdenID, CodigoOrden, NoDocERP, AreaID FROM Ordenes WHERE OrdenID IN (${[...forzarSet].join(',')})`);
+                await validarLibroParaDeposito(transaction, ordsForzar.recordset);
+            }
             // Forzar-puro: las órdenes forzadas se procesan aunque no vinieran bultos nuevos en esta llamada
             if (areaReceptora === 'DEPOSITO') for (const oid of forzarSet) receivedOrdersSet.add(oid);
             const ordenBultos = {};          // OrdenID -> { esperados, recibidos, lista } (números del PEDIDO)
@@ -1537,6 +1718,27 @@ exports.receiveDispatch = async (req, res) => {
                         const oRow = oData.recordset[0];
                         const logPrefix = `[CONTABILIDAD-WMS] [${oRow.CodigoOrden}] ${oRow.DescripcionTrabajo.substring(0,30)}`;
 
+                        // [POR ÁREA] Pedido cobrado por área ([FACTURA POR AREA] en la PRO madre): cada área
+                        // tiene su línea, pero lo único que entra a Depósito es la madre. La madre cobra TODAS
+                        // las líneas del pedido; sus hermanas (Bordado, DTF…) no cobran nada propio — si no,
+                        // la primera en pasar marcaba el pedido como contabilizado y el resto quedaba sin cobrar.
+                        let esMadrePorArea = false;
+                        try {
+                            const mpa = await poolLocal.request().input('OID', require('mssql').Int, L_OrdenID).query(`
+                                SELECT TOP 1 m.OrdenID FROM Ordenes o WITH(NOLOCK)
+                                JOIN Ordenes m WITH(NOLOCK) ON LTRIM(RTRIM(CAST(m.NoDocERP AS VARCHAR(50)))) = LTRIM(RTRIM(CAST(o.NoDocERP AS VARCHAR(50))))
+                                 AND m.AreaID = 'PRO' AND m.ComboItemID IS NULL AND ISNULL(m.EstadoDependencia, '') <> 'VENTA_DIRECTA'
+                                 AND m.Nota LIKE '%[[]FACTURA POR AREA]%'
+                                WHERE o.OrdenID = @OID AND o.NoDocERP IS NOT NULL
+                                ORDER BY m.OrdenID`);
+                            const madreId = mpa.recordset[0]?.OrdenID ? Number(mpa.recordset[0].OrdenID) : null;
+                            if (madreId === Number(L_OrdenID)) esMadrePorArea = true;
+                            else if (madreId && ordenesAContab.includes(madreId)) {
+                                console.log(`${logPrefix} -> Hermana de pedido por área: cobra la madre PRO, se omite acá`);
+                                continue;
+                            }
+                        } catch (eMpa) { logger.warn(`[DEPOSITO] ${oRow.CodigoOrden}: no se pudo ver si el pedido es por área: ${eMpa.message}`); }
+
                         // 2. Buscar en PedidosCobranza
                         const pcReq = await poolLocal.request().input('OID', require('mssql').Int, L_OrdenID)
                             .query("SELECT ID, MontoTotal, NoDocERP, MontoContabilizado, MetrosContabilizados, Moneda FROM PedidosCobranza WITH(NOLOCK) WHERE NoDocERP = (SELECT TOP 1 LTRIM(RTRIM(CAST(NoDocERP AS VARCHAR))) FROM Ordenes WITH(NOLOCK) WHERE OrdenID = @OID)");
@@ -1619,7 +1821,7 @@ if (triggerReversal || triggerForward) {
                                          const cRes = await poolLocal.request().query("SELECT TOP 1 CotDolar FROM dbo.Cotizaciones WITH(NOLOCK) ORDER BY CotFecha DESC");
                                          const cotizacionVal = cRes.recordset[0]?.CotDolar || 40;
 
-                                         const details = await poolLocal.request().input('PID', require('mssql').Int, pc.ID).query("SELECT Cantidad, Subtotal as TotalLinea, ProIdProducto as IDProdReact, Moneda, OrdenID, PrecioUnitario, PrecioUnitarioOriginal, MonedaOriginal, PerfilAplicado FROM PedidosCobranzaDetalle WHERE PedidoCobranzaID = @PID");
+                                         const details = await poolLocal.request().input('PID', require('mssql').Int, pc.ID).query("SELECT Cantidad, Subtotal as TotalLinea, ProIdProducto as IDProdReact, Moneda, OrdenID, PrecioUnitario, PrecioUnitarioOriginal, MonedaOriginal, PerfilAplicado, ISNULL(EsHermanaConsolidada, 0) AS EsHermanaConsolidada FROM PedidosCobranzaDetalle WHERE PedidoCobranzaID = @PID");
                                            
                                            // --- EN ESTE PUNTO LA ORDEN YA LLAMÓ AL CHECKIN WMS, INSERTAMOS EN ORDENESDEPOSITO SI FALTA ---
                                            // Las fallas (-F) son internas: su material se incorpora a la madre,
@@ -1673,13 +1875,24 @@ if (triggerReversal || triggerForward) {
                                                    return sub;
                                                };
                                                const dOrden     = lineasDeLaOrden[0] || null;
-                                               const cantOrden  = lineasDeLaOrden.some(d => d.Cantidad   != null)
+                                               let cantOrden  = lineasDeLaOrden.some(d => d.Cantidad   != null)
                                                    ? lineasDeLaOrden.reduce((s, d) => s + (parseFloat(d.Cantidad) || 0), 0)
                                                    : (parseFloat(ordenDeposito.magnitud ?? oRow.Magnitud) || totalMetros || 0);
-                                               const costoOrden = esRepoCliente ? 0 : (lineasDeLaOrden.some(d => d.TotalLinea != null)
+                                               let costoOrden = esRepoCliente ? 0 : (lineasDeLaOrden.some(d => d.TotalLinea != null)
                                                    ? Math.round(lineasDeLaOrden.reduce((s, d) => s + aMonedaFinal(d), 0) * 100) / 100
                                                    : currentMonto);
-                                               const prodOrden  = (dOrden && dOrden.IDProdReact)        ? dOrden.IDProdReact           : (ordenDeposito.proIdProducto ?? oRow.ProIdProducto ?? null);
+                                               let prodOrden  = (dOrden && dOrden.IDProdReact)        ? dOrden.IDProdReact           : (ordenDeposito.proIdProducto ?? oRow.ProIdProducto ?? null);
+                                               // [POR ÁREA] La PRO madre de un pedido cobrado por área entra a Depósito con el
+                                               // TOTAL del pedido (sus líneas propias solo tienen el artículo o $0), la cantidad
+                                               // de prendas y su producto — mismo helper que los otros ingresos y la etiqueta.
+                                               if (!esRepoCliente && ordenDeposito.ordenId) {
+                                                   const dep = await importeOrdenParaDeposito(poolLocal, ordenDeposito.ordenId, finalMonId === 2 ? 'USD' : 'UYU');
+                                                   if (dep?.porArea) {
+                                                       if (parseFloat(dep.Imp) > 0) costoOrden = Math.round(parseFloat(dep.Imp) * 100) / 100;
+                                                       if (parseFloat(dep.Cant) > 0) cantOrden = parseFloat(dep.Cant);
+                                                       if (dep.Prod) prodOrden = dep.Prod;
+                                                   }
+                                               }
                                                // Prioriza la madre (si se redirigió) y resuelve por CodCliente si el id no vino.
                                                const cliPKForDep = await resolverCliPK(poolLocal, ordenDeposito.cliIdCliente || oRow.CliIdCliente, ordenDeposito.codCliente || oRow.CodCliente);
                                                if (!cliPKForDep) {
@@ -1730,7 +1943,9 @@ if (triggerReversal || triggerForward) {
                                            // (pedidos legacy sin desglose): ahí el pedido es de una sola orden.
                                            const lineasPedido = details.recordset;
                                            const lineasOrden  = lineasPedido.filter(d => Number(d.OrdenID) === Number(L_OrdenID));
-                                           const lineasContab = lineasOrden.length > 0
+                                           const lineasContab = esMadrePorArea
+                                               ? lineasPedido.filter(d => !Number(d.EsHermanaConsolidada))   // [POR ÁREA] todo el pedido
+                                               : lineasOrden.length > 0
                                                ? lineasOrden
                                                : (lineasPedido.some(d => d.OrdenID != null) ? [] : lineasPedido);
                                            console.log(`${logPrefix} -> Líneas a contabilizar: ${lineasContab.length} de ${lineasPedido.length} del pedido`);
@@ -1952,7 +2167,8 @@ if (triggerReversal || triggerForward) {
                                          // se redirigió) — no 0 fijo: cubre hermanas cuyo pedido ya quedó
                                          // contabilizado (marca) en esta misma pasada.
                                          const fbMoneda = (pcReq.recordset[0]?.Moneda === 'USD') ? 'USD' : 'UYU';
-                                         const linFb = await totalesCobranzaDeOrden(poolLocal, ordenDepositoFb.ordenId, fbMoneda);
+                                         // [POR ÁREA] la PRO madre de un pedido por área entra con el total del pedido
+                                         const linFb = await importeOrdenParaDeposito(poolLocal, ordenDepositoFb.ordenId, fbMoneda);
                                          const fbCant  = parseFloat(linFb.Cant) || ordenDepositoFb.magnitud || oRow.Magnitud || 0;
                                          const fbCosto = Math.round((parseFloat(linFb.Imp) || 0) * 100) / 100;
                                          const fbProd  = linFb.Prod || ordenDepositoFb.proIdProducto || oRow.ProIdProducto || null;
@@ -2054,7 +2270,8 @@ if (triggerReversal || triggerForward) {
                                         .input('ND', require('mssql').VarChar, oi.NoDoc || '')
                                         .query(`SELECT TOP 1 Moneda FROM PedidosCobranza WITH(NOLOCK) WHERE LTRIM(RTRIM(CAST(NoDocERP AS VARCHAR(50)))) = @ND`);
                                     const upMoneda = (monR.recordset[0]?.Moneda === 'USD') ? 'USD' : 'UYU';
-                                    const lin = await totalesCobranzaDeOrden(poolCnt, ordenDepositoUp.ordenId, upMoneda);
+                                    // [POR ÁREA] la PRO madre de un pedido por área entra con el total del pedido
+                                    const lin = await importeOrdenParaDeposito(poolCnt, ordenDepositoUp.ordenId, upMoneda);
                                     const cliPkUp = await resolverCliPK(poolCnt, ordenDepositoUp.cliIdCliente || oi.CliIdCliente, ordenDepositoUp.codCliente || oi.CodCliente);
                                     if (!cliPkUp) {
                                         console.error(`[REWORK-BULTOS] ${ordenDepositoUp.codigoOrden}: el cliente no existe — no se crea la fila en Esperando. ¿Cliente eliminado?`);
@@ -2156,15 +2373,21 @@ exports.getPedidosCompletosPRO = async (req, res) => {
         // Candidatos: pedidos con orden madre PRO real que ya tienen algún componente
         // físicamente en PRO — evita recorrer TODA la tabla Ordenes.
         const candidatosRes = await pool.request().query(`
-            SELECT DISTINCT LTRIM(RTRIM(O.NoDocERP)) AS NoDocERP
-            FROM Ordenes O
-            JOIN Logistica_Bultos B ON B.OrdenID = O.OrdenID
-            WHERE O.AreaID <> 'PRO'
-              AND B.UbicacionActual = 'PRO' AND B.Estado = 'EN_STOCK'
-              AND ISNULL(B.Tipocontenido, '') <> 'ENCOMIENDA'
+            -- [VENTA UNA LÍNEA] El pedido se identifica por su NoDocERP o, para la venta de
+            -- retiro de un artículo que llega directo a PRO, por ComboPedidoNoDocERP.
+            SELECT DISTINCT X.NoDocERP FROM (
+                SELECT LTRIM(RTRIM(CASE WHEN O.EstadoDependencia = 'VENTA_DIRECTA' THEN O.ComboPedidoNoDocERP
+                                        ELSE CAST(O.NoDocERP AS VARCHAR(50)) END)) AS NoDocERP
+                FROM Ordenes O
+                JOIN Logistica_Bultos B ON B.OrdenID = O.OrdenID
+                WHERE (O.AreaID <> 'PRO' OR (O.EstadoDependencia = 'VENTA_DIRECTA' AND O.ComboPedidoNoDocERP IS NOT NULL))
+                  AND B.UbicacionActual = 'PRO' AND B.Estado = 'EN_STOCK'
+                  AND ISNULL(B.Tipocontenido, '') <> 'ENCOMIENDA'
+            ) X
+            WHERE X.NoDocERP IS NOT NULL
               AND EXISTS (
                   SELECT 1 FROM Ordenes P
-                  WHERE P.NoDocERP = O.NoDocERP AND P.AreaID = 'PRO'
+                  WHERE LTRIM(RTRIM(P.NoDocERP)) = X.NoDocERP AND P.AreaID = 'PRO'
                     AND ISNULL(P.EstadoDependencia, '') <> 'VENTA_DIRECTA'
               )
         `);
@@ -2172,52 +2395,122 @@ exports.getPedidosCompletosPRO = async (req, res) => {
         const pedidos = [];
         for (const row of candidatosRes.recordset) {
             const chk = await isPedidoCompletoFisicamenteEnArea(pool, row.NoDocERP, 'PRO');
-            if (!chk.completo) continue;
+            // [PRENDAS] Bandeja PRO: antes se ocultaba el pedido hasta que TODOS sus
+            // componentes llegaran — sin poder verlo mientras tanto. Ahora se muestra igual,
+            // marcado 'esperando' (con lo que falta), y pasa a 'recibido' cuando ya está
+            // completo. `ControlPedidosPRO.jsx` (pantalla vieja) sigue mostrando solo los
+            // 'recibido' filtrando del lado del cliente — mismo comportamiento de siempre ahí.
+            const estado = chk.completo ? 'recibido' : 'esperando';
 
             const ordenProRes = await pool.request()
                 .input('Doc', sql.VarChar, row.NoDocERP)
                 .query(`
-                    SELECT TOP 1 O.OrdenID, O.Cliente, O.DescripcionTrabajo, O.CodigoOrden,
-                           A.Descripcion AS NombreProducto
+                    SELECT TOP 1 O.OrdenID, O.DescripcionTrabajo, O.CodigoOrden,
+                           O.Magnitud AS CantidadPrendas,
+                           A.Descripcion AS NombreProducto,
+                           -- O.Cliente es texto suelto cargado al crear la orden — en pedidos del
+                           -- portal a veces queda el USUARIO (ej. 'Yoa1973') en vez del nombre real
+                           -- del cliente. Clientes.Nombre (vía CliIdCliente, la FK real) es la
+                           -- fuente confiable; O.Cliente queda solo de último recurso.
+                           ISNULL(NULLIF(LTRIM(RTRIM(C.Nombre)), ''), O.Cliente) AS ClienteNombre
                     FROM Ordenes O
                     LEFT JOIN Articulos A ON A.ProIdProducto = O.ProIdProducto
+                    LEFT JOIN Clientes C ON C.CliIdCliente = O.CliIdCliente
                     WHERE O.NoDocERP = @Doc AND O.AreaID = 'PRO'
                       AND ISNULL(O.EstadoDependencia, '') <> 'VENTA_DIRECTA'
+                    ORDER BY O.OrdenID
                 `);
             const ordenPro = ordenProRes.recordset[0];
             if (!ordenPro) continue; // no debería pasar — por seguridad
 
+            // [VENTA x ITEM] "Comprar y personalizar" crea UNA PRO POR ARTÍCULO del carrito:
+            // la cantidad del pedido no es la de "la" PRO (TOP 1 agarraba una cualquiera), es
+            // la suma de todas. Con una sola PRO da lo mismo que antes.
+            const prosRes = await pool.request()
+                .input('Doc', sql.VarChar, row.NoDocERP)
+                .query(`
+                    SELECT COUNT(*) AS Articulos, SUM(ISNULL(TRY_CAST(Magnitud AS FLOAT), 0)) AS Total
+                    FROM Ordenes
+                    WHERE NoDocERP = @Doc AND AreaID = 'PRO' AND ISNULL(EstadoDependencia, '') <> 'VENTA_DIRECTA'
+                `);
+            const articulosPro = prosRes.recordset[0]?.Articulos || 1;
+            const cantidadPrendasPedido = articulosPro > 1 ? prosRes.recordset[0].Total : ordenPro.CantidadPrendas;
+
+            // DISTINCT sobre O.OrdenID: un componente (Bordado, Estampado...) puede tener
+            // varios bultos propios en PRO (tandas/remitos parciales de la misma orden) — sin
+            // esto el JOIN a Logistica_Bultos hacía fan-out y el mismo componente aparecía
+            // repetido tantas veces como bultos tuviera, todos mostrando la Magnitud total.
             const componentesRes = await pool.request()
                 .input('Doc', sql.VarChar, row.NoDocERP)
                 .query(`
-                    SELECT O.OrdenID, O.CodigoOrden, O.AreaID, O.Magnitud,
-                           B.BultoID, B.CodigoEtiqueta,
+                    SELECT DISTINCT O.OrdenID, O.CodigoOrden, O.AreaID, O.Magnitud, O.ComboItemID,
                            A.Descripcion AS NombreArticulo
                     FROM Ordenes O
                     JOIN Logistica_Bultos B ON B.OrdenID = O.OrdenID
                         AND B.UbicacionActual = 'PRO' AND B.Estado = 'EN_STOCK'
                         AND ISNULL(B.Tipocontenido, '') <> 'ENCOMIENDA'
                     LEFT JOIN Articulos A ON A.ProIdProducto = O.ProIdProducto
-                    WHERE O.NoDocERP = @Doc AND O.AreaID <> 'PRO'
+                    WHERE (O.NoDocERP = @Doc AND O.AreaID <> 'PRO')
+                       -- [VENTA UNA LÍNEA] artículo sin personalizar que llegó directo a PRO
+                       OR (LTRIM(RTRIM(O.ComboPedidoNoDocERP)) = LTRIM(RTRIM(@Doc)) AND O.EstadoDependencia = 'VENTA_DIRECTA')
                     ORDER BY O.OrdenID
                 `);
 
+            // Spec 39: "físicamente reunido en PRO" (bultos en la ubicación) no es lo mismo
+            // que "completo según el libro de entregas" — puede haber una reposición abierta
+            // en una etapa anterior de la cadena (ej. una falla de Sublimación) que nunca pasa
+            // por PRO. Se muestra igual (no se oculta el pedido) pero con el motivo, mismo
+            // criterio que "Lo que falta de este pedido" en las demás bandejas.
+            const incompletas = await libroEntregas.ordenesIncompletasPedido(row.NoDocERP, pool);
+            // Magnitud EFECTIVA para las áreas de bandeja (Bordado/Estampado/Corte/Costura):
+            // Ordenes.Magnitud suele quedar en '0' ahí, las piezas reales viven en
+            // ArchivosOrden/ArchivosReferencia (mismo cálculo que usa esa bandeja al aprobar).
+            const AREAS_BANDEJA = new Set(['EMB', 'EST', 'TWC', 'TWT']);
+            let getMagnitudEfectiva = null;
+            if (componentesRes.recordset.some(c => AREAS_BANDEJA.has(String(c.AreaID || '').trim().toUpperCase()))) {
+                try { ({ getMagnitudEfectiva } = require('./embBoardController')); } catch (eReq) { /* best effort */ }
+            }
+            const magnitudesEfectivas = {};
+            for (const c of componentesRes.recordset) {
+                if (getMagnitudEfectiva && AREAS_BANDEJA.has(String(c.AreaID || '').trim().toUpperCase())) {
+                    try { magnitudesEfectivas[c.OrdenID] = await getMagnitudEfectiva(pool, c.OrdenID); } catch (eMag) { /* deja el crudo */ }
+                }
+            }
             pedidos.push({
                 noDocERP: row.NoDocERP,
                 ordenProId: ordenPro.OrdenID,
                 codigoOrden: ordenPro.CodigoOrden,
-                cliente: ordenPro.Cliente,
+                cliente: ordenPro.ClienteNombre,
                 trabajo: ordenPro.DescripcionTrabajo,
                 producto: ordenPro.NombreProducto,
+                // La cantidad de prendas del PEDIDO es la Magnitud de la orden madre PRO
+                // (UM='u', el "campo prendas" real) — la fuente única y confiable. La
+                // Magnitud de cada componente NO sirve para esto: Sublimación/DTF/TPU miden
+                // metros de tela, no prendas, y comparar esos números entre sí no dice nada.
+                cantidadPrendas: cantidadPrendasPedido,
+                // Cuántos artículos (PRO) tiene el pedido: >1 = varias prendas distintas, cada
+                // una con su propia cantidad (no se comparan entre sí).
+                articulosPedido: articulosPro,
+                estado,
+                totalComponentes: chk.totalOrdenes,
                 componentes: componentesRes.recordset.map(c => ({
                     ordenId: c.OrdenID,
                     codigoOrden: c.CodigoOrden,
                     areaId: c.AreaID,
                     nombreArticulo: c.NombreArticulo,
-                    magnitud: c.Magnitud,
-                    bultoId: c.BultoID,
-                    codigoEtiqueta: c.CodigoEtiqueta,
+                    // Prenda a la que pertenece (combo o artículo del carrito). Las cantidades
+                    // solo se comparan entre componentes de la MISMA prenda.
+                    comboItemId: c.ComboItemID,
+                    magnitud: magnitudesEfectivas[c.OrdenID] != null ? magnitudesEfectivas[c.OrdenID] : c.Magnitud,
+                    // true solo en las áreas de bandeja (EMB/EST/TWC/TWT): ahí la magnitud
+                    // efectiva SÍ está contada en piezas/prendas (getMagnitudEfectiva). En el
+                    // resto (Sublimación, DTF, TPU...) la Magnitud es otra unidad (metros) —
+                    // no es comparable contra "cantidad de prendas" y no debe mostrarse como tal.
+                    esPrendas: AREAS_BANDEJA.has(String(c.AreaID || '').trim().toUpperCase()),
                 })),
+                faltantesPorLlegar: chk.faltantes.map(f => ({ codigoOrden: String(f.CodigoOrden).trim(), areaId: f.AreaID, estadoenArea: f.EstadoenArea })),
+                libroIncompleto: incompletas.length > 0,
+                motivosLibro: incompletas.map(i => ({ codigoOrden: String(i.CodigoOrden).trim(), areaId: i.AreaID, motivos: i.motivos })),
             });
         }
 
@@ -2242,6 +2535,17 @@ exports.aprobarControlPRO = async (req, res) => {
             return res.status(400).json({ error: `Todavía falta${chk.faltantes.length === 1 ? '' : 'n'} ${chk.faltantes.length} componente(s) por llegar a PRO.` });
         }
 
+        // Spec 39: "reunido físicamente en PRO" no es lo mismo que "completo según el libro"
+        // (puede haber una reposición abierta en una etapa anterior que nunca pasa por PRO).
+        // Se corta ACÁ, antes de generar la etiqueta final y consumir los bultos de los
+        // componentes — evita dejar el pedido a medio consolidar cuando el remito final
+        // (createRemito, más abajo) lo iba a rechazar de todos modos.
+        const incompletas = await libroEntregas.ordenesIncompletasPedido(noDocERP, pool);
+        if (incompletas.length > 0) {
+            const detalle = incompletas.map(i => `${String(i.CodigoOrden).trim()} (${i.motivos.join('; ') || 'incompleta'})`).join(' · ');
+            return res.status(400).json({ error: `El pedido ${noDocERP} no está completo según el libro de entregas: ${detalle}. No se puede consolidar en PRO hasta que no quede ninguna reposición ni envío parcial abierto.` });
+        }
+
         const ordenProRes = await pool.request()
             .input('Doc', sql.VarChar, noDocERP)
             .query(`
@@ -2258,7 +2562,9 @@ exports.aprobarControlPRO = async (req, res) => {
                 SELECT B.BultoID
                 FROM Ordenes O
                 JOIN Logistica_Bultos B ON B.OrdenID = O.OrdenID
-                WHERE O.NoDocERP = @Doc AND O.AreaID <> 'PRO'
+                WHERE ((O.NoDocERP = @Doc AND O.AreaID <> 'PRO')
+                       -- [VENTA UNA LÍNEA] el bulto del artículo sin personalizar también se consume
+                       OR (LTRIM(RTRIM(O.ComboPedidoNoDocERP)) = LTRIM(RTRIM(@Doc)) AND O.EstadoDependencia = 'VENTA_DIRECTA'))
                   AND B.UbicacionActual = 'PRO' AND B.Estado = 'EN_STOCK'
                   AND ISNULL(B.Tipocontenido, '') <> 'ENCOMIENDA'
             `);
@@ -2839,12 +3145,24 @@ exports.getAreaStock = async (req, res) => {
     try {
         const pool = await getPool();
 
+        // Spec 39: en las áreas con envío parcial habilitado no se ocultan los bultos por hermanas
+        // no prontas (el operario manda lo que ya está bien); y los bultos de una orden de falla
+        // con reposición registrada aparecen como COMPLEMENTO de su madre cuando tienen que viajar.
+        let areasParcial = [];
+        try { areasParcial = await libroEntregas.areasConParcial(pool); } catch (e) { logger.warn('[getAreaStock] AREAS_DESPACHO_PARCIAL:', e.message); }
+        const sqlAreasParcial = areasParcial.length ? areasParcial.map(a => `'${a.replace(/'/g, "''")}'`).join(',') : `''`;
+
         let query = `
-            SELECT 
+            SELECT
                 b.*,
                 -- Hybrid Data Fetching (Prioritize Reception/Customer Service Data)
                 o.CodigoOrden,
                 o.NoDocERP,
+                o.AreaID AS AreaOrden,
+                o.EstadoEnvio,
+                rep.ReposicionID, rep.OrdenMadreID, rep.AreaProduce, rep.AreaReporta,
+                CAST(CASE WHEN rep.ReposicionID IS NULL THEN 0 ELSE 1 END AS BIT) AS EsComplemento,
+                madre.CodigoOrden AS CodigoOrdenMadre,
                 COALESCE(r.Codigo, '') as CodigoRecepcion,
                 COALESCE(r.Cliente, o.Cliente, 'CLIENTE_NOT_FOUND') as Cliente,
                 cliord.IDCliente AS IDCliente,
@@ -2856,6 +3174,9 @@ exports.getAreaStock = async (req, res) => {
             -- datos de la orden fantasma pisaban al COALESCE con la recepción/bulto)
             LEFT JOIN Ordenes o ON b.OrdenID = o.OrdenID AND ISNULL(b.Tipocontenido,'') <> 'ENCOMIENDA'
             LEFT JOIN dbo.Clientes cliord WITH(NOLOCK) ON o.CliIdCliente = cliord.CliIdCliente
+            -- Spec 39: reposición registrada de una orden de falla (viaja como complemento de su madre)
+            LEFT JOIN Reposiciones rep ON rep.OrdenFallaID = o.OrdenID AND rep.Estado IN ('PENDIENTE','EN_PRODUCCION')
+            LEFT JOIN Ordenes madre ON madre.OrdenID = rep.OrdenMadreID
             -- ROBUST JOIN: Priority to Explicit ID, Fallback to String Match
             LEFT JOIN Recepciones r ON (
                 b.RecepcionID = r.RecepcionID 
@@ -2878,12 +3199,17 @@ exports.getAreaStock = async (req, res) => {
             AND NOT (
                 b.Tipocontenido = 'PROD_TERMINADO'
                 AND o.OrdenID IS NOT NULL
+                AND UPPER(LTRIM(RTRIM(ISNULL(o.AreaID,'')))) NOT IN (${sqlAreasParcial})
                 AND ${sqlExistsHermanaNoPronta('o')}
             )
             -- Fallas internas (-F): sus bultos circulan por planta con etiqueta, pero una -F NUNCA se
             -- despacha sola — su material se incorpora al pedido madre. No se ofrecen en Crear Remito.
             -- (Bultos sin orden asociada, ej. recepciones, siguen apareciendo: el IS NULL los conserva.)
-            AND (o.CodigoOrden IS NULL OR o.CodigoOrden NOT LIKE '%-F%')
+            -- Spec 39: EXCEPCIÓN — una orden de falla con reposición registrada sí se ofrece, como
+            -- complemento de su madre, cuando nació en otra área (faltante hacia atrás) o cuando la madre
+            -- ya salió en envío parcial.
+            AND (o.CodigoOrden IS NULL OR o.CodigoOrden NOT LIKE '%-F%'
+                 OR (rep.ReposicionID IS NOT NULL AND (UPPER(LTRIM(RTRIM(rep.AreaReporta))) <> UPPER(LTRIM(RTRIM(rep.AreaProduce))) OR ISNULL(madre.EstadoEnvio,'') = 'PARCIAL')))
         `;
 
         if (areaId && areaId !== 'TODOS') {

@@ -74,6 +74,16 @@ const logisticsService = {
         return response.data;
     },
 
+    // --- LIBRO DE ENTREGAS (Spec 39): envío parcial, complementos, lo que falta de este pedido ---
+    getLibroConfig: async () => (await api.get('/logistics/libro/config')).data,
+    getLibroOrden: async (ordenId) => (await api.get(`/logistics/libro/orden/${ordenId}`)).data,
+    getLibroPedido: async (noDoc) => (await api.get(`/logistics/libro/pedido/${encodeURIComponent(String(noDoc).trim())}`)).data,
+    getPendientesArea: async (noDoc, area) => (await api.get('/logistics/libro/pendientes', { params: { noDoc: String(noDoc).trim(), area } })).data,
+    getEnvioInfo: async (ordenIds, areaOrigen, areaDestino) => (await api.post('/logistics/libro/envio-info', { ordenIds, areaOrigen, areaDestino })).data,
+    // Reposiciones de una orden (accesible desde cualquier área) — usada por el detalle de
+    // orden para mostrar SOLO el archivo puntual de la madre a reponer, sin traer nada más.
+    getReposicionesOrden: async (ordenId) => (await api.get(`/logistics/reposiciones/orden/${ordenId}`)).data,
+
     forzarIngreso: async (ordenId, usuarioId) => {
         const response = await api.post('/logistics/receive', {
             forzarOrdenes: [ordenId],

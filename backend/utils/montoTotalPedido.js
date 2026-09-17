@@ -32,7 +32,9 @@ const conversion = (alias) => `
  * Recalcula PedidosCobranza.MontoTotal. Espera un parámetro @PID (int) con el ID del pedido.
  *
  * "Comprar y personalizar": las líneas hermanas (EMB/DF/TPU/EST) siguen excluidas — ya están
- * incluidas dentro del subtotal de la línea de PRO.
+ * incluidas dentro del subtotal de la línea de PRO. Una línea destildada como NO facturable
+ * (EsFacturable = 0) tampoco suma: no se le cobra al cliente ni sale en la factura (misma
+ * regla que la cotización al guardar y que el "Nuevo Total" de la pantalla).
  */
 const SQL_RECALC_MONTO_TOTAL = `
     ${T_SQL_COTIZ}
@@ -45,6 +47,7 @@ const SQL_RECALC_MONTO_TOTAL = `
         FROM dbo.PedidosCobranzaDetalle d WITH(NOLOCK)
         WHERE d.PedidoCobranzaID = @PID
           AND ISNULL(d.EsHermanaConsolidada, 0) = 0
+          AND ISNULL(d.EsFacturable, 1) = 1
     )
     WHERE ID = @PID;
 `;
@@ -97,4 +100,81 @@ const totalesCobranzaDeOrden = async (pool, ordenId, monedaDestino = null) => {
     };
 };
 
-module.exports = { SQL_RECALC_MONTO_TOTAL, totalesCobranzaDeOrden };
+/**
+ * Total real del PEDIDO COMPLETO (todas las líneas de TODAS sus órdenes, sin las
+ * hermanas ya consolidadas), convertido a una moneda — mismo cálculo que
+ * SQL_RECALC_MONTO_TOTAL pero de lectura y por NoDocERP en vez de por PedidoCobranzaID.
+ *
+ * Para "comprar y personalizar" facturado "por área" (marcador [FACTURA POR AREA]):
+ * cada área cobra su propia línea y la orden de Producción — la ÚNICA que el cliente
+ * retira físicamente por Depósito — queda a propósito con su línea en $0. Sin esto,
+ * `totalesCobranzaDeOrden` (que solo mira las líneas de ESA orden) le da al ingreso a
+ * Depósito y al aviso de WhatsApp un costo $0, y el cliente se lleva el pedido sin
+ * pagar nada. Con el modo "consolidado" (sin el marcador) esto da el mismo resultado
+ * que `totalesCobranzaDeOrden` de la orden de Producción, porque ya tiene todo sumado.
+ */
+const totalDelPedido = async (pool, noDocERP, monedaDestino = null) => {
+    const mon = (monedaDestino || '').toUpperCase();
+    const r = await pool.request()
+        .input('Doc', sql.NVarChar(50), String(noDocERP || '').trim())
+        .input('MonParam', sql.VarChar(10), (mon === 'USD' || mon === 'UYU') ? mon : null)
+        .query(`
+            ${T_SQL_COTIZ}
+            DECLARE @PedId INT, @PedMoneda VARCHAR(10);
+            SELECT TOP 1 @PedId = ID, @PedMoneda = Moneda FROM dbo.PedidosCobranza WITH(NOLOCK)
+                WHERE LTRIM(RTRIM(NoDocERP)) = LTRIM(RTRIM(@Doc)) ORDER BY ID DESC;
+
+            DECLARE @MFinal VARCHAR(10) = ISNULL(@MonParam, @PedMoneda);
+            IF @MFinal IS NULL SET @MFinal = 'UYU';
+
+            SELECT ISNULL(SUM(${conversion('d.')}), 0) AS Imp
+            FROM dbo.PedidosCobranzaDetalle d WITH(NOLOCK)
+            WHERE d.PedidoCobranzaID = @PedId
+              AND ISNULL(d.EsHermanaConsolidada, 0) = 0;
+        `);
+    const row = r.recordset[0] || {};
+    return { Imp: row.Imp == null ? null : Math.round(parseFloat(row.Imp) * 100) / 100 };
+};
+
+/**
+ * [POR ÁREA] Cantidad, importe y producto con los que una orden entra a DEPÓSITO.
+ *
+ * Igual que `totalesCobranzaDeOrden`, salvo un caso: la orden madre PRO de un pedido cobrado
+ * POR ÁREA (marcador [FACTURA POR AREA] en su nota). Ahí cada área cobra su propia línea
+ * (el bordado, el DTF, el estampado… y en "Comprar y personalizar" también los artículos, que
+ * son líneas de la madre), pero la ÚNICA que el cliente retira por Depósito es la madre: entra
+ * con el TOTAL del pedido. Antes solo se hacía cuando la línea de la madre valía 0; desde que
+ * la madre lleva los artículos del carrito ya no vale 0 y los bordados quedaban sin cobrar.
+ */
+const importeOrdenParaDeposito = async (pool, ordenId, monedaDestino = null) => {
+    const lin = await totalesCobranzaDeOrden(pool, ordenId, monedaDestino);
+    try {
+        const o = (await pool.request().input('OID', sql.Int, ordenId).query(`
+            SELECT TOP 1 LTRIM(RTRIM(CAST(NoDocERP AS VARCHAR(50)))) AS NoDoc, Magnitud, ProIdProducto,
+                   (SELECT TOP 1 a.ProIdProducto FROM dbo.Articulos a WITH(NOLOCK)
+                     WHERE LTRIM(RTRIM(a.CodArticulo)) = 'PPERS' AND ISNULL(a.borrar, 0) = 0) AS ProdPPERS
+            FROM dbo.Ordenes WITH(NOLOCK)
+            WHERE OrdenID = @OID AND AreaID = 'PRO' AND ComboItemID IS NULL
+              AND ISNULL(EstadoDependencia, '') <> 'VENTA_DIRECTA'
+              AND Nota LIKE '%[[]FACTURA POR AREA]%'
+        `)).recordset[0];
+        if (!o?.NoDoc) return lin;
+        const pedido = await totalDelPedido(pool, o.NoDoc, monedaDestino);
+        const imp = parseFloat(pedido?.Imp);
+        // Cantidad = prendas del pedido (Magnitud de la madre), no la suma de sus líneas: con los
+        // artículos del carrito la madre tiene PPERS + el artículo, y sumaba las prendas dos veces.
+        // Producto = el de la madre; la de prenda del cliente no tiene → genérico PPERS.
+        const mag = parseFloat(o.Magnitud);
+        return {
+            ...lin,
+            Imp: imp > 0 ? imp : lin.Imp,
+            Cant: mag > 0 ? mag : lin.Cant,
+            Prod: o.ProIdProducto || o.ProdPPERS || lin.Prod,
+            porArea: true,
+        };
+    } catch (e) {
+        return lin;
+    }
+};
+
+module.exports = { SQL_RECALC_MONTO_TOTAL, totalesCobranzaDeOrden, totalDelPedido, importeOrdenParaDeposito };

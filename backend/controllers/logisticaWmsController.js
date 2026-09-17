@@ -81,14 +81,15 @@ async function attachProximoServicioAncla(pool, orders) {
         if (!docs.length) return orders;
         const docsIn = docs.map(d => `'${d.replace(/'/g, "''")}'`).join(',');
         const r = await pool.request().query(`
-            SELECT LTRIM(RTRIM(NoDocERP)) AS Doc, LTRIM(RTRIM(ProximoServicio)) AS ProximoServicio
+            SELECT LTRIM(RTRIM(NoDocERP)) AS Doc, LTRIM(RTRIM(ProximoServicio)) AS ProximoServicio,
+                   CASE WHEN EXISTS (SELECT 1 FROM Reposiciones rp WHERE rp.VenOrdenID = Ordenes.OrdenID) THEN 1 ELSE 0 END AS EsReposicion
             FROM Ordenes
             WHERE LTRIM(RTRIM(NoDocERP)) IN (${docsIn})
               AND AreaID = 'PRO' AND EstadoDependencia = 'VENTA_DIRECTA'
         `);
-        const map = {};
-        r.recordset.forEach(x => { map[x.Doc] = x.ProximoServicio; });
-        orders.forEach(o => { o.proximoServicioAncla = map[(o.codigo || '').trim()] || null; });
+        const map = {}, rep = {};
+        r.recordset.forEach(x => { map[x.Doc] = x.ProximoServicio; if (x.EsReposicion) rep[x.Doc] = true; });
+        orders.forEach(o => { o.proximoServicioAncla = map[(o.codigo || '').trim()] || null; o.esReposicion = !!rep[(o.codigo || '').trim()]; });
     } catch (e) { /* sin dato no se rompe la lista */ }
     return orders;
 }
@@ -223,6 +224,53 @@ exports.startPreparation = async (req, res) => {
     }
 };
 
+/**
+ * [REPOSICIÓN] VEN interna de reposición por falla (solicitudesInsumoController.crearVenInterna):
+ * la ancla nace con ProximoServicio = área que reportó (ej. EMB). Una vez descontado el stock,
+ * la prenda nueva no ingresa a Depósito ni se avisa al cliente: se arma el remito PRO→área
+ * (la línea viaja como complemento de la orden madre, con su ReposicionID) y la VEN pasa a
+ * ENVIADO_PRODUCCION. Al recibir el remito en el área se cierra la reposición.
+ * Devuelve null si la VEN no es de reposición.
+ */
+async function enviarVenReposicionAlArea(pool, pedidoId, noDocErpVen, req) {
+    const r = await pool.request().input('Doc', sql.VarChar, noDocErpVen).query(`
+        SELECT o.OrdenID, LTRIM(RTRIM(o.ProximoServicio)) AS ProximoServicio,
+               (SELECT COUNT(*) FROM Logistica_Bultos b WHERE b.OrdenID = o.OrdenID AND b.Estado = 'EN_STOCK' AND b.UbicacionActual = 'PRO') AS BultosEnPro
+        FROM Ordenes o
+        WHERE o.NoDocERP = @Doc AND o.AreaID = 'PRO' AND o.EstadoDependencia = 'VENTA_DIRECTA'
+          AND EXISTS (SELECT 1 FROM Reposiciones rp WHERE rp.VenOrdenID = o.OrdenID)`);
+    if (!r.recordset.length) return null;
+    const remitos = [], errores = [], areas = [];
+    for (const a of r.recordset) {
+        const area = String(a.ProximoServicio || '').toUpperCase();
+        if (!area || area.startsWith('DEPOSITO') || area === 'PRO') continue;
+        areas.push(area);
+        // Sin bulto en PRO: el remito ya salió (o no hay etiqueta) — no crear uno vacío.
+        if (!(a.BultosEnPro > 0)) continue;
+        try {
+            const logisticsController = require('./logisticsController');
+            let remitoResult = null;
+            const fakeRes = {
+                json: (data) => { remitoResult = data; },
+                status: (code) => ({ json: (data) => { remitoResult = { ...data, _statusCode: code }; } }),
+            };
+            await logisticsController.createRemitoFromOrders({
+                body: { areaOrigen: 'PRO', areaDestino: area, usuarioId: req.user?.id || 1, orderIds: [a.OrdenID],
+                        observations: `Remito automático — reposición por falla (${noDocErpVen})` },
+                user: req.user || 'Sistema',
+                app: req.app,
+            }, fakeRes);
+            if (remitoResult?.success) remitos.push(remitoResult.dispatchCode);
+            else errores.push(remitoResult?.error || 'no se pudo crear el remito');
+        } catch (e) { errores.push(e.message); }
+    }
+    if (errores.length) logger.warn(`[WMS] Reposición ${noDocErpVen}: remito PRO→área con errores:`, errores);
+    await pool.request().input('PedidoID', sql.Int, pedidoId)
+        .query(`UPDATE PedidosCobranza SET EstadoCobro = 'ENVIADO_PRODUCCION' WHERE ID = @PedidoID AND NoDocERP LIKE 'VEN-%'`);
+    await logEvento(pool, pedidoId, { estado: 'ENVIADO_PRODUCCION', usuario: req.user?.usuario });
+    return { areas, remitos, errores };
+}
+
 exports.confirmPreparation = async (req, res) => {
     try {
         const { pedidoId } = req.params;
@@ -254,7 +302,7 @@ exports.confirmPreparation = async (req, res) => {
         const itemsDescuento = await explotarCombos(pool, items);
         // ref = idempotencia del WMS interno (con el externo no cambia nada)
         const { wmsDisponible, wmsErrors } = await descontarStockWmsExterno(itemsDescuento,
-            { refTipo: 'PEDIDO_COBRANZA', refId: parseInt(pedidoId, 10) });
+            { refTipo: 'PEDIDO_COBRANZA', refId: parseInt(pedidoId, 10), refDoc: noDocErpVen });
 
         // Bloquear solo si el WMS está completamente offline
         if (!wmsDisponible) {
@@ -394,8 +442,17 @@ exports.confirmPreparation = async (req, res) => {
                             }
                         }
                     }
-                    if (hermanasLiberadas > 0) {
-                        logger.info(`[WMS] Combo: ${hermanasLiberadas} orden(es) de decoración liberada(s) tras confirmar ${noDocErpVen}.`);
+                    // [VENTA UNA LÍNEA] Artículo de "Comprar y personalizar" que NO se personaliza:
+                    // su venta de retiro no libera a nadie (no tiene servicios) y va directo a PRO,
+                    // donde se junta con el resto del pedido. Igual que un componente de combo, esta
+                    // VEN- ya cumplió su función al retirar la prenda: nunca debe "ingresar a
+                    // Depósito" por su cuenta — eso crearía una fila suelta en $0 con su propio
+                    // aviso al cliente, cuando el pedido sale entero por su orden PRO. El bulto ya
+                    // nació en PRO, no hay remito que armar.
+                    const vaDirectoAPro = anclasCombo.recordset.every(a =>
+                        String(a.ProximoServicio || '').trim().toUpperCase() === 'PRO');
+                    if (hermanasLiberadas > 0 || vaDirectoAPro) {
+                        logger.info(`[WMS] Combo/venta: ${hermanasLiberadas} orden(es) de decoración liberada(s) tras confirmar ${noDocErpVen}${vaDirectoAPro ? ' (artículo sin personalizar, queda en PRO)' : ''}.`);
 
                         // [COMBOS] Esta VEN- ya cumplió su función (retirar el componente del
                         // depósito y mandarlo a producción) — nunca va a "entrar a Depósito" ella
@@ -417,11 +474,19 @@ exports.confirmPreparation = async (req, res) => {
             logger.warn('[WMS] confirmPreparation: no se pudieron liberar hermanas de combo:', eCombo.message);
         }
 
+        // [REPOSICIÓN] VEN interna por falla: va al área que reportó, no a Depósito.
+        let reposicion = null;
+        try {
+            if (noDocErpVen && hermanasLiberadas === 0) reposicion = await enviarVenReposicionAlArea(pool, pedidoId, noDocErpVen, req);
+        } catch (eRep) {
+            logger.warn('[WMS] confirmPreparation: no se pudo enviar la VEN de reposición al área:', eRep.message);
+        }
+
         const msg = wmsErrors.length > 0
             ? `Pedido PREPARADO con advertencias: ${wmsErrors.join('; ')}`
             : 'Pedido confirmado, stock descontado y marcado como PREPARADO';
 
-        res.json({ success: true, message: msg, wmsErrors, bultoOrdenIds, hermanasLiberadas });
+        res.json({ success: true, message: msg, wmsErrors, bultoOrdenIds, hermanasLiberadas, reposicion });
 
     } catch (err) {
         logger.error('Error en confirmPreparation (Logistica):', err);
@@ -464,6 +529,22 @@ exports.receivePreparedOrder = async (req, res) => {
             return res.json({ success: false, message: `El pedido no está PREPARADO (estado: ${order.EstadoCobro}). No se ingresa a Depósito.` });
         }
 
+        // [REPOSICIÓN] VEN interna por falla que quedó PREPARADO: se manda al área que reportó
+        // (remito PRO→área). Nunca ingresa a Depósito ni se avisa al cliente.
+        const reposicion = await enviarVenReposicionAlArea(pool, pedidoId, order.NoDocERP, req);
+        if (reposicion) {
+            const destino = reposicion.areas.join(', ') || 'el área';
+            return res.json({
+                success: reposicion.errores.length === 0,
+                reposicion,
+                message: reposicion.errores.length
+                    ? `Enviado a ${destino}, pero el remito no se pudo armar solo (${reposicion.errores.join('; ')}). Armalo desde Despacho de PRO.`
+                    : reposicion.remitos.length
+                        ? `Reposición enviada a ${destino} con el remito ${reposicion.remitos.join(', ')}. Falta recibirlo en ${destino}.`
+                        : `Reposición marcada como enviada a ${destino}.`,
+            });
+        }
+
         // [COMBOS] Guard nuevo: si la ancla de esta venta tiene que pasar primero por un
         // área de decoración (ProximoServicio distinto de DEPOSITO — retiro de un
         // componente de combo, ver FASE 3 del plan de servicios de combo por componente),
@@ -489,7 +570,21 @@ exports.receivePreparedOrder = async (req, res) => {
         // Nombre del trabajo FIJO — el detalle de los productos va solo en la hoja A4
         // (remito-print); acá se mantiene genérico para no cambiar el aviso WSP.
         const nombreTrabajo = 'VENTAS DE PRODUCTOS USER';
-        const proIdProducto = order.Moneda === 'USD' ? 411 : 386;
+        // Artículo genérico de venta — SIEMPRE el mismo, no depende de la moneda: la
+        // moneda de la orden viaja aparte en OrdenesDeposito.MonIdMoneda y en el hook
+        // contable, nadie la lee del artículo.
+        //
+        // Antes acá había `order.Moneda === 'USD' ? 411 : 386`, y el 411 es "Dry Pro New
+        // (1,83)": una TELA real de sublimación (Grupo 1.1, ancho 1,83). O sea que toda
+        // venta en dólares entraba a Depósito disfrazada de tela, y no era solo cosmético:
+        //   · hookOrdenCreada busca plan de metros por (cliente, artículo). Si el cliente
+        //     tiene rollo adelantado de Dry Pro New, la venta en USD se le descontaba de
+        //     los metros y NO generaba deuda — mercadería gratis.
+        //   · si el cliente es tipo ROLLO/SEMANAL sin plan activo, le anotaba -1 metro en
+        //     la cuenta de recursos en vez del cargo en dólares.
+        //   · cualquier reporte por artículo sumaba las ventas al consumo de esa tela.
+        const proIdProducto = 386; // "Articulos User" — el mismo genérico que ya usaban las ventas en pesos
+
         const insertRes = await pool.request()
             .input('Cod', sql.VarChar(100), order.NoDocERP)
             .input('Cli', sql.Int, order.ClienteID)
@@ -507,6 +602,45 @@ exports.receivePreparedOrder = async (req, res) => {
 
         await pool.request().input('PedidoID', sql.Int, pedidoId).query(`UPDATE PedidosCobranza SET EstadoCobro = 'RECIBIDO_DEPOSITO' WHERE ID = @PedidoID`);
         await logEvento(pool, pedidoId, { estado: 'RECIBIDO_DEPOSITO', usuario: req.user?.usuario });
+
+        // [WMS] La etiqueta acompaña a la mercadería: si el pedido ingresó a Depósito, el
+        // bulto pasa a estar en Depósito. Hasta acá el bulto nacía en PRO — que es donde
+        // vive la orden ancla, la que existe solo para poder imprimirlo — y NADIE lo movía
+        // nunca: quedaba para siempre en "Crear Remito" del área PRO, incluso con el pedido
+        // ya entregado al cliente (10/09/2026: 109 bultos así, 108 ya en depósito).
+        // No se arma un remito PRO→DEPOSITO: en la venta directa no hay viaje que despachar
+        // ni quien le haga check-in del otro lado, el que prepara se lo pasa al depósito en
+        // mano. Desde Depósito sí se puede armar el remito si la venta se manda por
+        // encomienda, que es como ya salían las que se entregaron a domicilio.
+        // Best-effort: si esto falla, la recepción contable ya está hecha y no se revierte.
+        try {
+            const bultosVenta = await pool.request()
+                .input('Doc', sql.VarChar, order.NoDocERP)
+                .query(`
+                    SELECT b.BultoID, b.CodigoEtiqueta
+                    FROM Logistica_Bultos b
+                    INNER JOIN Ordenes o ON o.OrdenID = b.OrdenID
+                    WHERE o.NoDocERP = @Doc AND o.AreaID = 'PRO' AND o.EstadoDependencia = 'VENTA_DIRECTA'
+                      AND b.Estado = 'EN_STOCK' AND b.UbicacionActual = 'PRO'
+                `);
+            for (const b of bultosVenta.recordset) {
+                await pool.request()
+                    .input('BID', sql.Int, b.BultoID)
+                    .query(`UPDATE Logistica_Bultos SET UbicacionActual = 'DEPOSITO' WHERE BultoID = @BID`);
+                await pool.request()
+                    .input('Cod', sql.VarChar, b.CodigoEtiqueta)
+                    .input('User', sql.Int, req.user?.id || 1)
+                    .query(`
+                        INSERT INTO MovimientosLogistica (CodigoBulto, TipoMovimiento, AreaID, UsuarioID, FechaHora, Observaciones, EstadoAnterior, EstadoNuevo, EsRecepcion)
+                        VALUES (@Cod, 'INGRESO', 'DEPOSITO', @User, GETDATE(), 'Venta ingresada a Depósito (sin remito: entrega en mano)', 'EN_STOCK', 'EN_STOCK', 1)
+                    `);
+            }
+            if (bultosVenta.recordset.length) {
+                logger.info(`[WMS] ${order.NoDocERP}: ${bultosVenta.recordset.length} bulto(s) movidos de PRO a DEPOSITO.`);
+            }
+        } catch (eBultos) {
+            logger.warn(`[WMS] No se pudieron mover a Depósito los bultos de ${order.NoDocERP}: ${eBultos.message}`);
+        }
 
         // Registrar en deuda contable
         const contabilidadService = require('../services/contabilidadService');
