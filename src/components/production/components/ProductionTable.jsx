@@ -183,6 +183,24 @@ export default function ProductionTable({ rowData = [], onRowSelected, selectedR
             // pintar arriba y abajo. Con inset-0 se cubre también el padding de la celda.
             const celda = 'absolute inset-0 flex items-center justify-center text-xs tablet:text-[11px] font-bold';
             const estado = String(value || '').trim();
+
+            // CONSULTA AL CLIENTE: aplica a cualquier área habilitada (SB/DTF/ECOUV), por eso
+            // va antes del bloque de TPU. Ámbar FIJO y no pulsante a propósito: en la planta
+            // nadie tiene nada que hacer con esta orden, se está esperando al cliente.
+            if (estado === 'Esperando Cliente') {
+                const c = data?.consulta;
+                return (
+                    <div
+                        className={`${celda} text-white bg-amber-500`}
+                        title={c
+                            ? `${c.motivo}${c.usuario ? ` — preguntó ${c.usuario}` : ''}${c.desde ? ` — desde el ${new Date(c.desde).toLocaleString('es-ES')}` : ''}`
+                            : 'Frenada esperando la respuesta del cliente'}
+                    >
+                        {estado}
+                    </div>
+                );
+            }
+
             if (String(data?.area || '').toUpperCase() === 'TPU') {
                 if (estado === 'Rechazado') return (
                     <div className={`${celda} text-white bg-red-500 animate-pulse`} title="El cliente RECHAZÓ el boceto: corregilo y reenvialo a aprobación">

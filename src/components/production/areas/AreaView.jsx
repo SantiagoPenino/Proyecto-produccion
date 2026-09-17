@@ -163,6 +163,10 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
             setShowPronto(false);
             setProntoOrders([]);
         }
+        if (showConsultas) {
+            setShowConsultas(false);
+            setConsultasOrders([]);
+        }
         setActiveFilters(prev => {
             const current = prev[category] || [];
             const next = current.includes(value)
@@ -200,10 +204,38 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
     const [prontoOrders, setProntoOrders] = useState([]);
     const [loadingPronto, setLoadingPronto] = useState(false);
 
+    // [CONSULTA AL CLIENTE] Bandeja de órdenes frenadas esperando respuesta. Son las que
+    // el filtro de EstadoDependencia saca de la grilla activa: sin esta bandeja
+    // desaparecen de la planilla y nadie sabe dónde quedaron.
+    const [showConsultas, setShowConsultas] = useState(false);
+    const [consultasOrders, setConsultasOrders] = useState([]);
+    const [loadingConsultas, setLoadingConsultas] = useState(false);
+
+    const handleToggleConsultas = async () => {
+        const next = !showConsultas;
+        setShowConsultas(next);
+        if (next) { setShowPronto(false); setShowCancelled(false); }
+        setIsFilterDropdownOpen(false);
+        if (next && areaKey && areaKey.toLowerCase() !== 'area') {
+            setLoadingConsultas(true);
+            try {
+                const data = await ordersService.getByArea(areaDatos, 'consultas');
+                setConsultasOrders(Array.isArray(data) ? data : []);
+            } catch (e) {
+                console.error('Error cargando órdenes en consulta:', e);
+                setConsultasOrders([]);
+            } finally {
+                setLoadingConsultas(false);
+            }
+        } else {
+            setConsultasOrders([]);
+        }
+    };
+
     const handleToggleCancelled = async () => {
         const next = !showCancelled;
         setShowCancelled(next);
-        if (next) setShowPronto(false);
+        if (next) { setShowPronto(false); setShowConsultas(false); setConsultasOrders([]); }
         setIsFilterDropdownOpen(false);
         if (next && areaKey && areaKey.toLowerCase() !== 'area') {
             setLoadingCancelled(true);
@@ -226,7 +258,7 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
     const handleTogglePronto = async () => {
         const next = !showPronto;
         setShowPronto(next);
-        if (next) setShowCancelled(false);
+        if (next) { setShowCancelled(false); setShowConsultas(false); setConsultasOrders([]); }
         setIsFilterDropdownOpen(false);
         if (next && areaKey && areaKey.toLowerCase() !== 'area') {
             setLoadingPronto(true);
@@ -494,12 +526,18 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
     const isDirecta = ['DIRECTA', 'IMD'].includes((areaKey || '').toUpperCase());
     const lotePorMaterial = isDTF || isDirecta;
     const isEcouv = (areaKey || '').toUpperCase() === 'ECOUV';
+    // [CONSULTA AL CLIENTE] Solo estas áreas pueden consultar (espeja AREAS_HABILITADAS del
+    // backend). En el resto la bandeja siempre vendría vacía, así que ni se ofrece.
+    const areaConsultable = ['SB', 'SUB', 'DF', 'DTF', 'ECOUV'].includes((areaDatos || '').toUpperCase());
 
     // 5. FILTRADO
-    const displayOrders = showCancelled ? cancelledOrders : (showPronto ? prontoOrders : dbOrders);
+    const displayOrders = showCancelled ? cancelledOrders
+        : (showPronto ? prontoOrders
+        : (showConsultas ? consultasOrders : dbOrders));
     const filteredOrders = useMemo(() => {
-        // En modo canceladas o prontas: mostrar todas sin aplicar filtros activos de la sesión normal
-        if (showCancelled || showPronto) {
+        // En modo canceladas, prontas o en consulta: mostrar todas sin aplicar filtros activos
+        // de la sesión normal (son bandejas aparte, no vistas del tablero).
+        if (showCancelled || showPronto || showConsultas) {
             let result = [...displayOrders];
             if (globalSearch) {
                 const term = globalSearch.toLowerCase().trim();
@@ -597,7 +635,7 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
 
         // Fallas 1°, Reposiciones 2°, resto
         return [...allFallas, ...allReposiciones, ...resultWithoutFallas];
-    }, [displayOrders, sidebarFilter, sidebarMode, clientFilter, activeFilters, areaKey, showCancelled, showPronto, globalSearch]);
+    }, [displayOrders, sidebarFilter, sidebarMode, clientFilter, activeFilters, areaKey, showCancelled, showPronto, showConsultas, globalSearch]);
 
     const renderSidebar = () => null;
 
@@ -805,8 +843,22 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
                                 </div>
                             )}
 
-                            {/* Separador + Cancelados / Prontas */}
+                            {/* Separador + Cancelados / Prontas / Esperando al cliente */}
                             <div className="border-t border-zinc-200 pt-4 flex flex-col gap-2">
+                                {areaConsultable && (
+                                    <button
+                                        onClick={handleToggleConsultas}
+                                        className={`w-full flex items-center gap-2 px-3 py-2 text-xs font-bold border rounded-lg transition-colors shadow-sm ${
+                                            showConsultas
+                                                ? 'bg-amber-500 text-white border-amber-500'
+                                                : 'bg-white text-amber-600 border-amber-200 hover:bg-amber-50 hover:border-amber-300'
+                                        }`}
+                                        title="Órdenes frenadas esperando que el cliente responda una consulta"
+                                    >
+                                        <i className={`fa-solid ${loadingConsultas ? 'fa-circle-notch fa-spin' : 'fa-comment-dots'}`}></i>
+                                        {showConsultas ? 'Ocultar esperando al cliente' : 'Ver esperando al cliente'}
+                                    </button>
+                                )}
                                 <button
                                     onClick={handleTogglePronto}
                                     className={`w-full flex items-center gap-2 px-3 py-2 text-xs font-bold border rounded-lg transition-colors shadow-sm ${

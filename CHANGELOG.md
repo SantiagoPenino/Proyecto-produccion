@@ -7,6 +7,77 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
 
 ---
 
+## [2026-09-16] — tercer deploy del día
+
+### Arreglado
+- **Editar un comprobante chocaba con los cobros de caja (deadlock), dos veces en nueve minutos esta tarde.** La causa: todas las operaciones que crean o editan comprobantes (editar, cobro en caja, pago de deuda, notas de crédito y débito) completan el área de cada línea con un procedimiento que corría **dentro** de su transacción. Para encontrar las líneas sin área, ese procedimiento recorre todas las pendientes, incluidas las que otra operación acaba de crear y todavía no confirmó; con dos operaciones a la vez, cada una quedaba esperando las líneas de la otra y la base mataba a una. Ahora el área se completa **después** de que la operación confirma, afuera de la transacción. Si la operación se revierte no corre nada, y si fallara, lo completa el próximo cobro. Reproducido en la base local: con el comportamiento anterior, dos operaciones simultáneas chocaban en 256 ms; con el nuevo terminan las dos y el área queda completada.
+
+### Notas de deploy
+- Backend: `services/areaLineaService.js`. Sin build, sin SQL.
+- Va junto con el reintento automático del 10/09 si todavía no está arriba (`utils/reintentarDeadlock.js`, `controllers/cfeController.js`, `controllers/cajaController.js`, `routes/contabilidadRoutes.js`), que a su vez necesita `utils/rollbackSeguro.js` del 07/09.
+
+## [2026-09-16] — segundo deploy del día
+
+### Arreglado
+- **El sistema se puso lento a media tarde: el servidor se quedó sin CPU.** No había bloqueos ni falta de memoria; las 25 conexiones a la base estaban ocupadas a la vez con consultas esperando turno de procesador. Se atacaron las dos consultas que más CPU gastaban por vez:
+  - **Abrir el detalle de un lote** costaba cerca de 2,7 segundos de CPU. Para mostrar en qué estado están las otras partes del mismo pedido, comparaba cada orden del lote contra todas las órdenes de la tabla. Ahora las busca de una sola vez por índice. Medido en la base local sobre 34 lotes y 1.146 órdenes: el resultado es idéntico orden por orden y la carga pasó de 30,6 a 3 segundos en total.
+  - **El mapa de estantes del depósito** costaba cerca de un segundo por consulta. Cruzaba retiros y clientes convirtiendo números a texto, lo que obligaba a recorrer las dos tablas enteras por cada ubicación. Ahora busca por clave. Las 178 filas salen idénticas, columna por columna, y la consulta es cuatro veces más rápida en la base local.
+
+### Notas de deploy
+- Solo backend: `controllers/rollsController.js` y `controllers/webRetirosController.js`. Sin build, sin SQL.
+- El listado de etiquetas del lote tiene la misma comparación contra toda la tabla, pero se usa mucho menos y quedó como estaba.
+
+## [2026-09-16]
+
+### Arreglado
+- **Las ventas de los clientes registrados por el portal no le contaban a ningún vendedor.** El registro guardaba en la ficha del cliente el código interno del asesor (VEN-001 a VEN-006), y el resto del sistema, incluido el reporte de ventas por vendedor, espera la cédula. El reporte las mostraba aparte, como ventas de "un vendedor que ya no está en el área", y quedaban fuera de la base de comisión: 48 ventas en lo que va de setiembre, de 110 clientes repartidos entre los seis vendedores. Ahora el registro guarda la cédula, tanto si el cliente elige su asesor como si se le asigna solo, y el portal encuentra al asesor de las dos formas, así que ningún cliente deja de ver el suyo.
+
+### Cambiado
+- **Reparto automático de clientes nuevos:** le toca al asesor que hace más tiempo que no recibe un registro. Reparte parejo, igual que hasta ahora. La regla anterior contaba solo los clientes guardados con código; contar la cartera entera habría mandado todos los registros al vendedor de cartera más chica.
+
+### Notas de deploy
+- Solo backend: `controllers/webAuthController.js`. Sin build.
+- Después de reiniciar, correr una vez el UPDATE que pasa a cédula los clientes guardados con código (`Clientes.VendedorID LIKE 'VEN-%'`, cruzando con `Trabajadores.ID`). Tiene que quedar en cero la cantidad con código.
+
+## [2026-09-10]
+
+### Arreglado
+- **Editar una factura ya no se pierde si choca con otra operación.** Cuando dos operaciones de caja escriben al mismo tiempo sobre las mismas tablas, la base elige una, la deshace entera y pide que se vuelva a intentar. Hasta ahora eso llegaba al usuario como un error y la edición se perdía, aunque no hubiera nada mal en lo que estaba haciendo (pasó hoy a las 16:50 editando un comprobante). Ahora el sistema reintenta solo, hasta tres veces, con una pausa en el medio: para el usuario es invisible. Si aun así no puede, avisa con un mensaje claro de que **no se guardó nada** y que pruebe de nuevo, en vez de un error genérico. Aplica a editar y anular comprobantes, notas de crédito, reversos, anticipos y anulación de facturas.
+- **Otra transacción que quedaba abierta al fallar.** Editar un comprobante tenía el mismo problema de alcance que volteó el sistema el 7 de setiembre: si algo fallaba, el intento de deshacer los cambios no se ejecutaba nunca y la conexión volvía al lote con los candados puestos. Se corrigió. El detector que había pasado sobre el código no lo vio porque esa función mide casi mil líneas y solo miraba las primeras cuatrocientas; se amplió y ya no queda ninguna.
+
+### Agregado
+- **Consultar al cliente antes de imprimir (Sublimación, DTF y ECOUV) — base funcionando, sin pantallas todavía.** Cuando el operario ve algo raro en un archivo, hasta ahora solo podía editarlo o cancelarlo. Falta el paso del medio: preguntar. Ya está construida toda la parte de fondo: el operario manda **una** pregunta sobre un archivo (o sobre la orden entera) con hasta cinco fotos, la orden queda **frenada** y sale de la grilla de trabajo, y el cliente responde **una** vez desde su portal, continuar o cancelar. No es un chat: no hay hilo ni respuesta escrita de vuelta, solo un renglón opcional del cliente para explicar por qué canceló. Si continúa, la orden vuelve exactamente al estado en el que estaba. Si cancela, se cancela por el mismo camino de siempre, con lo cual la orden se cancela sola si era su último archivo y la terminación de ECOUV cae junto con su impresión. Solo se puede consultar mientras la orden está pendiente, y una orden esperando respuesta ya no puede entrar a un lote ni por la pantalla ni por fuera de ella. Falta la parte visible: los botones en el detalle de orden y la pantalla del cliente.
+
+### Cambiado
+- **Las contraseñas ya no se guardan en texto plano.** Las tres tablas de credenciales del sistema —usuarios internos, clientes del portal y diseñadores— guardaban la contraseña tal cual se escribía: los nombres de columna decían "hash" pero el login comparaba una cadena contra la otra, así que cualquiera con acceso de lectura a la base tenía todas las claves. Ahora se guardan con bcrypt, que es de una sola vía: se puede verificar si una contraseña es la correcta, pero no se puede volver a leerla. **Nadie tuvo que cambiar su contraseña ni enterarse**: la verificación entiende los dos formatos, así que quien entra con una clave vieja la sigue usando igual y el sistema la convierte en ese mismo momento. Migradas 67 usuarios internos, 7 diseñadores y 5.493 clientes; no quedó ninguna en texto plano. Los 69 clientes que nunca entraron siguen con la columna vacía y definen su clave en el primer ingreso, como siempre.
+
+### Arreglado
+- **El blanco de DTF salía con bastante más cuerpo que el del archivo pasado por la acción de Photoshop.** El generador adelgaza el blanco 2 píxeles para que no asome por debajo del color, pero lo hacía tomando como borde el primer rastro de tinta en vez del cuerpo del dibujo. Al rasterizar el arte, cada forma queda con un halo de un píxel de transición, así que el adelgazado se gastaba en comerse ese halo y al dibujo real solo le llegaba la mitad. En artes con trama de puntos —donde el punto mide décimas de milímetro— eso es la diferencia entre imprimir el 13 % de la superficie y el 22 %, casi un 70 % más de tinta blanca. Ahora se adelgaza el cuerpo del dibujo, igual que hace Photoshop al contraer la selección, y la plancha coincide con la de la acción. Medido sobre DTF-21175, con punto de trama de 0,347 mm. El umbral quedó como parámetro por si algún arte pide otra cosa.
+
+### Quitado
+- **El registro público de usuarios internos**, que además nunca funcionó. Era un endpoint sin autenticación que intentaba crear un usuario del sistema apuntando a dos columnas que no existen, así que siempre devolvía error. El registro de clientes es otro y no se toca.
+
+### Notas de deploy
+- Backend: `utils/password.js` y `scripts/backfill_passwords_bcrypt.js` (nuevos), más los controladores de autenticación, usuarios y diseñadores y la ruta de auth. **Requiere `npm install bcryptjs` antes de reiniciar**, si no el proceso no levanta.
+- El arreglo del blanco DTF va en `backend/python/dtf_blanco.py`. No necesita reinicio: el servicio lanza Python en cada archivo.
+- Sin cambios de esquema. El backfill de contraseñas se corre a mano una sola vez, después de que el código esté arriba (`node scripts/backfill_passwords_bcrypt.js` para simular, `--aplicar` para escribir).
+- Queda pendiente sacar la compatibilidad con el formato viejo una vez que el cambio tenga unos días de rodaje.
+
+## [2026-09-09] — Sin deployar
+
+### Arreglado
+- **El relieve de las matrices propias salía como una línea de contorno**, dos días de pruebas en máquina. Dos causas independientes. La primera, en el archivo: el arte del cliente iba dibujado encima del relieve con el knockout que Illustrator pone dentro de su PDF, y el RIP borraba las tintas de relieve en toda el área del arte; ahora el relieve va debajo, en el orden del archivo de Illustrator de referencia, y el arte se reescribe con sobreimpresión para que no tape nada. La segunda, en la planta: la impresora tiene un solo cabezal blanco y el canal Spot_1 no imprime, así que todo lo marcado "relieve normal" salía vacío y solo se veía lo doble. Mientras siga así, el generador pone todas las zonas también en Spot 2 y el visor 3D muestra todo al relieve máximo, con el botón Normal/Doble escondido; la elección del cliente se sigue guardando. Es una constante en el servicio y otra en el visor para apagar cuando llegue el segundo cabezal.
+- **Las texturas finas del catálogo imprimen bien**: verificado en máquina con trazos de 0,10 mm. Se quitó el engorde de la trama que se había agregado en el visor y en el generador mientras se buscaba la causa: fundía la textura en bloques y no correspondía a nada físico.
+
+### Cambiado
+- **Separación entre parches de 5 mm medida entre líneas de corte**, 2,5 mm que aporta cada vecino; contra el borde de la plancha no se agrega margen.
+- **El corte envuelve todo el arte como una sola pieza.** Un escudo con estrellas sueltas salía como cinco recortes; ahora el TPU une las piezas y hay un solo troquel por parche.
+- Las capas del PDF de impresión se declaran como las de Illustrator, con intención de vista y diseño.
+- El botón "Hago mi matriz" queda oculto en el portal hasta terminar de validar la impresión; el flujo entero sigue en el código.
+
+### Notas de deploy
+- Backend, build del frontend y los scripts `backend/python/tpu_matriz.py` y `backend/python/svg_trazos.py`. No hay SQL.
+
 ## [2026-09-07] — Sin deployar
 
 ### Arreglado

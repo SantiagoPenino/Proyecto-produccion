@@ -1,6 +1,7 @@
 const { getPool, sql } = require('../config/db');
 const logger = require('../utils/logger');
 const { rollbackSeguro } = require('../utils/rollbackSeguro');
+const { esDeadlock } = require('../utils/reintentarDeadlock');
 const { estamparAreaLineas } = require('../services/areaLineaService');
 
 // ID del cliente genérico "Consumidor Final" — no tiene cuenta corriente propia
@@ -1218,12 +1219,20 @@ exports.anularFactura = async (req, res) => {
     } catch (err) {
         logger.error('Error anulando documento CFE:', err);
         await rollbackSeguro(transaction, `anularFactura doc ${id}`);
+        // Víctima de deadlock: se relanza para que la capa de reintento la vuelva a correr.
+        if (esDeadlock(err)) throw err;
         res.status(500).json({ error: err.message });
     }
 };
 
 // ── Editar documento (solo si está PENDIENTE — no fue enviado a DGI aún) ─────────
 exports.editarFactura = async (req, res) => {
+    // OJO: fuera del try. Estaba adentro con `const`, y el catch del final la usaba para
+    // el rollback sobre una variable que en ese scope NO EXISTE: tiraba ReferenceError,
+    // el catch vacío se lo comía y la transacción quedaba abierta. Mismo bug que volteó
+    // el sistema el 07/09 desde anularFactura. (Se me pasó en el barrido del 08/09 porque
+    // esta función mide casi mil líneas y el detector miraba 400.)
+    let transaction = null;
     try {
         const { id } = req.params;
         const {
@@ -1244,7 +1253,7 @@ exports.editarFactura = async (req, res) => {
         const MonIdMoneda = req.body.MonIdMoneda != null ? (parseInt(req.body.MonIdMoneda, 10) || 1) : req.body.MonIdMoneda;
 
         const pool = await getPool();
-        const transaction = pool.transaction();
+        transaction = pool.transaction();
         await transaction.begin();
 
         const docRes = await transaction.request()
@@ -2190,11 +2199,13 @@ exports.editarFactura = async (req, res) => {
         res.json({ success: true, message: 'Documento y líneas actualizados correctamente' });
     } catch (err) {
         logger.error('Error editando documento CFE:', err);
-        try {
-            await transaction.rollback();
-        } catch (rollbackErr) {
-            // Ignorar si ya se abortó la transacción
-        }
+        await rollbackSeguro(transaction, `editarFactura doc ${req.params?.id}`);
+
+        // Víctima de deadlock: NO se responde acá. Se relanza para que la capa de
+        // reintento (utils/reintentarDeadlock) vuelva a ejecutar la edición entera.
+        // SQL ya revirtió la transacción por su cuenta, así que reintentar es seguro.
+        if (esDeadlock(err)) throw err;
+
         res.status(500).json({ error: err.message });
     }
 };

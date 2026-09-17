@@ -8,6 +8,7 @@ import { useNavigate } from 'react-router-dom';
 import { ConfirmationModal } from '../pautas/ConfirmationModal';
 // Visor 3D del parche TPU (aprobación): three.js adentro, se carga solo si se abre.
 const Tpu3DViewer = lazy(() => import('./Tpu3DViewer'));
+import ConsultaClienteModal from './ConsultaClienteModal';
 import { socket } from '../../services/socketService';
 
 const STATUS_CONFIG = {
@@ -126,6 +127,12 @@ export const FactoryView = () => {
     const [cancelModal, setCancelModal] = useState({ isOpen: false, onConfirm: null, titulo: '', mensaje: '' });
     const [cancelRazon, setCancelRazon] = useState('');
     const [tpu3D, setTpu3D] = useState(null); // { ordenId, codigo } → visor 3D del parche TPU abierto
+
+    // CONSULTA AL CLIENTE: producción preguntó algo sobre un pedido y el trabajo está
+    // FRENADO hasta que se responda. Va sobre la tarjeta del pedido y no en Soporte: el
+    // cliente mira sus trabajos acá. Ver docs/consultas-cliente-plan.md §6.
+    const [consultas, setConsultas] = useState([]);           // las ENVIADAS, sin responder
+    const [consultaAbierta, setConsultaAbierta] = useState(null); // la que se está respondiendo
 
     // `silencioso`: refresca los datos SIN encender `loading`. Importa porque el spinner de
     // página 1 es un early-return que reemplaza la vista ENTERA — buscador, lista y visor 3D —
@@ -308,6 +315,18 @@ export const FactoryView = () => {
         });
     };
 
+    // Las consultas sin responder del cliente. Van aparte de la lista de pedidos porque no
+    // dependen de la paginación ni del buscador: son pocas y hay que verlas siempre.
+    const fetchConsultas = async () => {
+        try {
+            const res = await apiClient.get('/web-orders/consultas');
+            setConsultas(res?.success ? (res.data || []) : []);
+        } catch (e) {
+            setConsultas([]);   // sin consultas la vista funciona igual que siempre
+        }
+    };
+    useEffect(() => { fetchConsultas(); }, []);
+
     // Scroll infinito: solo las páginas siguientes. La página 1 (montaje, búsqueda, refresh,
     // acciones) la pide `recargar`, siempre con el término de búsqueda vigente.
     useEffect(() => {
@@ -345,6 +364,9 @@ export const FactoryView = () => {
                 debounceTimer = null;
                 lastFetchAt = Date.now();
                 recargar({ silencioso: true });
+                // Frenar una orden por consulta mueve su estado, así que llega por el mismo
+                // evento: sin esto la tarjeta no muestra la consulta hasta recargar la página.
+                fetchConsultas();
             }, wait);
         };
 
@@ -584,6 +606,40 @@ export const FactoryView = () => {
                 </div>
             </div>
 
+            {/* ── CONSULTA AL CLIENTE ──
+                El aviso va acá arriba y no solo en la tarjeta: el pedido consultado puede
+                quedar fuera de la página cargada o del filtro elegido, y entonces el cliente
+                nunca vería que hay algo frenado esperándolo. */}
+            {consultas.length > 0 && (
+                <div className="mb-3 rounded-xl border border-amber-500/40 bg-amber-500/10 p-4">
+                    <div className="flex items-start gap-3">
+                        <MessageSquareWarning className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+                        <div className="min-w-0 flex-1">
+                            <p className="text-sm font-bold text-amber-200">
+                                {consultas.length === 1
+                                    ? 'Tenemos una consulta sobre uno de tus pedidos'
+                                    : `Tenemos ${consultas.length} consultas sobre tus pedidos`}
+                            </p>
+                            <p className="text-xs text-amber-200/70 mt-0.5">
+                                {consultas.length === 1 ? 'Ese trabajo está frenado' : 'Esos trabajos están frenados'} hasta que nos respondas.
+                            </p>
+                            <div className="flex flex-wrap gap-2 mt-2.5">
+                                {consultas.map(c => (
+                                    <button
+                                        key={c.ConIdConsulta}
+                                        onClick={() => setConsultaAbierta(c)}
+                                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-500 text-black text-xs font-bold hover:bg-amber-400 transition-colors"
+                                    >
+                                        {c.CodigoOrden}
+                                        <span className="font-semibold opacity-70">· {c.Motivo || 'Consulta'}</span>
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {/* ── Orders List ── */}
             {filteredProjects.length === 0 ? (
                 <div className="glass-panel rounded-xl p-16 flex flex-col items-center justify-center gap-3">
@@ -619,6 +675,10 @@ export const FactoryView = () => {
                         const isMultitela = telaSubs.length >= 2;
                         // F4: pedido de diseñador retenido — está en 'Cargando...' pero completo, esperando el OK del cliente
                         const esperandoAprobacion = project.pendientesAprobacion.length > 0;
+                        // Consultas sin responder de este pedido. Se cruzan acá y no en el agrupado
+                        // porque la lista de consultas se pide aparte (no depende de la paginación).
+                        const consultasProyecto = consultas.filter(c =>
+                            project.subOrders.some(so => String(so.OrdenID) === String(c.OrdIdOrden)));
 
                         // Reclamo: solo si el pedido está entregado y la entrega fue hace ≤ RECLAMO_WINDOW_DAYS días.
                         const relevantSubs = project.subOrders.filter(so => !(so.CodigoOrden || '').toUpperCase().includes('-F'));
@@ -667,6 +727,18 @@ export const FactoryView = () => {
                                         {/* Estado + acción a la derecha (ml-auto: alineado a la derecha también
                                             cuando baja de línea en mobile; wrap interno por si ni así entra) */}
                                         <div className="flex flex-wrap items-center justify-end gap-1.5 shrink-0 ml-auto">
+                                            {/* CONSULTA AL CLIENTE: el trabajo está frenado hasta que responda.
+                                                Primero de todo, porque es lo único que desbloquea el pedido. */}
+                                            {consultasProyecto.length > 0 && (
+                                                <button
+                                                    onClick={(e) => { e.stopPropagation(); setConsultaAbierta(consultasProyecto[0]); }}
+                                                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider bg-amber-500/15 text-amber-300 border border-amber-500/40 hover:bg-amber-500/25 transition-colors animate-pulse"
+                                                    title="Necesitamos que revises algo para poder seguir"
+                                                >
+                                                    <MessageSquareWarning size={13} />
+                                                    RESPONDÉ PARA SEGUIR
+                                                </button>
+                                            )}
                                             {esperandoAprobacion ? (
                                                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider bg-amber-500/10 text-amber-400 border-amber-500/30 border">
                                                     <ShieldCheck size={15} />
@@ -1209,6 +1281,16 @@ export const FactoryView = () => {
                     </div>
                 </div>
             , document.body)}
+
+            {/* CONSULTA AL CLIENTE: la pantalla de respuesta. Una sola vez — al responder,
+                la consulta pasa a ser historial y el pedido sigue (o se cancela). */}
+            {consultaAbierta && (
+                <ConsultaClienteModal
+                    consulta={consultaAbierta}
+                    onClose={() => setConsultaAbierta(null)}
+                    onRespondida={() => { fetchConsultas(); recargar({ silencioso: true }); }}
+                />
+            )}
         </div>
     );
 };

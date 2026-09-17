@@ -29,6 +29,11 @@ export default defineConfig({
   server: {
     host: true,  // Permite conexiones externas (celular en red local)
     port: 5173,
+    // Vite 7 rechaza los Host que no conoce ("Blocked request. This host is not allowed").
+    // Los túneles de Cloudflare (`cloudflared tunnel --url http://localhost:5173`) sirven para
+    // mostrarle el local a alguien de afuera: un solo túnel al 5173 alcanza, porque el proxy de
+    // abajo resuelve /api, /socket.io y los estáticos contra el 5000 del lado del servidor.
+    allowedHosts: ['.trycloudflare.com'],
     proxy: {
       '/api': {
         target: 'http://localhost:5000',

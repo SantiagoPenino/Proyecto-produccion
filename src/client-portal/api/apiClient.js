@@ -102,6 +102,19 @@ export const apiClient = {
         return handleResponse(response);
     },
 
+    // Un archivo servido por una ruta AUTENTICADA (fotos de consultas, adjuntos): no se
+    // puede poner la URL en un <img src>, porque ahí no viaja el token. Devuelve el blob;
+    // quien lo use arma el object URL y lo revoca al desmontar.
+    getBlob: async (endpoint) => {
+        const response = await fetch(`${API_BASE_URL}${endpoint}`, { method: 'GET', headers: getHeaders() });
+        if (!response.ok) {
+            const err = new Error(response.statusText || 'No se pudo descargar el archivo');
+            err.status = response.status;
+            throw err;
+        }
+        return response.blob();
+    },
+
     // Method to upload files
     postFormData: async (endpoint, formData) => {
         const token = localStorage.getItem('auth_token');

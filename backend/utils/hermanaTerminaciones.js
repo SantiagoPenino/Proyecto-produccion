@@ -212,9 +212,38 @@ async function eliminarHermanaTerminaciones(transaction, ecouvId) {
     return { hermanaId: hermana.OrdenID, codigo: String(hermana.CodigoOrden || '').trim() };
 }
 
+/**
+ * buscarHermanaTerminaciones
+ * Devuelve la hermana TERMINAC viva de una ECOUV, sin tocarla. Misma búsqueda que
+ * usa cancelarHermanaTerminaciones (corchetes escapados para no matchear la hermana
+ * de otro pedido), extraída para quien necesite operar sobre ella sin cancelarla:
+ * hoy la usa el freno de "Consulta al cliente" (sin impresión no hay qué terminar,
+ * así que si se frena la madre se frena la hermana).
+ *
+ * @param {object} transaction transacción sql activa
+ * @param {number} ecouvId OrdenID de la orden ECOUV
+ * @returns {Promise<{OrdenID:number, CodigoOrden:string, Estado:string, EstadoenArea:string, EstadoDependencia:string}|null>}
+ */
+async function buscarHermanaTerminaciones(transaction, ecouvId) {
+    const src = await new sql.Request(transaction)
+        .input('OID', sql.Int, ecouvId)
+        .query('SELECT TOP 1 CodigoOrden, AreaID FROM Ordenes WHERE OrdenID = @OID');
+    const o = src.recordset[0];
+    if (!o || String(o.AreaID || '').trim().toUpperCase() !== 'ECOUV') return null;
+
+    const r = await new sql.Request(transaction)
+        .input('Nota', sql.NVarChar(200), `%![TERMINACIONES DE ${String(o.CodigoOrden || '').trim()}!]%`)
+        .query(`SELECT TOP 1 OrdenID, CodigoOrden, Estado, EstadoenArea, EstadoDependencia
+                FROM Ordenes
+                WHERE AreaID = 'TERMINAC' AND Estado NOT IN ('Cancelado','CANCELADO')
+                  AND Nota LIKE @Nota ESCAPE '!'`);
+    return r.recordset[0] || null;
+}
+
 module.exports = {
     crearHermanaTerminaciones,
     cancelarHermanaTerminaciones,
     eliminarHermanaTerminaciones,
     marcarTerminacionesCanceladas,
+    buscarHermanaTerminaciones,
 };

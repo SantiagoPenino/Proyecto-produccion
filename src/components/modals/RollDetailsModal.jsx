@@ -827,13 +827,20 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
         const pendientes = orders.filter(o => !o.printed);
         // En Historial y calandra no se mueve nada al final: se listan donde están.
         const conCola = !readOnly && !lockReorder && !calandraView;
-        // matCount (auto vs bloque suelto) solo cuenta órdenes sueltas: ni nuevas ni ya agrupadas.
+        // matCount (auto vs bloque suelto) cuenta las sueltas, NUEVAS incluidas: una nueva que se
+        // suma a su tela hace bloque igual que cualquier otra. Solo quedan afuera las ya agrupadas.
         const matCount = {};
-        pendientes.forEach(o => { if (!isNewOrder(o.id) && manualIdxOf[o.id] === undefined) { const m = matKey(o); matCount[m] = (matCount[m] || 0) + 1; } });
+        pendientes.forEach(o => { if (manualIdxOf[o.id] === undefined) { const m = matKey(o); matCount[m] = (matCount[m] || 0) + 1; } });
         const byKey = {};
-        const cola = [], nuevas = [];
+        const cola = [];
         pendientes.forEach(o => {
-            if (isNewOrder(o.id)) { const u = unidad('new:' + o.id, 'new', o); u.orders.push(o); nuevas.push(u); return; }
+            // Una orden NUEVA (asignada al lote con el modal abierto) NO se saca del circuito: se
+            // ubica por su tela como cualquier otra (pedido de planta 10/09/2026). Antes se iba
+            // derecho al final en un bloque propio sin siquiera mirar la tela, así que una orden
+            // de una tela que estaba ahí mismo sin imprimir aparecía último. Queda el cartel NUEVA
+            // en la fila para que el operario la note. Las tres ramas de abajo dan justo la regla
+            // pedida: se suma a su grupo si le queda algo sin imprimir, o si su tela es la que está
+            // en máquina (el grupo siguiente todavía no arrancó); si su tela ya pasó, FUERA DE ORDEN.
             if (!isSB) { const u = unidad('l:' + o.id, 'loose', o); u.orders.push(o); list.push(u); return; }
             const mat = matKey(o);
             // La tela que está en máquina sigue: la orden entra al bloque impreso, a continuación.
@@ -852,7 +859,7 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
         // Bloques impresos en SB: 1 orden = 'auto' (encabezado con la tela), más de una = bloque.
         if (isSB) list.forEach(u => { if (u.mat !== undefined) u.kind = u.orders.length > 1 ? 'loose' : 'auto'; });
 
-        return cerrar(list.concat(cola, nuevas));
+        return cerrar(list.concat(cola));
     })();
 
     // Impresión EN ORDEN: solo se puede marcar la siguiente (todas las anteriores impresas) y solo
@@ -931,13 +938,34 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
             unit.orders.filter(usaContador).forEach(o => { next[o.id] = willPrint ? getTotalUnidades(o) : 0; });
             return next;
         });
-        // Un solo refresco al terminar todas (ver handleTogglePrinted): las fechas pasan a ser las del servidor.
-        Promise.allSettled(ids.map(id =>
-            (enSegundaEstacion ? rollsService.setCalandered : rollsService.setPrinted)(id, willPrint).catch(() => {
-                setPrintedOrderIds(prev => willPrint ? prev.filter(x => x !== id) : [...new Set([...prev, id])]);
+        // Un solo refresco al terminar (ver handleTogglePrinted): las fechas pasan a ser las del servidor.
+        //
+        // Impresión: UNA llamada con todo el grupo EN EL ORDEN EN QUE SE VE. El backend les pone
+        // horas crecientes en ese orden. Antes se mandaba una llamada por orden en paralelo y cada
+        // una escribía su propio GETDATE(): llegaban al servidor en orden arbitrario, las
+        // FechaImpreso quedaban revueltas y el lote se dibujaba desordenado — el agrupado por tela
+        // consecutiva partía los bloques y en calandra se veía peor (reporte de planta 10/09/2026).
+        const guardar = enSegundaEstacion
+            // Calandra: el orden que muestra el modal sale igual de FechaImpreso, así que acá el
+            // paralelo no desordena nada y se deja como estaba.
+            ? Promise.allSettled(ids.map(id => rollsService.setCalandered(id, willPrint)))
+                .then(rs => rs.every(r => r.status === 'fulfilled'))
+            // Los ids van SIEMPRE en orden de impresión: si se está mirando en modo Calandra, la
+            // lista está invertida en pantalla y hay que darla vuelta antes de mandarla.
+            : rollsService.setPrintedBulk((calandraView || lockReorder) ? [...ids].reverse() : ids, willPrint)
+                .then(r => r?.ok !== false);
+        guardar
+            .then(ok => {
+                if (!ok) {
+                    setPrintedOrderIds(prev => willPrint ? prev.filter(x => !ids.includes(x)) : [...new Set([...prev, ...ids])]);
+                    toast.error(`No se pudo guardar el estado de ${lockReorder ? 'calandrado' : 'impreso'}`);
+                }
+            })
+            .catch(() => {
+                setPrintedOrderIds(prev => willPrint ? prev.filter(x => !ids.includes(x)) : [...new Set([...prev, ...ids])]);
                 toast.error(`No se pudo guardar el estado de ${lockReorder ? 'calandrado' : 'impreso'}`);
             })
-        )).then(() => loadFreshData(true));
+            .then(() => loadFreshData(true));
     };
 
     // Función auxiliar para obtener el directorio base de descargas
@@ -1837,7 +1865,12 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
                                                     {/* w-36 (no w-28): los códigos de falla (…-F10759) no entran en 28 y se partían
                                                         a mitad de número. break-words en vez de break-all: solo corta si no entra. */}
                                                     <div className="w-36 px-2 font-mono text-xs break-words">
-                                                      <div className="font-bold text-zinc-700">{o.code || o.CodigoOrden}</div>
+                                                      <div className="font-bold text-zinc-700 flex items-center gap-1">
+                                                        {o.code || o.CodigoOrden}
+                                                        {/* La orden recién asignada al lote ya se ubica por su tela; el cartel queda
+                                                            acá solo para que el operario la reconozca. */}
+                                                        {isNewOrder(o.id) && <span className="px-1 rounded bg-amber-100 text-amber-700 border border-amber-300 text-[9px] font-black uppercase tracking-wider" title="Se asignó al lote con el detalle abierto">Nueva</span>}
+                                                      </div>
                                                       {o.entryDate && <div className="text-[10px] font-normal text-zinc-400 mt-0.5">{fmtEntry(o.entryDate)}</div>}
                                                     </div>
                                                     <div className="flex-1 min-w-[150px] px-2 overflow-hidden">

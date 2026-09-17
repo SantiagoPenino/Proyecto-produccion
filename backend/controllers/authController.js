@@ -3,6 +3,7 @@ const jwt = require('jsonwebtoken');
 const logger = require('../utils/logger');
 const { audit } = require('../utils/auditLogger');
 const { trackLogin } = require('../utils/sessionTracker');
+const { hashear, verificar } = require('../utils/password');
 const JWT_SECRET = process.env.JWT_SECRET;
 if (!JWT_SECRET) throw new Error('JWT_SECRET is not defined in environment variables');
 
@@ -26,12 +27,29 @@ exports.login = async (req, res) => {
         if (result.recordset.length > 0) {
             const user = result.recordset[0];
 
-            // Validación manual (si aplica)
-            if (user.PasswordHash && password !== user.PasswordHash) {
+            // Validación manual (si aplica).
+            // OJO: `user.PasswordHash` es el alias que devuelve sp_AutenticarUsuario para
+            // `Usuarios.ContrasenaHash` — la columna PasswordHash no existe.
+            const chk = await verificar(password, user.PasswordHash);
+            if (user.PasswordHash && !chk.ok) {
                 // Contraseña incorrecta para usuario existente -> Fallar aquí (no probar cliente)
                 // O probar cliente SOLO si el username coincide con un IDCliente
                 // Por seguridad, si existe el usuario interno, asumimos que es ese
                 return res.status(401).json({ success: false, message: 'Credenciales inválidas.' });
+            }
+
+            // Entró con la contraseña vieja en texto plano: se migra a bcrypt acá mismo.
+            // Best-effort: si falla, el login igual es válido y se reintenta al siguiente.
+            if (chk.rehash) {
+                try {
+                    await pool.request()
+                        .input('ID', sql.Int, user.UserID)
+                        .input('Hash', sql.NVarChar(255), chk.rehash)
+                        .query('UPDATE dbo.Usuarios SET ContrasenaHash = @Hash WHERE IdUsuario = @ID');
+                    logger.info(`[PASSWORD] Usuario ${user.Username} migrado a bcrypt.`);
+                } catch (e) {
+                    logger.warn(`[PASSWORD] No se pudo migrar a ${user.Username}: ${e.message}`);
+                }
             }
 
             // Audit & session tracking
@@ -98,6 +116,7 @@ exports.login = async (req, res) => {
 
             let isValid = false;
             let isFirstTime = false;
+            let rehash = null;
 
             // Lógica Password Cliente
             if (!client.WebPasswordHash || client.WebPasswordHash === '') {
@@ -107,8 +126,10 @@ exports.login = async (req, res) => {
                 } else {
                     return res.status(401).json({ success: false, message: 'Debe ingresar una contraseña.' });
                 }
-            } else if (client.WebPasswordHash === password) {
-                isValid = true;
+            } else {
+                const chk = await verificar(password, client.WebPasswordHash);
+                isValid = chk.ok;
+                rehash = chk.rehash || null;
             }
 
             if (!isValid) {
@@ -131,9 +152,19 @@ exports.login = async (req, res) => {
             if (isFirstTime) {
                 await pool.request()
                     .input('ID', sql.Int, client.CodCliente)
-                    .input('Pass', sql.NVarChar, password)
+                    .input('Pass', sql.NVarChar, await hashear(password))
                     .query("UPDATE Clientes SET WebPasswordHash = @Pass, WebResetPassword = 0 WHERE CodCliente = @ID");
                 client.WebResetPassword = false;
+            } else if (rehash) {
+                // Entró con la contraseña vieja en texto plano: se migra a bcrypt (best-effort).
+                try {
+                    await pool.request()
+                        .input('ID', sql.Int, client.CodCliente)
+                        .input('Hash', sql.NVarChar(255), rehash)
+                        .query('UPDATE dbo.Clientes SET WebPasswordHash = @Hash WHERE CodCliente = @ID');
+                } catch (e) {
+                    logger.warn(`[PASSWORD] No se pudo migrar al cliente ${client.CodCliente}: ${e.message}`);
+                }
             }
 
             // GENERATE TOKEN (CLIENT)
@@ -290,74 +321,17 @@ exports.googleLogin = async (req, res) => {
 };
 
 // =====================================================================
-// 2. REGISTER (NUEVO)
+// 2. (BORRADO 10/09/2026) exports.register + POST /api/auth/register
+//
+// Creaba un USUARIO INTERNO (IdRol 2) desde un endpoint público sin
+// autenticación, y encima nunca funcionó: insertaba en `PasswordHash` y
+// devolvía `OUTPUT INSERTED.UserID`, dos columnas que no existen — las
+// reales son `ContrasenaHash` e `IdUsuario`. Siempre respondía 500.
+//
+// El registro de clientes que SÍ se usa es webAuthController.register
+// (POST /api/web-auth/register), que escribe en la tabla Clientes.
+// El alta de usuarios internos es usersController.create (/admin/users).
 // =====================================================================
-exports.register = async (req, res) => {
-    const { name, email, password } = req.body;
-
-    // Validación básica
-    if (!name || !email || !password) {
-        return res.status(400).json({ success: false, message: 'Todos los campos son obligatorios.' });
-    }
-
-    try {
-        const pool = await getPool();
-
-        // 1. Verificar si el usuario ya existe
-        const check = await pool.request()
-            .input('Email', sql.NVarChar, email)
-            .query("SELECT COUNT(*) as count FROM Usuarios WHERE Usuario = @Email"); // Asumimos Usuario = Email para clientes
-
-        if (check.recordset[0].count > 0) {
-            return res.status(400).json({ success: false, message: 'El correo electrónico ya está registrado.' });
-        }
-
-        // 2. Insertar Usuario
-        // NOTA: Ajusta los campos según tu tabla de Usuarios real. 
-        // Asumimos estructura estándar o procedure si existiera.
-        // Usamos una consulta directa por ahora para asegurar funcionamiento básico.
-
-        const result = await pool.request()
-            .input('Nombre', sql.NVarChar, name)
-            .input('Username', sql.NVarChar, email) // Username es el Email
-            .input('PasswordHash', sql.NVarChar, password) // ¡EN PRODUCCION USAR BCRYPT! Aquí guardamos texto plano por compatibilidad con tu login actual
-            .input('Role', sql.Int, 2) // Asumimos ID 2 = Cliente (Ajustar según tabla Roles)
-            .query(`
-                INSERT INTO Usuarios (Nombre, Usuario, PasswordHash, IdRol, Activo, FechaCreacion)
-                OUTPUT INSERTED.UserID
-                VALUES (@Nombre, @Username, @PasswordHash, @Role, 1, GETDATE())
-            `);
-
-        const newUserId = result.recordset[0].UserID;
-
-        // 3. Auto-Login (Generar Token)
-        const token = jwt.sign(
-            {
-                id: newUserId,
-                username: email,
-                role: 'Cliente', // Hardcoded por ahora
-                idRol: 2
-            },
-            JWT_SECRET,
-            { expiresIn: '30d' }
-        );
-
-        res.json({
-            success: true,
-            user: {
-                userId: newUserId,
-                username: email,
-                role: 'Cliente',
-                name: name
-            },
-            token: token
-        });
-
-    } catch (err) {
-        logger.error('[REGISTER ERROR]', err);
-        res.status(500).json({ success: false, message: 'Error al registrar usuario.', error: err.message });
-    }
-};
 
 // =====================================================================
 // 3. ME (Session Check)

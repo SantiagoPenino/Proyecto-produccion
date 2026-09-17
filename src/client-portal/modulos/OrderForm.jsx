@@ -2291,7 +2291,11 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                 </div>
             )}
 
-            <form onSubmit={handleSubmit} className="space-y-6">
+            {/* noValidate: sin esto el navegador frena el submit y muestra SU globo ("Please fill out
+                this field"), en inglés y con un estilo que no es el nuestro. La validación real vive
+                en `enviarPedido` y avisa con addToast, en español. El `required` del campo se deja
+                puesto: sirve para lectores de pantalla, solo se apaga el globo nativo. */}
+            <form onSubmit={handleSubmit} noValidate className="space-y-6">
 
                 {/* 1. Datos Generales (Resumed) */}
                 <GlassCard title="Datos Generales del Pedido" icon={ClipboardList} className="-mx-4 md:mx-0 md:!rounded-xl !rounded-none !border-x-0 md:!border-x border-y md:border-y-0 px-4 md:px-6">
@@ -2622,7 +2626,9 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                             {/* Standard Production Files (Items) */}
                             {serviceId === 'tpu' && (
                                 <div className="space-y-4">
-                                    {/* Selector: trabajo nuevo / hago mi matriz / reusar una matriz */}
+                                    {/* Selector: trabajo nuevo / hago mi matriz / reusar una matriz.
+                                        "Hago mi matriz" estuvo oculto del 09/09 al 15/09, hasta validar en la
+                                        máquina la impresión del arte generado (prueba 16: relieve y texturas OK). */}
                                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                                         <button type="button" onClick={() => { setTpuMode('nuevo'); setMatrizSel(null); }}
                                             className={`text-left p-3 rounded-xl border-2 transition-all ${tpuMode === 'nuevo' ? 'border-cyan-400 bg-cyan-400/5' : 'border-zinc-700 hover:border-zinc-600'}`}>
@@ -2818,7 +2824,6 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                         modo="matriz"
                                         codigo={jobName?.trim() || 'Tu matriz'}
                                         fuente={{ pdf: tpuMatrizFile, analisis: tpuMatriz.analisis }}
-                                        medidaMm={medidaMatrizMm()}
                                         inicial={{ zonas: tpuMatriz.zonas }}
                                         onListo={({ zonas }) => setTpuMatriz(m => ({ ...m, zonas }))}
                                         onClose={() => setTpuMatrizVisor(false)}

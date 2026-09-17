@@ -10,9 +10,10 @@ Illustrator. Reproduce su contrato de salida (verificado 04/09/2026 sobre
   <base>-cmyk-spots.pdf   una pagina por plancha, 4 capas OCG (panel de capas, de arriba a abajo):
                             CMYK · Spot 1 (Relieve 1) · Spot 2 (Relieve 2) · Spot 3 (Barniz)
                           y 3 tintas planas Separation "Spot 1" / "Spot 2" / "Spot 3"
-                          (alternate DeviceCMYK). ORDEN DE DIBUJO: spots primero y CMYK ultimo,
-                          encima — el relieve es tinta blanca que va debajo del color.
-                          PhotoPrint separa por TINTA, no por capa.
+                          (alternate DeviceCMYK). ORDEN DE DIBUJO: CMYK primero y los spots
+                          ENCIMA con sobreimpresion (receta de dtf_blanco); si el arte va encima,
+                          su knockout anula el relieve (ver generar()). PhotoPrint separa por
+                          TINTA, no por capa, y el orden de deposicion lo fija la maquina.
   <base>-corte.pdf        misma geometria de plancha, capa OCG "Corte", tinta "CutContour".
   <base>-boceto.pdf       (opcional) el parche unitario a tamanio real con cotas, para el
                           cliente / "Mis matrices". No va al RIP.
@@ -52,6 +53,7 @@ Formato de job.json:
     "spots_raster": false,                          # true = capas de relieve como IMAGEN con su tinta
     "spots_trazado": false,                         # true = capas de relieve como TRAZADOS ya recortados
     "boceto": true,
+    "relieve_doble_siempre": false,                 # true = Spot 2 con TODAS las zonas (un solo cabezal blanco)
     "pieza_unica": true                             # el corte envuelve TODO el arte (default)
   }
 
@@ -106,8 +108,9 @@ MAX_ALTO_DEFAULT_MM = 500.0     # alto maximo de la plancha (decision del usuari
 REPETICIONES_DEFAULT = 2        # espeja REPETICIONES_DEFAULT de webOrdersController.getTexturasTpu
 CAPAS_BANDA_MM = 12.0           # banda superior con el rotulo en el PDF de control de capas
 
-# Orden EXACTO de la referencia de Illustrator ('TPU UV  - Impresion.pdf'): el panel de capas y el
-# orden de dibujo van Spot 3 -> Spot 2 -> Spot 1 -> CMYK (el relieve, tinta blanca, debajo del color).
+# Orden del PANEL DE CAPAS, como la referencia de Illustrator ('TPU UV  - Impresion.pdf'):
+# Spot 3 -> Spot 2 -> Spot 1 -> CMYK. El orden de DIBUJO en la pagina es otro (CMYK primero, ver
+# generar()): el arte del cliente encima anulaba el relieve.
 CAPAS = [
     ("Spot 3 (Barniz)", "Spot 3"),
     ("Spot 2 (Relieve 2)", "Spot 2"),
@@ -623,6 +626,48 @@ def _extgstate_illustrator(pdf):
     return pdf.make_indirect(gs)
 
 
+def _forzar_sobreimpresion(xobj, vistos=None):
+    """Pone /OP y /op en true en TODOS los ExtGState de un XObject y de los que cuelgan de el.
+
+    El PDF del cliente sale de Illustrator con un /GS0 de knockout (/OP false, /op false) aplicado
+    a cada objeto. Ese estado vive DENTRO del Form XObject del arte, asi que pisa la sobreimpresion
+    que le pongamos al hacer el `Do`: el arte termina borrando las tintas planas que tiene debajo y
+    del relieve solo queda el contorno (diagnostico del 08/09, pruebas 3 a 13).
+
+    Con /op true y /OPM 1 (modo no-cero) un componente en 0 ya no borra lo que hay debajo: el arte
+    sigue imprimiendo igual en CMYK pero deja intactos Spot 1/2/3. Si el arte no declara ningun
+    ExtGState, se agrega uno y NO se puede aplicar sin tocar su content stream — ese caso se avisa.
+    """
+    from pikepdf import Dictionary, Name
+    if vistos is None:
+        vistos = set()
+    try:
+        oid = xobj.objgen
+    except Exception:
+        oid = None
+    if oid is not None:
+        if oid in vistos:
+            return 0
+        vistos.add(oid)
+    res = xobj.get(Name.Resources)
+    if res is None:
+        return 0
+    n = 0
+    gss = res.get(Name.ExtGState)
+    if gss is not None:
+        for _, gs in gss.items():
+            gs[Name.OP] = True
+            gs[Name("/op")] = True
+            gs[Name.OPM] = 1
+            n += 1
+    hijos = res.get(Name.XObject)
+    if hijos is not None:
+        for _, hijo in hijos.items():
+            if str(hijo.get(Name.Subtype)) == "/Form":
+                n += _forzar_sobreimpresion(hijo, vistos)
+    return n
+
+
 # Umbral de "tinta mayoritaria" para invertir la textura, como el visor (cargarTile: si lo que
 # subiria es mas de la mitad de la superficie, se da vuelta y sube el fondo).
 POLARIDAD_INVERTIR = 0.5
@@ -643,12 +688,26 @@ APLANAR_MAX_BYTES = 60 * 1024 * 1024
 # lo que las distingue son los clips anidados que meten la trama dentro de la forma.
 SPOTS_RASTER_DPI = 600
 
-# GROSOR MINIMO del relieve, en mm. Medido el 08/09: el arte de Illustrator que imprime bien tiene
-# trazos de 2,7 mm de mediana (solo el 3 % baja de 0,5 mm), mientras que las texturas del catalogo
-# llevadas al tamanio del parche caian a 0,08 mm de mediana — el 88 % por debajo de 0,3 mm. En la
-# prueba del usuario, rayas de 0,5 y 1 mm salieron perfectas y esa trama fina no salia. La mascara
-# del relieve se DILATA hasta este minimo, conservando el dibujo.
-RELIEVE_MIN_MM = 0.5
+# Guardar las imagenes de relieve a 1 BIT por pixel en vez de 8. La mascara es binaria (tinta o
+# nada), asi que no se pierde absolutamente nada y el archivo baja mucho: a 600 dpi cada capa son
+# 72,8 millones de pixeles, 69 MB en crudo a 8 bits contra 8,7 MB a 1 bit. Sigue en False mientras
+# se valida el relieve en maquina (09/09): un cambio por vez.
+SPOTS_1BIT = False
+
+# GROSOR MINIMO del relieve, en mm: la mascara se DILATA hasta este minimo. En 0 = apagado.
+#
+# APAGADO el 09/09 tras verificarlo en material. Se habia puesto en 0,5 creyendo que las tramas del
+# catalogo (0,08 mm de trazo al tamanio del parche) eran demasiado finas para imprimir. Eran dos
+# errores encadenados:
+#   - La prueba que parecia demostrarlo se hizo en una impresora de UN SOLO cabezal de blanco, que
+#     solo imprime el canal asignado a ese cabezal: las zonas de relieve normal (solo Spot 1)
+#     desaparecian y quedaban las de relieve doble. No era el tamanio de la trama.
+#   - Y el engorde no salvaba nada: en una trama densa dilatar cada trazo fusiona los vecinos, asi
+#     que en vez de engordar el dibujo lo rellena y la "textura" pasa a ser los huecos que
+#     sobrevivieron. Salia un manchon (comparado en pantalla y en material el 09/09).
+# Verificado imprimiendo: una trama de 0,08 mm de trazo sale bien — no como trazos separados sino
+# fusionada por la tinta en una textura tipo cuero. No hace falta grosor minimo.
+RELIEVE_MIN_MM = 0.0
 
 
 def cargar_textura(pdf, ruta_svg, sep, cs_name="CSspot", invertir=None):
@@ -701,9 +760,11 @@ def cargar_textura(pdf, ruta_svg, sep, cs_name="CSspot", invertir=None):
     return xo, tw, th, info
 
 
-def _capa_raster(pdf, xo_unitario, Wp, Hp, imp, copias, sep, dpi=SPOTS_RASTER_DPI, min_mm=RELIEVE_MIN_MM):
+def _capa_raster(pdf, xo_unitario, Wp, Hp, imp, copias, sep, dpi=SPOTS_RASTER_DPI, min_mm=RELIEVE_MIN_MM,
+                 un_bit=SPOTS_1BIT):
     """Renderiza una capa (el XObject unitario repetido en las copias) y la devuelve como imagen
-    con la tinta plana `sep`: 0 = sin tinta, 255 = tinta al 100 %. Igual que dtf_blanco."""
+    con la tinta plana `sep`: 0 = sin tinta, 255 = tinta al 100 %. Igual que dtf_blanco.
+    `un_bit`: guardar la mascara a 1 bit por pixel en vez de 8 (ver SPOTS_1BIT)."""
     import pikepdf
     from pikepdf import Array, Dictionary, Name
 
@@ -749,12 +810,22 @@ def _capa_raster(pdf, xo_unitario, Wp, Hp, imp, copias, sep, dpi=SPOTS_RASTER_DP
             tinta = np.where(dist <= radio, np.uint8(255), np.uint8(0))
 
     # 3) imagen con la Separation como colorspace (receta de dtf_blanco.incrustar_spot)
-    img = pdf.make_stream(zlib.compress(tinta.tobytes(), 6))
+    # La mascara es BINARIA (tinta o nada), asi que a 1 bit por pixel entra igual y ocupa 8 veces
+    # menos antes de comprimir. np.packbits empaqueta por filas y ya las alinea a byte, que es lo
+    # que pide el formato de imagen del PDF. Con 1 bit los valores son 0 y 1, y el /Decode por
+    # defecto de una Separation ([0 1]) los lee como 0 % y 100 % de tinta: mismo resultado exacto.
+    if un_bit:
+        datos = np.packbits(tinta > 0, axis=-1).tobytes()
+        bpc = 1
+    else:
+        datos = tinta.tobytes()
+        bpc = 8
+    img = pdf.make_stream(zlib.compress(datos, 6))
     img[Name.Type] = Name.XObject
     img[Name.Subtype] = Name.Image
     img[Name.Width] = int(pix.width)
     img[Name.Height] = int(pix.height)
-    img[Name.BitsPerComponent] = 8
+    img[Name.BitsPerComponent] = bpc
     img[Name.ColorSpace] = sep
     img[Name.Filter] = Name.FlateDecode
     return pdf.make_indirect(img), int(pix.width), int(pix.height)
@@ -773,21 +844,36 @@ def _capa_trazada(pdf, xo_unitario, Wp, Hp, imp, copias, cs_name, dpi=SPOTS_RAST
     if not tinta.any():
         return None
     # 2) contornos (con agujeros) -> paths; even-odd resuelve los huecos
+    from scipy import ndimage
     esc = (imp.W / w)                       # px de la mascara -> pt de la pagina
     tol_px = max(0.5, (TOL_SIMPLIFICACION_MM / 25.4) * dpi)
     partes = [f"/{cs_name} cs 1 scn /GSop gs"]
     n = 0
-    for c in find_contours(np.pad(tinta.astype(np.float32), 1), 127.5):
-        c = approximate_polygon(c - 1.0, tolerance=tol_px)
-        if len(c) < 3:
+    # UN RELLENO POR FIGURA, como Illustrator (440 `f` en el archivo que imprime bien). Un unico
+    # path compuesto con 16.000 subtrazados y regla par-impar era lo que el RIP reducia al contorno
+    # (comparado el 08/09). Cada componente lleva su contorno exterior y sus agujeros en un `f*`.
+    etiquetas, ncomp = ndimage.label(tinta > 0, structure=np.ones((3, 3), dtype=int))
+    for idx, corte in enumerate(ndimage.find_objects(etiquetas), start=1):
+        if corte is None:
             continue
-        pts = [(x * esc, imp.H - y * esc) for y, x in c]
-        partes.append(f"{_f(pts[0][0])} {_f(pts[0][1])} m " +
-                      " ".join(f"{_f(x)} {_f(y)} l" for x, y in pts[1:]) + " h")
+        y0, x0 = corte[0].start, corte[1].start
+        sub = (etiquetas[corte] == idx)
+        sub_pad = np.pad(sub.astype(np.float32), 1)
+        anillos = []
+        for c in find_contours(sub_pad, 0.5):
+            c = approximate_polygon(c - 1.0, tolerance=tol_px)
+            if len(c) < 3:
+                continue
+            pts = [((x + x0) * esc, imp.H - (y + y0) * esc) for y, x in c]
+            anillos.append(f"{_f(pts[0][0])} {_f(pts[0][1])} m " +
+                           " ".join(f"{_f(x)} {_f(y)} l" for x, y in pts[1:]) + " h")
+        if not anillos:
+            continue
+        partes.append(chr(10).join(anillos))
+        partes.append("f*")                 # exterior + agujeros de ESTA figura
         n += 1
     if not n:
         return None
-    partes.append("f*")
     return chr(10).join(partes), n
 
 
@@ -1012,6 +1098,13 @@ def generar(job, preview=None):
     gs_ai = _extgstate_illustrator(pdf)
     gs_op = _extgstate_overprint(pdf)
     arte_xo = pdf.copy_foreign(pikepdf.Page(src_pdf.pages[0]).as_form_xobject())
+    # El arte va ENCIMA de las capas de relieve: si conserva el knockout que le puso Illustrator,
+    # borra las tintas planas que tiene debajo (ver _forzar_sobreimpresion y el comentario del
+    # orden de dibujo, mas abajo).
+    n_gs = _forzar_sobreimpresion(arte_xo)
+    if not n_gs:
+        avisos.append("El PDF del cliente no declara ningun estado grafico propio: no se pudo forzar "
+                      "la sobreimpresion del arte. Si el relieve sale solo como contorno, es por esto.")
 
     # matriz para colocar el arte original dentro del parche: pdf(user) -> parche
     M = ~page.transformation_matrix           # fitz -> pdf del cliente
@@ -1199,7 +1292,14 @@ def generar(job, preview=None):
         avisos.append(f"{len(sin_zona)} trazado(s) del arte quedan sin relieve (no pertenecen a ninguna zona).")
 
     r1 = contenido_zonas(zonas, "Spot 1")
-    r2 = contenido_zonas([z for z in zonas if z.get("doble")], "Spot 2")
+    # Un solo cabezal blanco en la maquina (verificado 09/09, prueba 16): Spot_1 no imprime, solo
+    # Spot_2, asi que todo lo marcado "relieve normal" salia vacio. Mientras el service mande
+    # `relieve_doble_siempre`, Spot 2 lleva TODAS las zonas (= Spot 1) y el archivo sale igual en la
+    # maquina de uno y en la de dos cabezales. La eleccion del cliente se conserva en `doble`.
+    doble_siempre = bool(job.get("relieve_doble_siempre", False))
+    r2 = contenido_zonas(zonas if doble_siempre else [z for z in zonas if z.get("doble")], "Spot 2")
+    if doble_siempre and zonas:
+        avisos.append("Relieve doble en todas las zonas (forzado: la impresora tiene un solo cabezal blanco).")
     r3 = contenido_zonas([z for z in zonas if z.get("barniz")], "Spot 3", con_textura=False)
     x_spot1, plano1, tiles1 = r1 if r1 else (None, None, 0)
     x_spot2, plano2, _ = r2 if r2 else (None, None, 0)
@@ -1318,10 +1418,20 @@ def generar(job, preview=None):
         # objetos del contenido de pagina.
         # (Sin "marcador de tintas": la referencia de Illustrator no lo tiene. Cada tinta figura en
         # la lista de canales por los objetos que la usan, que ahora estan aplanados en la pagina.)
-        # ORDEN DE DIBUJO = orden fisico de impresion: el relieve es tinta BLANCA que va DEBAJO del
-        # color, asi que los spots se dibujan primero y el CMYK ultimo, encima (correccion del
-        # usuario 07/09). Es lo que hace el archivo de referencia de Illustrator: su primer objeto
-        # es de Spot 3 y el CMYK va al final. El panel de capas (/Order) sigue con CMYK arriba.
+        # ORDEN DE DIBUJO: spots primero, CMYK ultimo — como el archivo de Illustrator que imprime
+        # bien ('TPU UV  - Impresion.pdf', cuyo primer objeto es de Spot 3 y cuyo CMYK va al final).
+        # PhotoPrint usa este orden para el APILADO FISICO: la prueba 14 (08/09) lo invirtio —CMYK
+        # primero, spots encima— y la maquina deposito el blanco ARRIBA del color; el escudo salio
+        # blanco con el dorado tapado, aunque la previsualizacion de los 4 canales de proceso se veia
+        # completa. O sea: el orden de la pagina manda, y el relieve tiene que ir primero.
+        #
+        # Pero con los spots primero, el arte de arriba los ANULA (pruebas 3 a 13): el PDF del
+        # cliente trae su propio ExtGState con /OP false —Illustrator lo pone en cada objeto— asi
+        # que la sobreimpresion que le damos al XObject padre no rige adentro, y cada relleno del
+        # arte hace knockout de las tintas planas que tiene debajo. De Spot 1 solo sobrevivia el
+        # borde: la "linea finita en el contorno del escudo y de las estrellas".
+        # Por eso el arte se incrusta con la sobreimpresion FORZADA (ver _forzar_sobreimpresion):
+        # asi va encima sin borrar el relieve, y el orden de deposicion queda como corresponde.
         for idx, xo, plano in ((3, x_spot3, plano3), (2, x_spot2, plano2), (1, x_spot1, plano1)):
             cont.append(f"/OC /MC{PROP_DE_TINTA[idx]} BDC")
             if xo is not None:
@@ -1332,7 +1442,8 @@ def generar(job, preview=None):
                 elif spots_raster:
                     # Una imagen por capa, cubriendo la plancha entera (ver SPOTS_RASTER_DPI).
                     im, iw, ih = _capa_raster(pdf, xo, Wp, Hp, imp, copias, seps[f"Spot {idx}"],
-                                              min_mm=float(job.get("relieve_min_mm", RELIEVE_MIN_MM)))
+                                              min_mm=float(job.get("relieve_min_mm", RELIEVE_MIN_MM)),
+                                              un_bit=bool(job.get("spots_1bit", SPOTS_1BIT)))
                     imgs[f"/ISpot{idx}"] = im
                     cont.append(f"q /GSop gs {_f(imp.W)} 0 0 {_f(H)} 0 0 cm /ISpot{idx} Do Q")
                 else:
@@ -1344,8 +1455,8 @@ def generar(job, preview=None):
             cont.append("EMC")
         cont.append(f"/OC /MC{PROP_DE_TINTA[0]} BDC")
         for (cx, cy) in copias:
-            # /GSop: el arte va ENCIMA del relieve; sin sobreimpresion su knockout apagaba los
-            # canales de relieve en toda el area del parche.
+            # /GSop ademas de la sobreimpresion forzada adentro del arte: el knockout de este
+            # objeto apagaba los canales de relieve en toda el area del parche.
             cont.append(f"q /GSop gs 1 0 0 1 {_f(cx)} {_f(cy)} cm /XCmyk Do Q")
         cont.append("q " + _marcas(registros, imp.W, "0 0 0 1 k") + " Q")
         cont.append("EMC")

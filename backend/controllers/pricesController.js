@@ -43,9 +43,13 @@ const getBasePrices = async (req, res) => {
 const saveBasePrice = async (req, res) => {
     const { codArticulo, precio, moneda, proIdProducto } = req.body;
     try {
-        await PricingService.setBasePrice(codArticulo, precio, moneda === 'USD' ? 2 : 1, proIdProducto);
+        // La moneda va tal cual venga ('UYU'/'USD' o el id): el service la normaliza. Convertirla
+        // acá a número era lo que rompía el endpoint — el service hacía moneda.toUpperCase().
+        await PricingService.setBasePrice(codArticulo, precio, moneda, proIdProducto);
         res.json({ success: true });
     } catch (e) {
+        // Sin este log el 500 no dejaba NADA en el servidor y había que reproducirlo para verlo.
+        logger.error(`Error saveBasePrice (art=${codArticulo} prod=${proIdProducto} ${moneda}):`, e);
         res.status(500).json({ error: e.message });
     }
 };

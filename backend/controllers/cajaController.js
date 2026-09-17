@@ -2,6 +2,8 @@
 
 const cajaService = require('../services/cajaService');
 const logger      = require('../utils/logger');
+const { rollbackSeguro } = require('../utils/rollbackSeguro');
+const { esDeadlock }     = require('../utils/reintentarDeadlock');
 const contabilidadSvc = require('../services/contabilidadService');
 const contabilidadCore = require('../services/contabilidadCore'); // ERP Core
 const { getPool, sql } = require('../config/db');
@@ -2804,8 +2806,13 @@ const generarNotaCredito = async (req, res) => {
         message: `Nota de Crédito ${fullNcNumero} generada`,
         avisoContable, avisoRecurso
       });
-    } catch (errTx) { await transaction.rollback(); throw errTx; }
-  } catch (err) { logger.error('[NOTA-CREDITO]', err.message); return res.status(500).json({ error: err.message }); }
+    } catch (errTx) { await rollbackSeguro(transaction, 'caja'); throw errTx; }
+  } catch (err) {
+    logger.error('[NOTA-CREDITO]', err.message);
+    // Víctima de deadlock: se relanza para que conReintentoDeadlock reejecute la operación.
+    if (esDeadlock(err)) throw err;
+    return res.status(500).json({ error: err.message });
+  }
 };
 
 // POST /contabilidad/caja/nota-credito-externa
@@ -2957,7 +2964,7 @@ const generarNotaCreditoExterna = async (req, res) => {
       logger.info(`[NOTA-CREDITO-EXTERNA] Ref externa ${serieOrigenTrim}-${numeroOrigenTrim} -> NC #${ncId} (${fullNcNumero}) Monto:${montoNum}`);
       const s = io(req); if (s) s.emit('actualizado', { type: 'nota-credito' });
       return res.status(201).json({ success: true, ncId, ncNumero: fullNcNumero, ncTipo, refStubId: stubId, message: `Nota de Crédito ${fullNcNumero} generada (sin movimiento contable)` });
-    } catch (errTx) { await transaction.rollback(); throw errTx; }
+    } catch (errTx) { await rollbackSeguro(transaction, 'caja'); throw errTx; }
   } catch (err) { logger.error('[NOTA-CREDITO-EXTERNA]', err.message); return res.status(500).json({ error: err.message }); }
 };
 
@@ -3171,7 +3178,7 @@ const generarNotaDebito = async (req, res) => {
       logger.info(`[NOTA-DEBITO] Doc #${docIdOrigen} -> ND #${ndId} (${fullNdNumero}) Monto:${montoNum}`);
       const s = io(req); if (s) s.emit('actualizado', { type: 'nota-debito' });
       return res.status(201).json({ success: true, ndId, ndNumero: fullNdNumero, ndTipo, message: 'Nota de Debito ' + fullNdNumero + ' generada' });
-    } catch (errTx) { await transaction.rollback(); throw errTx; }
+    } catch (errTx) { await rollbackSeguro(transaction, 'caja'); throw errTx; }
   } catch (err) { logger.error('[NOTA-DEBITO]', err.message); return res.status(500).json({ error: err.message }); }
 };
 
@@ -3231,7 +3238,12 @@ const reversarDocumento = async (req, res) => {
     logger.info(`[REVERSAR-DOC] Doc #${docId} anulado`);
     const s = io(req); if (s) s.emit('actualizado', { type: 'reverso-doc' });
     return res.json({ success: true, message: `Documento ${doc.DocSerie}-${doc.DocNumero} revertido correctamente` });
-  } catch (err) { logger.error('[REVERSAR-DOC]', err.message); return res.status(500).json({ error: err.message }); }
+  } catch (err) {
+    logger.error('[REVERSAR-DOC]', err.message);
+    // Víctima de deadlock: se relanza para que conReintentoDeadlock reejecute la operación.
+    if (esDeadlock(err)) throw err;
+    return res.status(500).json({ error: err.message });
+  }
 };
 
 /**
@@ -3578,8 +3590,13 @@ const registrarPagoAnticipo = async (req, res) => {
         success: true, tcaId, docId, movId,
         message: `Anticipo ${monStr} ${montoNum.toFixed(2)} registrado correctamente.${msgImputado}`
       });
-    } catch (errTx) { await transaction.rollback(); throw errTx; }
-  } catch (err) { logger.error('[ANTICIPO]', err.message); return res.status(500).json({ error: err.message }); }
+    } catch (errTx) { await rollbackSeguro(transaction, 'caja'); throw errTx; }
+  } catch (err) {
+    logger.error('[ANTICIPO]', err.message);
+    // Víctima de deadlock: se relanza para que conReintentoDeadlock reejecute la operación.
+    if (esDeadlock(err)) throw err;
+    return res.status(500).json({ error: err.message });
+  }
 };
 
 // ─────────────────────────────────────────────
@@ -3726,8 +3743,13 @@ const anularFactura = async (req, res) => {
         message: `Factura ${doc.DocSerie}-${doc.DocNumero} anulada correctamente. Las órdenes quedan libres para ser tomadas por un nuevo ciclo.`,
         cicloAnulado: !!cicId,
       });
-    } catch (errTx) { await transaction.rollback(); throw errTx; }
-  } catch (err) { logger.error('[ANULAR-FACTURA]', err.message); return res.status(500).json({ error: err.message }); }
+    } catch (errTx) { await rollbackSeguro(transaction, 'caja'); throw errTx; }
+  } catch (err) {
+    logger.error('[ANULAR-FACTURA]', err.message);
+    // Víctima de deadlock: se relanza para que conReintentoDeadlock reejecute la operación.
+    if (esDeadlock(err)) throw err;
+    return res.status(500).json({ error: err.message });
+  }
 };
 
 const guardarComprobante = async (req, res) => {

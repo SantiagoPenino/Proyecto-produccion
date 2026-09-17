@@ -2,6 +2,7 @@ const { sql, getPool } = require('../config/db');
 const jwt = require('jsonwebtoken');
 const asyncHandler = require('../middleware/asyncHandler');
 const logger = require('../utils/logger');
+const { hashear, verificar } = require('../utils/password');
 const JWT_SECRET = process.env.JWT_SECRET;
 
 /*
@@ -46,7 +47,7 @@ exports.register = asyncHandler(async (req, res) => {
         .input('Nombre', sql.NVarChar(200), nombre.trim())
         .input('Email', sql.NVarChar(200), email.trim())
         .input('Tel', sql.NVarChar(50), telefono?.trim() || null)
-        .input('Pass', sql.NVarChar(300), password)
+        .input('Pass', sql.NVarChar(300), await hashear(password))
         .query('INSERT INTO dbo.Disenadores (Nombre, Email, Telefono, WebPasswordHash) VALUES (@Nombre, @Email, @Tel, @Pass)');
 
     logger.info(`🎨 [Disenador] Registro nuevo: ${email.trim()} (pendiente de aprobación)`);
@@ -69,9 +70,21 @@ exports.tryDesignerLogin = async (req, res, identifier, password) => {
         res.status(403).json({ success: false, message: 'Tu cuenta de diseñador aún no fue aprobada por USER.' });
         return true;
     }
-    if (!password || !d.WebPasswordHash || d.WebPasswordHash !== password) {
+    const chk = await verificar(password, d.WebPasswordHash);
+    if (!chk.ok) {
         res.status(401).json({ success: false, message: 'Contraseña incorrecta.' });
         return true;
+    }
+    // Entró con la contraseña vieja en texto plano: se migra a bcrypt (best-effort).
+    if (chk.rehash) {
+        try {
+            await pool.request()
+                .input('ID', sql.Int, d.DisenadorID)
+                .input('Hash', sql.NVarChar(300), chk.rehash)
+                .query('UPDATE dbo.Disenadores SET WebPasswordHash = @Hash WHERE DisenadorID = @ID');
+        } catch (e) {
+            logger.warn(`[PASSWORD] No se pudo migrar al diseñador ${d.DisenadorID}: ${e.message}`);
+        }
     }
 
     const userPayload = {

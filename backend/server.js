@@ -129,6 +129,7 @@ app.use('/api/web-retiros', webRetirosRoutes);
 app.use('/api/web-recursos', require('./routes/webRecursosRoutes')); // "MIS RECURSOS" DEL PORTAL (planes de metros, solo lectura)
 app.use('/api/web-content', require('./routes/webContentRoutes')); // RUTAS CONTENIDO WEB (Sidebar/Popup)
 app.use('/api/tickets', require('./routes/ticketsRoutes'));        // MÓDULO HELPDESK TICKETING
+app.use('/api/consultas', require('./routes/consultasClienteRoutes')); // CONSULTA AL CLIENTE (SB/DTF/ECOUV) — pregunta puntual, NO es un hilo
 app.use('/api/tareas', require('./routes/tareasRoutes'));          // TO-DO COMPARTIDO (interno)
 app.use('/api/push', require('./routes/pushRoutes'));              // PUSH NOTIFICATIONS
 app.use('/api/nomenclators', nomenclatorsRoutes);
@@ -557,6 +558,15 @@ if (process.env.NODE_ENV !== 'test') {
                 startCuadreSaldosJob();
             } catch (e) {
                 logger.error("❌ [CRON] Error cargando CuadreSaldos:", e.message);
+            }
+
+            // CONSULTA AL CLIENTE — recordatorios (4 h / 20 h) y vencimiento del plazo.
+            // Vencer NO cancela: libera la orden y le deja una nota al operador.
+            try {
+                const { startConsultasVencimientoJob } = require('./jobs/consultasVencimiento.job');
+                startConsultasVencimientoJob(io);
+            } catch (e) {
+                logger.error("❌ [CRON] Error cargando ConsultasVencimiento:", e.message);
             }
 
         } catch (error) {

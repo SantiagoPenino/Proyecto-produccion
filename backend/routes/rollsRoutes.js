@@ -9,6 +9,7 @@ router.post('/move', controller.moveOrder);
 router.post('/create', verifyToken, controller.createRoll);
 router.post('/reorder', controller.reorderOrders);
 router.post('/order-printed', controller.setOrderPrinted); // Marcar impreso (todas las áreas)
+router.post('/orders-printed-bulk', controller.setOrdersPrintedBulk); // Marcar impreso un GRUPO, en orden
 router.post('/order-calandered', controller.setOrderCalandered); // Marcar calandrado (SB, lote en calandra)
 router.post('/order-cantidad-impresa', controller.setOrderCantidadImpresa); // Impresión parcial (TPU): unidades impresas
 router.post('/order-magnitud', controller.setOrderMagnitud);   // Editar metros (Magnitud) de una orden (-F)

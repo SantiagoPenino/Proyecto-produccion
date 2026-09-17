@@ -722,15 +722,22 @@ class PricingService {
 
     }
 
+    // `moneda` acepta las dos formas que circulan en el sistema: el código ('UYU'/'USD') o el id
+    // de Monedas (1/2). El controlador mandaba el id y acá se hacía moneda.toUpperCase(), así que
+    // POST /prices/base tiraba TypeError y devolvía 500 SIEMPRE (marketing no podía guardar un
+    // precio; encontrado el 10/09/2026). Se normaliza una sola vez y se usa el id de ahí en más.
     static async setBasePrice(codArticulo, precio, moneda = 'UYU', proIdProducto = null) {
         const pool = await getPool();
-        
+        const monId = (typeof moneda === 'number' || /^\d+$/.test(String(moneda)))
+            ? (parseInt(moneda, 10) === 2 ? 2 : 1)
+            : (String(moneda).toUpperCase() === 'USD' ? 2 : 1);
+
         if (proIdProducto) {
             await pool.request()
                 .input('Cod', sql.NVarChar, codArticulo ? codArticulo.trim() : '')
                 .input('ProId', sql.Int, proIdProducto)
                 .input('Pre', sql.Decimal(18, 4), precio)
-                .input('MonIdMoneda', sql.Int, moneda.toUpperCase() === 'USD' ? 2 : 1)
+                .input('MonIdMoneda', sql.Int, monId)
                 .query(`
                     MERGE PreciosBase AS target
                     USING (SELECT @ProId AS ProIdProducto, @MonIdMoneda AS MonIdMoneda) AS source
@@ -743,7 +750,7 @@ class PricingService {
             await pool.request()
                 .input('Cod', sql.NVarChar, codArticulo.trim())
                 .input('Pre', sql.Decimal(18, 4), precio)
-                .input('MonIdMoneda', sql.Int, moneda.toUpperCase() === 'USD' ? 2 : 1)
+                .input('MonIdMoneda', sql.Int, monId)
                 .query(`
                     MERGE PreciosBase AS target
                     USING (SELECT @Cod AS CodArticulo, @MonIdMoneda AS MonIdMoneda) AS source

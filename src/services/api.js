@@ -29,3 +29,4 @@ export { receptionService } from './modules/receptionService';
 export { machineControlService } from './modules/machineControlService';
 export { wmsService } from './modules/wmsService';
 export { tareasService } from './modules/tareasService';
+export { consultasService } from './modules/consultasService';

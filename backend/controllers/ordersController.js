@@ -1053,7 +1053,14 @@ exports.getOrdersByArea = async (req, res) => {
         // modal de detalle pide sus archivos aparte por /orders/details/:id. En las listas
         // históricas eso son 11.496 subconsultas para nada — medido: 16,8 MB de JSON para
         // mostrar 20 filas. Se pide solo en el tablero activo, que son decenas de órdenes.
-        const archivosDetalle = !['pronto', 'cancelled', 'history'].includes(mode);
+        const archivosDetalle = !['pronto', 'cancelled', 'history', 'consultas'].includes(mode);
+
+        // [CONSULTA AL CLIENTE] mode='consultas' = la bandeja de órdenes FRENADAS esperando
+        // que el cliente responda. Sin esta bandeja la orden simplemente desaparece de la
+        // grilla activa (la excluye el filtro de EstadoDependencia) y nadie sabe dónde está.
+        // Es un modo aparte y no una columna del tablero activo a propósito: el OUTER APPLY
+        // no tiene por qué correr en el camino caliente, donde además nunca daría resultados.
+        const modoConsultas = mode === 'consultas';
 
         // DEBUG: Force print final area
         // logger.info(`🔎 [getOrdersByArea] Querying DB with AreaID = '${area}'`);
@@ -1063,6 +1070,19 @@ exports.getOrdersByArea = async (req, res) => {
         // Auto-heal de FechaAprobacionCliente/FechaRechazoCliente: el SELECT las lee siempre.
         // La función cachea tras el primer llamado, así que en el camino caliente no cuesta nada.
         await require('./webOrdersController').ensureColFechaAprobacion(pool);
+
+        // Las tablas de consultas se crean solas la primera vez (mismo patrón de auto-heal).
+        // Solo hace falta en la bandeja: si fallara, se sigue sin el detalle de la consulta
+        // en vez de tumbar la planilla entera.
+        let consultasOk = false;
+        if (modoConsultas) {
+            try {
+                await require('../services/consultasClienteService').ensureSchema(pool);
+                consultasOk = true;
+            } catch (e) {
+                logger.warn(`[CONSULTA] No se pudo preparar el esquema para la bandeja: ${e.message}`);
+            }
+        }
 
         let query = `
             SELECT
@@ -1128,11 +1148,26 @@ exports.getOrdersByArea = async (req, res) => {
                     WHERE OrdenID = o.OrdenID
                     FOR JSON PATH
                 )` : 'NULL'} as files_data
+                ${consultasOk ? `,
+                cc.Motivo        AS ConsultaMotivo,
+                cc.ConFechaAlta  AS ConsultaDesde,
+                cc.ConFechaVence AS ConsultaVence,
+                cc.UsuarioNombre AS ConsultaUsuario` : ''}
 
             FROM dbo.Ordenes o WITH(NOLOCK)
             LEFT JOIN dbo.ConfigEquipos m WITH(NOLOCK) ON o.MaquinaID = m.EquipoID
             LEFT JOIN dbo.Clientes c WITH(NOLOCK) ON o.IdClienteReact = c.IDReact
             LEFT JOIN dbo.InventarioBobinas ibt WITH(NOLOCK) ON ibt.BobinaID = o.BobinaTelaID
+            ${consultasOk ? `
+            OUTER APPLY (
+                SELECT TOP 1 m2.MotConTitulo AS Motivo, cs.ConFechaAlta, cs.ConFechaVence,
+                       u2.Nombre AS UsuarioNombre
+                FROM dbo.ConsultasCliente cs WITH(NOLOCK)
+                LEFT JOIN dbo.MotivosConsulta m2 WITH(NOLOCK) ON m2.MotConIdMotivo = cs.MotConIdMotivo
+                LEFT JOIN dbo.Usuarios       u2 WITH(NOLOCK) ON u2.IdUsuario = cs.ConUsuarioAlta
+                WHERE cs.OrdIdOrden = o.OrdenID AND cs.ConEstado = 'ENVIADA'
+                ORDER BY cs.ConIdConsulta DESC
+            ) cc` : ''}
             WHERE o.AreaID IN (${areas.map((_, i) => `@Area${i}`).join(', ')})
         `;
 
@@ -1146,6 +1181,12 @@ exports.getOrdersByArea = async (req, res) => {
             query += ` AND UPPER(LTRIM(RTRIM(o.Estado))) IN ('CANCELADO', 'ANULADO', 'RECHAZADO')`;
         } else if (mode === 'pronto') {
             query += ` AND UPPER(LTRIM(RTRIM(o.Estado))) = 'FINALIZADO'`;
+        } else if (modoConsultas) {
+            // El filtro es la DEPENDENCIA, no la consulta: la hermana de terminaciones de una
+            // ECOUV queda frenada por arrastre y no tiene fila propia en ConsultasCliente,
+            // pero igual desapareció de la grilla y tiene que verse acá.
+            query += ` AND o.EstadoDependencia = 'ESPERANDO_CONSULTA'`;
+            query += ` AND o.Estado NOT IN (${estadosFinales})`;
         } else if (mode === 'all') {
             // No filtrar por estado
         } else {
@@ -1213,6 +1254,15 @@ exports.getOrdersByArea = async (req, res) => {
             enabledDate: o.FechaHabilitacion, // Cuando se liberó la restricción
             dependencyStatus: o.EstadoDependencia || 'OK', // 'ESPERANDO_INSUMOS', 'OK'
             // --------------------------------
+
+            // [CONSULTA AL CLIENTE] Solo viene en la bandeja (mode='consultas'): motivo, desde
+            // cuándo espera y quién preguntó. null en la hermana frenada por arrastre.
+            consulta: o.ConsultaMotivo ? {
+                motivo : o.ConsultaMotivo,
+                desde  : o.ConsultaDesde,
+                vence  : o.ConsultaVence,
+                usuario: o.ConsultaUsuario || null,
+            } : null,
 
             deliveryDate: o.FechaEstimadaEntrega,
             printer: o.NombreMaquina,
@@ -1434,6 +1484,22 @@ exports.assignRoll = async (req, res) => {
         else if (orderId) targetOrderIds.push(orderId);
 
         if (targetOrderIds.length === 0) throw new Error("No se especificaron órdenes.");
+
+        // ----------------------------------------------------
+        // CONSULTA AL CLIENTE: una orden frenada esperando respuesta NO entra a un lote.
+        // El front ya no la muestra (EstadoDependencia la saca de la grilla), pero esta
+        // función no validaba NINGÚN estado, así que por API entraba igual.
+        // ----------------------------------------------------
+        {
+            const consultasSvc = require('../services/consultasClienteService');
+            const frenadas = await consultasSvc.ordenesConConsultaAbierta(pool, targetOrderIds);
+            if (frenadas.length > 0) {
+                const codigos = frenadas.map(f => f.CodigoOrden).join(', ');
+                return res.status(409).json({
+                    error: `⛔ ${frenadas.length === 1 ? 'La orden' : 'Las órdenes'} ${codigos} ${frenadas.length === 1 ? 'está esperando' : 'están esperando'} la respuesta del cliente a una consulta. No se ${frenadas.length === 1 ? 'puede' : 'pueden'} asignar a un lote hasta que responda.`
+                });
+            }
+        }
 
         // ----------------------------------------------------
         // REGLA DE NEGOCIO PARA SUBLIMACIÓN (SB)
@@ -1818,6 +1884,25 @@ exports.updateFile = async (req, res) => {
                 ? `Archivo modificado (ID: ${fileId}) — ${cambios.join(' | ')}`
                 : `Archivo modificado (ID: ${fileId}) — sin cambios de valores`).substring(0, 499);
             if (cambios.length) logger.info(`📝 [UpdateFile] Archivo ${fileId} por ${safeUser}: ${cambios.join(' | ')}`);
+
+            // CONSULTA AL CLIENTE: el arte cambió. La consulta abierta sobre ESTE archivo se
+            // retira (preguntaba sobre el arte viejo) y una aprobación previa deja de valer —
+            // un arte nuevo no está aprobado. Fuera de la transacción y sin await: editar un
+            // archivo no puede fallar porque el módulo de consultas tenga un problema.
+            if (ordenId && cambios.length) {
+                require('../services/consultasClienteService')
+                    .archivoEditado({
+                        ordenId,
+                        archivoId: parseInt(fileId, 10),
+                        usuarioId: parseInt(req.user?.id || req.body.userId, 10) || 1,
+                        io: req.app.get('socketio'),
+                    })
+                    .then(r => {
+                        if (r.retirada) logger.info(`[CONSULTA] #${r.retirada} retirada: se editó el archivo ${fileId}.`);
+                        if (r.conformidadesInvalidadas) logger.info(`[CONSULTA] ${r.conformidadesInvalidadas} aprobación(es) del archivo ${fileId} quedaron marcadas: el arte cambió.`);
+                    })
+                    .catch(e => logger.warn(`[CONSULTA] archivoEditado falló para el archivo ${fileId}: ${e.message}`));
+            }
 
             if (ordenId) {
                 pool.request()
@@ -2958,6 +3043,18 @@ exports.cancelOrder = async (req, res) => {
                 io      : req.app.get('socketio')
             });
 
+            // [PRENDAS] Lo que esperaba a esta orden por LiberaCuandoOrdenID cae con ella:
+            // su dependencia solo se suelta cuando la fuente llega a 'Pronto', y una orden
+            // cancelada nunca llega. Sin esto quedan órdenes zombi invisibles para siempre.
+            const { cancelarOrdenesEncadenadas, hermanasVivasDelPedido } = require('../utils/cadenaOrdenes');
+            const encadenadas = await cancelarOrdenesEncadenadas(transaction, orderId, {
+                userObj : req.user || req.body.usuario,
+                io      : req.app.get('socketio')
+            });
+
+            // Las otras órdenes del pedido NO se tocan: se informan y decide una persona.
+            const hermanasVivas = await hermanasVivasDelPedido(transaction, orderId);
+
             await transaction.commit();
 
             // AUTO-CLEANUP: si el lote quedó solo con órdenes muertas (Pronto/finalizadas/canceladas
@@ -2991,7 +3088,12 @@ exports.cancelOrder = async (req, res) => {
                 }
             } catch (sockErr) { logger.error("Socket error:", sockErr); }
 
-            res.json({ success: true, message: 'Orden cancelada correctamente.' });
+            res.json({
+                success: true,
+                message: 'Orden cancelada correctamente.',
+                encadenadas,      // las que cayeron con ella (ya canceladas)
+                hermanasVivas,    // las que siguen vivas: las decide el operador
+            });
 
             // Push notification ({code} se reemplaza por el CodigoOrden en el servicio)
             pushService.sendToOrderClient(orderId, {
@@ -3446,6 +3548,8 @@ exports.cancelFile = async (req, res) => {
             const ordenId = orderRes.recordset[0]?.OrdenID;
             const noDocERP = orderRes.recordset[0]?.NoDocERP;
             let orderCancelled = false;
+            let encadenadas = [];    // órdenes que esperaban a ésta y cayeron con ella
+            let hermanasVivas = [];  // las otras del pedido que siguen vivas (las decide el operador)
 
             if (ordenId) {
                 // 3. Recalcular Magnitud Total (Unificado)
@@ -3489,6 +3593,14 @@ exports.cancelFile = async (req, res) => {
                         userObj : req.user || req.body.usuario,
                         io      : req.app.get('socketio')
                     });
+                    // Y lo que esperaba a esta orden por LiberaCuandoOrdenID (ver cadenaOrdenes):
+                    // solo acá, cuando la orden entera cae. Cancelar UN archivo no corta la cadena.
+                    const { cancelarOrdenesEncadenadas, hermanasVivasDelPedido } = require('../utils/cadenaOrdenes');
+                    encadenadas = await cancelarOrdenesEncadenadas(transaction, ordenId, {
+                        userObj : req.user || req.body.usuario,
+                        io      : req.app.get('socketio')
+                    });
+                    hermanasVivas = await hermanasVivasDelPedido(transaction, ordenId);
                     orderCancelled = true;
                 }
 
@@ -3526,7 +3638,7 @@ exports.cancelFile = async (req, res) => {
                 }
             } catch (sockErr) { logger.error("Socket emit error:", sockErr); }
 
-            res.json({ success: true, orderCancelled });
+            res.json({ success: true, orderCancelled, encadenadas, hermanasVivas });
 
         } catch (inner) {
             await transaction.rollback();

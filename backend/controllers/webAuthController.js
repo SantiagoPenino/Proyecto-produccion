@@ -7,8 +7,66 @@ const logger = require('../utils/logger');
 const googleSheets = require('../services/sheetsService');
 const { trackLogin } = require('../utils/sessionTracker');
 const { audit } = require('../utils/auditLogger');
+const { hashear, verificar } = require('../utils/password');
 const JWT_SECRET = process.env.JWT_SECRET;
 if (!JWT_SECRET) throw new Error('JWT_SECRET is not defined in environment variables');
+
+// Clientes.VendedorID guarda la CÉDULA del asesor: así lo leen el reporte de ventas por vendedor,
+// la cartera y la integración de clientes. Hasta el 16/09/2026 el registro del portal guardaba en
+// cambio Trabajadores.ID (VEN-00X), y las ventas de esos clientes no le caían a ningún vendedor.
+// El asesor se busca de las dos formas para que un cliente que todavía tenga el código lo siga
+// viendo. OUTER APPLY + TOP 1: una cédula repetida en Trabajadores no puede duplicar al cliente
+// (el login cuenta las filas que encuentra).
+const SQL_ASESOR_DEL_CLIENTE = `
+            OUTER APPLY (
+                SELECT TOP 1 tr.Nombre, tr.Cedula
+                FROM dbo.Trabajadores tr
+                WHERE LTRIM(RTRIM(c.VendedorID)) IN (tr.ID, CAST(tr.Cedula AS NVARCHAR(50)))
+                ORDER BY CASE WHEN UPPER(LTRIM(RTRIM(ISNULL(tr.[Área], '')))) = 'VENTAS' THEN 0 ELSE 1 END
+            ) t`;
+
+// Asesor de un cliente que se registra por el portal; devuelve la cédula (o null).
+// - La elección manual manda. El formulario manda Trabajadores.ID (VEN-00X) y una versión cacheada
+//   por la PWA lo va a seguir mandando, así que se acepta ID o cédula y se guarda la cédula. Lo que
+//   no sea un asesor de Ventas se ignora y cae en el reparto automático.
+// - Reparto automático: le toca al asesor que hace más tiempo que no recibe un registro. Antes se
+//   elegía al de menos clientes contando solo los guardados con código, que en la práctica eran
+//   solo los registrados por el portal: el efecto era repartir parejo los clientes nuevos. Contar la
+//   cartera entera cambiaría eso y mandaría todos los registros al de cartera más chica. El alta
+//   manual y la sincronización no cargan FechaRegistro, así que la cuenta sigue mirando registros.
+async function resolverAsesorRegistro(pool, eleccion) {
+    const elegido = String(eleccion || '').trim();
+    if (elegido) {
+        const r = await pool.request()
+            .input('V', sql.NVarChar(50), elegido)
+            .query(`
+                SELECT TOP 1 CAST(t.Cedula AS NVARCHAR(20)) AS Cedula
+                FROM dbo.Trabajadores t
+                WHERE t.Cedula IS NOT NULL
+                  AND UPPER(LTRIM(RTRIM(ISNULL(t.[Área], '')))) = 'VENTAS'
+                  AND @V IN (t.ID, CAST(t.Cedula AS NVARCHAR(50)))
+            `);
+        if (r.recordset[0]?.Cedula) return r.recordset[0].Cedula;
+        logger.warn(`[REGISTRO] El asesor elegido '${elegido}' no es un asesor de Ventas: se asigna automático.`);
+    }
+    const r = await pool.request().query(`
+        WITH ultimos AS (
+            SELECT LTRIM(RTRIM(VendedorID)) AS V, MAX(FechaRegistro) AS Ultimo
+            FROM dbo.Clientes
+            WHERE FechaRegistro IS NOT NULL
+              AND LTRIM(RTRIM(ISNULL(VendedorID, ''))) <> ''
+            GROUP BY LTRIM(RTRIM(VendedorID))
+        )
+        SELECT TOP 1 CAST(t.Cedula AS NVARCHAR(20)) AS Cedula
+        FROM dbo.Trabajadores t
+        LEFT JOIN ultimos u ON u.V IN (t.ID, CAST(t.Cedula AS NVARCHAR(50)))
+        WHERE t.Cedula IS NOT NULL
+          AND UPPER(LTRIM(RTRIM(ISNULL(t.[Área], '')))) = 'VENTAS'
+        GROUP BY t.Cedula
+        ORDER BY MAX(u.Ultimo) ASC
+    `);
+    return r.recordset[0]?.Cedula || null;
+}
 
 // ===================================
 // LOGIN
@@ -29,7 +87,7 @@ exports.login = asyncHandler(async (req, res) => {
         .query(`
             SELECT c.*, t.Nombre AS VendedorNombre, t.Cedula AS VendedorCedula, NULL AS VendedorTelefono, d.Nombre AS DepartamentoNombre
             FROM Clientes c
-            LEFT JOIN dbo.Trabajadores t ON c.VendedorID = t.ID
+            ${SQL_ASESOR_DEL_CLIENTE}
             LEFT JOIN dbo.Departamentos d ON c.DepartamentoID = d.ID
             WHERE LTRIM(RTRIM(c.IDCliente)) = @Val
         `);
@@ -50,6 +108,7 @@ exports.login = asyncHandler(async (req, res) => {
 
     let isValid = false;
     let isFirstTime = false;
+    let rehash = null;
 
     if (!client.WebPasswordHash || client.WebPasswordHash === '') {
         if (password && password.length > 0) {
@@ -58,8 +117,10 @@ exports.login = asyncHandler(async (req, res) => {
         } else {
             return res.status(401).json({ success: false, message: 'Debe ingresar una contraseña.' });
         }
-    } else if (client.WebPasswordHash === password) {
-        isValid = true;
+    } else {
+        const chk = await verificar(password, client.WebPasswordHash);
+        isValid = chk.ok;
+        rehash = chk.rehash || null;
     }
 
     if (!isValid) {
@@ -86,9 +147,20 @@ exports.login = asyncHandler(async (req, res) => {
     if (isFirstTime) {
         await pool.request()
             .input('ID', sql.Int, client.CodCliente)
-            .input('Pass', sql.NVarChar, password)
+            .input('Pass', sql.NVarChar, await hashear(password))
             .query("UPDATE Clientes SET WebPasswordHash = @Pass, WebResetPassword = 0 WHERE CodCliente = @ID");
         client.WebResetPassword = false;
+    } else if (rehash) {
+        // Entró con la contraseña vieja en texto plano: se migra a bcrypt (best-effort:
+        // si el UPDATE falla, el login ya es válido y se reintenta en el próximo).
+        try {
+            await pool.request()
+                .input('ID', sql.Int, client.CodCliente)
+                .input('Hash', sql.NVarChar(255), rehash)
+                .query('UPDATE dbo.Clientes SET WebPasswordHash = @Hash WHERE CodCliente = @ID');
+        } catch (e) {
+            logger.warn(`[PASSWORD] No se pudo migrar al cliente ${client.CodCliente}: ${e.message}`);
+        }
     }
 
     const token = jwt.sign(
@@ -167,26 +239,15 @@ exports.register = asyncHandler(async (req, res) => {
         }
     }
 
-    // --- Vendedor: la elección manual manda; si no eligió, el asesor de Ventas con menos
-    // clientes. Ya no se filtra por la Zona del departamento (Principal / Interior dejó de regir
-    // el 04/09/2026): con la zona, un departamento sin asesor propio dejaba al cliente sin vendedor.
-    // Se guarda t.ID (VEN-00X) porque el perfil del portal resuelve el nombre del asesor por ese
-    // campo (joins de login/perfil más abajo). ---
-    let vendedorId = manualVendedorId || null;
-    if (!vendedorId) {
-        try {
-            const vendedorResult = await pool.request().query(`
-                SELECT TOP 1 t.ID
-                FROM dbo.Trabajadores t
-                LEFT JOIN dbo.Clientes c ON c.VendedorID = t.ID
-                WHERE UPPER(LTRIM(RTRIM(ISNULL(t.[Área], '')))) = 'VENTAS'
-                GROUP BY t.ID
-                ORDER BY COUNT(c.CodCliente) ASC
-            `);
-            vendedorId = vendedorResult.recordset[0]?.ID || null;
-        } catch (err) {
-            logger.warn('⚠️ Error auto-assigning vendedor:', err.message);
-        }
+    // --- Vendedor: la elección manual manda; si no eligió, reparto automático entre los asesores de
+    // Ventas. Ya no se filtra por la Zona del departamento (Principal / Interior dejó de regir el
+    // 04/09/2026): con la zona, un departamento sin asesor propio dejaba al cliente sin vendedor.
+    // Se guarda la CÉDULA (ver resolverAsesorRegistro). ---
+    let vendedorId = null;
+    try {
+        vendedorId = await resolverAsesorRegistro(pool, manualVendedorId);
+    } catch (err) {
+        logger.warn('⚠️ Error asignando vendedor:', err.message);
     }
 
     // 1. Verificar si IDCliente ya existe
@@ -244,7 +305,7 @@ exports.register = asyncHandler(async (req, res) => {
         .input('Tel', sql.NVarChar(50), phone || '')
         .input('Dir', sql.NVarChar(500), address || '')
         .input('Ruc', sql.NVarChar(50), ruc || '')
-        .input('Pass', sql.NVarChar(255), password)
+        .input('Pass', sql.NVarChar(255), await hashear(password))
         .input('DepID', sql.Int, departamentoId || null)
         .input('LocID', sql.Int, localidadId || null)
         .input('AgeID', sql.Int, agenciaId || null)
@@ -316,7 +377,7 @@ exports.me = asyncHandler(async (req, res) => {
         .query(`
             SELECT c.*, t.Nombre AS VendedorNombre, t.Cedula AS VendedorCedula, NULL AS VendedorTelefono, d.Nombre AS DepartamentoNombre
             FROM Clientes c
-            LEFT JOIN dbo.Trabajadores t ON c.VendedorID = t.ID
+            ${SQL_ASESOR_DEL_CLIENTE}
             LEFT JOIN dbo.Departamentos d ON c.DepartamentoID = d.ID
             WHERE c.CodCliente = @ID
         `);
@@ -369,7 +430,7 @@ exports.updatePassword = asyncHandler(async (req, res) => {
     const pool = await getPool();
     await pool.request()
         .input('ID', sql.Int, userId)
-        .input('Pass', sql.NVarChar, newPassword)
+        .input('Pass', sql.NVarChar, await hashear(newPassword))
         .query("UPDATE Clientes SET WebPasswordHash = @Pass, WebResetPassword = 0 WHERE CodCliente = @ID");
 
     res.json({ success: true, message: "Contraseña actualizada correctamente" });
@@ -539,7 +600,7 @@ exports.resetPassword = asyncHandler(async (req, res) => {
     const pool = await getPool();
     await pool.request()
         .input('ID', sql.Int, decoded.codCliente)
-        .input('Pass', sql.NVarChar, newPassword)
+        .input('Pass', sql.NVarChar, await hashear(newPassword))
         .query("UPDATE Clientes SET WebPasswordHash = @Pass, WebResetPassword = 0 WHERE CodCliente = @ID");
 
     return res.json({ success: true, message: 'Contraseña actualizada correctamente.' });

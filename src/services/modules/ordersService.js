@@ -136,6 +136,11 @@ export const ordersService = {
                 area: o.AreaID || o.area || area || '',
                 status: o.Estado || o.status || 'Pendiente',
                 areaStatus: o.EstadoenArea || o.areaStatus || '',
+                // El lote y la dependencia deciden qué acciones se pueden ofrecer en el
+                // detalle (p.ej. consultar al cliente es solo sobre pendientes sin lote).
+                // Sin esto llegaban undefined y el gate del modal quedaba a ciegas.
+                rollId: o.RolloID ?? o.rollId ?? null,
+                dependencyStatus: o.EstadoDependencia || o.dependencyStatus || 'OK',
                 priority: o.Prioridad || o.priority || 'Normal',
                 magnitude: o.Magnitud || o.magnitude || '',
                 material: o.Material || o.material || '',

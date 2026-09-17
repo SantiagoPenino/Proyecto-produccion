@@ -1227,19 +1227,93 @@ exports.getRolloMetrics = async (req, res) => {
     }
 };
 
+// Hermanas de una orden = mismo NoDocERP, o misma RAÍZ de código: el texto antes del primer
+// paréntesis ("DTF-123 (1/2)" y "DTF-123 (2/2)"). Antes lo resolvía una subconsulta por orden que
+// calculaba la raíz de TODAS las órdenes de la tabla: en un lote de 70 órdenes eran 70 recorridas
+// completas, ~2,7 s de CPU cada vez que alguien abría el lote. Ahora es una sola consulta que busca
+// por índice (NoDocERP y prefijo de CodigoOrden) y el emparejado exacto se hace acá, con las mismas
+// reglas que la comparación de SQL: sin distinguir mayúsculas y sin los espacios de relleno.
+const raizDeCodigo = (codigo) => {
+    if (codigo == null) return null;
+    const s = String(codigo);
+    const i = s.indexOf('(');
+    return (i >= 0 ? s.slice(0, i) : s).replace(/^ +| +$/g, '').toUpperCase();
+};
+const claveNoDoc = (noDoc) => {
+    if (noDoc == null) return null;
+    const k = String(noDoc).replace(/ +$/, '').toUpperCase();   // nchar: viene rellenado con espacios
+    return k === '' ? null : k;
+};
+const comodinLike = (s) => s.replace(/\[/g, '[[]').replace(/%/g, '[%]').replace(/_/g, '[_]');
+
+async function estadosDeHermanas(pool, ordenes) {
+    const porOrden = new Map();
+    // Una orden sin raíz (código vacío o que empieza con paréntesis) no se empareja por raíz: con
+    // la subconsulta vieja "hermanaba" con todas las órdenes sin código, que no son del mismo pedido.
+    const raices = [...new Set(ordenes.map(o => raizDeCodigo(o.CodigoOrden)).filter(Boolean))];
+    const noDocs = [...new Map(ordenes.filter(o => claveNoDoc(o.NoDocERP)).map(o => [claveNoDoc(o.NoDocERP), o.NoDocERP])).values()];
+    if (!raices.length && !noDocs.length) return porOrden;
+
+    const candidatas = new Map();   // OrdenID -> fila (una orden puede entrar por las dos vías)
+    const TANDA = 500;              // lejos del tope de 2100 parámetros por consulta
+    for (let i = 0; i < Math.max(raices.length, noDocs.length); i += TANDA) {
+        const rr = raices.slice(i, i + TANDA);
+        const dd = noDocs.slice(i, i + TANDA);
+        const request = pool.request();
+        const condiciones = [];
+        if (dd.length) {
+            dd.forEach((v, j) => request.input(`d${j}`, sql.NChar(30), v));
+            condiciones.push(`O2.NoDocERP IN (${dd.map((_, j) => `@d${j}`).join(',')})`);
+        }
+        rr.forEach((v, j) => {
+            // VARCHAR como la columna: con NVARCHAR la base convierte la columna y pierde el índice
+            request.input(`r${j}`, sql.VarChar(400), comodinLike(v) + '%');
+            condiciones.push(`O2.CodigoOrden LIKE @r${j}`);
+        });
+        const res = await request.query(`
+            SELECT O2.OrdenID, O2.CodigoOrden, O2.NoDocERP, O2.AreaID, O2.Estado
+            FROM dbo.Ordenes O2
+            WHERE ${condiciones.join(' OR ')}
+        `);
+        res.recordset.forEach(f => candidatas.set(f.OrdenID, f));
+    }
+
+    const lista = [...candidatas.values()]
+        .sort((a, b) => a.OrdenID - b.OrdenID)
+        .map(f => ({ raiz: raizDeCodigo(f.CodigoOrden), noDoc: claveNoDoc(f.NoDocERP), f }));
+    ordenes.forEach(o => {
+        const raiz = raizDeCodigo(o.CodigoOrden);
+        const noDoc = claveNoDoc(o.NoDocERP);
+        porOrden.set(o.OrdenID, lista
+            .filter(c => (noDoc && c.noDoc === noDoc) || (raiz && c.raiz === raiz))
+            // undefined y no null: el FOR JSON de antes omitía las columnas nulas, así el front
+            // recibe exactamente la misma forma.
+            .map(c => ({ area: c.f.AreaID ?? undefined, status: c.f.Estado ?? undefined })));
+    });
+    return porOrden;
+}
+
 // ==========================================
 // 8. OBTENER DETALLE DE UN ROLLO (Orders + Files)
 // ==========================================
 exports.getRollDetails = async (req, res) => {
     const { rolloId } = req.params;
     try {
+        // RolloID es INT. Comparado como texto (CAST a VARCHAR) la base no podía usar el índice y
+        // recorría la tabla entera de órdenes en cada apertura del lote.
+        const txtId = String(rolloId ?? '').trim();
+        const rolloNum = /^\d{1,10}$/.test(txtId) ? Number(txtId) : null;
+        if (rolloNum === null || rolloNum > 2147483647) {
+            return res.status(404).json({ error: 'Rollo no encontrado' });
+        }
+
         const pool = await getPool();
         await ensureOrderColumns(pool);
 
         // A. TRAER ROLLO
         const rollsRes = await pool.request()
-            .input('RolloID', sql.VarChar(50), rolloId)
-            .query("SELECT * FROM dbo.Rollos WHERE CAST(RolloID AS VARCHAR(50)) = @RolloID");
+            .input('RolloID', sql.Int, rolloNum)
+            .query("SELECT * FROM dbo.Rollos WHERE RolloID = @RolloID");
 
         if (rollsRes.recordset.length === 0) {
             return res.status(404).json({ error: 'Rollo no encontrado' });
@@ -1252,16 +1326,16 @@ exports.getRollDetails = async (req, res) => {
         // lectura y no debe reescribir la secuencia de datos históricos.
         if (String(r.AreaID || '').toUpperCase() === 'SB' && !r.OrdenadoSB && !['Finalizado', 'Cerrado'].includes(r.Estado)) {
             await pool.request()
-                .input('RID', sql.VarChar(50), rolloId)
+                .input('RID', sql.Int, r.RolloID)
                 .query(`
                     ;WITH O AS (
                         SELECT OrdenID, ROW_NUMBER() OVER (
                             ORDER BY LTRIM(RTRIM(ISNULL(Material,''))), LTRIM(RTRIM(ISNULL(Variante,''))), CodigoOrden
                         ) AS rn
-                        FROM dbo.Ordenes WHERE CAST(RolloID AS VARCHAR(50)) = @RID
+                        FROM dbo.Ordenes WHERE RolloID = @RID
                     )
                     UPDATE ord SET Secuencia = O.rn FROM dbo.Ordenes ord JOIN O ON ord.OrdenID = O.OrdenID;
-                    UPDATE dbo.Rollos SET OrdenadoSB = 1 WHERE CAST(RolloID AS VARCHAR(50)) = @RID;
+                    UPDATE dbo.Rollos SET OrdenadoSB = 1 WHERE RolloID = @RID;
                 `);
         }
 
@@ -1286,7 +1360,7 @@ exports.getRollDetails = async (req, res) => {
 
         // B. TRAER ÓRDENES DEL ROLLO
         const ordersRes = await pool.request()
-            .input('RolloID', sql.VarChar(50), rolloId)
+            .input('RolloID', sql.Int, r.RolloID)
             .query(`
                 SELECT 
                     o.OrdenID, o.CodigoOrden, o.Cliente, o.DescripcionTrabajo, 
@@ -1306,28 +1380,16 @@ exports.getRollDetails = async (req, res) => {
                        FROM dbo.ArchivosOrden ao
                       WHERE ao.OrdenID = o.OrdenID
                         AND (ao.Observaciones LIKE '%[[]RAPORT]%' OR ao.Observaciones LIKE '%[[]ESCALA]%')
-                      ORDER BY CASE WHEN ao.Observaciones LIKE '%[[]RAPORT]%' THEN 0 ELSE 1 END) AS ModoImpresion,
-                    -- ✅ SUBQUERY FOR GLOBAL STATUS (Sibling Orders via Root Match)
-                    (
-                        SELECT O2.AreaID, O2.Estado 
-                        FROM Ordenes O2 
-                        WHERE 
-                            (o.NoDocERP IS NOT NULL AND O2.NoDocERP = o.NoDocERP AND O2.NoDocERP != '')
-                            OR 
-                            (
-                               -- Match text before first parenthesis (The Root Pedido ID)
-                               LTRIM(RTRIM(LEFT(O2.CodigoOrden, CHARINDEX('(', O2.CodigoOrden + '(') - 1)))
-                               = 
-                               LTRIM(RTRIM(LEFT(o.CodigoOrden, CHARINDEX('(', o.CodigoOrden + '(') - 1)))
-                            )
-                        FOR JSON PATH
-                    ) as RelatedStatus
+                      ORDER BY CASE WHEN ao.Observaciones LIKE '%[[]RAPORT]%' THEN 0 ELSE 1 END) AS ModoImpresion
                 FROM dbo.Ordenes o
                 LEFT JOIN dbo.Clientes c ON c.CliIdCliente = o.CliIdCliente
                 LEFT JOIN dbo.InventarioBobinas ibt ON ibt.BobinaID = o.BobinaTelaID
-                WHERE CAST(o.RolloID AS VARCHAR(50)) = @RolloID
+                WHERE o.RolloID = @RolloID
                 ORDER BY ISNULL(o.Secuencia, 999999), o.OrdenID ASC
             `);
+
+        // Estado de las hermanas de cada orden (el "services" de abajo), en una sola consulta.
+        const hermanasPorOrden = await estadosDeHermanas(pool, ordersRes.recordset);
 
         // Tela de Cliente (variante con "cliente"): material a mostrar = Referencia + DescripcionTela
         // (capitalizada) + Ancho; y la Referencia se usa para agrupar (solo se agrupa si es igual).
@@ -1373,17 +1435,7 @@ exports.getRollDetails = async (req, res) => {
                 ink: o.Tinta,
                 fileCount: o.CantidadArchivos || o.fileCount || 0,
                 note: o.Nota,
-                // RelatedStatus viene de un FOR JSON PATH: si llega cortado/mal formado, un JSON.parse
-                // suelto tira TODO el detalle del lote (500) y el modal queda vacío. Se degrada a [].
-                services: (() => {
-                    if (!o.RelatedStatus) return [];
-                    try {
-                        return JSON.parse(o.RelatedStatus).map(s => ({ area: s.AreaID, status: s.Estado }));
-                    } catch (e) {
-                        logger.warn(`[getRollDetails] RelatedStatus ilegible en orden ${o.OrdenID}: ${e.message}`);
-                        return [];
-                    }
-                })()
+                services: hermanasPorOrden.get(o.OrdenID) || []
             });
 
             rollObj.currentUsage += magVal;
@@ -1400,16 +1452,17 @@ exports.getRollDetails = async (req, res) => {
 // ==========================================
 // Marcar / desmarcar una orden como IMPRESA (persistente, todas las áreas)
 // ==========================================
-exports.setOrderPrinted = async (req, res) => {
-    const { orderId, printed } = req.body;
-    if (!orderId) return res.status(400).json({ error: 'orderId requerido' });
-    try {
-        const pool = await getPool();
-        await ensureOrderColumns(pool);
-        await pool.request()
-            .input('OID', sql.Int, Number(orderId))
-            .input('P', sql.Bit, printed ? 1 : 0)
-            .query(`
+/**
+ * Marca/desmarca UNA orden como impresa. `fecha` (Date | null) permite fijar el instante desde
+ * afuera: lo usa el marcado por GRUPO para que las órdenes queden con horas CRECIENTES en el
+ * orden en que se ven en pantalla. Con null se usa GETDATE(), la hora del propio SQL Server.
+ */
+async function marcarImpresoUna(pool, orderId, printed, fecha = null) {
+    await pool.request()
+        .input('OID', sql.Int, Number(orderId))
+        .input('P', sql.Bit, printed ? 1 : 0)
+        .input('F', sql.DateTime2, fecha)
+        .query(`
                 -- Total del contador parcial, según el caso:
                 --   · AreaID='DIRECTA'  → copias del arte (SUM de ArchivosOrden.Copias)
                 --   · lote en MIMAKI    → ídem, copias del arte
@@ -1440,12 +1493,60 @@ exports.setOrderPrinted = async (req, res) => {
                         ELSE CantidadImpresa END,
                     -- Se desmarca al desmarcar Impreso: si se reimprime después, la fecha nueva
                     -- refleja CUÁNDO ocurrió de verdad, no cuándo se había marcado la primera vez.
-                    FechaImpreso = CASE WHEN @P = 1 THEN GETDATE() ELSE NULL END
+                    FechaImpreso = CASE WHEN @P = 1 THEN ISNULL(@F, GETDATE()) ELSE NULL END
                 WHERE OrdenID = @OID
             `);
+}
+
+exports.setOrderPrinted = async (req, res) => {
+    const { orderId, printed } = req.body;
+    if (!orderId) return res.status(400).json({ error: 'orderId requerido' });
+    try {
+        const pool = await getPool();
+        await ensureOrderColumns(pool);
+        await marcarImpresoUna(pool, orderId, printed);
         res.json({ ok: true });
     } catch (err) {
         logger.error('Error seteando Impreso:', err);
+        res.status(500).json({ error: err.message });
+    }
+};
+
+// ==========================================
+// Marcar / desmarcar UN GRUPO de órdenes (el checkbox de un bloque de tela)
+// ==========================================
+// Existe porque el frontend disparaba una llamada POR ORDEN en paralelo (Promise.allSettled) y
+// cada una escribía su propio GETDATE(): el orden en que llegaban al servidor era arbitrario, así
+// que un grupo de 12 órdenes quedaba con 12 horas en orden aleatorio. Como el detalle del lote
+// ordena las impresas por FechaImpreso y agrupa por tela CONSECUTIVA, esas fechas revueltas
+// intercalaban las telas y partían el lote en bloques sueltos — se veía "todo desordenado",
+// sobre todo en la calandra, que además lo muestra invertido (reporte de planta 10/09/2026).
+//
+// Acá los ids llegan en el ORDEN VISUAL y se les asignan fechas de 1 ms de diferencia a partir de
+// una sola lectura del reloj del SQL Server, así el orden guardado es exactamente el que vio el
+// operario. Secuencial a propósito: en paralelo se volvería al mismo problema.
+exports.setOrdersPrintedBulk = async (req, res) => {
+    const { orderIds, printed } = req.body;
+    const ids = Array.isArray(orderIds) ? orderIds.map(Number).filter(n => Number.isFinite(n) && n > 0) : [];
+    if (!ids.length) return res.status(400).json({ error: 'orderIds requerido' });
+    try {
+        const pool = await getPool();
+        await ensureOrderColumns(pool);
+        // Una sola lectura de la hora del servidor: la base común de todo el grupo.
+        const baseRes = await pool.request().query('SELECT SYSDATETIME() AS Base');
+        const base = new Date(baseRes.recordset[0].Base).getTime();
+        const fallidas = [];
+        for (let i = 0; i < ids.length; i++) {
+            try {
+                await marcarImpresoUna(pool, ids[i], printed, printed ? new Date(base + i) : null);
+            } catch (e) {
+                fallidas.push(ids[i]);
+                logger.warn(`[ROLLS] No se pudo marcar impresa la orden ${ids[i]}: ${e.message}`);
+            }
+        }
+        res.json({ ok: fallidas.length === 0, total: ids.length, fallidas });
+    } catch (err) {
+        logger.error('Error seteando Impreso (grupo):', err);
         res.status(500).json({ error: err.message });
     }
 };

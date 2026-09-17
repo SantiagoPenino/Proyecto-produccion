@@ -154,6 +154,16 @@ router.post('/aprobar-pedido', verifyToken, webOrdersController.aprobarPedido);
 // POST /api/web-orders/rechazar-pedido — el CLIENTE rechaza el boceto; vuelve a producción marcada.
 router.post('/rechazar-pedido', verifyToken, webOrdersController.rechazarPedido);
 
+// ── CONSULTA AL CLIENTE ───────────────────────────────────────────────────────
+// Producción preguntó algo sobre un archivo (o sobre la orden) y el cliente responde
+// UNA vez: aprueba o cancela. No es un hilo — no hay endpoint para escribir de vuelta.
+const consultasCtrl = require('../controllers/consultasClienteController');
+router.get('/consultas', verifyToken, impersonarCliente, consultasCtrl.misConsultas);
+router.post('/consultas/:id/responder', verifyToken, impersonarCliente, consultasCtrl.responder);
+// Las fotos de la pregunta. Mismo handler que el de la planta: adentro chequea que la
+// consulta sea del cliente que la pide (el token de un cliente trae codCliente).
+router.get('/consultas/:consultaId/foto/:fotoId', verifyToken, impersonarCliente, consultasCtrl.getFoto);
+
 // --- INTEGRACIÓN EXTERNA (API KEY) ---
 const INTEGRATION_KEY = process.env.INTEGRATION_API_KEY || 'macrosoft-secret-key';
 

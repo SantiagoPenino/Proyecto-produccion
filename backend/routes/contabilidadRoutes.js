@@ -215,13 +215,17 @@ router.put('/caja/autorizaciones-sin-pago/:id',          caja.gestionarAutorizac
 router.get('/caja/operaciones', motorCtrl.getOperacionesCaja);
 router.post('/caja/operacion-manual', caja.registrarOperacionManual);
 
+// Reintento automático si SQL elige la operación como víctima de un deadlock (1205).
+// Requiere que el handler relance ese error en vez de responder — ver utils/reintentarDeadlock.
+const { conReintentoDeadlock } = require('../utils/reintentarDeadlock');
+
 // ── OPERACIONES DESDE ESTADO DE CUENTA (Caja Administrativa) ──────────────────
-router.post('/caja/nota-credito',      caja.generarNotaCredito);      // Nota de crédito sobre doc existente
+router.post('/caja/nota-credito',      conReintentoDeadlock(caja.generarNotaCredito));      // Nota de crédito sobre doc existente
 router.post('/caja/nota-credito-externa', caja.generarNotaCreditoExterna); // Nota de crédito sobre factura del sistema anterior (solo CFE, sin impacto contable)
 router.post('/caja/nota-debito',       caja.generarNotaDebito);       // Nota de débito sobre doc existente (NUEVO)
-router.post('/caja/reversar-doc',      caja.reversarDocumento);       // Reverso: contado→egreso/crédito→NC
-router.post('/caja/pago-anticipo',     caja.registrarPagoAnticipo);   // Anticipo directo a cuenta (nuevo dinero)
-router.post('/caja/anular-factura',    caja.anularFactura);           // Anular factura no enviada a DGI → reabre ciclo
+router.post('/caja/reversar-doc',      conReintentoDeadlock(caja.reversarDocumento));       // Reverso: contado→egreso/crédito→NC
+router.post('/caja/pago-anticipo',     conReintentoDeadlock(caja.registrarPagoAnticipo));   // Anticipo directo a cuenta (nuevo dinero)
+router.post('/caja/anular-factura',    conReintentoDeadlock(caja.anularFactura));           // Anular factura no enviada a DGI → reabre ciclo
 router.post('/caja/imputar-anticipo-deuda', caja.imputarAnticipoADeuda); // Imputar saldo existente a una deuda específica
 // ¿La factura fue una compra de recurso (rollo por adelantado)? Se consulta antes de
 // emitir una NC o anular, para avisar que además de la plata hay metros en juego.
@@ -239,8 +243,13 @@ router.get('/cfe/documentos/:id/preview-dgi', cfeCtrl.previewDGI);   // Qué CFE
 router.post('/cfe/manual', cfeCtrl.crearFacturaManual);
 router.get('/cfe/documentos/:id/detalle', cfeCtrl.getDetalleFactura);
 router.post('/cfe/documentos/:id/enviar-email', cfeCtrl.enviarDocumentoPorEmail); // Manda el PDF al cliente por correo
-router.put('/cfe/documentos/:id/anular', cfeCtrl.anularFactura);
-router.put('/cfe/documentos/:id', cfeCtrl.editarFactura);
+router.put('/cfe/documentos/:id/anular', conReintentoDeadlock(cfeCtrl.anularFactura));
+// Editar una factura escribe en OCHO tablas dentro de una sola transacción
+// (SecuenciaDocumentos, DocumentosContables, Cont_AsientosCabecera, el detalle,
+// MovimientosCuenta, CuentasCliente, DeudaDocumento y TransaccionesCaja) y puede tardar
+// varios segundos: es la que más choca con las operaciones de caja. Ser víctima de un
+// deadlock acá es esperable, y perder la edición no.
+router.put('/cfe/documentos/:id', conReintentoDeadlock(cfeCtrl.editarFactura));
 
 // ── Búsqueda de documento por serie+numero ───────────────────────────────────
 router.get('/documentos/buscar', async (req, res) => {

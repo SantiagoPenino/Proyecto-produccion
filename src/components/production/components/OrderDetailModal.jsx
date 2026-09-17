@@ -1,6 +1,6 @@
 import React, { useState, useEffect, Fragment } from 'react';
 import { createPortal } from 'react-dom';
-import { ordersService, fileControlService } from '../../../services/api';
+import { ordersService, fileControlService, consultasService } from '../../../services/api';
 import api from '../../../services/apiClient';
 import FileItem, { ActionButton } from './FileItem';
 import ReferenceItem from './ReferenceItem';
@@ -16,6 +16,8 @@ import { Listbox, Transition } from '@headlessui/react';
 import { Check, ChevronDown } from 'lucide-react';
 import ModalConfirmacionFalla from './ModalConfirmacionFalla';
 import ModalLiberacionFalla from './ModalLiberacionFalla';
+import ModalConsultaCliente from './ModalConsultaCliente';
+import BandaConsultaCliente from './BandaConsultaCliente';
 import Swal from 'sweetalert2';
 
 // Visor 3D del parche TPU (el mismo del portal, en modo interno: el diseñador elige las texturas).
@@ -72,6 +74,18 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
     // tipo). La Magnitud es la CANTIDAD DE PRENDAS del pedido — editable acá (recotiza el
     // pedido); los archivos NO la tocan.
     const isPRO = String(order?.area || order?.AreaID || currentOrder?.area || currentOrder?.AreaID || '').toUpperCase() === 'PRO';
+
+    // CONSULTA AL CLIENTE — solo SB/DTF/ECOUV (espeja AREAS_HABILITADAS del backend:
+    // services/consultasClienteService.js). TPU queda afuera: ya tiene su propio
+    // circuito de aprobación de boceto. Ver docs/consultas-cliente-plan.md §0.
+    const AREAS_CONSULTA = ['SB', 'SUB', 'DF', 'DTF', 'ECOUV'];
+    const areaConsultable = AREAS_CONSULTA.includes(
+        String(order?.area || order?.AreaID || currentOrder?.area || currentOrder?.AreaID || '').toUpperCase()
+    );
+    const [consultas, setConsultas] = useState([]);
+    // null | { archivo: {id, nombre} | null } — null en `archivo` = consulta de la orden entera
+    const [consultaModal, setConsultaModal] = useState(null);
+
     const [files, setFiles] = useState([]);
     const [uploadingTPU, setUploadingTPU] = useState(false);
     // Progreso de la subida TPU: % global ponderado por bytes + archivo en curso (para la barra).
@@ -1050,24 +1064,26 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
             usuario: safeUser
         };
 
+        // `cancelType` se limpia en el success del toast: se captura acá para que el aviso
+        // posterior sepa qué se canceló.
+        const tipo = cancelType;
+        let resultado = null;
+
         const promise = (async () => {
-            if (cancelType === 'FILE') {
+            if (tipo === 'FILE') {
                 if (!fileToCancel) return;
                 const fileId = fileToCancel.id || fileToCancel.ArchivoID;
-                const res = await ordersService.cancelFile({ ...commonPayload, fileId });
+                resultado = await ordersService.cancelFile({ ...commonPayload, fileId });
+                if (!resultado.orderCancelled) reloadFiles();
+                return resultado.message || 'Archivo cancelado';
 
-                if (res.orderCancelled) onClose();
-                else reloadFiles();
-                return res.message || 'Archivo cancelado';
-
-            } else if (cancelType === 'REQUEST') {
+            } else if (tipo === 'REQUEST') {
                 await ordersService.cancelRequest({ ...commonPayload, orderId: currentOrder.id });
                 onClose();
                 return "Pedido completo cancelado (todas las áreas).";
 
             } else {
-                await ordersService.cancelOrder({ ...commonPayload, orderId: currentOrder.id });
-                onClose();
+                resultado = await ordersService.cancelOrder({ ...commonPayload, orderId: currentOrder.id });
                 return "Orden cancelada correctamente.";
             }
         })();
@@ -1085,6 +1101,59 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
             },
             error: (e) => `Error al cancelar: ${e.response?.data?.error || e.message}`
         });
+
+        // El cierre del modal se decide DESPUÉS del aviso: si el operador elige cancelar el
+        // pedido completo, el modal tiene que seguir montado para abrir esa confirmación.
+        promise.then(async () => {
+            if (tipo === 'REQUEST') return;                                  // ya cerró
+            if (tipo === 'FILE' && !resultado?.orderCancelled) return;       // la orden sigue viva
+            const accion = await avisarCascadaCancelacion(resultado);
+            if (accion === 'pedido') { setCancelType('REQUEST'); setCancelModalOpen(true); }
+            else onClose();
+        }).catch(() => { /* el error ya lo muestra el toast */ });
+    };
+
+    /**
+     * Qué pasó con el resto del pedido (plan §11.4). El sistema INFORMA:
+     *  · qué cayó en cascada (las que esperaban a esta orden por LiberaCuandoOrdenID);
+     *  · qué quedó vivo del mismo pedido, que NO se cancela solo — un pedido puede tener
+     *    trabajos independientes y cancelarlos por arrastre es peor que el problema.
+     * La decisión de cancelar el pedido entero es de una persona.
+     * @returns {Promise<'pedido'|'cerrar'>}
+     */
+    const avisarCascadaCancelacion = async (res) => {
+        const encadenadas = res?.encadenadas || [];
+        const vivas = res?.hermanasVivas || [];
+        if (!encadenadas.length && !vivas.length) return 'cerrar';
+
+        const lista = (arr) => arr.map(o =>
+            `<li style="margin:2px 0"><b>${o.codigo}</b>${o.area ? ` · ${o.area}` : ''}${o.estado ? ` · ${o.estado}` : ''}</li>`
+        ).join('');
+
+        const html = [
+            encadenadas.length
+                ? `<p style="margin:0 0 4px">Se cancelaron también, porque esperaban a esta orden para arrancar:</p>
+                   <ul style="text-align:left;margin:0 0 14px 20px;padding:0">${lista(encadenadas)}</ul>`
+                : '',
+            vivas.length
+                ? `<p style="margin:0 0 4px">Estas órdenes del mismo pedido <b>siguen vivas</b>:</p>
+                   <ul style="text-align:left;margin:0 0 10px 20px;padding:0">${lista(vivas)}</ul>
+                   <p style="margin:0;font-size:13px;color:#71717a">Si el pedido entero ya no va, cancelalo completo.</p>`
+                : '',
+        ].join('');
+
+        const r = await Swal.fire({
+            title: 'Qué pasó con el resto del pedido',
+            html,
+            icon: encadenadas.length ? 'warning' : 'info',
+            showDenyButton: vivas.length > 0,
+            confirmButtonText: 'Entendido',
+            denyButtonText: 'Cancelar el pedido completo',
+            confirmButtonColor: '#0891b2',
+            denyButtonColor: '#BD0C7E',
+            customClass: { container: '!z-[99999]' },
+        });
+        return r.isDenied ? 'pedido' : 'cerrar';
     };
 
     // ── REACTIVACIÓN ───────────────────────────────────────────────
@@ -1200,6 +1269,27 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
         }
     }, [order]);
 
+    // CONSULTA AL CLIENTE: las de esta orden (abiertas e históricas). Solo se piden en
+    // las áreas habilitadas — en el resto el endpoint devolvería siempre vacío.
+    const cargarConsultas = React.useCallback(() => {
+        if (!order?.id || !areaConsultable) { setConsultas([]); return; }
+        consultasService.getPorOrden(order.id)
+            .then(setConsultas)
+            .catch(() => setConsultas([]));   // sin consultas el modal funciona igual que siempre
+    }, [order?.id, areaConsultable]);
+    useEffect(() => { cargarConsultas(); }, [cargarConsultas]);
+
+    const consultaAbierta = consultas.find(c => c.ConEstado === 'ENVIADA') || null;
+
+    // Decisión 6 del plan: SOLO sobre órdenes pendientes y sin lote. Con la orden en un
+    // lote o en máquina el trabajo ya arrancó y frenarla no evita nada. El backend
+    // rechaza igual (409) — esto es para no ofrecer un botón que va a rebotar.
+    const puedeConsultar = !readOnly
+        && areaConsultable
+        && !consultaAbierta
+        && String(currentOrder?.status || '').trim().toLowerCase() === 'pendiente'
+        && !(order?.rollId || currentOrder?.rollId);
+
     if (!order || !currentOrder) return null;
 
     // Helper para acciones de archivo (Definido aquí para acceder al scope)
@@ -1307,6 +1397,18 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                                 onClick={() => startEditing({ ...f, id: fileId })}
                                 title="Editar Dimensiones y Cantidad"
                             />
+                            {/* CONSULTA AL CLIENTE — ámbar, nunca magenta: es una acción de espera,
+                                no destructiva. Solo sobre órdenes pendientes (ver puedeConsultar). */}
+                            {puedeConsultar && !f.readonly && (
+                                <ActionButton
+                                    icon="fa-comment-dots"
+                                    color="amber"
+                                    onClick={() => setConsultaModal({
+                                        archivo: { id: fileId, nombre: f.name || f.NombreArchivo || f.nombre || 'este archivo' }
+                                    })}
+                                    title="Consultar al cliente sobre este archivo"
+                                />
+                            )}
                             {/* [PRO] Único caso que cambia: administra archivos de verdad, así que
                                 tiene Eliminar (borrado físico) ADEMÁS de Cancelar. El resto de las
                                 áreas (TPU, DF, etc.) sigue exactamente igual que en producción — no se toca. */}
@@ -1493,6 +1595,14 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                 </div>
 
                 <div className="p-6 bg-white flex-1 overflow-y-auto custom-scrollbar">
+
+                    {/* CONSULTA AL CLIENTE: por qué está frenada la orden, o la conformidad
+                        escrita del cliente si ya respondió. */}
+                    <BandaConsultaCliente
+                        consultas={consultas}
+                        readOnly={readOnly}
+                        onCambio={() => { cargarConsultas(); reloadFiles(); onOrderUpdated?.(); }}
+                    />
 
                     {/* Campos de Estado Editables — solo internos con rol habilitado (ver puedeEditarEstado) */}
                     {!readOnly && puedeEditarEstado && (
@@ -2434,6 +2544,18 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                 {/* FOOTER ACCIONES CONSOLIDADO */}
                 <div className="px-6 py-4 bg-zinc-50 border-t border-zinc-200 flex justify-between items-center gap-3 shrink-0">
                     <div className="flex items-center gap-2">
+                        {/* CONSULTA AL CLIENTE — FUERA del bloque rojo a propósito: preguntar es
+                            una acción de espera, no una cancelación. Ver plan §5b. */}
+                        {puedeConsultar && (
+                            <button
+                                onClick={() => setConsultaModal({ archivo: null })}
+                                className="px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-2 bg-white border border-amber-200 text-amber-600 hover:bg-amber-50 hover:border-amber-300 shadow-sm"
+                                title="Preguntarle algo al cliente sobre toda la orden (queda frenada hasta que responda)"
+                            >
+                                <i className="fa-solid fa-comment-dots"></i> Consultar al Cliente
+                            </button>
+                        )}
+
                         {/* Grupo de Botones Peligrosos — solo visible si NO está cancelada */}
                         {!readOnly && !['CANCELADO','Cancelado'].includes(currentOrder?.status) && (
                         <div className="flex bg-white rounded-lg border border-zinc-200 p-1 shadow-sm">
@@ -2601,6 +2723,16 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                         </div>
                     </div>
                 </div>
+            )}
+
+            {/* CONSULTA AL CLIENTE: una pregunta + hasta 5 fotos. Al enviarla la orden queda frenada. */}
+            {consultaModal && (
+                <ModalConsultaCliente
+                    orden={currentOrder}
+                    archivo={consultaModal.archivo}
+                    onClose={() => setConsultaModal(null)}
+                    onCreada={() => { cargarConsultas(); reloadFiles(); onOrderUpdated?.(); }}
+                />
             )}
 
             {/* Visor 3D TPU en modo interno (elige/corrige texturas el diseñador). */}

@@ -478,13 +478,22 @@ exports.obtenerMapaEstantes = async (req, res) => {
                     WHERE od.OReIdOrdenRetiro = orr.OReIdOrdenRetiro
                 ) AS OrdenesCodigos
             FROM ConfiguracionEstantes c
-            LEFT JOIN OcupacionEstantes o 
+            LEFT JOIN OcupacionEstantes o
                 ON c.EstanteID = o.EstanteID AND c.Seccion = o.Seccion AND c.Posicion = o.Posicion
-            LEFT JOIN OrdenesRetiro orr 
-                ON o.OrdenRetiro = COALESCE(orr.FormaRetiro, 'R') + '-' + CAST(orr.OReIdOrdenRetiro AS VARCHAR)
-            LEFT JOIN Clientes cli 
-                ON CAST(cli.CodCliente AS VARCHAR) = CAST(orr.CodCliente AS VARCHAR) 
-                OR CAST(cli.CodCliente AS VARCHAR) = CAST(o.CodigoCliente AS VARCHAR)
+            -- Los dos joins de abajo comparaban texto armado sobre la tabla de la derecha ("RW-" + id,
+            -- CAST de CodCliente), así que por cada ocupación la base recorría todos los retiros y todos
+            -- los clientes: ~1 s de CPU por consulta. Ahora el primer renglón de cada ON busca por
+            -- clave (el número que va después del guión, el código de cliente como INT) y el segundo
+            -- conserva la comparación original, que ya solo se evalúa sobre esa fila.
+            LEFT JOIN OrdenesRetiro orr
+                ON orr.OReIdOrdenRetiro = TRY_CAST(SUBSTRING(o.OrdenRetiro, CHARINDEX('-', o.OrdenRetiro) + 1, 50) AS INT)
+               AND o.OrdenRetiro = COALESCE(orr.FormaRetiro, 'R') + '-' + CAST(orr.OReIdOrdenRetiro AS VARCHAR)
+            -- CodigoCliente casi siempre trae el NOMBRE del cliente, no el código: ahí el TRY_CAST da
+            -- NULL y solo cuenta el cliente del retiro, igual que antes.
+            LEFT JOIN Clientes cli
+                ON cli.CodCliente IN (orr.CodCliente, TRY_CAST(o.CodigoCliente AS INT))
+               AND (cli.CodCliente = orr.CodCliente
+                    OR CAST(cli.CodCliente AS VARCHAR) = CAST(o.CodigoCliente AS VARCHAR))
             LEFT JOIN TiposClientes tc WITH(NOLOCK) ON tc.TClIdTipoCliente = cli.TClIdTipoCliente
             WHERE c.Activo = 1
               AND (orr.OReEstadoActual IS NULL OR orr.OReEstadoActual NOT IN (5, 6))

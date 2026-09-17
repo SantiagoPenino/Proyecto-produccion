@@ -1,5 +1,6 @@
 const { getPool, sql } = require('../config/db');
 const logger = require('../utils/logger');
+const { hashear } = require('../utils/password');
 
 exports.getAll = async (req, res) => {
     try {
@@ -16,16 +17,13 @@ exports.create = async (req, res) => {
     const { Usuario, Contrasena, Email, IdRol, IdCargo, Activo, Nombre, AreaUsuario } = req.body;
     try {
         const pool = await getPool();
-        // NOTE: In production, password must be hashed. For now, matching authController which compares plaintext.
-        // Wait, authController compares `password !== user.PasswordHash`. If user.PasswordHash implies it IS a hash, then authController is doing it wrong or assuming the DB has plaintext for now?
-        // Ah, `password !== user.PasswordHash` compares the input directly to the DB column. If the DB column is named PasswordHash but stores plaintext, that's a security risk, but I must follow existing logic or fix both.
-        // The user prompted `[ContrasenaHash]` column name.
-        // For now, I will store it as is, or maybe I should update authController later? The USER prompt implies existing structure.
-        // I will assume simple storage for now to match authController logic `password !== user.PasswordHash`.
+        // La contraseña se guarda hasheada con bcrypt (utils/password.js). El login la
+        // verifica con `verificar()`, que además entiende las viejas en texto plano y las
+        // migra sola al primer ingreso. Ver el plan del 10/09/2026.
 
         const result = await pool.request()
             .input('Usuario', sql.NVarChar, Usuario)
-            .input('ContrasenaHash', sql.NVarChar, Contrasena) // Storing directly as per current auth controller logic (or assuming it's already hashed by frontend? Unlikely)
+            .input('ContrasenaHash', sql.NVarChar, await hashear(Contrasena))
             .input('Email', sql.NVarChar, Email)
             .input('IdRol', sql.Int, IdRol)
             .input('IdCargo', sql.Int, IdCargo || null)
@@ -67,7 +65,7 @@ exports.update = async (req, res) => {
         `;
 
         if (Contrasena) {
-            request.input('ContrasenaHash', sql.NVarChar, Contrasena);
+            request.input('ContrasenaHash', sql.NVarChar, await hashear(Contrasena));
             query += `, ContrasenaHash = @ContrasenaHash`;
         }
 

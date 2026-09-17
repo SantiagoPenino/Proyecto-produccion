@@ -26,6 +26,13 @@ export const rollsService = {
         const { data } = await api.post('/rolls/order-printed', { orderId, printed });
         return data;
     },
+    // Marca un GRUPO entero en UNA llamada. `orderIds` va en el orden en que se ven en pantalla:
+    // el backend les pone horas crecientes en ese orden. Marcarlas de a una en paralelo dejaba las
+    // FechaImpreso en orden aleatorio y el lote se veía desordenado (sobre todo en calandra).
+    setPrintedBulk: async (orderIds, printed) => {
+        const { data } = await api.post('/rolls/orders-printed-bulk', { orderIds, printed });
+        return data;
+    },
     setCalandered: async (orderId, calandered) => {
         const { data } = await api.post('/rolls/order-calandered', { orderId, calandered });
         return data;

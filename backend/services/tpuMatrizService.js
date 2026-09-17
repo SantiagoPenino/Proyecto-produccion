@@ -50,6 +50,12 @@ const CAPAS_CONTROL = true;
 // capas vectoriales el RIP mostraba las zonas lisas pero NO las texturadas (07/09). El arte CMYK
 // sigue vectorial. `false` vuelve al vector.
 const SPOTS_RASTER = true;
+// Un solo cabezal blanco en la impresora (verificado 09/09 con la prueba 16): el canal Spot_1 no
+// imprime, solo Spot_2, así que las zonas con "relieve normal" salían vacías. Mientras esté en true,
+// el generador pone TODAS las zonas también en Spot 2 y el archivo sale igual en la máquina de uno
+// y en la de dos cabezales. Cuando llegue el segundo cabezal: false acá y en RELIEVE_DOBLE_SIEMPRE
+// del visor (Tpu3DViewer.jsx), que por la misma razón muestra todo al relieve máximo.
+const RELIEVE_DOBLE_SIEMPRE = true;
 
 const habilitado = () => process.env.TPU_MATRIZ_ENABLED !== '0';
 
@@ -266,6 +272,7 @@ async function procesarOrden({ ordenId, codCliente, matriz, cantidad, io }) {
         vista: true,
         capas: CAPAS_CONTROL,
         spots_raster: SPOTS_RASTER,
+        relieve_doble_siempre: RELIEVE_DOBLE_SIEMPRE,
     };
     const jobPath = path.join(salidaDir, 'job.json');
     fs.writeFileSync(jobPath, JSON.stringify(job, null, 2));

@@ -234,6 +234,12 @@ el operario imponga a mano.
   se **dilata a `RELIEVE_MIN_MM` = 0,5 mm** en el generador (modo raster) y **el visor engorda igual**
   (`engordarTile`, mismo mm sobre el ancho del parche), para que lo impreso sea lo que el cliente vio.
   Descartadas antes, por medición: XObjects vs inline, sobreimpresión, orden de capas, alternativos de color.
+- **CERRADO 09/09 con impresión real.** Causa 1: el arte del cliente encima con knockout (`/OP false` que Illustrator
+  mete dentro de su PDF) borraba los spots → orden Spot 3→2→1→CMYK y `/OP true` reescrito en todos los ExtGState del
+  XObject del arte. Causa 2: **la impresora tiene un solo cabezal blanco, Spot_1 no imprime** → "relieve normal" vacío.
+  Mientras dure: `RELIEVE_DOBLE_SIEMPRE` (service → `relieve_doble_siempre` en el job → Spot 2 = todas las zonas) y la
+  misma constante en el visor (todo al máximo, botón Normal/Doble oculto; el `doble` que viaja al backend queda en true).
+  Los trazos de 0,10 mm del Recurso 10 imprimieron nítidos: **no hay piso de grosor**, el engorde se eliminó de ambos lados.
 - **Spot 3 sin barniz / Spot 2 sin dobles**: la capa queda vacía; los marcadores de tinta del RIP solo
   se emiten para las tintas con objetos, y en el PDF de control la página vacía lleva solo el rótulo.
 - **Base blanca del modelo**: achique por distancia al borde (5 px), bisel hacia adentro
