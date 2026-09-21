@@ -14,7 +14,7 @@
 //                         solo se calcula para Bordado vendido por el portal—, y para el resto de
 //                         las órdenes queda NULL y cae en la FechaEstimadaEntrega fija de siempre)
 //   - Fallas            : dbo.FallasProduccion + dbo.TiposFallas
-//   - Máquinas          : dbo.ConfigEquipos (Estado / EstadoProceso actuales)
+//   - Máquinas          : dbo.ConfigEquipos (Estado) + lotes montados en dbo.Rollos (mismo criterio que Planeación)
 //   - Tiempos de entrega: dbo.ConfiguracionTiemposEntrega
 //   - Tiempo de inactividad: SIN FUENTE todavía (se devuelve null)
 // =============================================================================
@@ -435,10 +435,40 @@ exports.getPanel = async (req, res) => {
                 ORDER BY x.n DESC
             `), { recordset: [] }, 'fallas'),
 
-            // 8. Máquinas (estado actual)
+            // 8. Máquinas (estado actual). TRABAJANDO = tiene un LOTE MONTADO (definición del usuario,
+            //    21-sep-2026): un lote asignado a la máquina que no esté Cerrado/Finalizado/Cancelado,
+            //    con ▶ dado, en pausa o esperando — el mismo filtro que el tablero de Planeación
+            //    (productionKanbanController.getBoard), y la misma cuenta de órdenes que la tarjeta del lote.
+            //    Áreas sin lotes (bandeja: Bordado, Estampado, Corte, Costura): trabajando = una orden
+            //    iniciada ('En Maquina') en esa máquina.
+            //    EstadoProceso NO se usa: ▶/⏸/🏁 no lo actualizan (solo el modal de configuración de
+            //    equipos) y dejaba máquinas sin lote como "Imprimiendo".
             safe(() => base().query(`
-                SELECT ce.EquipoID, ce.AreaID, ce.Nombre, ce.Estado, ce.EstadoProceso
+                SELECT ce.EquipoID, ce.AreaID, ce.Nombre, ce.Estado,
+                       ISNULL(l.Lotes, 0) AS Lotes, l.LoteID, l.LoteNombre, ISNULL(l.OrdenesLotes, 0) AS OrdenesLotes,
+                       ISNULL(s.OrdenesSinLote, 0) AS OrdenesSinLote,
+                       CASE WHEN EXISTS (SELECT 1 FROM dbo.Rollos r2 WITH(NOLOCK)
+                                         WHERE r2.AreaID = ce.AreaID AND r2.FechaCreacion >= DATEADD(DAY, -90, GETDATE()))
+                            THEN 1 ELSE 0 END AS UsaLotes
                 FROM dbo.ConfigEquipos ce WITH(NOLOCK)
+                OUTER APPLY (
+                    SELECT COUNT(*) AS Lotes, MIN(r.RolloID) AS LoteID, MIN(r.Nombre) AS LoteNombre, SUM(x.N) AS OrdenesLotes
+                    FROM dbo.Rollos r WITH(NOLOCK)
+                    OUTER APPLY (
+                        SELECT COUNT(*) AS N FROM dbo.Ordenes o WITH(NOLOCK)
+                        WHERE o.RolloID = r.RolloID AND o.AreaID = r.AreaID
+                          AND o.Estado NOT IN ('Finalizado', 'Entregado', 'Cancelado')
+                    ) x
+                    WHERE r.MaquinaID = ce.EquipoID AND r.AreaID = ce.AreaID
+                      AND r.Estado NOT IN ('Cerrado', 'Finalizado', 'Cancelado')
+                ) l
+                LEFT JOIN (
+                    SELECT o.MaquinaID, COUNT(*) AS OrdenesSinLote
+                    FROM dbo.Ordenes o WITH(NOLOCK)
+                    WHERE o.MaquinaID IS NOT NULL AND o.RolloID IS NULL
+                      AND LTRIM(RTRIM(o.EstadoenArea)) = 'En Maquina' AND ${ACTIVAS_WHERE}
+                    GROUP BY o.MaquinaID
+                ) s ON s.MaquinaID = ce.EquipoID
                 WHERE ce.Activo = 1 ${areaFcol('ce.AreaID')}
                 ORDER BY ce.AreaID, ce.Nombre
             `), { recordset: [] }, 'maquinas'),
@@ -496,12 +526,6 @@ exports.getPanel = async (req, res) => {
             bulto: o.CodigoEtiqueta || null,
             estadoBulto: o.EstadoBulto || null,
         }));
-
-        // órdenes "En Maquina" por equipo (para el panel de máquinas)
-        const ordenesPorMaquina = {};
-        for (const o of resActivas.recordset) {
-            if (o.MaquinaID && o.EstadoenArea === 'En Maquina') ordenesPorMaquina[o.MaquinaID] = (ordenesPorMaquina[o.MaquinaID] || 0) + 1;
-        }
 
         // ── KPIs período ─────────────────────────────────────────────────────
         const kp = Object.fromEntries(resKpis.recordset.map(r => [r.per, r]));
@@ -658,25 +682,25 @@ exports.getPanel = async (req, res) => {
             .sort((a, b) => b.cantidad - a.cantidad);
 
         // ── Máquinas ─────────────────────────────────────────────────────────
-        // Estado real: ConfigEquipos.Estado vale 'DISPONIBLE' u 'OK' cuando la máquina está sana;
-        // EstadoProceso ('Detenido', 'Imprimiendo', ...) no siempre se mantiene al día, así que
-        // una máquina se considera ACTIVA si tiene órdenes "En Maquina" o un proceso en curso.
+        // TRABAJANDO (activa) = equipo sano (ConfigEquipos.Estado 'DISPONIBLE'/'OK') con un lote montado
+        // o, en áreas sin lotes, con una orden iniciada. NO TRABAJANDO = sin lote/orden, o equipo no
+        // sano (FALLA, …): el motivo lo dice.
         const maquinas = resMaquinas.recordset.map(m => {
             const estado = String(m.Estado || '').trim().toUpperCase();
-            const proceso = String(m.EstadoProceso || '').trim();
-            const detenida = !proceso || /^DETENID/i.test(proceso);
             const sana = !estado || estado === 'DISPONIBLE' || estado === 'OK';
-            const enMaquina = ordenesPorMaquina[m.EquipoID] || 0;
-            const activa = sana && (enMaquina > 0 || !detenida);
+            const lotes = m.Lotes || 0;
+            const sinLote = m.OrdenesSinLote || 0;
+            const activa = sana && (lotes > 0 || sinLote > 0);
             return {
                 id: m.EquipoID,
                 n: String(m.Nombre || '').trim(),
                 area: mapa.codigoANombre[m.AreaID] || m.AreaID,
                 sector: mapa.codigoASector[m.AreaID] || null,
                 activa,
-                motivo: !sana ? String(m.Estado).trim() : (activa ? '' : 'Detenida · sin órdenes en máquina'),
-                proceso,
-                ordenesEnMaquina: enMaquina,
+                motivo: !sana ? String(m.Estado).trim() : (activa ? '' : (m.UsaLotes ? 'Sin lote montado' : 'Sin órdenes en máquina')),
+                lotes,
+                lote: lotes === 1 ? { id: m.LoteID, nombre: String(m.LoteNombre || '').trim() } : null,
+                ordenes: (m.OrdenesLotes || 0) + sinLote,
             };
         });
 

@@ -360,6 +360,18 @@ const ControlPrendaCard = ({ order, service, onChanged }) => {
 //   prendas controladas (contador APARTE del de trabajo) y la cantidad de bultos antes de
 //   aprobar — recién ahí se generan las etiquetas y la orden pasa a Pronto (igual patrón
 //   que Terminaciones ECOUV, ver ecoUvFinishingController.controlOrder).
+// [DISEÑO] Etapa de diseño de una orden de BORDADO, con los MISMOS rótulos que usa TPU en su planilla
+// (Falta diseño → Esperando aprobación del cliente → Diseñado). Es SOLO visual: Bordado sigue
+// funcionando con sus requisitos (Matriz / Aprobación del Cliente / Prendas); acá se leen de
+// FaltantePendiente para mostrar en qué etapa está. No cambia ninguna regla ni ningún dato.
+const etapaDisenoBordado = (o, bloqueada) => {
+    const falta = String(o?.FaltantePendiente || '');
+    if (bloqueada && /^Esperando/i.test(falta)) return null;   // bloqueo de otro tipo (retiro, reposición…): no es de diseño
+    if (bloqueada && /matriz/i.test(falta)) return { txt: 'Falta diseño (matriz)', cls: 'bg-amber-50 text-amber-700 border-amber-200' };
+    if (bloqueada && /aprobaci/i.test(falta)) return { txt: 'Esperando aprobación del cliente', cls: 'bg-sky-50 text-sky-700 border-sky-200' };
+    return { txt: 'Diseñado', cls: 'bg-emerald-50 text-emerald-700 border-emerald-200' };
+};
+
 export default function EmbBandeja({ area = 'EMB', fase = 'trabajo', onSelectOrder }) {
     const { user } = useAuth();
     const service = getBandejaService(area);
@@ -644,6 +656,10 @@ export default function EmbBandeja({ area = 'EMB', fase = 'trabajo', onSelectOrd
                             <p className="text-xs text-zinc-600 line-clamp-1 font-medium">{o.DescripcionTrabajo}</p>
                         )}
                         <p className="text-xs text-zinc-500 line-clamp-1 italic">{o.Material}</p>
+                        {area === 'EMB' && fase === 'trabajo' && (() => {
+                            const et = etapaDisenoBordado(o, bloqueada);
+                            return et ? <span className={`inline-block mt-1 px-1.5 py-0.5 rounded text-[10px] font-bold border ${et.cls}`}>{et.txt}</span> : null;
+                        })()}
 
                         {/* CORTE: lo que el operario necesita saber de un vistazo — cuántas
                             tizadas entran, cuántas piezas salen y cuánto láser lleva. */}

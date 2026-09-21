@@ -1242,6 +1242,8 @@ async function getSaldoCliente(CliIdCliente, { incluirCerradas = false } = {}) {
         cc.CuePuedeNegativo,
         cc.CueDiasCiclo,
         cc.CueCicloActivo,
+        cc.CPaIdCondicion,
+        cp.CPaDiasVencimiento           AS CondicionDias,
         ${hayBen ? 'bc.BclIdBeneficioCliente, bc.BenIdBeneficio, bc.BclEstado, bc.BclFechaVencimiento,' : 'CAST(NULL AS INT) AS BclIdBeneficioCliente,'}
         RTRIM(art.Descripcion)          AS NombreArticulo,
         u.UniDescripcionUnidad          AS UniNombreCompleto,
@@ -2139,6 +2141,8 @@ async function getDeudasPorCliente(CliIdCliente, modo = 'TODO') {
         LTRIM(RTRIM(docPrincipal.DocSerie)) AS DocSerie,
         LTRIM(RTRIM(CAST(docPrincipal.DocNumero AS VARCHAR(50)))) AS DocNumero,
         LTRIM(RTRIM(docPrincipal.DocTipo)) AS DocTipoReal,
+        docPrincipal.CfeEstado,
+        docPrincipal.CfeNumeroOficial,
         cli.Nombre AS ClienteNombre,
         (SELECT c.CicSaldoFacturar FROM dbo.DocumentosContables dc WITH(NOLOCK) JOIN dbo.CiclosCredito c WITH(NOLOCK) ON c.CicIdCiclo = dc.CicIdCiclo WHERE dc.DocIdDocumento = d.DocIdDocumento AND dc.DocTipo = 'FACTURA') AS CicSaldoFacturar,
         (SELECT c.CicTotalOrdenes FROM dbo.DocumentosContables dc WITH(NOLOCK) JOIN dbo.CiclosCredito c WITH(NOLOCK) ON c.CicIdCiclo = dc.CicIdCiclo WHERE dc.DocIdDocumento = d.DocIdDocumento AND dc.DocTipo = 'FACTURA') AS CicTotalOrdenes,
@@ -2939,7 +2943,49 @@ async function getAntiguedadDeuda(modo = 'TODO') {
       ISNULL(SUM(CASE WHEN DATEDIFF(DAY, d.DDeFechaVencimiento, GETDATE()) > 90
                       THEN d.DDeImportePendiente ELSE 0 END), 0) AS Mas90,
       -- Total pendiente
-      ISNULL(SUM(d.DDeImportePendiente), 0)         AS TotalDeuda
+      ISNULL(SUM(d.DDeImportePendiente), 0)         AS TotalDeuda,
+
+      -- "Al día" abierto en tramos POR VENCER (suman exactamente AlDia): control de cobranzas
+      ISNULL(SUM(CASE WHEN DATEDIFF(DAY, GETDATE(), d.DDeFechaVencimiento) = 0
+                      THEN d.DDeImportePendiente ELSE 0 END), 0) AS VenceHoy,
+      ISNULL(SUM(CASE WHEN DATEDIFF(DAY, GETDATE(), d.DDeFechaVencimiento) BETWEEN 1 AND 7
+                      THEN d.DDeImportePendiente ELSE 0 END), 0) AS Vence1_7,
+      ISNULL(SUM(CASE WHEN DATEDIFF(DAY, GETDATE(), d.DDeFechaVencimiento) BETWEEN 8 AND 15
+                      THEN d.DDeImportePendiente ELSE 0 END), 0) AS Vence8_15,
+      ISNULL(SUM(CASE WHEN DATEDIFF(DAY, GETDATE(), d.DDeFechaVencimiento) BETWEEN 16 AND 30
+                      THEN d.DDeImportePendiente ELSE 0 END), 0) AS Vence16_30,
+      ISNULL(SUM(CASE WHEN DATEDIFF(DAY, GETDATE(), d.DDeFechaVencimiento) > 30
+                      THEN d.DDeImportePendiente ELSE 0 END), 0) AS VenceMas30,
+      -- Para el semáforo: la deuda más atrasada y la que vence más pronto
+      MAX(DATEDIFF(DAY, d.DDeFechaVencimiento, GETDATE()))                       AS MaxDiasVencido,
+      MIN(CASE WHEN DATEDIFF(DAY, GETDATE(), d.DDeFechaVencimiento) >= 0
+               THEN DATEDIFF(DAY, GETDATE(), d.DDeFechaVencimiento) END)          AS DiasProxVencimiento,
+      SUM(CASE WHEN DATEDIFF(DAY, d.DDeFechaVencimiento, GETDATE()) > 0 THEN 1 ELSE 0 END) AS DocsVencidos,
+      COUNT(*)                                                                    AS DocsPendientes,
+
+      -- Crédito: UN límite por cliente, en UNA moneda (decisión del usuario 17-sep-2026). Se
+      -- guarda en la cuenta principal de la moneda elegida (la otra principal queda en 0), así
+      -- que el límite del cliente es el de la principal que lo tenga > 0, y LimiteMoneda dice
+      -- en qué moneda está. La deuda de las dos monedas se compara convertida al tipo de cambio.
+      (SELECT SUM(x.CueLimiteCredito) FROM dbo.CuentasCliente x WITH(NOLOCK)
+        WHERE x.CliIdCliente = c.CliIdCliente AND x.CueActiva = 1 AND x.CueEsPrincipal = 1
+          AND x.CueTipo IN ('DINERO_UYU', 'DINERO_USD')) AS LimiteCredito,
+      (SELECT TOP 1 CASE WHEN x.CueTipo = 'DINERO_USD' THEN 'USD' ELSE 'UYU' END FROM dbo.CuentasCliente x WITH(NOLOCK)
+        WHERE x.CliIdCliente = c.CliIdCliente AND x.CueActiva = 1 AND x.CueEsPrincipal = 1
+          AND x.CueTipo IN ('DINERO_UYU', 'DINERO_USD') AND ISNULL(x.CueLimiteCredito, 0) > 0
+        ORDER BY x.CueLimiteCredito DESC) AS LimiteMoneda,
+      (SELECT TOP 1 cp.CPaNombre FROM dbo.CuentasCliente x WITH(NOLOCK)
+        JOIN dbo.CondicionesPago cp WITH(NOLOCK) ON cp.CPaIdCondicion = x.CPaIdCondicion
+        WHERE x.CliIdCliente = c.CliIdCliente AND x.CueTipo = c.CueTipo AND x.CueActiva = 1
+        ORDER BY x.CueEsPrincipal DESC, x.CueIdCuenta)                             AS CondicionPago,
+      -- La misma deuda partida en facturada (con documento) y sin facturar (órdenes en cuenta
+      -- corriente, DocIdDocumento NULL). Suman TotalDeuda: el control de crédito elige cuál
+      -- comparar contra el límite sin contar dos veces las órdenes.
+      ISNULL(SUM(CASE WHEN d.DocIdDocumento IS NOT NULL THEN d.DDeImportePendiente ELSE 0 END), 0) AS DeudaFacturas,
+      ISNULL(SUM(CASE WHEN d.DocIdDocumento IS NULL     THEN d.DDeImportePendiente ELSE 0 END), 0) AS DeudaOrdenes,
+      -- Vendedor: Clientes.VendedorID guarda la CÉDULA del usuario (Usuarios.Cedula)
+      (SELECT TOP 1 ISNULL(NULLIF(RTRIM(u.Nombre), ''), u.Usuario) FROM dbo.Usuarios u WITH(NOLOCK)
+        WHERE CAST(u.Cedula AS NVARCHAR(20)) = LTRIM(RTRIM(cli.VendedorID)))          AS Vendedor
     FROM      dbo.CuentasCliente c
     JOIN      dbo.Clientes       cli ON cli.CliIdCliente = c.CliIdCliente
     LEFT JOIN dbo.Monedas        mon ON mon.MonIdMoneda  = c.MonIdMoneda
@@ -2948,7 +2994,7 @@ async function getAntiguedadDeuda(modo = 'TODO') {
                                     ${filtroCondicion}
     WHERE c.CueActiva = 1
       AND c.CueTipo IN ('DINERO_UYU', 'DINERO_USD', 'CORRIENTE', 'CREDITO')
-    GROUP BY c.CliIdCliente, cli.Nombre, c.CueTipo, mon.MonSimbolo
+    GROUP BY c.CliIdCliente, cli.Nombre, c.CueTipo, mon.MonSimbolo, cli.VendedorID
     HAVING SUM(d.DDeImportePendiente) > 0
     ORDER BY TotalDeuda DESC
   `);

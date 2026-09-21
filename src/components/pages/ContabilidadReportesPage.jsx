@@ -4,8 +4,13 @@ import { fmtFecha } from '../../utils/fechas';
 import {
     Landmark, ChevronRight, Search, RefreshCw, Download,
     PieChart as PieChartIcon, FileCheck2, CheckCircle2, XCircle, Wallet, BookText, Eye,
-    Users, Package, BarChart3, Settings2, FolderTree, ChevronDown, Check,
+    Users, Package, BarChart3, Settings2, FolderTree, ChevronDown, Check, CalendarClock, Scale, BellRing,
 } from 'lucide-react';
+// Reportes que ya existían como pantallas propias: se muestran acá tal cual (siguen
+// teniendo su ruta directa /contabilidad/antiguedad y /caja/central-admin).
+import ContabilidadAntiguedadView from './ContabilidadAntiguedadView';
+import ReporteCajaCentralAdminView from './ReporteCajaCentralAdminView';
+import CobranzasSection from './CobranzasSection';
 
 // ─── Reportes disponibles ────────────────────────────────────────────────────
 // El Dashboard de Producción vive en Reportes (producción, /reportes), no acá.
@@ -23,6 +28,27 @@ const REPORTS = [
         icon: FileCheck2,
         desc: 'Documentos enviados vs no enviados a DGI, cantidad e importe por moneda',
         color: 'text-emerald-500',
+    },
+    {
+        id: 'cobranzas',
+        label: 'Cobranzas',
+        icon: BellRing,
+        desc: 'Atención de cobranzas, panel de vencimientos por factura, informe semanal / mensual / trimestral y ficha financiera por cliente',
+        color: 'text-rose-500',
+    },
+    {
+        id: 'antiguedad',
+        label: 'Antigüedad de Deuda',
+        icon: CalendarClock,
+        desc: 'Deuda por vencer y vencida por cliente, alertas, límite de crédito y vendedor',
+        color: 'text-indigo-500',
+    },
+    {
+        id: 'caja-central-admin',
+        label: 'Caja Central vs Administrativa',
+        icon: Scale,
+        desc: 'Auditoría de movimientos por caja: pagos administrativos que caen en el arqueo central',
+        color: 'text-teal-500',
     },
     {
         id: 'top-clientes',
@@ -64,7 +90,7 @@ const REPORTS = [
 
 // Reportes que manejan sus propios filtros y carga (no usan los filtros genéricos
 // del encabezado ni el fetch automático de la página).
-const REPORTES_AUTONOMOS = ['libro-contador', 'top-clientes', 'top-productos', 'resumen-mensual', 'catalogo'];
+const REPORTES_AUTONOMOS = ['libro-contador', 'top-clientes', 'top-productos', 'resumen-mensual', 'catalogo', 'antiguedad', 'caja-central-admin', 'cobranzas'];
 
 // ─── Utilidades de fecha (mismo patrón que ReportesPage.jsx) ─────────────────
 const FECHA_PRESETS = [
@@ -2156,6 +2182,12 @@ export default function ContabilidadReportesPage() {
                                 Reintentar
                             </button>
                         </div>
+                    ) : activeReport === 'cobranzas' ? (
+                        <CobranzasSection />
+                    ) : activeReport === 'antiguedad' ? (
+                        <ContabilidadAntiguedadView embebido />
+                    ) : activeReport === 'caja-central-admin' ? (
+                        <ReporteCajaCentralAdminView embebido />
                     ) : activeReport === 'catalogo' ? (
                         <CatalogoSectoresSection />
                     ) : activeReport === 'libro-contador' ? (

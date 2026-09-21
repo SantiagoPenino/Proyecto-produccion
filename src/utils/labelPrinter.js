@@ -93,9 +93,10 @@ export const printLabels = (labels) => {
             <div class="left-panel">
                 <img src="${qrUrl}" />
                 
-                <div class="order-code">ORDEN: ${displayCode}</div>
+                <div class="order-code">${l.orderPrefix != null ? l.orderPrefix : 'ORDEN: '}${displayCode}</div>
                 <div class="bulto-code">BULTO ${bultoStr}</div>
                 <div class="ref-code" style="font-size: 14px; margin-top: 15px;">DESTINO: <strong>${(l.nextService || 'LOGISTICA').toUpperCase()}</strong></div>
+                ${l.retiroCode ? `<div class="ref-code" style="font-size: 14px; margin-top: 6px;">RETIRO: <strong>${l.retiroCode}</strong></div>` : ''}
             </div>
 
             <!-- RIGHT: SERVICES LIST -->

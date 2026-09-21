@@ -110,6 +110,11 @@ router.get('/reportes/ventas-por-documento', reportesVentasCtrl.getVentasPorDocu
 router.get('/reportes/ingresos',             reportesVentasCtrl.getIngresos);
 router.get('/reportes/libro-contador-ventas', reportesVentasCtrl.getLibroContadorVentas);
 router.get('/reportes/libro-contador-cobros', reportesVentasCtrl.getLibroContadorCobros);
+// Cobranzas (documento de administración 17-sep-2026): vencimientos, informe por período, ficha por cliente
+const cobranzasCtrl = require('../controllers/cobranzasReportesController');
+router.get('/reportes/cobranzas-vencimientos', cobranzasCtrl.getCobranzasVencimientos);
+router.get('/reportes/cobranzas-periodos',     cobranzasCtrl.getCobranzasPeriodos);
+router.get('/reportes/cobranzas-clientes',     cobranzasCtrl.getCobranzasClientes);
 router.get('/reportes/top-clientes',          reportesVentasCtrl.getTopClientes);
 router.get('/reportes/top-clientes-detalle',  reportesVentasCtrl.getTopClientesDetalle);
 router.get('/reportes/top-productos',         reportesVentasCtrl.getTopProductos);

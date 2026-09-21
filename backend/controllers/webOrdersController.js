@@ -4248,7 +4248,12 @@ exports.getPickupOrders = async (req, res) => {
                 cubiertaBilletera: o.CubiertaBilletera === 1,
                 // Parcial: la billetera cubrió parte y `amount` ya es SOLO el resto a cobrar
                 parcialBilletera: o.ParcialBilletera === 1 && o.RestoCtaCte != null,
-                currency: cob ? cob.Moneda : (o.MonSimbolo && o.MonSimbolo.toUpperCase().includes('U') ? 'USD' : '$'),
+                // Formato consistente con PedidosCobranza.Moneda ('UYU'/'USD'): una orden sin
+                // cobranza (como la devolución de tela cliente, siempre $0) caía acá con el símbolo
+                // ('$') en vez del código ('UYU') — el front compara este campo por igualdad exacta
+                // para bloquear mezclar monedas en un retiro, y '$' nunca es igual a 'UYU', así que
+                // esa orden no se podía combinar con NINGUNA otra, ni en pesos ni en dólares.
+                currency: cob ? cob.Moneda : (o.MonSimbolo && o.MonSimbolo.toUpperCase().includes('U') ? 'USD' : 'UYU'),
                 quantity: parseQuantity(o.Cantidad),
                 quantityStr: o.Cantidad ? String(o.Cantidad) : '1',
                 clientId: o.IdCliente || 'N/A',

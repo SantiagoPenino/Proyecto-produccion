@@ -92,6 +92,11 @@ const DesignersAdminPage = lazyWithRetry(() => import('../pages/DesignersAdminPa
 const SysAdminPage = lazyWithRetry(() => import('../pages/admin/SysAdminPage'));
 const LeadsCRMView = lazyWithRetry(() => import('../pages/ventas/LeadsCRMView'));
 const PedidoPrendaPage = lazyWithRetry(() => import('../pages/ventas/PedidoPrendaPage')); // Alta interna de pedidos de prendas
+// Spec 41 — Solicitudes de vendedores (solicitud previa al pedido) + bandeja común de Diseño
+const SolicitudesVendedorPage = lazyWithRetry(() => import('../pages/ventas/SolicitudesVendedorPage'));
+const SolicitudVendedorForm = lazyWithRetry(() => import('../pages/ventas/SolicitudVendedorForm'));
+const SolicitudVendedorDetalle = lazyWithRetry(() => import('../pages/ventas/SolicitudVendedorDetalle'));
+const BandejaDisenoPage = lazyWithRetry(() => import('../pages/ventas/BandejaDisenoPage'));
 const AuditDepositoView = lazyWithRetry(() => import('../pages/AuditDepositoView'));
 const AdminEditarOrdenView = lazyWithRetry(() => import('../pages/AdminEditarOrdenView'));
 const ContabilidadCuentasView    = lazyWithRetry(() => import('../pages/ContabilidadCuentasView'));
@@ -701,6 +706,11 @@ const MainAppContent = ({ menuItems = [] }) => {
                 <Route path="/logistica/pedidos-wms" element={<WmsLogisticsPage />} />
                 <Route path="/admin/clientes-integration" element={<ClientsIntegration />} />
                 <Route path="/ventas/presupuestos" element={<PresupuestosPage />} />
+                <Route path="/ventas/solicitudes" element={<SolicitudesVendedorPage />} />
+                <Route path="/ventas/solicitudes/nueva" element={<SolicitudVendedorForm />} />
+                <Route path="/ventas/solicitudes/:id/editar" element={<SolicitudVendedorForm />} />
+                <Route path="/ventas/solicitudes/:id" element={<SolicitudVendedorDetalle />} />
+                <Route path="/ventas/bandeja-diseno" element={<BandejaDisenoPage />} />
                 <Route path="/admin/duplicate-clients" element={<DuplicateClientsPage />} />
                 <Route path="/designers" element={<DesignersAdminPage />} />
                 <Route path="/admin/helpdesk" element={<HelpDeskAdminView />} />
@@ -1008,6 +1018,8 @@ const DynamicRouter = ({ menuItems }) => {
     if (menuItem.Ruta === '/produccion/etiquetas') return <LabelGenerationPage />;
     if (menuItem.Ruta === '/admin/clientes-integration') return <ClientsIntegration />;
     if (menuItem.Ruta === '/ventas/presupuestos') return <PresupuestosPage />;
+    if (menuItem.Ruta === '/ventas/solicitudes') return <SolicitudesVendedorPage />;
+    if (menuItem.Ruta === '/ventas/bandeja-diseno') return <BandejaDisenoPage />;
     if (menuItem.Ruta === '/admin/nomencladores' || menuItem.Ruta === '/nomencladores') return <NomenclatorsABM />;
     if (menuItem.Ruta === '/admin/products-integration') return <ProductsIntegration />;
     // [MARKETING 21/08] Rutas propias de marketing (menú por rol), con pantallas simples
