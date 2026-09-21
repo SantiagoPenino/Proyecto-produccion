@@ -7,6 +7,30 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
 
 ---
 
+## [2026-09-21]
+
+### Cambiado
+- **Catálogo y WMS, rediseñado.** Las tarjetas de artículos ahora ocupan la mitad de alto: arriba el nombre y el precio, debajo solo los datos que tienen valor (ancho, variantes, vínculo con el WMS, papel) y al pie Editar más un menú de tres puntos con Precios por variante y Eliminar, que ya no queda al lado de Editar. Un precio base en 0 o sin cargar ahora dice "Sin precio" en lugar de "UYU 0.00".
+- **Los artículos ocultos se encuentran más fácil.** El filtro de estado pasó de "Activos / Inactivos" a "Visibles / Todos / Ocultos" y el botón de ocultos muestra cuántos hay. La etiqueta "Oculto" va en gris con el ojo tachado en lugar de rojo, y en el editor el interruptor se llama "Visible en el catálogo".
+- Las familias de la barra lateral se llaman por lo que son, **Servicios** y **Productos**, en lugar de "Familia 1" y "Familia 2".
+- El selector de orden es un menú propio (Headless UI) con la opción elegida marcada, en lugar del desplegable del navegador.
+- **Eliminar un artículo pide escribir "eliminar"** (en mayúscula o minúscula) para habilitar el botón; antes alcanzaba con un clic en la confirmación.
+- **Editor de artículos, rediseñado.** El encabezado muestra el nombre del artículo, su número, código y familia, y el interruptor "Visible", que antes quedaba al final del formulario. Los campos van agrupados en General, Clasificación y Precio y medidas; la familia se ve con su nombre ("1 · Servicios"). El precio base se muestra como texto, con el mismo formato que las tarjetas, y un enlace a Perfiles de precio, donde se cambia. La foto es un cuadrado fijo en lugar del recuadro que se estiraba.
+- **El editor ya no pierde cambios por un clic afuera.** Cerrar con cambios sin guardar (clic afuera, X, Cancelar o Esc) pregunta antes de descartarlos, y el pie avisa "Cambios sin guardar" solo cuando corresponde. El código obligatorio vacío se marca debajo del campo.
+- Al crear un artículo, la foto se ofrece recién después de crearlo: antes se podía elegir una, pero el alta no la subía.
+- Colores de la marca en toda la pantalla y sus ventanas: cian de marca en lugar del azul, rojo 500 y verde esmeralda 500. Íconos de Lucide en lugar de Font Awesome. Sin desenfoques de fondo.
+
+### Notas de deploy
+- Frontend: `src/components/pages/ProductsIntegration.jsx`. Necesita build.
+
+## [2026-09-18]
+
+### Arreglado
+- **Planeación pedía el tablero entero con cada cambio de cualquier orden de la fábrica.** Cada pantalla de Planeación abierta recargaba sus dos consultas del tablero ante cada aviso de cambio, sin ningún freno, y en hora pico eso se vio en el registro del servidor como varias recargas por segundo desde una misma sede. Era la mayor parte de la carga del tablero, que el 16 se llevaba la mitad de la CPU de la base. Ahora recarga como la pantalla del área: como máximo una vez cada 8 segundos ante cambios de otros. Lo que hace el propio usuario (arrastrar, asignar, crear un lote) se sigue viendo al instante.
+
+### Notas de deploy
+- Frontend: `src/components/pages/PlaneacionTrabajo.jsx`. Necesita build.
+
 ## [2026-09-16] — tercer deploy del día
 
 ### Arreglado

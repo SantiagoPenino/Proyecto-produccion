@@ -1,19 +1,118 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import api from '../../services/api';
 import { toast } from 'sonner';
+import { Listbox, ListboxButton, ListboxOptions, ListboxOption } from '@headlessui/react';
+import {
+    Plus, Pencil, X, Network, Box, Check, CloudUpload, Camera, Upload, LoaderCircle,
+    Layers, Info, TriangleAlert, Image as ImageIcon, Link2, EyeOff, Tag, Trash2, RotateCw,
+    PackageOpen, Search, Globe, Folder, FolderOpen, ArrowUpDown, CloudDownload, Download, Ellipsis,
+    FileText, Ruler, ExternalLink, ChevronDown
+} from 'lucide-react';
+
+// SupFlia 1 = servicios y 2 = productos (mismo criterio que el filtro "Tipo").
+const nombreFamilia = (sup) => {
+    if (sup === '1') return 'Servicios';
+    if (sup === '2') return 'Productos';
+    if (sup === '(Sin Familia)') return 'Sin familia';
+    return `Familia ${sup}`;
+};
+
+// Mostrar llega como bit (true/false) o como 1/0 después de guardar desde el modal.
+const esOculto = (a) => a.Mostrar === false || a.Mostrar === 0;
+
+const fmt2 = (n) => Number(n).toLocaleString('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+const MONEDAS = { 1: 'UYU', 2: 'USD' };
+
+const ORDEN_OPCIONES = [
+    { value: 'price_asc',  label: 'Menor Precio' },
+    { value: 'price_desc', label: 'Mayor Precio' },
+    { value: 'name_asc',   label: 'Nombre A-Z' },
+    { value: 'name_desc',  label: 'Nombre Z-A' },
+];
+
+// Orden de la grilla con Listbox de Headless UI: marca la opción elegida y se maneja con teclado.
+const OrdenSelect = ({ value, onChange }) => {
+    const sel = ORDEN_OPCIONES.find(o => o.value === value) || ORDEN_OPCIONES[0];
+    return (
+        <Listbox value={value} onChange={onChange}>
+            <ListboxButton
+                aria-label={`Ordenar: ${sel.label}`}
+                className="group min-w-[12rem] py-2 pl-3 pr-2.5 inline-flex items-center justify-between gap-2 border border-slate-200 bg-slate-50 hover:bg-white rounded-lg text-sm font-semibold text-slate-600 outline-none transition-colors focus-visible:border-brand-cyan focus-visible:ring-4 focus-visible:ring-brand-cyan/10 data-[open]:border-brand-cyan data-[open]:bg-white"
+            >
+                <span className="truncate">{sel.label}</span>
+                <ChevronDown size={15} className="shrink-0 text-slate-400 transition-transform group-data-[open]:rotate-180" aria-hidden="true" />
+            </ListboxButton>
+            <ListboxOptions
+                anchor="bottom start"
+                transition
+                className="z-50 w-[var(--button-width)] min-w-[12rem] [--anchor-gap:4px] rounded-xl border border-slate-200 bg-white p-1 shadow-lg outline-none transition duration-100 ease-out data-[closed]:scale-95 data-[closed]:opacity-0"
+            >
+                {ORDEN_OPCIONES.map(o => (
+                    <ListboxOption
+                        key={o.value}
+                        value={o.value}
+                        className="group flex cursor-pointer select-none items-center justify-between gap-3 rounded-lg px-2.5 py-2 text-sm text-slate-700 data-[focus]:bg-slate-100 data-[selected]:font-semibold data-[selected]:text-brand-cyan"
+                    >
+                        <span className="whitespace-nowrap">{o.label}</span>
+                        <Check size={14} className="invisible text-brand-cyan group-data-[selected]:visible" aria-hidden="true" />
+                    </ListboxOption>
+                ))}
+            </ListboxOptions>
+        </Listbox>
+    );
+};
+
+// Precio base 0 o ausente = sin precio (antes se mostraba "UYU 0.00").
+const precioDe = (art) => {
+    const p = art.PrecioBase != null ? parseFloat(art.PrecioBase) : null;
+    if (p == null || !Number.isFinite(p) || p === 0) return { texto: 'Sin precio', sinPrecio: true };
+    return { texto: `${MONEDAS[art.MonIdMoneda] || 'S/M'} ${fmt2(p)}`, sinPrecio: false };
+};
+
+const FORM_VACIO = {
+    proIdProducto: null, codArticulo: '', idProdReact: '',
+    descripcion: '', codStock: '',
+    grupo: '', supFlia: '', mostrar: true,
+    anchoImprimible: '', largoImprimible: '', llevaPapel: false, monIdMoneda: '',
+    uniIdUnidad: '',
+    producto_maestro_id: ''
+};
+
+const MONEDA_OPCIONES = [{ v: '1', l: 'UYU' }, { v: '2', l: 'USD' }, { v: '', l: 'Sin definir' }];
+
+const Switch = ({ checked, onChange, labelledBy, onClass }) => (
+    <button
+        type="button"
+        role="switch"
+        aria-checked={!!checked}
+        aria-labelledby={labelledBy}
+        onClick={() => onChange(!checked)}
+        className={`relative inline-flex h-6 w-10 shrink-0 items-center rounded-full transition-colors outline-none focus-visible:ring-4 focus-visible:ring-brand-cyan/20 ${checked ? onClass : 'bg-slate-300'}`}
+    >
+        <span className={`inline-block h-5 w-5 rounded-full bg-white shadow-sm transition-transform ${checked ? 'translate-x-[18px]' : 'translate-x-0.5'}`} />
+    </button>
+);
+
+const Seccion = ({ icon: Icono, titulo, extra, children }) => (
+    <section className="rounded-xl border border-slate-200 p-4">
+        <h3 className="text-sm font-bold text-slate-700 flex items-center gap-2 mb-3">
+            <Icono size={16} className="text-brand-cyan" aria-hidden="true" /> {titulo} {extra}
+        </h3>
+        <div className="space-y-3">{children}</div>
+    </section>
+);
 
 // ─── Modal de Edición con combos dependientes ─────────────────────────────────
 const EditModal = ({ article, allArticles, onClose, onSaved }) => {
     const isNew = !article?.ProIdProducto;
 
-    const [form, setForm] = useState({
-        proIdProducto: null, codArticulo: '', idProdReact: '',
-        descripcion: '', codStock: '',
-        grupo: '', supFlia: '', mostrar: true,
-        anchoImprimible: '', largoImprimible: '', llevaPapel: false, monIdMoneda: '',
-        uniIdUnidad: '',
-        producto_maestro_id: ''
-    });
+    const [form, setForm] = useState(FORM_VACIO);
+    // Foto del formulario al abrir: contra esto se detectan los cambios sin guardar.
+    const inicialRef = useRef(JSON.stringify(FORM_VACIO));
+    const [errores, setErrores] = useState({});
+    const [confirmDiscard, setConfirmDiscard] = useState(false);
+    const codigoRef = useRef(null);
     const [unidades, setUnidades] = useState([]); // Unidad de medida (1=Cantidades, 2=Metros)
     const [saving, setSaving] = useState(false);
     const [imageFile, setImageFile] = useState(null);
@@ -106,7 +205,7 @@ const EditModal = ({ article, allArticles, onClose, onSaved }) => {
 
     useEffect(() => {
         if (article) {
-            setForm({
+            const f = {
                 proIdProducto:   article.ProIdProducto ?? null,
                 codArticulo:     article.CodArticulo?.trim()     || '',
                 idProdReact:     article.IDProdReact != null ? String(article.IDProdReact) : '',
@@ -115,14 +214,17 @@ const EditModal = ({ article, allArticles, onClose, onSaved }) => {
                 grupo:           article.Grupo?.trim()            || '',
                 supFlia:         article.SupFlia?.trim()          || '',
                 mostrar:         article.Mostrar == null ? true : !!article.Mostrar,
-                anchoImprimible: article.anchoimprimible != null ? String(parseFloat(Number(article.anchoimprimible).toFixed(4))) : '',
+                // Ancho 0 se muestra vacío: al guardar, vacío vuelve a ser 0.
+                anchoImprimible: Number(article.anchoimprimible) ? String(parseFloat(Number(article.anchoimprimible).toFixed(4))) : '',
                 largoImprimible: article.largoimprimible != null ? String(parseFloat(Number(article.largoimprimible).toFixed(4))) : '',
                 llevaPapel:      !!article.LLEVAPAPEL,
                 monIdMoneda:     article.MonIdMoneda != null ? String(article.MonIdMoneda) : '',
                 uniIdUnidad:     article.UniIdUnidad != null ? String(article.UniIdUnidad) : '',
                 producto_maestro_id: article.producto_maestro_id != null ? String(article.producto_maestro_id) : '',
                 precioBase:      article.PrecioBase != null ? parseFloat(article.PrecioBase) : null
-            });
+            };
+            setForm(f);
+            inicialRef.current = JSON.stringify(f);
         }
     }, [article]);
 
@@ -224,7 +326,7 @@ const EditModal = ({ article, allArticles, onClose, onSaved }) => {
             .filter(a => !form.supFlia || a.SupFlia?.trim() === form.supFlia)
             .map(a => ({
                 val:   a.Grupo?.trim(),
-                label: a.DescripcionGrupo?.trim() ? `${a.Grupo?.trim()} — ${a.DescripcionGrupo.trim()}` : a.Grupo?.trim()
+                label: a.DescripcionGrupo?.trim() ? `${a.Grupo?.trim()} · ${a.DescripcionGrupo.trim()}` : a.Grupo?.trim()
             }))
             .filter(x => x.val && !seen.has(x.val) && seen.add(x.val))
             .sort((a, b) => a.val?.localeCompare(b.val));
@@ -239,7 +341,7 @@ const EditModal = ({ article, allArticles, onClose, onSaved }) => {
             .map(a => ({
                 val:   a.CodStock?.trim(),
                 label: a.DescripcionStock?.trim()
-                    ? `${a.CodStock?.trim()} — ${a.DescripcionStock.trim()}`
+                    ? `${a.CodStock?.trim()} · ${a.DescripcionStock.trim()}`
                     : a.CodStock?.trim()
             }))
             .filter(x => x.val && !seen.has(x.val) && seen.add(x.val))
@@ -248,7 +350,9 @@ const EditModal = ({ article, allArticles, onClose, onSaved }) => {
 
     const handleChange = (e) => {
         const { name, value, type, checked } = e.target;
-        const newVal = type === 'checkbox' ? checked : value;
+        let newVal = type === 'checkbox' ? checked : value;
+        if (name === 'idProdReact') newVal = String(newVal).replace(/\D/g, '');
+        if (name === 'codArticulo' && errores.codArticulo) setErrores(prev => ({ ...prev, codArticulo: undefined }));
         setForm(prev => {
             const next = { ...prev, [name]: newVal };
             if (name === 'supFlia') { next.grupo = ''; next.codStock = ''; }
@@ -269,7 +373,11 @@ const EditModal = ({ article, allArticles, onClose, onSaved }) => {
 
     const handleSubmit = async (e) => {
         e.preventDefault();
-        if (!form.codArticulo.trim()) return toast.error('El código es obligatorio');
+        if (!form.codArticulo.trim()) {
+            setErrores(prev => ({ ...prev, codArticulo: 'Ingresá el código del artículo.' }));
+            codigoRef.current?.focus();
+            return;
+        }
         setSaving(true);
         try {
             const payload = {
@@ -338,167 +446,244 @@ const EditModal = ({ article, allArticles, onClose, onSaved }) => {
         } finally { setSaving(false); }
     };
 
-    const inputCls = "w-full px-3 py-2.5 border border-slate-300 rounded-xl text-sm outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 transition bg-slate-50 focus:bg-white";
+    // Cambios sin guardar: el formulario difiere de como se abrió, o hay foto o producto terminado pendientes.
+    const dirty = useMemo(
+        () => JSON.stringify(form) !== inicialRef.current || !!imageFile || ptDirty,
+        [form, imageFile, ptDirty]
+    );
+
+    // Cerrar (X, Cancelar, clic afuera o Esc) sin perder cambios: si hay algo sin guardar, primero pregunta.
+    const intentarCerrar = () => {
+        if (saving) return;
+        if (dirty) setConfirmDiscard(true);
+        else onClose();
+    };
+
+    useEffect(() => {
+        const onKey = (e) => {
+            if (e.key !== 'Escape') return;
+            if (confirmDiscard) setConfirmDiscard(false);
+            else intentarCerrar();
+        };
+        document.addEventListener('keydown', onKey);
+        return () => document.removeEventListener('keydown', onKey);
+    });
+
+    const inputBase = "w-full h-10 px-3 border rounded-lg text-sm bg-white outline-none focus:ring-4 transition disabled:bg-slate-50 disabled:text-slate-400";
+    const inputCls = `${inputBase} border-slate-300 focus:border-brand-cyan focus:ring-brand-cyan/10`;
+    const inputErrCls = `${inputBase} border-red-500 focus:border-red-500 focus:ring-red-500/10`;
     const selectCls = inputCls;
-    const labelCls = "block text-xs font-bold tracking-wide text-slate-500 uppercase mb-1.5";
+    const labelCls = "block text-xs font-semibold text-slate-600 mb-1.5";
+    const helpCls = "text-[11px] text-slate-400 mt-1 leading-snug";
+
+    const grupoSel = grupos.find(g => g.val === form.grupo);
+    const titulo = isNew ? 'Nuevo artículo' : (form.descripcion.trim() || 'Editar artículo');
+    const meta = isNew
+        ? 'Completá los datos y guardá para crearlo'
+        : [
+            article?.ProIdProducto != null ? `#${article.ProIdProducto}` : null,
+            form.codArticulo.trim() ? `Código ${form.codArticulo.trim()}` : null,
+            form.supFlia ? [nombreFamilia(form.supFlia), grupoSel?.label?.replace(' · ', ' ')].filter(Boolean).join(' › ') : null,
+        ].filter(Boolean).join(' · ');
+    const precio = precioDe({ PrecioBase: form.precioBase, MonIdMoneda: form.monIdMoneda });
 
     return (
-        <div className="fixed inset-0 bg-slate-900/60 z-50 flex items-center justify-center p-4" onClick={onClose}>
-            <div className="bg-white rounded-3xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
-                {/* Header */}
-                <div className="flex items-center justify-between p-6 bg-slate-50 border-b border-slate-100 shrink-0">
-                    <h2 className="text-xl font-bold text-slate-800 flex items-center gap-3">
-                        <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${isNew ? 'bg-green-100 text-green-600' : 'bg-blue-100 text-blue-600'}`}>
-                            <i className={`fa-solid ${isNew ? 'fa-plus' : 'fa-pen'}`}></i>
-                        </div>
-                        {isNew ? 'Nuevo Artículo' : `Editar Artículo`}
-                    </h2>
-                    <button onClick={onClose} className="w-8 h-8 flex items-center justify-center bg-slate-200 hover:bg-slate-300 text-slate-500 rounded-full transition-colors"><i className="fa-solid fa-times"></i></button>
+        <div className="fixed inset-0 bg-slate-900/60 z-50 flex items-center justify-center p-4" onClick={intentarCerrar}>
+            <div
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="edit-modal-titulo"
+                className="relative bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden"
+                onClick={e => e.stopPropagation()}
+            >
+                {/* Header: qué artículo es y si se ve en el catálogo */}
+                <div className="flex items-start gap-3 px-6 py-4 border-b border-slate-100 shrink-0">
+                    <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${isNew ? 'bg-emerald-500/10 text-emerald-500' : 'bg-brand-cyan/10 text-brand-cyan'}`}>
+                        {isNew ? <Plus size={20} aria-hidden="true" /> : <Pencil size={18} aria-hidden="true" />}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                        <h2 id="edit-modal-titulo" className="text-lg font-bold text-slate-800 truncate" title={titulo}>{titulo}</h2>
+                        <p className="text-xs text-slate-500 truncate" title={meta}>{meta}</p>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0 pt-1.5">
+                        <span id="lbl-visible" className="text-sm font-semibold text-slate-600">Visible</span>
+                        <Switch checked={form.mostrar} onChange={v => setForm(p => ({ ...p, mostrar: v }))} labelledBy="lbl-visible" onClass="bg-emerald-500" />
+                    </div>
+                    <button type="button" onClick={intentarCerrar} aria-label="Cerrar"
+                        className="w-9 h-9 shrink-0 flex items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 transition-colors">
+                        <X size={18} aria-hidden="true" />
+                    </button>
                 </div>
 
                 {/* Body */}
-                <form id="edit-form" onSubmit={handleSubmit} className="overflow-y-auto flex-1 p-8 text-sm">
-                    <div className="flex flex-col lg:flex-row gap-8">
-                        {/* Left Column - Main Details */}
-                        <div className="flex-1 space-y-6">
-                            
-                            {!isNew && (
-                                <div className="flex flex-col gap-1">
-                                    <span className="text-xs font-bold text-slate-400 uppercase">ID Interno (ProIdProducto)</span>
-                                    <span className="text-2xl font-black text-slate-800">#{article?.ProIdProducto ?? '—'}</span>
-                                </div>
-                            )}
-
-                            <div className="grid grid-cols-2 gap-4">
+                <form id="edit-form" onSubmit={handleSubmit} noValidate className="overflow-y-auto flex-1 p-6 text-sm">
+                    <div className="flex flex-col lg:flex-row gap-6">
+                        {/* Columna izquierda: datos del artículo */}
+                        <div className="flex-1 min-w-0 space-y-4">
+                            <Seccion icon={FileText} titulo="General">
                                 <div>
-                                    <label className={labelCls}>Código Artículo *</label>
-                                    <input name="codArticulo" value={form.codArticulo} onChange={handleChange} className={inputCls} placeholder="Ej: 1152" />
+                                    <label htmlFor="art-descripcion" className={labelCls}>Descripción</label>
+                                    <input id="art-descripcion" name="descripcion" value={form.descripcion} onChange={handleChange}
+                                        className={inputCls} placeholder="Nombre del artículo" autoFocus />
                                 </div>
-                                <div>
-                                    <label className={labelCls}>IDReact</label>
-                                    <input type="number" name="idProdReact" value={form.idProdReact} onChange={handleChange} className={inputCls} placeholder="Ej: 54" />
-                                </div>
-                            </div>
-
-                            <div>
-                                <label className={labelCls}>Descripción</label>
-                                <input name="descripcion" value={form.descripcion} onChange={handleChange} className={inputCls} placeholder="Nombre del artículo" />
-                            </div>
-
-                            <div className="bg-slate-50 p-5 rounded-2xl border border-slate-100 space-y-4">
-                                <h3 className="font-bold text-slate-800 text-sm flex items-center gap-2 mb-2">
-                                    <i className="fa-solid fa-sitemap text-blue-500"></i> Clasificación
-                                </h3>
-                                <div>
-                                    <label className={labelCls}>Sup. Familia</label>
-                                    <select name="supFlia" value={form.supFlia} onChange={handleChange} className={selectCls}>
-                                        <option value="">— Seleccionar —</option>
-                                        {supFlias.map(x => <option key={x.val} value={x.val}>{x.label}</option>)}
-                                    </select>
-                                </div>
-                                <div className="grid grid-cols-2 gap-4">
+                                <div className="grid grid-cols-2 gap-3">
                                     <div>
-                                        <label className={labelCls}>Grupo</label>
-                                        <select name="grupo" value={form.grupo} onChange={handleChange} className={selectCls} disabled={!form.supFlia && grupos.length === 0}>
-                                            <option value="">— Seleccionar —</option>
+                                        <label htmlFor="art-codigo" className={labelCls}>Código de artículo <span className="text-red-500">*</span></label>
+                                        <input id="art-codigo" ref={codigoRef} name="codArticulo" value={form.codArticulo} onChange={handleChange}
+                                            onBlur={() => { if (!form.codArticulo.trim()) setErrores(prev => ({ ...prev, codArticulo: 'Ingresá el código del artículo.' })); }}
+                                            aria-invalid={!!errores.codArticulo}
+                                            aria-describedby={errores.codArticulo ? 'art-codigo-error' : undefined}
+                                            className={errores.codArticulo ? inputErrCls : inputCls} placeholder="1152" />
+                                        {errores.codArticulo && (
+                                            <p id="art-codigo-error" className="text-xs font-medium text-red-500 mt-1">{errores.codArticulo}</p>
+                                        )}
+                                    </div>
+                                    <div>
+                                        <label htmlFor="art-idreact" className={labelCls}>IDReact</label>
+                                        <input id="art-idreact" name="idProdReact" inputMode="numeric" value={form.idProdReact} onChange={handleChange}
+                                            className={inputCls} placeholder="54" />
+                                    </div>
+                                </div>
+                            </Seccion>
+
+                            <Seccion icon={Network} titulo="Clasificación">
+                                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                                    <div>
+                                        <label htmlFor="art-familia" className={labelCls}>Familia</label>
+                                        <select id="art-familia" name="supFlia" value={form.supFlia} onChange={handleChange} className={selectCls}>
+                                            <option value="">Seleccionar</option>
+                                            {supFlias.map(x => (
+                                                <option key={x.val} value={x.val}>
+                                                    {['1', '2'].includes(x.val) ? `${x.val} · ${nombreFamilia(x.val)}` : x.label}
+                                                </option>
+                                            ))}
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label htmlFor="art-grupo" className={labelCls}>Grupo</label>
+                                        <select id="art-grupo" name="grupo" value={form.grupo} onChange={handleChange} className={selectCls}
+                                            disabled={!form.supFlia && grupos.length === 0} title={grupoSel?.label}>
+                                            <option value="">Seleccionar</option>
                                             {grupos.map(x => <option key={x.val} value={x.val}>{x.label}</option>)}
                                         </select>
                                     </div>
                                     <div>
-                                        <label className={labelCls}>Cód. Stock</label>
-                                        <select name="codStock" value={form.codStock} onChange={handleChange} className={selectCls} disabled={!form.grupo && stocks.length === 0}>
-                                            <option value="">— Seleccionar —</option>
+                                        <label htmlFor="art-stock" className={labelCls}>Código de stock</label>
+                                        <select id="art-stock" name="codStock" value={form.codStock} onChange={handleChange} className={selectCls}
+                                            disabled={!form.grupo && stocks.length === 0} title={stocks.find(s => s.val === form.codStock)?.label}>
+                                            <option value="">Seleccionar</option>
                                             {stocks.map(x => <option key={x.val} value={x.val}>{x.label}</option>)}
                                         </select>
                                     </div>
                                 </div>
-                            </div>
+                            </Seccion>
 
-                            <div className="grid grid-cols-3 gap-4">
-                                <div>
-                                    <label className={labelCls}>Moneda</label>
-                                    <select name="monIdMoneda" value={form.monIdMoneda} onChange={handleChange} className={selectCls}>
-                                        <option value="">— Sin especificar —</option>
-                                        <option value="1">$ UYU — Pesos Uruguayos</option>
-                                        <option value="2">USD — Dólares</option>
-                                    </select>
-                                </div>
-                                <div>
-                                    <label className={labelCls}>Precio Base</label>
-                                    <div className={`h-10 px-3 rounded-lg border border-slate-300 bg-slate-100 flex items-center text-lg font-black text-slate-800 cursor-not-allowed`} title="El precio base se configura en Perfiles de Precio">
-                                        {form.precioBase != null ? `${form.monIdMoneda === '2' ? 'U$S' : '$'} ${form.precioBase.toFixed(2)}` : '—'}
+                            <Seccion icon={Ruler} titulo="Precio y medidas">
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                    <div>
+                                        <span id="lbl-moneda" className={labelCls}>Moneda</span>
+                                        <div role="radiogroup" aria-labelledby="lbl-moneda" className="inline-flex bg-slate-100 p-1 rounded-lg border border-slate-200 text-xs font-bold">
+                                            {MONEDA_OPCIONES.map(o => (
+                                                <button key={o.v || 'sin-definir'} type="button" role="radio" aria-checked={form.monIdMoneda === o.v}
+                                                    onClick={() => setForm(p => ({ ...p, monIdMoneda: o.v }))}
+                                                    className={`px-3 py-1.5 rounded-md transition-colors ${form.monIdMoneda === o.v ? 'bg-white text-brand-cyan shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>
+                                                    {o.l}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <span className={labelCls}>Precio base</span>
+                                        <div className="min-h-[2.25rem] flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                                            <span className={`text-sm tabular-nums ${precio.sinPrecio ? 'text-slate-400' : 'font-bold text-slate-800'}`}>{precio.texto}</span>
+                                            <a href="/admin/price-profiles" target="_blank" rel="noreferrer"
+                                                className="inline-flex items-center gap-1 text-xs font-semibold text-brand-cyan hover:underline">
+                                                Editar en Perfiles de precio <ExternalLink size={12} aria-hidden="true" />
+                                            </a>
+                                        </div>
                                     </div>
                                 </div>
-                                <div>
-                                    <label className={labelCls}>Ancho Imprimible</label>
-                                    <input type="number" step="0.01" min="0" name="anchoImprimible" value={form.anchoImprimible} onChange={handleChange} className={inputCls} placeholder="Ej: 1.60" />
+                                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                                    <div>
+                                        <label htmlFor="art-unidad" className={labelCls}>Unidad</label>
+                                        <select id="art-unidad" name="uniIdUnidad" value={form.uniIdUnidad} onChange={handleChange} className={selectCls}
+                                            aria-describedby="art-unidad-ayuda">
+                                            <option value="">Sin definir</option>
+                                            {unidades.map(u => (
+                                                <option key={u.UniIdUnidad} value={u.UniIdUnidad}>{u.Descripcion}{u.Notacion ? ` (${u.Notacion})` : ''}</option>
+                                            ))}
+                                        </select>
+                                        <p id="art-unidad-ayuda" className={helpCls}>Cómo se cuenta en producción: por piezas o por metros.</p>
+                                    </div>
+                                    <div>
+                                        <label htmlFor="art-ancho" className={labelCls}>Ancho imprimible (m)</label>
+                                        <input id="art-ancho" type="number" step="0.01" min="0" name="anchoImprimible" value={form.anchoImprimible} onChange={handleChange}
+                                            className={inputCls} placeholder="1.60" />
+                                    </div>
+                                    <div>
+                                        <label htmlFor="art-largo" className={labelCls}>Largo fijo (m)</label>
+                                        <input id="art-largo" type="number" step="0.01" min="0" name="largoImprimible" value={form.largoImprimible} onChange={handleChange}
+                                            className={inputCls} placeholder="Opcional" aria-describedby="art-largo-ayuda" />
+                                        <p id="art-largo-ayuda" className={helpCls}>Si se carga, el portal exige esa medida exacta (ej: banderas).</p>
+                                    </div>
                                 </div>
-                                <div>
-                                    <label className={labelCls} title="Si se carga, el material es de MEDIDA FIJA: el portal exige que el archivo mida exactamente Ancho x Largo (ej: banderas)">Largo Imprimible (medida fija)</label>
-                                    <input type="number" step="0.01" min="0" name="largoImprimible" value={form.largoImprimible} onChange={handleChange} className={inputCls} placeholder="Vacío = sin medida fija" />
+                                <div className="flex items-center gap-3 pt-1">
+                                    <Switch checked={form.llevaPapel} onChange={v => setForm(p => ({ ...p, llevaPapel: v }))} labelledBy="lbl-papel" onClass="bg-brand-cyan" />
+                                    <span id="lbl-papel" className="text-sm font-semibold text-slate-700">Lleva papel</span>
                                 </div>
-                                <div>
-                                    <label className={labelCls} title="Cómo se cuenta el trabajo en producción: por piezas (Cantidades) o por metros. En Impresión Directa define si el avance de impresión se controla por piezas o metros.">Unidad de Medida</label>
-                                    <select name="uniIdUnidad" value={form.uniIdUnidad} onChange={handleChange} className={selectCls}>
-                                        <option value="">— Sin definir —</option>
-                                        {unidades.map(u => (
-                                            <option key={u.UniIdUnidad} value={u.UniIdUnidad}>{u.Descripcion}{u.Notacion ? ` (${u.Notacion})` : ''}</option>
-                                        ))}
-                                    </select>
-                                </div>
-                            </div>
+                            </Seccion>
 
                             {showProductoTerminado && (
-                                <div className="bg-purple-50 p-5 rounded-2xl border border-purple-100 space-y-4">
-                                    <h3 className="font-bold text-slate-800 text-sm flex items-center gap-2">
-                                        <i className="fa-solid fa-cube text-purple-500"></i> Producto Terminado
-                                        {ptDirty && <span className="text-[10px] font-black text-purple-600 bg-purple-100 px-2 py-0.5 rounded-full uppercase">Sin guardar</span>}
-                                    </h3>
-                                    <p className="text-[11px] text-slate-500 -mt-2">Dimensiones fijas y terminaciones que YA INCLUYE (dentro del precio). Se guardan con "Guardar Cambios".</p>
+                                <Seccion icon={Box} titulo="Producto terminado" extra={ptDirty && (
+                                    <span className="ml-1 inline-flex items-center gap-1.5 text-[11px] font-semibold text-slate-500">
+                                        <span className="w-1.5 h-1.5 rounded-full bg-amber-500" aria-hidden="true" /> Sin guardar
+                                    </span>
+                                )}>
+                                    <p className={`${helpCls} -mt-2`}>Dimensiones fijas y terminaciones que ya incluye el precio. Se guardan con Guardar cambios.</p>
                                     <div>
-                                        <label className={labelCls}>Material de impresión</label>
-                                        <select value={ptMaterial}
+                                        <label htmlFor="pt-material" className={labelCls}>Material de impresión</label>
+                                        <select id="pt-material" value={ptMaterial}
                                             onChange={e => { setPtMaterial(e.target.value); setPtDirty(true); }}
-                                            className={selectCls}>
-                                            <option value="">— Sin definir —</option>
+                                            className={selectCls} aria-describedby="pt-material-ayuda">
+                                            <option value="">Sin definir</option>
                                             {ptMateriales.map(m => (
                                                 <option key={m.CodArticulo} value={m.CodArticulo}>{m.Descripcion}</option>
                                             ))}
                                         </select>
-                                        <p className="text-[10px] text-slate-400 mt-1">Sobre qué material se imprime este producto (ej: cuadro canvas brillo → Canvas Brillo).</p>
+                                        <p id="pt-material-ayuda" className={helpCls}>Sobre qué material se imprime (ej: cuadro canvas brillo → Canvas Brillo).</p>
                                     </div>
-                                    <div className="grid grid-cols-4 gap-4">
+                                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                                         <div>
-                                            <label className={labelCls}>Ancho (m)</label>
-                                            <input type="number" step="0.01" min="0" value={ptAncho}
+                                            <label htmlFor="pt-ancho" className={labelCls}>Ancho (m)</label>
+                                            <input id="pt-ancho" type="number" step="0.01" min="0" value={ptAncho}
                                                 onChange={e => { setPtAncho(e.target.value); setPtDirty(true); }}
-                                                className={inputCls} placeholder="Ej: 1.00" />
+                                                className={inputCls} placeholder="1.00" />
                                         </div>
                                         <div>
-                                            <label className={labelCls}>Alto (m)</label>
-                                            <input type="number" step="0.01" min="0" value={ptAlto}
+                                            <label htmlFor="pt-alto" className={labelCls}>Alto (m)</label>
+                                            <input id="pt-alto" type="number" step="0.01" min="0" value={ptAlto}
                                                 onChange={e => { setPtAlto(e.target.value); setPtDirty(true); }}
-                                                className={inputCls} placeholder="Ej: 1.00" />
+                                                className={inputCls} placeholder="1.00" />
                                         </div>
                                         <div>
-                                            <label className={labelCls}>Borde (cm)</label>
-                                            <input type="number" step="0.5" min="0" value={ptBorde}
+                                            <label htmlFor="pt-borde" className={labelCls}>Borde (cm)</label>
+                                            <input id="pt-borde" type="number" step="0.5" min="0" value={ptBorde}
                                                 onChange={e => { setPtBorde(e.target.value); setPtDirty(true); }}
-                                                className={inputCls} placeholder="Ej: 3" title="Demasía por lado (envuelve bastidor / dobladillo)" />
+                                                className={inputCls} placeholder="3" title="Demasía por lado (envuelve bastidor / dobladillo)" />
                                         </div>
                                         <div>
-                                            <label className={labelCls}>Tinta</label>
-                                            <select value={ptTinta}
+                                            <label htmlFor="pt-tinta" className={labelCls}>Tinta</label>
+                                            <select id="pt-tinta" value={ptTinta}
                                                 onChange={e => { setPtTinta(e.target.value); setPtDirty(true); }}
                                                 className={selectCls}>
-                                                <option value="">— Sin definir —</option>
+                                                <option value="">Sin definir</option>
                                                 <option value="Ecosolvente">Ecosolvente</option>
                                                 <option value="UV">UV</option>
                                             </select>
                                         </div>
                                     </div>
                                     <div>
-                                        <label className={labelCls}>Terminaciones incluidas</label>
+                                        <span className={labelCls}>Terminaciones incluidas</span>
                                         {termCatalogo.length === 0 ? (
                                             <p className="text-xs text-slate-400 italic">Cargando catálogo...</p>
                                         ) : (
@@ -508,20 +693,20 @@ const EditModal = ({ article, allArticles, onClose, onSaved }) => {
                                                     const active = v != null;
                                                     const ubicacionesT = (t.Ubicaciones || '').split(',').map(x => x.trim()).filter(Boolean);
                                                     return (
-                                                        <div key={t.TerminacionID} className={`inline-flex items-center rounded-full border transition-all overflow-hidden ${active
-                                                            ? 'bg-purple-500 border-purple-500 text-white shadow-sm'
-                                                            : 'bg-white border-slate-200 text-slate-500 hover:border-purple-300'}`}>
-                                                            <button type="button" onClick={() => togglePtTerminacion(t.TerminacionID)}
-                                                                className="px-3 py-1.5 text-xs font-bold">
-                                                                {active && <i className="fa-solid fa-check mr-1.5"></i>}
+                                                        <div key={t.TerminacionID} className={`inline-flex items-center rounded-full border transition-colors overflow-hidden ${active
+                                                            ? 'bg-brand-cyan border-brand-cyan text-white'
+                                                            : 'bg-white border-slate-200 text-slate-600 hover:border-brand-cyan/40'}`}>
+                                                            <button type="button" onClick={() => togglePtTerminacion(t.TerminacionID)} aria-pressed={active}
+                                                                className="px-3 py-1.5 text-xs font-bold inline-flex items-center gap-1.5">
+                                                                {active && <Check size={12} aria-hidden="true" />}
                                                                 {t.Nombre}
                                                             </button>
                                                             {active && ubicacionesT.length > 0 && (
                                                                 <select value={v.ubicacion || ''}
                                                                     onChange={e => setPtUbicacion(t.TerminacionID, e.target.value)}
                                                                     onClick={e => e.stopPropagation()}
-                                                                    className="text-[10px] font-bold text-purple-700 bg-white rounded-full px-1.5 py-1 mr-1 outline-none max-w-[110px]"
-                                                                    title="Ubicación">
+                                                                    className="text-[11px] font-bold text-brand-cyan bg-white rounded-full px-1.5 py-1 mr-1 outline-none max-w-[110px]"
+                                                                    aria-label={`Ubicación de ${t.Nombre}`} title="Ubicación">
                                                                     <option value="">Ubicación...</option>
                                                                     {UBICACIONES_PT.filter(u => ubicacionesT.includes(u.v)).map(u => (
                                                                         <option key={u.v} value={u.v}>{u.l}</option>
@@ -532,8 +717,8 @@ const EditModal = ({ article, allArticles, onClose, onSaved }) => {
                                                                 <input type="number" min="0.5" step="0.5" value={v.cantidad}
                                                                     onChange={e => setPtCantidad(t.TerminacionID, e.target.value)}
                                                                     onClick={e => e.stopPropagation()}
-                                                                    className="w-14 px-1.5 py-1 mr-1 text-xs font-black text-purple-700 bg-white rounded-full outline-none text-center"
-                                                                    title="Cantidad incluida" />
+                                                                    className="w-14 px-1.5 py-1 mr-1 text-xs font-black text-brand-cyan bg-white rounded-full outline-none text-center"
+                                                                    aria-label={`Cantidad incluida de ${t.Nombre}`} title="Cantidad incluida" />
                                                             )}
                                                         </div>
                                                     );
@@ -541,135 +726,142 @@ const EditModal = ({ article, allArticles, onClose, onSaved }) => {
                                             </div>
                                         )}
                                     </div>
-                                </div>
+                                </Seccion>
                             )}
-
-                            <div className="flex gap-8 pt-2">
-                                <label className="flex items-center gap-3 cursor-pointer group">
-                                    <div className="relative flex items-center justify-center">
-                                        <input type="checkbox" name="mostrar" checked={form.mostrar} onChange={handleChange} className="peer sr-only" />
-                                        <div className="w-10 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-green-500"></div>
-                                    </div>
-                                    <span className="font-bold text-slate-700 group-hover:text-slate-900">Mostrar Activo</span>
-                                </label>
-
-                                <label className="flex items-center gap-3 cursor-pointer group">
-                                    <div className="relative flex items-center justify-center">
-                                        <input type="checkbox" name="llevaPapel" checked={form.llevaPapel} onChange={handleChange} className="peer sr-only" />
-                                        <div className="w-10 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-500"></div>
-                                    </div>
-                                    <span className="font-bold text-slate-700 group-hover:text-slate-900">Lleva Papel</span>
-                                </label>
-                            </div>
                         </div>
 
-                        {/* Right Column - WMS & Image */}
-                        <div className="w-full lg:w-72 flex flex-col gap-6">
-                            <div className="bg-blue-50 rounded-2xl p-5 border border-blue-100">
-                                <h3 className="font-bold text-blue-800 text-sm flex items-center gap-2 mb-4">
-                                    <i className="fa-solid fa-boxes-stacked"></i> Integración WMS
-                                </h3>
-                                <div>
-                                    <label className="block text-xs font-bold text-blue-700 uppercase mb-2">WMS Master ID</label>
-                                    {form.producto_maestro_id ? (
-                                        <div className="px-4 py-3 border border-blue-200 rounded-xl text-sm font-bold text-blue-900 bg-white">
-                                            {wmsSearch || `ID: ${form.producto_maestro_id}`}
-                                        </div>
-                                    ) : (
-                                        <div className="px-4 py-3 border border-slate-200 rounded-xl text-sm text-slate-400 bg-slate-50 italic">
-                                            Sin vinculación WMS
-                                        </div>
-                                    )}
-                                    <p className="text-[10px] text-blue-600/80 font-medium mt-2 leading-tight">Vinculación de solo lectura. Stock en tiempo real desde el WMS.</p>
-                                </div>
-                                
-                                {/* Variantes - solo lectura */}
-                                {wmsVariants.length > 0 && (
-                                    <div className="mt-4 pt-4 border-t border-blue-200/50">
-                                        <label className="block text-[10px] font-bold text-blue-700 uppercase mb-2">Variantes ({wmsVariants.length})</label>
-                                        <div className="flex flex-wrap gap-2 max-h-32 overflow-y-auto pr-1">
-                                            {wmsVariants.map(v => (
-                                                <span key={v.variante_id} className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-blue-100 text-blue-800 text-[10px] font-bold border border-blue-200">
-                                                    {v.nombre_variante || v.codigo_variante}
-                                                </span>
-                                            ))}
-                                        </div>
+                        {/* Columna derecha: foto, fotos por color y WMS */}
+                        <div className="w-full lg:w-64 shrink-0 space-y-5">
+                            <div>
+                                <span className={labelCls}>Foto</span>
+                                {isNew ? (
+                                    <div className="aspect-square rounded-xl border-2 border-dashed border-slate-200 bg-slate-50 flex flex-col items-center justify-center gap-2 text-center p-6 text-slate-400">
+                                        <ImageIcon size={28} aria-hidden="true" />
+                                        <p className="text-xs">Creá el artículo para poder subirle fotos.</p>
                                     </div>
-                                )}
-                            </div>
-
-                            <div className="flex-1 min-h-[200px] border-2 border-dashed border-slate-300 hover:border-blue-400 rounded-2xl bg-slate-50 flex flex-col items-center justify-center relative overflow-hidden transition-colors group cursor-pointer"
-                                onClick={() => fileInputRef.current?.click()}>
-                                {imagePreview ? (
-                                    <img src={imagePreview} alt="Preview" className="w-full h-full object-cover" />
                                 ) : (
-                                    <div className="text-center p-6">
-                                        <div className="w-16 h-16 bg-white shadow-sm rounded-full flex items-center justify-center mx-auto mb-3 group-hover:scale-110 transition-transform">
-                                            <i className="fa-solid fa-cloud-arrow-up text-2xl text-blue-500"></i>
-                                        </div>
-                                        <p className="font-bold text-slate-700 text-sm">Cargar Imagen</p>
-                                        <p className="text-xs text-slate-400 mt-1">PNG, JPG o WEBP</p>
-                                    </div>
+                                    <>
+                                        <button type="button" onClick={() => fileInputRef.current?.click()}
+                                            aria-label={imagePreview ? 'Cambiar foto' : 'Subir foto'}
+                                            className="group relative w-full aspect-square rounded-xl border-2 border-dashed border-slate-300 hover:border-brand-cyan/60 bg-slate-50 overflow-hidden flex items-center justify-center transition-colors">
+                                            {imagePreview ? (
+                                                <>
+                                                    <img src={imagePreview} alt="" className="absolute inset-0 w-full h-full object-cover" />
+                                                    <span className="absolute inset-x-0 bottom-0 bg-slate-900/75 text-white text-xs font-semibold py-2 inline-flex items-center justify-center gap-1.5 opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100 transition-opacity">
+                                                        <Camera size={14} aria-hidden="true" /> Cambiar foto
+                                                    </span>
+                                                </>
+                                            ) : (
+                                                <span className="flex flex-col items-center gap-1.5">
+                                                    <CloudUpload size={28} className="text-brand-cyan" aria-hidden="true" />
+                                                    <span className="text-sm font-semibold text-slate-600">Subir foto</span>
+                                                    <span className="text-[11px] text-slate-400">PNG, JPG o WEBP</span>
+                                                </span>
+                                            )}
+                                        </button>
+                                        <input type="file" ref={fileInputRef} onChange={handleImageChange} accept="image/*" className="hidden" />
+                                        {imageFile && <p className={helpCls}>La foto nueva se sube al guardar.</p>}
+                                    </>
                                 )}
-                                <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                                    <span className="text-white font-bold bg-black/50 px-4 py-2 rounded-full backdrop-blur-sm">
-                                        <i className="fa-solid fa-camera mr-2"></i> Cambiar Foto
-                                    </span>
-                                </div>
-                                <input type="file" ref={fileInputRef} onChange={handleImageChange} accept="image/*" className="hidden" />
                             </div>
 
                             {/* Imágenes por color (solo edición: necesita el ProIdProducto) */}
                             {!isNew && (
-                                <div className="mt-4">
-                                    <label className={labelCls}>Imágenes por color</label>
-                                    <p className="text-[10px] text-slate-400 mb-2 leading-tight">
+                                <div>
+                                    <span className={labelCls}>Fotos por color</span>
+                                    <p className={`${helpCls} mt-0 mb-2`}>
                                         La tienda muestra la foto del color que aparezca en el nombre de la variante elegida
-                                        (ej: la variante "Short 14 ROJO" usa la foto ROJO).
+                                        (ej: "Short 14 ROJO" usa la foto ROJO).
                                     </p>
                                     {colorImages.length > 0 && (
                                         <div className="flex flex-wrap gap-2 mb-2">
                                             {colorImages.map(ci => (
-                                                <div key={ci.color} className="flex items-center gap-2 border border-slate-200 rounded-xl p-1.5 pr-2 bg-white">
-                                                    <img src={ci.url_imagen} alt={ci.color} className="w-10 h-10 rounded-lg object-cover bg-slate-100" />
+                                                <div key={ci.color} className="flex items-center gap-2 border border-slate-200 rounded-lg p-1 pr-1.5 bg-white">
+                                                    <img src={ci.url_imagen} alt={ci.color} className="w-8 h-8 rounded-md object-cover bg-slate-100" />
                                                     <span className="text-[11px] font-bold text-slate-600 uppercase">{ci.color}</span>
-                                                    <button type="button" onClick={() => borrarImagenColor(ci.color)} title="Quitar"
-                                                        className="w-5 h-5 rounded-full bg-slate-100 hover:bg-red-100 hover:text-red-600 text-slate-400 flex items-center justify-center">
-                                                        <i className="fa-solid fa-times text-[10px]"></i>
+                                                    <button type="button" onClick={() => borrarImagenColor(ci.color)} title="Quitar" aria-label={`Quitar la foto ${ci.color}`}
+                                                        className="w-6 h-6 rounded-md hover:bg-red-500/10 hover:text-red-500 text-slate-400 flex items-center justify-center transition-colors">
+                                                        <X size={12} aria-hidden="true" />
                                                     </button>
                                                 </div>
                                             ))}
                                         </div>
                                     )}
                                     <div className="flex gap-2">
-                                        <input value={colorNuevo} onChange={e => setColorNuevo(e.target.value)} placeholder="Color (ej: ROJO)" className={inputCls} />
+                                        <input value={colorNuevo} onChange={e => setColorNuevo(e.target.value)} placeholder="Color (ej: ROJO)"
+                                            aria-label="Color de la foto" className={inputCls} />
                                         <button type="button"
                                             onClick={() => colorNuevo.trim() ? colorFileRef.current?.click() : toast.error('Escribí el color primero (ej: ROJO)')}
-                                            className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold whitespace-nowrap transition-colors">
-                                            <i className="fa-solid fa-upload mr-1.5"></i>Subir foto
+                                            className="h-10 px-3 rounded-lg bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold whitespace-nowrap transition-colors inline-flex items-center gap-1.5">
+                                            <Upload size={14} aria-hidden="true" /> Subir
                                         </button>
                                         <input type="file" ref={colorFileRef} accept="image/*" className="hidden"
                                             onChange={e => { const f = e.target.files[0]; if (f) subirImagenColor(f); e.target.value = ''; }} />
                                     </div>
                                 </div>
                             )}
+
+                            {/* WMS: solo lectura */}
+                            <div className="rounded-xl border border-slate-200 p-3">
+                                <p className="text-xs font-semibold text-slate-600 flex items-center gap-1.5 mb-1.5">
+                                    <Link2 size={14} className="text-brand-cyan" aria-hidden="true" /> WMS
+                                </p>
+                                {form.producto_maestro_id ? (
+                                    <p className="text-sm font-semibold text-slate-800 break-words">{wmsSearch || `Producto #${form.producto_maestro_id}`}</p>
+                                ) : (
+                                    <p className="text-sm text-slate-400">Sin vincular</p>
+                                )}
+                                {wmsVariants.length > 0 && (
+                                    <div className="mt-2">
+                                        <p className="text-[11px] font-semibold text-slate-500 mb-1">
+                                            {wmsVariants.length} {wmsVariants.length === 1 ? 'variante' : 'variantes'}
+                                        </p>
+                                        <div className="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto pr-1">
+                                            {wmsVariants.map(v => (
+                                                <span key={v.variante_id} className="px-2 py-0.5 rounded-md bg-brand-cyan/10 text-brand-cyan text-[11px] font-semibold">
+                                                    {v.nombre_variante || v.codigo_variante}
+                                                </span>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+                                <p className={helpCls}>Solo lectura. El stock se lee del WMS.</p>
+                            </div>
                         </div>
                     </div>
                 </form>
 
                 {/* Footer */}
-                <div className="flex items-center justify-between p-6 bg-slate-50 border-t border-slate-100 shrink-0">
-                    <p className="text-xs font-semibold text-slate-400">
-                        {isNew ? 'Completá los campos para crear' : 'Recordá guardar tus cambios'}
+                <div className="flex items-center justify-between gap-3 px-6 py-4 bg-slate-50 border-t border-slate-100 shrink-0">
+                    <p className="text-xs font-semibold text-slate-500 flex items-center gap-2" aria-live="polite">
+                        {dirty && (<><span className="w-2 h-2 rounded-full bg-amber-500" aria-hidden="true" /> Cambios sin guardar</>)}
                     </p>
-                    <div className="flex gap-3">
-                        <button type="button" onClick={onClose} className="px-6 py-3 font-bold text-slate-600 hover:bg-slate-200 rounded-xl transition">Cancelar</button>
-                        <button type="submit" form="edit-form" disabled={saving} className="px-8 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold shadow-lg shadow-blue-500/30 transition-all disabled:opacity-60 flex items-center gap-2">
-                            {saving && <i className="fa-solid fa-spinner fa-spin"></i>}
-                            {isNew ? 'Crear Artículo' : 'Guardar Cambios'}
+                    <div className="flex gap-2">
+                        <button type="button" onClick={intentarCerrar} className="h-10 px-5 font-semibold text-slate-600 hover:bg-slate-200 rounded-lg transition-colors">Cancelar</button>
+                        <button type="submit" form="edit-form" disabled={saving}
+                            className="h-10 px-6 bg-brand-cyan hover:bg-brand-cyan/90 text-white rounded-lg font-semibold shadow-sm transition-colors disabled:opacity-60 flex items-center gap-2">
+                            {saving && <LoaderCircle size={16} className="animate-spin" aria-hidden="true" />}
+                            {isNew ? 'Crear artículo' : 'Guardar cambios'}
                         </button>
                     </div>
                 </div>
+
+                {/* Confirmación para descartar cambios */}
+                {confirmDiscard && (
+                    <div className="absolute inset-0 z-10 bg-slate-900/40 flex items-center justify-center p-6"
+                        role="alertdialog" aria-modal="true" aria-labelledby="descartar-titulo" aria-describedby="descartar-texto">
+                        <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm p-5">
+                            <h3 id="descartar-titulo" className="text-base font-bold text-slate-800">¿Descartar los cambios?</h3>
+                            <p id="descartar-texto" className="text-sm text-slate-500 mt-1">Lo que modificaste en este artículo no se va a guardar.</p>
+                            <div className="flex justify-end gap-2 mt-5">
+                                <button type="button" autoFocus onClick={() => setConfirmDiscard(false)}
+                                    className="h-9 px-4 rounded-lg font-semibold text-slate-600 hover:bg-slate-100 transition-colors">Seguir editando</button>
+                                <button type="button" onClick={onClose}
+                                    className="h-9 px-4 rounded-lg font-semibold text-white bg-red-500 hover:bg-red-500/90 transition-colors">Descartar</button>
+                            </div>
+                        </div>
+                    </div>
+                )}
             </div>
         </div>
     );
@@ -695,13 +887,13 @@ const VariantPriceModal = ({ art, onClose }) => {
     const baseMoneda = art.MonIdMoneda === 2 ? 'USD' : 'UYU';
 
     return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4">
             <div className="bg-white rounded-3xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col overflow-hidden">
                 {/* Header */}
                 <div className="p-6 border-b border-slate-100 flex items-center justify-between shrink-0">
                     <div>
                         <div className="flex items-center gap-2 mb-1">
-                            <span className="bg-blue-100 text-blue-700 text-xs font-bold px-2 py-0.5 rounded-full uppercase tracking-wide">Solo lectura</span>
+                            <span className="bg-brand-cyan/10 text-brand-cyan text-xs font-bold px-2 py-0.5 rounded-full uppercase tracking-wide">Solo lectura</span>
                         </div>
                         <h2 className="text-xl font-black text-slate-800">{art.Descripcion?.trim()}</h2>
                         <p className="text-sm text-slate-500 mt-0.5">
@@ -709,11 +901,11 @@ const VariantPriceModal = ({ art, onClose }) => {
                             <span className="font-bold text-slate-700 ml-1">
                                 {basePrice != null ? `${baseMoneda === 'USD' ? 'U$S' : '$'} ${basePrice.toFixed(2)}` : 'Sin precio'}
                             </span>
-                            <span className="ml-2 text-xs text-blue-500">— Para editar precios ir a Gestión de Precios › Precios x Variante</span>
+                            <span className="ml-2 text-xs text-brand-cyan">— Para editar precios ir a Gestión de Precios › Precios x Variante</span>
                         </p>
                     </div>
-                    <button onClick={onClose} className="w-9 h-9 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-500 transition-colors">
-                        <i className="fa-solid fa-xmark"></i>
+                    <button onClick={onClose} aria-label="Cerrar" className="w-9 h-9 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-500 transition-colors">
+                        <X size={18} aria-hidden="true" />
                     </button>
                 </div>
 
@@ -721,11 +913,11 @@ const VariantPriceModal = ({ art, onClose }) => {
                 <div className="flex-1 overflow-y-auto p-6">
                     {loading ? (
                         <div className="flex items-center justify-center py-16 text-slate-400">
-                            <i className="fa-solid fa-circle-notch fa-spin text-3xl"></i>
+                            <LoaderCircle size={30} className="animate-spin" aria-hidden="true" />
                         </div>
                     ) : variants.length === 0 ? (
                         <div className="flex flex-col items-center justify-center py-16 text-slate-400">
-                            <i className="fa-solid fa-layer-group text-5xl mb-3 text-slate-200"></i>
+                            <Layers size={48} className="mb-3 text-slate-200" aria-hidden="true" />
                             <p className="font-bold">Este producto no tiene variantes WMS</p>
                         </div>
                     ) : (
@@ -738,16 +930,16 @@ const VariantPriceModal = ({ art, onClose }) => {
                                     : (basePrice != null ? `${baseMoneda === 'USD' ? 'U$S' : '$'} ${basePrice.toFixed(2)}` : 'Sin precio');
                                 return (
                                     <div key={v.id} className={`flex items-center justify-between gap-3 p-3 rounded-xl border ${
-                                        hasCustomPrice ? 'border-emerald-200 bg-emerald-50' : 'border-slate-200 bg-slate-50'
+                                        hasCustomPrice ? 'border-emerald-500/30 bg-emerald-500/5' : 'border-slate-200 bg-slate-50'
                                     }`}>
                                         <div className="flex-1 min-w-0">
-                                            <p className="text-sm font-bold text-slate-800 truncate">{v.nombre_variante}</p>
+                                            <p className="text-sm font-bold text-slate-800 truncate" title={v.nombre_variante}>{v.nombre_variante}</p>
                                         </div>
                                         <div className="flex items-center gap-2 shrink-0">
                                             {hasCustomPrice && (
-                                                <span className="text-[10px] bg-emerald-100 text-emerald-700 font-bold px-2 py-0.5 rounded-full">precio propio</span>
+                                                <span className="text-[10px] bg-emerald-500/10 text-emerald-500 font-bold px-2 py-0.5 rounded-full">precio propio</span>
                                             )}
-                                            <span className={`text-sm font-black ${ hasCustomPrice ? 'text-emerald-700' : 'text-slate-500' }`}>
+                                            <span className={`text-sm font-black tabular-nums ${ hasCustomPrice ? 'text-emerald-500' : 'text-slate-500' }`}>
                                                 {precio}
                                             </span>
                                         </div>
@@ -760,9 +952,9 @@ const VariantPriceModal = ({ art, onClose }) => {
 
                 {/* Footer */}
                 <div className="p-4 border-t border-slate-100 flex items-center gap-2 shrink-0 bg-slate-50">
-                    <i className="fa-solid fa-circle-info text-blue-400"></i>
+                    <Info size={16} className="text-brand-cyan shrink-0" aria-hidden="true" />
                     <p className="text-xs text-slate-500">
-                        Las variantes en <strong className="text-emerald-700">verde</strong> tienen precio propio.
+                        Las variantes en <strong className="text-emerald-500">verde</strong> tienen precio propio.
                         Las demás usan el precio base del artículo.
                         Para editar, ir a <strong>Gestión de Precios › Precios x Variante</strong>.
                     </p>
@@ -778,8 +970,12 @@ const VariantPriceModal = ({ art, onClose }) => {
 // ─── Modal de Confirmación de Borrado ─────────────────────────────────────────
 const DeleteConfirmModal = ({ art, onClose, onConfirm }) => {
     const [deleting, setDeleting] = React.useState(false);
+    const [texto, setTexto] = React.useState('');
+    // Hay que escribir la palabra para habilitar el borrado; vale "eliminar" o "ELIMINAR".
+    const confirmado = texto.trim().toLowerCase() === 'eliminar';
 
     const handleConfirm = async () => {
+        if (!confirmado || deleting) return;
         setDeleting(true);
         try {
             await onConfirm(art);
@@ -788,30 +984,55 @@ const DeleteConfirmModal = ({ art, onClose, onConfirm }) => {
         }
     };
 
+    const cerrar = () => { if (!deleting) onClose(); };
+
+    useEffect(() => {
+        const onKey = (e) => { if (e.key === 'Escape') cerrar(); };
+        document.addEventListener('keydown', onKey);
+        return () => document.removeEventListener('keydown', onKey);
+    });
+
     return (
-        <div className="fixed inset-0 bg-slate-900/60 z-[60] flex items-center justify-center p-4" onClick={onClose}>
-            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden" onClick={e => e.stopPropagation()}>
+        <div className="fixed inset-0 bg-slate-900/60 z-[60] flex items-center justify-center p-4" onClick={cerrar}>
+            <div role="alertdialog" aria-modal="true" aria-labelledby="borrar-titulo" aria-describedby="borrar-texto"
+                className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden" onClick={e => e.stopPropagation()}>
                 <div className="p-6 flex flex-col items-center text-center">
-                    <div className="w-14 h-14 rounded-full bg-red-100 text-red-600 flex items-center justify-center mb-4">
-                        <i className="fa-solid fa-triangle-exclamation text-2xl"></i>
+                    <div className="w-14 h-14 rounded-full bg-red-500/10 text-red-500 flex items-center justify-center mb-4">
+                        <TriangleAlert size={26} aria-hidden="true" />
                     </div>
-                    <h2 className="text-lg font-black text-slate-800">¿Eliminar este artículo?</h2>
-                    <p className="text-sm text-slate-500 mt-2">
+                    <h2 id="borrar-titulo" className="text-lg font-black text-slate-800">¿Eliminar este artículo?</h2>
+                    <p id="borrar-texto" className="text-sm text-slate-500 mt-2">
                         Estás por eliminar <strong className="text-slate-700">{art?.Descripcion?.trim() || art?.CodArticulo?.trim()}</strong>.
                         Esta acción no se puede deshacer.
                     </p>
                     <p className="text-[11px] text-slate-400 mt-2">
                         Si el producto ya se usó en pedidos u órdenes, el sistema lo va a impedir.
                     </p>
+                    <div className="w-full mt-5 text-left">
+                        <label htmlFor="borrar-confirmacion" className="block text-xs font-semibold text-slate-600 mb-1.5">
+                            Para confirmar, escribí <span className="font-bold text-red-500">ELIMINAR</span>
+                        </label>
+                        <input
+                            id="borrar-confirmacion"
+                            value={texto}
+                            onChange={e => setTexto(e.target.value)}
+                            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleConfirm(); } }}
+                            autoFocus
+                            autoComplete="off"
+                            spellCheck={false}
+                            disabled={deleting}
+                            className="w-full h-10 px-3 border border-slate-300 rounded-lg text-sm bg-white outline-none focus:border-red-500 focus:ring-4 focus:ring-red-500/10 transition disabled:bg-slate-50"
+                        />
+                    </div>
                 </div>
                 <div className="flex gap-3 p-4 bg-slate-50 border-t border-slate-100">
-                    <button type="button" onClick={onClose} disabled={deleting}
+                    <button type="button" onClick={cerrar} disabled={deleting}
                         className="flex-1 px-4 py-2.5 font-bold text-slate-600 bg-white border border-slate-200 hover:bg-slate-100 rounded-xl transition disabled:opacity-60">
                         Cancelar
                     </button>
-                    <button type="button" onClick={handleConfirm} disabled={deleting}
-                        className="flex-1 px-4 py-2.5 bg-red-600 hover:bg-red-700 text-white rounded-xl font-bold shadow-lg shadow-red-500/30 transition-all disabled:opacity-60 flex items-center justify-center gap-2">
-                        {deleting && <i className="fa-solid fa-spinner fa-spin"></i>}
+                    <button type="button" onClick={handleConfirm} disabled={!confirmado || deleting}
+                        className="flex-1 px-4 py-2.5 bg-red-500 hover:bg-red-500/90 text-white rounded-xl font-bold shadow-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-red-500 flex items-center justify-center gap-2">
+                        {deleting && <LoaderCircle size={16} className="animate-spin" aria-hidden="true" />}
                         {deleting ? 'Eliminando...' : 'Sí, eliminar'}
                     </button>
                 </div>
@@ -820,144 +1041,141 @@ const DeleteConfirmModal = ({ art, onClose, onConfirm }) => {
     );
 };
 
-const ArticleCard = ({ art, onEdit, onVariants, onDelete, showImages }) => {
-    const ancho = art.anchoimprimible != null ? parseFloat(Number(art.anchoimprimible).toFixed(4)) : 0;
-    const isWmsSynced = art.producto_maestro_id != null;
-    
+// Menú "⋯" de la tarjeta: acciones secundarias y el borrado, lejos del botón Editar.
+const CardMenu = ({ art, onVariants, onDelete }) => {
+    const [open, setOpen] = useState(false);
+    const ref = useRef(null);
+    const tieneVariantes = art.CantidadVariantes > 0;
+
+    useEffect(() => {
+        if (!open) return;
+        const cerrarAfuera = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+        const cerrarConEsc = (e) => { if (e.key === 'Escape') setOpen(false); };
+        document.addEventListener('mousedown', cerrarAfuera);
+        document.addEventListener('keydown', cerrarConEsc);
+        return () => {
+            document.removeEventListener('mousedown', cerrarAfuera);
+            document.removeEventListener('keydown', cerrarConEsc);
+        };
+    }, [open]);
+
     return (
-        <div className="bg-white rounded-2xl border border-slate-200 hover:border-blue-300 shadow-sm hover:shadow-xl hover:shadow-blue-500/10 transition-all overflow-hidden flex flex-col group h-full">
-            {showImages && (
-                <div className="relative h-40 bg-slate-100 shrink-0 overflow-hidden">
-                    {art.url_imagen ? (
-                        <img src={art.url_imagen} alt={art.Descripcion} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" />
-                    ) : (
-                        <div className="w-full h-full flex flex-col items-center justify-center text-slate-300">
-                            <i className="fa-solid fa-image text-4xl mb-2"></i>
-                            <span className="text-xs font-bold uppercase tracking-widest">Sin Foto</span>
-                        </div>
+        <div ref={ref} className="relative">
+            <button
+                type="button"
+                onClick={() => setOpen(o => !o)}
+                aria-label="Más acciones"
+                aria-haspopup="menu"
+                aria-expanded={open}
+                className={`w-8 h-8 flex items-center justify-center rounded-lg transition-colors ${open ? 'bg-slate-200 text-slate-700' : 'text-slate-500 hover:bg-slate-100 hover:text-slate-700'}`}
+            >
+                <Ellipsis size={16} aria-hidden="true" />
+            </button>
+            {open && (
+                <div role="menu" className="absolute right-0 top-full mt-1 z-20 w-max min-w-[8rem] bg-white border border-slate-200 rounded-lg shadow-lg p-1">
+                    {tieneVariantes && (
+                        <>
+                            <button
+                                type="button"
+                                role="menuitem"
+                                onClick={() => { setOpen(false); onVariants(art); }}
+                                className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md text-sm font-medium whitespace-nowrap text-slate-700 hover:bg-slate-100 transition-colors"
+                            >
+                                <Tag size={15} className="text-emerald-500" aria-hidden="true" /> Precios por variante
+                            </button>
+                            <div className="my-1 border-t border-slate-100" />
+                        </>
                     )}
-                    <div className="absolute top-3 left-3 flex flex-col gap-1.5">
-                        {isWmsSynced && (
-                            <div className="bg-blue-600/90 backdrop-blur-sm text-white text-[10px] font-bold px-2.5 py-1 rounded-full shadow-sm flex items-center gap-1.5" title="Sincronizado con WMS">
-                                <i className="fa-solid fa-link"></i> WMS: {art.producto_maestro_id}
-                            </div>
-                        )}
-                        {art.Mostrar === false && (
-                            <div className="bg-red-500/90 backdrop-blur-sm text-white text-[10px] font-bold px-2.5 py-1 rounded-full shadow-sm flex items-center gap-1.5" title="Oculto">
-                                <i className="fa-solid fa-eye-slash"></i> Oculto
-                            </div>
-                        )}
-                    </div>
+                    <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => { setOpen(false); onDelete(art); }}
+                        className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md text-sm font-medium whitespace-nowrap text-red-500 hover:bg-red-500/10 transition-colors"
+                    >
+                        <Trash2 size={15} aria-hidden="true" /> Eliminar
+                    </button>
                 </div>
             )}
-            
-            <div className="p-4 flex flex-col flex-1">
-                {!showImages && (
-                    <div className="flex items-center justify-between mb-3">
-                        <div className="flex gap-1.5">
-                            {isWmsSynced && (
-                                <span className="bg-blue-100 text-blue-700 text-[10px] font-bold px-2 py-0.5 rounded-md flex items-center gap-1" title="Sincronizado con WMS">
-                                    <i className="fa-solid fa-link"></i> WMS
-                                </span>
-                            )}
-                            {art.Mostrar === false && (
-                                <span className="bg-red-100 text-red-700 text-[10px] font-bold px-2 py-0.5 rounded-md flex items-center gap-1" title="Oculto">
-                                    <i className="fa-solid fa-eye-slash"></i> Oculto
-                                </span>
-                            )}
+        </div>
+    );
+};
+
+const Chip = ({ children, className = 'bg-slate-100 text-slate-600', title }) => (
+    <span title={title} className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-semibold whitespace-nowrap ${className}`}>
+        {children}
+    </span>
+);
+
+// Tarjeta compacta: solo muestra los datos que tienen valor (nada de "0" ni "No").
+const ArticleCard = ({ art, onEdit, onVariants, onDelete, showImages }) => {
+    const nombre = art.Descripcion?.trim() || art.CodArticulo?.trim() || 'Sin nombre';
+    const precio = precioDe(art);
+    const oculto = esOculto(art);
+    const ancho = Number(art.anchoimprimible) || 0;
+    const largo = Number(art.largoimprimible) || 0;
+    const variantes = Number(art.CantidadVariantes) || 0;
+    const stock = Number(art.StockWMS) || 0;
+    const vinculadoWms = art.producto_maestro_id != null;
+
+    return (
+        <div className="bg-white rounded-xl border border-slate-200 hover:border-brand-cyan/40 hover:shadow-sm transition flex flex-col">
+            {showImages && (
+                <div className="h-36 bg-slate-100 rounded-t-xl overflow-hidden shrink-0">
+                    {art.url_imagen ? (
+                        <img src={art.url_imagen} alt={nombre} loading="lazy" className="w-full h-full object-cover" />
+                    ) : (
+                        <div className="w-full h-full flex flex-col items-center justify-center gap-1 text-slate-300">
+                            <ImageIcon size={28} aria-hidden="true" />
+                            <span className="text-[11px] font-semibold">Sin foto</span>
                         </div>
+                    )}
+                </div>
+            )}
+
+            <div className="p-3 flex flex-col gap-2.5 flex-1">
+                <div className="flex items-start justify-between gap-3">
+                    <h4 className="text-sm font-semibold text-slate-800 leading-snug line-clamp-2" title={nombre}>
+                        {nombre}
+                    </h4>
+                    <span className={`text-sm tabular-nums whitespace-nowrap ${precio.sinPrecio ? 'text-slate-400 font-medium' : 'text-slate-700 font-semibold'}`}>
+                        {precio.texto}
+                    </span>
+                </div>
+
+                {(ancho > 0 || variantes > 0 || vinculadoWms || art.LLEVAPAPEL || stock > 0) && (
+                    <div className="flex flex-wrap gap-1.5">
+                        {ancho > 0 && (
+                            <Chip title={largo > 0 ? 'Medida fija' : 'Ancho imprimible'}>
+                                {largo > 0 ? `${fmt2(ancho)} × ${fmt2(largo)} m` : `${fmt2(ancho)} m`}
+                            </Chip>
+                        )}
+                        {variantes > 0 && <Chip>{variantes} {variantes === 1 ? 'variante' : 'variantes'}</Chip>}
+                        {vinculadoWms && (
+                            <Chip className="bg-brand-cyan/10 text-brand-cyan" title={`Vinculado al producto #${art.producto_maestro_id} del WMS`}>
+                                <Link2 size={12} aria-hidden="true" /> WMS
+                            </Chip>
+                        )}
+                        {!!art.LLEVAPAPEL && <Chip>Lleva papel</Chip>}
+                        {stock > 0 && <Chip className="bg-emerald-500/10 text-emerald-500">Stock {stock}</Chip>}
                     </div>
                 )}
-                
-                <div className="flex items-center justify-between mb-2">
-                    <div></div>
-                    <div>
-                        {art.MonIdMoneda != null && (
-                            <>
-                                {art.MonIdMoneda === 2 && (
-                                    <span className="text-[12px] font-black text-emerald-700 bg-emerald-50 px-2 py-1 rounded-md border border-emerald-200 shadow-sm flex items-center gap-1">
-                                        <span>USD</span>
-                                        {art.PrecioBase != null && <span>{parseFloat(art.PrecioBase).toFixed(2)}</span>}
-                                    </span>
-                                )}
-                                {art.MonIdMoneda === 1 && (
-                                    <span className="text-[12px] font-black text-blue-700 bg-blue-50 px-2 py-1 rounded-md border border-blue-200 shadow-sm flex items-center gap-1">
-                                        <span>UYU</span>
-                                        {art.PrecioBase != null && <span>{parseFloat(art.PrecioBase).toFixed(2)}</span>}
-                                    </span>
-                                )}
-                                {art.MonIdMoneda !== 1 && art.MonIdMoneda !== 2 && (
-                                    <span className="text-[10px] font-black text-slate-400 bg-slate-100 px-2 py-1 rounded-md border border-slate-200">S/M</span>
-                                )}
-                            </>
-                        )}
-                    </div>
-                </div>
-                
-                <h4 className="font-bold text-slate-800 text-sm leading-tight mb-3 line-clamp-2" title={art.Descripcion?.trim()}>
-                    {art.Descripcion?.trim()}
-                </h4>
-                
-                <div className="mt-auto grid grid-cols-2 gap-2 text-[11px] font-semibold">
 
-                    <div className="bg-slate-50 rounded-lg p-2 flex items-center gap-2">
-                        <i className="fa-solid fa-boxes-stacked text-slate-400"></i>
-                        <div className="flex flex-col leading-tight">
-                            <span className="text-slate-400 text-[9px] uppercase tracking-wider">Stock WMS</span>
-                            <span className={art.StockWMS > 0 ? "text-emerald-600 font-bold" : "text-slate-400"}>{art.StockWMS ?? 0}</span>
-                        </div>
-                    </div>
-
-                    <div className="bg-slate-50 rounded-lg p-2 flex items-center gap-2">
-                        <i className="fa-solid fa-layer-group text-slate-400"></i>
-                        <div className="flex flex-col leading-tight">
-                            <span className="text-slate-400 text-[9px] uppercase tracking-wider">Variantes</span>
-                            <span className="text-slate-700">{art.CantidadVariantes ?? 0}</span>
-                        </div>
-                    </div>
-
-                    {ancho > 0 ? (
-                        <div className="bg-slate-50 rounded-lg p-2 flex items-center gap-2">
-                            <i className="fa-solid fa-ruler-horizontal text-slate-400"></i>
-                            <div className="flex flex-col leading-tight">
-                                <span className="text-slate-400 text-[9px] uppercase tracking-wider">Ancho</span>
-                                <span className="text-slate-700">{ancho}m</span>
-                            </div>
-                        </div>
-                    ) : (
-                        <div className="bg-slate-50 rounded-lg p-2 flex items-center gap-2">
-                            <i className="fa-solid fa-scroll text-slate-400"></i>
-                            <div className="flex flex-col leading-tight">
-                                <span className="text-slate-400 text-[9px] uppercase tracking-wider">Papel</span>
-                                <span className={art.LLEVAPAPEL ? "text-blue-600" : "text-slate-400"}>{art.LLEVAPAPEL ? "Sí" : "No"}</span>
-                            </div>
-                        </div>
-                    )}
-                </div>
-
-                {/* Botones de acción */}
-                <div className="mt-3 pt-3 border-t border-slate-100 flex gap-2">
-                    <button
-                        onClick={() => onEdit(art)}
-                        className="flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-xs font-bold text-slate-600 bg-slate-100 hover:bg-slate-200 transition-colors"
-                    >
-                        <i className="fa-solid fa-pen"></i> Editar
-                    </button>
-                    {art.CantidadVariantes > 0 && (
+                <div className="mt-auto pt-2.5 border-t border-slate-100 flex items-center justify-between gap-2">
+                    {oculto ? (
+                        <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-500">
+                            <EyeOff size={13} aria-hidden="true" /> Oculto
+                        </span>
+                    ) : <span />}
+                    <div className="flex items-center gap-1">
                         <button
-                            onClick={() => onVariants(art)}
-                            className="flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-xs font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 transition-colors"
+                            type="button"
+                            onClick={() => onEdit(art)}
+                            className="h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-xs font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 transition-colors"
                         >
-                            <i className="fa-solid fa-tag"></i> Precios
+                            <Pencil size={13} aria-hidden="true" /> Editar
                         </button>
-                    )}
-                    <button
-                        onClick={() => onDelete(art)}
-                        title="Eliminar artículo"
-                        className="shrink-0 flex items-center justify-center w-9 py-1.5 rounded-lg text-xs font-bold text-red-600 bg-red-50 hover:bg-red-100 border border-red-200 transition-colors"
-                    >
-                        <i className="fa-solid fa-trash"></i>
-                    </button>
+                        <CardMenu art={art} onVariants={onVariants} onDelete={onDelete} />
+                    </div>
                 </div>
             </div>
         </div>
@@ -1098,8 +1316,9 @@ const ProductsIntegration = () => {
 
     const supKeys = Object.keys(tree).sort();
 
-    // Filtro para el Grid Principal
-    const displayArticles = useMemo(() => {
+    // Filtros de tipo, texto y árbol. La visibilidad va aparte para poder contar los ocultos
+    // del mismo alcance y mostrarlos en el botón "Ocultos".
+    const scopedArticles = useMemo(() => {
         let list = articles;
 
         // Filtro por tipo (Productos = SupFlia 2, Servicios = SupFlia 1)
@@ -1107,13 +1326,6 @@ const ProductsIntegration = () => {
             list = list.filter(a => (a.SupFlia || '').trim() === '2');
         } else if (filterType === 'services') {
             list = list.filter(a => (a.SupFlia || '').trim() === '1');
-        }
-        
-        // Filtro por activo/inactivo
-        if (filterStatus === 'active') {
-            list = list.filter(a => a.Mostrar !== false && a.Mostrar !== 0);
-        } else if (filterStatus === 'inactive') {
-            list = list.filter(a => a.Mostrar === false || a.Mostrar === 0);
         }
 
         // Filtro por texto
@@ -1138,6 +1350,18 @@ const ProductsIntegration = () => {
             }
         }
 
+        return list;
+    }, [articles, search, selectedNode, filterType]);
+
+    const hiddenCount = useMemo(() => scopedArticles.filter(esOculto).length, [scopedArticles]);
+
+    // Filtro para el Grid Principal
+    const displayArticles = useMemo(() => {
+        let list = scopedArticles;
+
+        if (filterStatus === 'active') list = list.filter(a => !esOculto(a));
+        else if (filterStatus === 'inactive') list = list.filter(esOculto);
+
         // Ordenamiento
         list = [...list].sort((a, b) => {
             if (sortBy === 'name_asc') return (a.Descripcion || '').localeCompare(b.Descripcion || '');
@@ -1148,15 +1372,27 @@ const ProductsIntegration = () => {
         });
 
         return list;
-    }, [articles, search, selectedNode, filterStatus, filterType, sortBy]);
+    }, [scopedArticles, filterStatus, sortBy]);
+
+    const selectedTitle = selectedNode === 'all'
+        ? 'Todos los artículos'
+        : selectedNode.startsWith('sup')
+            ? nombreFamilia(selectedNode.split('||')[1])
+            : (() => {
+                const [, sup, grp] = selectedNode.split('||');
+                const nombre = tree[sup]?.grupos[grp]?.nombre;
+                return nombre ? `${grp} · ${nombre}` : `Grupo ${grp}`;
+            })();
+
+    const segBtn = (activo) => `px-3 py-1.5 rounded-md transition-colors inline-flex items-center gap-1.5 ${activo ? 'bg-white text-brand-cyan shadow-sm' : 'text-slate-500 hover:text-slate-700'}`;
 
     return (
         <div className="h-full flex flex-col bg-slate-50 overflow-hidden">
             {/* Header */}
             <div className="p-5 bg-white border-b border-slate-200 flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-sm z-10 shrink-0">
                 <div className="flex items-center gap-4">
-                    <div className="w-12 h-12 bg-blue-600 rounded-2xl flex items-center justify-center text-white shadow-lg shadow-blue-500/30">
-                        <i className="fa-solid fa-box-open text-xl"></i>
+                    <div className="w-12 h-12 bg-brand-cyan rounded-2xl flex items-center justify-center text-white shadow-sm">
+                        <PackageOpen size={24} aria-hidden="true" />
                     </div>
                     <div>
                         <h1 className="text-2xl font-black text-slate-800 tracking-tight">Catálogo y WMS</h1>
@@ -1167,11 +1403,11 @@ const ProductsIntegration = () => {
                 </div>
 
                 <div className="flex gap-2">
-                    <button onClick={load} className="px-4 py-2.5 text-xs font-bold bg-white border-2 border-slate-200 rounded-xl text-slate-600 hover:bg-slate-50 hover:border-slate-300 transition-colors shadow-sm" title="Recargar">
-                        <i className="fa-solid fa-rotate"></i>
+                    <button onClick={load} className="px-3 py-2.5 bg-white border border-slate-200 rounded-xl text-slate-600 hover:bg-slate-50 hover:border-slate-300 transition-colors" title="Recargar" aria-label="Recargar">
+                        <RotateCw size={16} className={loading ? 'animate-spin' : ''} aria-hidden="true" />
                     </button>
-                    <button onClick={() => setEditing({})} className="flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-sm font-bold shadow-lg shadow-blue-600/30 transition-all">
-                        <i className="fa-solid fa-plus"></i> Nuevo
+                    <button onClick={() => setEditing({})} className="flex items-center gap-2 px-5 py-2.5 bg-brand-cyan hover:bg-brand-cyan/90 text-white rounded-xl text-sm font-bold shadow-sm transition-colors">
+                        <Plus size={16} aria-hidden="true" /> Nuevo
                     </button>
                 </div>
             </div>
@@ -1182,30 +1418,31 @@ const ProductsIntegration = () => {
                 {/* Sidebar */}
                 <div className="w-80 bg-white border-r border-slate-200 flex flex-col h-full shrink-0">
                     <div className="p-4 border-b border-slate-100 flex items-center justify-between">
-                        <h2 className="font-bold text-slate-800 text-sm">Categorias / Familias</h2>
-                        <span className="bg-slate-100 text-slate-500 text-[10px] font-bold px-2 py-1 rounded-md">{supKeys.length} Familias</span>
+                        <h2 className="font-bold text-slate-800 text-sm">Categorías</h2>
+                        <span className="bg-slate-100 text-slate-500 text-[11px] font-bold px-2 py-1 rounded-md">{supKeys.length} {supKeys.length === 1 ? 'familia' : 'familias'}</span>
                     </div>
-                    
+
                     <div className="p-4 border-b border-slate-100">
                         <div className="relative">
-                            <i className="fa-solid fa-search absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-xs"></i>
-                            <input className="w-full pl-8 pr-3 py-2 border border-slate-200 bg-slate-50 rounded-lg text-sm outline-none focus:border-blue-500 focus:bg-white transition-all"
+                            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" aria-hidden="true" />
+                            <input className="w-full pl-8 pr-3 py-2 border border-slate-200 bg-slate-50 rounded-lg text-sm outline-none focus:border-brand-cyan focus:bg-white transition-all"
                                 placeholder="Filtrar productos..."
+                                aria-label="Filtrar productos"
                                 value={search} onChange={e => setSearch(e.target.value)} />
                         </div>
                     </div>
 
                     <div className="flex-1 overflow-y-auto p-3 space-y-1 custom-scrollbar">
                         {/* Boton "Todos los productos" */}
-                        <div 
-                            className={`flex items-center justify-between px-3 py-2.5 rounded-xl cursor-pointer transition-colors ${selectedNode === 'all' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-600 hover:bg-slate-100'}`}
+                        <div
+                            className={`flex items-center justify-between px-3 py-2.5 rounded-xl cursor-pointer transition-colors ${selectedNode === 'all' ? 'bg-brand-cyan text-white' : 'text-slate-600 hover:bg-slate-100'}`}
                             onClick={() => setSelectedNode('all')}
                         >
                             <div className="flex items-center gap-3">
-                                <i className="fa-solid fa-globe text-sm opacity-80"></i>
-                                <span className="text-sm font-bold">Todos los Productos</span>
+                                <Globe size={16} className="opacity-80" aria-hidden="true" />
+                                <span className="text-sm font-bold">Todos los productos</span>
                             </div>
-                            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md ${selectedNode === 'all' ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-500'}`}>{articles.length}</span>
+                            <span className={`text-[11px] font-bold px-2 py-0.5 rounded-md tabular-nums ${selectedNode === 'all' ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-500'}`}>{articles.length}</span>
                         </div>
 
                         {/* Arbol */}
@@ -1217,18 +1454,23 @@ const ProductsIntegration = () => {
 
                             return (
                                 <div key={supKey} className="mt-2">
-                                    <div 
-                                        className={`flex items-center justify-between px-3 py-2.5 rounded-xl cursor-pointer transition-colors ${isSelected ? 'bg-blue-600 text-white shadow-md' : 'text-slate-700 hover:bg-slate-100'}`}
+                                    <div
+                                        className={`flex items-center justify-between px-3 py-2.5 rounded-xl cursor-pointer transition-colors ${isSelected ? 'bg-brand-cyan text-white' : 'text-slate-700 hover:bg-slate-100'}`}
                                         onClick={() => setSelectedNode(supKey)}
                                     >
                                         <div className="flex items-center gap-3 overflow-hidden">
-                                            <i 
-                                                className={`fa-solid ${isExpanded ? 'fa-folder-open' : 'fa-folder'} text-sm ${isSelected ? 'opacity-90' : 'text-amber-400'}`}
+                                            <button
+                                                type="button"
                                                 onClick={(e) => toggle(supKey, e)}
-                                            ></i>
-                                            <span className="text-sm font-bold truncate">Familia {sup}</span>
+                                                aria-label={isExpanded ? 'Contraer grupos' : 'Expandir grupos'}
+                                                aria-expanded={isExpanded}
+                                                className={`shrink-0 ${isSelected ? 'text-white/90' : 'text-amber-400'}`}
+                                            >
+                                                {isExpanded ? <FolderOpen size={16} aria-hidden="true" /> : <Folder size={16} aria-hidden="true" />}
+                                            </button>
+                                            <span className="text-sm font-bold truncate">{nombreFamilia(sup)}</span>
                                         </div>
-                                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md shrink-0 ${isSelected ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-500'}`}>{tree[sup].count}</span>
+                                        <span className={`text-[11px] font-bold px-2 py-0.5 rounded-md shrink-0 tabular-nums ${isSelected ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-500'}`}>{tree[sup].count}</span>
                                     </div>
 
                                     {/* Grupos */}
@@ -1243,14 +1485,14 @@ const ProductsIntegration = () => {
                                                 return (
                                                     <div 
                                                         key={grpKey} 
-                                                        className={`flex items-center justify-between px-3 py-2 rounded-lg cursor-pointer transition-colors ${isGrpSelected ? 'bg-blue-50 text-blue-700 font-bold' : 'text-slate-600 hover:bg-slate-100'}`}
+                                                        className={`flex items-center justify-between px-3 py-2 rounded-lg cursor-pointer transition-colors ${isGrpSelected ? 'bg-brand-cyan/10 text-brand-cyan font-bold' : 'text-slate-600 hover:bg-slate-100'}`}
                                                         onClick={() => setSelectedNode(grpKey)}
                                                     >
                                                         <div className="flex items-center gap-2 overflow-hidden">
-                                                            <i className={`fa-solid fa-folder text-xs ${isGrpSelected ? 'text-blue-500' : 'text-amber-400'}`}></i>
+                                                            <Folder size={13} className={`shrink-0 ${isGrpSelected ? 'text-brand-cyan' : 'text-amber-400'}`} aria-hidden="true" />
                                                             <span className="text-xs truncate" title={gLabel}>{gLabel}</span>
                                                         </div>
-                                                        <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-md shrink-0 ${isGrpSelected ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-400'}`}>{gInfo.count}</span>
+                                                        <span className={`text-[11px] font-bold px-1.5 py-0.5 rounded-md shrink-0 tabular-nums ${isGrpSelected ? 'bg-brand-cyan/15 text-brand-cyan' : 'bg-slate-100 text-slate-500'}`}>{gInfo.count}</span>
                                                     </div>
                                                 );
                                             })}
@@ -1266,66 +1508,60 @@ const ProductsIntegration = () => {
                 <div className="flex-1 overflow-y-auto p-6 bg-slate-50 custom-scrollbar">
                     {loading ? (
                         <div className="flex flex-col items-center justify-center h-full text-slate-400">
-                            <i className="fa-solid fa-circle-notch fa-spin text-4xl mb-4 text-blue-500"></i>
+                            <LoaderCircle size={40} className="animate-spin mb-4 text-brand-cyan" aria-hidden="true" />
                             <p className="font-bold">Cargando catálogo...</p>
                         </div>
                     ) : (
                         <div>
                             {/* Barra de filtros SIEMPRE visible */}
-                            <div className="mb-6 bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-col gap-4">
+                            <div className="mb-5 bg-white p-4 rounded-xl border border-slate-200 flex flex-col gap-4">
                                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                                    <h2 className="text-lg font-bold text-slate-800">
-                                        {selectedNode === 'all' && 'Todos los Artículos'}
-                                        {selectedNode.startsWith('sup') && `Familia ${selectedNode.split('||')[1]}`}
-                                        {selectedNode.startsWith('grp') && `Grupo ${selectedNode.split('||')[2]}`}
-                                    </h2>
-                                    <span className="bg-slate-100 text-slate-600 text-xs font-bold px-3 py-1.5 rounded-lg border border-slate-200">{displayArticles.length} resultados</span>
+                                    <h2 className="text-lg font-bold text-slate-800">{selectedTitle}</h2>
+                                    <span className="bg-slate-100 text-slate-600 text-xs font-bold px-3 py-1.5 rounded-lg tabular-nums">{displayArticles.length} {displayArticles.length === 1 ? 'resultado' : 'resultados'}</span>
                                 </div>
-                                
+
                                 <div className="flex flex-wrap items-center justify-between gap-4 pt-4 border-t border-slate-100">
                                     <div className="relative flex-1 min-w-[250px] max-w-md">
-                                        <i className="fa-solid fa-search absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm"></i>
-                                        <input className="w-full pl-9 pr-3 py-2 border border-slate-200 bg-slate-50 hover:bg-white rounded-lg text-sm outline-none focus:border-blue-500 focus:bg-white transition-all shadow-inner"
-                                            placeholder="Buscar producto por nombre, código..."
+                                        <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" aria-hidden="true" />
+                                        <input className="w-full pl-9 pr-3 py-2 border border-slate-200 bg-slate-50 hover:bg-white rounded-lg text-sm outline-none focus:border-brand-cyan focus:bg-white transition-all"
+                                            placeholder="Buscar por nombre o código"
+                                            aria-label="Buscar artículo"
                                             value={search} onChange={e => setSearch(e.target.value)} />
                                     </div>
 
                                     <div className="flex flex-wrap items-center gap-4">
                                         <div className="flex items-center gap-2">
-                                            <span className="text-xs font-bold text-slate-500"><i className="fa-solid fa-sort"></i></span>
-                                            <select className="px-3 py-2 border border-slate-200 bg-slate-50 hover:bg-white rounded-lg text-sm outline-none focus:border-blue-500 transition-all font-semibold text-slate-600 shadow-sm"
-                                                value={sortBy} onChange={e => setSortBy(e.target.value)}>
-                                                <option value="name_asc">A - Z</option>
-                                                <option value="name_desc">Z - A</option>
-                                                <option value="price_asc">Precio: Menor a Mayor</option>
-                                                <option value="price_desc">Precio: Mayor a Menor</option>
-                                            </select>
+                                            <ArrowUpDown size={15} className="text-slate-400" aria-hidden="true" />
+                                            <OrdenSelect value={sortBy} onChange={setSortBy} />
                                         </div>
 
                                         <div className="flex items-center gap-4 border-l border-slate-200 pl-4">
                                             <label className="flex items-center gap-2 cursor-pointer group">
                                                 <div className="relative flex items-center justify-center">
                                                     <input type="checkbox" checked={showImages} onChange={e => setShowImages(e.target.checked)} className="peer sr-only" />
-                                                    <div className="w-8 h-5 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-500 shadow-inner"></div>
+                                                    <div className="w-8 h-5 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-brand-cyan"></div>
                                                 </div>
                                                 <span className="text-xs font-bold text-slate-600 group-hover:text-slate-800">Fotos</span>
                                             </label>
 
                                             <div className="flex items-center gap-2">
                                                 <span className="text-xs font-bold text-slate-500">Tipo:</span>
-                                                <div className="flex bg-slate-100 p-1 rounded-lg border border-slate-200 shadow-inner text-xs font-bold">
-                                                    <button onClick={() => setFilterType('all')} className={`px-3 py-1.5 rounded-md transition-all ${filterType === 'all' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Todos</button>
-                                                    <button onClick={() => setFilterType('products')} className={`px-3 py-1.5 rounded-md transition-all ${filterType === 'products' ? 'bg-white text-emerald-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Productos</button>
-                                                    <button onClick={() => setFilterType('services')} className={`px-3 py-1.5 rounded-md transition-all ${filterType === 'services' ? 'bg-white text-purple-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Servicios</button>
+                                                <div role="group" aria-label="Tipo" className="flex bg-slate-100 p-1 rounded-lg border border-slate-200 text-xs font-bold">
+                                                    <button type="button" aria-pressed={filterType === 'all'} onClick={() => setFilterType('all')} className={segBtn(filterType === 'all')}>Todos</button>
+                                                    <button type="button" aria-pressed={filterType === 'services'} onClick={() => setFilterType('services')} className={segBtn(filterType === 'services')}>Servicios</button>
+                                                    <button type="button" aria-pressed={filterType === 'products'} onClick={() => setFilterType('products')} className={segBtn(filterType === 'products')}>Productos</button>
                                                 </div>
                                             </div>
 
                                             <div className="flex items-center gap-2">
                                                 <span className="text-xs font-bold text-slate-500">Estado:</span>
-                                                <div className="flex bg-slate-100 p-1 rounded-lg border border-slate-200 shadow-inner text-xs font-bold">
-                                                    <button onClick={() => setFilterStatus('active')} className={`px-3 py-1.5 rounded-md transition-all ${filterStatus === 'active' ? 'bg-white text-emerald-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Activos</button>
-                                                    <button onClick={() => setFilterStatus('all')} className={`px-3 py-1.5 rounded-md transition-all ${filterStatus === 'all' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Todos</button>
-                                                    <button onClick={() => setFilterStatus('inactive')} className={`px-3 py-1.5 rounded-md transition-all ${filterStatus === 'inactive' ? 'bg-white text-red-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Inactivos</button>
+                                                <div role="group" aria-label="Estado" className="flex bg-slate-100 p-1 rounded-lg border border-slate-200 text-xs font-bold">
+                                                    <button type="button" aria-pressed={filterStatus === 'active'} onClick={() => setFilterStatus('active')} className={segBtn(filterStatus === 'active')}>Visibles</button>
+                                                    <button type="button" aria-pressed={filterStatus === 'all'} onClick={() => setFilterStatus('all')} className={segBtn(filterStatus === 'all')}>Todos</button>
+                                                    <button type="button" aria-pressed={filterStatus === 'inactive'} onClick={() => setFilterStatus('inactive')} className={segBtn(filterStatus === 'inactive')}>
+                                                        <EyeOff size={13} aria-hidden="true" /> Ocultos
+                                                        <span className={`tabular-nums px-1.5 rounded ${filterStatus === 'inactive' ? 'bg-brand-cyan/10' : 'bg-slate-200 text-slate-600'}`}>{hiddenCount}</span>
+                                                    </button>
                                                 </div>
                                             </div>
                                         </div>
@@ -1335,10 +1571,10 @@ const ProductsIntegration = () => {
 
                             {/* WMS Importer — solo visible al filtrar Productos */}
                             {filterType === 'products' && (
-                                <div className="mb-6 bg-blue-50 p-5 rounded-xl border border-blue-200 shadow-inner">
+                                <div className="mb-5 bg-brand-cyan/5 p-5 rounded-xl border border-brand-cyan/20">
                                     <div className="flex items-center gap-3 mb-4">
-                                        <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white shrink-0">
-                                            <i className="fa-solid fa-cloud-arrow-down"></i>
+                                        <div className="w-8 h-8 bg-brand-cyan rounded-lg flex items-center justify-center text-white shrink-0">
+                                            <CloudDownload size={16} aria-hidden="true" />
                                         </div>
                                         <div>
                                             <h3 className="text-sm font-bold text-slate-800">Importar Producto desde WMS</h3>
@@ -1346,10 +1582,11 @@ const ProductsIntegration = () => {
                                         </div>
                                     </div>
                                     <div className="relative mb-3">
-                                        <i className="fa-solid fa-search absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"></i>
+                                        <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" aria-hidden="true" />
                                         <input
-                                            className="w-full pl-10 pr-4 py-2.5 border border-slate-300 rounded-lg text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none transition-all bg-white"
+                                            className="w-full pl-10 pr-4 py-2.5 border border-slate-300 rounded-lg text-sm focus:border-brand-cyan focus:ring-2 focus:ring-brand-cyan/15 outline-none transition-all bg-white"
                                             placeholder="Escribe el nombre del producto WMS..."
+                                            aria-label="Buscar producto en el WMS"
                                             value={wmsSearchInput}
                                             onChange={e => setWmsSearchInput(e.target.value)}
                                         />
@@ -1367,15 +1604,19 @@ const ProductsIntegration = () => {
                                                         <button
                                                             disabled={isImported || importingId === m.id}
                                                             onClick={() => handleImportWms(m.id)}
-                                                            className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-2 ${
+                                                            className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-colors flex items-center gap-2 ${
                                                                 isImported
-                                                                    ? 'bg-emerald-50 text-emerald-600 border border-emerald-200 cursor-not-allowed'
+                                                                    ? 'bg-emerald-500/10 text-emerald-500 border border-emerald-500/30 cursor-not-allowed'
                                                                     : importingId === m.id
-                                                                    ? 'bg-blue-100 text-blue-500 cursor-wait'
-                                                                    : 'bg-blue-600 text-white hover:bg-blue-700 shadow-md shadow-blue-500/20'
+                                                                    ? 'bg-brand-cyan/10 text-brand-cyan cursor-wait'
+                                                                    : 'bg-brand-cyan text-white hover:bg-brand-cyan/90'
                                                             }`}
                                                         >
-                                                            {importingId === m.id ? (<><i className="fa-solid fa-spinner fa-spin"></i> Importando...</>) : isImported ? (<><i className="fa-solid fa-check"></i> Ya existe</>) : (<><i className="fa-solid fa-download"></i> Importar</>)}
+                                                            {importingId === m.id
+                                                                ? (<><LoaderCircle size={14} className="animate-spin" aria-hidden="true" /> Importando...</>)
+                                                                : isImported
+                                                                    ? (<><Check size={14} aria-hidden="true" /> Ya existe</>)
+                                                                    : (<><Download size={14} aria-hidden="true" /> Importar</>)}
                                                         </button>
                                                     </div>
                                                 );
@@ -1391,12 +1632,18 @@ const ProductsIntegration = () => {
                             {/* Grid de artículos */}
                             {displayArticles.length === 0 ? (
                                 <div className="flex flex-col items-center justify-center py-20 text-slate-400">
-                                    <i className="fa-solid fa-box-open text-6xl mb-4 text-slate-200"></i>
+                                    <PackageOpen size={56} className="mb-4 text-slate-200" aria-hidden="true" />
                                     <p className="font-bold text-lg text-slate-500">No se encontraron artículos</p>
                                     {filterType === 'products' && <p className="text-sm text-slate-400 mt-1">Usá el importador de arriba para traer productos del WMS</p>}
+                                    {filterStatus === 'active' && hiddenCount > 0 && (
+                                        <button type="button" onClick={() => setFilterStatus('inactive')}
+                                            className="mt-3 inline-flex items-center gap-1.5 text-sm font-semibold text-brand-cyan hover:underline">
+                                            <EyeOff size={15} aria-hidden="true" /> Ver {hiddenCount} {hiddenCount === 1 ? 'oculto' : 'ocultos'}
+                                        </button>
+                                    )}
                                 </div>
                             ) : (
-                                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-5">
+                                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
                                     {displayArticles.map(art => (
                                         <ArticleCard
                                             key={art.ProIdProducto ?? art.CodArticulo}
