@@ -48,6 +48,7 @@ import CajaVentaDirectaTab from './CajaVentaDirectaTab';
 import ContabilidadBandejaCFE from './ContabilidadBandejaCFE';
 import FacturacionManualModal from './FacturacionManualModal';
 import SpecialPrices from './SpecialPrices';
+import CreditoClientePanel from './CreditoClientePanel';
 
 const TIPOS_MONETARIOS = ['USD', 'UYU', 'ARS', 'EUR', 'PYG', 'BRL', 'CORRIENTE', 'CREDITO', 'DEBITO', 'CAJA', 'DINERO_USD', 'DINERO_UYU'];
 const esRecurso = (c) => c.ProIdProducto != null || !TIPOS_MONETARIOS.includes(c.CueTipo?.toUpperCase());
@@ -685,7 +686,7 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
 
       {/* Sub-pestañas: Estado de cuenta / Órdenes / Recursos / Precios especiales */}
       <div className="px-4 pt-3 flex items-center gap-4 border-b border-slate-100">
-        {[['ESTADO', 'Estado de cuenta', movimientos.length], ['ORDENES', 'Órdenes', ordCargadas ? ordenesFiltradas.length : null], ['RECURSOS', 'Recursos', recursoCuentas.length || null], ['PRECIOS', 'Precios especiales', null]].map(([key, label, count]) => (
+        {[['ESTADO', 'Estado de cuenta', movimientos.length], ['ORDENES', 'Órdenes', ordCargadas ? ordenesFiltradas.length : null], ['RECURSOS', 'Recursos', recursoCuentas.length || null], ['PRECIOS', 'Precios especiales', null], ['CREDITO', 'Límites', null]].map(([key, label, count]) => (
           <button key={key} type="button" onClick={() => setVista(key)}
             className={`relative pb-2.5 text-xs font-bold transition-colors ${vista === key ? 'text-cyan-700' : 'text-slate-400 hover:text-slate-600'}`}>
             {label} {count != null && <span className="text-[10px] font-semibold text-slate-400">({count})</span>}
@@ -1265,6 +1266,14 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
             embebido
             clienteFijo={{ id: CliIdCliente, Nombre: cliente?.Nombre || cliente?.NombreFantasia || `Cliente ${CliIdCliente}` }}
           />
+        </div>
+      )}
+
+      {/* ── Vista LÍMITES: límite de crédito (uno, en $ o US$) y condición de pago del cliente;
+          la deuda de las dos monedas se compara contra el límite convertida al TC. ── */}
+      {vista === 'CREDITO' && (
+        <div className="p-4">
+          <CreditoClientePanel key={CliIdCliente} cliente={cliente} cuentas={cuentas} recargarCuentas={recargarCuentas} />
         </div>
       )}
     </div>

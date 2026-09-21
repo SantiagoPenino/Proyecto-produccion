@@ -2317,7 +2317,15 @@ exports.getAntiguedadDeuda = async (req, res) => {
   try {
     const { modo } = req.query;
     const datos = await svc.getAntiguedadDeuda(modo);
-    res.json({ success: true, data: datos });
+    // Cotización del día: el control de crédito compara la deuda de las dos monedas contra
+    // un único límite, convirtiendo al TC (el usuario puede pisarlo en pantalla).
+    let cotizacion = null;
+    try {
+      const pool = await getPool();
+      const c = await pool.request().query(`SELECT TOP 1 CotDolar, CotFecha FROM dbo.Cotizaciones WITH(NOLOCK) WHERE CotDolar IS NOT NULL ORDER BY CotFecha DESC`);
+      if (c.recordset.length) cotizacion = { dolar: Number(c.recordset[0].CotDolar), fecha: c.recordset[0].CotFecha };
+    } catch { /* sin cotización: la pantalla pide una a mano */ }
+    res.json({ success: true, data: datos, cotizacion });
   } catch (err) {
     logger.error('[CONTABILIDAD] getAntiguedadDeuda:', err.message);
     res.status(500).json({ success: false, error: err.message });

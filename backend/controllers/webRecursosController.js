@@ -17,6 +17,7 @@
 
 const svc      = require('../services/contabilidadService');
 const telaCtrl = require('./telaClienteController');
+const devolucionSvc = require('../services/telaClienteDevolucionFisicaService');
 const logger   = require('../utils/logger');
 const { getPool, sql } = require('../config/db');
 
@@ -165,6 +166,49 @@ exports.getEstadoCuentaMisTelas = async (req, res) => {
     return telaCtrl.getEstadoCuenta(req, res);
   } catch (err) {
     logger.error('[WEB-RECURSOS] getEstadoCuentaMisTelas:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+/**
+ * GET /api/web-recursos/mis-telas/avisos-excedente
+ * Avisos de excedente PENDIENTE del cliente logueado — para mostrarlos como
+ * aviso persistente ("ticket") en el portal, sin depender de WhatsApp ni de
+ * permisos de push del navegador.
+ */
+exports.getMisAvisosExcedente = async (req, res) => {
+  try {
+    const CliIdCliente = await resolverCliIdCliente(req);
+    if (CliIdCliente == null)
+      return res.status(403).json({ success: false, error: 'Disponible solo para clientes del portal.' });
+
+    const pool = await getPool();
+    const data = await devolucionSvc.listarAvisosPendientesCliente(pool, String(CliIdCliente));
+    res.json({ success: true, data });
+  } catch (err) {
+    logger.error('[WEB-RECURSOS] getMisAvisosExcedente:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+/**
+ * POST /api/web-recursos/mis-telas/:bobinaId/solicitar-devolucion
+ * Body: { accion: 'DEVOLVER'|'DESCARTAR', canal?: 'RETIRO'|'ENCOMIENDA' }
+ * El cliente pide que le devuelvan (o descarten) el excedente de una bobina
+ * suya. Cae en la bandeja interna — no es autoservicio directo, alguien de
+ * depósito/atención al cliente la aprueba antes de que salga.
+ */
+exports.solicitarDevolucionMiTela = async (req, res) => {
+  try {
+    const CliIdCliente = await resolverCliIdCliente(req);
+    if (CliIdCliente == null)
+      return res.status(403).json({ success: false, error: 'Disponible solo para clientes del portal.' });
+
+    req.params.clienteId = String(CliIdCliente);
+    req.body.origen = 'PORTAL';
+    return telaCtrl.solicitarDevolucion(req, res);
+  } catch (err) {
+    logger.error('[WEB-RECURSOS] solicitarDevolucionMiTela:', err.message);
     res.status(500).json({ success: false, error: err.message });
   }
 };

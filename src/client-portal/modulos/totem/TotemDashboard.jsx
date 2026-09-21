@@ -9,7 +9,7 @@ import { totemHeaders } from './totemAuth';
 
 const API_BASE = import.meta.env.VITE_API_URL || '/api';
 
-const BASE_PREFIXES = ['SB', 'SUB', 'DF', 'DTF', 'UVDF', 'ECOUV', 'EUV', 'TWC', 'COR', 'EMB', 'TP', 'TPU', 'IMD', 'DIR', 'PRO', 'VEN'];
+const BASE_PREFIXES = ['SB', 'SUB', 'DF', 'DTF', 'UVDF', 'ECOUV', 'EUV', 'TWC', 'COR', 'EMB', 'TP', 'TPU', 'IMD', 'DIR', 'PRO', 'VEN', 'DEV'];
 
 // Print ticket (80mm thermal - same technique as PrintStationPage)
 const printTotemTicket = ({ ordenRetiro, client, orders, title = 'COMPROBANTE DE RETIRO' }) => {
@@ -104,11 +104,11 @@ export const TotemDashboard = ({ onLogout }) => {
     const [success, setSuccess] = useState(false);
     const [error, setError] = useState('');
 
-    const NON_EXTERNAL_PREFIXES = ['PRO', 'VEN'];
+    const NON_EXTERNAL_PREFIXES = ['PRO', 'VEN', 'DEV'];
     const fullCode = prefix ? `${externalMode && !NON_EXTERNAL_PREFIXES.includes(prefix) ? externalMode : ''}${prefix}-${number}` : number;
 
     const handlePrefix = (p) => {
-        if (['PRO', 'VEN'].includes(p)) setExternalMode('');
+        if (NON_EXTERNAL_PREFIXES.includes(p)) setExternalMode('');
         setPrefix(p);
 
     };
@@ -658,7 +658,7 @@ export const TotemDashboard = ({ onLogout }) => {
                                         }`}
                                     onClick={() => handlePrefix(p)}
                                 >
-                                    {externalMode && !['PRO', 'VEN'].includes(p) ? `${externalMode}${p}` : p}
+                                    {externalMode && !NON_EXTERNAL_PREFIXES.includes(p) ? `${externalMode}${p}` : p}
                                 </button>
                             ))}
                         </div>
@@ -666,7 +666,7 @@ export const TotemDashboard = ({ onLogout }) => {
                         <div className="mb-5 flex items-center gap-2">
                             {prefix && (
                                 <div className="text-xl font-bold text-blue-400 whitespace-nowrap">
-                                    {externalMode && !['PRO', 'VEN'].includes(prefix) ? `${externalMode}${prefix}` : prefix}-
+                                    {externalMode && !NON_EXTERNAL_PREFIXES.includes(prefix) ? `${externalMode}${prefix}` : prefix}-
                                 </div>
                             )}
                             <div className="flex-1 bg-black/30 border border-white/10 rounded-xl px-4 py-2.5 text-center text-xl font-bold tracking-[4px] min-h-[36px] text-white">

@@ -3,7 +3,7 @@ import { toast } from 'sonner';
 import api from '../../services/apiClient';
 import {
     Calendar, Search, RefreshCw, Printer, Building2, Landmark,
-    AlertTriangle, Wallet, FileText, Filter, Loader2
+    AlertTriangle, Wallet, FileText, Filter, Loader2, ChevronDown, ChevronUp, X
 } from 'lucide-react';
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
@@ -21,6 +21,15 @@ const esHuerfano = (m) => m.TipoOperacion === 'INGRESO' && (m.Sesion === null ||
 const esSospechoso = (m) => esHuerfano(m) || esAnticipo(m) || esOnline(m);
 
 const emptyTot = { UYU_in: 0, UYU_out: 0, USD_in: 0, USD_out: 0, cant: 0 };
+
+// Fecha DATE del backend (UTC 00:00) → dd/mm/aaaa sin correrla un día
+const fmtDia = (d) => (d ? String(d).slice(0, 10).split('-').reverse().join('/') : '');
+// Detalle del cheque de un movimiento (null si no se pagó con cheque)
+const chequeTxt = (m) => (m.ChequeNumero
+    ? [`N° ${m.ChequeNumero}`, m.ChequeBanco, m.ChequeAgencia && `ag. ${m.ChequeAgencia}`, m.ChequeEmitidoPor && `emite ${m.ChequeEmitidoPor}`,
+        m.ChequeFechaVencimiento && `vence ${fmtDia(m.ChequeFechaVencimiento)}`, m.ChequePlazo, m.ChequeEstado && String(m.ChequeEstado).replace(/_/g, ' ').toLowerCase()]
+        .filter(Boolean).join(' · ')
+    : null);
 
 // ─── TOTALES DE UN BUCKET ──────────────────────────────────────────────────────
 const TotalesBucket = ({ t }) => (
@@ -47,6 +56,7 @@ const TablaMovs = ({ movs, marcarSospechosos }) => (
                     <th className="px-3 py-2 text-left">Fecha</th>
                     <th className="px-3 py-2 text-left">Comprobante</th>
                     <th className="px-3 py-2 text-left">Concepto</th>
+                    <th className="px-3 py-2 text-left">Medio de pago</th>
                     <th className="px-3 py-2 text-left">Usuario</th>
                     <th className="px-3 py-2 text-right">Entrada</th>
                     <th className="px-3 py-2 text-right">Salida</th>
@@ -54,7 +64,7 @@ const TablaMovs = ({ movs, marcarSospechosos }) => (
             </thead>
             <tbody className="divide-y divide-slate-100">
                 {movs.length === 0 ? (
-                    <tr><td colSpan={6} className="text-center py-8 text-slate-400">Sin movimientos</td></tr>
+                    <tr><td colSpan={7} className="text-center py-8 text-slate-400">Sin movimientos</td></tr>
                 ) : movs.map((m, i) => {
                     const susp = marcarSospechosos && esSospechoso(m);
                     return (
@@ -65,6 +75,10 @@ const TablaMovs = ({ movs, marcarSospechosos }) => (
                                 {m.TipoComprobante} {m.Comprobante}
                             </td>
                             <td className="px-3 py-2 text-slate-600 max-w-[220px] truncate" title={m.Concepto}>{m.Concepto}</td>
+                            <td className="px-3 py-2 text-slate-600">
+                                <span className="font-bold whitespace-nowrap">{m.MedioDePago || '—'}</span>
+                                {chequeTxt(m) && <span className="block text-[10px] text-slate-400 max-w-[260px]">{chequeTxt(m)}</span>}
+                            </td>
                             <td className="px-3 py-2 text-slate-500 whitespace-nowrap">{m.Usuario}</td>
                             <td className="px-3 py-2 text-right font-bold text-emerald-700 whitespace-nowrap">{m.Entrada > 0 ? `${m.Moneda} ${fmt(m.Entrada)}` : '—'}</td>
                             <td className="px-3 py-2 text-right font-bold text-rose-700 whitespace-nowrap">{m.Salida > 0 ? `${m.Moneda} ${fmt(m.Salida)}` : '—'}</td>
@@ -78,13 +92,28 @@ const TablaMovs = ({ movs, marcarSospechosos }) => (
 
 // ─── CIERRES DE LA CAJA CENTRAL (con PDF) ───────────────────────────────────────
 const CierresCentral = ({ cierres, onVerPdf, onGenerarPdf, cargando, generando }) => {
+    // Contraído por defecto: con un rango largo la lista de sesiones empuja la tabla fuera de pantalla
+    const [abierto, setAbierto] = useState(false);
     if (!cierres || cierres.length === 0) return null;
+    const conDif = cierres.filter(c => c.StuEstado !== 'ABIERTA' && Math.abs(Number(c.StuDiferencia || 0)) > 0.009).length;
+    const abiertas = cierres.filter(c => c.StuEstado === 'ABIERTA').length;
     return (
         <div className="rounded-lg border border-indigo-100 bg-indigo-50/40 p-3">
-            <p className="text-[11px] font-black text-indigo-700 uppercase tracking-wide mb-2 flex items-center gap-1">
-                <FileText size={12} /> Cierres de caja del período
-            </p>
-            <div className="flex flex-col gap-1.5">
+            <button type="button" onClick={() => setAbierto(a => !a)}
+                title={abierto ? 'Ocultar los cierres de caja del período' : 'Ver los cierres de caja del período (sesiones, diferencias y PDF)'}
+                className="w-full flex items-center justify-between gap-2 text-left">
+                <span className="text-[11px] font-black text-indigo-700 uppercase tracking-wide flex items-center gap-1">
+                    <FileText size={12} /> Cierres de caja del período
+                    <span className="normal-case font-bold text-slate-500 ml-2">
+                        {cierres.length} sesión(es){conDif > 0 ? ` · ${conDif} con diferencia` : ''}{abiertas > 0 ? ` · ${abiertas} abierta(s)` : ''}
+                    </span>
+                </span>
+                <span className="flex items-center gap-1 text-[11px] font-bold text-indigo-700">
+                    {abierto ? 'Ocultar' : 'Ver cierres'} {abierto ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                </span>
+            </button>
+            {abierto && (
+            <div className="flex flex-col gap-1.5 mt-2">
                 {cierres.map(c => {
                     const abierta = c.StuEstado === 'ABIERTA';
                     const dif = Number(c.StuDiferencia || 0);
@@ -123,12 +152,92 @@ const CierresCentral = ({ cierres, onVerPdf, onGenerarPdf, cargando, generando }
                     );
                 })}
             </div>
+            )}
         </div>
     );
 };
 
+// ─── MOVIMIENTOS DE UN BUCKET: filtros + buscador + tabla ───────────────────────
+// Los filtros se aplican sobre lo ya cargado (no vuelven a consultar). Los totales de
+// arriba del bucket siguen siendo los del período completo; acá se muestra el subtotal
+// de lo filtrado para que no se confundan.
+const BucketMovs = ({ movs, marcarSospechosos }) => {
+    const [txt, setTxt] = useState('');
+    const [medio, setMedio] = useState('');
+    const [usuario, setUsuario] = useState('');
+    const [tipo, setTipo] = useState('');       // '' | 'INGRESO' | 'EGRESO'
+    const [moneda, setMoneda] = useState('');   // '' | 'UYU' | 'USD'
+    const [soloSosp, setSoloSosp] = useState(false);
+
+    const opciones = (key) => [...new Set(movs.map(m => m[key]).filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b), 'es'));
+    const q = txt.trim().toLowerCase();
+    const filtrados = movs.filter(m =>
+        (!medio || m.MedioDePago === medio) &&
+        (!usuario || m.Usuario === usuario) &&
+        (!tipo || m.TipoOperacion === tipo) &&
+        (!moneda || m.Moneda === moneda) &&
+        (!soloSosp || esSospechoso(m)) &&
+        (!q || [m.TipoComprobante, m.Comprobante, m.Concepto, m.Usuario, m.MedioDePago, m.ChequeNumero, m.ChequeBanco, m.ChequeEmitidoPor]
+            .some(v => String(v || '').toLowerCase().includes(q))));
+    const hayFiltro = !!(q || medio || usuario || tipo || moneda || soloSosp);
+    const sub = filtrados.reduce((t, m) => {
+        const k = m.Moneda === 'USD' ? 'USD' : 'UYU';
+        t[k + '_in'] += Number(m.Entrada || 0); t[k + '_out'] += Number(m.Salida || 0);
+        return t;
+    }, { UYU_in: 0, UYU_out: 0, USD_in: 0, USD_out: 0 });
+    const limpiar = () => { setTxt(''); setMedio(''); setUsuario(''); setTipo(''); setMoneda(''); setSoloSosp(false); };
+    const selCls = 'border border-slate-200 rounded-lg px-2 py-1.5 text-xs bg-white focus:outline-none focus:border-indigo-500';
+
+    return (
+        <>
+            <div className="flex flex-wrap items-center gap-2">
+                <div className="relative flex-1 min-w-[200px]">
+                    <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                    <input value={txt} onChange={e => setTxt(e.target.value)} placeholder="Buscar comprobante, concepto, cliente, cheque…"
+                        className="w-full border border-slate-200 rounded-lg pl-7 pr-2 py-1.5 text-xs focus:outline-none focus:border-indigo-500" />
+                </div>
+                <select value={medio} onChange={e => setMedio(e.target.value)} className={selCls}>
+                    <option value="">Medio de pago: todos</option>
+                    {opciones('MedioDePago').map(o => <option key={o} value={o}>{o}</option>)}
+                </select>
+                <select value={usuario} onChange={e => setUsuario(e.target.value)} className={selCls}>
+                    <option value="">Usuario: todos</option>
+                    {opciones('Usuario').map(o => <option key={o} value={o}>{o}</option>)}
+                </select>
+                <select value={tipo} onChange={e => setTipo(e.target.value)} className={selCls}>
+                    <option value="">Ingresos y egresos</option>
+                    <option value="INGRESO">Solo ingresos</option>
+                    <option value="EGRESO">Solo egresos</option>
+                </select>
+                <select value={moneda} onChange={e => setMoneda(e.target.value)} className={selCls}>
+                    <option value="">$ y U$S</option>
+                    <option value="UYU">Solo $</option>
+                    <option value="USD">Solo U$S</option>
+                </select>
+                {marcarSospechosos && (
+                    <label className="flex items-center gap-1.5 text-xs font-bold text-amber-700 cursor-pointer" title="Huérfanos sin sesión, anticipos y cobros que no son online">
+                        <input type="checkbox" checked={soloSosp} onChange={e => setSoloSosp(e.target.checked)} className="rounded" /> Solo sospechosos
+                    </label>
+                )}
+                {hayFiltro && (
+                    <button type="button" onClick={limpiar} className="flex items-center gap-1 text-xs font-bold text-rose-600 hover:text-rose-800">
+                        <X size={12} /> Limpiar filtros
+                    </button>
+                )}
+            </div>
+            {hayFiltro && (
+                <p className="text-[11px] text-slate-500">
+                    Mostrando <b>{filtrados.length}</b> de {movs.length} movimientos · subtotal de lo filtrado: ingresos <b className="text-emerald-700">$ {fmt(sub.UYU_in)} / U$S {fmt(sub.USD_in)}</b> · egresos <b className="text-rose-700">$ {fmt(sub.UYU_out)} / U$S {fmt(sub.USD_out)}</b>
+                </p>
+            )}
+            <TablaMovs movs={filtrados} marcarSospechosos={marcarSospechosos} />
+        </>
+    );
+};
+
 // ─── VISTA PRINCIPAL ────────────────────────────────────────────────────────────
-const ReporteCajaCentralAdminView = () => {
+// embebido = true dentro de Reportes de Contabilidad (esa página ya pone el título).
+const ReporteCajaCentralAdminView = ({ embebido = false }) => {
     const hoy = new Date().toISOString().split('T')[0];
     const ayer = new Date(Date.now() - 86400000).toISOString().split('T')[0];
     const [desde, setDesde] = useState(ayer);
@@ -192,6 +301,7 @@ const ReporteCajaCentralAdminView = () => {
                 <td style="padding:4px 8px;color:#64748b">${fmtDate(m.Fecha)}</td>
                 <td style="padding:4px 8px;font-weight:bold;color:#4338ca">${susp ? '⚠ ' : ''}${m.TipoComprobante || ''} ${m.Comprobante || ''}</td>
                 <td style="padding:4px 8px">${m.Concepto || ''}</td>
+                <td style="padding:4px 8px"><b>${m.MedioDePago || ''}</b>${chequeTxt(m) ? `<br><span style="color:#64748b;font-size:10px">${chequeTxt(m)}</span>` : ''}</td>
                 <td style="padding:4px 8px;color:#64748b">${m.Usuario || ''}</td>
                 <td style="padding:4px 8px;text-align:right;color:#065f46">${m.Entrada > 0 ? m.Moneda + ' ' + fmt(m.Entrada) : ''}</td>
                 <td style="padding:4px 8px;text-align:right;color:#991b1b">${m.Salida > 0 ? m.Moneda + ' ' + fmt(m.Salida) : ''}</td>
@@ -201,10 +311,10 @@ const ReporteCajaCentralAdminView = () => {
             <table style="width:100%;border-collapse:collapse;font-size:11px">
                 <thead><tr style="background:#f1f5f9;color:#475569">
                     <th style="padding:6px 8px;text-align:left">Fecha</th><th style="padding:6px 8px;text-align:left">Comprobante</th>
-                    <th style="padding:6px 8px;text-align:left">Concepto</th><th style="padding:6px 8px;text-align:left">Usuario</th>
+                    <th style="padding:6px 8px;text-align:left">Concepto</th><th style="padding:6px 8px;text-align:left">Medio de pago</th><th style="padding:6px 8px;text-align:left">Usuario</th>
                     <th style="padding:6px 8px;text-align:right">Entrada</th><th style="padding:6px 8px;text-align:right">Salida</th>
                 </tr></thead>
-                <tbody>${b.movimientos.map(m => filaHtml(m, marcar && esSospechoso(m))).join('') || '<tr><td colspan=6 style="padding:8px;color:#94a3b8">Sin movimientos</td></tr>'}</tbody>
+                <tbody>${b.movimientos.map(m => filaHtml(m, marcar && esSospechoso(m))).join('') || '<tr><td colspan=7 style="padding:8px;color:#94a3b8">Sin movimientos</td></tr>'}</tbody>
             </table>`;
         win.document.write(`<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"/>
             <title>Caja Central vs Administrativa ${desde} al ${hasta}</title>
@@ -221,15 +331,19 @@ const ReporteCajaCentralAdminView = () => {
     };
 
     return (
-        <div className="min-h-full flex flex-col p-4 lg:p-8 gap-4 font-sans bg-[#f6f8fb]">
-            {/* Header */}
+        <div className={embebido ? 'flex flex-col gap-4 font-sans' : 'min-h-full flex flex-col p-4 lg:p-8 gap-4 font-sans bg-[#f6f8fb]'}>
+            {/* Header (embebido: la página contenedora ya muestra el título) */}
             <div className="flex items-center justify-between flex-wrap gap-3">
+                {embebido ? (
+                    <p className="text-xs text-slate-500">Auditoría de movimientos por caja — detectá pagos administrativos que caen en el arqueo central.</p>
+                ) : (
                 <div>
                     <h2 className="text-2xl font-black text-slate-800 flex items-center gap-2">
                         <Wallet size={24} className="text-indigo-600" /> Caja Central vs Administrativa
                     </h2>
                     <p className="text-sm text-slate-400 mt-0.5">Auditoría de movimientos por bucket — detectá pagos administrativos que caen en el arqueo central</p>
                 </div>
+                )}
                 <button onClick={handlePrint} disabled={!data}
                     className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2.5 rounded-xl font-bold shadow-md disabled:opacity-40 transition-all text-sm">
                     <Printer size={15} /> Exportar PDF
@@ -291,7 +405,7 @@ const ReporteCajaCentralAdminView = () => {
                             <TotalesBucket t={central.totales} />
                             {/* Cierres del período con su PDF */}
                             <CierresCentral cierres={cierres} onVerPdf={verPdfCierre} onGenerarPdf={generarPdfCierre} cargando={pdfCargando} generando={pdfGenerando} />
-                            <TablaMovs movs={central.movimientos} marcarSospechosos />
+                            <BucketMovs movs={central.movimientos} marcarSospechosos />
                         </div>
                     )}
                     {/* ADMINISTRATIVA */}
@@ -302,7 +416,7 @@ const ReporteCajaCentralAdminView = () => {
                                 <span className="text-xs font-bold text-slate-400">{admin.totales.cant} movs</span>
                             </div>
                             <TotalesBucket t={admin.totales} />
-                            <TablaMovs movs={admin.movimientos} marcarSospechosos={false} />
+                            <BucketMovs movs={admin.movimientos} marcarSospechosos={false} />
                         </div>
                     )}
                 </div>

@@ -6,7 +6,9 @@ import api from "../../services/api";
 import { MultiAreaSelector } from "../ui/MultiAreaSelector";
 import EstadoTelaModal from "../modals/inventory/EstadoTelaModal";
 import ManageBobinaModal from "../modals/inventory/ManageBobinaModal";
-import { CheckCircle, AlertTriangle, FileText, Settings2, Search, RefreshCw, Ruler, X, User, Loader2 } from "lucide-react";
+import SolicitarDevolucionTelaModal from "../modals/inventory/SolicitarDevolucionTelaModal";
+import BandejaDevolucionesTelaPanel from "./BandejaDevolucionesTelaPanel";
+import { CheckCircle, AlertTriangle, FileText, Settings2, Search, RefreshCw, Ruler, X, User, Loader2, Undo2, Inbox } from "lucide-react";
 import { toast } from "sonner";
 
 // ─── BobinaCard — definida FUERA del componente padre para evitar remount en cada render ───
@@ -22,6 +24,7 @@ const BobinaCard = ({
     onEstadoCuenta,
     onAdministrar,
     onEjecutarConfirm,
+    onSolicitarDevolucion,
 }) => {
     const esPendiente   = bob.Estado === "Pendiente";
     const esAgotada     = bob.Estado === "Agotado" || bob.Estado === "Cerrado";
@@ -161,6 +164,15 @@ const BobinaCard = ({
                         <FileText className="w-3.5 h-3.5" /> Estado de Cuenta
                     </button>
                 )}
+                {!esAgotada && !esPendiente && (
+                    <button
+                        onClick={() => onSolicitarDevolucion(bob)}
+                        className="p-1.5 text-amber-600 hover:text-white bg-amber-50 hover:bg-amber-500 rounded-lg border border-amber-200 hover:border-amber-500 transition-colors"
+                        title="Solicitar devolución/descarte de excedente"
+                    >
+                        <Undo2 className="w-4 h-4" />
+                    </button>
+                )}
                 <button
                     onClick={() => onAdministrar(bob)}
                     className="p-1.5 text-indigo-500 hover:text-white bg-indigo-50 hover:bg-indigo-500 rounded-lg border border-indigo-200 hover:border-indigo-500 transition-colors"
@@ -241,6 +253,8 @@ const TelaClienteInventarioPage = () => {
     const [confirmLoading, setConfirmLoading]       = useState(false);
     const [estadoTelaBobina, setEstadoTelaBobina]   = useState(null);
     const [managingBobina, setManagingBobina]       = useState(null);
+    const [solicitandoBobina, setSolicitandoBobina] = useState(null);
+    const [vista, setVista]                         = useState("inventario"); // 'inventario' | 'bandeja'
 
     // -- Buscador de cliente tipo Caja --
     const [clienteQuery, setClienteQuery]           = useState("");
@@ -383,17 +397,38 @@ const TelaClienteInventarioPage = () => {
                             <h1 className="text-2xl font-bold text-slate-800">Inventario Tela de Cliente</h1>
                             <p className="text-slate-500 text-sm mt-0.5">Control de bobinas por cliente y confirmacion de medidas</p>
                         </div>
-                        <button
-                            onClick={loadInventory}
-                            disabled={loading || selectedAreas.length === 0}
-                            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white text-sm font-semibold transition-colors"
-                        >
-                            <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
-                            Actualizar
-                        </button>
+                        <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-1 bg-slate-100 rounded-lg p-1">
+                                <button
+                                    onClick={() => setVista("inventario")}
+                                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${vista === "inventario" ? "bg-white shadow text-indigo-700" : "text-slate-500"}`}
+                                >
+                                    Inventario
+                                </button>
+                                <button
+                                    onClick={() => setVista("bandeja")}
+                                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${vista === "bandeja" ? "bg-white shadow text-indigo-700" : "text-slate-500"}`}
+                                >
+                                    <Inbox className="w-3.5 h-3.5" /> Bandeja de devoluciones
+                                </button>
+                            </div>
+                            {vista === "inventario" && (
+                                <button
+                                    onClick={loadInventory}
+                                    disabled={loading || selectedAreas.length === 0}
+                                    className="flex items-center gap-2 px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white text-sm font-semibold transition-colors"
+                                >
+                                    <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
+                                    Actualizar
+                                </button>
+                            )}
+                        </div>
                     </div>
                 </div>
 
+                {vista === "bandeja" && <BandejaDevolucionesTelaPanel />}
+
+              {vista === "inventario" && (<>
                 {/* Buscador de cliente tipo Caja */}
                 <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4 flex flex-col sm:flex-row gap-3 items-start">
                     <div className="flex-1">
@@ -565,6 +600,7 @@ const TelaClienteInventarioPage = () => {
                                 onCancelarConfirmar={() => setConfirmando(null)}
                                 onEstadoCuenta={setEstadoTelaBobina}
                                 onAdministrar={(b) => setManagingBobina({ bobina: b, insumoName: b.TipoTela })}
+                                onSolicitarDevolucion={setSolicitandoBobina}
                                 onEjecutarConfirm={ejecutarConfirmacion}
                             />
                         ))}
@@ -591,6 +627,7 @@ const TelaClienteInventarioPage = () => {
                                 onCancelarConfirmar={() => setConfirmando(null)}
                                 onEstadoCuenta={setEstadoTelaBobina}
                                 onAdministrar={(b) => setManagingBobina({ bobina: b, insumoName: b.TipoTela })}
+                                onSolicitarDevolucion={setSolicitandoBobina}
                                 onEjecutarConfirm={ejecutarConfirmacion}
                             />
                         ))}
@@ -617,12 +654,14 @@ const TelaClienteInventarioPage = () => {
                                 onCancelarConfirmar={() => setConfirmando(null)}
                                 onEstadoCuenta={setEstadoTelaBobina}
                                 onAdministrar={(b) => setManagingBobina({ bobina: b, insumoName: b.TipoTela })}
+                                onSolicitarDevolucion={setSolicitandoBobina}
                                 onEjecutarConfirm={ejecutarConfirmacion}
                             />
                         ))}
                         </div>
                     </div>
                 )}
+              </>)}
             </div>
 
             {estadoTelaBobina && (
@@ -633,6 +672,14 @@ const TelaClienteInventarioPage = () => {
                     bobina={managingBobina.bobina}
                     insumoName={managingBobina.insumoName}
                     onClose={() => setManagingBobina(null)}
+                    onSuccess={loadInventory}
+                />
+            )}
+            {solicitandoBobina && (
+                <SolicitarDevolucionTelaModal
+                    bobina={solicitandoBobina}
+                    clienteId={solicitandoBobina.ClienteID}
+                    onClose={() => setSolicitandoBobina(null)}
                     onSuccess={loadInventory}
                 />
             )}

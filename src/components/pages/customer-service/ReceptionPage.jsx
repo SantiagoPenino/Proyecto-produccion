@@ -959,17 +959,18 @@ const ReceptionPage = () => {
                                                         </div>
 
                                                         {/* Cabecera tabla */}
-                                                        <div className="grid gap-1" style={{gridTemplateColumns:'28px 1fr 1fr 1fr 28px'}}>
+                                                        <div className="grid gap-1" style={{gridTemplateColumns:'28px 1fr 1fr 1fr 1.4fr 28px'}}>
                                                             <div />
                                                             <div className="text-[10px] font-bold text-slate-400 uppercase text-center">Largo (m)</div>
                                                             <div className="text-[10px] font-bold text-slate-400 uppercase text-center">Ancho (m)</div>
                                                             <div className="text-[10px] font-bold text-slate-400 uppercase text-center">Peso (kg)</div>
+                                                            <div className="text-[10px] font-bold text-slate-400 uppercase text-center">Excedente</div>
                                                             <div />
                                                         </div>
 
                                                         {/* Filas de bobinas */}
                                                         {formData.bobinas.map((bob, idx) => (
-                                                            <div key={idx} className="grid gap-1 items-center" style={{gridTemplateColumns:'28px 1fr 1fr 1fr 28px'}}>
+                                                            <div key={idx} className="grid gap-1 items-center" style={{gridTemplateColumns:'28px 1fr 1fr 1fr 1.4fr 28px'}}>
                                                                 <span className="text-xs font-bold text-slate-400 text-center">{idx+1}</span>
                                                                 <input
                                                                     type="number" step="0.01" placeholder="0.00"
@@ -1005,6 +1006,20 @@ const ReceptionPage = () => {
                                                                         setFormData({ ...formData, bobinas: nb });
                                                                     }}
                                                                 />
+                                                                <select
+                                                                    className="w-full p-2 border border-slate-300 rounded-lg text-[11px] font-bold text-slate-600 outline-none focus:ring-2 focus:ring-blue-500"
+                                                                    value={bob.decisionExcedente || ''}
+                                                                    title="Qué hacer con lo que sobre de esta bobina cuando se termine de consumir"
+                                                                    onChange={e => {
+                                                                        const nb = [...formData.bobinas];
+                                                                        nb[idx] = { ...nb[idx], decisionExcedente: e.target.value };
+                                                                        setFormData({ ...formData, bobinas: nb });
+                                                                    }}
+                                                                >
+                                                                    <option value="">Sin decidir</option>
+                                                                    <option value="DEVOLVER">Devolver al cliente</option>
+                                                                    <option value="QUEDA">Queda para otras órdenes</option>
+                                                                </select>
                                                                 <button
                                                                     type="button"
                                                                     onClick={() => {

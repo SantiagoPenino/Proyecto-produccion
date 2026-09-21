@@ -103,6 +103,11 @@ exports.createReception = async (req, res) => {
                 const bLargo = bDatos ? (parseFloat(bDatos.largo) || 0) : (parseFloat(metros) || 0);
                 const bAncho = bDatos ? (parseFloat(bDatos.ancho) || null) : null;
                 const bPeso  = bDatos ? (parseFloat(bDatos.peso)  || null) : null;
+                // Qué hacer con el excedente cuando se termine de consumir esta bobina:
+                // 'DEVOLVER' o 'QUEDA' (para otras órdenes). Sin decisión = NULL, el
+                // cliente puede pedirla más adelante desde el portal o la bobina.
+                const decisionExc = bDatos?.decisionExcedente === 'DEVOLVER' ? 'DEVOLVER'
+                    : bDatos?.decisionExcedente === 'QUEDA' ? 'QUEDA' : null;
 
                 // 1. Logistica
                 await new sql.Request(transaction)
@@ -132,15 +137,16 @@ exports.createReception = async (req, res) => {
 
                     if (bAncho !== null) req2.input('Ancho', sql.Decimal(10,2), bAncho);
                     if (bPeso  !== null) req2.input('Peso',  sql.Decimal(10,2), bPeso);
+                    req2.input('DecExc', sql.NVarChar(20), decisionExc);
 
                     const invRes = await req2.query(`
                         INSERT INTO InventarioBobinas
                             (InsumoID, AreaID, MetrosIniciales, MetrosRestantes, Estado, LoteProveedor,
-                             CodigoEtiqueta, Referencia, ClienteID, DescripcionTela
+                             CodigoEtiqueta, Referencia, ClienteID, DescripcionTela, DecisionExcedente
                              ${bAncho !== null ? ', Ancho' : ''}
                              ${bPeso  !== null ? ', Peso'  : ''})
                         OUTPUT INSERTED.BobinaID
-                        VALUES (@IID, @Area, @Met, @Met, 'Pendiente', @Lote, @Code, @Ref, @Cli, @Desc
+                        VALUES (@IID, @Area, @Met, @Met, 'Pendiente', @Lote, @Code, @Ref, @Cli, @Desc, @DecExc
                             ${bAncho !== null ? ', @Ancho' : ''}
                             ${bPeso  !== null ? ', @Peso'  : ''});
                     `);

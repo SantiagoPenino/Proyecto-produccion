@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { apiClient } from '../api/apiClient';
-import { Layers, History, X, Loader2, Package, ChevronDown, ChevronRight, Wallet, Plus, Zap, CreditCard, FileText } from 'lucide-react';
+import { Layers, History, X, Loader2, Package, ChevronDown, ChevronRight, Wallet, Plus, Zap, CreditCard, FileText, Undo2, Send } from 'lucide-react';
 import { fmtFechaCorta } from '../../utils/fechas';
 import { codigoCuenta } from '../../utils/cuentaCodigo';
 import { validarDocumentoUY, normalizarDocumento } from '../../utils/documentoUY';
@@ -344,6 +344,28 @@ function ModalConsumoTela({ tela, onClose }) {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
     const [abierta, setAbierta] = useState(null); // BobinaID desplegada
+    // Solicitar devolución/descarte del excedente de un bulto puntual — cae en
+    // la bandeja interna, no es autoservicio directo (alguien de depósito la aprueba).
+    // Cómo se la devuelven (retiro/encomienda) y la dirección NO se piden acá — se
+    // definen recién cuando el cliente la retira de verdad, como cualquier pedido.
+    const [pidiendo, setPidiendo] = useState(null); // { bobinaId, accion }
+    const [pidiendoBusy, setPidiendoBusy] = useState(false);
+    const [pidiendoMsg, setPidiendoMsg] = useState(null); // { bobinaId, tipo, texto }
+
+    const enviarSolicitud = async (bobinaId) => {
+        setPidiendoBusy(true);
+        try {
+            await apiClient.post(`/web-recursos/mis-telas/${bobinaId}/solicitar-devolucion`, {
+                accion: pidiendo.accion,
+            });
+            setPidiendoMsg({ bobinaId, tipo: 'ok', texto: pidiendo.accion === 'DEVOLVER' ? 'Solicitud de devolución enviada. Te avisamos cuando esté lista.' : 'Solicitud de descarte enviada.' });
+            setPidiendo(null);
+        } catch (e) {
+            setPidiendoMsg({ bobinaId, tipo: 'err', texto: e?.response?.data?.error || e.message || 'No se pudo enviar la solicitud.' });
+        } finally {
+            setPidiendoBusy(false);
+        }
+    };
 
     useEffect(() => {
         let alive = true;
@@ -482,6 +504,44 @@ function ModalConsumoTela({ tela, onClose }) {
                                         </span>
                                     </div>
                                 </button>
+
+                                {!['agotado', 'cerrado'].includes(String(b.estado || '').toLowerCase()) && (
+                                    <div className="px-4 pb-3 -mt-1">
+                                        {pidiendo?.bobinaId === b.bobinaId ? (
+                                            <div className="border border-zinc-800 rounded-lg p-3 bg-custom-dark/60 space-y-2.5">
+                                                <p className="text-[11px] text-zinc-400">¿Qué querés pedir con los {fmtNum(b.saldo)} m que quedan?</p>
+                                                <div className="grid grid-cols-2 gap-2">
+                                                    <button onClick={() => setPidiendo(p => ({ ...p, accion: 'DEVOLVER' }))}
+                                                        className={`py-1.5 rounded-lg text-[11px] font-bold border transition-colors ${pidiendo.accion === 'DEVOLVER' ? 'border-custom-cyan bg-brand-cyan/10 text-custom-cyan' : 'border-zinc-700 text-zinc-400'}`}>
+                                                        Devolver
+                                                    </button>
+                                                    <button onClick={() => setPidiendo(p => ({ ...p, accion: 'DESCARTAR' }))}
+                                                        className={`py-1.5 rounded-lg text-[11px] font-bold border transition-colors ${pidiendo.accion === 'DESCARTAR' ? 'border-rose-400 bg-rose-500/10 text-rose-300' : 'border-zinc-700 text-zinc-400'}`}>
+                                                        Descartar
+                                                    </button>
+                                                </div>
+                                                {pidiendo.accion === 'DEVOLVER' && (
+                                                    <p className="text-[10px] text-zinc-500">Cómo te la devolvemos (retiro en el local o encomienda) lo elegís cuando la vengas a retirar, igual que cualquier pedido.</p>
+                                                )}
+                                                <div className="flex justify-end gap-2">
+                                                    <button onClick={() => setPidiendo(null)} className="px-3 py-1.5 rounded-lg text-[11px] font-bold text-zinc-400 hover:bg-zinc-800">Cancelar</button>
+                                                    <button disabled={pidiendoBusy} onClick={() => enviarSolicitud(b.bobinaId)}
+                                                        className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[11px] font-bold text-white bg-custom-cyan/90 hover:bg-custom-cyan disabled:opacity-50">
+                                                        <Send size={12} /> {pidiendoBusy ? 'Enviando...' : 'Enviar solicitud'}
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        ) : (
+                                            <button onClick={() => { setPidiendo({ bobinaId: b.bobinaId, accion: 'DEVOLVER' }); setPidiendoMsg(null); }}
+                                                className="flex items-center gap-1.5 text-[11px] font-bold text-amber-400 hover:text-amber-300">
+                                                <Undo2 size={12} /> Solicitar devolución de excedente
+                                            </button>
+                                        )}
+                                        {pidiendoMsg?.bobinaId === b.bobinaId && (
+                                            <p className={`text-[11px] mt-1.5 ${pidiendoMsg.tipo === 'ok' ? 'text-emerald-400' : 'text-rose-400'}`}>{pidiendoMsg.texto}</p>
+                                        )}
+                                    </div>
+                                )}
 
                                 {open && (
                                     <div className="border-t border-zinc-800 overflow-x-auto">
@@ -1406,6 +1466,96 @@ function SeccionPlanes({ planes, error, onVerConsumo }) {
 }
 
 /* ══════════════════════════════════════════════════════════════════════
+   AVISO PERSISTENTE — bobinas con remanente chico ("excedente"), detectadas
+   por backend/jobs/telaClienteExcedente.job.js. Es el "ticket" en el portal:
+   no depende de WhatsApp ni de permisos de push, el cliente lo ve cada vez
+   que entra hasta que responde. Responder acá resuelve el aviso solo.
+   ══════════════════════════════════════════════════════════════════════ */
+function SeccionAvisosExcedente() {
+    const [avisos, setAvisos] = useState([]);
+    const [loading, setLoading] = useState(true);
+    const [accionando, setAccionando] = useState(null); // { tevId, accion }
+    const [busy, setBusy] = useState(false);
+    const [msg, setMsg] = useState(null); // { tevId, texto }
+
+    const cargar = useCallback(() => {
+        apiClient.get('/web-recursos/mis-telas/avisos-excedente')
+            .then(r => setAvisos(r.data || []))
+            .catch(() => setAvisos([]))
+            .finally(() => setLoading(false));
+    }, []);
+    useEffect(() => { cargar(); }, [cargar]);
+
+    if (loading || avisos.length === 0) return null;
+
+    const enviar = async (aviso) => {
+        const a = accionando;
+        setBusy(true);
+        setMsg(null);
+        try {
+            await apiClient.post(`/web-recursos/mis-telas/${aviso.BobinaID}/solicitar-devolucion`, {
+                accion: a.accion,
+            });
+            setAccionando(null);
+            cargar(); // ya se resolvió el aviso solo — desaparece de la lista
+        } catch (e) {
+            setMsg({ tevId: aviso.TevID, texto: e?.response?.data?.error || e.message || 'No se pudo enviar.' });
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    return (
+        <div className="space-y-2">
+            <TituloSeccion icon={Package}>Tela sobrante</TituloSeccion>
+            <div className="space-y-2">
+                {avisos.map(av => {
+                    const activo = accionando?.tevId === av.TevID;
+                    return (
+                        <div key={av.TevID} className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-4 space-y-2.5">
+                            <p className="text-sm text-zinc-200">
+                                Te queda <b className="text-amber-300">{fmtNum(av.MetrosActuales)} m</b> de <b>{av.TipoTela}</b> ({av.CodigoEtiqueta}) en el depósito — ¿qué querés hacer?
+                            </p>
+
+                            {!activo ? (
+                                <div className="flex gap-2">
+                                    <button onClick={() => setAccionando({ tevId: av.TevID, accion: 'DEVOLVER' })}
+                                        className="px-3 py-1.5 rounded-lg text-xs font-bold text-white bg-custom-cyan/90 hover:bg-custom-cyan">
+                                        Devolvémela
+                                    </button>
+                                    <button onClick={() => setAccionando({ tevId: av.TevID, accion: 'DESCARTAR' })}
+                                        className="px-3 py-1.5 rounded-lg text-xs font-bold text-rose-300 bg-rose-500/10 border border-rose-500/30 hover:bg-rose-500/20">
+                                        Descartala
+                                    </button>
+                                </div>
+                            ) : (
+                                <div className="space-y-2 border-t border-amber-500/20 pt-2.5">
+                                    {accionando.accion === 'DEVOLVER' && (
+                                        <p className="text-[11px] text-zinc-400">Cómo te la devolvemos (retiro en el local o encomienda) lo elegís cuando la vengas a retirar, igual que cualquier pedido.</p>
+                                    )}
+                                    {accionando.accion === 'DESCARTAR' && (
+                                        <p className="text-[11px] text-zinc-400">Vas a autorizar que descartemos esta tela — no se puede deshacer.</p>
+                                    )}
+                                    <div className="flex justify-end gap-2">
+                                        <button onClick={() => setAccionando(null)} className="px-3 py-1.5 rounded-lg text-[11px] font-bold text-zinc-400 hover:bg-zinc-800">Cancelar</button>
+                                        <button disabled={busy} onClick={() => enviar(av)}
+                                            className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[11px] font-bold text-white bg-custom-cyan/90 hover:bg-custom-cyan disabled:opacity-50">
+                                            <Send size={12} /> {busy ? 'Enviando...' : 'Confirmar'}
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
+
+                            {msg?.tevId === av.TevID && <p className="text-[11px] text-rose-400">{msg.texto}</p>}
+                        </div>
+                    );
+                })}
+            </div>
+        </div>
+    );
+}
+
+/* ══════════════════════════════════════════════════════════════════════
    SECCIÓN 2 — TELAS DEL CLIENTE (metros físicos en depósito)
    ══════════════════════════════════════════════════════════════════════ */
 function SeccionTelas({ telas, error, onVerConsumo }) {
@@ -1419,6 +1569,9 @@ function SeccionTelas({ telas, error, onVerConsumo }) {
     return (
         <div className="space-y-2">
             <TituloSeccion icon={Package}>Mis telas en el depósito</TituloSeccion>
+
+            {/* Aviso persistente de tela sobrante — vive acá, junto con sus telas */}
+            <SeccionAvisosExcedente />
 
             {error ? (
                 <div className="rounded-xl border border-zinc-800 bg-brand-dark py-8 text-center text-rose-400 text-sm">{error}</div>

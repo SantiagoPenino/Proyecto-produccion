@@ -49,6 +49,7 @@ export const MainLayout = ({ children }) => {
     const [showLogoutModal, setShowLogoutModal] = useState(false);
     const [tickets, setTickets] = useState([]);
     const [hasPendingResponse, setHasPendingResponse] = useState(false);
+    const [hasAvisoExcedente, setHasAvisoExcedente] = useState(false);
 
     // Push notifications (pre-permission banner)
     const { showBanner, acceptPush, dismissPush } = usePushNotifications();
@@ -120,6 +121,24 @@ export const MainLayout = ({ children }) => {
         };
 
         fetchTickets();
+    }, [user]);
+
+    // Fetch avisos de excedente de tela — badge de "Mis Recursos"
+    useEffect(() => {
+        if (!user) return;
+
+        const fetchAvisosExcedente = async () => {
+            try {
+                const res = await apiClient.get('/web-recursos/mis-telas/avisos-excedente');
+                if (res.success && Array.isArray(res.data)) {
+                    setHasAvisoExcedente(res.data.length > 0);
+                }
+            } catch (error) {
+                console.error('Error fetching avisos de excedente for badge:', error);
+            }
+        };
+
+        fetchAvisosExcedente();
     }, [user]);
 
     // Socket updates subscription for support badge
@@ -328,7 +347,7 @@ export const MainLayout = ({ children }) => {
 
                     {/* <NavItem to="/portal/factory" icon={Factory} label="Fábrica / Estado" /> */}
                     {/* Mis Recursos: planes de metros del cliente (comprado / usado / restante) */}
-                    <NavItem to="/portal/recursos" icon={Layers} label="Mis Recursos" />
+                    <NavItem to="/portal/recursos" icon={Layers} label="Mis Recursos" isNotification={hasAvisoExcedente} />
 
                     <NavItem to="/portal/pickup" icon={Package} label="Retiro de Pedidos" />
                     <NavItem to="/portal/payments" icon={CreditCard} label="Pagos Pendientes" />

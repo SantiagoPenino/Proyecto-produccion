@@ -1222,6 +1222,30 @@ exports.receiveDispatch = async (req, res) => {
                             receivedOrdersSet.add(Number(OrdenID));
                         }
 
+                        // [TELA CLIENTE] Devolución de excedente: recién ACÁ, cuando el bulto llega
+                        // de verdad a depósito, la orden queda "lista para retirar" (igual que
+                        // cualquier orden normal) y se avisa al cliente — el retiro/encomienda real
+                        // todavía NO se crea: nace después, cuando el cliente la retira de verdad
+                        // por el circuito normal (portal/tótem/WebRetirosPage). Conexión propia,
+                        // best-effort: si falla no aborta la recepción del remito, solo queda
+                        // logueado para revisar a mano — mismo patrón que el bloque de contabilidad
+                        // WMS de más abajo (poolLocal fuera de la transacción).
+                        if (OrdenID && areaReceptora === 'DEPOSITO' && item.estado === 'ESCANEADO' && bultoInfo.Tipocontenido === 'DEV_TELA_CLIENTE') {
+                            try {
+                                const devolucionSvc = require('../services/telaClienteDevolucionFisicaService');
+                                const poolDevolucion = await getPool();
+                                const resDev = await devolucionSvc.finalizarLlegadaDeposito(poolDevolucion, { ordenId: Number(OrdenID), usuarioId });
+                                // Sin este emit, el dashboard/portal del cliente no se entera de que ya
+                                // tiene algo listo para retirar hasta que alguien refresca a mano.
+                                if (resDev?.ok) {
+                                    const io = req.app.get('socketio');
+                                    if (io) io.emit('actualizado', { type: 'actualizacion' });
+                                }
+                            } catch (eDev) {
+                                logger.warn(`[RECEIVE-DISPATCH] No se pudo finalizar la devolución de tela cliente (Orden ${OrdenID}): ${eDev.message}`);
+                            }
+                        }
+
                         // [PRENDAS] Recepción en un área INTERMEDIA (no Depósito): la orden que mandó
                         // el bulto queda 'En transito' para siempre si nadie la cierra acá — nada más
                         // la avanza. Se junta para procesar después del loop (ver más abajo), igual
@@ -1264,7 +1288,11 @@ exports.receiveDispatch = async (req, res) => {
                         logger.info("Resolved Order Data:", { OrdenID, Cliente, Ref: bultoInfo.Referencias });
 
                         // --- AUTO-FULFILL REQUIREMENT ON CHECK-IN ---
-                        if (OrdenID && areaReceptora) {
+                        // La orden ancla DEV-xx (devolución de tela cliente) no tiene NoDocERP ni
+                        // requisitos de producción reales — Tipocontenido incluye "TELA" y entraba
+                        // igual al fallback de abajo, pisando en un bug preexistente (variable
+                        // `NoDocERP` suelta, nunca declarada acá) porque bultoInfo.NoDocERP es NULL.
+                        if (OrdenID && areaReceptora && bultoInfo.Tipocontenido !== 'DEV_TELA_CLIENTE') {
                             // --- LOGICA INTELIGENTE: ORIGEN -> ENTREGA ---
                             let reqTypeToFulfill = null;
                             let originAreaID = '';
@@ -1331,7 +1359,7 @@ exports.receiveDispatch = async (req, res) => {
                                     .input('OID', sql.Int, OrdenID)
                                     .input('Type', sql.VarChar(50), `%${searchPattern}%`)
                                     .input('Area', sql.VarChar(50), areaReceptora)
-                                    .input('Doc', sql.VarChar, bultoInfo.NoDocERP || NoDocERP || '')
+                                    .input('Doc', sql.VarChar, bultoInfo.NoDocERP || '')
                                     .input('Obs', sql.NVarChar(200), obsAuto)
                                     .query(`
                                         MERGE OrdenCumplimientoRequisitos AS target

@@ -217,6 +217,12 @@ try {
     app.use('/api/products-integration', require('./routes/productsIntegrationRoutes'));
 } catch (e) { logger.error("❌ Error loading product integration routes:", e); }
 
+// Ingreso de pedidos de prenda por sistema (x-api-key). Va ANTES de /api/external y en su propio
+// bloque: si falla al cargar no arrastra a nadie. Apagado: PEDIDOS_EXTERNOS_ENABLED=0.
+try {
+    app.use('/api/external/pedidos-prenda', require('./routes/externalPedidosRoutes'));
+} catch (e) { logger.error('❌ Error loading external pedidos-prenda routes:', e.message); }
+
 try {
     app.use('/api/integration-logs', require('./routes/integrationLogsRoutes'));
     app.use('/api/external', require('./routes/externalRoutes'));
@@ -238,6 +244,11 @@ try {
     // Vista 360 del Vendedor (solo lectura)
     app.use('/api/vendedor-360', require('./routes/vendedorVistaRoutes'));
 } catch (e) { logger.error("❌ Error loading vendedor 360 routes:", e); }
+
+try {
+    // Captación de solicitudes de vendedores (specs/41): solicitud previa al pedido + bandeja de Diseño
+    app.use('/api/solicitudes-vendedor', require('./routes/solicitudesVendedorRoutes'));
+} catch (e) { logger.error("❌ Error loading solicitudes vendedor routes:", e); }
 
 try {
     app.use('/api/reports', require('./routes/reportsRoutes'));
@@ -578,6 +589,14 @@ if (process.env.NODE_ENV !== 'test') {
                 startSolicitudesInsumoJob();
             } catch (e) {
                 logger.error("❌ [CRON] Error cargando SolicitudesInsumo:", e.message);
+            }
+
+            // Tela de cliente — detección de excedente por umbral (bandeja de avisos).
+            try {
+                const { startTelaClienteExcedenteJob } = require('./jobs/telaClienteExcedente.job');
+                startTelaClienteExcedenteJob();
+            } catch (e) {
+                logger.error("❌ [CRON] Error cargando TelaClienteExcedente:", e.message);
             }
 
         } catch (error) {

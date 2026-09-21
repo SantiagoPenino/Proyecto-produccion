@@ -1,5 +1,6 @@
 const { getPool, sql } = require('../config/db');
 const logger = require('../utils/logger');
+const devolucionSvc = require('../services/telaClienteDevolucionFisicaService');
 
 // ====================================================================
 // MÓDULO: Tela Cliente — Gestión centralizada de metros por cliente
@@ -384,5 +385,111 @@ exports.liberarReserva = async (req, res) => {
     } catch (err) {
         logger.error('[TELA-CLIENTE] Error liberarReserva:', err);
         res.status(500).json({ error: err.message });
+    }
+};
+
+// ─────────────────────────────────────────────────────────────────────
+// 6. DEVOLUCIÓN FÍSICA DE EXCEDENTE — solicitar / bandeja / empaquetar
+//    Ver backend/services/telaClienteDevolucionFisicaService.js
+// ─────────────────────────────────────────────────────────────────────
+
+// POST /api/tela-cliente/:clienteId/bobinas/:bobinaId/solicitar
+// Body: { accion: 'DEVOLVER'|'DESCARTAR', observaciones? }
+// El canal (Retiro/Encomienda) y la dirección de envío ya NO se piden acá — se
+// definen recién cuando el cliente retira de verdad, por el circuito normal de
+// retiros (portal/tótem/WebRetirosPage), igual que cualquier otra orden.
+// Usable desde la vista interna de la bobina Y (delegado) desde el portal.
+exports.solicitarDevolucion = async (req, res) => {
+    const { clienteId, bobinaId } = req.params;
+    const { accion, observaciones, origen } = req.body;
+    const usuarioId = req.user?.id || null;
+
+    try {
+        const pool = await getPool();
+        const { tevId } = await devolucionSvc.solicitarDevolucion(pool, {
+            clienteId, bobinaId, accion, observaciones,
+            origen: origen || (req.user?.role === 'WEB_CLIENT' ? 'PORTAL' : 'INTERNO'),
+            usuarioId,
+        });
+        res.status(201).json({ success: true, tevId });
+    } catch (err) {
+        logger.error('[TELA-CLIENTE] Error solicitarDevolucion:', err);
+        res.status(400).json({ error: err.message });
+    }
+};
+
+// GET /api/tela-cliente/bandeja?estado=PENDIENTE
+exports.getBandeja = async (req, res) => {
+    try {
+        const pool = await getPool();
+        const data = await devolucionSvc.listarBandeja(pool, { estado: req.query.estado });
+        res.json({ success: true, data });
+    } catch (err) {
+        logger.error('[TELA-CLIENTE] Error getBandeja:', err);
+        res.status(500).json({ error: err.message });
+    }
+};
+
+// GET /api/tela-cliente/bandeja/para-empaquetar
+exports.getParaEmpaquetar = async (req, res) => {
+    try {
+        const pool = await getPool();
+        const data = await devolucionSvc.listarParaEmpaquetar(pool);
+        res.json({ success: true, data });
+    } catch (err) {
+        logger.error('[TELA-CLIENTE] Error getParaEmpaquetar:', err);
+        res.status(500).json({ error: err.message });
+    }
+};
+
+// POST /api/tela-cliente/bandeja/:tevId/aprobar
+exports.aprobarEvento = async (req, res) => {
+    try {
+        const pool = await getPool();
+        const r = await devolucionSvc.aprobarSolicitud(pool, { tevId: req.params.tevId, usuarioId: req.user?.id });
+        res.json({ success: true, ...r });
+    } catch (err) {
+        logger.error('[TELA-CLIENTE] Error aprobarEvento:', err);
+        res.status(400).json({ error: err.message });
+    }
+};
+
+// POST /api/tela-cliente/bandeja/:tevId/rechazar
+exports.rechazarEvento = async (req, res) => {
+    try {
+        const pool = await getPool();
+        const r = await devolucionSvc.rechazarSolicitud(pool, { tevId: req.params.tevId, usuarioId: req.user?.id, motivo: req.body?.motivo });
+        res.json({ success: true, ...r });
+    } catch (err) {
+        logger.error('[TELA-CLIENTE] Error rechazarEvento:', err);
+        res.status(400).json({ error: err.message });
+    }
+};
+
+// POST /api/tela-cliente/bandeja/:tevId/empaquetar
+exports.empaquetarDevolucion = async (req, res) => {
+    try {
+        const pool = await getPool();
+        const r = await devolucionSvc.empaquetarDevolucion(pool, {
+            tevId: req.params.tevId,
+            usuarioId: req.user?.id,
+            userName: req.user?.name || req.user?.username,
+        });
+        res.json({ success: true, ...r });
+    } catch (err) {
+        logger.error('[TELA-CLIENTE] Error empaquetarDevolucion:', err);
+        res.status(400).json({ error: err.message });
+    }
+};
+
+// POST /api/tela-cliente/bandeja/:tevId/marcar-enviado  (aviso de excedente, tras contactar por Callbell)
+exports.marcarAvisoEnviado = async (req, res) => {
+    try {
+        const pool = await getPool();
+        const r = await devolucionSvc.marcarAvisoEnviado(pool, { tevId: req.params.tevId, usuarioId: req.user?.id });
+        res.json({ success: true, ...r });
+    } catch (err) {
+        logger.error('[TELA-CLIENTE] Error marcarAvisoEnviado:', err);
+        res.status(400).json({ error: err.message });
     }
 };

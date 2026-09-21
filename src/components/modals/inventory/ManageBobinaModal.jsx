@@ -61,7 +61,6 @@ const ManageBobinaModal = ({ bobina, insumoName, onClose, onSuccess }) => {
         e.preventDefault();
 
         const finalConcept = customConcept || concept;
-        const esDevolucion = finalConcept === 'Devolución al Cliente';
 
         // --- Metros ---
         const cant = parseFloat(amount);
@@ -76,38 +75,21 @@ const ManageBobinaModal = ({ bobina, insumoName, onClose, onSuccess }) => {
         const anchoValido = anchoNuevo !== null && !isNaN(anchoNuevo) && anchoNuevo > 0;
         const anchoCambio = anchoValido && (anchoActual === null || Math.abs(anchoNuevo - anchoActual) > 0.001);
 
-        if (!metrosCambio && !anchoCambio && !esDevolucion) {
+        if (!metrosCambio && !anchoCambio) {
             return toast.info("No hay cambios para aplicar");
         }
 
         setLoading(true);
         try {
-            // 1. Ajustar metros y/o ancho
-            if (metrosCambio || anchoCambio) {
-                await inventoryService.adjustBobina({
-                    bobinaId: bobina.BobinaID,
-                    cantidad: metrosCambio ? delta : 0,
-                    motivo: finalConcept,
-                    orden: orden.trim() || undefined,
-                    anchoReal: anchoCambio ? anchoNuevo : undefined,
-                });
-            }
+            await inventoryService.adjustBobina({
+                bobinaId: bobina.BobinaID,
+                cantidad: metrosCambio ? delta : 0,
+                motivo: finalConcept,
+                orden: orden.trim() || undefined,
+                anchoReal: anchoCambio ? anchoNuevo : undefined,
+            });
 
-            // 2. Si es devolución, cerrar la bobina automáticamente
-            if (esDevolucion) {
-                await inventoryService.closeBobina({
-                    bobinaId: bobina.BobinaID,
-                    metrosFinales: 0,
-                    motivo: 'Devolución al Cliente',
-                    finish: true
-                });
-                toast.success('Devolución registrada. Bobina cerrada.');
-            } else if (anchoCambio && !metrosCambio) {
-                toast.success('Ancho actualizado correctamente');
-            } else {
-                toast.success('Stock ajustado correctamente');
-            }
-
+            toast.success(anchoCambio && !metrosCambio ? 'Ancho actualizado correctamente' : 'Stock ajustado correctamente');
             onSuccess?.();
             onClose();
         } catch (error) {
@@ -156,7 +138,6 @@ const ManageBobinaModal = ({ bobina, insumoName, onClose, onSuccess }) => {
         "Mermas Operativas",
         "Ajuste de Inventario",
         "Venta / Salida Externa",
-        "Devolución al Cliente",
         "Otro"
     ];
 
@@ -270,6 +251,12 @@ const ManageBobinaModal = ({ bobina, insumoName, onClose, onSuccess }) => {
                                             <span className="text-zinc-300"> · Declarado: {parseFloat(bobina.Ancho).toFixed(2)} m</span>
                                         )}
                                     </p>
+                                </div>
+                            )}
+
+                            {bobina.ClienteID && (
+                                <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                                    ¿Es tela de este cliente y hay que devolvérsela o descartarla? Usá el botón <strong>"Solicitar devolución"</strong> de la tarjeta, no un ajuste manual acá — ese sí genera el bulto, avisa al cliente y deja todo prolijo en la bandeja.
                                 </div>
                             )}
 

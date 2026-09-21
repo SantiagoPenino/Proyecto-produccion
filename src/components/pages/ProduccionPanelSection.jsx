@@ -930,13 +930,13 @@ export default function ProduccionPanelSection() {
 
                 <section className="card col-sector">
                     <h2>{filtrado ? 'Máquinas · ' + ambitoNombre : 'Máquinas — todos los sectores'}</h2>
-                    <div className="hint">Equipos configurados: activa = con órdenes en máquina o con proceso en curso · inactiva muestra el motivo</div>
+                    <div className="hint">Trabajando = tiene un lote montado, igual que en Planeación (con ▶, en pausa o esperando) · en áreas sin lotes, una orden iniciada en la máquina · no trabajando muestra el motivo</div>
                     {mTot === 0 ? <div className="empty">Sin equipos configurados para esta selección</div> : (
                         <>
                             <div className="maq-sum">
                                 <div className="maq-stat"><span className="n">{mTot}</span><span className="l">máquinas</span></div>
-                                <div className="maq-stat"><span className="n" style={{ color: COLORS.good }}>{mAct}</span><span className="l">activas</span></div>
-                                <div className="maq-stat"><span className="n" style={{ color: COLORS.critical }}>{mTot - mAct}</span><span className="l">inactivas</span></div>
+                                <div className="maq-stat"><span className="n" style={{ color: COLORS.good }}>{mAct}</span><span className="l">trabajando</span></div>
+                                <div className="maq-stat"><span className="n" style={{ color: COLORS.critical }}>{mTot - mAct}</span><span className="l">no trabajando</span></div>
                                 <div className="maq-util"><div className="ubar"><i style={{ width: mUtil + '%' }}></i></div><span>{mUtil}% en uso</span></div>
                             </div>
                             <div className="maq-list">
@@ -946,10 +946,15 @@ export default function ProduccionPanelSection() {
                                         <span className="nm">{m.n}</span>
                                         {!data?.area && <span className="sec">· {m.area}</span>}
                                         <span className="right">
-                                            {m.ordenesEnMaquina > 0 && <span className="oc">{nf(m.ordenesEnMaquina)} en máquina</span>}
+                                            {m.activa && (
+                                                <span className="oc" title={m.lote?.nombre || ''}>
+                                                    {m.lotes === 1 ? `Lote #${m.lote?.id} · ` : m.lotes > 1 ? `${m.lotes} lotes · ` : ''}
+                                                    {nf(m.ordenes)} {m.lotes > 0 ? (m.ordenes === 1 ? 'orden' : 'órdenes') : 'en máquina'}
+                                                </span>
+                                            )}
                                             {m.activa
-                                                ? <span className="st on">{m.proceso && !/^detenid/i.test(m.proceso) ? m.proceso : 'Activa'}</span>
-                                                : <><span className="rz">{m.motivo || 'Inactiva'}</span><span className="st off">Inactiva</span></>}
+                                                ? <span className="st on">Trabajando</span>
+                                                : <><span className="rz">{m.motivo || 'Sin lote montado'}</span><span className="st off">No trabajando</span></>}
                                         </span>
                                     </div>
                                 ))}

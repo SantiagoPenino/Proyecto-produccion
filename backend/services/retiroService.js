@@ -364,9 +364,11 @@ async function crearRetiro(transaction, { ordIds, totalCost, lugarRetiro, usuari
     const ordDataReq = transaction.request();
     ordIds.forEach((id, i) => ordDataReq.input(`ord${i}`, sql.Int, id));
     const ordDataRes = await ordDataReq.query(`
-        SELECT OrdIdOrden, ProIdProducto, OrdCantidad, PagIdPago, MonIdMoneda, OrdCostoFinal
-        FROM   dbo.OrdenesDeposito WITH(NOLOCK)
-        WHERE  OrdIdOrden IN (${ordParamsClause})
+        SELECT od.OrdIdOrden, od.ProIdProducto, od.OrdCantidad, od.PagIdPago, od.MonIdMoneda, od.OrdCostoFinal,
+               o.EstadoDependencia
+        FROM   dbo.OrdenesDeposito od WITH(NOLOCK)
+        LEFT JOIN dbo.Ordenes o WITH(NOLOCK) ON o.CodigoOrden = od.OrdCodigoOrden
+        WHERE  od.OrdIdOrden IN (${ordParamsClause})
     `);
     const ordenesData  = ordDataRes.recordset;
     const pagoExistenteId = ordenesData.find(o => o.PagIdPago)?.PagIdPago || null;
@@ -415,6 +417,15 @@ async function crearRetiro(transaction, { ordIds, totalCost, lugarRetiro, usuari
     const ordenesQueNecesitanCredito = [];
     for (const orden of ordenesData) {
         if (orden.PagIdPago) continue; // ya pagada
+
+        // Devolución de excedente de tela cliente: SIEMPRE $0 por diseño, nunca pasa por
+        // caja aunque el cliente no tenga plan/rollo/billetera abiertos (ver
+        // telaClienteDevolucionFisicaService.js — antes esto se resolvía con un INSERT a
+        // mano en OrdenesRetiro para esquivar este mismo motor; ahora entra por acá).
+        if (orden.EstadoDependencia === 'DEVOLUCION_TELA_CLIENTE') {
+            logger.info(`[RETIRO] Orden ${orden.OrdIdOrden} es devolución de tela cliente (costo $0) → cubierta, pasa.`);
+            continue;
+        }
 
         // ── ROLLO POR ADELANTADO: la cobertura la define el COSTO de la orden ──
         // El motor de contabilización (check-in a DEPOSITO) deja OrdCostoFinal = 0
@@ -567,6 +578,29 @@ async function crearRetiro(transaction, { ordIds, totalCost, lugarRetiro, usuari
                 INSERT INTO HistoricoEstadosOrdenes (OrdIdOrden, EOrIdEstadoOrden, HEOFechaEstado, HEOUsuarioAlta)
                 VALUES (@OrdId, 9, GETDATE(), @Usr);
             `);
+    }
+
+    // Si el retiro incluye alguna devolución de tela cliente, cerrar su seguimiento acá
+    // — es el único lugar donde nace el retiro real para ese tipo de orden (ver arriba).
+    const ordIdsDevolucion = ordenesData
+        .filter(o => o.EstadoDependencia === 'DEVOLUCION_TELA_CLIENTE' && ordIds.includes(o.OrdIdOrden))
+        .map(o => o.OrdIdOrden);
+    if (ordIdsDevolucion.length > 0) {
+        try {
+            await transaction.request()
+                .input('RetiroId', sql.Int, OReIdOrdenRetiro)
+                .query(`
+                    UPDATE t SET Estado = 'ENVIADA', OReIdOrdenRetiro = @RetiroId,
+                                 FechaResolucion = ISNULL(FechaResolucion, GETDATE())
+                    FROM dbo.TelaClienteEventos t
+                    JOIN dbo.Ordenes o ON o.OrdenID = t.OrdenGeneradaID
+                    JOIN dbo.OrdenesDeposito od ON od.OrdCodigoOrden = o.CodigoOrden
+                    WHERE od.OrdIdOrden IN (${ordIdsDevolucion.join(',')})
+                      AND t.Tipo = 'SOLICITUD_CLIENTE' AND t.Estado = 'EN_DEPOSITO'
+                `);
+        } catch (eTev) {
+            logger.warn(`[RETIRO] No se pudo cerrar el seguimiento de devolución de tela cliente: ${eTev.message}`);
+        }
     }
 
     return OReIdOrdenRetiro;

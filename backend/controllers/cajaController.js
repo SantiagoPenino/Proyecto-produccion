@@ -458,6 +458,10 @@ const getReporteCentralAdmin = async (req, res) => {
         ISNULL(NULLIF(t.TcaObservaciones, ''), 'Cobro Mostrador') +
         CASE WHEN c.Nombre IS NOT NULL THEN ' (' + RTRIM(c.Nombre) + ')' ELSE '' END as Concepto,
         mp.MPaDescripcionMetodo as MedioDePago,
+        -- Datos del cheque cuando el pago se hizo con uno (Pagos.PagIdCheque → TesoreriaCheques)
+        ch.NumeroCheque as ChequeNumero, bco.NombreBanco as ChequeBanco, ch.Agencia as ChequeAgencia,
+        ch.EmitidoPor as ChequeEmitidoPor, ch.FechaEmision as ChequeFechaEmision,
+        ch.FechaVencimiento as ChequeFechaVencimiento, ch.Estado as ChequeEstado, ch.ClasificacionPlazo as ChequePlazo,
         CASE WHEN p.PagIdMonedaPago = 2 THEN 'USD' ELSE 'UYU' END as Moneda,
         p.PagMontoPago as Entrada,
         0 as Salida,
@@ -465,6 +469,8 @@ const getReporteCentralAdmin = async (req, res) => {
       FROM dbo.TransaccionesCaja t WITH(NOLOCK)
       JOIN dbo.Pagos p WITH(NOLOCK) ON p.PagTcaIdTransaccion = t.TcaIdTransaccion
       LEFT JOIN dbo.MetodosPagos mp WITH(NOLOCK) ON mp.MPaIdMetodoPago = p.MPaIdMetodoPago
+      LEFT JOIN dbo.TesoreriaCheques ch WITH(NOLOCK) ON ch.IdCheque = p.PagIdCheque
+      LEFT JOIN dbo.TesoreriaBancos bco WITH(NOLOCK) ON bco.IdBanco = ch.IdBanco
       LEFT JOIN dbo.Config_TiposDocumento ct1 WITH(NOLOCK) ON ct1.CodDocumento = t.TcaTipoDocumento
       LEFT JOIN dbo.Clientes c WITH(NOLOCK) ON c.CliIdCliente = t.TcaClienteId
       LEFT JOIN dbo.Usuarios u WITH(NOLOCK) ON u.IdUsuario = t.TcaUsuarioId
@@ -482,6 +488,10 @@ const getReporteCentralAdmin = async (req, res) => {
         ISNULL(e.EgrSerieDoc,'') + '-' + ISNULL(e.EgrNumeroDoc,'Pendiente') as Comprobante,
         e.EgrConcepto + CASE WHEN e.EgrProveedor IS NOT NULL AND e.EgrProveedor != '' THEN ' (' + e.EgrProveedor + ')' ELSE '' END as Concepto,
         mp.MPaDescripcionMetodo as MedioDePago,
+        -- Los egresos de caja no guardan cheque: mismas columnas en NULL para el UNION
+        CAST(NULL AS VARCHAR(50)) as ChequeNumero, CAST(NULL AS VARCHAR(100)) as ChequeBanco, CAST(NULL AS VARCHAR(100)) as ChequeAgencia,
+        CAST(NULL AS VARCHAR(200)) as ChequeEmitidoPor, CAST(NULL AS DATE) as ChequeFechaEmision,
+        CAST(NULL AS DATE) as ChequeFechaVencimiento, CAST(NULL AS VARCHAR(30)) as ChequeEstado, CAST(NULL AS VARCHAR(50)) as ChequePlazo,
         e.EgrMoneda as Moneda,
         0 as Entrada,
         e.EgrMonto as Salida,

@@ -1378,7 +1378,7 @@ export const ModalCuentasCliente = ({ cliente, onClose, onChanged }) => {
                       {cerrada && <span className="text-[9px] font-black uppercase px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 border border-slate-200">Cerrada</span>}
                     </div>
                     {c.CueEsPrincipal ? (
-                      <p className="text-[11px] text-slate-400 mt-0.5">La cuenta del sistema: facturas, cobros, cruces y saldo a favor. No se configura.</p>
+                      <p className="text-[11px] text-slate-400 mt-0.5">La cuenta del sistema: facturas, cobros, cruces y saldo a favor. No se configura (el límite de crédito y la condición de pago van en la pestaña "Límites" del 360).</p>
                     ) : (
                       <div className="flex items-center gap-1.5 flex-wrap mt-1">
                         <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${mod.badge}`}>{mod.corto}</span>
