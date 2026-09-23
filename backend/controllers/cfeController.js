@@ -489,9 +489,21 @@ exports.enviarADGI = async (req, res) => {
         const esFacturaCFE = docTipoUpperV.includes('FACTURA');
         const esTicketCFE = docTipoUpperV.includes('TICKET');
         const _snapVacioV = String(doc.DocCliDocumento || '').trim() === '';
-        const docReceptorReal = (esTicketCFE && !docTipoUpperV.includes('NOTA') && _snapVacioV)
+        let docReceptorReal = (esTicketCFE && !docTipoUpperV.includes('NOTA') && _snapVacioV)
             ? ''                                        // consumidor final: sin receptor
             : (doc.DocCliDocumento || doc.CliRUT || '');
+        // NC/ND de e-Ticket: el comprador es el del ticket original y nunca un RUT
+        // (misma regla que prepararCFE → sisnetService.receptorNotaETicket).
+        if (esTicketCFE && docTipoUpperV.includes('NOTA')) {
+            let refCliDoc = null;
+            if (doc.DocIdDocumentoRef) {
+                const refR = await pool.request()
+                    .input('RefId', sql.Int, doc.DocIdDocumentoRef)
+                    .query(`SELECT DocCliDocumento FROM dbo.DocumentosContables WHERE DocIdDocumento = @RefId`);
+                refCliDoc = refR.recordset[0]?.DocCliDocumento || null;
+            }
+            docReceptorReal = sisnetService.receptorNotaETicket(doc.DocCliDocumento, refCliDoc);
+        }
         const valReceptor = validarDocumentoUY(docReceptorReal);
 
         if (esFacturaCFE && (!valReceptor.valido || valReceptor.tipo !== 'RUT')) {

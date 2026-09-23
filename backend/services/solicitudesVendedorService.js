@@ -33,6 +33,19 @@ const FORMATOS_DISENO = {
 };
 
 const fallo = (status, mensaje) => { const e = new Error(mensaje); e.status = status; return e; };
+
+// Las columnas de la ficha de ingreso (FichaJson / FechaEntrega / FechaEntregaHasta) las agrega
+// scripts/add_conversion_solicitud_pedido.sql. Si todavía no corrió, el módulo sigue funcionando
+// sin ellas (la ficha no se guarda y se avisa en el log) en vez de romper la pantalla.
+let _tieneFicha = null;
+async function tieneFicha(pool) {
+  if (_tieneFicha === null) {
+    const r = await pool.request().query("SELECT COUNT(*) AS n FROM sys.columns WHERE object_id = OBJECT_ID('dbo.SolicitudesVendedor') AND name = 'FichaJson'");
+    _tieneFicha = r.recordset[0].n > 0;
+    if (!_tieneFicha) logger.warn('[SOLICITUDES] Falta correr scripts/add_conversion_solicitud_pedido.sql: la ficha de ingreso (muestra, plazo, fecha de entrega, indicaciones) NO se guarda hasta entonces.');
+  }
+  return _tieneFicha;
+}
 const norm = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
 const txt = (v, max) => { const s = String(v ?? '').trim(); return s ? (max ? s.substring(0, max) : s) : null; };
 const entero = (v) => { const n = parseInt(v, 10); return Number.isFinite(n) ? n : null; };
@@ -169,7 +182,19 @@ function limpiarCabecera(b, user) {
   if (!nombre) throw fallo(400, 'Ingresá el nombre del trabajo.');
   const detalle = txt(b.Detalle);
   if (!detalle) throw fallo(400, 'Escribí el detalle de la solicitud (qué pide el cliente).');
-  return { CodCliente: codCliente, NombreTrabajo: nombre, Detalle: detalle, Observaciones: txt(b.Observaciones), VendedorID: entero(b.VendedorID) || user.id, PreId: entero(b.PreId), PreNumero: null };
+  const fecha = (v) => { const s = String(v || '').trim().slice(0, 10); return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null; };
+  const fi = (b.Ficha && typeof b.Ficha === 'object') ? b.Ficha : {};
+  const mu = (fi.muestra && typeof fi.muestra === 'object') ? fi.muestra : {};
+  if (fi.dondeSeCose && !['TALLER', 'EXTERNO'].includes(fi.dondeSeCose)) throw fallo(400, 'Dónde se cose: "Nuestro taller" o "Taller externo".');
+  if (mu.respuesta && !['PIDIO', 'ACEPTO', 'RECHAZO'].includes(mu.respuesta)) throw fallo(400, 'La respuesta sobre la muestra no es válida.');
+  // Ficha de ingreso a producción (checklist del taller). Se guarda como llegó, saneada.
+  const Ficha = {
+    dondeSeCose: fi.dondeSeCose || 'TALLER', tallerExterno: txt(fi.tallerExterno, 200),
+    muestra: { ofrecida: !!mu.ofrecida, respuesta: mu.respuesta || '', aprobada: !!mu.aprobada },
+    plazoOk: !!fi.plazoOk, indicaciones: txt(fi.indicaciones), sinIndicaciones: !!fi.sinIndicaciones, notasInternas: txt(fi.notasInternas),
+  };
+  return { CodCliente: codCliente, NombreTrabajo: nombre, Detalle: detalle, Observaciones: txt(b.Observaciones), VendedorID: entero(b.VendedorID) || user.id, PreId: entero(b.PreId), PreNumero: null,
+           FichaJson: jsonTxt(Ficha), FechaEntrega: fecha(b.FechaEntrega), FechaEntregaHasta: fecha(b.FechaEntregaHasta) };
 }
 
 // RN-SOL.05b: presupuesto del que salió la solicitud (opcional). La tabla Presupuestos la crea
@@ -226,14 +251,16 @@ async function crear(pool, user, body) {
   const transaction = new sql.Transaction(pool);
   await transaction.begin();
   try {
+    const conFicha = await tieneFicha(pool);
     const ins = await new sql.Request(transaction)
       .input('Cod', sql.Int, cab.CodCliente).input('Nom', sql.NVarChar(200), cab.NombreTrabajo)
       .input('Ven', sql.Int, cab.VendedorID).input('Det', sql.NVarChar(sql.MAX), cab.Detalle)
       .input('Obs', sql.NVarChar(sql.MAX), cab.Observaciones).input('U', sql.Int, user.id)
       .input('Pre', sql.Int, cab.PreId).input('PreNum', sql.VarChar(20), cab.PreNumero)
-      .query(`INSERT INTO dbo.SolicitudesVendedor (CodCliente, NombreTrabajo, VendedorID, Detalle, Observaciones, PreId, PreNumero, UsuarioAlta)
+      .input('Fi', sql.NVarChar(sql.MAX), cab.FichaJson).input('FE', sql.Date, cab.FechaEntrega).input('FEH', sql.Date, cab.FechaEntregaHasta)
+      .query(`INSERT INTO dbo.SolicitudesVendedor (CodCliente, NombreTrabajo, VendedorID, Detalle, Observaciones, PreId, PreNumero, UsuarioAlta${conFicha ? ', FichaJson, FechaEntrega, FechaEntregaHasta' : ''})
               OUTPUT INSERTED.SolicitudID
-              VALUES (@Cod, @Nom, @Ven, @Det, @Obs, @Pre, @PreNum, @U)`);
+              VALUES (@Cod, @Nom, @Ven, @Det, @Obs, @Pre, @PreNum, @U${conFicha ? ', @Fi, @FE, @FEH' : ''})`);
     const solicitudId = ins.recordset[0].SolicitudID;
     for (const p of productos) {
       const pid = await insertarProducto(transaction, solicitudId, p);
@@ -288,15 +315,20 @@ async function actualizar(pool, user, solicitudId, body) {
     const cambios = [];
 
     // Cabecera
-    const difCab = diferencias([['CodCliente', 'Cliente'], ['NombreTrabajo', 'Nombre del trabajo'], ['VendedorID', 'Vendedor'], ['Detalle', 'Detalle'], ['Observaciones', 'Observaciones'], ['PreNumero', 'Presupuesto asociado']], sol, cab);
+    const fechaBD = (v) => (v ? new Date(v).toISOString().slice(0, 10) : null);
+    const solCmp = { ...sol, FechaEntrega: fechaBD(sol.FechaEntrega), FechaEntregaHasta: fechaBD(sol.FechaEntregaHasta) };
+    const difCab = diferencias([['CodCliente', 'Cliente'], ['NombreTrabajo', 'Nombre del trabajo'], ['VendedorID', 'Vendedor'], ['Detalle', 'Detalle'], ['Observaciones', 'Observaciones'], ['PreNumero', 'Presupuesto asociado'],
+                                ['FichaJson', 'Ficha de ingreso (muestra, plazo, indicaciones, dónde se cose)'], ['FechaEntrega', 'Fecha de entrega'], ['FechaEntregaHasta', 'Fecha de entrega (hasta)']], solCmp, cab);
     if (difCab.length) {
       await new sql.Request(transaction)
         .input('Sol', sql.Int, solicitudId).input('Cod', sql.Int, cab.CodCliente).input('Nom', sql.NVarChar(200), cab.NombreTrabajo)
         .input('Ven', sql.Int, cab.VendedorID).input('Det', sql.NVarChar(sql.MAX), cab.Detalle)
         .input('Obs', sql.NVarChar(sql.MAX), cab.Observaciones).input('U', sql.Int, user.id)
         .input('Pre', sql.Int, cab.PreId).input('PreNum', sql.VarChar(20), cab.PreNumero)
+        .input('Fi', sql.NVarChar(sql.MAX), cab.FichaJson).input('FE', sql.Date, cab.FechaEntrega).input('FEH', sql.Date, cab.FechaEntregaHasta)
         .query(`UPDATE dbo.SolicitudesVendedor SET CodCliente = @Cod, NombreTrabajo = @Nom, VendedorID = @Ven, Detalle = @Det,
-                       Observaciones = @Obs, PreId = @Pre, PreNumero = @PreNum, UsuarioModif = @U, FechaModif = GETDATE() WHERE SolicitudID = @Sol`);
+                       Observaciones = @Obs, PreId = @Pre, PreNumero = @PreNum, ${(await tieneFicha(pool)) ? 'FichaJson = @Fi, FechaEntrega = @FE, FechaEntregaHasta = @FEH,' : ''}
+                       UsuarioModif = @U, FechaModif = GETDATE() WHERE SolicitudID = @Sol`);
       cambios.push(...difCab);
     }
 
@@ -798,7 +830,7 @@ async function listar(pool, user, f) {
   if (txt(f.q)) { req.input('Q', sql.NVarChar(120), `%${txt(f.q, 100)}%`); where.push('(s.NombreTrabajo LIKE @Q OR c.Nombre LIKE @Q OR c.NombreFantasia LIKE @Q OR CAST(s.SolicitudID AS varchar(12)) LIKE @Q OR EXISTS (SELECT 1 FROM dbo.SolicitudesVendedorProductos pq WHERE pq.SolicitudID = s.SolicitudID AND pq.Activo = 1 AND CAST(pq.PedidoNoDocERP AS varchar(12)) LIKE @Q))'); }
 
   const r = await req.query(`
-    SELECT TOP 500 s.SolicitudID, s.PreNumero, s.FechaSolicitud, s.CodCliente, LTRIM(RTRIM(c.Nombre)) AS ClienteNombre, s.NombreTrabajo, s.Estado,
+    SELECT TOP 500 s.SolicitudID, s.PreNumero, s.FechaSolicitud, ${(await tieneFicha(pool)) ? 's.FechaEntrega, s.FechaEntregaHasta, s.FichaJson' : 'NULL AS FechaEntrega, NULL AS FechaEntregaHasta, NULL AS FichaJson'}, s.CodCliente, LTRIM(RTRIM(c.Nombre)) AS ClienteNombre, s.NombreTrabajo, s.Estado,
            s.VendedorID, u.Nombre AS VendedorNombre, s.ModoCobro, s.PrecioPactado, s.MonIdMoneda, s.RequiereSena, s.SenaConfirmada,
            x.Productos, x.Convertidos,
            -- Números de los pedidos de producción creados desde esta solicitud (uno por producto convertido)
@@ -838,7 +870,7 @@ async function listar(pool, user, f) {
     ) z
     WHERE ${where.join(' AND ')}
     ORDER BY s.FechaSolicitud DESC`);
-  return r.recordset;
+  return sellarLista(pool, r.recordset);
 }
 
 async function obtener(pool, user, solicitudId) {
@@ -881,6 +913,7 @@ async function obtener(pool, user, solicitudId) {
   }));
   sol.Archivos = archivos;
   sol.Eventos = eventos;
+  sol.Ficha = jsonObj(sol.FichaJson);
   sol.Presupuesto = null;
   if (sol.PreId) {
     try {
@@ -889,7 +922,12 @@ async function obtener(pool, user, solicitudId) {
       sol.Presupuesto = pre.recordset[0] || null;
     } catch (e) { logger.warn(`[SOLICITUDES] no se pudo leer el presupuesto ${sol.PreId}: ${e.message}`); }
   }
-  sol.Conversion = sol.Productos.map(p => ({ ProductoSolID: p.ProductoSolID, faltantes: faltantesConversion(sol, p, archivos), avisos: avisosConversion(p, archivos) }));
+  sol.Conversion = sol.Productos.map(p => {
+    const faltantes = faltantesConversion(sol, p, archivos);
+    // Checklist de ingreso a producción (rojo / verde / ámbar), con lo técnico de la conversión adentro del rojo
+    const checklist = p.PedidoNoDocERP ? { listo: true, faltan: [], ok: [], luego: [] } : require('./solicitudesVendedorChecklist').evaluarProducto(sol, p, archivos, faltantes);
+    return { ProductoSolID: p.ProductoSolID, faltantes: checklist.faltan, avisos: avisosConversion(p, archivos), checklist };
+  });
   const estados = await require('./solicitudesVendedorConversion').estadosConversion(pool, sol);
   sol.Conversion.forEach(c => { c.pedido = estados[c.ProductoSolID] || null; });
   // Pedido ya creado: el diseño de Bordado / TPU sigue en PRODUCCIÓN. Se trae cómo va cada orden.
@@ -901,6 +939,38 @@ async function obtener(pool, user, solicitudId) {
     } catch (e) { logger.warn(`[SOLICITUDES] no se pudo leer el diseño en producción del pedido ${p.PedidoNoDocERP}: ${e.message}`); }
   }
   return sol;
+}
+
+// Sello de cada solicitud de la lista (como la franja verde / roja de la maqueta): se evalúa el
+// checklist de cada producto no convertido con 3 consultas en lote, no una por fila.
+async function sellarLista(pool, filas) {
+  const abiertas = filas.filter(s => s.Estado !== 'CANCELADA');
+  for (const s of filas) { s.Ficha = jsonObj(s.FichaJson); delete s.FichaJson; s.Listo = null; s.Faltan = 0; s.Unidades = 0; }
+  if (!abiertas.length) return filas;
+  const ids = abiertas.map(s => s.SolicitudID).join(',');
+  const [prods, partes, archs] = await Promise.all([
+    pool.request().query(`SELECT * FROM dbo.SolicitudesVendedorProductos WHERE Activo = 1 AND SolicitudID IN (${ids})`),
+    pool.request().query(`SELECT ParteID, SolicitudID, ProductoSolID, Tipo, Estado, DatosJson, CantidadTotal, PorPrenda, Modificada, DisenadorID FROM dbo.SolicitudesVendedorPartes WHERE Activo = 1 AND SolicitudID IN (${ids})`),
+    pool.request().query(`SELECT ArchivoID, SolicitudID, ProductoSolID, ParteID, EventoID, Rol, Vigente, Material, NombreOriginal FROM dbo.SolicitudesVendedorArchivos WHERE Vigente = 1 AND UrlDrive <> 'Pendiente' AND SolicitudID IN (${ids})`),
+  ]);
+  const { evaluarProducto } = require('./solicitudesVendedorChecklist');
+  for (const s of abiertas) {
+    const productos = prods.recordset.filter(p => p.SolicitudID === s.SolicitudID).map(p => ({
+      ...p, Datos: jsonObj(p.DatosJson),
+      Partes: partes.recordset.filter(pa => pa.ProductoSolID === p.ProductoSolID).map(pa => ({ ...pa, Datos: jsonObj(pa.DatosJson) })),
+    }));
+    const archivos = archs.recordset.filter(a => a.SolicitudID === s.SolicitudID);
+    const cab = { ...s, Productos: productos };
+    let faltan = 0;
+    for (const p of productos) {
+      s.Unidades += Number(p.Cantidad) || 0;
+      if (p.PedidoNoDocERP) continue;
+      faltan += evaluarProducto(cab, p, archivos, faltantesConversion(cab, p, archivos)).faltan.length;
+    }
+    s.Faltan = faltan;
+    s.Listo = faltan === 0;
+  }
+  return filas;
 }
 
 // ---------------------------------------------------------------------

@@ -37,12 +37,14 @@ const VENDEDOR_APPLY = (cliAlias) => `
                  FROM dbo.Usuarios u WITH(NOLOCK)
                  WHERE CAST(u.Cedula AS NVARCHAR(20)) = LTRIM(RTRIM(${cliAlias}.VendedorID))) ven`;
 
+// Devuelve la fecha como TEXTO ISO ('YYYY-MM-DDT00:00:00' / 'T23:59:59.997') para
+// mandarla a SQL como VarChar: con un Date, el driver la corría 3 horas según el reloj
+// del proceso Node y el último día del rango perdía documentos (mismo problema
+// corregido en contabilidadReportesController.bindFiltrosComunes, 23-sep-2026).
 const parseFecha = (s, finDia = false) => {
     const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(s || ''));
     if (!m) return null;
-    const d = new Date(+m[1], +m[2] - 1, +m[3]);
-    if (finDia) d.setHours(23, 59, 59, 999);
-    return d;
+    return `${m[1]}-${m[2]}-${m[3]}${finDia ? 'T23:59:59.997' : 'T00:00:00'}`;
 };
 
 // ─── GET /api/contabilidad/reportes/cobranzas-vencimientos ────────────────────
@@ -133,8 +135,8 @@ exports.getCobranzasPeriodos = async (req, res) => {
                 : `DATEFROMPARTS(YEAR(${f}), MONTH(${f}), 1)`;
 
         const base = () => pool.request()
-            .input('desde', sql.DateTime, desde)
-            .input('hasta', sql.DateTime, hasta)
+            .input('desde', sql.VarChar(30), desde)
+            .input('hasta', sql.VarChar(30), hasta)
             .input('vendedor', sql.NVarChar(20), vendedor);
 
         const CTE_DOCS = `

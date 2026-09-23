@@ -207,3 +207,26 @@ export function MotivoModal({ titulo, descripcion, etiquetaBoton, busy, onConfir
         </div>
     );
 }
+
+// ── Checklist de ingreso a producción (misma lectura que la maqueta: rojo frena, verde listo, ámbar después) ──
+export const Sello = ({ listo, chico }) => (
+    <span className={`inline-block font-black uppercase tracking-wider border-2 rounded-sm ${chico ? 'text-[10px] px-1.5 py-0.5' : 'text-sm px-2.5 py-1 -rotate-3'} ${listo ? 'text-emerald-700 border-emerald-600 bg-emerald-50' : 'text-rose-700 border-rose-600 bg-rose-50'}`}>
+        {listo ? 'Listo para ingresar' : 'Falta info'}
+    </span>
+);
+
+export function Checklist({ ch, titulo, compacto }) {
+    if (!ch) return null;
+    return (
+        <div className={`rounded-xl border p-3 ${ch.listo ? 'border-emerald-200 bg-emerald-50/50' : 'border-rose-200 bg-rose-50/40'}`}>
+            <div className="flex items-center gap-3 mb-2">
+                <Sello listo={ch.listo} />
+                <div className="text-xs text-slate-600">{titulo || (ch.listo ? 'Tiene todo lo necesario para entrar a producción.' : `Falta${ch.faltan.length === 1 ? '' : 'n'} ${ch.faltan.length} cosa${ch.faltan.length === 1 ? '' : 's'} para poder ingresar.`)}</div>
+            </div>
+            {ch.faltan.length > 0 && <ul className="text-xs text-rose-800 space-y-0.5 mb-2">{ch.faltan.map((x, i) => <li key={i} className="flex gap-1.5"><span className="font-black">✕</span><span>{x}</span></li>)}</ul>}
+            {!compacto && ch.ok.length > 0 && <ul className="text-xs text-emerald-800 space-y-0.5">{ch.ok.map((x, i) => <li key={i} className="flex gap-1.5"><span className="font-black">✓</span><span>{x}</span></li>)}</ul>}
+            {compacto && ch.ok.length > 0 && <div className="text-[11px] text-emerald-800">✓ {ch.ok.length} requisito{ch.ok.length === 1 ? '' : 's'} cumplido{ch.ok.length === 1 ? '' : 's'}</div>}
+            {ch.luego.length > 0 && <div className="mt-2 pt-2 border-t border-dashed border-slate-300 text-[11px] text-amber-700">Se puede completar después, no frena: {ch.luego.join(' · ')}</div>}
+        </div>
+    );
+}

@@ -1401,7 +1401,7 @@ export default function CierreCicloPreviewModal({
                                 {d.ArticuloNombre ? d.ArticuloNombre.trim() + ' - ' : ''}
                                 {d.Descripcion || 'Servicio'}
                               </div>
-                              {!sinLista && (descU > 0 || recU > 0) && (() => {
+                              {(descU > 0 || recU > 0) && (() => {
                                 // texto que ve el cliente: vacío = automático (el del pedido, o 'Ajuste manual…' si se editó el %); '-' = sin texto
                                 const autoDesc = (ed && Math.abs(descU - descUnitDetalle(d)) > 0.00005) ? 'Ajuste manual en la pre-factura' : (d.DescuentoOrigen || 'Descuento');
                                 const autoRec  = (ed && Math.abs(recU  - recUnitDetalle(d))  > 0.00005) ? 'Ajuste manual en la pre-factura' : (d.RecargoOrigen  || 'Recargo');
@@ -1425,8 +1425,8 @@ export default function CierreCicloPreviewModal({
                                 <div className="text-[10px] text-indigo-500 pl-3.5">{origen}</div>
                               )}
                               {sinLista && (
-                                <div className="text-[10px] text-slate-400 pl-3.5" title="Pedido anterior al desglose: no tiene lista guardada, no se puede editar descuento ni recargo acá">
-                                  sin desglose de lista
+                                <div className="text-[10px] text-slate-400 pl-3.5" title="Pedido anterior al desglose: no tiene lista guardada. Se toma como lista el precio actual del pedido; el descuento y el recargo que pongas acá se aplican sobre ese precio y quedan guardados en la línea.">
+                                  sin desglose guardado: lista = precio actual del pedido
                                 </div>
                               )}
                             </td>
@@ -1435,11 +1435,11 @@ export default function CierreCicloPreviewModal({
                             <td className="px-4 py-2.5 text-right">
                               <div className="flex flex-col items-end gap-0.5">
                                 <div className="flex items-center gap-0.5">
-                                  <input type="number" min="0" max="100" step="any" disabled={sinLista} value={descPct ? pct2(descPct) : ''} placeholder="0" onChange={e => onDescPct(e.target.value)} className={inputCls} />
+                                  <input type="number" min="0" max="100" step="any" value={descPct ? pct2(descPct) : ''} placeholder="0" onChange={e => onDescPct(e.target.value)} className={inputCls} />
                                   <span className="text-[10px] font-bold text-slate-400 w-4">%</span>
                                 </div>
                                 <div className="flex items-center gap-0.5">
-                                  <input type="number" min="0" step="any" disabled={sinLista} value={descU > 0 ? r2conv(descU * rate) : ''} placeholder="0" onChange={e => onDescImp(e.target.value)} className={inputCls} />
+                                  <input type="number" min="0" step="any" value={descU > 0 ? r2conv(descU * rate) : ''} placeholder="0" onChange={e => onDescImp(e.target.value)} className={inputCls} />
                                   <span className="text-[10px] font-bold text-slate-400 w-4">{simbolo}</span>
                                 </div>
                               </div>
@@ -1447,11 +1447,11 @@ export default function CierreCicloPreviewModal({
                             <td className="px-4 py-2.5 text-right">
                               <div className="flex flex-col items-end gap-0.5">
                                 <div className="flex items-center gap-0.5">
-                                  <input type="number" min="0" step="any" disabled={sinLista} value={recPct ? pct2(recPct) : ''} placeholder="0" onChange={e => onRecPct(e.target.value)} className={inputCls} />
+                                  <input type="number" min="0" step="any" value={recPct ? pct2(recPct) : ''} placeholder="0" onChange={e => onRecPct(e.target.value)} className={inputCls} />
                                   <span className="text-[10px] font-bold text-slate-400 w-4">%</span>
                                 </div>
                                 <div className="flex items-center gap-0.5">
-                                  <input type="number" min="0" step="any" disabled={sinLista} value={recU > 0 ? r2conv(recU * rate) : ''} placeholder="0" onChange={e => onRecImp(e.target.value)} className={inputCls} />
+                                  <input type="number" min="0" step="any" value={recU > 0 ? r2conv(recU * rate) : ''} placeholder="0" onChange={e => onRecImp(e.target.value)} className={inputCls} />
                                   <span className="text-[10px] font-bold text-slate-400 w-4">{simbolo}</span>
                                 </div>
                               </div>

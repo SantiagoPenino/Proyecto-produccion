@@ -1820,19 +1820,20 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
                   <table className="w-full text-left min-w-[760px] border-collapse table-fixed">
                     <thead className="bg-zinc-50 border-b border-zinc-200 text-[9px] font-black text-zinc-500 uppercase tracking-widest sticky top-0 z-10">
                       <tr>
-                        <th className="p-2.5 pl-4 w-[24%]">Concepto o Descripción</th>
-                        <th className="p-2.5 w-[8%] min-w-[52px] text-right">Cant.</th>
-                        <th className="p-2.5 w-[14%] min-w-[100px] text-right" title="Precio de lista por unidad, antes de descuento y recargo. Las líneas que vienen de una orden lo traen del pedido y no se editan.">
+                        <th className="p-2.5 pl-4 w-[21%]">Concepto o Descripción</th>
+                        <th className="p-2.5 w-[7%] min-w-[52px] text-right">Cant.</th>
+                        <th className="p-2.5 w-[12%] min-w-[96px] text-right" title="Precio de lista por unidad (con IVA), antes de descuento y recargo. Si la línea viene de una orden trae la lista del pedido; se puede corregir acá.">
                           P. Lista
                           <span className={`ml-1 text-[9px] font-black px-1.5 py-0.5 rounded-full ${monedaOp === 'USD' ? 'bg-amber-100 text-amber-700' : 'bg-blue-100 text-blue-700'}`}>
                             {monedaOp === 'USD' ? 'U$S' : '$UY'}
                           </span>
                         </th>
-                        <th className="p-2.5 w-[9%] min-w-[72px] text-right" title="Descuento por línea, en porcentaje sobre la lista. Se imprime en la factura.">Desc. %</th>
-                        <th className="p-2.5 w-[9%] min-w-[72px] text-right" title="Recargo por línea, en porcentaje sobre la lista (urgencia, tinta, manual). Se imprime en la factura.">Recargo %</th>
-                        <th className="p-2.5 w-[10%] min-w-[80px] text-center">IVA %</th>
-                        <th className="p-2.5 w-[12%] min-w-[92px] text-right">Subtotal Neto</th>
-                        <th className="p-2.5 w-[14%] min-w-[100px] text-right pr-4">Total con IVA</th>
+                        <th className="p-2.5 w-[10%] min-w-[80px] text-right" title="Descuento por línea: en % sobre la lista o en importe por unidad. Se imprime en la factura.">Descuento</th>
+                        <th className="p-2.5 w-[10%] min-w-[80px] text-right" title="Recargo por línea (urgencia, tinta, manual): en % sobre la lista o en importe por unidad. Se imprime en la factura.">Recargo</th>
+                        <th className="p-2.5 w-[10%] min-w-[84px] text-right" title="Precio unitario final con IVA = lista − descuento + recargo. Es el que va al CFE.">P. Unitario</th>
+                        <th className="p-2.5 w-[8%] min-w-[76px] text-center">IVA %</th>
+                        <th className="p-2.5 w-[10%] min-w-[88px] text-right">Subtotal Neto</th>
+                        <th className="p-2.5 w-[12%] min-w-[96px] text-right pr-4">Total con IVA</th>
                         <th className="p-2.5 w-[44px] text-center"></th>
                       </tr>
                     </thead>
@@ -1930,9 +1931,8 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
                                       : 'border-zinc-200 focus:border-indigo-500'
                                   }`}
                                   value={line.precioUnitario}
-                                  readOnly={bloqueadoPorOrden}
-                                  title={bloqueadoPorOrden ? 'Precio de lista del pedido: no se edita acá; usá Descuento o Recargo' : undefined}
-                                  onChange={e => { if (!bloqueadoPorOrden) updateLinea(line.id, 'precioUnitario', e.target.value); }}
+                                  title={bloqueadoPorOrden ? 'Precio de lista del pedido (con IVA). Se puede corregir; el descuento y el recargo se calculan sobre él.' : 'Precio de lista por unidad (con IVA)'}
+                                  onChange={e => updateLinea(line.id, 'precioUnitario', e.target.value)}
                                 />
                               </div>
                               {line.precioNote && !bloqueadoPorOrden && (
@@ -1957,9 +1957,22 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
                                 />
                                 <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[9px] font-black text-zinc-400 select-none pointer-events-none">%</span>
                               </div>
+                              {/* Importe por unidad (misma moneda de la factura): se convierte a % sobre la lista */}
+                              <div className="relative mt-0.5">
+                                <input
+                                  type="number"
+                                  min="0" step="any"
+                                  placeholder="0"
+                                  title="Descuento por unidad, en importe. Equivale al % de arriba (se calcula sobre la lista)."
+                                  className="w-full bg-zinc-50 border border-zinc-200 rounded-lg pl-2 pr-6 py-1 text-xs text-right font-bold outline-none focus:border-indigo-500 focus:bg-white"
+                                  value={descPctLinea > 0 && price > 0 ? Math.round(price * descPctLinea) / 100 : ''}
+                                  onChange={e => { const u = Math.max(0, parseFloat(e.target.value) || 0); updateLinea(line.id, 'descPct', price > 0 ? Math.min(100, Math.round(u / price * 1000000) / 10000) : 0); }}
+                                />
+                                <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[9px] font-black text-zinc-400 select-none pointer-events-none">{monedaOp === 'USD' ? 'U$S' : '$'}</span>
+                              </div>
                               {descPctLinea > 0 && (
-                                <span className="text-[8px] text-emerald-600 font-semibold block text-right mt-0.5 whitespace-nowrap">
-                                  −{formatMoney(qty * price * (descPctLinea / 100))}
+                                <span className="text-[8px] text-emerald-600 font-semibold block text-right mt-0.5 whitespace-nowrap" title="Descuento total de la línea (cantidad × descuento por unidad)">
+                                  −{formatMoney(qty * price * (descPctLinea / 100))} en la línea
                                 </span>
                               )}
                               {descPctLinea > 0 && (
@@ -1986,9 +1999,22 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
                                 />
                                 <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[9px] font-black text-zinc-400 select-none pointer-events-none">%</span>
                               </div>
+                              {/* Importe por unidad (misma moneda de la factura): se convierte a % sobre la lista */}
+                              <div className="relative mt-0.5">
+                                <input
+                                  type="number"
+                                  min="0" step="any"
+                                  placeholder="0"
+                                  title="Recargo por unidad, en importe. Equivale al % de arriba (se calcula sobre la lista)."
+                                  className="w-full bg-zinc-50 border border-zinc-200 rounded-lg pl-2 pr-6 py-1 text-xs text-right font-bold outline-none focus:border-indigo-500 focus:bg-white"
+                                  value={recPctLinea > 0 && price > 0 ? Math.round(price * recPctLinea) / 100 : ''}
+                                  onChange={e => { const u = Math.max(0, parseFloat(e.target.value) || 0); updateLinea(line.id, 'recPct', price > 0 ? Math.round(u / price * 1000000) / 10000 : 0); }}
+                                />
+                                <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[9px] font-black text-zinc-400 select-none pointer-events-none">{monedaOp === 'USD' ? 'U$S' : '$'}</span>
+                              </div>
                               {recPctLinea > 0 && (
-                                <span className="text-[8px] text-amber-600 font-semibold block text-right mt-0.5 whitespace-nowrap">
-                                  +{formatMoney(qty * price * (recPctLinea / 100))}
+                                <span className="text-[8px] text-amber-600 font-semibold block text-right mt-0.5 whitespace-nowrap" title="Recargo total de la línea (cantidad × recargo por unidad)">
+                                  +{formatMoney(qty * price * (recPctLinea / 100))} en la línea
                                 </span>
                               )}
                               {recPctLinea > 0 && (
@@ -2001,6 +2027,11 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
                                   onChange={e => updateLinea(line.id, 'recargoStr', e.target.value)}
                                 />
                               )}
+                            </td>
+                            {/* P. Unitario final con IVA = lista − descuento + recargo (el que va al CFE) */}
+                            <td className="p-1.5 text-right font-mono text-xs font-black whitespace-nowrap align-top pt-2.5" title="Precio unitario final con IVA = lista − descuento + recargo">
+                              <span className={`text-[10px] mr-0.5 ${monedaOp === 'USD' ? 'text-amber-500' : 'text-blue-400'}`}>{monedaOp === 'USD' ? 'U$S' : '$'}</span>
+                              <span className={descPctLinea > 0 ? 'text-emerald-700' : (recPctLinea > 0 ? 'text-amber-700' : 'text-zinc-800')}>{formatMoney(price * (1 - descPctLinea / 100 + recPctLinea / 100))}</span>
                             </td>
                             <td className="p-1.5">
                               <select

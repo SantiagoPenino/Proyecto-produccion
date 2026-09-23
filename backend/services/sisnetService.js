@@ -67,6 +67,23 @@ exports.resolverTipoCFE = (docTipo, docCliDoc, refEsFactura = null) => {
 };
 
 /**
+ * Comprador de una NC/ND de e-Ticket (102/103).
+ *
+ * La nota identifica al comprador IGUAL que el e-Ticket que corrige: primero el documento
+ * cargado en la propia nota, si no el del e-Ticket original (su DocCliDocumento). Nunca la
+ * ficha del cliente: si el ticket original salió sin receptor, la nota también.
+ * Y nunca un RUT: DGI rechaza tipoDocRecep=2 en la familia e-Ticket
+ * ("WsReceptor.getTipoDocRecep()=> Dato invalido para comprobante (Nota de Crédito de e-Ticket)").
+ * Si el resultado es un RUT, la nota se emite sin receptor.
+ *
+ * @returns {string} solo dígitos, o '' = sin receptor
+ */
+exports.receptorNotaETicket = (docCliDocumento, refCliDocumento) => {
+    const d = String(docCliDocumento || refCliDocumento || '').replace(/\D/g, '').trim();
+    return d.length === 12 ? '' : d;
+};
+
+/**
  * Reproduce la lógica VIEJA (con el bug del DocTipo truncado) para poder auditar qué
  * tipo de CFE se le pidió realmente a DGI en los documentos emitidos ANTES del fix.
  * No se usa para emitir: solo para comparar "lo que se mandó" contra "lo que correspondía".
@@ -168,6 +185,8 @@ exports.prepararCFE = async (doc, lineas, cotDolar = 40.0, empresa = null) => {
     // Naturaleza del documento referenciado: true = e-Factura, false = e-Ticket, null = sin referencia.
     // DGI exige que la NC/ND sea de la MISMA familia que el CFE que corrige.
     let refEsFactura = null;
+    // Documento del comprador del CFE referenciado: una NC/ND de e-Ticket lo copia (ver receptorNotaETicket).
+    let refCliDocumento = null;
     if (doc.DocIdDocumentoRef) {
         try {
             logger.info(`[SISNET-Service] Buscando documento referenciado con ID: ${doc.DocIdDocumentoRef}`);
@@ -180,6 +199,7 @@ exports.prepararCFE = async (doc, lineas, cotDolar = 40.0, empresa = null) => {
 
             if (refRes.recordset.length > 0) {
                 const refDoc = refRes.recordset[0];
+                refCliDocumento = refDoc.DocCliDocumento || null;
                 // Para e-Tickets (B2C) NO se envía wsReceptor → no necesitamos el RUT aquí
                 // Solo para e-Facturas (B2B) leemos el RUT del comprador
                 const rutReceptorRef = (doc.DocCliDocumento || doc.CliRUT || '').replace(/\D/g, '').trim();
@@ -316,6 +336,13 @@ exports.prepararCFE = async (doc, lineas, cotDolar = 40.0, empresa = null) => {
     // ¿Es e-Ticket (B2C)? → tipoCFE 101, 102, 103 → NO enviar wsReceptor
     const esETicket = [101, 102, 103].includes(tipoCFE);
 
+    // Documento que viaja como receptor. En NC/ND de e-Ticket NO se usa docCliDoc (que cae
+    // a la ficha y puede ser un RUT): se copia el comprador del ticket original y nunca un RUT.
+    // docCliDoc sigue decidiendo el tipo de CFE; esto solo cambia el wsReceptor.
+    const docReceptor = (esETicket && (isDocNC || isDocND))
+        ? exports.receptorNotaETicket(doc.DocCliDocumento, refCliDocumento)
+        : docCliDoc;
+
     // DGI exige estricta precisión matemática (2 decimales) independientemente de la moneda.
     const fixD = (num) => Number(Number(num || 0).toFixed(2));
 
@@ -390,12 +417,12 @@ exports.prepararCFE = async (doc, lineas, cotDolar = 40.0, empresa = null) => {
     // Receptor: e-Facturas SIEMPRE lo llevan; e-Tickets lo llevan solo cuando hay
     // CI/RUT VÁLIDO (dígito verificador OK) — DGI exige identificar al comprador
     // en tickets sobre el umbral de UI, y así el dato realmente llega a DGI.
-    const valReceptor = validarDocumentoUY(docCliDoc);
+    const valReceptor = validarDocumentoUY(docReceptor);
     const wsReceptorData = {
         wsReceptor: {
             tipoDocRecep: valReceptor.tipo === 'RUT' ? 2 : 3, // 2=RUT, 3=CI
             codPaisRecep: 'UY',
-            docRecep: valReceptor.normalizado || docCliDoc,
+            docRecep: valReceptor.normalizado || docReceptor,
             rznSocRecep: (doc.DocCliNombre || doc.CliRazonSocial || '').trim() || 'Sin Nombre',
             dirRecep: (doc.DocCliDireccion || doc.CliDireccion || '').trim() || 'Sin Direccion',
             ciudadRecep: (doc.DocCliCiudad || '').trim() || 'Montevideo',

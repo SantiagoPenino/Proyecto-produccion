@@ -1348,14 +1348,24 @@ const editarCostoOrden = async (req, res) => {
           const puFinal = cantFinal > 0 ? nuevoCostoNum / cantFinal : nuevoCostoNum;
           const pu2 = Math.round((puFinal + Number.EPSILON) * 100) / 100;
           // Con cambio de moneda la lista guardada ya no sirve (queda sin desglose).
-          const lista = (nuevaMonedaId === null && Number(ln.PrecioLista) > 0) ? r4(ln.PrecioLista) : null;   // lista 0 = sin lista
           const dz = (desglose && typeof desglose === 'object') ? desglose : {};
           const motivo = dz.motivo ? String(dz.motivo).trim().substring(0, 120) : '';
           const origenCaja = motivo ? `Caja: ${motivo}` : 'Ajuste en caja';
+          const vino = k => dz[k] != null && dz[k] !== '' && !isNaN(Number(dz[k]));
+          const editoDesglose = ['descuentoPct', 'descuentoImporte', 'recargoPct', 'recargoImporte'].some(vino);
+          let lista = (nuevaMonedaId === null && Number(ln.PrecioLista) > 0) ? r4(ln.PrecioLista) : null;   // lista 0 = sin lista
+          if (lista == null && editoDesglose) {
+            // Sin lista guardada (pedido anterior al desglose, línea sin catálogo o cambio de
+            // moneda): la caja igual puede poner descuento/recargo. La lista es el precio que
+            // tenía la línea, o sea neto + descuento − recargo (lista − descuento + recargo = neto).
+            const dI = vino('descuentoImporte') ? r4(dz.descuentoImporte) : 0;
+            const rI = vino('recargoImporte') ? r4(dz.recargoImporte) : 0;
+            lista = r4(pu2 + dI - rI);
+            if (!(lista > 0)) lista = null;
+          }
           let dTipo = null, dPct = null, dImp = null, dOrig = null, rPct = null, rImp = null, rOrig = null;
           if (lista != null) {
-            const vino = k => dz[k] != null && dz[k] !== '' && !isNaN(Number(dz[k]));
-            if (['descuentoPct', 'descuentoImporte', 'recargoPct', 'recargoImporte'].some(vino)) {
+            if (editoDesglose) {
               // La caja editó descuento y/o recargo: el importe del descuento cierra la cuenta.
               rPct = vino('recargoPct') ? r4(dz.recargoPct) : null;
               rImp = vino('recargoImporte') ? r4(dz.recargoImporte) : (rPct != null ? r4(lista * rPct / 100) : null);
