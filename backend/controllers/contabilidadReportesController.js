@@ -171,36 +171,70 @@ const condArticulo = (codigoExpr) => `EXISTS (
       AND pcdA.ProIdProducto = @articulo
 )`;
 
-// Filtro de área/artículo precalculado UNA sola vez como CTE (set de DocIdDocumento que
-// matchean), para usar con IN en vez de repetir el filtro por cada consulta.
+// Filtro de área/artículo precalculado UNA sola vez como CTE: los DocIdDocumento que
+// matchean y el PESO del área dentro de cada documento (0..1), para que el reporte por
+// documento y los ingresos tomen SOLO la parte del documento que es del área/sector,
+// con el mismo reparto que ventas-por-area (proporción de DcdSubtotal por área; si el
+// documento no tiene subtotales, partes iguales entre sus áreas). Sin filtro de área
+// (solo artículo) el peso es 1 = documento entero, como antes.
+// Decisión del usuario (23-sep-2026): "cada línea tiene su área y ese es el importe
+// que debe tomarse" — antes, con filtro de sector, un ticket con TPU + Sublimación
+// contaba entero como TPU y el reporte por documento no cuadraba con el de área.
 // condAreas: condición ya armada por condAreasIn (área puntual o áreas de un sector).
 const filtroAreaArticulo = (condAreas, articulo, alias) => {
-    if (!condAreas && !articulo) return { cte: '', cond: '' };
+    if (!condAreas && !articulo) return { cte: '', join: '', peso: '1.0' };
     const conds = [condEsVenta('fdoc'), `fdoc.DocEstado <> 'ANULADO'`];
-    if (condAreas) conds.push(condAreas);
     if (articulo) conds.push(condArticulo('dcd.OrdCodigoOrden'));
-    const cte = `FiltroAreaArticulo AS (
-        SELECT DISTINCT dcd.DocIdDocumento
-        FROM dbo.DocumentosContablesDetalle dcd WITH(NOLOCK)
-        JOIN dbo.DocumentosContables fdoc WITH(NOLOCK) ON fdoc.DocIdDocumento = dcd.DocIdDocumento
-        WHERE ${conds.join(' AND ')}
-    )`;
-    return { cte, cond: `${alias}.DocIdDocumento IN (SELECT DocIdDocumento FROM FiltroAreaArticulo)` };
+    let cte;
+    if (condAreas) {
+        const areaExpr = areaDesdeCodigo('dcd.OrdCodigoOrden');
+        cte = `FiltroAreaArticulo AS (
+            SELECT x.DocIdDocumento,
+                   CASE WHEN ISNULL(x.SubTot, 0) = 0 THEN CAST(x.NAreasFiltro AS FLOAT) / x.NAreas
+                        ELSE CAST(x.SubArea AS FLOAT) / x.SubTot END AS Peso
+            FROM (
+                SELECT dcd.DocIdDocumento,
+                       SUM(CASE WHEN ${condAreas} THEN ISNULL(dcd.DcdSubtotal, 0) ELSE 0 END) AS SubArea,
+                       SUM(ISNULL(dcd.DcdSubtotal, 0)) AS SubTot,
+                       COUNT(DISTINCT CASE WHEN ${condAreas} THEN ${areaExpr} END) AS NAreasFiltro,
+                       COUNT(DISTINCT ${areaExpr}) AS NAreas
+                FROM dbo.DocumentosContablesDetalle dcd WITH(NOLOCK)
+                JOIN dbo.DocumentosContables fdoc WITH(NOLOCK) ON fdoc.DocIdDocumento = dcd.DocIdDocumento
+                WHERE ${conds.join(' AND ')}
+                GROUP BY dcd.DocIdDocumento
+            ) x
+            WHERE x.NAreasFiltro > 0
+        )`;
+    } else {
+        cte = `FiltroAreaArticulo AS (
+            SELECT DISTINCT dcd.DocIdDocumento, CAST(1.0 AS FLOAT) AS Peso
+            FROM dbo.DocumentosContablesDetalle dcd WITH(NOLOCK)
+            JOIN dbo.DocumentosContables fdoc WITH(NOLOCK) ON fdoc.DocIdDocumento = dcd.DocIdDocumento
+            WHERE ${conds.join(' AND ')}
+        )`;
+    }
+    return {
+        cte,
+        join: `JOIN FiltroAreaArticulo faa ON faa.DocIdDocumento = ${alias}.DocIdDocumento`,
+        peso: 'faa.Peso',
+    };
 };
 
 // Bindea fecha/área/artículo (comunes a los reportes) — SIEMPRE (con NULL si no vienen),
 // porque las queries las referencian incondicionalmente (patrón "@x IS NULL OR ...").
 // La moneda se bindea aparte en cada endpoint porque cambia de tipo: texto ('UYU'/'USD')
 // a nivel línea de detalle, vs MonIdMoneda numérico a nivel documento.
+// Las fechas llegan como 'YYYY-MM-DD' y se mandan a SQL como TEXTO ISO ('...T00:00:00' /
+// '...T23:59:59.997'), no como Date. Antes se hacía new Date('2026-08-31') (= medianoche
+// UTC) + setHours(23,59,59) en hora LOCAL del proceso: con Node en Uruguay (UTC-3) el
+// "hasta" quedaba en 2026-08-31 02:59:59 y el último día del rango perdía todo lo emitido
+// después de las 3 de la mañana (detectado 23-sep-2026: 30 días ≠ septiembre + 24-31/08).
+// Con texto el corte es el día calendario, sin depender del reloj del proceso.
+const soloFecha = (v) => { const m = String(v || '').match(/^(\d{4})-(\d{2})-(\d{2})/); return m ? `${m[1]}-${m[2]}-${m[3]}` : null; };
 const bindFiltrosComunes = (r, { fechaDesde, fechaHasta, area, articulo }) => {
-    r.input('fechaDesde', sql.DateTime, fechaDesde ? new Date(fechaDesde) : null);
-    if (fechaHasta) {
-        const d = new Date(fechaHasta);
-        d.setHours(23, 59, 59, 999);
-        r.input('fechaHasta', sql.DateTime, d);
-    } else {
-        r.input('fechaHasta', sql.DateTime, null);
-    }
+    const d = soloFecha(fechaDesde), h = soloFecha(fechaHasta);
+    r.input('fechaDesde', sql.VarChar(30), d ? `${d}T00:00:00` : null);
+    r.input('fechaHasta', sql.VarChar(30), h ? `${h}T23:59:59.997` : null);
     r.input('area', sql.NVarChar(150), area || null);
     r.input('articulo', sql.Int, articulo ? parseInt(articulo) : null);
 };
@@ -459,8 +493,10 @@ exports.getVentasPorArea = async (req, res) => {
 };
 
 // ─── GET /api/contabilidad/reportes/ventas-por-documento ──────────────────────
-// Unidad de conteo = documento completo (DocTotal). area/articulo filtran vía un CTE
-// precalculado (no bajan a nivel línea, para no alterar el importe sumado).
+// Unidad de conteo = documento (CantidadDocumentos cuenta documentos). El importe es el
+// DocTotal, y con filtro de área/sector SOLO la porción del documento que es de esas
+// áreas (faa.Peso, mismo reparto que ventas-por-area) — así los dos reportes cuadran
+// también filtrados. Con filtro de artículo solo, el documento entero.
 exports.getVentasPorDocumento = async (req, res) => {
     try {
         await tieneDcdArea(); // el área sale de DcdArea; si no existe, del parseo del prefijo
@@ -484,35 +520,48 @@ exports.getVentasPorDocumento = async (req, res) => {
         if (fechaDesde)  conds.push('doc.DocFechaEmision >= @fechaDesde');
         if (fechaHasta)  conds.push('doc.DocFechaEmision <= @fechaHasta');
         if (moneda)      conds.push('doc.MonIdMoneda = @moneda');
-        if (filtro.cond) conds.push(filtro.cond);
 
         const result = await r.query(`
             ${filtro.cte ? `;WITH ${filtro.cte}` : ''}
+            -- TipoPago: un "Pedidos Caja" es CONTADO si nació de una transacción de caja
+            -- (se cobró en el momento) y CRÉDITO si nació de un cierre de ciclo de cuenta
+            -- corriente (CicIdCiclo): el cliente lo paga después en cuotas. Antes todos
+            -- caían en CONTADO por el nombre del tipo (verificado 23-sep-2026: 3.303 de
+            -- caja vs 332 cierres de ciclo).
             SELECT
                 CASE WHEN doc.CfeEstado = 'ACEPTADO_DGI' THEN 'ENVIADO_DGI' ELSE 'NO_ENVIADO' END AS EstadoDgi,
-                CASE WHEN doc.DocTipo LIKE '%Credito%' OR doc.DocTipo LIKE '%CREDITO%' THEN 'CREDITO' ELSE 'CONTADO' END AS TipoPago,
+                CASE WHEN doc.DocTipo LIKE '%Credito%' OR doc.DocTipo LIKE '%CREDITO%'
+                          OR (RTRIM(doc.DocTipo) = 'Pedidos Caja' AND doc.CicIdCiclo IS NOT NULL) THEN 'CREDITO' ELSE 'CONTADO' END AS TipoPago,
                 doc.MonIdMoneda,
                 ISNULL(mon.MonSimbolo, '')          AS MonSimbolo,
                 ISNULL(mon.MonDescripcionMoneda, '') AS MonNombre,
                 COUNT(*)          AS CantidadDocumentos,
-                SUM(doc.DocTotal) AS ImporteTotal,
-                -- Pendiente solo para Crédito: en Contado, DeudaDocumento aparece asociado a
-                -- documentos con DocPagado=true y montos que no coinciden con DocTotal (dato
-                -- sucio verificado, no representa deuda real de esa venta) — mismo criterio
-                -- que "de eso, a crédito" en el frontend, para que ambos números coincidan.
-                SUM(CASE WHEN doc.DocTipo LIKE '%Credito%' OR doc.DocTipo LIKE '%CREDITO%' THEN ISNULL(dd.Pendiente, 0) ELSE 0 END) AS ImportePendiente
+                SUM(doc.DocTotal * ${filtro.peso}) AS ImporteTotal,
+                -- Pendiente = deuda VIVA (DeudaDocumento PENDIENTE/VENCIDO/PARCIAL) de los
+                -- documentos a Crédito y de los Pedidos Caja (venta de caja que quedó sin
+                -- pagar — pedido del usuario 23-sep-2026: PC-3981 y PC-4290 debían US$ 368,69 y
+                -- el reporte decía 0). En tickets/facturas Contado sigue en 0: ahí DeudaDocumento
+                -- trae dato sucio (docs pagados con deuda) y no representa deuda real.
+                SUM(CASE WHEN doc.DocTipo LIKE '%Credito%' OR doc.DocTipo LIKE '%CREDITO%' OR RTRIM(doc.DocTipo) = 'Pedidos Caja'
+                         THEN ISNULL(dd.Pendiente, 0) ELSE 0 END * ${filtro.peso}) AS ImportePendiente,
+                -- Cuántos documentos de la fila tienen algo pendiente (para mostrar "(n)" al lado)
+                SUM(CASE WHEN (doc.DocTipo LIKE '%Credito%' OR doc.DocTipo LIKE '%CREDITO%' OR RTRIM(doc.DocTipo) = 'Pedidos Caja')
+                          AND ISNULL(dd.Pendiente, 0) > 0.005 THEN 1 ELSE 0 END) AS CantidadConPendiente
             FROM dbo.DocumentosContables doc WITH(NOLOCK)
+            ${filtro.join}
             LEFT JOIN dbo.Monedas mon WITH(NOLOCK) ON mon.MonIdMoneda = doc.MonIdMoneda
             -- Pre-agregado 1 fila por documento (puede haber >1 fila en DeudaDocumento
             -- para el mismo doc) para no duplicar CantidadDocumentos/ImporteTotal al hacer LEFT JOIN.
             LEFT JOIN (
                 SELECT DocIdDocumento, SUM(DDeImportePendiente) AS Pendiente
                 FROM dbo.DeudaDocumento WITH(NOLOCK)
+                WHERE DDeEstado IN ('PENDIENTE', 'VENCIDO', 'PARCIAL')
                 GROUP BY DocIdDocumento
             ) dd ON dd.DocIdDocumento = doc.DocIdDocumento
             WHERE ${conds.join(' AND ')}
             GROUP BY CASE WHEN doc.CfeEstado = 'ACEPTADO_DGI' THEN 'ENVIADO_DGI' ELSE 'NO_ENVIADO' END,
-                     CASE WHEN doc.DocTipo LIKE '%Credito%' OR doc.DocTipo LIKE '%CREDITO%' THEN 'CREDITO' ELSE 'CONTADO' END,
+                     CASE WHEN doc.DocTipo LIKE '%Credito%' OR doc.DocTipo LIKE '%CREDITO%'
+                          OR (RTRIM(doc.DocTipo) = 'Pedidos Caja' AND doc.CicIdCiclo IS NOT NULL) THEN 'CREDITO' ELSE 'CONTADO' END,
                      doc.MonIdMoneda, mon.MonSimbolo, mon.MonDescripcionMoneda
             ORDER BY doc.MonIdMoneda, EstadoDgi
         `);
@@ -552,25 +601,46 @@ exports.getIngresos = async (req, res) => {
         const filtro = filtroAreaArticulo(condAreas, articulo, 'dc');
         const filtroDgi = condDgi('dc', dgi);
 
+        // Factor para llevar el pago a la moneda del documento: 1 si coinciden; si no,
+        // dólar del día del pago (última cotización cargada hasta esa fecha).
+        const tcDiaPago = `(SELECT TOP 1 c.CotDolar FROM dbo.Cotizaciones c WITH(NOLOCK)
+                             WHERE c.CotDolar > 0 AND c.CotFecha <= CAST(p.PagFechaPago AS DATE) ORDER BY c.CotFecha DESC)`;
+        const factorAMonedaDoc = `CASE WHEN p.PagIdMonedaPago = dc.MonIdMoneda THEN 1.0
+                                       WHEN dc.MonIdMoneda = 2 THEN 1.0 / NULLIF(${tcDiaPago}, 0)
+                                       ELSE ${tcDiaPago} END`;
+
         const result = await r.query(`
             ;WITH ${filtro.cte ? `${filtro.cte},` : ''}
+            -- Con filtro de área/sector, del pago se toma la misma porción que tiene el
+            -- área en el documento (faa.Peso), igual que el "Facturado" con el que se compara.
+            -- El cobro se expresa en la MONEDA DEL DOCUMENTO (decisión del usuario 23-sep-2026):
+            -- antes se agrupaba por la moneda del pago, y una venta en US$ pagada en $ caía
+            -- en la caja de pesos y quedaba "no cobrada" en dólares. Un pago en otra moneda se
+            -- convierte al dólar del día del pago (dbo.Cotizaciones; Pagos.PagCotizacion no
+            -- sirve: vale 1 en los pagos cruzados). MonIdMonedaPago se conserva para mostrar
+            -- cuánto de lo cobrado entró en la otra moneda.
             IngresosContado AS (
-                SELECT dc.DocIdDocumento, dc.DocFechaEmision, p.PagFechaPago, p.PagIdMonedaPago AS MonIdMoneda, p.PagMontoPago AS Importe
+                SELECT p.PagIdPago, dc.DocIdDocumento, dc.DocFechaEmision, p.PagFechaPago,
+                       dc.MonIdMoneda, p.PagIdMonedaPago AS MonIdMonedaPago,
+                       p.PagMontoPago * ${filtro.peso} * ${factorAMonedaDoc} AS Importe
                 FROM dbo.Pagos p WITH(NOLOCK)
                 JOIN dbo.TransaccionesCaja t WITH(NOLOCK) ON t.TcaIdTransaccion = p.PagTcaIdTransaccion
                 JOIN dbo.DocumentosContables dc WITH(NOLOCK) ON dc.TcaIdTransaccion = t.TcaIdTransaccion
+                ${filtro.join}
                 WHERE p.PagTipoMovimiento <> 'ANULADO'
                   AND ${condEsVenta('dc')}
                   AND dc.DocEstado <> 'ANULADO'
                   ${filtroDgi ? `AND ${filtroDgi}` : ''}
                   AND (@moneda IS NULL OR p.PagIdMonedaPago = @moneda)
-                  ${filtro.cond ? `AND ${filtro.cond}` : ''}
             ),
             IngresosCredito AS (
-                SELECT dc.DocIdDocumento, dc.DocFechaEmision, p.PagFechaPago, p.PagIdMonedaPago AS MonIdMoneda, p.PagMontoPago AS Importe
+                SELECT p.PagIdPago, dc.DocIdDocumento, dc.DocFechaEmision, p.PagFechaPago,
+                       dc.MonIdMoneda, p.PagIdMonedaPago AS MonIdMonedaPago,
+                       p.PagMontoPago * ${filtro.peso} * ${factorAMonedaDoc} AS Importe
                 FROM dbo.MovimientosCuenta m WITH(NOLOCK)
                 JOIN dbo.Pagos p WITH(NOLOCK) ON p.PagIdPago = m.PagIdPago
                 JOIN dbo.DocumentosContables dc WITH(NOLOCK) ON dc.DocIdDocumento = m.DocIdDocumento
+                ${filtro.join}
                 WHERE m.MovTipo IN ('PAGO','COBRO')
                   AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)
                   AND p.PagTipoMovimiento <> 'ANULADO'
@@ -578,20 +648,36 @@ exports.getIngresos = async (req, res) => {
                   AND dc.DocEstado <> 'ANULADO'
                   ${filtroDgi ? `AND ${filtroDgi}` : ''}
                   AND (@moneda IS NULL OR p.PagIdMonedaPago = @moneda)
-                  ${filtro.cond ? `AND ${filtro.cond}` : ''}
             ),
+            -- Un pago cuenta UNA sola vez (verificado 23-sep-2026: los pagos de contado
+            -- también tienen su MovimientosCuenta PAGO con DocIdDocumento, así que los dos
+            -- caminos traían el mismo pago dos veces — sin filtro, $2,3 M de más en un mes;
+            -- y un pago aplicado a varios documentos aparecía una vez por documento).
             IngresosTodos AS (
-                SELECT * FROM IngresosContado
-                UNION ALL
-                SELECT * FROM IngresosCredito
+                SELECT PagIdPago, DocIdDocumento, DocFechaEmision, PagFechaPago, MonIdMoneda, MonIdMonedaPago, Importe
+                FROM (
+                    SELECT *, ROW_NUMBER() OVER (PARTITION BY PagIdPago ORDER BY Prioridad, DocIdDocumento) AS Rn
+                    FROM (
+                        SELECT 1 AS Prioridad, * FROM IngresosContado
+                        UNION ALL
+                        SELECT 2 AS Prioridad, * FROM IngresosCredito
+                    ) u
+                ) d
+                WHERE Rn = 1
             )
-            SELECT 'PAGO' AS Base, MonIdMoneda, SUM(Importe) AS ImporteCobrado, COUNT(DISTINCT DocIdDocumento) AS CantidadFacturas
+            -- MonIdMoneda = moneda del DOCUMENTO; ImporteOtraMoneda = parte de ImporteCobrado
+            -- que se pagó en la otra moneda (ya convertida).
+            SELECT 'PAGO' AS Base, MonIdMoneda, SUM(Importe) AS ImporteCobrado,
+                   SUM(CASE WHEN MonIdMonedaPago <> MonIdMoneda THEN Importe ELSE 0 END) AS ImporteOtraMoneda,
+                   COUNT(DISTINCT DocIdDocumento) AS CantidadFacturas
             FROM IngresosTodos
             WHERE (@fechaDesde IS NULL OR PagFechaPago >= @fechaDesde)
               AND (@fechaHasta IS NULL OR PagFechaPago <= @fechaHasta)
             GROUP BY MonIdMoneda
             UNION ALL
-            SELECT 'FACTURA' AS Base, MonIdMoneda, SUM(Importe) AS ImporteCobrado, COUNT(DISTINCT DocIdDocumento) AS CantidadFacturas
+            SELECT 'FACTURA' AS Base, MonIdMoneda, SUM(Importe) AS ImporteCobrado,
+                   SUM(CASE WHEN MonIdMonedaPago <> MonIdMoneda THEN Importe ELSE 0 END) AS ImporteOtraMoneda,
+                   COUNT(DISTINCT DocIdDocumento) AS CantidadFacturas
             FROM IngresosTodos
             WHERE (@fechaDesde IS NULL OR DocFechaEmision >= @fechaDesde)
               AND (@fechaHasta IS NULL OR DocFechaEmision <= @fechaHasta)
@@ -666,6 +752,32 @@ const CLIENTE_MOSTRADOR = 2089; // se mantiene para el flag EsMostrador
 const CLIENTES_GENERICOS = [2089, 8741];
 const SQL_GENERICOS = CLIENTES_GENERICOS.join(', ');
 
+// Moneda de los rankings (Top Clientes / Top Productos / Árbol / drill-downs):
+//   moneda=1|2  → solo documentos de esa moneda, importes tal cual.
+//   moneda=UNIF → las DOS monedas llevadas a US$: los documentos en $ se dividen por
+//                 @tc (el TC que manda la pantalla, o la última cotización cargada).
+// Pedido del usuario 23-sep-2026: "representado a una moneda, al dólar con el tipo
+// de cambio como en las otras vistas". @moneda y @tc se bindean SIEMPRE porque las
+// queries los referencian incondicionalmente.
+const bindMonedaTop = async (r, params, q = {}) => {
+    const unif = String(params.moneda || '').toUpperCase() === 'UNIF';
+    let tc = unif ? (parseFloat(q.tc) || 0) : 0;
+    if (unif && !(tc > 0)) {
+        const pool = await getPool();
+        const cot = await pool.request().query(`
+            SELECT TOP 1 CotDolar FROM dbo.Cotizaciones WITH(NOLOCK)
+            WHERE CotDolar > 0 ORDER BY CotFecha DESC`);
+        tc = Number(cot.recordset[0]?.CotDolar) || 40;
+    }
+    r.input('moneda', sql.Int, unif ? null : (parseInt(params.moneda) || 1));
+    r.input('tc', sql.Float, unif ? tc : 1);
+    return { unif, tc };
+};
+// Factor que lleva el importe de un documento a la moneda del ranking (1 salvo en
+// modo unificado para documentos en pesos).
+const factorMonedaTop = (alias = 'doc') =>
+    `CASE WHEN @moneda IS NULL AND ${alias}.MonIdMoneda = 1 THEN 1.0 / @tc ELSE 1.0 END`;
+
 // Ventas + Notas (NC resta, ND suma). Recibos/anticipos/egresos siguen afuera.
 const condVentaONota = (alias = 'doc') =>
     `(${condEsVenta(alias)} OR ${alias}.DocTipo LIKE '%Nota%' OR ${alias}.DocTipo LIKE '%NOTA%')`;
@@ -687,7 +799,8 @@ const batchDocsClienteMonto = (condArea = '') => `
     SET NOCOUNT ON;
 
     -- 1. Documentos del rango (ventas + notas, con signo)
-    SELECT doc.DocIdDocumento, doc.CliIdCliente, doc.DocTotal,
+    SELECT doc.DocIdDocumento, doc.CliIdCliente, doc.DocTotal, doc.MonIdMoneda,
+           ${factorMonedaTop('doc')} AS Factor,
            doc.DocTipo, doc.DocSerie, doc.DocNumero, doc.CfeNumeroOficial,
            doc.CfeEstado, doc.DocFechaEmision, doc.DocCliNombre, doc.DocCliDocumento,
            ${signoExpr('doc')} AS Signo
@@ -697,7 +810,7 @@ const batchDocsClienteMonto = (condArea = '') => `
       AND doc.DocEstado <> 'ANULADO'
       AND (@fechaDesde IS NULL OR doc.DocFechaEmision >= @fechaDesde)
       AND (@fechaHasta IS NULL OR doc.DocFechaEmision <= @fechaHasta)
-      AND doc.MonIdMoneda = @moneda;
+      AND (@moneda IS NULL OR doc.MonIdMoneda = @moneda);
 
     -- 2. Áreas de cada documento con su peso (una pasada por el detalle)
     SELECT d.DocIdDocumento,
@@ -763,7 +876,7 @@ const batchDocsClienteMonto = (condArea = '') => `
            COALESCE(CAST(r.CliResuelto AS VARCHAR(20)),
                     'R:' + UPPER(r.ReceptorReal), 'M') AS CliId,
            l.Area, r.Signo,
-           r.DocTotal * r.Signo * CASE WHEN ISNULL(t.SubTot, 0) = 0 THEN 1.0 / t.NAreas
+           r.DocTotal * r.Factor * r.Signo * CASE WHEN ISNULL(t.SubTot, 0) = 0 THEN 1.0 / t.NAreas
                                        ELSE CAST(l.SubArea AS FLOAT) / t.SubTot END AS Monto
     INTO #monto
     FROM #lineas l
@@ -789,7 +902,7 @@ exports.getTopClientes = async (req, res) => {
 
         const r = pool.request();
         bindFiltrosComunes(r, params);
-        r.input('moneda', sql.Int, parseInt(params.moneda) || 1);
+        await bindMonedaTop(r, params, req.query);
         r.input('limite', sql.Int, limite);
         // area = un área puntual; sector = todas las áreas de ese sector
         const condArea = condAreasIn(await areasDeFiltro(params), 'l.Area', r);
@@ -875,7 +988,7 @@ exports.getTopClientesDetalle = async (req, res) => {
 
         const r = pool.request();
         bindFiltrosComunes(r, params);
-        r.input('moneda', sql.Int, parseInt(params.moneda) || 1);
+        await bindMonedaTop(r, params, req.query);
         r.input('cliente', sql.NVarChar(250), cliente);
         const condArea = condAreasIn(await areasDeFiltro(params), 'l.Area', r);
 
@@ -891,6 +1004,8 @@ exports.getTopClientesDetalle = async (req, res) => {
                 -- área (mismo reparto que el ranking, así el modal suma igual que la fila);
                 -- sin filtro es el total del documento (con signo de NC).
                 m.Importe,
+                dc.MonIdMoneda,
+                dc.DocTotal * dc.Signo AS ImporteOriginal,
                 dc.Signo,
                 CASE WHEN dc.CfeEstado = 'ACEPTADO_DGI' THEN 1 ELSE 0 END AS EnviadoDgi,
                 -- A quién salió el CFE en DGI, cuando el interno es una ficha genérica
@@ -922,38 +1037,62 @@ exports.getTopClientesDetalle = async (req, res) => {
 };
 
 // ─── Top Productos ────────────────────────────────────────────────────────────
-// El artículo vendido no está en las líneas del documento: se resuelve por la
-// cotización de la orden (DocumentosContablesDetalle.OrdCodigoOrden →
-// Ordenes.CodigoOrden → PedidosCobranzaDetalle.OrdenID → Articulos). Los importes
-// y cantidades salen de PedidosCobranzaDetalle (la línea real cotizada por
-// artículo). Lo que no mapea a ningún artículo queda afuera del ranking — el
-// front lo aclara. Las NC no se incluyen acá (no tienen líneas de pedido).
-const cteOrdenesDoc = (condArea = '') => `
-    DocsVenta AS (
-        SELECT doc.DocIdDocumento, doc.CliIdCliente, doc.DocFechaEmision, doc.DocTipo,
-               doc.DocSerie, doc.DocNumero
+// (23-sep-2026) El artículo sale de la LÍNEA FACTURADA (DocumentosContablesDetalle.
+// DcdProIdProducto, poblado en el 97% de las líneas de venta desde jun-2026), no
+// de la cotización de la orden como antes. Aquello perdía toda venta sin código de
+// orden (en TPU/USD/30 días: 24 de 33 líneas, US$ 1.790 de 2.182) y sumaba importes
+// COTIZADOS (PedidosCobranzaDetalle), no facturados. El importe de cada línea es su
+// parte del DocTotal con el mismo reparto que ventas-por-area (proporción de
+// DcdSubtotal dentro del documento; si el documento no tiene subtotales, partes
+// iguales), así el ranking suma exactamente lo mismo que Ventas por Área con el
+// mismo filtro. La orden se usa solo para variante / nombre del trabajo / cliente
+// dueño de la orden. Las NC no entran (no son ventas). Las líneas sin artículo se
+// devuelven aparte (sinArticulo) para que la pantalla lo diga.
+// El filtro de área va en la CTE "Lineas" (no en LineasVenta) para que el reparto
+// del DocTotal se calcule sobre TODAS las líneas del documento.
+const cteLineasVenta = (condArea = '') => `
+    LineasVenta AS (
+        SELECT doc.DocIdDocumento, doc.DocFechaEmision, doc.DocTipo, doc.DocSerie, doc.DocNumero, doc.MonIdMoneda,
+               ${factorMonedaTop('doc')} AS Factor,
+               dcd.DcdIdDetalle, dcd.DcdProIdProducto AS ProIdProducto, dcd.DcdNomItem,
+               ISNULL(dcd.DcdCantidad, 0) AS Cantidad,
+               CASE WHEN dcd.OrdCodigoOrden IS NULL OR LTRIM(dcd.OrdCodigoOrden) = '' THEN NULL
+                    ELSE ${primerToken('dcd.OrdCodigoOrden')} END AS CodigoOrden,
+               ${areaDesdeCodigo('dcd.OrdCodigoOrden')} AS Area,
+               COALESCE(o.CliIdCliente, doc.CliIdCliente) AS ClienteId,
+               o.OrdenID,
+               NULLIF(LTRIM(RTRIM(CAST(o.Variante AS NVARCHAR(200)))), '') AS Variante,
+               NULLIF(LTRIM(RTRIM(CAST(o.DescripcionTrabajo AS NVARCHAR(400)))), '') AS NombreTrabajo,
+               doc.DocTotal * ${factorMonedaTop('doc')} * CASE
+                   WHEN SUM(ISNULL(dcd.DcdSubtotal, 0)) OVER (PARTITION BY doc.DocIdDocumento) = 0
+                        THEN 1.0 / COUNT(*) OVER (PARTITION BY doc.DocIdDocumento)
+                   ELSE CAST(ISNULL(dcd.DcdSubtotal, 0) AS FLOAT) / SUM(ISNULL(dcd.DcdSubtotal, 0)) OVER (PARTITION BY doc.DocIdDocumento)
+               END AS Monto
         FROM dbo.DocumentosContables doc WITH(NOLOCK)
+        JOIN dbo.DocumentosContablesDetalle dcd WITH(NOLOCK) ON dcd.DocIdDocumento = doc.DocIdDocumento
+        OUTER APPLY (
+            SELECT TOP 1 o.OrdenID, o.CliIdCliente, o.Variante, o.DescripcionTrabajo
+            FROM dbo.Ordenes o WITH(NOLOCK)
+            WHERE dcd.OrdCodigoOrden IS NOT NULL AND LTRIM(dcd.OrdCodigoOrden) <> ''
+              AND o.CodigoOrden = ${primerToken('dcd.OrdCodigoOrden')}
+        ) o
         WHERE ${COND_ES_VENTA}
           AND doc.DocEstado <> 'ANULADO'
           AND (@fechaDesde IS NULL OR doc.DocFechaEmision >= @fechaDesde)
           AND (@fechaHasta IS NULL OR doc.DocFechaEmision <= @fechaHasta)
-          AND doc.MonIdMoneda = @moneda
+          AND (@moneda IS NULL OR doc.MonIdMoneda = @moneda)
     ),
-    OrdenesDoc AS (
-        SELECT DISTINCT dv.DocIdDocumento, o.OrdenID, o.CliIdCliente AS ClienteOrden,
-               ${areaDesdeCodigo('dcd.OrdCodigoOrden')} AS Area,
-               LTRIM(RTRIM(ISNULL(CAST(o.Variante AS NVARCHAR(200)), ''))) AS Variante
-        FROM DocsVenta dv
-        JOIN dbo.DocumentosContablesDetalle dcd WITH(NOLOCK) ON dcd.DocIdDocumento = dv.DocIdDocumento
-        JOIN dbo.Ordenes o WITH(NOLOCK) ON o.CodigoOrden = ${primerToken('dcd.OrdCodigoOrden')}
-        WHERE 1=1
-          ${condArea ? `AND ${condArea}` : ''}
+    Lineas AS (
+        SELECT lv.* FROM LineasVenta lv
+        ${condArea ? `WHERE ${condArea}` : ''}
     )`;
 
 /**
  * GET /api/contabilidad/reportes/top-productos
- *   ?fechaDesde&fechaHasta&moneda=1|2&area=&cliente=&limite=200
- * Ranking de artículos por monto y unidades (el orden final lo elige el front).
+ *   ?fechaDesde&fechaHasta&moneda=1|2|UNIF&tc=&area=|sector=&cliente=&limite=200
+ * Ranking de artículos por monto facturado y unidades (el orden final lo elige el
+ * front). Devuelve además sinArticulo = lo facturado en líneas sin artículo, que
+ * no puede entrar al ranking.
  */
 exports.getTopProductos = async (req, res) => {
     try {
@@ -965,39 +1104,36 @@ exports.getTopProductos = async (req, res) => {
 
         const r = pool.request();
         bindFiltrosComunes(r, params);
-        r.input('moneda', sql.Int, parseInt(params.moneda) || 1);
+        await bindMonedaTop(r, params, req.query);
         r.input('cliente', sql.Int, cliente);
         r.input('limite', sql.Int, limite);
-        const condArea = condAreasIn(await areasDeFiltro(params), areaDesdeCodigo('dcd.OrdCodigoOrden'), r);
+        const condArea = condAreasIn(await areasDeFiltro(params), 'lv.Area', r);
 
         const result = await r.query(`
-            ;WITH ${cteOrdenesDoc(condArea)},
+            ;WITH ${cteLineasVenta(condArea)},
             PorProducto AS (
-                SELECT pcd.ProIdProducto,
-                       RTRIM(ISNULL(a.CodArticulo, ISNULL(pcd.CodArticulo, ''))) AS CodArticulo,
-                       RTRIM(ISNULL(a.Descripcion, 'Artículo #' + CAST(pcd.ProIdProducto AS VARCHAR(10)))) AS Descripcion,
+                SELECT l.ProIdProducto,
+                       RTRIM(ISNULL(a.CodArticulo, '')) AS CodArticulo,
+                       RTRIM(ISNULL(a.Descripcion, 'Artículo #' + CAST(l.ProIdProducto AS VARCHAR(10)))) AS Descripcion,
                        RTRIM(ISNULL(CAST(a.Grupo AS VARCHAR(20)), '')) AS Grupo,
-                       SUM(ISNULL(pcd.Cantidad, 0)) AS Unidades,
-                       SUM(ISNULL(pcd.Subtotal, 0)) AS Monto,
-                       COUNT(DISTINCT od.DocIdDocumento) AS CantidadDocumentos
-                FROM OrdenesDoc od
-                JOIN dbo.PedidosCobranzaDetalle pcd WITH(NOLOCK) ON pcd.OrdenID = od.OrdenID
-                LEFT JOIN dbo.Articulos a WITH(NOLOCK) ON a.ProIdProducto = pcd.ProIdProducto
-                WHERE pcd.ProIdProducto IS NOT NULL
-                  AND (@cliente IS NULL OR od.ClienteOrden = @cliente)
-                GROUP BY pcd.ProIdProducto, a.CodArticulo, pcd.CodArticulo, a.Descripcion, a.Grupo
-                HAVING SUM(ISNULL(pcd.Subtotal, 0)) <> 0 OR SUM(ISNULL(pcd.Cantidad, 0)) <> 0
+                       SUM(l.Cantidad) AS Unidades,
+                       SUM(l.Monto) AS Monto,
+                       COUNT(DISTINCT l.DocIdDocumento) AS CantidadDocumentos
+                FROM Lineas l
+                LEFT JOIN dbo.Articulos a WITH(NOLOCK) ON a.ProIdProducto = l.ProIdProducto
+                WHERE l.ProIdProducto IS NOT NULL
+                  AND (@cliente IS NULL OR l.ClienteId = @cliente)
+                GROUP BY l.ProIdProducto, a.CodArticulo, a.Descripcion, a.Grupo
+                HAVING SUM(l.Monto) <> 0 OR SUM(l.Cantidad) <> 0
             ),
-            -- Área donde más se vendió cada artículo (para mostrarla en el ranking).
-            -- Si el artículo nunca pasó por una orden con área, cae a la clasificación
-            -- del catálogo (ArticuloClasificacion).
+            -- Área donde más se facturó cada artículo (para mostrarla en el ranking).
+            -- Si no tiene, cae a la clasificación del catálogo (ArticuloClasificacion).
             AreaPorProducto AS (
-                SELECT pcd.ProIdProducto, od.Area,
-                       ROW_NUMBER() OVER (PARTITION BY pcd.ProIdProducto ORDER BY SUM(ISNULL(pcd.Subtotal,0)) DESC) AS rn
-                FROM OrdenesDoc od
-                JOIN dbo.PedidosCobranzaDetalle pcd WITH(NOLOCK) ON pcd.OrdenID = od.OrdenID
-                WHERE pcd.ProIdProducto IS NOT NULL AND od.Area IS NOT NULL
-                GROUP BY pcd.ProIdProducto, od.Area
+                SELECT l.ProIdProducto, l.Area,
+                       ROW_NUMBER() OVER (PARTITION BY l.ProIdProducto ORDER BY SUM(l.Monto) DESC) AS rn
+                FROM Lineas l
+                WHERE l.ProIdProducto IS NOT NULL AND (@cliente IS NULL OR l.ClienteId = @cliente)
+                GROUP BY l.ProIdProducto, l.Area
             )
             SELECT TOP (@limite)
                 p.*,
@@ -1009,11 +1145,20 @@ exports.getTopProductos = async (req, res) => {
             ORDER BY p.Monto DESC
         `);
 
+        // Lo facturado que NO puede entrar al ranking porque la línea no tiene artículo
+        const sinArt = await r.query(`
+            ;WITH ${cteLineasVenta(condArea)}
+            SELECT ISNULL(SUM(l.Monto), 0) AS Monto, COUNT(*) AS Lineas, COUNT(DISTINCT l.DocIdDocumento) AS Documentos
+            FROM Lineas l
+            WHERE l.ProIdProducto IS NULL AND (@cliente IS NULL OR l.ClienteId = @cliente)
+        `);
+
         // Sector al que pertenece el área de cada artículo (roll-up del mapeo)
         const mapa = await getMapeoSectores();
         res.json({
             success: true,
             data: result.recordset.map(x => ({ ...x, Sector: sectorDeArea(x.Area, mapa).nombre })),
+            sinArticulo: sinArt.recordset[0] || { Monto: 0, Lineas: 0, Documentos: 0 },
         });
     } catch (err) {
         logger.error('[CONTABILIDAD-REPORTES] getTopProductos:', err.message);
@@ -1271,25 +1416,28 @@ exports.getArbolVentas = async (req, res) => {
 
         const r = pool.request();
         bindFiltrosComunes(r, params);
-        r.input('moneda', sql.Int, parseInt(params.moneda) || 1);
-        const condArea = condAreasIn(await areasDeFiltro(params), areaDesdeCodigo('dcd.OrdCodigoOrden'), r);
+        await bindMonedaTop(r, params, req.query);
+        const condArea = condAreasIn(await areasDeFiltro(params), 'lv.Area', r);
 
+        // Misma base que Top Productos (líneas facturadas). Las líneas sin artículo
+        // entran como hoja "Sin artículo en la línea", así el total del árbol es el
+        // mismo que Ventas por Área.
         const result = await r.query(`
-            ;WITH ${cteOrdenesDoc(condArea)}
-            SELECT od.Area,
-                   NULLIF(od.Variante, '')                       AS Variante,
-                   pcd.ProIdProducto,
-                   RTRIM(ISNULL(a.Descripcion, 'Artículo #' + CAST(pcd.ProIdProducto AS VARCHAR(10)))) AS Producto,
+            ;WITH ${cteLineasVenta(condArea)}
+            SELECT l.Area,
+                   l.Variante,
+                   l.ProIdProducto,
+                   RTRIM(ISNULL(a.Descripcion, CASE WHEN l.ProIdProducto IS NULL THEN 'Sin artículo en la línea'
+                                                    ELSE 'Artículo #' + CAST(l.ProIdProducto AS VARCHAR(10)) END)) AS Producto,
                    RTRIM(ISNULL(a.CodArticulo, ''))              AS CodArticulo,
-                   SUM(ISNULL(pcd.Cantidad, 0))                  AS Unidades,
-                   SUM(ISNULL(pcd.Subtotal, 0))                  AS Monto,
-                   COUNT(DISTINCT od.DocIdDocumento)             AS Documentos,
-                   COUNT(DISTINCT od.OrdenID)                    AS Ordenes
-            FROM OrdenesDoc od
-            JOIN dbo.PedidosCobranzaDetalle pcd WITH(NOLOCK) ON pcd.OrdenID = od.OrdenID
-            LEFT JOIN dbo.Articulos a WITH(NOLOCK) ON a.ProIdProducto = pcd.ProIdProducto
-            GROUP BY od.Area, NULLIF(od.Variante, ''), pcd.ProIdProducto, a.Descripcion, a.CodArticulo
-            HAVING SUM(ISNULL(pcd.Subtotal, 0)) <> 0 OR SUM(ISNULL(pcd.Cantidad, 0)) <> 0
+                   SUM(l.Cantidad)                               AS Unidades,
+                   SUM(l.Monto)                                  AS Monto,
+                   COUNT(DISTINCT l.DocIdDocumento)              AS Documentos,
+                   COUNT(DISTINCT l.OrdenID)                     AS Ordenes
+            FROM Lineas l
+            LEFT JOIN dbo.Articulos a WITH(NOLOCK) ON a.ProIdProducto = l.ProIdProducto
+            GROUP BY l.Area, l.Variante, l.ProIdProducto, a.Descripcion, a.CodArticulo
+            HAVING SUM(l.Monto) <> 0 OR SUM(l.Cantidad) <> 0
         `);
 
         // Armado del árbol: agrupa hacia arriba (producto → variante → área → sector)
@@ -1355,35 +1503,35 @@ exports.getTopProductosDetalle = async (req, res) => {
 
         const r = pool.request();
         bindFiltrosComunes(r, params);
-        r.input('moneda', sql.Int, parseInt(params.moneda) || 1);
+        await bindMonedaTop(r, params, req.query);
         r.input('cliente', sql.Int, cliente);
         r.input('producto', sql.Int, producto);
-        const condArea = condAreasIn(await areasDeFiltro(params), areaDesdeCodigo('dcd.OrdCodigoOrden'), r);
+        const condArea = condAreasIn(await areasDeFiltro(params), 'lv.Area', r);
 
+        // Una fila por línea facturada del artículo (Subtotal = su parte del DocTotal,
+        // ya en la moneda del ranking; SubtotalOriginal = en la moneda del documento).
         const result = await r.query(`
-            ;WITH ${cteOrdenesDoc(condArea)}
+            ;WITH ${cteLineasVenta(condArea)}
             SELECT TOP 500
-                dv.DocIdDocumento,
-                LTRIM(RTRIM(dv.DocTipo)) AS DocTipo,
-                RTRIM(ISNULL(dv.DocSerie, '')) + '-' + RTRIM(ISNULL(dv.DocNumero, '')) AS NumeroInterno,
-                dv.DocFechaEmision,
-                o.CodigoOrden,
-                od.Area,
-                NULLIF(LTRIM(RTRIM(CAST(o.Variante AS NVARCHAR(200)))), '') AS Variante,
-                -- Qué se hizo en esa orden (lo que el cliente pidió)
-                NULLIF(LTRIM(RTRIM(CAST(o.DescripcionTrabajo AS NVARCHAR(400)))), '') AS NombreTrabajo,
+                l.DocIdDocumento,
+                LTRIM(RTRIM(l.DocTipo)) AS DocTipo,
+                RTRIM(ISNULL(l.DocSerie, '')) + '-' + RTRIM(ISNULL(CAST(l.DocNumero AS VARCHAR(50)), '')) AS NumeroInterno,
+                l.DocFechaEmision,
+                l.CodigoOrden,
+                l.Area,
+                l.Variante,
+                l.NombreTrabajo,
                 RTRIM(ISNULL(c.Nombre, 'Mostrador')) AS Cliente,
-                pcd.Cantidad,
-                pcd.PrecioUnitario,
-                pcd.Subtotal
-            FROM OrdenesDoc od
-            JOIN DocsVenta dv ON dv.DocIdDocumento = od.DocIdDocumento
-            JOIN dbo.Ordenes o WITH(NOLOCK) ON o.OrdenID = od.OrdenID
-            JOIN dbo.PedidosCobranzaDetalle pcd WITH(NOLOCK) ON pcd.OrdenID = od.OrdenID
-            LEFT JOIN dbo.Clientes c WITH(NOLOCK) ON c.CliIdCliente = od.ClienteOrden
-            WHERE pcd.ProIdProducto = @producto
-              AND (@cliente IS NULL OR od.ClienteOrden = @cliente)
-            ORDER BY dv.DocFechaEmision DESC
+                l.Cantidad,
+                CASE WHEN l.Cantidad <> 0 THEN l.Monto / l.Cantidad ELSE NULL END AS PrecioUnitario,
+                l.Monto AS Subtotal,
+                l.MonIdMoneda,
+                l.Monto / NULLIF(l.Factor, 0) AS SubtotalOriginal
+            FROM Lineas l
+            LEFT JOIN dbo.Clientes c WITH(NOLOCK) ON c.CliIdCliente = l.ClienteId
+            WHERE l.ProIdProducto = @producto
+              AND (@cliente IS NULL OR l.ClienteId = @cliente)
+            ORDER BY l.DocFechaEmision DESC
         `);
 
         const mapa = await getMapeoSectores();

@@ -25,10 +25,21 @@ const r2 = n => Math.round((Number(n || 0) + Number.EPSILON) * 100) / 100;
  * @returns {object|null}  columnas a escribir, o null si la línea no tiene lista
  */
 function desgloseTrasEdicionManual(actual, nuevoNeto, edit = {}, origenTexto = 'Ajuste manual') {
-  if (!actual || !(Number(actual.PrecioLista) > 0)) return null;   // lista 0 = sin lista
-  const lista = r4(actual.PrecioLista);
+  if (!actual) return null;
   const neto = r2(nuevoNeto);
   const vino = k => edit && edit[k] != null && edit[k] !== '' && !isNaN(Number(edit[k]));
+  let lista = Number(actual.PrecioLista) > 0 ? r4(actual.PrecioLista) : null;
+  if (lista == null) {
+    // Sin lista guardada (pedido anterior al desglose o línea sin catálogo): si la pantalla
+    // editó descuento/recargo, la lista es el precio que tenía la línea, o sea
+    // neto + descuento − recargo (lista − descuento + recargo = neto). Sin edición, nada.
+    if (!(vino('descUnit') || vino('recUnit') || vino('descPct') || vino('recPct'))) return null;
+    const dU = vino('descUnit') ? r4(edit.descUnit) : 0;
+    const rU = vino('recUnit') ? r4(edit.recUnit) : 0;
+    lista = r4(neto + dU - rU);
+    if (!(lista > 0)) return null;
+    actual = { ...actual, PrecioLista: lista, DescuentoTipo: null, DescuentoPct: null, DescuentoImporte: null, DescuentoOrigen: null, RecargoPct: null, RecargoImporte: null, RecargoOrigen: null };
+  }
   let dTipo = actual.DescuentoTipo || null;
   let dPct = actual.DescuentoPct != null ? r4(actual.DescuentoPct) : null;
   let dImp = actual.DescuentoImporte != null ? r4(actual.DescuentoImporte) : null;

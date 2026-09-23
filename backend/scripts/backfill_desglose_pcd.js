@@ -11,9 +11,13 @@
 //
 //   DRY-RUN (default):  node scripts/backfill_desglose_pcd.js
 //   APLICAR:            node scripts/backfill_desglose_pcd.js --apply
+//   UN SOLO CLIENTE:    node scripts/backfill_desglose_pcd.js --cliente=PALMERO [--apply]
+//                       (acepta IdCliente, código, CliIdCliente numérico o nombre exacto;
+//                        sirve para probar con un cliente antes de correrlo para todos)
 const path = require('path');
 const { sql, getPool } = require(path.resolve(__dirname, '../config/db.js'));
 const APPLY = process.argv.includes('--apply');
+const CLIENTE = (process.argv.find(a => a.startsWith('--cliente=')) || '').split('=').slice(1).join('=').trim() || null;
 const r2 = n => Math.round((Number(n || 0) + Number.EPSILON) * 100) / 100;
 const r4 = n => Math.round((Number(n || 0) + Number.EPSILON) * 10000) / 10000;
 const num = s => parseFloat(String(s).replace(',', '.'));
@@ -71,10 +75,25 @@ function parsear(log, pu) {
   const pool = await getPool();
   const perf = await pool.request().query(`SELECT ID, LTRIM(RTRIM(Nombre)) AS Nombre FROM PerfilesPrecios`);
   const perfilPorNombre = {}; perf.recordset.forEach(p => { perfilPorNombre[p.Nombre] = p.ID; });
+  // Filtro por cliente (opcional): se busca la ficha por IdCliente / código / CliIdCliente /
+  // nombre y se toman sus pedidos (PedidosCobranza.ClienteID puede guardar cualquiera de
+  // esos identificadores, por eso se comparan todos como texto).
+  let filtroPedidos = '';
+  if (CLIENTE) {
+    const cli = await pool.request().input('C', sql.NVarChar(100), CLIENTE).query(`
+      SELECT CliIdCliente, CodCliente, IDCliente, Nombre FROM dbo.Clientes WITH(NOLOCK)
+      WHERE CAST(IDCliente AS NVARCHAR(100)) = @C OR CAST(CodCliente AS NVARCHAR(100)) = @C
+         OR CAST(CliIdCliente AS NVARCHAR(100)) = @C OR LTRIM(RTRIM(Nombre)) = @C`);
+    if (!cli.recordset.length) { console.error(`No se encontró el cliente "${CLIENTE}" (IdCliente, código, CliIdCliente o nombre exacto).`); process.exit(1); }
+    const ids = [...new Set(cli.recordset.flatMap(r => [r.CliIdCliente, r.CodCliente, r.IDCliente]).filter(v => v != null).map(v => String(v).trim()).filter(Boolean))];
+    filtroPedidos = ` AND PedidoCobranzaID IN (SELECT ID FROM dbo.PedidosCobranza WITH(NOLOCK) WHERE LTRIM(RTRIM(CAST(ClienteID AS NVARCHAR(100)))) IN (${ids.map(v => `'${v.replace(/'/g, "''")}'`).join(',')}))`;
+    console.log(`Cliente: ${cli.recordset.map(r => `${(r.Nombre || '').trim()} (CliIdCliente ${r.CliIdCliente}, IdCliente ${(r.IDCliente || '-').trim()})`).join(' | ')}`);
+  }
   const res = await pool.request().query(`
-    SELECT ID, PrecioUnitario, LogPrecioAplicado FROM dbo.PedidosCobranzaDetalle WITH(NOLOCK)
-    WHERE PrecioLista IS NULL AND LogPrecioAplicado LIKE 'Base:%' AND PrecioUnitario IS NOT NULL`);
+    SELECT ID, PedidoCobranzaID, PrecioUnitario, LogPrecioAplicado FROM dbo.PedidosCobranzaDetalle WITH(NOLOCK)
+    WHERE PrecioLista IS NULL AND LogPrecioAplicado LIKE 'Base:%' AND PrecioUnitario IS NOT NULL${filtroPedidos}`);
   const st = { candidatas: res.recordset.length, ok: 0, skip: {} };
+  if (CLIENTE) console.log(`Pedidos del cliente con líneas sin desglose: ${new Set(res.recordset.map(r => r.PedidoCobranzaID)).size}`);
   const updates = [];
   for (const row of res.recordset) {
     const p = parsear(row.LogPrecioAplicado, Number(row.PrecioUnitario));

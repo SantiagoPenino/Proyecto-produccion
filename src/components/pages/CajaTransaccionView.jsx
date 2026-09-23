@@ -1147,14 +1147,22 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
           const dzs = res.data || {};
           setEditRows(prev => prev.map(r => {
             const dz = dzs[r.orderId];
-            if (!dz || dz.multiple || !(Number(dz.lista) > 0)) return r;   // lista 0 = sin lista
-            if (Number(r.monedaId) !== (dz.moneda === 'USD' ? 2 : 1)) return r;
+            if (dz && dz.multiple) return r;   // varias líneas por orden: se edita como siempre
+            // Sin desglose guardado (pedido anterior al desglose, lista 0, otra moneda o un
+            // desglose que no explica el precio actual): la lista es el precio actual de la
+            // orden y sobre él se editan descuento y recargo; el precio también sigue editable.
+            const listaManual = (r) => ({
+              ...r, conDesglose: true, listaManual: true, lista: parseFloat(r.precio) || 0, descU: 0, recU: 0, descPct: 0, recPct: 0,
+              descOrigen: '', recOrigen: '', origDescOrigen: '', origRecOrigen: '', origDescU: 0, origRecU: 0
+            });
+            if (!dz || !(Number(dz.lista) > 0)) return listaManual(r);
+            if (Number(r.monedaId) !== (dz.moneda === 'USD' ? 2 : 1)) return listaManual(r);
             const lista = Number(dz.lista) || 0;
             const descU = Number(dz.descuentoImporte) || 0;
             const recU = Number(dz.recargoImporte) || 0;
             const precioCalc = Math.round((lista - descU + recU) * 100) / 100;
             // el pedido tiene que explicar el precio actual; si no, no se muestra un desglose que no cierra
-            if (Math.abs(precioCalc - (parseFloat(r.precio) || 0)) > 0.011) return r;
+            if (Math.abs(precioCalc - (parseFloat(r.precio) || 0)) > 0.011) return listaManual(r);
             return {
               ...r, conDesglose: true, lista, descU, recU,
               descPct: dz.descuentoPct != null ? Number(dz.descuentoPct) : (lista > 0 ? Math.round(descU / lista * 10000) / 100 : 0),
@@ -1202,8 +1210,17 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
       } else if (campo === 'monedaId') {
         next.monedaId = parseInt(valor, 10) || 1;
         next.simbolo = next.monedaId === 2 ? 'US$' : '$';
-        // cambiar la moneda invalida el desglose guardado (la lista está en la moneda original)
-        next.conDesglose = false;
+        // cambiar la moneda invalida el desglose guardado (la lista está en la moneda original):
+        // la lista pasa a ser el precio actual, sin descuento ni recargo, y sigue editable
+        next.conDesglose = true; next.listaManual = true;
+        next.descU = 0; next.recU = 0; next.descPct = 0; next.recPct = 0; next.origDescU = 0; next.origRecU = 0;
+        next.descOrigen = ''; next.recOrigen = ''; next.origDescOrigen = ''; next.origRecOrigen = '';
+      }
+      // Lista manual (= precio actual): tipear el precio o el total mueve la lista y borra
+      // descuento y recargo, igual que en la cotización.
+      if (next.listaManual && ['precio', 'total', 'monedaId'].includes(campo)) {
+        next.lista = parseFloat(next.precio) || 0;
+        next.descU = 0; next.recU = 0; next.descPct = 0; next.recPct = 0;
       }
       return next;
     }));
@@ -1244,7 +1261,12 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
           OReIdOrdenRetiro: editRetiro.codigoRef || editRetiro.retiroId,
         };
         // Descuento / recargo editados sobre la lista del pedido (el backend los congela en la línea)
-        if (r.conDesglose) {
+        // El desglose viaja solo si se editó descuento, recargo o su texto (o si la lista es
+        // manual, para que quede lista = precio). Si solo cambió cantidad o total, el backend
+        // conserva el desglose guardado en vez de rotularlo "Ajuste en caja".
+        const cambioDesglose = Math.abs((r.descU || 0) - (r.origDescU || 0)) > 0.00005 || Math.abs((r.recU || 0) - (r.origRecU || 0)) > 0.00005
+          || !!(r.descOrigen || '').trim() || !!(r.recOrigen || '').trim();
+        if (r.conDesglose && (cambioDesglose || r.listaManual)) {
           payload.desglose = { descuentoPct: r.descPct, descuentoImporte: r.descU, recargoPct: r.recPct, recargoImporte: r.recU, motivo: '',
             descuentoTexto: (r.descOrigen || '').trim(), recargoTexto: (r.recOrigen || '').trim() };
         }
@@ -3590,7 +3612,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
       {/* ── Modal Editar Órdenes del Retiro ── */}
       {editRetiro && (
         <div className="fixed inset-0 z-[115] flex items-center justify-center bg-black/60 p-4 animate-in fade-in duration-200" onClick={(e) => e.target === e.currentTarget && !savingEdit && setEditRetiro(null)}>
-          <div className="bg-white rounded-3xl max-w-2xl w-full shadow-2xl flex flex-col border border-zinc-200 animate-in zoom-in-95 duration-200 text-slate-800 max-h-[90vh]">
+          <div className="bg-white rounded-3xl max-w-5xl w-full shadow-2xl flex flex-col border border-zinc-200 animate-in zoom-in-95 duration-200 text-slate-800 max-h-[92vh]">
             <div className="flex justify-between items-center px-6 py-5 border-b border-zinc-100">
               <div>
                 <h3 className="font-black text-zinc-800 text-lg uppercase tracking-wider flex items-center gap-2">
@@ -3605,7 +3627,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
             </div>
 
             <div className="flex-1 overflow-y-auto px-6 py-4 flex flex-col gap-3">
-              <div className="grid grid-cols-[1.3fr_0.7fr_0.7fr_0.8fr_1.1fr_1.1fr_0.8fr_0.9fr] gap-2 px-1 text-[9px] font-black text-slate-400 uppercase tracking-wider">
+              <div className="grid grid-cols-[1.6fr_0.8fr_0.75fr_1fr_1.25fr_1.25fr_1.05fr_1.15fr] gap-3 px-1 text-[10px] font-black text-slate-400 uppercase tracking-wider">
                 <span>Orden</span>
                 <span className="text-center">Moneda</span>
                 <span className="text-center">Cantidad</span>
@@ -3621,7 +3643,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                 const esMixto = cobrableFilas.some(r => Number(r.monedaId) === 1) && cobrableFilas.some(r => Number(r.monedaId) === 2);
                 const cotiz = parseFloat(cotizacion) || 0;
                 return editRows.map((row, idx) => (
-                <div key={row.orderId} className={`grid grid-cols-[1.3fr_0.7fr_0.7fr_0.8fr_1.1fr_1.1fr_0.8fr_0.9fr] gap-2 items-center bg-slate-50 border rounded-xl p-2.5 ${row.bloqueado ? 'border-slate-200 opacity-60' : 'border-slate-200'}`}>
+                <div key={row.orderId} className={`grid grid-cols-[1.6fr_0.8fr_0.75fr_1fr_1.25fr_1.25fr_1.05fr_1.15fr] gap-3 items-center bg-slate-50 border rounded-xl p-2.5 ${row.bloqueado ? 'border-slate-200 opacity-60' : 'border-slate-200'}`}>
                   <div className="min-w-0">
                     <p className="font-black text-slate-800 text-sm leading-none truncate">{row.orderNumber}</p>
                     <p className="text-[10px] text-slate-400 italic font-semibold uppercase tracking-wider mt-1 leading-none truncate">{row.nombreTrabajo}</p>
@@ -3666,7 +3688,9 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                     className="w-full px-2 py-1.5 text-center text-slate-800 font-black text-xs bg-white border border-slate-200 rounded-lg outline-none focus:border-brand-cyan disabled:bg-slate-100 disabled:text-slate-400"
                   />
                   <div className="text-center font-mono text-xs text-slate-600 leading-tight" title="Precio de lista del pedido (antes de descuento y recargo)">
-                    {row.conDesglose ? `${row.simbolo} ${fmt(row.lista)}` : <span className="text-slate-300">—</span>}
+                    {row.conDesglose
+                      ? <span title={row.listaManual ? 'Sin desglose guardado: la lista es el precio actual de la orden. Si tipeás otro precio, la lista pasa a ser ese.' : 'Precio de lista del pedido'}>{row.simbolo} {fmt(row.lista)}{row.listaManual && <span className="block text-[8px] text-slate-400 font-normal">= precio actual</span>}</span>
+                      : <span className="text-slate-300">—</span>}
                   </div>
                   {['desc', 'rec'].map(k => (
                     <div key={k} className="flex flex-col gap-0.5">
@@ -3674,7 +3698,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                         <input type="number" min="0" step="any" disabled={row.bloqueado || !row.conDesglose}
                           value={row.conDesglose && row[k + 'Pct'] ? pct2(row[k + 'Pct']) : ''} placeholder="%"
                           onChange={e => actualizarFilaEdicion(idx, k + 'Pct', e.target.value)}
-                          className="w-full px-1 py-1 text-center text-slate-800 font-black text-[11px] bg-transparent outline-none disabled:text-slate-300" />
+                          className="w-full px-1.5 py-1.5 text-center text-slate-800 font-black text-xs bg-transparent outline-none disabled:text-slate-300" />
                         <span className="pr-1.5 text-[9px] text-slate-400 font-bold shrink-0">%</span>
                       </div>
                       <div className="flex items-center bg-white border border-slate-200 rounded-lg overflow-hidden focus-within:border-brand-cyan">
@@ -3682,7 +3706,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                         <input type="number" min="0" step="any" disabled={row.bloqueado || !row.conDesglose}
                           value={row.conDesglose ? (row[k + 'U'] || '') : ''} placeholder="0"
                           onChange={e => actualizarFilaEdicion(idx, k + 'Imp', e.target.value)}
-                          className="w-full px-1 py-1 text-center text-slate-800 font-black text-[11px] bg-transparent outline-none disabled:text-slate-300" />
+                          className="w-full px-1.5 py-1.5 text-center text-slate-800 font-black text-xs bg-transparent outline-none disabled:text-slate-300" />
                       </div>
                       {row.conDesglose && (row[k + 'U'] > 0) && (
                         <input type="text" disabled={row.bloqueado}
@@ -3690,15 +3714,15 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                           placeholder={Math.abs((row[k + 'U'] || 0) - (row['orig' + (k === 'desc' ? 'DescU' : 'RecU')] || 0)) > 0.00005 ? 'Ajuste en caja' : (row['orig' + (k === 'desc' ? 'DescOrigen' : 'RecOrigen')] || (k === 'desc' ? 'Descuento' : 'Recargo'))}
                           title="Texto que ve el cliente en la factura junto al descuento / recargo. Vacío = el texto automático (el que se muestra en gris). Un guion (-) = sin texto."
                           onChange={e => actualizarFilaEdicion(idx, k + 'Origen', e.target.value)}
-                          className="w-full px-1 py-0.5 text-[8px] text-center text-slate-500 bg-white border border-slate-100 rounded-md outline-none focus:border-brand-cyan placeholder-slate-300 disabled:text-slate-300" />
+                          className="w-full px-1.5 py-1 text-[10px] text-center text-slate-500 bg-white border border-slate-100 rounded-md outline-none focus:border-brand-cyan placeholder-slate-300 disabled:text-slate-300" />
                       )}
                     </div>
                   ))}
                   <div className="flex items-center bg-white border border-slate-200 rounded-lg overflow-hidden focus-within:border-brand-cyan">
                     <span className="pl-2 text-[10px] text-slate-400 font-bold shrink-0">{row.simbolo}</span>
                     <input
-                      type="number" min="0" step="any" disabled={row.bloqueado || row.conDesglose}
-                      title={row.conDesglose ? 'Unitario neto = lista − descuento + recargo: editá el descuento o el recargo' : undefined}
+                      type="number" min="0" step="any" disabled={row.bloqueado || (row.conDesglose && !row.listaManual)}
+                      title={row.conDesglose && !row.listaManual ? 'Unitario neto = lista − descuento + recargo: editá el descuento o el recargo' : (row.listaManual ? 'Precio unitario. Si lo tipeás, pasa a ser la lista (sin descuento ni recargo).' : undefined)}
                       value={row.precio}
                       onChange={e => actualizarFilaEdicion(idx, 'precio', e.target.value)}
                       className="w-full px-1 py-1.5 text-center text-slate-800 font-black text-xs bg-transparent outline-none disabled:text-slate-400"
@@ -3708,8 +3732,8 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                     <div className="flex items-center bg-white border border-slate-200 rounded-lg overflow-hidden focus-within:border-brand-cyan">
                       <span className="pl-2 text-[10px] text-slate-400 font-bold shrink-0">{row.simbolo}</span>
                       <input
-                        type="number" min="0" step="any" disabled={row.bloqueado || row.conDesglose}
-                        title={row.conDesglose ? 'Total = unitario neto × cantidad: editá cantidad, descuento o recargo' : undefined}
+                        type="number" min="0" step="any" disabled={row.bloqueado || (row.conDesglose && !row.listaManual)}
+                        title={row.conDesglose && !row.listaManual ? 'Total = unitario neto × cantidad: editá cantidad, descuento o recargo' : (row.listaManual ? 'Total de la orden. Si lo tipeás, el unitario pasa a ser la lista (sin descuento ni recargo).' : undefined)}
                         value={row.total}
                         onChange={e => actualizarFilaEdicion(idx, 'total', e.target.value)}
                         className="w-full px-1 py-1.5 text-center text-brand-cyan font-black text-xs bg-transparent outline-none disabled:text-slate-400"

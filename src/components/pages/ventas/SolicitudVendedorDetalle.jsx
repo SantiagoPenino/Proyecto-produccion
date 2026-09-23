@@ -5,11 +5,12 @@ import { AlertTriangle, ArrowLeft, Ban, CheckCircle2, ClipboardList, FileText, H
 import { useAuth } from '../../../context/AuthContext';
 import { fileService } from '../../../client-portal/api/fileService';
 import { solicitudesVendedorService as svc } from '../../../services/modules/solicitudesVendedorService';
-import { fmtFechaHora } from '../../../utils/fechas';
+import { fmtFecha, fmtFechaHora } from '../../../utils/fechas';
+import { RESPUESTA_MUESTRA } from './checklistSolicitud';
 import OrderDetailModal from '../../production/components/OrderDetailModal';
 import {
     BTN_PELIGRO, BTN_PRIMARIO, BTN_SECUNDARIO, Campo, ESTADO_PARTE, ESTADO_SOLICITUD, INPUT, Info, MONEDA, MotivoModal,
-    NOMBRE_PARTE, Pill, PillModificada, ROL_ARCHIVO, TIPO_TRABAJO, errorDe, plata,
+    NOMBRE_PARTE, Pill, PillModificada, ROL_ARCHIVO, Sello, Checklist, TIPO_TRABAJO, errorDe, plata,
 } from './solicitudesComunes';
 
 /**
@@ -117,7 +118,9 @@ export default function SolicitudVendedorDetalle() {
         <div className="p-4 md:p-6 max-w-6xl mx-auto space-y-4">
             <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
-                    <div className="flex items-center gap-2"><Pill e={s.Estado} mapa={ESTADO_SOLICITUD} /><span className="text-[11px] text-slate-400">Solicitud #{s.SolicitudID} · {fmtFechaHora(s.FechaSolicitud)}</span></div>
+                    <div className="flex flex-wrap items-center gap-2"><Pill e={s.Estado} mapa={ESTADO_SOLICITUD} />
+                        {abierta && s.Conversion.some(c => c.checklist) && <Sello listo={s.Conversion.every(c => !c.checklist || c.checklist.listo)} chico />}
+                        <span className="text-[11px] text-slate-400">Solicitud #{s.SolicitudID} · {fmtFechaHora(s.FechaSolicitud)}</span></div>
                     <h1 className="text-xl font-black text-slate-800 mt-1 flex items-center gap-2"><ClipboardList size={20} className="text-indigo-500" /> {s.NombreTrabajo}</h1>
                     <p className="text-sm text-slate-600">{s.ClienteNombre}{s.ClienteCodigo ? <span className="font-mono text-xs text-slate-400"> · {s.ClienteCodigo}</span> : null} · vendedor <b>{s.VendedorNombre || '—'}</b></p>
                 </div>
@@ -144,9 +147,10 @@ export default function SolicitudVendedorDetalle() {
             )}
 
             {/* Lo importante de un vistazo */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
                 <Dato l="Cómo se cobra" v={!s.ModoCobro ? <span className="text-rose-600">Sin pactar</span> : s.ModoCobro === 'POR_AREA' ? 'Por cada área' : 'Precio establecido'} />
                 <Dato l="Precio de la solicitud" v={s.ModoCobro === 'PRECIO_ESTABLECIDO' ? plata(s.PrecioPactado, s.MonIdMoneda) : '—'} />
+                <Dato l="Entrega que necesita el cliente" v={s.FechaEntrega ? `${fmtFecha(s.FechaEntrega)}${s.FechaEntregaHasta ? ` → ${fmtFecha(s.FechaEntregaHasta)}` : ''}` : <span className="text-rose-600">Sin fecha</span>} />
                 <Dato l="Seña" v={!s.RequiereSena ? 'No requiere' : s.SenaConfirmada ? <span className="text-emerald-700">{plata(s.SenaMonto, s.MonIdMoneda)} confirmada</span> : <span className="text-rose-600">{plata(s.SenaMontoRequerido, s.MonIdMoneda)} sin confirmar</span>} />
                 {s.Productos.some(p => p.PedidoNoDocERP)
                     ? <Dato l="Pedido de producción creado" v={<span className="text-emerald-700">{s.Productos.filter(p => p.PedidoNoDocERP).map(p => p.PedidoNoDocERP).join(', ')}</span>} />
@@ -169,6 +173,7 @@ export default function SolicitudVendedorDetalle() {
                             <Info l="Qué pide el cliente" v={<span className="whitespace-pre-line">{s.Detalle}</span>} />
                             {s.PreNumero && <Info l="Presupuesto del que salió" v={<><b className="font-mono">{s.PreNumero}</b>{s.Presupuesto ? ` · ${s.Presupuesto.Moneda} ${Number(s.Presupuesto.Total || 0).toLocaleString('es-UY', { minimumFractionDigits: 2 })} · ${s.Presupuesto.Estado} · emitido ${fmtFechaHora(s.Presupuesto.FechaEmision)}` : ''}</>} />}
                             {s.Observaciones && <Info l="Observaciones generales" v={<span className="whitespace-pre-line">{s.Observaciones}</span>} />}
+                            <FichaIngreso s={s} />
                             <div className="border-t border-slate-100 pt-3 space-y-2">
                                 <div>
                                     <div className="text-[10px] font-black uppercase tracking-wide text-slate-500">Archivos generales de la solicitud (opcional)</div>
@@ -253,6 +258,7 @@ function ProductoTab({ s, p, n, id, user, perfil, busy, abierta, puedeVender, te
                 <Info l="Corte" v={p.Datos?.corte?.activo ? `${p.Datos.corte.tipoMolde} · ${p.Datos.corte.origenTela}` : 'No lleva'} />
                 <Info l="Costura" v={p.Datos?.costura?.activo ? (p.Datos.costura.instrucciones || 'Sin instrucciones especiales') : 'No lleva'} />
                 {p.Observaciones && <Info l="Observaciones" v={<span className="whitespace-pre-line">{p.Observaciones}</span>} />}
+                <DatosProducto d={p.Datos || {}} />
                 <div>
                     <div className="text-[9px] font-black uppercase tracking-wide text-slate-400">Planilla de talles y referencias</div>
                     <ArchivosCelda archivos={delProducto} vacio="Sin archivos" puedeQuitar={puedeVender && !p.PedidoNoDocERP} onQuitar={(a) => hacer(() => svc.quitarArchivo(id, a.ArchivoID), 'Archivo quitado.')} />
@@ -286,7 +292,7 @@ function ProductoTab({ s, p, n, id, user, perfil, busy, abierta, puedeVender, te
                 </table>
             </div>
 
-            <Conversion s={s} p={p} pedido={conv.pedido} faltantes={faltantes} avisos={conv.avisos || []} puedeVender={perfil.esVendedor} busy={busy} hacer={hacer} id={id} />
+            <Conversion s={s} p={p} pedido={conv.pedido} faltantes={faltantes} avisos={conv.avisos || []} checklist={conv.checklist} puedeVender={perfil.esVendedor} busy={busy} hacer={hacer} id={id} />
         </div>
     );
 }
@@ -466,7 +472,7 @@ function ArchivosCelda({ archivos, vacio, puedeQuitar, onQuitar, conRol }) {
 }
 
 // Conversión del producto en pedido de producción: qué falta, el botón, y cómo quedó.
-function Conversion({ s, p, pedido, faltantes, avisos = [], puedeVender, busy, hacer, id }) {
+function Conversion({ s, p, pedido, faltantes, avisos = [], checklist, puedeVender, busy, hacer, id }) {
     const navigate = useNavigate();
     const usaTelaCliente = !!p.Datos?.corte?.activo && p.Datos.corte.origenTela === 'TELA CLIENTE';
     const [bobinas, setBobinas] = useState(null);         // null = todavía no se pidieron
@@ -506,19 +512,18 @@ function Conversion({ s, p, pedido, faltantes, avisos = [], puedeVender, busy, h
     }
 
     return (
-        <div className={`rounded-xl border p-3 text-xs ${faltantes.length ? 'border-amber-200 bg-amber-50/60' : 'border-emerald-200 bg-emerald-50/60'}`}>
+        <div className="text-xs space-y-2">
+            <Checklist ch={checklist || { listo: faltantes.length === 0, faltan: faltantes, ok: [], luego: [] }} titulo={faltantes.length ? 'Lo rojo frena el ingreso a producción. Lo verde ya está.' : 'Este producto tiene todo para convertirse en pedido de producción.'} />
             {faltantes.length ? (
                 <>
-                    <div className="font-black text-amber-800 flex items-center gap-1"><AlertTriangle size={13} /> Para convertir este producto en pedido falta:</div>
-                    <ul className="list-disc pl-5 mt-1 text-slate-700 space-y-0.5">{faltantes.map((f, k) => <li key={k}>{f}</li>)}</ul>
-                    <div className="mt-2 text-[11px] text-slate-600 bg-white border border-amber-200 rounded-lg p-2">
+                    <div className="mt-2 text-[11px] text-slate-600 bg-white border border-slate-200 rounded-lg p-2">
                         <b>Dónde se completa cada cosa:</b> la <b>tela y las copias</b> las carga el diseñador en esta misma tabla, columna "Diseño pronto", debajo de cada archivo (se guardan solas al cambiar).
                         Los <b>datos de un servicio</b> (tipo / variante, material, cantidades) se cargan en
                         {' '}{puedeVender ? <button type="button" onClick={() => navigate(`/ventas/solicitudes/${id}/editar`)} className="text-indigo-600 font-bold hover:underline">Editar solicitud</button> : <b>Editar solicitud</b>}
                         {' '}y se guardan con "Guardar cambios de la solicitud". Los <b>archivos</b> se guardan solos al subirlos.
                     </div>
                 </>
-            ) : <div className="font-black text-emerald-800 flex items-center gap-1"><CheckCircle2 size={13} /> Este producto tiene todo para convertirse en pedido de producción.</div>}
+            ) : null}
 
             {avisos.length > 0 && (
                 <div className="mt-2 bg-white border border-sky-200 rounded-lg p-2">
@@ -701,5 +706,57 @@ function Interacciones({ s, puede, busy, hacer, subir }) {
                 </ul>
             )}
         </section>
+    );
+}
+
+// Ficha de ingreso a producción (cabecera): muestra, plazo, dónde se cose, indicaciones, notas internas.
+function FichaIngreso({ s }) {
+    const f = s.Ficha || {};
+    const mu = f.muestra || {};
+    const si = (v) => (v ? <span className="text-emerald-700 font-bold">Sí</span> : <span className="text-rose-600 font-bold">No</span>);
+    return (
+        <div className="border-t border-slate-100 pt-3">
+            <div className="text-[10px] font-black uppercase tracking-wide text-slate-500 mb-2">Ficha de ingreso a producción</div>
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-xs">
+                <Info l="Dónde se cose" v={f.dondeSeCose === 'EXTERNO' ? `Taller externo${f.tallerExterno ? `: ${f.tallerExterno}` : ' (sin nombre)'}` : 'Nuestro taller'} />
+                <Info l="Muestra" v={!mu.ofrecida ? <span className="text-rose-600 font-bold">No se ofreció / sin registrar</span> : <>Ofrecida · {RESPUESTA_MUESTRA[mu.respuesta] || <span className="text-rose-600 font-bold">respuesta sin registrar</span>}{mu.respuesta !== 'RECHAZO' && <> · aprobada: {si(mu.aprobada)}</>}</>} />
+                <Info l="Fecha que necesita el cliente" v={s.FechaEntrega ? `${fmtFecha(s.FechaEntrega)}${s.FechaEntregaHasta ? ` → ${fmtFecha(s.FechaEntregaHasta)}` : ''}` : <span className="text-rose-600 font-bold">Sin fecha</span>} />
+                <Info l="Plazo verificado, informado y aceptado" v={si(f.plazoOk)} />
+                <div className="col-span-2"><Info l="Indicaciones del cliente" v={f.indicaciones ? <span className="whitespace-pre-line">{f.indicaciones}</span> : f.sinIndicaciones ? 'No hay indicaciones especiales (ya se preguntó)' : <span className="text-rose-600 font-bold">Sin anotar</span>} /></div>
+                {f.notasInternas && <div className="col-span-full"><Info l="Notas internas (taller)" v={<span className="whitespace-pre-line">{f.notasInternas}</span>} /></div>}
+            </div>
+        </div>
+    );
+}
+
+// Datos de la ficha por producto: cómo se define, producto nuevo, medidas / talles, especificaciones, diseño.
+function DatosProducto({ d }) {
+    const e = d.espec || {};
+    const dis = d.diseno || {};
+    const marcas = [d.productoNuevo && 'Producto nuevo', d.produccionGrande && 'Producción grande', d.muestraFisica && 'Muestra física o molde del cliente', d.tablaEstandar && 'Tabla de medidas estándar del taller', d.personalizacion && (d.listaCerrada ? 'Nombres y números: lista cerrada' : 'Nombres y números: lista SIN cerrar')].filter(Boolean);
+    return (
+        <>
+            {d.tipoTrabajo && <Info l="Tipo de trabajo" v={d.tipoTrabajo} />}
+            <Info l="Cómo se define" v={d.comoSeDefine === 'MEDIDA' ? 'Por medidas en cm' : 'Por talle'} />
+            {marcas.length > 0 && <Info l="Marcas" v={marcas.join(' · ')} />}
+            {d.comoSeDefine === 'MEDIDA' ? (
+                <>
+                    <Info l="Medidas y cantidad por medida" v={d.medidas ? <span className="whitespace-pre-line">{d.medidas}</span> : <span className="text-rose-600">Sin cargar</span>} />
+                    <Info l="Terminación / costura" v={d.terminacion || <span className="text-rose-600">Sin cargar</span>} />
+                </>
+            ) : (
+                <>
+                    {d.notaTalles && <Info l="Nota sobre los talles" v={d.notaTalles} />}
+                    {d.medidasPrenda && <Info l="Medidas de la prenda" v={<span className="whitespace-pre-line">{d.medidasPrenda}</span>} />}
+                </>
+            )}
+            {d.productoNuevo && (
+                <div className="col-span-full grid grid-cols-2 md:grid-cols-4 gap-3 bg-slate-50 rounded-lg p-2">
+                    <Info l="Costuras" v={e.costuras || '—'} /><Info l="Terminaciones" v={e.terminaciones || '—'} /><Info l="Avíos y accesorios" v={e.avios || '—'} />
+                    <Info l="Tela e insumos" v={<>{e.tela || '—'}{e.provee ? <div className="text-[10px] text-slate-500">provee: {e.provee === 'TALLER' ? 'el taller' : 'el cliente'}</div> : null}</>} />
+                </div>
+            )}
+            {dis.origen && <Info l="Diseño" v={dis.origen === 'NO' ? 'No lleva diseño' : dis.origen === 'CLIENTE' ? <>Lo entrega el cliente · archivo verificado: {dis.verificado ? 'sí' : 'no'}</> : <>Lo hace el taller · propuesta aprobada por escrito: {dis.aprobado ? 'sí' : 'no'}</>} />}
+        </>
     );
 }

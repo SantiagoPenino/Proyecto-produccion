@@ -3260,11 +3260,12 @@ async function cerrarCicloCompleto({
           .input('RPct', sql.Decimal(9,4), dz ? dz.RecargoPct : null)
           .input('RImp', sql.Decimal(18,4), dz ? dz.RecargoImporte : null)
           .input('ROrig', sql.NVarChar(200), dz ? dz.RecargoOrigen : null)
+          .input('PLista', sql.Decimal(18, 4), dz ? dz.PrecioLista : null)
           .input('Limpiar', sql.Bit, dz && dz.limpiarRegla ? 1 : 0)
           .query(`
             UPDATE dbo.PedidosCobranzaDetalle
             SET PrecioUnitario = @Precio, Subtotal = @Subtotal, LogPrecioAplicado = @Log
-                ${dz ? `, DescuentoTipo = @DTipo, DescuentoPct = @DPct, DescuentoImporte = @DImp, DescuentoOrigen = @DOrig,
+                ${dz ? `, PrecioLista = @PLista, DescuentoTipo = @DTipo, DescuentoPct = @DPct, DescuentoImporte = @DImp, DescuentoOrigen = @DOrig,
                   DescuentoPerfilId = CASE WHEN @Limpiar = 1 THEN NULL ELSE DescuentoPerfilId END,
                   DescuentoReglaId  = CASE WHEN @Limpiar = 1 THEN NULL ELSE DescuentoReglaId END,
                   RecargoPct = @RPct, RecargoImporte = @RImp, RecargoOrigen = @ROrig` : ''}

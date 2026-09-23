@@ -117,7 +117,19 @@ function getDateRange(preset) {
 const toISO = d => d ? d.toISOString().slice(0, 10) : '';
 
 // Mismo mapeo usado en contabilidadCore.js (od.MonIdMoneda = 2 → USD, = 1 → UYU)
-const MONEDA_ID_MAP = { UYU: 1, USD: 2 };
+// USD_UNIF = las dos monedas llevadas a US$ con el tipo de cambio (backend moneda=UNIF&tc=)
+const MONEDA_ID_MAP = { UYU: 1, USD: 2, USD_UNIF: 'UNIF' };
+const etiquetaMoneda = (m) => (m === 'USD_UNIF' ? 'US$ unificado' : m);
+// Campo de tipo de cambio que aparece al lado del selector de moneda en modo unificado
+const InputTcUnif = ({ f, setF, opciones }) => f.moneda !== 'USD_UNIF' ? null : (
+    <span className="flex items-center gap-1 text-[11px] text-slate-500 ml-1" title="Los documentos en pesos se dividen por este tipo de cambio">
+        1 USD =
+        <input type="number" step="0.1" value={f.tc} placeholder={opciones?.cotizacionDolar ? String(opciones.cotizacionDolar) : ''}
+            onChange={e => setF({ tc: e.target.value })}
+            className="text-xs border border-slate-300 rounded-lg px-2 py-1 w-20 outline-none focus:ring-2 focus:ring-brand-cyan/30" />
+        UYU {!f.tc && opciones?.cotizacionDolar ? '(cotización del día)' : ''}
+    </span>
+);
 
 const fmtMoney = n => Number(n || 0).toLocaleString('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmtInt   = n => Number(n || 0).toLocaleString('es-UY');
@@ -478,7 +490,7 @@ const FilaFecha = ({ f, setF }) => (
 // Ranking por CLIENTE INTERNO (dueño de la orden), no por el receptor del CFE en
 // DGI. Lo irresoluble cae en "Mostrador / sin identificar". NC restan.
 function TopClientesSection({ opciones }) {
-    const [f, setFRaw] = useState({ preset: '30d', desde: '', hasta: '', ambito: 'Todas', verPor: 'sector', moneda: 'UYU', comparar: false, top: 25 });
+    const [f, setFRaw] = useState({ preset: '30d', desde: '', hasta: '', ambito: 'Todas', verPor: 'sector', moneda: 'UYU', tc: '', comparar: false, top: 25 });
     const setF = patch => setFRaw(x => ({ ...x, ...patch }));
     const topN = Math.min(Math.max(parseInt(f.top) || 25, 1), 200);
     const [rows, setRows] = useState([]);
@@ -491,7 +503,9 @@ function TopClientesSection({ opciones }) {
     // Documento expandido dentro del modal (click en el N°): trae sus líneas reales
     const [docAbierto, setDocAbierto] = useState(null); // { id, loading, lineas, doc }
 
-    const sym = f.moneda === 'USD' ? 'US$' : '$';
+    const sym = f.moneda === 'UYU' ? '$' : 'US$';
+    // moneda + tc para el backend (tc solo en modo unificado; vacío = cotización del día)
+    const paramsMoneda = { moneda: MONEDA_ID_MAP[f.moneda], ...(f.moneda === 'USD_UNIF' && Number(f.tc) > 0 && { tc: f.tc }) };
 
     const toggleDoc = async (docId) => {
         if (docAbierto?.id === docId) { setDocAbierto(null); return; }
@@ -510,7 +524,7 @@ function TopClientesSection({ opciones }) {
         setLoading(true); setError(null);
         try {
             const params = {
-                moneda: MONEDA_ID_MAP[f.moneda],
+                ...paramsMoneda,
                 limite: Math.min(Math.max(parseInt(f.top) || 25, 1), 200),
                 ...paramsAmbito(f.ambito),
             };
@@ -544,7 +558,7 @@ function TopClientesSection({ opciones }) {
     const abrirDrill = async (row) => {
         setDrill({
             titulo: row.nombre,
-            sub: `${row.codCliente ? row.codCliente + ' · ' : ''}Comprobantes que componen el total (${f.moneda}). ` +
+            sub: `${row.codCliente ? row.codCliente + ' · ' : ''}Comprobantes que componen el total (${etiquetaMoneda(f.moneda)}). ` +
                 (f.ambito !== 'Todas'
                     ? `El Importe es SOLO la porción de ${etiquetaAmbito(f.ambito, opciones)} de cada comprobante (si tiene líneas de otras áreas, esa parte no se cuenta acá). `
                     : 'El Importe es el total de cada comprobante. ') +
@@ -554,7 +568,7 @@ function TopClientesSection({ opciones }) {
         setDocAbierto(null);
         try {
             const { desde, hasta } = rangoDeFiltros(f);
-            const params = { cliente: row.cliId, moneda: MONEDA_ID_MAP[f.moneda], ...paramsAmbito(f.ambito) };
+            const params = { cliente: row.cliId, ...paramsMoneda, ...paramsAmbito(f.ambito) };
             if (desde) params.fechaDesde = desde;
             if (hasta) params.fechaHasta = hasta;
             const r = await api.get('/contabilidad/reportes/top-clientes-detalle', { params });
@@ -566,7 +580,7 @@ function TopClientesSection({ opciones }) {
 
     const exportar = () => descargarCSV(
         `top_clientes_${f.moneda}_${new Date().toISOString().slice(0, 10)}.csv`,
-        ['#', 'Cliente', 'Código', 'Área dominante', `Monto (${f.moneda})`, '% participación', 'Documentos', 'NC'],
+        ['#', 'Cliente', 'Código', 'Área dominante', `Monto (${etiquetaMoneda(f.moneda)})`, '% participación', 'Documentos', 'NC'],
         rows.map((r, i) => [i + 1, r.nombre, r.codCliente, r.areaDominante, r.monto.toFixed(2), r.participacion, r.cantidadDocumentos, r.cantidadNC]));
 
     const maxMonto = rows.length ? Math.max(...rows.map(r => r.monto)) : 1;
@@ -581,9 +595,13 @@ function TopClientesSection({ opciones }) {
                 <div className="flex items-center gap-3 flex-wrap">
                     <div className="flex items-center gap-2">
                         <span className="text-[11px] font-bold text-slate-500 w-14 shrink-0 tracking-wide">MONEDA</span>
-                        {['UYU', 'USD'].map(m => (
-                            <Chip key={m} active={f.moneda === m} onClick={() => setF({ moneda: m })}>{m === 'UYU' ? 'UYU (pesos)' : 'USD (dólares)'}</Chip>
+                        {['UYU', 'USD', 'USD_UNIF'].map(m => (
+                            <Chip key={m} active={f.moneda === m} onClick={() => setF({ moneda: m })}
+                                title={m === 'USD_UNIF' ? 'Pesos y dólares juntos, todo llevado a US$ con el tipo de cambio' : ''}>
+                                {m === 'UYU' ? 'UYU (pesos)' : m === 'USD' ? 'USD (dólares)' : 'US$ unificado (TC)'}
+                            </Chip>
                         ))}
+                        <InputTcUnif f={f} setF={setF} opciones={opciones} />
                     </div>
                     <div className="flex items-center gap-2 ml-2">
                         <span className="text-[11px] font-bold text-slate-500 tracking-wide">TOP</span>
@@ -611,7 +629,7 @@ function TopClientesSection({ opciones }) {
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <KpiCard label="Facturación del período (neta de NC)" value={`${sym} ${fmtMoney(totalUniverso)}`}
-                    sub={etiquetaAmbito(f.ambito, opciones)} color={f.moneda === 'USD' ? '#0891b2' : '#0d9488'} />
+                    sub={etiquetaAmbito(f.ambito, opciones)} color={f.moneda === 'UYU' ? '#0d9488' : '#0891b2'} />
                 <KpiCard label="Clientes con compras" value={fmtInt(cantidadClientes)} sub={`mostrando los ${rows.length} mayores`} color="#8b5cf6" />
                 <KpiCard label="Cliente #1" value={rows.length ? rows[0].nombre : '—'}
                     sub={rows.length ? `${sym} ${fmtMoney(rows[0].monto)}` : ''} color="#f59e0b" />
@@ -622,7 +640,7 @@ function TopClientesSection({ opciones }) {
                     <span className="font-bold text-xs text-slate-700">
                         {f.ambito === 'Todas' ? `Top ${topN} clientes — General (todos los sectores)` : `Top ${topN} clientes — ${etiquetaAmbito(f.ambito, opciones)}`}
                     </span>
-                    <span className="text-[11px] text-slate-400">{rows.length} clientes · {f.moneda} · clic en un cliente para ver sus comprobantes</span>
+                    <span className="text-[11px] text-slate-400">{rows.length} clientes · {etiquetaMoneda(f.moneda)} · clic en un cliente para ver sus comprobantes</span>
                 </div>
                 {loading ? (
                     <div className="flex items-center justify-center py-14"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-brand-cyan" /></div>
@@ -790,7 +808,7 @@ function TopClientesSection({ opciones }) {
 // El artículo se resuelve por la cotización de la orden (línea del documento →
 // orden → línea de pedido con artículo). Ventas sin orden/artículo no aparecen.
 function TopProductosSection({ opciones }) {
-    const [f, setFRaw] = useState({ preset: '30d', desde: '', hasta: '', ambito: 'Todas', verPor: 'sector', moneda: 'UYU', orden: 'monto', familia: 'Todas', top: 25 });
+    const [f, setFRaw] = useState({ preset: '30d', desde: '', hasta: '', ambito: 'Todas', verPor: 'sector', moneda: 'UYU', tc: '', orden: 'monto', familia: 'Todas', top: 25 });
     const setF = patch => setFRaw(x => ({ ...x, ...patch }));
     const topN = Math.min(Math.max(parseInt(f.top) || 25, 1), 200);
     const [rows, setRows] = useState([]);
@@ -798,11 +816,14 @@ function TopProductosSection({ opciones }) {
     const [error, setError] = useState(null);
     const [drill, setDrill] = useState(null);
     const [cliente, setCliente] = useState({ id: null, nombre: '', sugs: [] });
+    const [sinArticulo, setSinArticulo] = useState(null); // facturado en líneas sin artículo (no entra al ranking)
     const cliBoxRef = useRef(null);
     // Documento expandido dentro del modal (click en el N°): trae sus líneas reales
     const [docAbierto, setDocAbierto] = useState(null);
 
-    const sym = f.moneda === 'USD' ? 'US$' : '$';
+    const sym = f.moneda === 'UYU' ? '$' : 'US$';
+    // moneda + tc para el backend (tc solo en modo unificado; vacío = cotización del día)
+    const paramsMoneda = { moneda: MONEDA_ID_MAP[f.moneda], ...(f.moneda === 'USD_UNIF' && Number(f.tc) > 0 && { tc: f.tc }) };
 
     const toggleDoc = async (docId) => {
         if (docAbierto?.id === docId) { setDocAbierto(null); return; }
@@ -836,17 +857,18 @@ function TopProductosSection({ opciones }) {
         const { desde, hasta } = rangoDeFiltros(f);
         setLoading(true); setError(null);
         try {
-            const params = { moneda: MONEDA_ID_MAP[f.moneda], limite: 200, ...paramsAmbito(f.ambito) };
+            const params = { ...paramsMoneda, limite: 200, ...paramsAmbito(f.ambito) };
             if (desde) params.fechaDesde = desde;
             if (hasta) params.fechaHasta = hasta;
             if (cliente.id) params.cliente = cliente.id;
             const r = await api.get('/contabilidad/reportes/top-productos', { params });
             setRows(r.data.data || []);
+            setSinArticulo(r.data.sinArticulo || null);
         } catch (e) {
             setError(e.response?.data?.error || e.message);
             setRows([]);
         } finally { setLoading(false); }
-    }, [f.preset, f.desde, f.hasta, f.ambito, f.moneda, cliente.id]); // eslint-disable-line react-hooks/exhaustive-deps
+    }, [f.preset, f.desde, f.hasta, f.ambito, f.moneda, f.tc, cliente.id]); // eslint-disable-line react-hooks/exhaustive-deps
     useEffect(() => { cargar(); }, [cargar]);
 
     const familias = ['Todas', ...[...new Set(rows.map(r => r.Grupo).filter(Boolean))].sort()];
@@ -861,13 +883,13 @@ function TopProductosSection({ opciones }) {
     const abrirDrill = async (row) => {
         setDrill({
             titulo: row.Descripcion,
-            sub: `${row.CodArticulo}${row.Area ? ' · ' + row.Area : ''} · Comprobantes/órdenes que componen el total (${f.moneda}). Click en el N° para ver el documento.`,
+            sub: `${row.CodArticulo}${row.Area ? ' · ' + row.Area : ''} · Comprobantes/órdenes que componen el total (${etiquetaMoneda(f.moneda)}). Click en el N° para ver el documento.`,
             rows: null,
         });
         setDocAbierto(null);
         try {
             const { desde, hasta } = rangoDeFiltros(f);
-            const params = { producto: row.ProIdProducto, moneda: MONEDA_ID_MAP[f.moneda], ...paramsAmbito(f.ambito) };
+            const params = { producto: row.ProIdProducto, ...paramsMoneda, ...paramsAmbito(f.ambito) };
             if (desde) params.fechaDesde = desde;
             if (hasta) params.fechaHasta = hasta;
             if (cliente.id) params.cliente = cliente.id;
@@ -880,7 +902,7 @@ function TopProductosSection({ opciones }) {
 
     const exportar = () => descargarCSV(
         `top_productos_${f.moneda}_${new Date().toISOString().slice(0, 10)}.csv`,
-        ['#', 'Código', 'Descripción', 'Grupo', 'Sector', 'Área', 'Variante', 'Unidades', `Monto (${f.moneda})`, 'Precio prom.', 'Documentos'],
+        ['#', 'Código', 'Descripción', 'Grupo', 'Sector', 'Área', 'Variante', 'Unidades', `Monto (${etiquetaMoneda(f.moneda)})`, 'Precio prom.', 'Documentos'],
         vista.map((r, i) => [i + 1, r.CodArticulo, r.Descripcion, r.Grupo, r.Sector, r.Area, r.Variante || '',
             r.Unidades, Number(r.Monto).toFixed(2),
             r.Unidades ? (r.Monto / r.Unidades).toFixed(2) : '', r.CantidadDocumentos]));
@@ -898,7 +920,13 @@ function TopProductosSection({ opciones }) {
                     <Chip active={f.orden === 'monto'} onClick={() => setF({ orden: 'monto' })}>Monto total ($)</Chip>
                     <Chip active={f.orden === 'unid'} onClick={() => setF({ orden: 'unid' })}>Unidades vendidas</Chip>
                     <span className="text-[11px] font-bold text-slate-500 tracking-wide ml-3">MONEDA</span>
-                    {['UYU', 'USD'].map(m => <Chip key={m} active={f.moneda === m} onClick={() => setF({ moneda: m })}>{m}</Chip>)}
+                    {['UYU', 'USD', 'USD_UNIF'].map(m => (
+                        <Chip key={m} active={f.moneda === m} onClick={() => setF({ moneda: m })}
+                            title={m === 'USD_UNIF' ? 'Pesos y dólares juntos, todo llevado a US$ con el tipo de cambio' : ''}>
+                            {m === 'USD_UNIF' ? 'US$ unificado (TC)' : m}
+                        </Chip>
+                    ))}
+                    <InputTcUnif f={f} setF={setF} opciones={opciones} />
                     <span className="text-[11px] font-bold text-slate-500 tracking-wide ml-3">TOP</span>
                     <input type="number" min="1" max="200" value={f.top}
                         onChange={e => setF({ top: e.target.value })}
@@ -948,7 +976,7 @@ function TopProductosSection({ opciones }) {
             {error && <div className="bg-red-50 border border-red-200 text-red-600 text-xs rounded-xl px-4 py-3">{error}</div>}
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                <KpiCard label={`Monto total (${f.moneda})`} value={`${sym} ${fmtMoney(totM)}`} sub={`${vista.length} artículos`} color={f.moneda === 'USD' ? '#0891b2' : '#0d9488'} />
+                <KpiCard label={`Monto total (${etiquetaMoneda(f.moneda)})`} value={`${sym} ${fmtMoney(totM)}`} sub={`${vista.length} artículos`} color={f.moneda === 'UYU' ? '#0d9488' : '#0891b2'} />
                 <KpiCard label="Unidades vendidas" value={fmtMoney(totU)} sub="en el período/filtro" color="#8b5cf6" />
                 <KpiCard label="Producto #1" value={vista.length ? vista[0].Descripcion : '—'}
                     sub={vista.length ? (f.orden === 'unid' ? `${fmtMoney(vista[0].Unidades)} u.` : `${sym} ${fmtMoney(vista[0].Monto)}`) : ''} color="#f59e0b" />
@@ -957,7 +985,7 @@ function TopProductosSection({ opciones }) {
             <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
                 <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
                     <span className="font-bold text-xs text-slate-700">Top {topN} productos</span>
-                    <span className="text-[11px] text-slate-400">{vista.length} artículos · orden por {f.orden === 'unid' ? 'unidades' : 'monto'} · {f.moneda} · clic para ver comprobantes</span>
+                    <span className="text-[11px] text-slate-400">{vista.length} artículos · orden por {f.orden === 'unid' ? 'unidades' : 'monto'} · {etiquetaMoneda(f.moneda)} · clic para ver comprobantes</span>
                 </div>
                 {loading ? (
                     <div className="flex items-center justify-center py-14"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-brand-cyan" /></div>
@@ -1008,8 +1036,11 @@ function TopProductosSection({ opciones }) {
                 )}
             </div>
             <p className="text-[11px] text-slate-400">
-                El artículo se resuelve desde la cotización de la orden de cada línea facturada; las ventas sin orden o sin artículo cotizado no entran al ranking,
-                y las notas de crédito no se incluyen. Unidades en la unidad de medida de cada artículo (metros, unidades, etc.).
+                Cada línea facturada suma a su artículo la parte del total del documento que le corresponde (mismo reparto que Ventas por Área, así los dos reportes cuadran).
+                Las notas de crédito no se incluyen. Unidades en la unidad de medida de cada artículo (metros, unidades, etc.).
+                {sinArticulo && Number(sinArticulo.Monto) > 0.005 && (
+                    <> <b className="text-amber-600">Fuera del ranking: {sym} {fmtMoney(sinArticulo.Monto)}</b> facturados en {fmtInt(sinArticulo.Lineas)} línea(s) de {fmtInt(sinArticulo.Documentos)} documento(s) que no tienen artículo asociado (ej. "Venta productos", "ProductosVarios").</>
+                )}
             </p>
 
             <DrillModal drill={drill} onClose={() => { setDrill(null); setDocAbierto(null); }}>
@@ -1620,6 +1651,24 @@ function LibroContadorSection() {
 
     const COLUMNAS = ['Dia', 'Debe', 'Haber', 'Concepto', 'RUC', 'Moneda', 'Total', 'CodigoIVA', 'IVA', 'Cotizacion', 'Libro'];
     const PREVIEW_MAX_FILAS = 500;
+    const CUENTAS = { '1121001': 'Deudores', '5130': 'Ventas', '21332': 'IVA ventas' };
+
+    // Totales del archivo COMPLETO (no solo las filas mostradas): por moneda, Debe vs
+    // Haber (tienen que ser iguales: cada asiento cuadra) y el neto de cada cuenta.
+    // Columnas del CSV: 1 = Debe, 2 = Haber, 5 = Moneda (0 pesos / 1 dólares), 6 = Total.
+    const totalesLibro = (rows) => {
+        const out = {};
+        for (const row of rows) {
+            const mon = String(row[5]) === '1' ? 'USD' : 'UYU';
+            const m = out[mon] = out[mon] || { debe: 0, haber: 0, filas: 0, cuentas: {} };
+            const imp = Number(String(row[6] || '').replace(',', '.')) || 0;
+            const debe = String(row[1] || '').trim(), haber = String(row[2] || '').trim();
+            m.filas++;
+            if (debe) { m.debe += imp; const c = m.cuentas[debe] = m.cuentas[debe] || { debe: 0, haber: 0 }; c.debe += imp; }
+            if (haber) { m.haber += imp; const c = m.cuentas[haber] = m.cuentas[haber] || { debe: 0, haber: 0 }; c.haber += imp; }
+        }
+        return out;
+    };
 
     const fetchLibro = async (tipo) => {
         const url = tipo === 'ventas'
@@ -1778,6 +1827,45 @@ function LibroContadorSection() {
                             <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
                                 <span className="font-mono text-xs text-slate-700">{a.filename}</span>
                                 <span className="text-[11px] text-slate-400">{a.lineas.toLocaleString()} líneas</span>
+                            </div>
+                            {/* Totales del archivo completo, por moneda */}
+                            <div className="px-4 py-3 border-b border-slate-200 grid grid-cols-1 md:grid-cols-2 gap-3">
+                                {Object.entries(totalesLibro(a.rows)).map(([mon, t]) => {
+                                    const sym = mon === 'USD' ? 'US$' : '$';
+                                    const cuadra = Math.abs(t.debe - t.haber) < 0.5;
+                                    return (
+                                        <div key={mon} className="rounded-lg border border-slate-100 bg-slate-50/60 px-3 py-2 text-xs space-y-1">
+                                            <div className="flex items-center justify-between">
+                                                <span className="font-bold text-slate-700">{mon === 'USD' ? 'Dólares (Moneda = 1)' : 'Pesos (Moneda = 0)'}</span>
+                                                <span className="text-[11px] text-slate-400">{t.filas.toLocaleString('es-UY')} líneas</span>
+                                            </div>
+                                            <div className="flex items-center justify-between">
+                                                <span className="text-sky-700 font-semibold">Total Debe</span>
+                                                <span className="font-mono tabular-nums font-semibold text-sky-700">{sym} {fmtMoney(t.debe)}</span>
+                                            </div>
+                                            <div className="flex items-center justify-between">
+                                                <span className="text-emerald-700 font-semibold">Total Haber</span>
+                                                <span className="font-mono tabular-nums font-semibold text-emerald-700">{sym} {fmtMoney(t.haber)}</span>
+                                            </div>
+                                            <div className={`flex items-center justify-between text-[11px] ${cuadra ? 'text-slate-400' : 'text-rose-600 font-semibold'}`}>
+                                                <span>{cuadra ? 'Debe = Haber, el libro cuadra' : 'Debe ≠ Haber: diferencia'}</span>
+                                                <span className="font-mono tabular-nums">{sym} {fmtMoney(t.debe - t.haber)}</span>
+                                            </div>
+                                            <div className="border-t border-slate-200 pt-1 space-y-0.5">
+                                                {Object.entries(t.cuentas).sort(([x], [y]) => x.localeCompare(y)).map(([cta, c]) => (
+                                                    <div key={cta} className="flex items-center justify-between text-[11px] text-slate-500">
+                                                        <span><span className="font-mono">{cta}</span>{CUENTAS[cta] ? ` ${CUENTAS[cta]}` : ''}</span>
+                                                        <span className="font-mono tabular-nums">
+                                                            {c.debe > 0 && <span className="text-sky-700">D {fmtMoney(c.debe)}</span>}
+                                                            {c.debe > 0 && c.haber > 0 && ' · '}
+                                                            {c.haber > 0 && <span className="text-emerald-700">H {fmtMoney(c.haber)}</span>}
+                                                        </span>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    );
+                                })}
                             </div>
                             <div className="overflow-x-auto max-h-[28rem] overflow-y-auto">
                                 <table className="w-full text-xs">
@@ -1988,7 +2076,7 @@ export default function ContabilidadReportesPage() {
     const docPorMoneda = {};
     for (const row of docData) {
         const key = row.MonIdMoneda;
-        if (!docPorMoneda[key]) docPorMoneda[key] = { sym: row.MonSimbolo || '', nombre: row.MonNombre || '', enviado: 0, noEnviado: 0, cantEnviado: 0, cantNoEnviado: 0, credito: 0, cantCredito: 0, pendiente: 0 };
+        if (!docPorMoneda[key]) docPorMoneda[key] = { sym: row.MonSimbolo || '', nombre: row.MonNombre || '', enviado: 0, noEnviado: 0, cantEnviado: 0, cantNoEnviado: 0, credito: 0, cantCredito: 0, pendiente: 0, pendienteCredito: 0, pendienteCaja: 0, cantPendCredito: 0, cantPendCaja: 0 };
         if (row.EstadoDgi === 'ENVIADO_DGI') {
             docPorMoneda[key].enviado += Number(row.ImporteTotal || 0);
             docPorMoneda[key].cantEnviado += Number(row.CantidadDocumentos || 0);
@@ -1999,17 +2087,24 @@ export default function ContabilidadReportesPage() {
         if (row.TipoPago === 'CREDITO') {
             docPorMoneda[key].credito += Number(row.ImporteTotal || 0);
             docPorMoneda[key].cantCredito += Number(row.CantidadDocumentos || 0);
-            // Pendiente de cobro (dbo.DeudaDocumento) SOLO de las de Crédito — es lo que se
-            // muestra debajo de "a crédito", tiene que ser un subconjunto de ese monto.
-            docPorMoneda[key].pendiente += Number(row.ImportePendiente || 0);
         }
+        // Pendiente de cobro: deuda viva de las de Crédito Y de los Pedidos Caja sin pagar
+        // (el backend ya manda 0 para tickets/facturas contado). Se guardan separados
+        // porque en pantalla van en dos filas distintas: lo de crédito es parte de
+        // "a crédito"; lo de Pedidos Caja NO (son ventas contado que quedaron sin pagar).
+        const pend = Number(row.ImportePendiente || 0), cantPend = Number(row.CantidadConPendiente || 0);
+        docPorMoneda[key].pendiente += pend;
+        if (row.TipoPago === 'CREDITO') { docPorMoneda[key].pendienteCredito += pend; docPorMoneda[key].cantPendCredito += cantPend; }
+        else { docPorMoneda[key].pendienteCaja += pend; docPorMoneda[key].cantPendCaja += cantPend; }
     }
 
     // ── Ingresos (cobrado real) — comparación Facturado vs Cobrado por moneda ────
     const ingresosRows = ingresos[ingresosBase === 'pago' ? 'porFechaPago' : 'porFechaFactura'] || [];
     const ingresosPorMoneda = {};
     for (const row of ingresosRows) {
-        ingresosPorMoneda[row.MonIdMoneda] = { cobrado: Number(row.ImporteCobrado || 0), cantidad: row.CantidadFacturas };
+        // MonIdMoneda es la moneda del DOCUMENTO; otraMoneda = parte del cobrado que se pagó
+        // en la otra moneda (ya convertida al dólar del día del pago).
+        ingresosPorMoneda[row.MonIdMoneda] = { cobrado: Number(row.ImporteCobrado || 0), otraMoneda: Number(row.ImporteOtraMoneda || 0), cantidad: row.CantidadFacturas };
     }
     const monedaKeysComparacion = [...new Set([...Object.keys(docPorMoneda), ...Object.keys(ingresosPorMoneda)])];
 
@@ -2239,6 +2334,59 @@ export default function ContabilidadReportesPage() {
                                     })}
                                 </div>
                             )}
+                            {/* ── Resumen unificado en dólares (misma tarjeta que Ventas por Documento):
+                                  cada sector/área = sus ventas en US$ + sus ventas en $ / TC ── */}
+                            {monedasArea.length > 0 && (() => {
+                                const tcEff = Number(tcDoc) > 0 ? Number(tcDoc) : (Number(opciones.cotizacionDolar) || 40);
+                                const acc = {};
+                                for (const mon of monedasArea) for (const it of itemsArea(mon)) {
+                                    const x = acc[it.label] = acc[it.label] || { label: it.label, usd: 0, uyu: 0, docs: 0 };
+                                    if (mon === 'USD') x.usd += Number(it.ventas || 0); else x.uyu += Number(it.ventas || 0);
+                                    x.docs += Number(it.cantidadDocumentos || 0);
+                                }
+                                const items = Object.values(acc)
+                                    .map(x => ({ ...x, value: x.usd + x.uyu / tcEff }))
+                                    .sort((a, b) => b.value - a.value)
+                                    .map((x, i) => ({ ...x, color: AREA_COLORS[i % AREA_COLORS.length] }));
+                                const tot = items.reduce((s, x) => s + x.value, 0);
+                                return (
+                                    <div className="bg-white rounded-xl border border-emerald-200 shadow-sm ring-2 ring-emerald-500/10 p-4 space-y-3">
+                                        <div className="flex items-center justify-between flex-wrap gap-2">
+                                            <div>
+                                                <span className="font-bold text-slate-700 text-sm">Resumen unificado en dólares</span>
+                                                <p className="text-[11px] text-slate-400 mt-0.5">Todo convertido a USD — las ventas en $ de cada {verPor === 'sector' ? 'sector' : 'área'} divididas por el tipo de cambio, más sus ventas en US$</p>
+                                            </div>
+                                            <div className="flex items-center gap-2 text-[11px] text-slate-500">
+                                                <span>Dólar del día · 1 USD =</span>
+                                                <input type="number" step="0.1" value={tcDoc} placeholder={String(tcEff)}
+                                                    onChange={e => setTcDoc(e.target.value)}
+                                                    className="text-xs border border-slate-300 rounded-lg px-2 py-1 w-20 outline-none focus:ring-2 focus:ring-brand-cyan/30" />
+                                                <span>UYU {!tcDoc && opciones.cotizacionDolar ? '(cotización del día)' : ''}</span>
+                                            </div>
+                                        </div>
+                                        <div className="flex items-center gap-6 flex-wrap">
+                                            <DonutChart data={items} size={150} centerLabel="US$ total" />
+                                            <div className="flex-1 min-w-[260px] max-w-xl space-y-1.5">
+                                                {items.map(it => (
+                                                    <div key={it.label} className="flex items-center gap-2 text-xs">
+                                                        <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: it.color }} />
+                                                        <span className="text-slate-600 font-medium flex-1 truncate">{it.label}</span>
+                                                        <span className="font-mono tabular-nums text-slate-400 hidden sm:inline">US$ {fmtMoney(it.usd)} + $ {fmtMoney(it.uyu)}</span>
+                                                        <span className="font-mono tabular-nums font-bold w-28 text-right">US$ {fmtMoney(it.value)}</span>
+                                                        <span className="font-mono tabular-nums text-slate-500 w-14 text-right">{tot ? fmtMoney((it.value / tot) * 100) : 0}%</span>
+                                                    </div>
+                                                ))}
+                                                <div className="flex items-center gap-2 text-xs border-t border-slate-200 pt-2 mt-1">
+                                                    <span className="w-2.5 h-2.5 rounded-full shrink-0 bg-slate-800" />
+                                                    <span className="text-slate-800 font-extrabold flex-1">Total</span>
+                                                    <span className="font-mono tabular-nums font-extrabold w-28 text-right">US$ {fmtMoney(tot)}</span>
+                                                    <span className="font-mono tabular-nums text-slate-500 w-14 text-right">100%</span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                );
+                            })()}
                             <SimpleTable
                                 rows={filasTablaArea}
                                 cols={[
@@ -2293,11 +2441,12 @@ export default function ContabilidadReportesPage() {
                                 const env = bU.enviado + bY.enviado / tcEff;
                                 const noe = bU.noEnviado + bY.noEnviado / tcEff;
                                 const pen = bU.pendiente + bY.pendiente / tcEff;
-                                const tot = env + noe + pen;
+                                // Facturado = enviadas + no enviadas (universo cerrado). Lo pendiente de cobro
+                                // es una PARTE de ese facturado: se muestra aparte, no se suma (pedido del usuario 23-sep-2026).
+                                const tot = env + noe;
                                 const items = [
                                     { label: 'Enviadas a DGI', value: env, color: '#10b981' },
                                     { label: 'No enviadas', value: noe, color: '#f59e0b' },
-                                    { label: 'Pendientes de cobro', value: pen, color: '#ef4444' },
                                 ];
                                 return (
                                     <div className="bg-white rounded-xl border border-emerald-200 shadow-sm ring-2 ring-emerald-500/10 p-4 space-y-3">
@@ -2305,7 +2454,7 @@ export default function ContabilidadReportesPage() {
                                             <div>
                                                 <span className="font-bold text-slate-700 text-sm">Resumen unificado en dólares</span>
                                                 <span className="ml-2 px-2 py-0.5 rounded text-[10px] font-extrabold bg-emerald-100 text-emerald-700 align-middle">NUEVO</span>
-                                                <p className="text-[11px] text-slate-400 mt-0.5">Todo convertido a USD — enviadas a DGI, no enviadas y pendientes de cobro</p>
+                                                <p className="text-[11px] text-slate-400 mt-0.5">Todo convertido a USD — facturado (enviadas a DGI + no enviadas) y, de eso, lo pendiente de cobro</p>
                                             </div>
                                             <div className="flex items-center gap-2 text-[11px] text-slate-500">
                                                 <span>Dólar del día · 1 USD =</span>
@@ -2316,7 +2465,7 @@ export default function ContabilidadReportesPage() {
                                             </div>
                                         </div>
                                         <div className="flex items-center gap-6 flex-wrap">
-                                            <DonutChart data={items} size={150} centerLabel="US$ total" />
+                                            <DonutChart data={items} size={150} centerLabel="US$ facturado" />
                                             <div className="flex-1 min-w-[260px] max-w-md space-y-1.5">
                                                 {items.map(it => (
                                                     <div key={it.label} className="flex items-center gap-2 text-xs">
@@ -2328,15 +2477,21 @@ export default function ContabilidadReportesPage() {
                                                 ))}
                                                 <div className="flex items-center gap-2 text-xs border-t border-slate-200 pt-2 mt-1">
                                                     <span className="w-2.5 h-2.5 rounded-full shrink-0 bg-slate-800" />
-                                                    <span className="text-slate-800 font-extrabold flex-1">Total de las 3</span>
+                                                    <span className="text-slate-800 font-extrabold flex-1">Total facturado</span>
                                                     <span className="font-mono tabular-nums font-extrabold">US$ {fmtMoney(tot)}</span>
                                                     <span className="font-mono tabular-nums text-slate-500 w-14 text-right">100%</span>
+                                                </div>
+                                                <div className="flex items-center gap-2 text-xs">
+                                                    <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: '#ef4444' }} />
+                                                    <span className="text-rose-700 font-medium flex-1">De eso, pendiente de cobro</span>
+                                                    <span className="font-mono tabular-nums font-bold text-rose-700">US$ {fmtMoney(pen)}</span>
+                                                    <span className="font-mono tabular-nums text-slate-500 w-14 text-right">{tot ? fmtMoney((pen / tot) * 100) : 0}%</span>
                                                 </div>
                                             </div>
                                         </div>
                                         <p className="text-[11px] text-slate-400">
-                                            <b>Enviadas + no enviadas</b> cubren el total de documentos del filtro; <b>pendiente de cobro</b> es un estado de
-                                            cobranza que se solapa con ambas. El "Total de las 3" resume tres indicadores, no es la suma de un universo cerrado.
+                                            <b>Total facturado</b> = enviadas a DGI + no enviadas (todos los documentos del filtro). <b>Pendiente de cobro</b> es la parte
+                                            de ese facturado que todavía no se cobró (solo documentos a crédito); el % es sobre el total facturado.
                                         </p>
                                     </div>
                                 );
@@ -2365,6 +2520,7 @@ export default function ContabilidadReportesPage() {
                                     {ingresosBase === 'pago'
                                         ? 'Plata que efectivamente entró en el rango de fechas elegido, sea de facturas nuevas o viejas.'
                                         : 'Solo lo cobrado de facturas emitidas dentro del rango de fechas elegido.'}
+                                    {' '}Cada cobro se cuenta en la <b>moneda del documento</b>: si una venta en US$ se pagó en $, entra en la caja de dólares convertida al dólar del día del pago.
                                 </p>
                                 {monedaKeysComparacion.length === 0 ? (
                                     <div className="text-xs text-slate-400 text-center py-4">Sin cobros registrados para los filtros seleccionados</div>
@@ -2372,9 +2528,10 @@ export default function ContabilidadReportesPage() {
                                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                                         {monedaKeysComparacion.map(monId => {
                                             const doc = docPorMoneda[monId] || { sym: '', nombre: '', enviado: 0, noEnviado: 0 };
-                                            const ing = ingresosPorMoneda[monId] || { cobrado: 0, cantidad: 0 };
+                                            const ing = ingresosPorMoneda[monId] || { cobrado: 0, otraMoneda: 0, cantidad: 0 };
                                             const facturado = doc.enviado + doc.noEnviado;
-                                            const delta = facturado - ing.cobrado;
+                                            // Con base "fecha de factura" esto tiene que dar ~0: facturado = pendiente + cobrado
+                                            const delta = facturado - (doc.pendiente || 0) - ing.cobrado;
                                             return (
                                                 <div key={monId} className="border border-slate-100 rounded-lg p-3 space-y-1.5">
                                                     <div className="flex items-center justify-between text-xs">
@@ -2389,18 +2546,32 @@ export default function ContabilidadReportesPage() {
                                                         <span className="text-slate-400 italic">de eso, a crédito</span>
                                                         <span className="font-mono tabular-nums text-slate-400">{doc.sym} {fmtMoney(doc.credito)} ({fmtInt(doc.cantCredito)})</span>
                                                     </div>
+                                                    <div className="flex items-center justify-between text-[11px] pl-6">
+                                                        <span className="text-rose-400 italic">del crédito, todavía sin cobrar</span>
+                                                        <span className="font-mono tabular-nums text-rose-500">{doc.sym} {fmtMoney(doc.pendienteCredito)} ({fmtInt(doc.cantPendCredito)})</span>
+                                                    </div>
                                                     <div className="flex items-center justify-between text-[11px] pl-2">
-                                                        <span className="text-rose-500 italic">de eso, pendiente de cobro</span>
+                                                        <span className="text-rose-400 italic" title="Pedidos Caja de contado (cobrados en caja) que igual quedaron con deuda viva: casos raros, a revisar">de eso, contado con deuda viva</span>
+                                                        <span className="font-mono tabular-nums text-rose-500">{doc.sym} {fmtMoney(doc.pendienteCaja)} ({fmtInt(doc.cantPendCaja)})</span>
+                                                    </div>
+                                                    <div className="flex items-center justify-between text-[11px] pl-2">
+                                                        <span className="text-rose-500 italic font-semibold">total pendiente de cobro</span>
                                                         <span className="font-mono tabular-nums text-rose-600 font-semibold">{doc.sym} {fmtMoney(doc.pendiente)}</span>
                                                     </div>
                                                     <div className="flex items-center justify-between text-xs">
                                                         <span className="text-violet-600 font-semibold">Cobrado</span>
                                                         <span className="font-mono tabular-nums text-violet-700 font-semibold">{doc.sym} {fmtMoney(ing.cobrado)}</span>
                                                     </div>
+                                                    {ing.otraMoneda > 0.005 && (
+                                                        <div className="flex items-center justify-between text-[11px] pl-2">
+                                                            <span className="text-violet-400 italic">de eso, pagado en la otra moneda (al dólar del día del pago)</span>
+                                                            <span className="font-mono tabular-nums text-violet-500">{doc.sym} {fmtMoney(ing.otraMoneda)}</span>
+                                                        </div>
+                                                    )}
                                                     <div className="flex items-center justify-between text-xs pt-1 border-t border-slate-100">
-                                                        <span className="text-slate-400">Diferencia</span>
-                                                        <span className={`font-mono tabular-nums font-semibold ${delta >= 0 ? 'text-amber-600' : 'text-sky-600'}`}>
-                                                            {doc.sym} {fmtMoney(Math.abs(delta))} {delta >= 0 ? '(facturado no cobrado)' : '(cobrado de más / deuda vieja)'}
+                                                        <span className="text-slate-400">Facturado − pendiente − cobrado</span>
+                                                        <span className={`font-mono tabular-nums font-semibold ${Math.abs(delta) < 0.5 ? 'text-emerald-600' : delta > 0 ? 'text-amber-600' : 'text-sky-600'}`}>
+                                                            {doc.sym} {fmtMoney(Math.abs(delta))} {Math.abs(delta) < 0.5 ? '(cuadra)' : delta > 0 ? '(sin cobro ni deuda registrados)' : '(cobros de facturas fuera del rango)'}
                                                         </span>
                                                     </div>
                                                 </div>
