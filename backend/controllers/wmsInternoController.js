@@ -10,6 +10,8 @@ const fs = require('fs');
 const multer = require('multer');
 const { getPool, sql } = require('../config/db');
 const logger = require('../utils/logger');
+// Ficha textil: Wms_Variantes.Composicion se agregó el 22/09; se crea sola si falta (ver el service).
+const { asegurarColumnasTela } = require('../services/wmsInternoService');
 const svc = require('../services/wmsInternoService');
 
 const uid = (req) => req.user?.id || null;
@@ -55,10 +57,11 @@ exports.getDepositos = async (req, res) => {
 };
 
 // GET /inventario?dep=5&q=&conStock=1 — filas variante con su stock en el depósito.
-// El front agrupa por producto. q busca en producto/variante/sku/talle/color.
+// El front agrupa por producto. q busca en producto/variante/sku/talle/color/composición.
 exports.getInventario = async (req, res) => {
     try {
         const pool = await getPool();
+        await asegurarColumnasTela(pool);
         // dep=0 → USO GLOBAL (todos los depósitos), igual que el filtro del sistema anterior
         const depRaw = req.query.dep;
         const dep = depRaw === '0' || depRaw === 0 ? 0 : (parseInt(depRaw, 10) || 5);
@@ -70,6 +73,7 @@ exports.getInventario = async (req, res) => {
             .query(`
                 SELECT p.PmaId, p.Nombre AS Producto, p.UnidadBase, c.Nombre AS Categoria,
                        v.VarId, v.NombreVariante, v.CodigoVariante, v.Talle, v.Color,
+                       v.AnchoMetros, v.GramajeGsm, v.Composicion,
                        ISNULL(s.Stock, 0) AS Stock, ISNULL(s.Etiquetas, 0) AS Etiquetas,
                        ISNULL(s.ValorConCosto, 0) + ISNULL(s.CantSinCosto, 0) * ISNULL(v.Costo, 0) AS Patrimonio,
                        ISNULL(v.Moneda, 'UYU') AS Moneda
@@ -89,7 +93,8 @@ exports.getInventario = async (req, res) => {
                 ) s
                 WHERE v.Activa = 1
                   AND (@Q IS NULL OR p.Nombre LIKE @Q OR v.NombreVariante LIKE @Q
-                       OR v.CodigoVariante LIKE @Q OR v.Talle LIKE @Q OR v.Color LIKE @Q)
+                       OR v.CodigoVariante LIKE @Q OR v.Talle LIKE @Q OR v.Color LIKE @Q
+                       OR v.Composicion LIKE @Q)
                   ${soloConStock ? 'AND ISNULL(s.Stock, 0) > 0' : ''}
                 ORDER BY p.Nombre, v.NombreVariante
             `);
@@ -141,6 +146,7 @@ exports.getEtiquetasVariante = async (req, res) => {
 exports.buscarEtiqueta = async (req, res) => {
     try {
         const pool = await getPool();
+        await asegurarColumnasTela(pool);
         const codigo = String(req.query.codigo || '').trim();
         if (!codigo) return res.status(400).json({ error: 'Falta el código' });
         const num = /^\d+$/.test(codigo) ? parseInt(codigo, 10) : null;
@@ -150,7 +156,7 @@ exports.buscarEtiqueta = async (req, res) => {
             .query(`
                 SELECT TOP 1 e.EtiId, e.VarId, e.DepId, e.CantidadActual, e.CantidadInicial,
                        e.MedidaSecundaria, e.Peso, e.CodigoBarras, e.Estado,
-                       v.NombreVariante, v.Talle, v.Color, v.GramajeGsm, v.AnchoMetros,
+                       v.NombreVariante, v.Talle, v.Color, v.GramajeGsm, v.AnchoMetros, v.Composicion,
                        p.Nombre AS Producto, p.UnidadBase,
                        d.Nombre AS Deposito
                 FROM dbo.Wms_Etiquetas e
@@ -1114,11 +1120,12 @@ exports.guardarLimitesLote = async (req, res) => {
 exports.getArticulosGestion = async (req, res) => {
     try {
         const pool = await getPool();
+        await asegurarColumnasTela(pool);
         const r = await pool.request().query(`
             SELECT p.PmaId, p.Nombre AS Producto, p.UnidadBase, c.Nombre AS Categoria,
                    v.VarId, v.NombreVariante, v.CodigoVariante, v.Talle, v.Color,
                    ISNULL(v.Costo, 0) AS Costo, ISNULL(v.Moneda, 'UYU') AS Moneda,
-                   v.GramajeGsm, v.AnchoMetros,
+                   v.GramajeGsm, v.AnchoMetros, v.Composicion,
                    ISNULL(s.Stock, 0) AS Stock, ISNULL(s.SinValorizar, 0) AS SinValorizar
             FROM dbo.Wms_Variantes v
             JOIN dbo.Wms_ProductosMaestros p ON p.PmaId = v.PmaId
@@ -1139,6 +1146,9 @@ exports.getArticulosGestion = async (req, res) => {
 // PUT /gestion/articulos/:varId/costo — la ficha editable de la variante: costo de
 // referencia (0 = "sin costo", mismo significado que traía la migración) y, para telas,
 // gramaje g/m² + ancho del rollo en metros (juntos dan la conversión kg <-> metros).
+// (22/09) También color y composición, pero SOLO si vienen en el body: una pantalla vieja en caché
+// que no los manda no los borra. El color vacío se guarda como '' y no como NULL: el import rellena
+// los NULL desde el catálogo de la tienda, y así no vuelve a traer un color que se borró a propósito.
 exports.guardarCostoVariante = async (req, res) => {
     try {
         const varId = parseInt(req.params.varId, 10);
@@ -1157,15 +1167,27 @@ exports.guardarCostoVariante = async (req, res) => {
         let gramaje, ancho;
         try { gramaje = medida(req.body?.gramaje, 2000); ancho = medida(req.body?.ancho, 10); }
         catch (e) { return res.status(400).json({ error: e.message }); }
+        const body = req.body || {};
+        const conColor = Object.prototype.hasOwnProperty.call(body, 'color');
+        const conComp = Object.prototype.hasOwnProperty.call(body, 'composicion');
+        const color = conColor ? String(body.color ?? '').trim() : null;
+        const composicion = conComp ? String(body.composicion ?? '').trim() : null;
+        if (conColor && color.length > 50) return res.status(400).json({ error: 'El color admite hasta 50 caracteres' });
+        if (conComp && composicion.length > 200) return res.status(400).json({ error: 'La composición admite hasta 200 caracteres' });
         const pool = await getPool();
+        await asegurarColumnasTela(pool);
         const r = await pool.request()
             .input('V', sql.Int, varId)
             .input('C', sql.Decimal(18, 2), costo)
             .input('M', sql.VarChar(10), moneda)
             .input('G', sql.Decimal(8, 2), gramaje)
             .input('A', sql.Decimal(6, 3), ancho)
+            .input('Col', sql.NVarChar(50), color)
+            .input('Comp', sql.NVarChar(200), composicion || null)
             .query(`UPDATE dbo.Wms_Variantes
                     SET Costo = @C, Moneda = @M, GramajeGsm = @G, AnchoMetros = @A
+                        ${conColor ? ', Color = @Col' : ''}
+                        ${conComp ? ', Composicion = @Comp' : ''}
                     WHERE VarId = @V AND Activa = 1`);
         if (!r.rowsAffected[0]) return res.status(404).json({ error: 'Artículo no encontrado' });
         res.json({ success: true });

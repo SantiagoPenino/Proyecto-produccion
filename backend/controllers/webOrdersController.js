@@ -6303,6 +6303,8 @@ const crearTicketFinanzas = async (pool, codCliente, asunto, texto) => {
         logger.error('[HANDY ALERTA] No se pudo crear el ticket de alerta:', e.message);
     }
 };
+// Lo usa también el ingreso a Depósito de las compras de la tienda pagadas online.
+exports.crearTicketFinanzas = crearTicketFinanzas;
 
 // --- HANDY WEBHOOK ---
 // Recibe notificaciones automáticas de Handy cuando un cobro cambia de estado

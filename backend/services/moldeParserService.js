@@ -77,7 +77,9 @@ const cargarPdfjs = () => {
 async function leerTrazos(rutaPdf) {
     const pdfjs = await cargarPdfjs();
     const data = new Uint8Array(fs.readFileSync(rutaPdf));
-    const doc = await pdfjs.getDocument({ data, isEvalSupported: false }).promise;
+    // pdfjs 6 sacó doc.destroy(): el que cierra y libera memoria es el loadingTask.
+    const tarea = pdfjs.getDocument({ data, isEvalSupported: false });
+    const doc = await tarea.promise;
     const page = await doc.getPage(1);
     const vp = page.getViewport({ scale: 1 });
     const ol = await page.getOperatorList();
@@ -136,7 +138,7 @@ async function leerTrazos(rutaPdf) {
         });
     }
 
-    await doc.destroy();
+    await tarea.destroy();
     return { trazos, anchoPt: vp.width, altoPt: vp.height };
 }
 

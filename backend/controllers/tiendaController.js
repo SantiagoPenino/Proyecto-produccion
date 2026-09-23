@@ -594,7 +594,9 @@ async function resolverModoRetiro(pool, formaEnvioId) {
 // Crea la venta completa (VEN- + cabecera + detalle + ancla PRO + trazabilidad + socket).
 // `pago` opcional { ref, metodo }: estampa FechaPagoOnline/PagoOnlineRef/MetodoPagoOnline
 // en la cabecera — es la marca de VERDAD de "pagado online" (EstadoCobro es pipeline).
-async function crearVentaTienda(pool, { cliIdCliente, clienteNombre, lineas, monedaPedido, total, modoRetiro, pago = null, io = null }) {
+// `enTransaccion` opcional async (transaction, { pedidoId, codigoVenta }): corre dentro de
+// la misma transacción antes del commit (la reserva de billetera); si falla, no hay venta.
+async function crearVentaTienda(pool, { cliIdCliente, clienteNombre, lineas, monedaPedido, total, modoRetiro, pago = null, io = null, enTransaccion = null }) {
     const transaction = new sql.Transaction(pool);
     await transaction.begin();
     let pedidoId, codigoVenta;
@@ -696,6 +698,8 @@ async function crearVentaTienda(pool, { cliIdCliente, clienteNombre, lineas, mon
             try { await calcularFechasOrden(transaction, oidAncla); }
             catch (feErr) { logger.error(`⚠️ calcularFechasOrden falló para OrdenID ${oidAncla} (tienda): ${feErr.message}`); }
         }
+
+        if (enTransaccion) await enTransaccion(transaction, { pedidoId, codigoVenta });
 
         await transaction.commit();
     } catch (err) {
@@ -810,4 +814,169 @@ exports.crearVentaTiendaPagada = async (pool, storedData, { ref, metodo, io }) =
     });
     logger.info(`[Tienda] 💳 Venta pagada online creada por webhook: ${codigoVenta} (${metodo} ${ref})`);
     return { pedidoId, codigoVenta };
+};
+
+// ── [BILLETERA 23/09] Retiro en el local pagado con la billetera PREPAGO ───────────────
+// Decisión del usuario: SOLO prepago (PREPAGO_FACTURADO) — su plata ya tiene factura
+// propia y se gasta por CONSUMO, sin documento nuevo (igual que "Cubrir con mi billetera"
+// del portal). Al comprar se RESERVA el importe (movimiento RESERVA_TIENDA: el saldo baja
+// ya y no se puede gastar dos veces); al ingresar a Depósito la reserva se aplica como
+// consumo de la orden (logisticaWmsController.aplicarReservaBilleteraTienda) y el retiro
+// nace Abonado. Cancelar el pedido devuelve la reserva.
+// Cuentas, mismas reglas que "Cubrir con mi billetera": restringida que permita el artículo
+// con el que la venta entra a Depósito → libre de la moneda del pedido → libre de la otra
+// (cotización del día); si ninguna sola alcanza, repartida entre las libres. Nunca negativo.
+const PRO_VENTA_TIENDA = 386;   // "Articulos User": artículo de la orden de depósito de una VEN
+
+async function planBilleteraTienda(pool, cliIdCliente, { monedaPedido, total }) {
+    const contabilidadService = require('../services/contabilidadService');
+    const r2 = (n) => Math.round(n * 100) / 100;
+    const cot = parseFloat((await pool.request()
+        .query('SELECT TOP 1 CotDolar FROM dbo.Cotizaciones WITH(NOLOCK) ORDER BY CotFecha DESC')).recordset[0]?.CotDolar) || 40;
+    const sinBolsas = (await contabilidadService.tablaBeneficiosExiste(pool))
+        ? 'AND NOT EXISTS (SELECT 1 FROM dbo.BeneficiosCliente bx WITH(NOLOCK) WHERE bx.CueIdCuenta = cc.CueIdCuenta) -- las bolsas de beneficio pagan solo sus pedidos'
+        : '';
+    const cuentas = (await pool.request()
+        .input('Cli', sql.Int, cliIdCliente)
+        .input('Pro', sql.Int, PRO_VENTA_TIENDA)
+        .query(`
+            SELECT cc.CueIdCuenta, cc.CueNombre, cc.MonIdMoneda, cc.CueRestringida,
+                   ISNULL((SELECT SUM(m.MovImporte) FROM dbo.MovimientosCuenta m WITH(NOLOCK)
+                           WHERE m.CueIdCuenta = cc.CueIdCuenta AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)
+                             AND m.MovTipo NOT IN ('ORDEN','ORDEN_ANTICIPO')), 0) AS Saldo
+            FROM dbo.CuentasCliente cc WITH(NOLOCK)
+            WHERE cc.CliIdCliente = @Cli AND cc.CueActiva = 1 AND cc.CueTipo LIKE 'DINERO%'
+              AND cc.CueEsPrincipal = 0
+              AND ISNULL(cc.CueModalidadFiscal,'ANTICIPO_A_FACTURAR') = 'PREPAGO_FACTURADO'
+              AND (cc.CueRestringida = 0 OR EXISTS (SELECT 1 FROM dbo.CuentasClienteArticulosPermitidos ap WITH(NOLOCK)
+                                                    WHERE ap.CueIdCuenta = cc.CueIdCuenta AND ap.ProIdProducto = @Pro))
+              ${sinBolsas}
+            ORDER BY cc.CueIdCuenta`)).recordset
+        .map(c => ({ id: c.CueIdCuenta, nombre: (c.CueNombre || `Cuenta #${c.CueIdCuenta}`).trim(),
+                     mon: Number(c.MonIdMoneda) === 2 ? 2 : 1, restringida: !!c.CueRestringida, disp: r2(Number(c.Saldo)) }));
+
+    const monOrden = monedaPedido === 'USD' ? 2 : 1;
+    const importe = r2(total);
+    const enCuenta = (c) => c.mon === monOrden ? importe : (monOrden === 2 ? r2(importe * cot) : r2(importe / cot));
+    const conSaldo = cuentas.filter(c => c.disp > 0.009);
+    const sola = [
+        ...conSaldo.filter(c => c.restringida),
+        ...conSaldo.filter(c => !c.restringida && c.mon === monOrden),
+        ...conSaldo.filter(c => !c.restringida && c.mon !== monOrden),
+    ].find(c => c.disp + 0.001 >= enCuenta(c));
+    let partes = sola
+        ? [{ cueIdCuenta: sola.id, cuenta: sola.nombre, mon: sola.mon, importeCta: enCuenta(sola), importeOrden: importe, cruzada: sola.mon !== monOrden }]
+        : contabilidadService.planPartesConsumoBilletera({
+            fuentes: conSaldo.filter(c => !c.restringida).map(c => ({ id: c.id, nombre: c.nombre, mon: c.mon, disp: c.disp })),
+            monOrden, importe, cot });
+    if (partes && !partes.length) partes = null;
+    return {
+        partes, cot,
+        disponible: cuentas.map(c => ({ cuenta: c.nombre, moneda: c.mon === 2 ? 'USD' : 'UYU', saldo: c.disp })),
+    };
+}
+
+// Reserva el importe en la(s) cuenta(s) del plan, DENTRO de la transacción de la venta:
+// bloquea cada cuenta y vuelve a mirar el saldo (entre el plan y la compra pudo gastarse).
+// La observación guarda el total de la compra y la cotización: el ingreso a Depósito los
+// lee para consumir exactamente lo reservado.
+async function reservarBilleteraTienda(transaction, { pedidoId, codigoVenta, partes, cot, monedaPedido, total }) {
+    const contabilidadService = require('../services/contabilidadService');
+    const sim = monedaPedido === 'USD' ? 'US$' : '$';
+    const ids = [];
+    for (let i = 0; i < partes.length; i++) {
+        const p = partes[i];
+        await new sql.Request(transaction).input('C', sql.Int, p.cueIdCuenta)
+            .query('SELECT CueIdCuenta FROM dbo.CuentasCliente WITH (UPDLOCK, HOLDLOCK) WHERE CueIdCuenta = @C');
+        const saldo = await contabilidadService.getSaldoRealCuenta(p.cueIdCuenta, transaction);
+        if (saldo + 0.001 < p.importeCta) {
+            const e = new Error(`Tu billetera "${p.cuenta}" ya no tiene saldo suficiente (disponible ${saldo.toFixed(2)}). Actualizá la página y volvé a intentar.`);
+            e.status = 409;
+            throw e;
+        }
+        const mov = await contabilidadService.registrarMovimiento({
+            CueIdCuenta:      p.cueIdCuenta,
+            MovTipo:          'RESERVA_TIENDA',
+            MovConcepto:      `Reserva compra tienda ${codigoVenta}`,
+            MovImporte:       -Math.abs(p.importeCta),
+            MovUsuarioAlta:   999,
+            MovRefExterna:    codigoVenta,
+            MovObservaciones: `RESERVA_TIENDA ${codigoVenta} — total ${sim} ${Number(total).toFixed(2)}${p.cruzada ? ` @ cot. ${cot}` : ''} — ${p.cuenta}${partes.length > 1 ? ` (parte ${i + 1} de ${partes.length})` : ''}. Se cobra al llegar el pedido a Depósito.`,
+            SinCiclo:         true,
+        }, transaction);
+        ids.push(mov.MovIdGenerado);
+    }
+    await new sql.Request(transaction)
+        .input('PID', sql.Int, pedidoId)
+        .input('Ref', sql.VarChar(100), ids.map(id => `RES#${id}`).join(' ').slice(0, 100))
+        .query('UPDATE dbo.PedidosCobranza SET PagoOnlineRef = @Ref WHERE ID = @PID');
+    return ids;
+}
+
+// POST /api/web-orders/tienda/pagar-con-billetera — body { items, formaEnvioId, preview }.
+// preview=true → { alcanza, partes, disponible } sin comprar (el front decide si muestra
+// la opción). Sin preview → crea la VEN ya pagada (MetodoPagoOnline 'BILLETERA') + reserva.
+exports.pagarTiendaConBilletera = async (req, res) => {
+    try {
+        const { items, formaEnvioId, preview } = req.body || {};
+        if (!Array.isArray(items) || items.length === 0) {
+            return res.status(400).json({ error: 'El carrito está vacío.' });
+        }
+        const codCliente = req.user?.codCliente;
+        if (!codCliente) return res.status(403).json({ error: 'Sesión sin cliente asociado.' });
+        // La billetera la usa solo el cliente (las demás rutas de billetera no admiten diseñador)
+        if (req.user?.impersonadoPorDisenador) {
+            return res.status(403).json({ error: 'La billetera la puede usar solo el cliente desde su cuenta.', habilitada: false });
+        }
+
+        const pool = await getPool();
+        await ensureTiendaSchema(pool);
+
+        const cliRes = await pool.request()
+            .input('cod', sql.Int, codCliente)
+            .query('SELECT CliIdCliente, IDCliente, Nombre, ESTADO, ISNULL(CliBilleteraPortal, 0) AS BilleteraPortal FROM Clientes WHERE CodCliente = @cod');
+        if (!cliRes.recordset.length) return res.status(404).json({ error: 'Cliente no encontrado.' });
+        const cliente = cliRes.recordset[0];
+        if (cliente.ESTADO === 'BLOQUEADO') {
+            return res.status(403).json({ error: 'Tu cuenta está bloqueada. Contactá con nosotros para regularizar tu situación.', blocked: true });
+        }
+        // Mismo candado que "Mi billetera" del portal (Clientes.CliBilleteraPortal, 360)
+        if (!cliente.BilleteraPortal) {
+            return res.status(403).json({ error: 'Tu billetera no está habilitada en el portal. Hablá con administración para activarla.', habilitada: false });
+        }
+        const clienteNombre = (cliente.IDCliente && cliente.IDCliente.trim()) ? cliente.IDCliente.trim() : (cliente.Nombre || 'Cliente Web');
+
+        const { lineas, monedaPedido, total } = await validarCarritoTienda(pool, items);
+        const modoRetiro = await resolverModoRetiro(pool, formaEnvioId);
+        if (!modoRetiro || /encomienda/i.test(modoRetiro)) {
+            return res.status(400).json({ error: 'La billetera se usa con retiro en el local. La encomienda se paga cuando el pedido llega al depósito.' });
+        }
+
+        const plan = await planBilleteraTienda(pool, cliente.CliIdCliente, { monedaPedido, total });
+        if (preview) {
+            return res.json({ success: true, preview: true, alcanza: !!plan.partes, total, moneda: monedaPedido,
+                              partes: plan.partes || [], disponible: plan.disponible, cotizacion: plan.cot });
+        }
+        if (!plan.partes) {
+            const disp = plan.disponible.map(c => `${c.cuenta}: ${c.moneda === 'USD' ? 'US$' : '$'} ${c.saldo.toFixed(2)}`).join(' · ') || 'sin saldo';
+            return res.status(400).json({ error: `Tu billetera no alcanza para esta compra (${monedaPedido === 'USD' ? 'US$' : '$'} ${total.toFixed(2)}). Disponible: ${disp}.` });
+        }
+
+        let reservas = [];
+        const { pedidoId, codigoVenta } = await crearVentaTienda(pool, {
+            cliIdCliente: cliente.CliIdCliente, clienteNombre, lineas, monedaPedido, total, modoRetiro,
+            pago: { ref: null, metodo: 'BILLETERA' },
+            io: req.app?.get('socketio'),
+            enTransaccion: async (transaction, venta) => {
+                reservas = await reservarBilleteraTienda(transaction, { ...venta, partes: plan.partes, cot: plan.cot, monedaPedido, total });
+            },
+        });
+
+        logger.info(`[Tienda] 🔋 ${codigoVenta} — cliente ${clienteNombre} (CodCliente ${codCliente}) pagó con la billetera ${monedaPedido} ${total}: ${plan.partes.map(p => `"${p.cuenta}" -${p.mon === 2 ? 'US$' : '$'} ${p.importeCta.toFixed(2)}`).join(' + ')} (reservas ${reservas.join(', ')}).`);
+        res.json({ success: true, pedidoId, codigoVenta, total, moneda: monedaPedido, modoRetiro, pagadoConBilletera: true, partes: plan.partes });
+    } catch (err) {
+        if (err && err.status) return res.status(err.status).json({ error: err.message });
+        logger.error('[Tienda] pagarTiendaConBilletera: ' + err.message);
+        res.status(500).json({ error: err.message });
+    }
 };

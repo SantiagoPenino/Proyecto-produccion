@@ -1,5 +1,6 @@
 const { getPool, sql } = require('../config/db');
 const logger = require('../utils/logger');
+const { limpiarMarcasDeLote, resolverLoteVacio } = require('../utils/salidaDeLote');
 
 // Asegura columnas para impreso (todas las áreas) y agrupado manual (SB) de órdenes en el lote.
 // Se ejecuta una sola vez por proceso (el flag evita el chequeo en cada request).
@@ -125,10 +126,8 @@ exports.getBoardData = async (req, res) => {
             `);
 
         // B. TRAER ÓRDENES (Consulta Completa con Conteo de Archivos)
-        const ordersRes = await pool.request()
-            .input('AreaID', sql.VarChar(20), area)
-            .query(`
-                SELECT 
+        // Mismas columnas en las dos ramas de la consulta de abajo.
+        const columnasOrden = `
                     o.OrdenID, 
                     o.CodigoOrden, 
                     o.Cliente, 
@@ -159,21 +158,40 @@ exports.getBoardData = async (req, res) => {
                        FROM dbo.ArchivosOrden ao WITH(NOLOCK)
                       WHERE ao.OrdenID = o.OrdenID
                         AND (ao.Observaciones LIKE '%[[]RAPORT]%' OR ao.Observaciones LIKE '%[[]ESCALA]%')
-                      ORDER BY CASE WHEN ao.Observaciones LIKE '%[[]RAPORT]%' THEN 0 ELSE 1 END) AS ModoImpresion
+                      ORDER BY CASE WHEN ao.Observaciones LIKE '%[[]RAPORT]%' THEN 0 ELSE 1 END) AS ModoImpresion`;
 
-                FROM dbo.Ordenes o WITH(NOLOCK)
-                WHERE o.AreaID = @AreaID
-                AND (
+        // [23/09] Dos ramas con UNION ALL y no un OR. Con el OR, SQL recorría todas las órdenes del área
+        // que alguna vez tuvieron lote y, por cada una, iba a Rollos a ver si ese lote seguía activo:
+        // en producción, DF, 30.658 lecturas de Rollos por llamada, en el tablero que más se consulta.
+        // Partiendo de los lotes activos son 25 (2.622 lecturas en total contra 32.543). Mismo resultado,
+        // verificado en las 9 áreas de la base local y en DF de producción. Las ramas no se pisan: una
+        // exige lote y la otra que no lo tenga.
+        const ordersRes = await pool.request()
+            .input('AreaID', sql.VarChar(20), area)
+            .query(`
+                SELECT * FROM (
                     -- Órdenes dentro de un lote ACTIVO: se cuentan TODAS (total del lote, igual que el detalle).
                     -- MISMO filtro (case-insensitive) que el SELECT de rollos de arriba: si acá se listan
                     -- menos estados, el lote se ve en la máquina pero sus órdenes no llegan nunca.
-                    o.RolloID IN (SELECT RolloID FROM dbo.Rollos WITH(NOLOCK) WHERE AreaID = @AreaID AND UPPER(LTRIM(RTRIM(Estado))) NOT IN ('CERRADO', 'FINALIZADO', 'CANCELADO'))
+                    SELECT ${columnasOrden}
+                    FROM dbo.Rollos r WITH(NOLOCK)
+                    JOIN dbo.Ordenes o WITH(NOLOCK) ON o.RolloID = r.RolloID
+                    WHERE r.AreaID = @AreaID
+                      AND UPPER(LTRIM(RTRIM(r.Estado))) NOT IN ('CERRADO', 'FINALIZADO', 'CANCELADO')
+                      AND o.AreaID = @AreaID
+
+                    UNION ALL
+
                     -- Órdenes sin lote (pendientes en la mesa): solo las activas
-                    OR (o.RolloID IS NULL AND o.Estado NOT IN ('Entregado', 'Finalizado', 'Cancelado') AND ISNULL(o.EstadoenArea,'') NOT IN ('Pronto', 'PRONTO'))
-                )
+                    SELECT ${columnasOrden}
+                    FROM dbo.Ordenes o WITH(NOLOCK)
+                    WHERE o.AreaID = @AreaID AND o.RolloID IS NULL
+                      AND o.Estado NOT IN ('Entregado', 'Finalizado', 'Cancelado')
+                      AND ISNULL(o.EstadoenArea,'') NOT IN ('Pronto', 'PRONTO')
+                ) t
 
                 -- Ordenamos por Secuencia para mantener el orden del Drag & Drop
-                ORDER BY ISNULL(o.Secuencia, 999999), o.OrdenID ASC
+                ORDER BY ISNULL(t.Secuencia, 999999), t.OrdenID ASC
             `);
 
         // Mapeo de Rollos (ordenados por Secuencia DESC si existe, sino por FechaCreacion)
@@ -469,6 +487,16 @@ exports.moveOrder = async (req, res) => {
                 if (loteSt.recordset[0]?.MaquinaID != null) loteEstado = 'En Maquina';
             }
 
+            // Lote de origen de cada orden, antes de moverla: hace falta para limpiarle las marcas
+            // de ese lote y para cerrar el origen si queda vacío (utils/salidaDeLote).
+            const idsOrigen = idsToMove.map(Number).filter(n => Number.isInteger(n) && n > 0);
+            const origenRes = idsOrigen.length
+                ? await new sql.Request(transaction)
+                    .query(`SELECT OrdenID, RolloID FROM dbo.Ordenes WHERE OrdenID IN (${idsOrigen.join(',')})`)
+                : { recordset: [] };
+            const origenDe = new Map(origenRes.recordset.map(r => [Number(r.OrdenID), r.RolloID != null ? String(r.RolloID).trim() : null]));
+            const destino = targetRollId ? String(targetRollId).trim() : null;
+
             for (const id of idsToMove) {
                 // Columnas estructurales (rollo/secuencia/máquina) en UPDATE directo (no son "estado")
                 await new sql.Request(transaction)
@@ -481,6 +509,12 @@ exports.moveOrder = async (req, res) => {
                             MaquinaID = CASE WHEN @RolloID IS NULL THEN NULL ELSE (SELECT MaquinaID FROM dbo.Rollos WHERE RolloID = @RolloID) END
                         WHERE OrdenID = @OrdenID
                     `);
+                // Marcas del lote que deja: el grupo manual siempre; la de impreso solo si vuelve
+                // a pendientes (a otro lote viaja impresa). Si no cambia de lote, no se toca nada.
+                const origen = origenDe.get(Number(id));
+                if (origen && origen !== destino) {
+                    await limpiarMarcasDeLote(transaction, [id], { vuelveAPendientes: !destino });
+                }
                 // Estado/EstadoenArea vía servicio central ('En Lote' deriva a Produccion)
                 await changeOrderState(transaction, {
                     target : { type: 'ORDER', id },
@@ -494,17 +528,32 @@ exports.moveOrder = async (req, res) => {
             }
 
 
-            // 3. AUTO-CLEANUP: barrido de rollos vacíos (no tenemos el origen explícito en el body).
-            // Dos guardas contra el "lote perdido" (se llevó puesto al 1224 el 10/08/26 con 7
-            // órdenes recién asignadas):
+            // 3a. Lotes de origen que quedaron vacíos después de haber arrancado (imprimiendo, en
+            // pausa o devueltos a la cola): se CIERRAN con la bitácora cerrada, no se borran
+            // (utils/salidaDeLote). Los que nunca arrancaron los levanta el barrido de abajo.
+            const origenes = [...new Set([...origenDe.values()].filter(r => r && r !== destino))];
+            for (const origen of origenes) {
+                await resolverLoteVacio(transaction, origen, { borrarSiNoArranco: false });
+            }
+
+            // 3b. AUTO-CLEANUP: barrido de rollos vacíos. Tres guardas:
             //  - FechaCreacion > 10 min: un lote se crea vacío en un request y las órdenes le
             //    llegan en requests aparte; en esa ventana este barrido (disparado por mover
-            //    CUALQUIER orden de CUALQUIER área) lo veía con 0 órdenes y lo borraba.
+            //    CUALQUIER orden de CUALQUIER área) lo veía con 0 órdenes y lo borraba. Así se
+            //    perdió el lote 1224 el 10/08/26, con 7 órdenes recién asignadas.
             //  - READCOMMITTEDLOCK: con RCSI el subquery lee un snapshot y no ve asignaciones sin
             //    commitear; el hint lo hace esperar el commit y contarlas.
+            //  - Solo lotes que NUNCA arrancaron (sin FechaInicioProduccion ni bitácora). Antes
+            //    borraba cualquier lote vacío, incluso uno imprimiendo, con la bitácora de la
+            //    máquina abierta, o los que la impresión parcial deja finalizados sin órdenes.
             await new sql.Request(transaction).query(`
                 DELETE FROM dbo.Rollos
                 WHERE FechaCreacion < DATEADD(MINUTE, -10, GETDATE())
+                  AND FechaInicioProduccion IS NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM dbo.BitacoraProduccion b
+                      WHERE b.RolloID = CAST(dbo.Rollos.RolloID AS VARCHAR(50))
+                  )
                   AND NOT EXISTS (
                       SELECT 1 FROM dbo.Ordenes o WITH (READCOMMITTEDLOCK)
                       WHERE o.RolloID = CAST(dbo.Rollos.RolloID AS VARCHAR(50))
@@ -760,17 +809,12 @@ exports.updateRollGeneral = async (req, res) => {
                 }
             }
 
+            // La bobina queda en el lote (Rollos.BobinaID) y no se copia a las órdenes: Ordenes no
+            // tiene esa columna en ninguna base, así que la copia hacía fallar toda la asignación
+            // ("Invalid column name 'BobinaID'"). Nada la leía.
             if (updates.length > 0) {
                 const query = `UPDATE dbo.Rollos SET ${updates.join(', ')} WHERE CAST(RolloID AS VARCHAR(50)) = @RID`;
                 await request.query(query);
-
-                // ✅ Si se actualizó la bobina, propagar a las órdenes del rollo
-                if (bobinaId !== undefined) {
-                    await new sql.Request(transaction)
-                        .input('RID', sql.VarChar(50), String(rollId))
-                        .input('BID', sql.Int, Number(bobinaId))
-                        .query("UPDATE dbo.Ordenes SET BobinaID = @BID WHERE CAST(RolloID AS VARCHAR(50)) = @RID");
-                }
             }
 
             await transaction.commit();
@@ -887,17 +931,12 @@ exports.swapBobina = async (req, res) => {
                 .input('BID', sql.Int, newBobinaId)
                 .query("UPDATE InventarioBobinas SET Estado = 'En Uso' WHERE BobinaID = @BID");
 
-            // 3. ACTUALIZAR ROLLO
+            // 3. ACTUALIZAR ROLLO. La bobina vive en el lote: no se copia a las órdenes, porque
+            // Ordenes no tiene esa columna y la copia hacía fallar todo el relevo.
             await new sql.Request(transaction)
                 .input('RID', sql.VarChar(20), rollId)
                 .input('BID', sql.Int, newBobinaId)
                 .query("UPDATE Rollos SET BobinaID = @BID WHERE RolloID = @RID");
-
-            // 4. PROPAGAR CAMBIO A ÓRDENES (Sincronización)
-            await new sql.Request(transaction)
-                .input('RID', sql.VarChar(20), rollId)
-                .input('BID', sql.Int, newBobinaId)
-                .query("UPDATE dbo.Ordenes SET BobinaID = @BID WHERE RolloID = @RID");
 
             await transaction.commit();
 
@@ -934,15 +973,18 @@ exports.dismantleRoll = async (req, res) => {
         try {
             // 1. Liberar Ordenes (Vuelta a Pendientes) — vía servicio central (guarda: no tocar finalizadas)
             const { changeOrderState } = require('../services/stateManagerService');
-            await changeOrderState(transaction, {
+            const cambio = await changeOrderState(transaction, {
                 target  : { type: 'ROLL', id: rollId },
                 estado  : 'Pendiente',
                 userObj : req.user || 'Sistema',
                 detalle : 'Lote desarmado',
                 guard   : "Estado != 'Finalizado'",
-                extraSet: { RolloID: null, BobinaID: null, MaquinaID: null, Secuencia: null },
+                // Sin BobinaID: Ordenes no tiene esa columna (la bobina es del lote) y desarmar fallaba entero.
+                extraSet: { RolloID: null, MaquinaID: null, Secuencia: null },
                 io      : req.app.get('socketio'),
             });
+            // Vuelven a pendientes: sin el grupo ni la marca de impreso del lote (utils/salidaDeLote).
+            await limpiarMarcasDeLote(transaction, cambio.ordenesAfectadas, { vuelveAPendientes: true });
 
             // 2. Eliminar el Rollo físicamente
             await new sql.Request(transaction)
@@ -2042,12 +2084,17 @@ exports.magicRollAssignment = async (req, res) => {
             const pendingParams = new sql.Request(transaction);
             pendingParams.input('AreaID', sql.VarChar(20), cleanArea);
 
+            // Misma regla que la grilla activa (ordersController, modo normal): una orden con una
+            // dependencia abierta no es trabajable todavía. Sin este filtro entraban las frenadas
+            // por una consulta al cliente ('Esperando Cliente' cuelga de 'Pendiente'): quedaban en
+            // un lote con el estado pisado a 'En Lote' mientras el cliente todavía no respondía.
             const pendingRes = await pendingParams.query(`
                 SELECT OrdenID, CodigoOrden, Cliente, Material, Variante, Prioridad, Magnitud
                 FROM dbo.Ordenes
-                WHERE AreaID = @AreaID 
-                AND Estado = 'Pendiente' 
+                WHERE AreaID = @AreaID
+                AND Estado = 'Pendiente'
                 AND RolloID IS NULL
+                AND (EstadoDependencia IS NULL OR EstadoDependencia = 'OK')
             `);
 
             const orders = pendingRes.recordset;

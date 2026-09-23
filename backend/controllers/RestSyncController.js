@@ -564,7 +564,7 @@ const syncOrdersLogic = async (io) => {
             let committed = true; // BANDERA DE SEGURIDAD
 
             logger.info(`✅ EXITO SYNC V3. Creadas: ${generatedCodes.length}`);
-            if (io && generatedCodes.length) io.emit('server:ordersUpdated', { count: generatedCodes.length });
+            if (io && generatedCodes.length) io.emit('server:ordersUpdated', { count: generatedCodes.length, orderIds: createdOrderIds });
 
             // ASYNC: Procesamiento de Archivos
             if (createdOrderIds.length > 0) {

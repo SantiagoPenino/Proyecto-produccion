@@ -167,10 +167,13 @@ async function registrarMovimiento(params, transaction = null) {
     MovObservaciones = null,
     CicIdCiclo       = null,
     MovFecha         = null,
+    // true = el movimiento NO se asocia al ciclo abierto de la cuenta (orden ya pagada
+    // por fuera, que el cierre semanal no debe facturar; reserva de la tienda).
+    SinCiclo         = false,
   } = params;
 
-  let resolvedCicloId = CicIdCiclo;
-  if (!resolvedCicloId) {
+  let resolvedCicloId = SinCiclo ? null : CicIdCiclo;
+  if (!resolvedCicloId && !SinCiclo) {
     const activo = await obtenerCicloActivo(CueIdCuenta, transaction);
     if (activo) resolvedCicloId = activo.CicIdCiclo;
   }
@@ -5840,7 +5843,12 @@ async function procesarEventoContable(evtCodigo, data) {
     CliIdCliente, MonIdMoneda = 1, UsuarioAlta = 70,
     OrdIdOrden = null, CodigoOrden = '', NombreTrabajo = '',
     ProIdProducto = null, Cantidad = 0,
-    OReIdOrdenRetiro = null, PagIdPago = null
+    OReIdOrdenRetiro = null, PagIdPago = null,
+    // Orden YA PAGADA por fuera del motor (compra de la tienda pagada online: Handy o
+    // billetera reservada). Entra como deuda normal en la principal, SIN plan de metros,
+    // SIN billetera con descuento automático y SIN ciclo semanal: quien la paga es el
+    // que llama (caja o consumo de la reserva). Si no, se cobraba dos veces.
+    SinCoberturaAutomatica = false
   } = data;
   // Importe es mutable: una cuenta con descuento automático SIN negativo puede cubrir
   // solo una parte y el resto sigue su camino normal a la principal. El asiento del
@@ -5857,7 +5865,7 @@ async function procesarEventoContable(evtCodigo, data) {
       let saltarDinero = false;
       
       // Si el evento aplica recursos, verificamos si existe un plan activo para evitar doble cobro
-      if (evt.EvtAplicaRecurso && ProIdProducto) {
+      if (evt.EvtAplicaRecurso && ProIdProducto && !SinCoberturaAutomatica) {
          const pCheck = await pool.request()
             .input('C', sql.Int, CliIdCliente)
             .input('P', sql.Int, ProIdProducto)
@@ -5892,7 +5900,7 @@ async function procesarEventoContable(evtCodigo, data) {
       //   CueAutoConsumo   → la cuenta paga sola al entrar la orden (restringida al artículo o libre).
       //   CuePuedeNegativo → si no alcanza: ON = descuenta todo y queda en rojo (rollo);
       //                      OFF = descuenta lo que hay y el RESTO sigue a la principal (pasa por caja).
-      if (!saltarDinero && evt.EvtGeneraDeuda && (evt.EvtAfectaSaldo || -1) < 0 && Math.abs(Importe) > 0.001) {
+      if (!saltarDinero && !SinCoberturaAutomatica && evt.EvtGeneraDeuda && (evt.EvtAfectaSaldo || -1) < 0 && Math.abs(Importe) > 0.001) {
         const ctaAuto = await buscarCuentaAutoConsumoParaOrden(pool, { CliIdCliente, ProIdProducto, OrdIdOrden, CodigoOrden, MonIdMoneda });
         if (ctaAuto) {
           // Moneda: si la orden y la cuenta difieren, convertir con la cotización del día
@@ -6074,7 +6082,8 @@ async function procesarEventoContable(evtCodigo, data) {
         
         // Registrar en historial de movimientos
         // Buscar ciclo activo ANTES de registrar el movimiento
-        const cicloActivoEvt = await obtenerCicloActivo(cueId);
+        // Ya pagada: fuera del ciclo, o el cierre semanal la volvía a facturar.
+        const cicloActivoEvt = SinCoberturaAutomatica ? null : await obtenerCicloActivo(cueId);
         if (cicloActivoEvt) {
           logger.info(`[MOTOR] ${evtCodigo}: Cliente ${CliIdCliente} tiene ciclo activo CicId=${cicloActivoEvt.CicIdCiclo}. Movimiento se asocia al ciclo.`);
         }
@@ -6087,6 +6096,7 @@ async function procesarEventoContable(evtCodigo, data) {
           MovUsuarioAlta: UsuarioAlta,
           OrdIdOrden, OReIdOrdenRetiro, PagIdPago,
           CicIdCiclo: cicloActivoEvt ? cicloActivoEvt.CicIdCiclo : null,
+          SinCiclo: SinCoberturaAutomatica,
         });
 
         // 2. GENERACIÓN DE DEUDA VIVA (DOCUMENTOS PENDIENTES) Y CRUCES DE MONEDA
@@ -6130,7 +6140,7 @@ async function procesarEventoContable(evtCodigo, data) {
              ImportePendiente: Math.abs(Importe),
              aplicarSaldoAFavor: false
           });
-          logger.info(`[MOTOR] ${evtCodigo}: Orden ${CodigoOrden} (cliente sin ciclo) → deuda por el total ${Math.abs(Importe).toFixed(2)}, PENDIENTE. La cuenta principal no paga sola (saldo libro ${saldoLibroCta.toFixed(2)}); se cobra o se imputa en caja.`);
+          logger.info(`[MOTOR] ${evtCodigo}: Orden ${CodigoOrden} (${SinCoberturaAutomatica ? 'ya pagada por fuera: sin coberturas ni ciclo' : 'cliente sin ciclo'}) → deuda por el total ${Math.abs(Importe).toFixed(2)}, PENDIENTE. La cuenta principal no paga sola (saldo libro ${saldoLibroCta.toFixed(2)}); se cobra o se imputa en caja.`);
         } else if (evt.EvtGeneraDeuda && saldoConEstaOrden < 0) {
            let deudaReal = Math.min(Math.abs(Importe), Math.max(0, -saldoConEstaOrden));
 
@@ -6249,8 +6259,8 @@ async function procesarEventoContable(evtCodigo, data) {
     }
 
     // 3. LÓGICA DE RECURSOS (PLANES METROS/KG)
-    if (evt.EvtAplicaRecurso && ProIdProducto && Cantidad > 0) {
-      await hookEntregaMetros({ 
+    if (evt.EvtAplicaRecurso && ProIdProducto && Cantidad > 0 && !SinCoberturaAutomatica) {
+      await hookEntregaMetros({
         OrdIdOrden, CliIdCliente, ProIdProducto, Cantidad, 
         CodigoOrden, UsuarioAlta, Importe, MonIdMoneda, NombreTrabajo 
       });

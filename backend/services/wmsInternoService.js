@@ -200,6 +200,152 @@ async function getStockPorVariante(varIds = null, depId = null) {
 }
 
 /**
+ * Catálogo de maestros y variantes para /admin/products-integration (vincular artículos del ERP con
+ * el WMS e importar maestros). Devuelven LAS MISMAS formas de fila que el proxy del WMS externo
+ * (`id`, `nombre`, `variante_id`, `nombre_variante`, `codigo_variante`, `producto_maestro_id`) para
+ * que el controlador bifurque por WMS_INTERNO sin tocar a los que lo llaman. Los ids son los mismos
+ * en los dos lados: la migración los conserva.
+ */
+async function getMaestros() {
+    const pool = await getPool();
+    const r = await pool.request().query(`
+        SELECT PmaId AS id, Nombre AS nombre
+        FROM dbo.Wms_ProductosMaestros
+        ORDER BY Nombre`);
+    return r.recordset;
+}
+
+async function getMaestro(pmaId) {
+    const pool = await getPool();
+    const r = await pool.request()
+        .input('P', sql.Int, pmaId)
+        .query(`SELECT PmaId AS id, Nombre AS nombre FROM dbo.Wms_ProductosMaestros WHERE PmaId = @P`);
+    return r.recordset[0] || null;
+}
+
+async function getVariantesDeMaestro(pmaId) {
+    const pool = await getPool();
+    const r = await pool.request()
+        .input('P', sql.Int, pmaId)
+        .query(`
+            SELECT VarId AS id, VarId AS variante_id, PmaId AS producto_maestro_id,
+                   NombreVariante AS nombre_variante, CodigoVariante AS codigo_variante
+            FROM dbo.Wms_Variantes
+            WHERE PmaId = @P
+            ORDER BY VarId`);
+    return r.recordset;
+}
+
+// Catálogo entero para el "Sincronizar" de Pedidos WMS (wmsController.syncCatalog): misma forma de fila
+// que su consulta al WMS externo (variante + maestro + categoría) y, como ella, sin filtrar activas.
+async function getCatalogoSync() {
+    const pool = await getPool();
+    const r = await pool.request().query(`
+        SELECT v.VarId AS variante_id, v.NombreVariante AS nombre_variante, v.CodigoVariante AS codigo_variante,
+               v.PmaId AS producto_maestro_id, p.Nombre AS producto_nombre,
+               p.CatId AS categoria_id, c.Nombre AS cat_nombre
+        FROM dbo.Wms_Variantes v
+        INNER JOIN dbo.Wms_ProductosMaestros p ON p.PmaId = v.PmaId
+        LEFT JOIN dbo.Wms_Categorias c ON c.CatId = p.CatId
+        ORDER BY p.Nombre, v.NombreVariante`);
+    return r.recordset;
+}
+
+// Columnas de la ficha textil agregadas después del DDL original (22/09: Composicion). Se crean solas si
+// faltan, con el mismo criterio que Articulos_Imagenes.color: prod no corre migraciones y una columna
+// ausente tiraría 500 en el inventario. El SQL equivalente está en docs/wms-data/DDL-wms-compras.sql.
+// Llamarla ANTES de abrir una transacción (es DDL).
+let columnasTelaListas = null;
+function asegurarColumnasTela(pool) {
+    if (!columnasTelaListas) {
+        columnasTelaListas = pool.request().query(`
+            IF COL_LENGTH('dbo.Wms_Variantes', 'Composicion') IS NULL
+                ALTER TABLE dbo.Wms_Variantes ADD Composicion NVARCHAR(200) NULL;
+        `).catch((e) => { columnasTelaListas = null; throw e; });
+    }
+    return columnasTelaListas;
+}
+
+// Parte de un código a partir de un texto: sin tildes, mayúsculas, solo letras y números.
+const tramoSku = (txt, largo) => String(txt || '')
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, largo);
+
+/**
+ * Alta de un producto de stock NUEVO: el maestro y sus variantes, dentro de la transacción del caller.
+ * SOLO después del cutover (lo exige el controlador): PmaId y VarId NO son identity, se conservan los
+ * del WMS externo, que sigue numerando mientras esté vivo. Crear acá antes chocaría con el próximo
+ * import, y su borrado de ausentes lo eliminaría. El número sale de MAX+1 con UPDLOCK/HOLDLOCK: dos
+ * altas simultáneas no pueden tomar el mismo.
+ * Códigos: si no vienen se arman como los del sistema viejo, FAM-NOMBR-n para el maestro (TEL-SATEN-1)
+ * y <código del maestro>-VAR para cada variante (TEL-SATEN-1-SAT). No hay restricción de unicidad: son
+ * informativos, la etiqueta física se lee por su propio código.
+ * maestro: { nombre, catId, unidadBase, tipoGestion, llevaPeso, sku? }
+ * variantes: [{ nombre, codigo?, talle?, color?, costo, moneda, gramajeGsm?, anchoMetros?, composicion? }]
+ */
+async function crearMaestroConVariantes({ maestro, variantes, transaction }) {
+    const req = () => new sql.Request(transaction);
+
+    const fam = (await req().input('C', sql.Int, maestro.catId)
+        .query(`SELECT Nombre FROM dbo.Wms_Categorias WHERE CatId = @C`)).recordset[0];
+    if (!fam) throw new Error('La familia elegida no existe en el WMS.');
+
+    const pmaId = (await req().query(`
+        SELECT ISNULL(MAX(PmaId), 0) + 1 AS id FROM dbo.Wms_ProductosMaestros WITH (UPDLOCK, HOLDLOCK)`)).recordset[0].id;
+
+    let sku = String(maestro.sku || '').trim();
+    if (!sku) {
+        const base = `${tramoSku(fam.Nombre, 3) || 'GEN'}-${tramoSku(maestro.nombre, 5) || 'PROD'}`;
+        const previos = (await req().input('B', sql.NVarChar(110), base + '-%')
+            .query(`SELECT COUNT(*) AS n FROM dbo.Wms_ProductosMaestros WHERE Sku LIKE @B`)).recordset[0].n;
+        sku = `${base}-${previos + 1}`;
+    }
+
+    await req()
+        .input('P', sql.Int, pmaId)
+        .input('N', sql.NVarChar(255), maestro.nombre)
+        .input('S', sql.NVarChar(100), sku)
+        .input('C', sql.Int, maestro.catId)
+        .input('U', sql.NVarChar(50), maestro.unidadBase)
+        .input('T', sql.VarChar(50), maestro.tipoGestion)
+        .input('L', sql.Bit, maestro.llevaPeso ? 1 : 0)
+        .query(`INSERT INTO dbo.Wms_ProductosMaestros (PmaId, Nombre, Sku, CatId, UnidadBase, TipoGestion, LlevaPeso)
+                VALUES (@P, @N, @S, @C, @U, @T, @L)`);
+
+    let varId = (await req().query(`
+        SELECT ISNULL(MAX(VarId), 0) AS id FROM dbo.Wms_Variantes WITH (UPDLOCK, HOLDLOCK)`)).recordset[0].id;
+    const usados = new Set();
+    const creadas = [];
+    for (const v of variantes) {
+        varId += 1;
+        let codigo = String(v.codigo || '').trim();
+        if (!codigo) {
+            const base = `${sku}-${tramoSku(v.nombre, 3) || 'VAR'}`;
+            codigo = base;
+            for (let i = 2; usados.has(codigo); i++) codigo = `${base}-${i}`;
+        }
+        usados.add(codigo);
+        await req()
+            .input('V', sql.Int, varId)
+            .input('P', sql.Int, pmaId)
+            .input('N', sql.NVarChar(255), v.nombre)
+            .input('Cod', sql.NVarChar(150), codigo)
+            .input('Ta', sql.NVarChar(50), v.talle || null)
+            .input('Co', sql.NVarChar(50), v.color || null)
+            .input('Cos', sql.Decimal(18, 2), v.costo || 0)
+            .input('M', sql.VarChar(20), v.moneda)
+            .input('G', sql.Decimal(8, 2), v.gramajeGsm ?? null)
+            .input('A', sql.Decimal(6, 3), v.anchoMetros ?? null)
+            .input('Comp', sql.NVarChar(200), v.composicion || null)
+            .query(`INSERT INTO dbo.Wms_Variantes
+                        (VarId, PmaId, NombreVariante, CodigoVariante, Talle, Color, Costo, Moneda, GramajeGsm, AnchoMetros, Composicion)
+                    VALUES (@V, @P, @N, @Cod, @Ta, @Co, @Cos, @M, @G, @A, @Comp)`);
+        creadas.push({ varId, nombre: v.nombre, codigo, talle: v.talle || null, color: v.color || null });
+    }
+    return { pmaId, sku, variantes: creadas };
+}
+
+/**
  * Compatibilidad con wmsStockService.descontarStockWmsExterno: misma entrada
  * ([{ wms_variante_id, Cantidad }]) y misma salida ({ wmsDisponible, wmsErrors }).
  * Es el punto al que salta el flag WMS_INTERNO=true en el cutover (F2).
@@ -558,4 +704,5 @@ async function bajaManual({ etiId, cantidad, motivo = 'baja_consumo', nota = nul
 module.exports = {
     egresarVenta, egresarVentaCompat, ingresarEtiqueta, ajustarConteo, getStockPorVariante,
     crearRemito, cancelarRemito, recibirRemitoItem, recibirCompra, bajaManual,
+    getMaestros, getMaestro, getVariantesDeMaestro, getCatalogoSync, crearMaestroConVariantes, asegurarColumnasTela,
 };

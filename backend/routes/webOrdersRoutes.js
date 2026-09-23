@@ -242,6 +242,10 @@ router.post('/tienda/checkout', verifyToken, impersonarCliente, tiendaController
 // crear la venta — la crea el webhook al confirmarse el pago. La ENCOMIENDA no paga acá:
 // su VEN sigue el circuito normal y se paga en /portal/pickup al armar el retiro.
 router.post('/tienda/init-pago', verifyToken, impersonarCliente, tiendaController.initPagoTienda);
+// [BILLETERA 23/09] Retiro en el local pagado con la billetera PREPAGO: la VEN nace pagada
+// y el importe queda RESERVADO; se cobra (consumo) al ingresar a Depósito. preview=true
+// solo calcula si alcanza.
+router.post('/tienda/pagar-con-billetera', verifyToken, impersonarCliente, tiendaController.pagarTiendaConBilletera);
 
 // TPU: "Mis matrices" — pedidos TPU finalizados del cliente con arte, para reusar.
 router.get('/mis-matrices', verifyToken, impersonarCliente, webOrdersController.getMisMatrices);

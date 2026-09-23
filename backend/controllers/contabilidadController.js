@@ -4566,8 +4566,12 @@ exports.consumirDesdeSaldo = async (req, res) => {
 // todos con la marca; la ORDEN queda cubierta ENTERA (marca + deuda cancelada +
 // contra-asiento por el total), con un Ref# por consumo para la reversa.
 // NO es endpoint HTTP: lo usan caja y portal. Todo-o-nada (una transacción).
+// reservasALiberar: movimientos RESERVA_TIENDA (compra de la tienda pagada con la
+// billetera) que se anulan DENTRO de la misma transacción, justo antes de consumir:
+// la plata vuelve a la cuenta y sale enseguida como consumo, sin ventana en la que
+// otro descuento pueda llevársela. Si algo falla, la reserva queda como estaba.
 // ============================================================================
-exports.consumirOrdenDesdeSaldoEnPartes = async ({ movId, partes, cot, UsuarioAlta = 1 }) => {
+exports.consumirOrdenDesdeSaldoEnPartes = async ({ movId, partes, cot, UsuarioAlta = 1, reservasALiberar = [] }) => {
   const pool = await getPool();
   let transaction = null;
   try {
@@ -4597,6 +4601,14 @@ exports.consumirOrdenDesdeSaldoEnPartes = async ({ movId, partes, cot, UsuarioAl
     transaction = await pool.transaction();
     await transaction.begin();
     try {
+      for (const reservaId of reservasALiberar) {
+        const r = await new sql.Request(transaction).input('R', sql.Int, reservaId).query(`
+          SELECT MovTipo FROM dbo.MovimientosCuenta WITH(UPDLOCK)
+          WHERE MovIdMovimiento = @R AND (MovAnulado IS NULL OR MovAnulado = 0)`);
+        if (r.recordset[0]?.MovTipo !== 'RESERVA_TIENDA')
+          throw new Error(`La reserva #${reservaId} ya no está activa (¿la liberó otro proceso?).`);
+        await svc.anularMovimiento(reservaId, `Reserva aplicada a ${codigo}`, transaction);
+      }
       const refs = [], nombres = [];
       for (let i = 0; i < partes.length; i++) {
         const parte = partes[i];
@@ -4610,7 +4622,9 @@ exports.consumirOrdenDesdeSaldoEnPartes = async ({ movId, partes, cot, UsuarioAl
           MovImporte:       -Math.abs(parte.importeCta),
           MovUsuarioAlta:   UsuarioAlta,
           OrdIdOrden:       mov.OrdIdOrden,
-          MovObservaciones: `CUBIERTO_CUENTA_${parte.cueIdCuenta}${parte.cruzada ? ` @ cot. ${cot}` : ''} — ${parte.cuenta} (parte ${i + 1} de ${partes.length})`,
+          // Una sola parte (compra de la tienda con billetera): mismo texto que el consumo
+          // manual (Ref# a la ORDEN), así "Revertir" del libro la encuentra.
+          MovObservaciones: `CUBIERTO_CUENTA_${parte.cueIdCuenta}${parte.cruzada ? ` @ cot. ${cot}` : ''} — ${parte.cuenta}${partes.length > 1 ? ` (parte ${i + 1} de ${partes.length})` : ` Ref#${movId}`}`,
         }, transaction);
         refs.push(consumo.MovIdGenerado);
         nombres.push(parte.cuenta);
@@ -4618,7 +4632,7 @@ exports.consumirOrdenDesdeSaldoEnPartes = async ({ movId, partes, cot, UsuarioAl
       // Marca de la ORDEN con un Ref# por consumo (la reversa 🔄 los devuelve todos)
       await new sql.Request(transaction)
         .input('M', sql.Int, movId)
-        .input('Obs', sql.NVarChar(500), `CUBIERTO_CUENTA_${partes[0].cueIdCuenta} — pagada repartida entre ${nombres.join(' + ')} ${refs.map(id => `Ref#${id}`).join(' ')}`)
+        .input('Obs', sql.NVarChar(500), `CUBIERTO_CUENTA_${partes[0].cueIdCuenta} — ${partes.length > 1 ? `pagada repartida entre ${nombres.join(' + ')}` : `pagada con saldo de ${nombres[0]}`} ${refs.map(id => `Ref#${id}`).join(' ')}`)
         .query('UPDATE dbo.MovimientosCuenta SET MovObservaciones = @Obs WHERE MovIdMovimiento = @M');
       if (mov.OrdIdOrden) await svc.cancelarDeuda({ ordId: mov.OrdIdOrden, cueId: mov.CueIdCuenta }, transaction);
       // Contra-asiento por el TOTAL de la orden (igual que el consumo de una sola cuenta)

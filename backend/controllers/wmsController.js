@@ -4,33 +4,42 @@ const { calcularFechasOrden } = require('../services/fechaPrometidaService');
 // Dynamic import for fetch if needed, but since Node 18 it's native.
 // The .env has WMS_API_URL
 
+// Catálogo del WMS externo (variante + maestro + categoría) para syncCatalog.
+async function leerCatalogoWmsExterno() {
+    const wmsSqlUrl = process.env.WMS_SQL_URL || 'http://3.85.26.173:5005';
+
+    // Query WMS for Familia 2 (if filtering there) or just get all and filter here
+    const wmsQuery = `
+        USE Ventas_Dev;
+        SELECT v.id as variante_id, v.nombre_variante, v.codigo_variante,
+               v.producto_maestro_id, p.nombre as producto_nombre,
+               p.categoria_id, c.nombre as cat_nombre
+        FROM Stock_Variantes v
+        INNER JOIN Stock_Productos_Maestros p ON v.producto_maestro_id = p.id
+        LEFT JOIN Stock_Categorias c ON p.categoria_id = c.id
+        ORDER BY p.nombre, v.nombre_variante;
+    `;
+
+    const response = await fetch(`${wmsSqlUrl}/sql`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: wmsQuery })
+    });
+
+    const wmsData = await response.json();
+    if (wmsData.error) throw new Error(`WMS API Error: ${wmsData.error}`);
+
+    return wmsData.data || [];
+}
+
 exports.syncCatalog = async (req, res) => {
     try {
-        const wmsSqlUrl = process.env.WMS_SQL_URL || 'http://3.85.26.173:5005';
+        // [CUTOVER WMS PROPIO] WMS_INTERNO=true → el catálogo sale de las tablas Wms_*. Antes iba siempre
+        // al externo: después del cutover re-vinculaba artículos contra un catálogo que ya no se usa.
+        const items = String(process.env.WMS_INTERNO || '').toLowerCase() === 'true'
+            ? await require('../services/wmsInternoService').getCatalogoSync()
+            : await leerCatalogoWmsExterno();
 
-        // Query WMS for Familia 2 (if filtering there) or just get all and filter here
-        const wmsQuery = `
-            USE Ventas_Dev;
-            SELECT v.id as variante_id, v.nombre_variante, v.codigo_variante, 
-                   v.producto_maestro_id, p.nombre as producto_nombre, 
-                   p.categoria_id, c.nombre as cat_nombre 
-            FROM Stock_Variantes v 
-            INNER JOIN Stock_Productos_Maestros p ON v.producto_maestro_id = p.id 
-            LEFT JOIN Stock_Categorias c ON p.categoria_id = c.id 
-            ORDER BY p.nombre, v.nombre_variante;
-        `;
-
-        const response = await fetch(`${wmsSqlUrl}/sql`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ query: wmsQuery })
-        });
-        
-        const wmsData = await response.json();
-        if (wmsData.error) throw new Error(`WMS API Error: ${wmsData.error}`);
-        
-        const items = wmsData.data || [];
-        
         const pool = await getPool();
         const transaction = new sql.Transaction(pool);
         await transaction.begin();

@@ -55,34 +55,81 @@ const getEtiquetas = async (req, res) => {
 };
 
 /**
- * DELETE /api/etiqueta/:id
- * Elimina la etiqueta indicadat.
+ * DELETE /api/production-file-control/etiqueta/:id
+ * Elimina la etiqueta indicada JUNTO con su bulto del depósito (Logistica_Bultos).
+ * Antes solo borraba la etiqueta: el bulto quedaba vivo y el depósito lo seguía esperando
+ * (caso EUV-24417, 16/09: etiqueta extra agregada y borrada a los 11 s; su bulto viajó igual y
+ * la orden quedó trabada en "Esperando Bultos").
+ * Si el bulto ya viajó (está en un remito) o se movió de su área, NO se borra nada: el paquete
+ * existe y hay que resolverlo desde logística.
  */
 const deleteEtiqueta = async (req, res) => {
     const { id } = req.params;
     if (!id) return res.status(400).json({ error: 'EtiquetaID requerido' });
 
+    let transaction;
     try {
         const pool = await getPool();
+        transaction = new sql.Transaction(pool);
+        await transaction.begin();
 
-        // 1. Verificar existencia y obtener OrdenID
-        const check = await pool.request()
+        // 1. Verificar existencia y obtener OrdenID y código
+        const check = await new sql.Request(transaction)
             .input('EtiquetaID', sql.Int, id)
-            .query('SELECT OrdenID FROM Etiquetas WHERE EtiquetaID = @EtiquetaID');
+            .query('SELECT OrdenID, CodigoEtiqueta FROM Etiquetas WITH (UPDLOCK) WHERE EtiquetaID = @EtiquetaID');
 
         if (check.recordset.length === 0) {
+            await transaction.rollback();
             return res.status(404).json({ error: 'Etiqueta no encontrada' });
         }
 
-        const ordenId = check.recordset[0].OrdenID;
+        const { OrdenID: ordenId, CodigoEtiqueta: codigo } = check.recordset[0];
 
-        // 2. Borrar etiqueta
-        await pool.request()
+        // 2. Su bulto del depósito, si tiene
+        if (codigo) {
+            const bultoRes = await new sql.Request(transaction)
+                .input('Cod', sql.NVarChar(100), codigo)
+                .query('SELECT BultoID, Estado, UbicacionActual FROM Logistica_Bultos WITH (UPDLOCK) WHERE CodigoEtiqueta = @Cod');
+            const bulto = bultoRes.recordset[0];
+
+            if (bulto) {
+                const remitoRes = await new sql.Request(transaction)
+                    .input('BID', sql.Int, bulto.BultoID)
+                    .query(`
+                        SELECT TOP 1 e.CodigoRemito, e.Estado
+                        FROM Logistica_EnvioItems i
+                        JOIN Logistica_Envios e ON e.EnvioID = i.EnvioID
+                        WHERE i.BultoID = @BID
+                        ORDER BY e.EnvioID DESC`);
+                const remito = remitoRes.recordset[0];
+
+                if (remito || bulto.Estado !== 'EN_STOCK') {
+                    await transaction.rollback();
+                    const donde = remito
+                        ? `ya está en el remito ${remito.CodigoRemito} (${remito.Estado})`
+                        : `ya no está en su área (${bulto.Estado}${bulto.UbicacionActual ? `, ${bulto.UbicacionActual}` : ''})`;
+                    return res.status(409).json({
+                        error: `No se puede borrar la etiqueta ${codigo}: su bulto ${donde}. Resolvelo desde logística.`
+                    });
+                }
+
+                // Nunca viajó: se borra con la etiqueta (y sus movimientos, si tuviera)
+                await new sql.Request(transaction)
+                    .input('Cod', sql.VarChar(100), codigo)
+                    .query('DELETE FROM MovimientosLogistica WHERE CodigoBulto = @Cod');
+                await new sql.Request(transaction)
+                    .input('BID', sql.Int, bulto.BultoID)
+                    .query('DELETE FROM Logistica_Bultos WHERE BultoID = @BID');
+            }
+        }
+
+        // 3. Borrar etiqueta
+        await new sql.Request(transaction)
             .input('EtiquetaID', sql.Int, id)
             .query('DELETE FROM Etiquetas WHERE EtiquetaID = @EtiquetaID');
 
-        // 3. Actualizar TotalBultos en el resto de etiquetas de la orden
-        await pool.request()
+        // 4. Actualizar TotalBultos en el resto de etiquetas de la orden
+        await new sql.Request(transaction)
             .input('OrdenID', sql.Int, ordenId)
             .query(`
                 UPDATE Etiquetas
@@ -90,9 +137,11 @@ const deleteEtiqueta = async (req, res) => {
                 WHERE OrdenID = @OrdenID
             `);
 
+        await transaction.commit();
         res.json({ success: true, message: 'Etiqueta eliminada correctamente' });
 
     } catch (err) {
+        if (transaction) { try { await transaction.rollback(); } catch (eRb) { logger.warn('Rollback al eliminar etiqueta: ' + eRb.message); } }
         logger.error('Error eliminando etiqueta:', err);
         res.status(500).json({ error: err.message });
     }

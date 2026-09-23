@@ -370,6 +370,10 @@ const io = new Server(server, {
 
 app.set('socketio', io);
 
+// Avisos de órdenes: el portal de clientes recibe solo los de sus propias órdenes (ver el módulo).
+const avisosOrdenesPortal = require('./utils/avisosOrdenesPortal');
+avisosOrdenesPortal.instalar(io);
+
 io.on('connection', (socket) => {
     // Informar a cada cliente qué timestamp tiene este arranque del servidor.
     // Si el cliente ya conocía otro timestamp → detecta restart y hace hard-reload.
@@ -399,6 +403,9 @@ io.on('connection', (socket) => {
     socket.on('leave:ticket', ({ ticketId }) => {
         if (ticketId) socket.leave(`ticket:${ticketId}`);
     });
+
+    // --- PORTAL: suscripción a los avisos de las órdenes del cliente ---
+    socket.on('portal:suscribir', (datos, ack) => avisosOrdenesPortal.suscribir(socket, datos, ack));
 
     socket.on('error', (err) => {
         logger.error("[SOCKET] ERROR:", err);

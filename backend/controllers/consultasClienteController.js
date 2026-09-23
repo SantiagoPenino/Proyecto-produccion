@@ -34,6 +34,20 @@ exports.getPorOrden = async (req, res) => {
     }
 };
 
+// GET /api/consultas/orden/:ordenId/elegibilidad
+// Si se le puede hacer una consulta a la orden y en qué lote está: el detalle muestra el botón
+// y el aviso de salida del lote con la misma regla que valida crearConsulta.
+exports.getElegibilidad = async (req, res) => {
+    const ordenId = parseInt(req.params.ordenId, 10);
+    if (!ordenId) return res.status(400).json({ error: 'Orden inválida.' });
+    try {
+        res.json({ success: true, data: await svc.getElegibilidad(ordenId) });
+    } catch (err) {
+        logger.error(`[CONSULTAS] getElegibilidad ${ordenId}: ${err.message}`);
+        res.status(500).json({ error: 'No se pudo evaluar si la orden se puede consultar.' });
+    }
+};
+
 // POST /api/consultas  (multipart: fotos[] + campos)
 exports.crear = async (req, res) => {
     const { ordenId, archivoId, motivoId, pregunta, bloquea } = req.body;

@@ -18,6 +18,7 @@ const getPdfUserUnit = (page) => {
 const archiver = require('archiver');
 const fileProcessingService = require('../services/fileProcessingService');
 const axios = require('axios');
+const { enviarDescarga } = require('../utils/enviarDescarga');
 const logger = require('../utils/logger');
 
 // --- HELPERS ---
@@ -806,15 +807,14 @@ exports.downloadSingleFile = async (req, res) => {
             const { stream, mimeType, size } = await driveService.getFileStream(driveId);
             if (mimeType) res.setHeader('Content-Type', mimeType);
             if (size) res.setHeader('Content-Length', size);
-            stream.on('error', (e) => { logger.error(`[download-file ${archivoId}] Drive stream:`, e); if (!res.headersSent) res.status(502).end(); });
-            return stream.pipe(res);
+            return enviarDescarga(stream, res, `[download-file ${archivoId}] Drive:`);
         }
 
         if (sourcePath.startsWith('http')) {
             const response = await axios({ url: sourcePath, method: 'GET', responseType: 'stream', timeout: 600000 });
             if (response.headers['content-type']) res.setHeader('Content-Type', response.headers['content-type']);
             if (response.headers['content-length']) res.setHeader('Content-Length', response.headers['content-length']);
-            return response.data.pipe(res);
+            return enviarDescarga(response.data, res, `[download-file ${archivoId}] URL:`);
         }
 
         if (fs.existsSync(sourcePath)) return res.sendFile(path.resolve(sourcePath));

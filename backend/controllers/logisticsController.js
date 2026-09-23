@@ -8,6 +8,8 @@ const { totalesCobranzaDeOrden, importeOrdenParaDeposito } = require('../utils/m
 const libroEntregas = require('../services/libroEntregasService');
 const linajeOrdenes = require('../services/linajeOrdenesService');
 const reposicionesService = require('../services/reposicionesService');
+// Qué bultos espera el depósito de un pedido (misma regla en la recepción y en la bandeja)
+const bultosPedido = require('../services/bultosPedidoService');
 
 // [PRENDAS] "Comprar y personalizar": Bordado/DTF/TPU/Estampado/Corte/Costura que cuelgan
 // de una orden madre PRO (prenda comprada + personalizaciones, un solo precio) son trabajo
@@ -1669,36 +1671,21 @@ exports.receiveDispatch = async (req, res) => {
                     for (const r of pedRes.recordset) ordenPedido[r.OrdenID] = (r.NoDoc && r.NoDoc.length) ? r.NoDoc : null;
                 }
 
-                // Gate por pedido: contar bultos vivos de TODAS las hermanas
+                // Gate por pedido: bultos que se esperan de TODAS las hermanas y cuántos llegaron.
+                // La regla (qué bultos ya no van a llegar, reposiciones, fallas -F) vive en
+                // bultosPedidoService, la misma que usa la bandeja "Esperando Bultos".
                 const pedidos = [...new Set(Object.values(ordenPedido).filter(Boolean))];
+                const conteoPedidos = await bultosPedido.contarBultos(transaction, { noDocs: pedidos });
                 for (const noDoc of pedidos) {
-                    const cnt = await new sql.Request(transaction)
-                        .input('NoDoc', sql.VarChar, noDoc)
-                        .query(`
-                            SELECT o.OrdenID,
-                                   COUNT(b.BultoID) AS Esperados,
-                                   ISNULL(SUM(CASE WHEN b.Estado='EN_STOCK' AND b.UbicacionActual='DEPOSITO' THEN 1 ELSE 0 END), 0) AS Recibidos
-                            FROM Ordenes o
-                            LEFT JOIN Logistica_Bultos b ON b.OrdenID = o.OrdenID
-                                 AND b.Tipocontenido = 'PROD_TERMINADO'
-                                 AND b.Estado <> 'PROCESADO'
-                                 -- Fallas internas (-F): sus bultos NO viajan a depósito por diseño —
-                                 -- Crear Remito los oculta y el candado de "salir completo" los exime
-                                 -- (23-24/07). Contarlos acá dejaba al pedido esperando un bulto que no
-                                 -- puede llegar (casos DTF-15676/DTF-15734, 18/08: clavados en 1/2).
-                                 AND o.CodigoOrden NOT LIKE '%-F%'
-                            WHERE LTRIM(RTRIM(CAST(o.NoDocERP AS VARCHAR(50)))) = @NoDoc
-                              AND (o.Estado IS NULL OR UPPER(LTRIM(RTRIM(o.Estado))) <> 'CANCELADO')
-                            GROUP BY o.OrdenID
-                        `);
-                    const espPed = cnt.recordset.reduce((a, r) => a + (r.Esperados || 0), 0);
-                    const recPed = cnt.recordset.reduce((a, r) => a + (r.Recibidos || 0), 0);
-                    const forzado = cnt.recordset.some(r => forzarSet.has(Number(r.OrdenID)));
+                    const c = conteoPedidos.get(`P:${noDoc}`) || { esperados: 0, recibidos: 0, ordenIds: [] };
+                    const espPed = c.esperados;
+                    const recPed = c.recibidos;
+                    const forzado = c.ordenIds.some(id => forzarSet.has(Number(id)));
                     const completoFisico = espPed > 0 && recPed >= espPed;
                     // espPed === 0: sin bultos de producto terminado que esperar (ej. recepción de insumos) → no se gatea
                     const lista = forzado || completoFisico || espPed === 0;
-                    for (const r of cnt.recordset) {
-                        const roid = Number(r.OrdenID);
+                    for (const id of c.ordenIds) {
+                        const roid = Number(id);
                         ordenBultos[roid] = { esperados: espPed, recibidos: recPed, lista };
                         if ((forzado || completoFisico) && !procesarSet.has(roid)) {
                             procesarSet.add(roid);
@@ -1708,20 +1695,12 @@ exports.receiveDispatch = async (req, res) => {
                 }
 
                 // Órdenes sin pedido (NoDocERP NULL): gate por la propia orden
-                for (const oid of [...procesarSet]) {
-                    if (ordenPedido[oid] || ordenBultos[oid]) continue;
-                    const cntB = await new sql.Request(transaction)
-                        .input('OID', sql.Int, oid)
-                        .query(`
-                            SELECT COUNT(*) AS Esperados,
-                                   ISNULL(SUM(CASE WHEN Estado='EN_STOCK' AND UbicacionActual='DEPOSITO' THEN 1 ELSE 0 END), 0) AS Recibidos
-                            FROM Logistica_Bultos
-                            WHERE OrdenID=@OID AND Tipocontenido='PROD_TERMINADO' AND Estado <> 'PROCESADO'
-                        `);
-                    const esperados = cntB.recordset[0].Esperados || 0;
-                    const recibidos = cntB.recordset[0].Recibidos || 0;
-                    const lista = forzarSet.has(Number(oid)) || esperados === 0 || recibidos >= esperados;
-                    ordenBultos[oid] = { esperados, recibidos, lista };
+                const sinPedido = [...procesarSet].filter(oid => !ordenPedido[oid] && !ordenBultos[oid]);
+                const conteoSueltas = await bultosPedido.contarBultos(transaction, { ordenIds: sinPedido });
+                for (const oid of sinPedido) {
+                    const c = conteoSueltas.get(`O:${Number(oid)}`) || { esperados: 0, recibidos: 0 };
+                    const lista = forzarSet.has(Number(oid)) || c.esperados === 0 || c.recibidos >= c.esperados;
+                    ordenBultos[oid] = { esperados: c.esperados, recibidos: c.recibidos, lista };
                 }
 
                 ordenesProcesar = [...procesarSet];
@@ -1736,6 +1715,18 @@ exports.receiveDispatch = async (req, res) => {
                     // Órdenes a procesar: escaneadas + forzadas + hermanas del pedido cuando el pedido
                     // quedó completo (se ingresan/contabilizan todas juntas, una sola vez por orden).
                     const ordenesAContab = [...new Set(ordenesProcesar.map(Number))].filter(n => !isNaN(n));
+
+                    // Las madres antes que sus reposiciones (-R) y fallas (-F). Cada orden cobra solo SUS
+                    // líneas del pedido, y la primera que pasa deja el pedido marcado como contabilizado.
+                    // Una -R no tiene líneas propias: si iba primero (la que dispara un forzado o completa
+                    // el pedido al llegar), marcaba el pedido sin cobrar nada y la madre ya no cobraba.
+                    if (ordenesAContab.length > 1) {
+                        const codsRes = await poolLocal.request().query(
+                            `SELECT OrdenID, CodigoOrden FROM Ordenes WITH(NOLOCK) WHERE OrdenID IN (${ordenesAContab.join(',')})`);
+                        const esRepoOFalla = new Map(codsRes.recordset.map(r =>
+                            [Number(r.OrdenID), /-[RF]\d+$/i.test(String(r.CodigoOrden || '').trim())]));
+                        ordenesAContab.sort((a, b) => (esRepoOFalla.get(a) ? 1 : 0) - (esRepoOFalla.get(b) ? 1 : 0));
+                    }
 
                     for (const L_OrdenID of ordenesAContab) {
                         // --- GATE ESPERAR BULTOS: si la orden aún no tiene todos sus bultos, no contabilizar ---
@@ -2656,6 +2647,10 @@ exports.aprobarControlPRO = async (req, res) => {
 };
 
 // --- BANDEJA: órdenes esperando bultos (estado 13) ---
+// Los contadores se calculan EN VIVO con la misma regla que la recepción (bultosPedidoService):
+// los guardados en OrdenesDeposito son de la última recepción y no se enteran de un bulto
+// declarado perdido, de una reposición nueva ni de una etiqueta borrada. Si ya no falta nada,
+// la fila sale como Completo y el botón de la bandeja la ingresa por el camino normal.
 exports.getEsperandoBultos = async (req, res) => {
     try {
         const pool = await getPool();
@@ -2667,14 +2662,32 @@ exports.getEsperandoBultos = async (req, res) => {
                    od.OrdNombreTrabajo,
                    od.OrdFechaEstadoActual,
                    DATEDIFF(DAY, od.OrdFechaEstadoActual, GETDATE()) AS DiasEsperando,
-                   o.OrdenID AS OrdenIdReal
+                   o.OrdenID AS OrdenIdReal,
+                   NULLIF(LTRIM(RTRIM(CAST(o.NoDocERP AS VARCHAR(50)))), '') AS NoDoc
             FROM OrdenesDeposito od WITH(NOLOCK)
             LEFT JOIN Clientes c WITH(NOLOCK) ON c.CliIdCliente = od.CliIdCliente
             LEFT JOIN Ordenes o WITH(NOLOCK) ON LTRIM(RTRIM(o.CodigoOrden)) = LTRIM(RTRIM(od.OrdCodigoOrden))
             WHERE od.OrdEstadoActual = 13
             ORDER BY od.OrdFechaEstadoActual ASC
         `);
-        res.json(r.recordset);
+        const filas = r.recordset;
+        const conteo = await bultosPedido.contarBultos(pool, {
+            noDocs: filas.map(f => f.NoDoc).filter(Boolean),
+            ordenIds: filas.filter(f => !f.NoDoc && f.OrdenIdReal).map(f => f.OrdenIdReal),
+            conFaltantes: true,
+        });
+        res.json(filas.map(f => {
+            const c = f.NoDoc ? conteo.get(`P:${f.NoDoc}`) : (f.OrdenIdReal ? conteo.get(`O:${Number(f.OrdenIdReal)}`) : null);
+            // Sin orden en el sistema (no se puede contar): quedan los números de la última recepción
+            if (!c) return { ...f, Completo: false, Faltantes: [] };
+            return {
+                ...f,
+                BultosEsperados: c.esperados,
+                BultosRecibidos: c.recibidos,
+                Completo: c.recibidos >= c.esperados,
+                Faltantes: c.faltantes,
+            };
+        }));
     } catch (err) {
         logger.error("Error getEsperandoBultos:", err);
         res.status(500).json({ error: err.message });

@@ -3,6 +3,7 @@ const logger = require('../utils/logger');
 const pushService = require('../services/pushNotificationService');
 const { changeOrderState } = require('../services/stateManagerService');
 const { calcularFechasOrden } = require('../services/fechaPrometidaService');
+const { limpiarMarcasDeLote, resolverLoteVacio } = require('../utils/salidaDeLote');
 
 // Capas del arte TPU (04/09/2026): HASTA 5, y con 2 alcanza. Conviven dos formatos —
 // el viejo de 5 archivos (CMYK + Spot 1/2/3 + Corte.plt, las matrices migradas) y el actual
@@ -739,7 +740,7 @@ exports.enviarAprobacionTPU = async (req, res) => {
 
         try {
             const io = req.app.get('socketio');
-            if (io) io.emit('server:ordersUpdated', { count: 1, source: 'tpu-enviar-aprobacion' });
+            if (io) io.emit('server:ordersUpdated', { count: 1, source: 'tpu-enviar-aprobacion', orderIds: [ordenId] });
         } catch (_) {}
 
         logger.info(`[TPU] Orden ${ordenId} enviada a aprobación del cliente.`);
@@ -1493,7 +1494,7 @@ exports.createOrder = async (req, res) => {
 
         const io = req.app.get('socketio');
         if (io) {
-            io.emit('server:ordersUpdated', { count: createdIds.length });
+            io.emit('server:ordersUpdated', { count: createdIds.length, orderIds: createdIds });
             io.emit('server:new_order', { orders: createdOrdersData });
         }
 
@@ -1842,7 +1843,7 @@ exports.assignRoll = async (req, res) => {
             if (io) {
                 if (isNew) io.emit('server:rollCreated', { rollId });
                 io.emit('server:rollsUpdated', { count: 1 });
-                io.emit('server:ordersUpdated', { count: targetOrderIds.length });
+                io.emit('server:ordersUpdated', { count: targetOrderIds.length, orderIds: targetOrderIds });
                 io.emit('lotes:updated', { action: isNew ? 'created' : 'assigned', rollId });
             }
             res.json({ success: true, rollId });
@@ -2979,42 +2980,18 @@ exports.unassignOrder = async (req, res) => {
                 io       : req.app.get('socketio')
             });
 
-            // 3. Verificar si el rollo quedó vacío
+            // Marcas del lote: el grupo manual siempre; la de impreso si vuelve a producirse
+            // (una orden en estado terminal no vuelve a pendientes y la conserva).
+            await limpiarMarcasDeLote(transaction, [orderId], { vuelveAPendientes: !isProtectedState });
+
+            // 3. ¿El lote quedó vacío? Si nunca arrancó se borra, como siempre; si ya había
+            // arrancado se cierra como Finalizado con la bitácora cerrada (utils/salidaDeLote).
+            // Antes se borraba aunque estuviera imprimiendo, y además se ponía la máquina en
+            // 'Detenido': EstadoProceso es un dato de configuración del equipo que ▶/⏸/🏁 no tocan,
+            // así que quedaba pisado aunque la máquina siguiera trabajando con otro lote.
             let rollCancelled = false;
             if (rollId) {
-                const countRes = await new sql.Request(transaction)
-                    .input('RID', sql.VarChar(50), String(rollId))
-                    .query("SELECT COUNT(*) as Cnt FROM Ordenes WITH (READCOMMITTEDLOCK) WHERE RolloID = @RID");
-
-                if (countRes.recordset[0].Cnt === 0) {
-                    // Cancelar Rollo vacio (Limpieza Automática)
-                    logger.info(`[AutoCleanup] Rollo ${rollId} quedó vacío. Cancelando...`);
-
-                    // A. Obtener Máquina asignada (si existe) para liberarla visualmente (EstadoProceso)
-                    const rollInfo = await new sql.Request(transaction)
-                        .input('RID', sql.VarChar(50), String(rollId))
-                        .query("SELECT MaquinaID FROM Rollos WHERE RolloID = @RID");
-
-                    const maqId = rollInfo.recordset[0]?.MaquinaID;
-
-                    // B. Eliminar el rollo físicamente (ya que quedó vacío)
-                    await new sql.Request(transaction)
-                        .input('RID', sql.VarChar(50), String(rollId))
-                        .query("DELETE FROM Rollos WHERE RolloID = @RID");
-
-                    // C. Resetear EstadoProceso de la Máquina (si tenía)
-                    if (maqId) {
-                        await new sql.Request(transaction)
-                            .input('MID', sql.Int, maqId)
-                            .query("UPDATE ConfigEquipos SET EstadoProceso = 'Detenido' WHERE EquipoID = @MID");
-                    }
-
-                    // D. Importante: Desvincular Órdenes de la Máquina (aunque estén desasignadas, por seguridad)
-                    // (Ya se hizo en el paso 2 con MaquinaID=NULL, OrdenID=@OID)
-                    // Pero asegurarse de que ninguna otra orden quede pegada a ese rollo (CNT=0 garantiza esto).
-
-                    rollCancelled = true;
-                }
+                rollCancelled = (await resolverLoteVacio(transaction, rollId)) !== null;
             }
 
             await transaction.commit();

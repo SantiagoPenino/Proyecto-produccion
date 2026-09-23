@@ -18,9 +18,18 @@ const timestampFormat = winston.format.timestamp({
     }
 });
 
-const printFormat = winston.format.printf(({ timestamp, level, message, ...meta }) => {
+// Lo que llega después del mensaje como texto suelto — logger.error('[X]', err.message) — winston
+// lo guarda aparte (info[SPLAT]) y este formato no lo imprimía: 408 llamadas del backend perdían
+// el motivo del error (23/09: una nota de crédito fallida quedó registrada solo como
+// "[NOTA-CREDITO]"). Los objetos y los Error ya los incorpora winston al mensaje o a meta; acá se
+// suman solo los textos y números, en el orden en que vinieron.
+const SPLAT = Symbol.for('splat');
+const printFormat = winston.format.printf((info) => {
+    const { timestamp, level, message, ...meta } = info;
+    const sueltos = (info[SPLAT] || []).filter(a => a !== null && a !== undefined && typeof a !== 'object');
+    const texto = sueltos.length ? `${message} ${sueltos.join(' ')}` : message;
     const metaStr = Object.keys(meta).length ? ' ' + JSON.stringify(meta) : '';
-    return `${timestamp} [${level.toUpperCase()}] ${message}${metaStr}`;
+    return `${timestamp} [${level.toUpperCase()}] ${texto}${metaStr}`;
 });
 
 const logger = winston.createLogger({

@@ -28,6 +28,7 @@ const logger = require('../utils/logger');
 const { rollbackSeguro } = require('../utils/rollbackSeguro');
 const { changeOrderState } = require('./stateManagerService');
 const { buscarHermanaTerminaciones } = require('../utils/hermanaTerminaciones');
+const { limpiarMarcasDeLote, resolverLoteVacio } = require('../utils/salidaDeLote');
 
 // Áreas habilitadas. El portal y producción nombran distinto la misma área.
 const AREAS_HABILITADAS = ['SB', 'SUB', 'DF', 'DTF', 'ECOUV'];
@@ -42,9 +43,22 @@ const SLA_HORAS_DEFAULT = 24;
 // =====================================================================
 // ESQUEMA (auto-heal, mismo patrón que ensureColFechaAprobacion / OrdenTexturasTPU)
 // =====================================================================
+// Una sola corrida a la vez. Después de un restart el portal recarga a todos los clientes juntos y cada
+// uno pide sus consultas: con el DDL corriendo en paralelo, dos ALTER ADD de la misma columna chocaban
+// ("Column names in each table must be unique", 23/09 con ConArteCambiado). Si falla, el siguiente reintenta.
 let _schemaOk = false;
-async function ensureSchema(pool) {
-    if (_schemaOk) return;
+let _schemaEnCurso = null;
+function ensureSchema(pool) {
+    if (_schemaOk) return Promise.resolve();
+    if (!_schemaEnCurso) {
+        _schemaEnCurso = correrEsquema(pool)
+            .then(() => { _schemaOk = true; })
+            .finally(() => { _schemaEnCurso = null; });
+    }
+    return _schemaEnCurso;
+}
+
+async function correrEsquema(pool) {
     await pool.request().query(`
         IF OBJECT_ID('dbo.MotivosConsulta', 'U') IS NULL
             CREATE TABLE dbo.MotivosConsulta (
@@ -132,7 +146,6 @@ async function ensureSchema(pool) {
                 (N'Material o terminación', 5), (N'Sangrado / elementos cortados', 6),
                 (N'Consulta general del pedido', 7), (N'Otro', 99);
     `);
-    _schemaOk = true;
 }
 
 /** Horas de plazo configuradas (ConfiguracionGlobal.CONSULTA_SLA_HORAS). 0 = sin vencimiento. */
@@ -216,6 +229,124 @@ async function liberarOrden(transaction, consulta, opts = {}) {
 }
 
 // =====================================================================
+// ¿SE PUEDE CONSULTAR? (regla del 23/09, docs/consulta-en-lote-o-maquina.md §9)
+// =====================================================================
+// La orden puede estar pendiente sin lote, o en un lote que todavía no se está imprimiendo:
+// en mesa, en la cola de una máquina o en pausa. El lote que la máquina está imprimiendo, no.
+// Y en todos los casos sin marca de impresa/calandrada ni avance cargado: con algo impreso,
+// frenarla ya no evita nada. Al consultar, la orden sale del lote (sacarDelLote).
+const ESTADOS_LOTE_CONSULTABLE = ['abierto', 'en cola', 'pausado'];
+const ESTADOS_ORDEN_EN_LOTE = ['en lote', 'en maquina'];
+const MOTIVO_NO_CONSULTABLE = 'Solo se puede consultar una orden pendiente o en un lote que no se esté imprimiendo.';
+
+/** La orden con lo que la regla necesita: marcas de impresión y el lote en el que está. */
+async function leerOrdenParaConsulta(db, ordenId) {
+    const r = await new sql.Request(db)
+        .input('OID', sql.Int, ordenId)
+        .query(`SELECT o.OrdenID, o.CodigoOrden, o.AreaID, o.Estado, o.EstadoenArea, o.EstadoDependencia,
+                       o.RolloID, o.CodCliente, o.CliIdCliente, o.DescripcionTrabajo,
+                       o.Impreso, o.Calandrado, o.CantidadImpresa, o.CantidadCortada,
+                       r.RolloID AS LoteID, r.Nombre AS LoteNombre, r.Estado AS LoteEstado, ce.Nombre AS MaquinaNombre
+                FROM dbo.Ordenes o
+                LEFT JOIN dbo.Rollos r ON r.RolloID = TRY_CONVERT(INT, o.RolloID)
+                LEFT JOIN dbo.ConfigEquipos ce ON ce.EquipoID = r.MaquinaID
+                WHERE o.OrdenID = @OID`);
+    return r.recordset[0] || null;
+}
+
+/**
+ * Aplica la regla sobre la fila de leerOrdenParaConsulta.
+ * @returns {{ puede: boolean, status?: number, motivo?: string, lote: {id, nombre, estado, maquina}|null }}
+ */
+function evaluarConsultable(o) {
+    if (!o) return { puede: false, status: 404, motivo: 'La orden no existe.', lote: null };
+
+    const area = String(o.AreaID || '').trim().toUpperCase();
+    if (!AREAS_HABILITADAS.includes(area)) {
+        return { puede: false, status: 400, lote: null,
+            motivo: `Las consultas al cliente están habilitadas solo en Sublimación, DTF y ECOUV (esta orden es de ${area || 'sin área'}).` };
+    }
+    // Las -F son reposiciones internas: el cliente no las ve en el portal, y una consulta
+    // le mostraría el código de la falla.
+    if (/-F\d+/i.test(String(o.CodigoOrden || ''))) {
+        return { puede: false, status: 409, lote: null,
+            motivo: 'Las órdenes de falla (-F) son internas: no se le consultan al cliente.' };
+    }
+    const conMarca = !!o.Impreso || !!o.Calandrado || Number(o.CantidadImpresa || 0) > 0 || Number(o.CantidadCortada || 0) > 0;
+    if (conMarca) {
+        return { puede: false, status: 409, lote: null,
+            motivo: 'La orden ya está marcada como impresa o tiene avance cargado: frenarla con una consulta ya no evita nada.' };
+    }
+
+    if (o.RolloID == null || String(o.RolloID).trim() === '') {
+        if (String(o.Estado || '').trim().toLowerCase() !== 'pendiente') {
+            return { puede: false, status: 409, lote: null, motivo: MOTIVO_NO_CONSULTABLE };
+        }
+        return { puede: true, lote: null };
+    }
+
+    // En un lote: la orden todavía tiene que estar en producción (no controlada ni despachada).
+    if (!ESTADOS_ORDEN_EN_LOTE.includes(String(o.EstadoenArea || '').trim().toLowerCase())) {
+        return { puede: false, status: 409, lote: null, motivo: MOTIVO_NO_CONSULTABLE };
+    }
+    // RolloID huérfano (el lote ya no existe): se la saca sin problema.
+    if (o.LoteID == null) return { puede: true, lote: null };
+
+    const lote = { id: o.LoteID, nombre: o.LoteNombre || `Lote ${o.LoteID}`, estado: o.LoteEstado, maquina: o.MaquinaNombre || null };
+    const estadoLote = String(o.LoteEstado || '').trim().toLowerCase();
+    if (estadoLote.startsWith('en maquina') || ['producción', 'produccion', 'imprimiendo'].includes(estadoLote)) {
+        return { puede: false, status: 409, lote,
+            motivo: `El lote ${lote.nombre} se está imprimiendo${lote.maquina ? ` en ${lote.maquina}` : ''}: no se puede consultar hasta que se pause.` };
+    }
+    if (!ESTADOS_LOTE_CONSULTABLE.includes(estadoLote)) {
+        return { puede: false, status: 409, lote, motivo: `El lote ${lote.nombre} está "${o.LoteEstado}": no se puede consultar.` };
+    }
+    return { puede: true, lote };
+}
+
+/** Para el detalle de la orden: si se puede consultar, por qué no, y en qué lote está. */
+async function getElegibilidad(ordenId) {
+    const pool = await getPool();
+    await ensureSchema(pool);
+    const regla = evaluarConsultable(await leerOrdenParaConsulta(pool, ordenId));
+    if (regla.puede) {
+        const abierta = await pool.request()
+            .input('OID', sql.Int, ordenId)
+            .query("SELECT TOP 1 1 AS x FROM dbo.ConsultasCliente WITH(NOLOCK) WHERE OrdIdOrden = @OID AND ConEstado = 'ENVIADA'");
+        if (abierta.recordset.length) {
+            return { puede: false, motivo: 'Esta orden ya tiene una consulta esperando respuesta del cliente.', lote: regla.lote };
+        }
+    }
+    return { puede: regla.puede, motivo: regla.motivo || null, lote: regla.lote };
+}
+
+/**
+ * Saca la orden de su lote y de la máquina antes de congelarla: frenada no puede seguir en un
+ * lote, que se imprime o pasa a calandra sin esperarla. Misma receta que "Sacar del Rollo"
+ * (ordersController.unassignOrder), pero también sin máquina. Si el lote queda vacío se borra
+ * o se cierra según haya arrancado o no (utils/salidaDeLote). Al responder la consulta la orden
+ * vuelve a Pendiente, sin lote: el operario la arma de nuevo.
+ * @returns {Promise<{ nombre: string, loteVacio: 'borrado'|'cerrado'|null }>}
+ */
+async function sacarDelLote(transaction, orden, opts = {}) {
+    const rolloId = String(orden.RolloID).trim();
+    const nombre = orden.LoteNombre || `Lote ${rolloId}`;
+    await new sql.Request(transaction)
+        .input('OID', sql.Int, orden.OrdenID)
+        .query('UPDATE dbo.Ordenes SET RolloID = NULL, Secuencia = NULL, MaquinaID = NULL WHERE OrdenID = @OID');
+    await limpiarMarcasDeLote(transaction, [orden.OrdenID], { vuelveAPendientes: true });
+    await changeOrderState(transaction, {
+        target : { type: 'ORDER', id: orden.OrdenID },
+        estado : 'Pendiente',
+        userObj: opts.userObj,
+        detalle: `Sacada del lote ${nombre} para consultar al cliente`,
+        io     : opts.io,
+    });
+    const loteVacio = await resolverLoteVacio(transaction, rolloId);
+    return { nombre, loteVacio };
+}
+
+// =====================================================================
 // CREAR
 // =====================================================================
 
@@ -240,26 +371,11 @@ async function crearConsulta({ ordenId, archivoId, motivoId, pregunta, bloquea =
         transaction = new sql.Transaction(pool);
         await transaction.begin();
 
-        const ordRes = await new sql.Request(transaction)
-            .input('OID', sql.Int, ordenId)
-            .query(`SELECT OrdenID, CodigoOrden, AreaID, Estado, EstadoenArea, EstadoDependencia,
-                           RolloID, CodCliente, CliIdCliente, DescripcionTrabajo
-                    FROM dbo.Ordenes WHERE OrdenID = @OID`);
-        const orden = ordRes.recordset[0];
-        if (!orden) throw Object.assign(new Error('La orden no existe.'), { status: 404 });
-
-        const area = String(orden.AreaID || '').trim().toUpperCase();
-        if (!AREAS_HABILITADAS.includes(area)) {
-            throw Object.assign(new Error(`Las consultas al cliente están habilitadas solo en Sublimación, DTF y ECOUV (esta orden es de ${area || 'sin área'}).`), { status: 400 });
-        }
-
-        // Decisión 6: solo sobre pendientes. Con la orden en un lote o en máquina el
-        // trabajo ya arrancó y frenarla no evita nada — además el material puede
-        // estar viajando a otra área.
-        const estadoGeneral = String(orden.Estado || '').trim().toLowerCase();
-        if (estadoGeneral !== 'pendiente' || orden.RolloID != null) {
-            throw Object.assign(new Error('Solo se puede consultar una orden que todavía está pendiente y sin lote asignado.'), { status: 409 });
-        }
+        // Pendiente sin lote, o en un lote que no se esté imprimiendo, y sin nada impreso
+        // (evaluarConsultable). La misma regla decide si el detalle muestra el botón.
+        const orden = await leerOrdenParaConsulta(transaction, ordenId);
+        const regla = evaluarConsultable(orden);
+        if (!regla.puede) throw Object.assign(new Error(regla.motivo), { status: regla.status || 409 });
 
         const abiertaRes = await new sql.Request(transaction)
             .input('OID', sql.Int, ordenId)
@@ -276,6 +392,15 @@ async function crearConsulta({ ordenId, archivoId, motivoId, pregunta, bloquea =
             if (!archRes.recordset.length) {
                 throw Object.assign(new Error('El archivo no pertenece a esta orden o está cancelado.'), { status: 400 });
             }
+        }
+
+        // En un lote: sale del lote antes de congelarla. El estado que se guarda para
+        // restaurar pasa a ser Pendiente: al responder, la orden no vuelve a un lote que ya
+        // no es el suyo. Una consulta que no frena (bloquea=false) la deja donde está.
+        let loteSalida = null;
+        if (bloquea && orden.RolloID != null && String(orden.RolloID).trim() !== '') {
+            loteSalida = await sacarDelLote(transaction, orden, { userObj: usuarioId, io });
+            orden.EstadoenArea = 'Pendiente';
         }
 
         const insRes = await new sql.Request(transaction)
@@ -308,13 +433,14 @@ async function crearConsulta({ ordenId, archivoId, motivoId, pregunta, bloquea =
         }
 
         await transaction.commit();
-        logger.info(`[CONSULTA] #${consultaId} creada sobre ${orden.CodigoOrden}${archivoId ? ` (archivo ${archivoId})` : ' (orden completa)'} por el usuario ${usuarioId}.`);
+        logger.info(`[CONSULTA] #${consultaId} creada sobre ${orden.CodigoOrden}${archivoId ? ` (archivo ${archivoId})` : ' (orden completa)'} por el usuario ${usuarioId}${loteSalida ? ` — salió del lote ${loteSalida.nombre}${loteSalida.loteVacio ? ` (lote vacío: ${loteSalida.loteVacio})` : ''}` : ''}.`);
         return {
             consultaId,
             ordenId,
             codigoOrden: String(orden.CodigoOrden || '').trim(),
             codCliente: orden.CodCliente,
             trabajo: orden.DescripcionTrabajo,
+            loteSalida,
         };
     } catch (err) {
         await rollbackSeguro(transaction, `crearConsulta orden ${ordenId}`);
@@ -728,6 +854,8 @@ async function ordenesConConsultaAbierta(pool, ordenIds) {
 
 module.exports = {
     ensureSchema,
+    evaluarConsultable,
+    getElegibilidad,
     crearConsulta,
     guardarFotos,
     responderConsulta,

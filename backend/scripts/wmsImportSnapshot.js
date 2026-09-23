@@ -1,16 +1,23 @@
 /**
  * wmsImportSnapshot.js — importa el WMS externo (Johnson / Ventas_Dev) a las tablas Wms_* propias.
  * ─────────────────────────────────────────────────────────────────────────────────────────────
- * RE-EJECUTABLE: cada corrida deja nuestra copia idéntica al origen en ese instante (MERGE por
- * lotes). Se corre las veces que haga falta hasta el cutover; la corrida final (con el depósito
- * quieto) es la foto de cierre. Requiere las tablas de docs/wms-data/DDL-wms-propio.sql creadas.
+ * RE-EJECUTABLE: cada corrida deja nuestra copia idéntica al origen en ese instante: inserta lo
+ * nuevo, actualiza lo que cambió y (desde el 22/09) BORRA lo que el origen ya no tiene. Se corre las
+ * veces que haga falta hasta el cutover; la corrida final (con el depósito quieto) es la foto de
+ * cierre. Requiere las tablas de docs/wms-data/DDL-wms-propio.sql creadas.
+ *
+ * SOLO ANTES DEL CUTOVER: con WMS_INTERNO=true se niega a escribir. Después del cutover las tablas
+ * propias tienen ventas, recepciones y remitos que el WMS externo no conoce, y borrar "lo que no
+ * está en el origen" los eliminaría. (--solo-paridad sí corre: no escribe nada.)
  *
  * Uso (en el server, o donde el .env apunte a la base correcta):
  *   node scripts/wmsImportSnapshot.js                  → lee EN VIVO del proxy del WMS (default)
  *   node scripts/wmsImportSnapshot.js --dir=/ruta      → lee los snap_*.json de un backup local
  *   node scripts/wmsImportSnapshot.js --solo-paridad   → no escribe nada: compara y reporta
+ *   node scripts/wmsImportSnapshot.js --sin-borrar     → como antes del 22/09: no borra ausentes
  *
  * Qué hace, en orden (FKs respetadas):
+ *   0. BORRA lo que el origen ya no tiene (una transacción, hijos → padres; ver borrarAusentes).
  *   1. Depósitos, categorías, maestros, variantes (ids CONSERVADOS — todo el sistema los usa).
  *      Las variantes se enriquecen con Articulos_WMS_Variantes (ProIdProducto/Talle/Color).
  *   2. Proveedores, compras (GUID viejo → INT nuestro, mapa por GuidViejo), detalle, importaciones.
@@ -133,7 +140,109 @@ async function upsert(pool, tabla, cols, filas, { pk, identity = false, reload =
 const D = (v) => (v == null ? null : new Date(v));
 const N = (v) => (v == null ? null : Number(v));
 
+// ── Borrado de lo que ya no está en el origen (22/09) ──────────────────────────────────────────
+// upsert() hace MERGE con UPDATE + INSERT: lo que el origen BORRÓ quedaba en nuestras tablas. Caso
+// real: la foto del 22/09 ya no traía 31.246 etiquetas (una compra eliminada allá) y re-importar
+// encima las dejaba; la paridad no lo ve porque solo cuenta etiquetas ACTIVAS. Corre ANTES de las
+// cargas, en UNA transacción y en orden hijos → padres (el inverso de las cargas):
+//   · Tablas `reload`: se vacían si su origen trae filas (la carga de abajo las rellena). Con origen
+//     vacío se dejan como están, igual que siempre hizo la carga.
+//   · Tablas con MERGE: se borra la fila cuya clave no viene en el origen, con los MISMOS filtros que
+//     usa su carga. Si el origen trae 0 filas y acá hay, se ABORTA: es una foto rota, no un borrado.
+//   · Wms_Movimientos: SOLO las aperturas de migración (APERTURA:<id>). Lo que genere el sistema no
+//     se toca nunca; si apunta a una etiqueta a borrar, la FK corta y se revierte todo.
+function planesDeBorrado(o) {
+    const varIds = new Set(o.Stock_Variantes.map(v => v.id));
+    const ids = (arr) => arr.map(f => f.id);
+    return [
+        // reload (hijos): se vacían primero para no trabar el borrado de sus padres
+        { tabla: 'Wms_RemitosInternosItems', reload: o.wms_remitos_internos_items || [] },
+        { tabla: 'Wms_SolicitudesItems', reload: o.wms_solicitudes_items || [] },
+        { tabla: 'Wms_ComprasDetalle', reload: o.Stock_Compras_Detalle || [] },
+        { tabla: 'Wms_Pagos', reload: o.Stock_Pagos || [] },
+        { tabla: 'Wms_AlertasDepositos', reload: (o.Stock_Alertas_Depositos || []).filter(a => a.variante_id && a.deposito_id) },
+        { tabla: 'Wms_HistoricoExterno', reload: o.Stock_Movimientos || [] },
+        // MERGE, de hijos a padres (mismos filtros que cada carga de main)
+        {
+            tabla: 'Wms_Movimientos', col: 'IdempotencyKey', tipo: sql.VarChar(120), solo: "IdempotencyKey LIKE 'APERTURA:%'",
+            claves: o.Stock_Etiquetas
+                .filter(e => (e.estado || '') === 'activo' && Number(e.cantidad_actual) > 0 && varIds.has(e.variante_id) && e.deposito_id != null)
+                .map(e => 'APERTURA:' + e.id),
+        },
+        { tabla: 'Wms_Etiquetas', col: 'EtiId', tipo: sql.Int, claves: ids(o.Stock_Etiquetas.filter(e => e.variante_id != null && varIds.has(e.variante_id) && e.deposito_id != null)) },
+        { tabla: 'Wms_Solicitudes', col: 'SolId', tipo: sql.Int, claves: ids(o.wms_solicitudes.filter(x => x.deposito_solicitante_id != null)) },
+        { tabla: 'Wms_RemitosInternos', col: 'RemId', tipo: sql.Int, claves: ids(o.wms_remitos_internos.filter(r => r.deposito_origen_id != null && r.deposito_destino_id != null)) },
+        { tabla: 'Wms_Compras', col: 'GuidViejo', tipo: sql.UniqueIdentifier, claves: ids(o.Stock_Compras) },
+        { tabla: 'Wms_Importaciones', col: 'GuidViejo', tipo: sql.UniqueIdentifier, claves: ids(o.Stock_Importaciones) },
+        { tabla: 'Wms_Proveedores', col: 'PrvId', tipo: sql.Int, claves: ids(o.Stock_Proveedores) },
+        { tabla: 'Wms_PlantillasProgresoPasos', col: 'PasId', tipo: sql.Int, claves: ids((o.Stock_Plantillas_Progreso_Pasos || []).filter(x => x.plantilla_id != null)) },
+        { tabla: 'Wms_PlantillasProgreso', col: 'PlaId', tipo: sql.Int, claves: ids(o.Stock_Plantillas_Progreso || []) },
+        { tabla: 'Wms_PagosMotivos', col: 'PmoId', tipo: sql.Int, claves: ids(o.Stock_Pagos_Motivos || []) },
+        { tabla: 'Wms_TiposFactura', col: 'TfaId', tipo: sql.Int, claves: ids(o.Stock_TiposFactura || []) },
+        { tabla: 'Wms_Monedas', col: 'MonId', tipo: sql.Int, claves: ids(o.Stock_Monedas || []) },
+        { tabla: 'Wms_Variantes', col: 'VarId', tipo: sql.Int, claves: ids(o.Stock_Variantes.filter(v => v.producto_maestro_id != null)) },
+        { tabla: 'Wms_ProductosMaestros', col: 'PmaId', tipo: sql.Int, claves: ids(o.Stock_Productos_Maestros) },
+        { tabla: 'Wms_Categorias', col: 'CatId', tipo: sql.Int, claves: ids(o.Stock_Categorias) },
+        { tabla: 'Wms_Depositos', col: 'DepId', tipo: sql.Int, claves: ids(o.Stock_Depositos) },
+    ];
+}
+
+async function borrarAusentes(pool, planes) {
+    const tran = new sql.Transaction(pool);
+    await tran.begin();
+    const hechos = [];
+    try {
+        const req = () => new sql.Request(tran);
+        for (const p of planes) {
+            if (p.reload) {
+                if (p.reload.length) await req().query(`DELETE FROM dbo.${p.tabla};`);
+                continue;
+            }
+            const donde = p.solo ? `WHERE ${p.solo}` : '';
+            const actuales = (await req().query(`SELECT COUNT(*) AS n FROM dbo.${p.tabla} ${donde}`)).recordset[0].n;
+            if (!actuales) continue;
+            // sin repetidos; los GUID llegan en mayúscula o minúscula según la fuente
+            const vistos = new Set();
+            const claves = p.claves.filter(k => k != null).filter(k => {
+                const c = String(k).toLowerCase();
+                return vistos.has(c) ? false : (vistos.add(c), true);
+            });
+            if (!claves.length) {
+                throw new Error(`${p.tabla}: el origen trae 0 filas y acá hay ${actuales}. Es una foto rota, no un borrado.`);
+            }
+            const tmp = '#k_' + p.tabla;
+            const k = new sql.Table(tmp);
+            k.create = true;
+            k.columns.add('k', p.tipo, { nullable: false });
+            claves.forEach(v => k.rows.add(v));
+            await req().bulk(k);
+            const r = await req().query(`
+                DELETE T FROM dbo.${p.tabla} AS T
+                WHERE ${p.solo ? p.solo + ' AND ' : ''}NOT EXISTS (SELECT 1 FROM ${tmp} AS K WHERE K.k = T.${p.col});
+                SELECT @@ROWCOUNT AS n;
+                DROP TABLE ${tmp};`);
+            const n = r.recordset[0].n;
+            if (n) hechos.push(`${p.tabla} ${n}`);
+        }
+        await tran.commit();
+    } catch (e) {
+        try { await tran.rollback(); } catch (_) { /* ya revertida */ }
+        const fk = /REFERENCE constraint/i.test(e.message);
+        throw new Error('borrado de ausentes REVERTIDO, no se borró ni cargó nada. '
+            + (fk ? 'Hay datos propios (no de la migración) que apuntan a filas que el origen ya no tiene. ' : '')
+            + e.message);
+    }
+    logger.info(`[WMS-IMPORT] Borrado de lo que el origen ya no tiene: ${hechos.length ? hechos.join(' · ') : 'nada'}`);
+}
+
 async function main() {
+    // [22/09] Con el WMS propio prendido este script NO escribe: borraría las ventas, recepciones y
+    // remitos que registró el sistema y el externo no conoce. Solo se permite comparar.
+    if (!args['solo-paridad'] && String(process.env.WMS_INTERNO || '').toLowerCase() === 'true') {
+        logger.error('[WMS-IMPORT] ABORTADO: WMS_INTERNO=true. El import es SOLO para antes del cutover; '
+            + 'con el WMS propio prendido borraría lo que el sistema registró. Para comparar sin escribir: --solo-paridad');
+        process.exit(1);
+    }
     const pool = await getPool();
     const o = await cargarOrigen();
 
@@ -147,6 +256,9 @@ async function main() {
     });
 
     if (!args['solo-paridad']) {
+        // 0 ── lo que el origen ya no tiene (--sin-borrar: comportamiento anterior)
+        if (!args['sin-borrar']) await borrarAusentes(pool, planesDeBorrado(o));
+
         // 1 ── catálogo (ids conservados)
         await upsert(pool, 'Wms_Depositos', [
             ['DepId', sql.Int, f => f.id], ['Nombre', sql.VarChar(100), f => f.nombre || ('Depósito ' + f.id)],

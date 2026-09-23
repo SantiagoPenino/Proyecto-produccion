@@ -15,6 +15,7 @@ router.use(verifyToken);
 
 router.get('/motivos', ctrl.getMotivos);
 router.get('/orden/:ordenId', ctrl.getPorOrden);
+router.get('/orden/:ordenId/elegibilidad', ctrl.getElegibilidad);
 router.get('/foto/:consultaId/:fotoId', ctrl.getFoto);
 
 // multipart: campos + fotos[] (hasta 5, solo imágenes, 5 MB c/u)

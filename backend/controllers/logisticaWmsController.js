@@ -513,6 +513,279 @@ exports.markDelivered = async (req, res) => {
     }
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// [TIENDA 23/09] Cobro al ingresar a Depósito de una compra de la tienda con retiro en
+// el local YA PAGADA online. Después del cobro se crea el retiro, que nace Abonado.
+//  · Handy: por la CAJA (E-Ticket + deuda del ingreso saldada + asiento), igual que el
+//    pago Handy del pickup. Antes se anotaba el pago suelto en el retiro (registrarPago):
+//    sin comprobante y con la deuda del ingreso viva. Si la caja no puede, se vuelve a
+//    ese camino — la tarjeta ya se cobró, el retiro no puede quedar impago — y se avisa
+//    a Finanzas para que emita el comprobante.
+//  · Billetera: la reserva hecha al comprar se aplica como consumo, igual que "Cubrir
+//    con mi billetera" del portal. Si no se puede, NO se crea el retiro (caja lo volvería
+//    a cobrar) y se avisa a Finanzas.
+// Devuelve { ok, mensaje } para el operador de Depósito.
+// ─────────────────────────────────────────────────────────────────────────────
+async function cobrarVentaTiendaPagada(pool, order, ordIdDeposito, evtOrden, req) {
+    const codRes = await pool.request()
+        .input('Cli', sql.Int, order.ClienteID)
+        .query('SELECT CodCliente FROM Clientes WHERE CliIdCliente = @Cli');
+    const codCliente = codRes.recordset[0]?.CodCliente || null;
+    const avisarFinanzas = async (asunto, texto) => {
+        try {
+            // Tickets.CliIdCliente guarda el CodCliente (mismo uso que el webhook de Handy)
+            await require('./webOrdersController').crearTicketFinanzas(pool, codCliente, asunto, texto);
+        } catch (eT) {
+            logger.error(`[TIENDA] No se pudo crear el ticket a Finanzas "${asunto}": ${eT.message}`);
+        }
+    };
+
+    if (String(order.MetodoPagoOnline || '').toUpperCase() === 'BILLETERA') {
+        try {
+            await aplicarReservaBilleteraTienda(pool, order, ordIdDeposito, evtOrden);
+        } catch (eB) {
+            logger.error(`[TIENDA] ${order.NoDocERP}: pagada con la billetera pero la reserva NO se pudo aplicar: ${eB.message}. Queda con deuda y sin retiro.`);
+            await avisarFinanzas(`Tienda: reserva de billetera sin aplicar (${order.NoDocERP})`,
+                `La compra ${order.NoDocERP} se pagó con la billetera (la plata quedó reservada al comprar) y ya ingresó a Depósito, pero la reserva no se pudo aplicar:\n${eB.message}\n\nLa orden quedó con deuda y SIN retiro. NO cobrarla en caja: el cliente ya pagó con su billetera. Pedir a sistemas que aplique la reserva (movimientos RESERVA_TIENDA con referencia ${order.NoDocERP}) y después armar el retiro.`);
+            return { ok: false, mensaje: `ATENCIÓN: estaba pagada con la billetera pero la reserva no se pudo aplicar (${eB.message}). No se creó el retiro y se avisó a Finanzas: no la cobren en caja.` };
+        }
+        const ret = await crearRetiroTiendaAbonado(pool, order, ordIdDeposito, codCliente, req);
+        return ret.retiro
+            ? { ok: true, mensaje: `Pedido PAGADO CON LA BILLETERA: se aplicó la reserva y el retiro ${ret.retiro} nació abonado.` }
+            : { ok: false, mensaje: `Pedido PAGADO CON LA BILLETERA (la reserva se aplicó, está paga), pero el retiro no se pudo crear: ${ret.error}. Crealo a mano: nace abonado.` };
+    }
+
+    // Handy. Sin la deuda del ingreso por el total, la caja imputaría el pago a OTRAS
+    // deudas del cliente (su respaldo PEPS): en ese caso no se pasa por caja.
+    let cobro = null, motivoSinCaja = null;
+    try {
+        const deuda = await pool.request().input('Ord', sql.Int, ordIdDeposito).query(`
+            SELECT TOP 1 DDeImportePendiente FROM dbo.DeudaDocumento WITH(NOLOCK)
+            WHERE OrdIdOrden = @Ord AND DDeEstado IN ('PENDIENTE','PARCIAL')
+            ORDER BY DDeIdDocumento DESC`);
+        const pendiente = deuda.recordset.length ? Number(deuda.recordset[0].DDeImportePendiente) : NaN;
+        if (!evtOrden?.success) motivoSinCaja = `el motor contable no registró la orden (${evtOrden?.error || 'sin detalle'})`;
+        else if (!Number.isFinite(pendiente)) motivoSinCaja = 'no se encontró la deuda del ingreso';
+        else if (Math.abs(pendiente - Number(order.MontoTotal)) > 0.01) motivoSinCaja = `la deuda del ingreso (${pendiente.toFixed(2)}) no coincide con el total (${Number(order.MontoTotal).toFixed(2)})`;
+        else cobro = await cobrarHandyTiendaPorCaja(order, ordIdDeposito);
+    } catch (eC) {
+        motivoSinCaja = eC.message;
+    }
+    if (cobro) {
+        logger.info(`[TIENDA] ✅ ${order.NoDocERP}: Handy cobrado por caja (TcaId ${cobro.tcaIdTransaccion}, E-Ticket ${cobro.serieDoc || ''}-${cobro.numeroDoc || ''}).`);
+    } else {
+        logger.error(`[TIENDA] ${order.NoDocERP}: el pago Handy no pasó por caja (${motivoSinCaja}). Se anota el pago en el retiro, sin E-Ticket.`);
+    }
+    const ret = await crearRetiroTiendaAbonado(pool, order, ordIdDeposito, codCliente, req, { pagoSuelto: !cobro });
+    if (!cobro) {
+        await avisarFinanzas(`Tienda: pago Handy sin E-Ticket (${order.NoDocERP})`,
+            `La compra ${order.NoDocERP} se pagó con Handy (Tx ${order.PagoOnlineRef || 's/d'}) y ya ingresó a Depósito, pero el cobro no pudo pasar por caja:\n${motivoSinCaja}\n\n${ret.retiro ? `El retiro ${ret.retiro} quedó abonado con el pago anotado, ` : 'El retiro no se pudo crear, '}pero NO se emitió el E-Ticket y la deuda del ingreso puede seguir pendiente. Emitir el comprobante y saldar la deuda a mano. NO volver a cobrarle al cliente.`);
+    }
+    const doc = cobro ? `E-Ticket ${cobro.serieDoc || ''}-${cobro.numeroDoc || ''} emitido` : `el E-Ticket NO se pudo emitir (${motivoSinCaja}); se avisó a Finanzas`;
+    return ret.retiro
+        ? { ok: true, mensaje: `Pedido PAGADO ONLINE con Handy: ${doc} y retiro ${ret.retiro} creado y abonado.` }
+        : { ok: false, mensaje: `Pedido PAGADO ONLINE con Handy: ${doc}, pero el retiro no se pudo crear: ${ret.error}. Crealo a mano${cobro ? ': nace abonado' : ' y marcalo abonado'}.` };
+}
+
+// Cobro Handy de la compra por la caja administrativa (mismo payload que el webhook
+// del pickup, pero sobre la orden de depósito: el retiro todavía no existe).
+async function cobrarHandyTiendaPorCaja(order, ordIdDeposito) {
+    const { procesarTransaccion } = require('../services/cajaService');
+    const monedaId = order.Moneda === 'USD' ? 2 : 1;
+    const moneda = monedaId === 2 ? 'USD' : 'UYU';
+    const monto = Number(order.MontoTotal);
+    for (let intento = 1; ; intento++) {
+        try {
+            return await procesarTransaccion({
+                usuarioId: 999,                   // pagos online automáticos
+                header: {
+                    clienteId:        order.ClienteID,
+                    esAdministrativa: true,       // sin sesión de cajero
+                    tipoDocumento:    '07',       // E-Ticket Contado
+                    moneda,
+                    observaciones:    `Cobro Handy tienda ${order.NoDocERP} (Tx: ${order.PagoOnlineRef || 's/d'})`,
+                },
+                aplicaciones: [{
+                    tipo:          'ORDEN_DEPOSITO',
+                    referenciaId:  ordIdDeposito,
+                    codigoRef:     order.NoDocERP,
+                    montoOriginal: monto,
+                    descripcion:   `Compra en la tienda ${order.NoDocERP} (pagada online)`,
+                }],
+                pagos: [{ metodoPagoId: 9, monedaId, moneda, montoOriginal: monto, cotizacion: 1 }],   // 9 = Handy
+            });
+        } catch (e) {
+            const deadlock = e.number === 1205 || /deadlock/i.test(e.message || '');
+            if (!deadlock || intento >= 3) throw e;
+            logger.warn(`[TIENDA] Deadlock cobrando ${order.NoDocERP} por caja (intento ${intento}/3); reintento.`);
+            await new Promise(r => setTimeout(r, intento * 2000));
+        }
+    }
+}
+
+// Aplica la reserva de billetera de la compra (RESERVA_TIENDA, ver tiendaController
+// .pagarTiendaConBilletera) como consumo de la ORDEN del ingreso. Si el total no cambió
+// desde la compra se consume exactamente lo reservado; si cambió en la preparación, se
+// recalcula sobre lo reservado y, si no alcanza, con el saldo libre de esas cuentas.
+async function aplicarReservaBilleteraTienda(pool, order, ordIdDeposito, evtOrden) {
+    const svc = require('../services/contabilidadService');
+    const r2 = (n) => Math.round(n * 100) / 100;
+    if (!evtOrden?.success) throw new Error(`el motor contable no registró la orden (${evtOrden?.error || 'sin detalle'})`);
+
+    const mov = (await pool.request()
+        .input('Ord', sql.Int, ordIdDeposito)
+        .input('Cli', sql.Int, order.ClienteID)
+        .query(`
+            SELECT TOP 1 m.MovIdMovimiento, m.MovImporte
+            FROM dbo.MovimientosCuenta m WITH(NOLOCK)
+            JOIN dbo.CuentasCliente cc WITH(NOLOCK) ON cc.CueIdCuenta = m.CueIdCuenta
+            WHERE m.OrdIdOrden = @Ord AND cc.CliIdCliente = @Cli AND m.MovTipo = 'ORDEN'
+              AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)
+            ORDER BY m.MovIdMovimiento DESC`)).recordset[0];
+    if (!mov) throw new Error('no se encontró la ORDEN del ingreso');
+
+    const reservas = (await pool.request()
+        .input('Cli', sql.Int, order.ClienteID)
+        .input('Ref', sql.VarChar(100), order.NoDocERP)
+        .query(`
+            SELECT m.MovIdMovimiento, m.CueIdCuenta, m.MovImporte, m.MovObservaciones, cc.CueNombre, cc.MonIdMoneda
+            FROM dbo.CuentasCliente cc WITH(NOLOCK)
+            JOIN dbo.MovimientosCuenta m WITH(NOLOCK) ON m.CueIdCuenta = cc.CueIdCuenta
+            WHERE cc.CliIdCliente = @Cli AND m.MovTipo = 'RESERVA_TIENDA' AND m.MovRefExterna = @Ref
+              AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)
+            ORDER BY m.MovIdMovimiento`)).recordset;
+    if (!reservas.length) throw new Error('la compra no tiene reservas activas en la billetera');
+
+    const monOrden = order.Moneda === 'USD' ? 2 : 1;
+    const importe = r2(Math.abs(Number(mov.MovImporte)));
+    const leer = (re) => {
+        for (const r of reservas) { const m = String(r.MovObservaciones || '').match(re); if (m) return parseFloat(m[1]); }
+        return NaN;
+    };
+    const totalCompra = leer(/total (?:US\$|\$) ([\d.]+)/);
+    let cot = leer(/@ cot\. ([\d.]+)/);   // la de la compra: el cliente pagó a esa cotización
+    if (!(cot > 0)) {
+        cot = parseFloat((await pool.request().query('SELECT TOP 1 CotDolar FROM dbo.Cotizaciones WITH(NOLOCK) ORDER BY CotFecha DESC')).recordset[0]?.CotDolar) || 40;
+    }
+    const cuenta = (r) => ({ id: r.CueIdCuenta, nombre: (r.CueNombre || `cuenta #${r.CueIdCuenta}`).trim(), mon: Number(r.MonIdMoneda) === 2 ? 2 : 1 });
+
+    let partes;
+    if (Math.abs(totalCompra - importe) < 0.005) {
+        partes = reservas.map(r => {
+            const c = cuenta(r);
+            return { cueIdCuenta: c.id, cuenta: c.nombre, mon: c.mon, importeCta: r2(Math.abs(Number(r.MovImporte))), cruzada: c.mon !== monOrden };
+        });
+    } else {
+        const fuentes = reservas.map(r => ({ ...cuenta(r), disp: r2(Math.abs(Number(r.MovImporte))) }));
+        partes = svc.planPartesConsumoBilletera({ fuentes, monOrden, importe, cot });
+        if (!partes) {
+            for (const f of fuentes) f.disp = r2(f.disp + Math.max(0, await svc.getSaldoRealCuenta(f.id)));
+            partes = svc.planPartesConsumoBilletera({ fuentes, monOrden, importe, cot });
+        }
+        if (!partes || !partes.length) throw new Error(`el total pasó a ${importe.toFixed(2)} en la preparación y la billetera no alcanza para cubrirlo`);
+        logger.warn(`[TIENDA] ${order.NoDocERP}: el total cambió desde la compra (${Number.isFinite(totalCompra) ? totalCompra.toFixed(2) : '?'} → ${importe.toFixed(2)}); consumo recalculado.`);
+    }
+
+    const ctrlConta = require('./contabilidadController');
+    for (let intento = 1; ; intento++) {
+        const out = await ctrlConta.consumirOrdenDesdeSaldoEnPartes({
+            movId: mov.MovIdMovimiento, partes, cot, UsuarioAlta: 999,
+            reservasALiberar: reservas.map(r => r.MovIdMovimiento),
+        });
+        if (out.success) {
+            logger.info(`[TIENDA] 🔋 ${order.NoDocERP}: reserva aplicada — ${partes.map(p => `"${p.cuenta}" -${p.mon === 2 ? 'US$' : '$'} ${p.importeCta.toFixed(2)}`).join(' + ')}.`);
+            return partes;
+        }
+        if (!/deadlock/i.test(out.error || '') || intento >= 3) throw new Error(out.error || 'no se pudo consumir');
+        await new Promise(r => setTimeout(r, intento * 2000));
+    }
+}
+
+// Crea el retiro de la compra ya cobrada; nace Abonado. pagoSuelto = el camino previo
+// al 23/09 (pago Handy anotado en el retiro, sin caja), solo como respaldo.
+async function crearRetiroTiendaAbonado(pool, order, ordIdDeposito, codCliente, req, { pagoSuelto = false } = {}) {
+    const { crearRetiro, registrarPago } = require('../services/retiroService');
+    const retiroTransaction = new sql.Transaction(pool);
+    try {
+        await retiroTransaction.begin();
+        const OReIdOrdenRetiro = await crearRetiro(retiroTransaction, {
+            ordIds: [ordIdDeposito],
+            totalCost: order.MontoTotal,
+            lugarRetiro: 1,
+            usuarioAlta: 70,
+            formaRetiro: 'RW',
+            codCliente,
+            moneda: order.Moneda === 'USD' ? 'USD' : 'UYU',
+        });
+        if (pagoSuelto) {
+            await registrarPago(retiroTransaction, {
+                ordenRetiroId: OReIdOrdenRetiro,
+                metodoPagoId: 9, // Handy
+                monedaId: order.Moneda === 'USD' ? 2 : 1,
+                monto: order.MontoTotal,
+                orderNumbers: [ordIdDeposito],
+                usuarioId: 70,
+                nuevoEstado: 3, // Abonado
+            });
+        } else {
+            // Ya cobrada: crearRetiro la ve paga y el retiro nace Abonado. Excepción: cliente
+            // ROLLO pagado con billetera — crearRetiro mira el costo y los metros, no el
+            // consumo de billetera, y lo mandaría a caja.
+            const est = await new sql.Request(retiroTransaction).input('Id', sql.Int, OReIdOrdenRetiro)
+                .query('SELECT OReEstadoActual FROM dbo.OrdenesRetiro WHERE OReIdOrdenRetiro = @Id');
+            if (est.recordset[0]?.OReEstadoActual !== 3) {
+                await new sql.Request(retiroTransaction)
+                    .input('Id', sql.Int, OReIdOrdenRetiro)
+                    .input('Ord', sql.Int, ordIdDeposito)
+                    .query(`
+                        UPDATE dbo.OrdenesRetiro
+                        SET OReEstadoActual = 3, OReFechaEstadoActual = GETDATE(), PagIdPago = ISNULL(PagIdPago, 0), ORePasarPorCaja = 0
+                        WHERE OReIdOrdenRetiro = @Id;
+                        UPDATE dbo.OrdenesDeposito SET PagIdPago = ISNULL(PagIdPago, 0) WHERE OrdIdOrden = @Ord;
+                        INSERT INTO dbo.HistoricoEstadosOrdenesRetiro (OReIdOrdenRetiro, EORIdEstadoOrden, HEOFechaEstado, HEOUsuarioAlta)
+                        VALUES (@Id, 3, GETDATE(), 70);`);
+            }
+        }
+        await retiroTransaction.commit();
+
+        const ioInst = req.app?.get('socketio');
+        if (ioInst) {
+            ioInst.emit('actualizado', { type: 'actualizacion' });
+            ioInst.emit('retiros:update', { type: 'nuevo_retiro', ordenId: OReIdOrdenRetiro, formaRetiro: 'RW' });
+        }
+        logger.info(`[PAGO ONLINE] ✅ Retiro automático abonado RW-${OReIdOrdenRetiro} para ${order.NoDocERP} (${order.MetodoPagoOnline || 'ONLINE'} ${order.PagoOnlineRef || ''})`);
+        return { retiro: `RW-${OReIdOrdenRetiro}` };
+    } catch (eRet) {
+        try { await retiroTransaction.rollback(); } catch (e2) { /* sin tx activa */ }
+        logger.error(`[PAGO ONLINE] No se pudo crear el retiro automático de ${order.NoDocERP}: ${eRet.message}`);
+        return { error: eRet.message };
+    }
+}
+
+// Devuelve a la billetera lo reservado para una compra de la tienda que no se va a
+// cobrar (pedido cancelado). Devuelve cuántas reservas liberó.
+async function liberarReservasTienda(pool, pedidoId, motivo) {
+    const r = await pool.request().input('PID', sql.Int, pedidoId).query(`
+        SELECT m.MovIdMovimiento
+        FROM dbo.PedidosCobranza pc WITH(NOLOCK)
+        JOIN dbo.CuentasCliente cc WITH(NOLOCK) ON cc.CliIdCliente = pc.ClienteID
+        JOIN dbo.MovimientosCuenta m WITH(NOLOCK) ON m.CueIdCuenta = cc.CueIdCuenta
+        WHERE pc.ID = @PID AND m.MovTipo = 'RESERVA_TIENDA' AND m.MovRefExterna = pc.NoDocERP
+          AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)`);
+    if (!r.recordset.length) return 0;
+    const svc = require('../services/contabilidadService');
+    const tx = new sql.Transaction(pool);
+    await tx.begin();
+    try {
+        for (const m of r.recordset) await svc.anularMovimiento(m.MovIdMovimiento, motivo, tx);
+        await tx.commit();
+    } catch (e) {
+        await tx.rollback().catch(() => {});
+        throw e;
+    }
+    return r.recordset.length;
+}
+
 exports.receivePreparedOrder = async (req, res) => {
     try {
         const { pedidoId } = req.params;
@@ -642,9 +915,14 @@ exports.receivePreparedOrder = async (req, res) => {
             logger.warn(`[WMS] No se pudieron mover a Depósito los bultos de ${order.NoDocERP}: ${eBultos.message}`);
         }
 
-        // Registrar en deuda contable
+        // Registrar en deuda contable.
+        // [TIENDA 23/09] Compra de la tienda YA PAGADA online (Handy o billetera reservada):
+        // la ORDEN entra como deuda normal SIN coberturas automáticas (plan de metros,
+        // billetera con descuento automático, ciclo semanal) — la paga el cobro de abajo.
+        // Antes la podía cubrir además la billetera automática del cliente: cobro doble.
+        const pagadaOnline = (order.Origen || '') === 'TIENDA' && !!order.FechaPagoOnline;
         const contabilidadService = require('../services/contabilidadService');
-        await contabilidadService.procesarEventoContable('ORDEN', {
+        const evtOrden = await contabilidadService.procesarEventoContable('ORDEN', {
             OrdIdOrden: insertedOrdId || null,
             CliIdCliente: order.ClienteID,
             ProIdProducto: proIdProducto,
@@ -653,63 +931,21 @@ exports.receivePreparedOrder = async (req, res) => {
             NombreTrabajo: nombreTrabajo,
             UsuarioAlta: req.user?.usuarioId || 1,
             Importe: order.MontoTotal,
-            MonIdMoneda: order.Moneda === 'USD' ? 2 : 1
+            MonIdMoneda: order.Moneda === 'USD' ? 2 : 1,
+            SinCoberturaAutomatica: pagadaOnline,
         });
 
-        // [PAGO ONLINE 21/08] Tienda + RETIRO EN EL LOCAL ya pagado online: el retiro se
-        // crea SOLO y nace ABONADO (con su pago registrado — misma mecánica que el
-        // "pagar ahora" de pickup: la deuda del ingreso queda saldada por el pago). El
-        // cliente no pasa por caja: viene, empaque entrega, listo. Best-effort: si algo
-        // falla, la recepción ya está hecha y el retiro se puede crear a mano.
-        let retiroAuto = null;
-        if ((order.Origen || '') === 'TIENDA' && (order.ModoRetiro || '') === 'RETIRO' && order.FechaPagoOnline && insertedOrdId) {
-            const retiroTransaction = new sql.Transaction(pool);
-            try {
-                const codRes = await pool.request()
-                    .input('Cli', sql.Int, order.ClienteID)
-                    .query('SELECT CodCliente FROM Clientes WHERE CliIdCliente = @Cli');
-                const codClienteRet = codRes.recordset[0]?.CodCliente || null;
-
-                const { crearRetiro, registrarPago } = require('../services/retiroService');
-                await retiroTransaction.begin();
-                const OReIdOrdenRetiro = await crearRetiro(retiroTransaction, {
-                    ordIds: [insertedOrdId],
-                    totalCost: order.MontoTotal,
-                    lugarRetiro: 1,
-                    usuarioAlta: 70,
-                    formaRetiro: 'RW',
-                    codCliente: codClienteRet,
-                    moneda: order.Moneda === 'USD' ? 'USD' : 'UYU',
-                });
-                await registrarPago(retiroTransaction, {
-                    ordenRetiroId: OReIdOrdenRetiro,
-                    metodoPagoId: 9, // pago online (Handy); MP se mapeará cuando se sume
-                    monedaId: order.Moneda === 'USD' ? 2 : 1,
-                    monto: order.MontoTotal,
-                    orderNumbers: [insertedOrdId],
-                    usuarioId: 70,
-                    nuevoEstado: 3, // Abonado
-                });
-                await retiroTransaction.commit();
-                retiroAuto = `RW-${OReIdOrdenRetiro}`;
-                logger.info(`[PAGO ONLINE] ✅ Retiro automático abonado ${retiroAuto} para ${order.NoDocERP} (${order.MetodoPagoOnline || 'ONLINE'} ${order.PagoOnlineRef || ''})`);
-
-                const ioInst = req.app?.get('socketio');
-                if (ioInst) {
-                    ioInst.emit('actualizado', { type: 'actualizacion' });
-                    ioInst.emit('retiros:update', { type: 'nuevo_retiro', ordenId: OReIdOrdenRetiro, formaRetiro: 'RW' });
-                }
-            } catch (eRet) {
-                try { await retiroTransaction.rollback(); } catch (e2) { /* sin tx activa */ }
-                logger.error(`[PAGO ONLINE] No se pudo crear el retiro automático de ${order.NoDocERP}: ${eRet.message}`);
-            }
+        // [PAGO ONLINE 21/08] Tienda + RETIRO EN EL LOCAL ya pagado online: se cobra y el
+        // retiro se crea SOLO y nace ABONADO. El cliente no pasa por caja: viene, empaque
+        // entrega, listo. Best-effort: la recepción ya está hecha y no se revierte.
+        if (pagadaOnline && (order.ModoRetiro || '') === 'RETIRO' && insertedOrdId) {
+            const cobro = await cobrarVentaTiendaPagada(pool, order, insertedOrdId, evtOrden, req);
+            return res.json({ success: cobro.ok, message: `Orden recibida en depósito. ${cobro.mensaje}` });
         }
 
         res.json({
             success: true,
-            message: retiroAuto
-                ? `Orden recibida en depósito. Pedido PAGADO ONLINE: retiro ${retiroAuto} creado y abonado automáticamente.`
-                : 'Orden recibida en depósito, ingresada a deuda y aviso programado.'
+            message: 'Orden recibida en depósito, ingresada a deuda y aviso programado.'
         });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -779,9 +1015,20 @@ exports.cancelOrder = async (req, res) => {
     try {
         const { pedidoId } = req.params;
         const pool = await getPool();
-        await pool.request().input('PedidoID', sql.Int, pedidoId).query(`UPDATE PedidosCobranza SET EstadoCobro = 'CANCELADO' WHERE ID = @PedidoID AND NoDocERP LIKE 'VEN-%'`);
+        const upd = await pool.request().input('PedidoID', sql.Int, pedidoId).query(`UPDATE PedidosCobranza SET EstadoCobro = 'CANCELADO' WHERE ID = @PedidoID AND NoDocERP LIKE 'VEN-%'`);
         await logEvento(pool, pedidoId, { estado: 'CANCELADO', usuario: req.user?.usuario });
-        res.json({ success: true, message: 'Pedido cancelado' });
+        // [TIENDA 23/09] Compra pagada con la billetera: lo reservado vuelve a la billetera.
+        let extra = '';
+        if (upd.rowsAffected?.[0]) {
+            try {
+                const n = await liberarReservasTienda(pool, pedidoId, 'Compra de la tienda cancelada: la reserva vuelve a la billetera');
+                if (n) extra = ' Lo reservado de la billetera del cliente volvió a su saldo.';
+            } catch (eL) {
+                logger.error(`[TIENDA] Pedido ${pedidoId} cancelado pero su reserva de billetera no se pudo liberar: ${eL.message}`);
+                extra = ` ATENCIÓN: la reserva de billetera no se pudo devolver (${eL.message}); avisá a Finanzas.`;
+            }
+        }
+        res.json({ success: true, message: `Pedido cancelado.${extra}` });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }

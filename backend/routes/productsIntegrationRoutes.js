@@ -1,6 +1,14 @@
 const express = require('express');
 const router = express.Router();
 const controller = require('../controllers/productsIntegrationController');
+const { verifyToken, soloInternoConRol } = require('../middleware/authMiddleware');
+
+// Toda esta API es de administración interna: Catálogo y WMS, Productos de Marketing y Perfiles
+// de precio (las tres mandan el token por apiClient). Estaba montada SIN autenticación (hallado el
+// 22/09): cualquiera en internet podía crear y borrar artículos, cambiar precios, subir imágenes y
+// editar la vitrina. soloInternoConRol() sin roles = cualquier usuario del login interno; deja
+// afuera a clientes del portal y diseñadores. La tienda pública no usa estas rutas.
+router.use(verifyToken, soloInternoConRol());
 
 // 1. Obtener Lista de Articulos locales
 router.get('/local', controller.getLocalArticles);
@@ -30,6 +38,10 @@ router.put('/wms/:id', controller.updateWmsMasterId);
 
 // 7.1 Obtener Master Products de WMS
 router.get('/wms/masters', controller.getWmsMasters);
+
+// Alta de productos de stock nuevos en el WMS propio (solo después del cutover: WMS_INTERNO=true).
+router.get('/wms/alta/opciones', controller.getAltaWmsOpciones);
+router.post('/wms/alta', controller.crearProductoWms);
 
 // 7.1.1 Importar Master Product desde WMS
 router.post('/wms/import/:id', controller.importWmsMaster);
