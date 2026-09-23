@@ -176,7 +176,7 @@ const RollsKanban = ({ areaCode }) => {
 
     // ACCIÓN: DESARMAR ROLLO
     const handleDismantle = async (roll) => {
-        if (!window.confirm(`¿Estás seguro de devolver TODO el lote "${roll.name}" a Pendientes?\n\nEl lote se eliminará y las órdenes volverán a la columna de pendientes.`)) return;
+        if (!window.confirm(`¿Estás seguro de devolver TODO el lote "${roll.name}" a Pendientes?\n\nEl lote se eliminará y las órdenes volverán a la columna de pendientes. Si alguna estaba marcada como impresa, se le borra la marca.`)) return;
 
         try {
             setLoading(true);

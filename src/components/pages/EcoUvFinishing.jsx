@@ -9,8 +9,9 @@ import {
 } from '../../utils/terminacionesGeo';
 import PlanoPieza, { COLOR_CAPA } from '../shared/PlanoPieza';
 import OrdenProntaModal from '../production/components/OrdenProntaModal';
-import * as pdfjsLib from 'pdfjs-dist';
-import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+// pdf.js LEGACY, la misma ruta que src/client-portal/api/fileService.js (ver la nota ahí).
+import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
+import pdfjsWorker from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url';
 
 // fase 'trabajo' (Bandeja): órdenes con Material Recibido / En Terminaciones — marcar la
 //   primera terminación pasa la orden a 'En Terminaciones'; "Finalizar Tarea" la manda a

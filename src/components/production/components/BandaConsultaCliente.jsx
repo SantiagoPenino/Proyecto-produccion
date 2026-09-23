@@ -6,11 +6,14 @@ import { consultasService } from '../../../services/api';
 // =====================================================================
 // CONSULTA AL CLIENTE — lo que se ve en el detalle de la orden
 // =====================================================================
-// Dos cosas distintas, por eso son dos bloques:
+// Tres bloques:
 //  · la consulta ABIERTA (banda ámbar): por qué está frenada la orden, desde
 //    cuándo, quién preguntó y el botón para retirarla.
 //  · la última RESPONDIDA: la conformidad escrita del cliente, que es lo que
 //    después sostiene el reclamo (docs/consultas-cliente-plan.md §7).
+//  · las ANTERIORES (retiradas, vencidas y respondidas más viejas), plegadas.
+// Las fotos se abren en los tres con un link "Ver adjunto": son parte de lo que se le
+// preguntó al cliente, y antes desaparecían del detalle apenas la consulta se cerraba.
 
 /** "hace 3 h" / "hace 2 días" — el dato útil es cuánto hace que espera, no la fecha exacta. */
 const haceCuanto = (fecha) => {
@@ -24,46 +27,95 @@ const haceCuanto = (fecha) => {
     return `hace ${Math.floor(hs / 24)} días`;
 };
 
-/** Una foto de la consulta. La ruta es autenticada, así que va por blob (no por src directo). */
-const FotoConsulta = ({ consultaId, foto, onAmpliar }) => {
-    const [url, setUrl] = useState(null);
-    const [error, setError] = useState(false);
+const fechaCorta = (fecha) => fecha
+    ? new Date(fecha).toLocaleString('es-ES', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' })
+    : '';
 
-    useEffect(() => {
-        let vivo = true;
-        let creada = null;
-        consultasService.getFotoUrl(consultaId, foto.CFoIdFoto)
-            .then(u => { if (vivo) { creada = u; setUrl(u); } else { URL.revokeObjectURL(u); } })
-            .catch(() => { if (vivo) setError(true); });
-        return () => { vivo = false; if (creada) URL.revokeObjectURL(creada); };
-    }, [consultaId, foto.CFoIdFoto]);
+/** Cómo terminó una consulta que ya no está abierta. */
+const comoTermino = (c) => {
+    if (c.ConEstado === 'RESPONDIDA') {
+        return c.ConRespuesta === 'APROBADO'
+            ? { texto: 'El cliente aprobó continuar', icono: 'fa-circle-check text-emerald-600' }
+            : { texto: 'El cliente pidió cancelar', icono: 'fa-circle-xmark text-brand-magenta' };
+    }
+    if (c.ConEstado === 'RETIRADA') return { texto: 'Retirada', icono: 'fa-rotate-left text-zinc-400' };
+    if (c.ConEstado === 'VENCIDA') return { texto: 'Venció sin respuesta', icono: 'fa-hourglass-end text-zinc-400' };
+    return { texto: c.ConEstado, icono: 'fa-circle text-zinc-300' };
+};
 
-    if (error) return (
-        <div className="w-14 h-14 rounded border border-amber-200 bg-amber-50 flex items-center justify-center text-amber-400">
-            <i className="fa-solid fa-image-slash text-xs" />
-        </div>
-    );
-    if (!url) return <div className="w-14 h-14 rounded border border-amber-200 bg-amber-50 animate-pulse" />;
+/**
+ * Link "Ver adjunto". La foto se baja recién al tocarlo: la ruta es autenticada, así que
+ * va por blob (un <img src="/api/..."> pelado da 401).
+ */
+const LinkAdjunto = ({ consultaId, foto, texto, onAbrir }) => {
+    const [cargando, setCargando] = useState(false);
+
+    const abrir = async () => {
+        if (cargando) return;
+        setCargando(true);
+        try {
+            onAbrir(await consultasService.getFotoUrl(consultaId, foto.CFoIdFoto));
+        } catch (e) {
+            toast.error('No se pudo abrir el adjunto.');
+        } finally {
+            setCargando(false);
+        }
+    };
 
     return (
-        <img
-            src={url}
-            alt={foto.CFoNombre || ''}
-            onClick={() => onAmpliar(url)}
-            className="w-14 h-14 rounded border border-amber-200 object-cover cursor-zoom-in hover:opacity-80 transition-opacity"
-            title={foto.CFoNombre || 'Ver más grande'}
-        />
+        <button
+            type="button"
+            onClick={abrir}
+            disabled={cargando}
+            className="text-[11px] font-bold text-brand-cyan hover:underline disabled:opacity-60"
+            title={foto.CFoNombre || undefined}
+        >
+            <i className={`fa-solid ${cargando ? 'fa-circle-notch fa-spin' : 'fa-paperclip'} mr-1`} />
+            {texto}
+        </button>
+    );
+};
+
+/**
+ * Los adjuntos de una consulta, en cualquier estado. Van a la derecha de la primera línea
+ * de cada consulta (por eso es un span: puede ir dentro de un <p>). Si hay más de uno, numerados.
+ */
+const AdjuntosConsulta = ({ consulta, onAbrir, className = '' }) => {
+    const fotos = consulta?.fotos || [];
+    if (!fotos.length) return null;
+    return (
+        <span className={`inline-flex flex-wrap items-baseline gap-x-3 gap-y-1 ${className}`}>
+            {fotos.map((f, i) => (
+                <LinkAdjunto
+                    key={f.CFoIdFoto}
+                    consultaId={consulta.ConIdConsulta}
+                    foto={f}
+                    texto={fotos.length === 1 ? 'Ver adjunto' : `Ver adjunto ${i + 1}`}
+                    onAbrir={onAbrir}
+                />
+            ))}
+        </span>
     );
 };
 
 const BandaConsultaCliente = ({ consultas = [], readOnly = false, onCambio }) => {
     const [ampliada, setAmpliada] = useState(null);
     const [retirando, setRetirando] = useState(false);
+    const [verAnteriores, setVerAnteriores] = useState(false);
 
+    // Vienen de la más nueva a la más vieja.
     const abierta = consultas.find(c => c.ConEstado === 'ENVIADA');
-    const respondida = consultas.find(c => c.ConEstado === 'RESPONDIDA');
+    // La conformidad se muestra sola solo si no hay otra consulta abierta.
+    const respondida = abierta ? null : consultas.find(c => c.ConEstado === 'RESPONDIDA');
+    // Todo lo demás es historial. Sin esto, una consulta retirada o vencida no se veía en
+    // ningún lado, y con ella la foto que el operario había mandado.
+    const anteriores = consultas.filter(c => c !== abierta && c !== respondida);
+    const adjuntosAnteriores = anteriores.reduce((n, c) => n + (c.fotos?.length || 0), 0);
 
-    if (!abierta && !respondida) return null;
+    // La foto abierta es un blob URL: se libera al cerrarla, al abrir otra o si se cierra el detalle.
+    useEffect(() => () => { if (ampliada) URL.revokeObjectURL(ampliada); }, [ampliada]);
+
+    if (!consultas.length) return null;
 
     const retirar = async () => {
         const r = await Swal.fire({
@@ -107,6 +159,7 @@ const BandaConsultaCliente = ({ consultas = [], readOnly = false, onCambio }) =>
                                     </span>
                                     <span className="text-xs font-bold text-zinc-700">{abierta.Motivo || 'Consulta'}</span>
                                     <span className="text-[11px] text-amber-700">{haceCuanto(abierta.ConFechaAlta)}</span>
+                                    <AdjuntosConsulta consulta={abierta} onAbrir={setAmpliada} className="ml-1" />
                                 </div>
                                 <p className="text-sm text-zinc-700 font-medium mt-1.5 whitespace-pre-wrap break-words">
                                     {abierta.ConPregunta}
@@ -118,13 +171,6 @@ const BandaConsultaCliente = ({ consultas = [], readOnly = false, onCambio }) =>
                                         : <> sobre la orden completa</>}
                                     {abierta.ConFechaVence && <> · vence el {new Date(abierta.ConFechaVence).toLocaleString('es-ES', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</>}
                                 </p>
-                                {abierta.fotos?.length > 0 && (
-                                    <div className="flex gap-2 mt-2.5">
-                                        {abierta.fotos.map(f => (
-                                            <FotoConsulta key={f.CFoIdFoto} consultaId={abierta.ConIdConsulta} foto={f} onAmpliar={setAmpliada} />
-                                        ))}
-                                    </div>
-                                )}
                             </div>
                         </div>
 
@@ -168,6 +214,7 @@ const BandaConsultaCliente = ({ consultas = [], readOnly = false, onCambio }) =>
                                         {' '}el {new Date(respondida.ConFechaRespuesta).toLocaleString('es-ES', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' })}
                                     </span>
                                 )}
+                                <AdjuntosConsulta consulta={respondida} onAbrir={setAmpliada} className="ml-3" />
                             </p>
                             {vencida && (
                                 <p className="text-[11px] font-bold text-amber-700 mt-1">
@@ -188,6 +235,61 @@ const BandaConsultaCliente = ({ consultas = [], readOnly = false, onCambio }) =>
                 </div>
                 );
             })()}
+
+            {/* Consultas ya cerradas, plegadas. */}
+            {anteriores.length > 0 && (
+                <div className="mb-3 rounded-xl border border-zinc-200 bg-white shadow-sm">
+                    <button
+                        type="button"
+                        onClick={() => setVerAnteriores(v => !v)}
+                        className="w-full flex items-center justify-between gap-2 px-3 py-2 rounded-xl text-xs font-bold text-zinc-600 hover:bg-zinc-50 transition-colors"
+                    >
+                        <span>
+                            <i className="fa-solid fa-clock-rotate-left text-zinc-400 mr-1.5" />
+                            {anteriores.length === 1 ? 'Consulta anterior' : `Consultas anteriores (${anteriores.length})`}
+                            {adjuntosAnteriores > 0 && (
+                                <span className="ml-2 font-medium text-zinc-400">
+                                    <i className="fa-solid fa-paperclip mr-1" />
+                                    {adjuntosAnteriores} {adjuntosAnteriores === 1 ? 'adjunto' : 'adjuntos'}
+                                </span>
+                            )}
+                        </span>
+                        <i className={`fa-solid ${verAnteriores ? 'fa-chevron-up' : 'fa-chevron-down'} text-[10px] text-zinc-400`} />
+                    </button>
+
+                    {verAnteriores && (
+                        <ul className="border-t border-zinc-100 divide-y divide-zinc-100">
+                            {anteriores.map(c => {
+                                const fin = comoTermino(c);
+                                return (
+                                    <li key={c.ConIdConsulta} className="px-3 py-2.5">
+                                        <p className="text-xs font-bold text-zinc-700">
+                                            <i className={`fa-solid ${fin.icono} mr-1.5`} />
+                                            {fin.texto}
+                                            {c.ConFechaRespuesta && (
+                                                <span className="font-medium text-zinc-500"> el {fechaCorta(c.ConFechaRespuesta)}</span>
+                                            )}
+                                            <AdjuntosConsulta consulta={c} onAbrir={setAmpliada} className="ml-3" />
+                                        </p>
+                                        <p className="text-[11px] text-zinc-500 mt-0.5 break-words">
+                                            {c.Motivo || 'Consulta'} · «{c.ConPregunta}»
+                                        </p>
+                                        <p className="text-[11px] text-zinc-500 mt-0.5">
+                                            La mandó <b>{c.UsuarioNombre || 'un operario'}</b> el {fechaCorta(c.ConFechaAlta)}
+                                            {c.NombreArchivo
+                                                ? <> sobre el archivo <b>{c.NombreArchivo}</b></>
+                                                : <> sobre la orden completa</>}
+                                        </p>
+                                        {c.ConComentarioCli && (
+                                            <p className="text-[11px] text-zinc-600 mt-1 italic break-words">«{c.ConComentarioCli}»</p>
+                                        )}
+                                    </li>
+                                );
+                            })}
+                        </ul>
+                    )}
+                </div>
+            )}
 
             {/* Foto ampliada */}
             {ampliada && (

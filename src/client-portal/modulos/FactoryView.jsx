@@ -370,11 +370,23 @@ export const FactoryView = () => {
             }, wait);
         };
 
+        // Suscripción a los avisos de LAS ÓRDENES DEL CLIENTE (backend/utils/avisosOrdenesPortal.js):
+        // suscripto, el server deja de mandarle los avisos de toda la planta y le manda
+        // 'portal:mis_ordenes' solo cuando cambia una orden suya. Se repite al reconectar porque el
+        // server olvida las salas del socket anterior. Un diseñador no queda suscripto y sigue
+        // recibiendo los avisos generales, por eso se escuchan los dos.
+        const suscribir = () => socket.emit('portal:suscribir', { token: localStorage.getItem('auth_token') });
+        suscribir();
+        socket.on('connect', suscribir);
+
+        socket.on('portal:mis_ordenes', handleOrderUpdate);
         socket.on('server:ordersUpdated', handleOrderUpdate);
         socket.on('server:order_updated', handleOrderUpdate);
 
         return () => {
             clearTimeout(debounceTimer);
+            socket.off('connect', suscribir);
+            socket.off('portal:mis_ordenes', handleOrderUpdate);
             socket.off('server:ordersUpdated', handleOrderUpdate);
             socket.off('server:order_updated', handleOrderUpdate);
         };

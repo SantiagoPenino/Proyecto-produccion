@@ -27,12 +27,13 @@ export const rasterizarPdf = (file, ladoMayorPx = 600) => {
     const tarea = (async () => {
         let pdf = null, page = null, canvas = null;
         try {
-            const pdfjsLib = await import('pdfjs-dist');
+            // pdf.js LEGACY, la misma ruta que src/client-portal/api/fileService.js (ver la nota ahí).
+            const pdfjsLib = await import('pdfjs-dist/legacy/build/pdf.mjs');
             // Guard: si nadie configuró el worker todavía, pdf.js muere con
             // 'No "GlobalWorkerOptions.workerSrc" specified'. Normalmente lo deja seteado
             // fileService al importarse, pero no hay que depender de ese orden de carga.
             if (!pdfjsLib.GlobalWorkerOptions.workerSrc) {
-                const worker = await import('pdfjs-dist/build/pdf.worker.min.mjs?url');
+                const worker = await import('pdfjs-dist/legacy/build/pdf.worker.min.mjs?url');
                 pdfjsLib.GlobalWorkerOptions.workerSrc = worker.default;
             }
             const buf = await file.arrayBuffer();

@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import {
     ShoppingCart, Search, Package, Plus, Minus, Trash2, X,
     Store, ArrowRight, ImageOff, Sparkles, Scissors,
-    CheckCircle2, Loader2, MapPin, Truck, CreditCard
+    CheckCircle2, Loader2, MapPin, Truck, CreditCard, Wallet, ArrowLeft
 } from 'lucide-react';
 import { apiClient } from '../api/apiClient';
 import { useToast } from '../pautas/Toast';
@@ -333,8 +333,50 @@ export const TiendaView = () => {
     const cerrarPay = () => {
         if (payCerrando) return;
         setPayCerrando(true);
-        setTimeout(() => { setPayModalAbierto(false); setPayCerrando(false); }, 240);
+        setTimeout(() => { setPayModalAbierto(false); setPayCerrando(false); setConfirmandoBilletera(false); }, 240);
     };
+
+    // [BILLETERA 23/09] Retiro en el local pagado con la billetera PREPAGO. Al abrir el
+    // sheet se pide la vista previa al server (mismo cálculo que el cobro): la opción se
+    // muestra solo si la billetera está habilitada y alcanza — igual que en Retiro de
+    // Pedidos. Al confirmar, la compra queda pagada y el importe RESERVADO; se descuenta
+    // cuando el pedido llega al local.
+    const [billetera, setBilletera] = useState(null);          // vista previa { alcanza, partes, disponible }
+    const [confirmandoBilletera, setConfirmandoBilletera] = useState(false);
+    const itemsPayload = () => carrito.map(it => ({
+        proIdProducto: it.proIdProducto,
+        wmsVarianteId: it.wmsVarianteId,
+        cantidad: it.cantidad,
+    }));
+    const abrirPago = () => {
+        setBilletera(null);
+        setConfirmandoBilletera(false);
+        setPayModalAbierto(true);
+        apiClient.post('/web-orders/tienda/pagar-con-billetera', { items: itemsPayload(), formaEnvioId: formaEnvioId || null, preview: true })
+            .then(r => setBilletera(r?.success ? r : null))
+            // Billetera no habilitada (403) o sin datos: la opción simplemente no aparece
+            .catch(() => setBilletera(null));
+    };
+    const pagarConBilletera = async () => {
+        if (pagando || carrito.length === 0) return;
+        setPagando(true);
+        try {
+            const res = await apiClient.post('/web-orders/tienda/pagar-con-billetera', { items: itemsPayload(), formaEnvioId: formaEnvioId || null });
+            setCompraOk(res);
+            setCarrito([]);   // la compra ya está pagada: se vacía también en localStorage
+            cerrarPay();
+        } catch (e) {
+            addToast(e.message || 'No pudimos cobrar con tu billetera. Probá de nuevo.', 'error');
+            abrirPago();      // el saldo pudo cambiar: se recalcula la vista previa
+        } finally {
+            setPagando(false);
+        }
+    };
+    const simbolo = (m) => (m === 'USD' ? 'US$' : '$');
+    const disponibleBilletera = (billetera?.disponible || []).reduce((acc, c) => {
+        if (c.saldo > 0.009) acc[c.moneda] = (acc[c.moneda] || 0) + c.saldo;
+        return acc;
+    }, {});
     const payPanelRef = React.useRef(null);
     const paySwipe = useSwipeDown(payPanelRef, cerrarPay);
     // [PAGO ONLINE 21/08] Retiro en el local = paga-primero: se pide el link de pago
@@ -575,7 +617,9 @@ export const TiendaView = () => {
                                     <p className="text-2xl font-black text-brand-cyan tracking-wide mt-1">{compraOk.codigoVenta}</p>
                                 </div>
                                 {compraOk.total != null && (
-                                    <p className="text-sm text-zinc-300 font-bold">Total a pagar: {fmt(compraOk.total, compraOk.moneda)}</p>
+                                    <p className="text-sm text-zinc-300 font-bold">
+                                        {compraOk.pagadoConBilletera ? 'Pagado con tu billetera' : 'Total a pagar'}: {fmt(compraOk.total, compraOk.moneda)}
+                                    </p>
                                 )}
                                 <div className="p-4 rounded-xl border border-zinc-800 bg-zinc-900/60 text-left space-y-1.5 w-full">
                                     {compraOk.modoRetiro && (
@@ -585,7 +629,9 @@ export const TiendaView = () => {
                                         </p>
                                     )}
                                     <p className="text-xs text-zinc-500 leading-relaxed">
-                                        {/encomienda/i.test(compraOk.modoRetiro || '')
+                                        {compraOk.pagadoConBilletera
+                                            ? 'El importe quedó reservado de tu saldo prepago y se descuenta cuando el pedido llega al local. Retiralo mostrando este código: ya está pago. No se emite factura nueva: tu saldo ya se facturó al recargarlo.'
+                                            : /encomienda/i.test(compraOk.modoRetiro || '')
                                             ? 'Tu pedido quedó registrado. Cuando quieras, pagalo desde Retiro de Pedidos y ahí coordinamos la encomienda — recién con el pago lo preparamos.'
                                             : 'Preparamos tu pedido y pagás al retirarlo en el local, mostrando este código. No se te cobró nada todavía.'}
                                     </p>
@@ -715,7 +761,7 @@ export const TiendaView = () => {
                                 )}
 
                                 <button
-                                    onClick={() => envioEsEncomienda ? confirmarCompra() : setPayModalAbierto(true)}
+                                    onClick={() => envioEsEncomienda ? confirmarCompra() : abrirPago()}
                                     disabled={comprando}
                                     className={`w-full pt-4 pb-3.5 rounded-xl text-sm font-black uppercase tracking-wide border transition-colors flex items-center justify-center leading-none ${comprando
                                         ? 'bg-zinc-800 border-transparent text-zinc-500 cursor-wait'
@@ -733,13 +779,16 @@ export const TiendaView = () => {
                     </aside>
 
                     {/* Sheet de método de pago (18/08): sube desde abajo sobre el carrito.
-                        Diseño calcado del modal de portal/pickup (Handy / MercadoPago + nota). */}
+                        Diseño calcado del modal de portal/pickup (Handy / MercadoPago + nota).
+                        Las tarjetas miden lo mismo con 2 o 3 métodos (23/09): en desktop cada
+                        una queda en 175px y el modal se ensancha (420 → 609); en mobile van de
+                        a dos por fila y la tercera baja, centrada. */}
                     {payModalAbierto && (
                         <div className="absolute inset-0 z-30 flex items-end md:items-center justify-center">
                             <div className="absolute inset-0 bg-black/70" onClick={cerrarPay} style={{ animation: payCerrando ? 'tienda-backdrop-out 0.22s ease forwards' : 'tienda-backdrop-in 0.2s ease' }} />
                             <div
                                 ref={payPanelRef}
-                                className="relative w-full md:max-w-[420px] bg-[#212124] border-t md:border border-zinc-700/60 rounded-t-2xl md:rounded-2xl px-4 pt-2 pb-8 md:p-7"
+                                className={`relative w-full ${!confirmandoBilletera && billetera?.alcanza ? 'md:max-w-[609px]' : 'md:max-w-[420px]'} md:transition-[max-width] md:duration-200 bg-[#212124] border-t md:border border-zinc-700/60 rounded-t-2xl md:rounded-2xl px-4 pt-2 pb-8 md:p-7`}
                                 style={{ animation: payCerrando ? 'tienda-sheet-out 0.24s ease-in forwards' : 'tienda-sheet-in 0.28s cubic-bezier(.2,.8,.3,1)' }}
                             >
                                 {/* Handle (mobile): tap cierra, arrastrable — mismo gesto que los sheets */}
@@ -753,14 +802,68 @@ export const TiendaView = () => {
                                         <span className="block w-11 h-1.5 rounded-full bg-zinc-500"></span>
                                     </div>
                                 </div>
+                                {confirmandoBilletera && billetera?.alcanza ? (<>
+                                {/* [BILLETERA 23/09] Confirmación: de qué cuenta(s) sale el importe */}
+                                <p className="text-[12px] uppercase tracking-[0.15em] text-zinc-500 m-0 mb-1.5">Confirmá el pago</p>
+                                <h2 className="text-xl font-black text-zinc-100 mb-3 flex items-center gap-2"><Wallet size={20} className="text-brand-cyan" /> Pagar con tu billetera</h2>
+                                <div className="rounded-xl border border-zinc-700/60 bg-white/[0.04] p-3.5 space-y-1.5">
+                                    <div className="flex justify-between gap-3 text-sm">
+                                        <span className="text-zinc-400">Total de la compra</span>
+                                        <span className="font-bold text-zinc-100 font-gsanscode whitespace-nowrap">{fmt(billetera.total, billetera.moneda)}</span>
+                                    </div>
+                                    {(billetera.partes || []).map(p => (
+                                        <div key={p.cueIdCuenta} className="flex justify-between gap-3 text-xs text-zinc-400">
+                                            <span className="min-w-0 truncate">Sale de «{p.cuenta}»{p.cruzada ? ` (cotiz. ${billetera.cotizacion})` : ''}</span>
+                                            <span className="font-bold text-zinc-300 font-gsanscode whitespace-nowrap">{fmt(p.importeCta, p.mon === 2 ? 'USD' : 'UYU')}</span>
+                                        </div>
+                                    ))}
+                                </div>
+                                <p className="text-[11px] text-zinc-500 leading-relaxed mt-3 mb-4">
+                                    El importe se reserva ahora de tu saldo prepago y se descuenta cuando el pedido llega al local. No se emite factura nueva: tu saldo ya se facturó al recargarlo.
+                                </p>
+                                <div className="flex gap-2.5">
+                                    <button
+                                        onClick={() => setConfirmandoBilletera(false)}
+                                        disabled={pagando}
+                                        className="px-4 py-3 rounded-xl border border-zinc-700 text-zinc-400 hover:text-zinc-200 text-sm font-bold flex items-center gap-1.5 transition-colors"
+                                    >
+                                        <ArrowLeft size={15} /> Volver
+                                    </button>
+                                    <button
+                                        onClick={pagarConBilletera}
+                                        disabled={pagando}
+                                        className={`flex-1 py-3 rounded-xl border text-sm font-black uppercase tracking-wide flex items-center justify-center gap-2 transition-colors ${pagando
+                                            ? 'bg-zinc-800 border-transparent text-zinc-500 cursor-wait'
+                                            : 'bg-brand-cyan border-brand-cyan/60 text-white hover:bg-[#005a7d]'}`}
+                                    >
+                                        {pagando ? <><Loader2 size={16} className="animate-spin" /> Pagando...</> : <><Wallet size={16} /> Confirmar pago</>}
+                                    </button>
+                                </div>
+                                </>) : (<>
                                 <p className="text-[12px] uppercase tracking-[0.15em] text-zinc-500 m-0 mb-1.5">Elegí cómo pagar</p>
                                 <h2 className="text-xl font-black text-zinc-100 mb-3">Método de pago</h2>
 
-                                <div className="flex gap-3.5">
+                                <div className="flex flex-wrap md:flex-nowrap justify-center gap-3.5">
+                                    {/* [BILLETERA 23/09] Solo si está habilitada y alcanza (vista previa del server) */}
+                                    {billetera?.alcanza && (
+                                        <button
+                                            onClick={() => setConfirmandoBilletera(true)}
+                                            disabled={comprando || pagando}
+                                            className="w-[calc(50%-7px)] md:w-auto md:flex-1 h-[140px] flex flex-col items-center justify-center gap-3 rounded-2xl bg-brand-cyan border border-brand-cyan/60 hover:bg-[#005a7d] hover:scale-[1.02] transition-all"
+                                        >
+                                            <Wallet size={36} className="text-white" />
+                                            <span className="text-center leading-tight">
+                                                <span className="block text-white font-bold text-sm">Billetera</span>
+                                                {Object.entries(disponibleBilletera).map(([mon, saldo]) => (
+                                                    <span key={mon} className="block text-white/65 text-[11px] whitespace-nowrap">{fmt(saldo, mon)}</span>
+                                                ))}
+                                            </span>
+                                        </button>
+                                    )}
                                     <button
                                         onClick={() => elegirMetodoPago('handy')}
                                         disabled={comprando}
-                                        className="flex-1 h-[140px] flex flex-col items-center justify-center gap-3 rounded-2xl bg-[#722efa] border border-[#722efa]/60 hover:bg-[#5e1fe8] hover:scale-[1.02] transition-all"
+                                        className="w-[calc(50%-7px)] md:w-auto md:flex-1 h-[140px] flex flex-col items-center justify-center gap-3 rounded-2xl bg-[#722efa] border border-[#722efa]/60 hover:bg-[#5e1fe8] hover:scale-[1.02] transition-all"
                                     >
                                         <img src={handyLogo} alt="Handy" className="h-10 object-contain max-w-full" />
                                         <span className="text-center leading-tight">
@@ -771,7 +874,7 @@ export const TiendaView = () => {
                                     <button
                                         onClick={() => elegirMetodoPago('mercadopago')}
                                         disabled={comprando}
-                                        className="flex-1 h-[140px] flex flex-col items-center justify-center gap-3 rounded-2xl bg-[#ffe600] border border-[#ffe600]/60 hover:bg-[#e6cf00] hover:scale-[1.02] transition-all"
+                                        className="w-[calc(50%-7px)] md:w-auto md:flex-1 h-[140px] flex flex-col items-center justify-center gap-3 rounded-2xl bg-[#ffe600] border border-[#ffe600]/60 hover:bg-[#e6cf00] hover:scale-[1.02] transition-all"
                                     >
                                         <img src={mpLogo} alt="MercadoPago" className="h-10 object-contain max-w-full" />
                                         <span className="text-center leading-tight">
@@ -787,6 +890,7 @@ export const TiendaView = () => {
                                         Tus datos de tarjeta son procesados directamente por Handy o MercadoPago. USER no almacena ni accede a información financiera de ningún tipo.
                                     </p>
                                 </div>
+                                </>)}
                             </div>
                         </div>
                     )}

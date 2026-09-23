@@ -84,6 +84,8 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
         String(order?.area || order?.AreaID || currentOrder?.area || currentOrder?.AreaID || '').toUpperCase()
     );
     const [consultas, setConsultas] = useState([]);
+    // { puede, motivo, lote } — si se le puede hacer una consulta (backend: getElegibilidad)
+    const [elegibilidad, setElegibilidad] = useState(null);
     // null | { archivo: {id, nombre} | null } — null en `archivo` = consulta de la orden entera
     const [consultaModal, setConsultaModal] = useState(null);
 
@@ -647,10 +649,12 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
     // archivos de la madre/hermanas" (eso contamina cualquier descarga por lote para ripear
     // con contenido de otras órdenes/áreas). Se pide aparte, fuera de `files`/`productionFiles`,
     // para que estructuralmente no pueda mezclarse con lo que se manda a imprimir.
-    const [archivoOrigenFalla, setArchivoOrigenFalla] = useState(null);
+    // undefined = buscando · null = no hay archivo puntual registrado · objeto = el archivo.
+    const [archivoOrigenFalla, setArchivoOrigenFalla] = useState(undefined);
     useEffect(() => {
         if (!isFallaOrder || !currentOrder?.id) { setArchivoOrigenFalla(null); return; }
         let cancel = false;
+        setArchivoOrigenFalla(undefined);
         logisticsService.getReposicionesOrden(currentOrder.id).then(reps => {
             if (cancel) return;
             const rep = (reps || []).find(r => String(r.OrdenFallaID) === String(currentOrder.id) && r.ArchivoOrigenNombre);
@@ -913,7 +917,7 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                         const data = await fileControlService.getEtiquetas(currentOrder.id);
                         setLabels(data || []);
                         toast.success("Etiqueta eliminada");
-                    } catch (e) { toast.error("Error: " + e.message); }
+                    } catch (e) { toast.error(e?.response?.data?.error || ("Error: " + e.message)); }
                 }
             },
         });
@@ -1333,23 +1337,26 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
     // CONSULTA AL CLIENTE: las de esta orden (abiertas e históricas). Solo se piden en
     // las áreas habilitadas — en el resto el endpoint devolvería siempre vacío.
     const cargarConsultas = React.useCallback(() => {
-        if (!order?.id || !areaConsultable) { setConsultas([]); return; }
+        if (!order?.id || !areaConsultable) { setConsultas([]); setElegibilidad(null); return; }
         consultasService.getPorOrden(order.id)
             .then(setConsultas)
             .catch(() => setConsultas([]));   // sin consultas el modal funciona igual que siempre
+        consultasService.getElegibilidad(order.id)
+            .then(setElegibilidad)
+            .catch(() => setElegibilidad(null));   // sin respuesta no se ofrece el botón
     }, [order?.id, areaConsultable]);
     useEffect(() => { cargarConsultas(); }, [cargarConsultas]);
 
     const consultaAbierta = consultas.find(c => c.ConEstado === 'ENVIADA') || null;
 
-    // Decisión 6 del plan: SOLO sobre órdenes pendientes y sin lote. Con la orden en un
-    // lote o en máquina el trabajo ya arrancó y frenarla no evita nada. El backend
-    // rechaza igual (409) — esto es para no ofrecer un botón que va a rebotar.
+    // Cuándo se puede consultar lo decide el backend (docs/consulta-en-lote-o-maquina.md §9):
+    // pendiente, o en un lote en mesa, en cola o en pausa (no el que se está imprimiendo), y
+    // siempre sin marca de impresa. Crear la consulta lo vuelve a validar (409): esto es para
+    // no ofrecer un botón que va a rebotar.
     const puedeConsultar = !readOnly
         && areaConsultable
         && !consultaAbierta
-        && String(currentOrder?.status || '').trim().toLowerCase() === 'pendiente'
-        && !(order?.rollId || currentOrder?.rollId);
+        && !!elegibilidad?.puede;
 
     if (!order || !currentOrder) return null;
 
@@ -2338,9 +2345,10 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                                             </a>
                                         )}
                                     </div>
+                                ) : archivoOrigenFalla === undefined ? (
+                                    <div className="mt-1 text-fuchsia-500 italic">Buscando el archivo original de referencia...</div>
                                 ) : (
-                                    <div className="mt-1 text-fuchsia-500 italic">No se encontró el archivo original de referencia — fijate en {' '}
-                                        {archivoOrigenFalla === null ? 'la orden madre' : 'cargando...'}.</div>
+                                    <div className="mt-1 text-fuchsia-500 italic">No se encontró el archivo original de referencia — fijate en la orden madre.</div>
                                 )}
                                 <div className="mt-1 text-[10px] text-fuchsia-400">Es solo de referencia: no forma parte de los archivos de esta orden ni se incluye en descargas por lote.</div>
                             </div>
@@ -2846,6 +2854,7 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                 <ModalConsultaCliente
                     orden={currentOrder}
                     archivo={consultaModal.archivo}
+                    lote={elegibilidad?.lote || null}
                     onClose={() => setConsultaModal(null)}
                     onCreada={() => { cargarConsultas(); reloadFiles(); onOrderUpdated?.(); }}
                 />

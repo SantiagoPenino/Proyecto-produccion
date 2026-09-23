@@ -20,6 +20,14 @@ export const consultasService = {
         return response.data?.data || [];
     },
 
+    // Si se le puede hacer una consulta a la orden ({ puede, motivo, lote }). La regla la aplica el
+    // backend, la misma con la que valida al crear: pendiente, o en un lote que no se esté
+    // imprimiendo, y sin nada impreso. `lote` viene si está en uno (sale del lote al consultar).
+    getElegibilidad: async (ordenId) => {
+        const response = await api.get(`/consultas/orden/${ordenId}/elegibilidad`);
+        return response.data?.data || null;
+    },
+
     /**
      * Crea la consulta y frena la orden.
      * `fotos` son File del input; van como multipart porque el backend las guarda

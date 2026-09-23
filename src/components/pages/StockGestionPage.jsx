@@ -43,6 +43,71 @@ const metrosTeoricos = (kg, gramaje, ancho) => {
     if (!(k > 0) || !(g > 0) || !(a > 0)) return null;
     return Math.round(k * 100000 / (g * a)) / 100;
 };
+// Ficha textil en una línea con lo que haya cargado: "ancho 1,60 m · 140 g/m² · 100% Polyester" ('' si nada).
+const fichaTela = (x) => [
+    Number(x?.AnchoMetros) > 0 ? `ancho ${fmtCant(x.AnchoMetros)} m` : null,
+    Number(x?.GramajeGsm) > 0 ? `${fmtCant(x.GramajeGsm)} g/m²` : null,
+    x?.Composicion || null,
+].filter(Boolean).join(' · ');
+
+// Tabla talle × color (23/09): la ropa se muestra como una grilla por producto en vez de una
+// fila por variante. Talle y color salen del dato de la variante y, si no está cargado, del
+// nombre: "Short 12 AZUL MARINO", "Buzo Medio Cierre Azul Talle 2XL", "AMARILLO - L". Los
+// talles numéricos son de 1 o 2 cifras (un "140" es gramaje) y una M o L después de una medida
+// ("1,60 m") no es talle; del color se sacan el talle, los separadores y las palabras del
+// nombre del producto (con su plural: "Buzo" en "Buzos Medio Cierre").
+const TALLES_LETRA = ['XXS', 'XS', 'S', 'M', 'L', 'XL', 'XXL', '2XL', 'XXXL', '3XL', '4XL', '5XL', '6XL'];
+const RELLENO_VARIANTE = new Set(['-', '–', '/', '|', 'TALLE', 'TALLA', 'T.', 'T:']);
+const esTalle = (t, anterior) => /^\d{1,2}$/.test(t)
+    || (TALLES_LETRA.includes(t) && !((t === 'M' || t === 'L') && /^\d+[.,]\d+$/.test(anterior || '')));
+const mismaPalabra = (a, b) => a === b || a + 'S' === b || b + 'S' === a || a + 'ES' === b || b + 'ES' === a;
+function ejesVariante(v) {
+    const tokens = String(v.NombreVariante || '').toUpperCase().split(/\s+/).filter(Boolean);
+    let talle = String(v.Talle || '').trim().toUpperCase();
+    let idx = -1;
+    if (!talle) {
+        idx = tokens.findIndex((t, i) => esTalle(t, tokens[i - 1]));
+        if (idx < 0) return null;
+        talle = tokens[idx];
+    }
+    let color = String(v.Color || '').trim().toUpperCase();
+    if (!color) {
+        const producto = String(v.Producto || '').toUpperCase().split(/\s+/).filter(Boolean);
+        color = tokens.filter((t, i) => i !== idx && t !== talle && !RELLENO_VARIANTE.has(t)
+            && !producto.some(p => mismaPalabra(p, t))).join(' ');
+    }
+    return { talle, color };
+}
+// Numéricos primero (6 < 8 < 10), después letras de XXS a 6XL, desconocidos al final.
+const cmpTalles = (a, b) => {
+    const na = /^\d+$/.test(a), nb = /^\d+$/.test(b);
+    if (na && nb) return parseInt(a, 10) - parseInt(b, 10);
+    if (na !== nb) return na ? -1 : 1;
+    const ia = TALLES_LETRA.indexOf(a), ib = TALLES_LETRA.indexOf(b);
+    if (ia >= 0 && ib >= 0) return ia - ib;
+    if ((ia >= 0) !== (ib >= 0)) return ia >= 0 ? -1 : 1;
+    return a.localeCompare(b);
+};
+// null = el producto sigue como lista: no se cuenta por unidades (telas, tintas, films),
+// alguna variante no tiene talle, hay un solo talle, o dos variantes caerían en la misma celda.
+function armarMatriz(variantes) {
+    if (!variantes?.length || variantes.length < 2) return null;
+    if (String(variantes[0].UnidadBase || '').toLowerCase() !== 'uni') return null;
+    const celdas = new Map(), talles = new Set(), colores = new Set();
+    for (const v of variantes) {
+        const e = ejesVariante(v);
+        if (!e) return null;
+        const clave = `${e.color}|${e.talle}`;
+        if (celdas.has(clave)) return null;
+        celdas.set(clave, v); talles.add(e.talle); colores.add(e.color);
+    }
+    if (talles.size < 2) return null;
+    return {
+        talles: [...talles].sort(cmpTalles),
+        colores: [...colores].sort((a, b) => a.localeCompare(b)),
+        celda: (color, talle) => celdas.get(`${color}|${talle}`),
+    };
+}
 
 // Etiqueta física: ventana propia (como el resto de las impresiones del sistema), QR = EtiId.
 async function imprimirEtiqueta({ etiId, producto, variante, talle, color, cantidad, unidad, codigoBarras, metros }) {
@@ -1258,6 +1323,7 @@ function TabPeso({ dep }) {
                                 Lote <span className="font-gsanscode">#{eti.EtiId}</span> · {eti.Deposito} ·
                                 <span className="font-gsanscode"> {fmtCant(eti.CantidadActual)}</span> {eti.UnidadBase}
                             </p>
+                            {fichaTela(eti) && <p className="text-[11px] text-slate-500 font-semibold mt-0.5">{fichaTela(eti)}</p>}
                         </div>
                         <div className="grid grid-cols-2 gap-3">
                             <div>
@@ -1526,6 +1592,106 @@ function TarjetaRemitoSector({ r, sentido, onVer, acciones = null }) {
     );
 }
 
+/* ── TABLA TALLE × COLOR (ver armarMatriz) ───────────────────────────────── */
+// Una fila por color, una columna por talle; cada casillero es el stock de esa variante ("·"
+// si la combinación no existe). Con onElegir los casilleros son botones (Inventario: abren
+// las etiquetas de la variante) y el elegido queda marcado.
+function MatrizTalleColor({ matriz, seleccionada = null, onElegir = null }) {
+    const { talles, colores, celda } = matriz;
+    const stock = (c, t) => Number(celda(c, t)?.Stock || 0);
+    const totalColor = (c) => talles.reduce((s, t) => s + stock(c, t), 0);
+    const totalTalle = (t) => colores.reduce((s, c) => s + stock(c, t), 0);
+    const total = colores.reduce((s, c) => s + totalColor(c), 0);
+    return (
+        <div className="overflow-x-auto">
+            <table className="text-sm border-collapse">
+                <thead>
+                    <tr className="text-[10px] font-black uppercase tracking-wider text-slate-400">
+                        <th className="sticky left-0 bg-white text-left font-black py-1.5 pr-4">Color / talle</th>
+                        {talles.map(t => <th key={t} className="px-1 py-1.5 text-center font-black min-w-[52px]">{t}</th>)}
+                        <th className="pl-4 py-1.5 text-right font-black">Total</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {colores.map(c => (
+                        <tr key={c} className="border-t border-slate-100">
+                            <td className="sticky left-0 bg-white py-1 pr-4 text-xs font-bold text-slate-600 whitespace-nowrap">{c || 'Sin color'}</td>
+                            {talles.map(t => {
+                                const v = celda(c, t);
+                                if (!v) return <td key={t} className="px-1 py-1 text-center text-slate-300">·</td>;
+                                const cant = Number(v.Stock || 0);
+                                const titulo = `${v.NombreVariante} · ${v.Etiquetas} etiq.${v.CodigoVariante ? ` · ${v.CodigoVariante}` : ''}`;
+                                const numero = (
+                                    <span className={`tabular-nums font-gsanscode font-black ${cant > 0 ? 'text-slate-800' : 'text-slate-300'}`}>{fmtCant(cant)}</span>
+                                );
+                                return (
+                                    <td key={t} className="px-1 py-1 text-center">
+                                        {onElegir ? (
+                                            <button onClick={() => onElegir(v)} title={titulo}
+                                                className={`w-full rounded-lg px-2 py-1 transition-colors ${seleccionada === v.VarId ? 'bg-sky-100 ring-2 ring-sky-300' : 'hover:bg-slate-100'}`}>
+                                                {numero}
+                                            </button>
+                                        ) : (
+                                            <span title={titulo} className="block px-2 py-1">{numero}</span>
+                                        )}
+                                    </td>
+                                );
+                            })}
+                            <td className="pl-4 py-1 text-right tabular-nums font-gsanscode font-black text-slate-600">{fmtCant(totalColor(c))}</td>
+                        </tr>
+                    ))}
+                </tbody>
+                <tfoot>
+                    <tr className="border-t border-slate-200 text-slate-500">
+                        <td className="sticky left-0 bg-white py-1.5 pr-4 text-[10px] font-black uppercase tracking-wider">Total</td>
+                        {talles.map(t => <td key={t} className="px-1 py-1.5 text-center tabular-nums font-gsanscode font-black">{fmtCant(totalTalle(t))}</td>)}
+                        <td className="pl-4 py-1.5 text-right tabular-nums font-gsanscode font-black text-slate-800">{fmtCant(total)}</td>
+                    </tr>
+                </tfoot>
+            </table>
+        </div>
+    );
+}
+
+// Lo que distingue a la variante dentro de su producto: el nombre sin las palabras del producto
+// ("Gorro de lana Amarillo" en "Gorro de Lana" → "Amarillo"; "Cuello Polar Niño Rojo" en
+// "Cuellos Polares" → "Niño Rojo"). Si no queda nada, el nombre entero.
+const restoVariante = (v) => {
+    const producto = String(v.Producto || '').toUpperCase().split(/\s+/).filter(Boolean);
+    const resto = String(v.NombreVariante || '').split(/\s+/).filter(Boolean)
+        .filter(t => !RELLENO_VARIANTE.has(t.toUpperCase()) && !producto.some(p => mismaPalabra(p, t.toUpperCase())))
+        .join(' ');
+    return resto ? resto.charAt(0).toUpperCase() + resto.slice(1) : v.NombreVariante;   // "liso Beige" → "Liso Beige"
+};
+// Mosaico: para lo que se cuenta por unidades y varía sin talle (gorros por color, cuellos por
+// modelo y color): un casillero por variante con su stock, en vez de una fila por variante.
+const usaMosaico = (variantes) => variantes.length >= 2 && String(variantes[0].UnidadBase || '').toLowerCase() === 'uni';
+function MosaicoVariantes({ variantes, seleccionada = null, onElegir = null }) {
+    return (
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-2">
+            {variantes.map(v => {
+                const cant = Number(v.Stock || 0);
+                const titulo = `${v.NombreVariante} · ${v.Etiquetas} etiq.${v.CodigoVariante ? ` · ${v.CodigoVariante}` : ''}`;
+                const contenido = (
+                    <>
+                        <span className="text-xs font-bold text-slate-600 leading-tight line-clamp-2">{restoVariante(v)}</span>
+                        <span className={`text-sm font-black tabular-nums font-gsanscode whitespace-nowrap ${cant > 0 ? 'text-slate-800' : 'text-slate-300'}`}>{fmtCant(cant)}</span>
+                    </>
+                );
+                const clases = 'flex items-center justify-between gap-2 rounded-xl border px-3 py-2 text-left transition-colors';
+                return onElegir ? (
+                    <button key={v.VarId} onClick={() => onElegir(v)} title={titulo}
+                        className={`${clases} ${seleccionada === v.VarId ? 'border-sky-300 bg-sky-50 ring-2 ring-sky-100' : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50'}`}>
+                        {contenido}
+                    </button>
+                ) : (
+                    <div key={v.VarId} title={titulo} className={`${clases} border-slate-200 bg-white`}>{contenido}</div>
+                );
+            })}
+        </div>
+    );
+}
+
 /* ── MI SECTOR (vista del operario sobre SU depósito) ────────────────────── */
 function TabMiSector({ depositos }) {
     const [sector, setSector] = useState(undefined);   // undefined = cargando
@@ -1542,9 +1708,11 @@ function TabMiSector({ depositos }) {
     const [detRem, setDetRem] = useState({});
     const [abierto, setAbierto] = useState(null);
     const [cargando, setCargando] = useState(false);
+    const [cargadoDep, setCargadoDep] = useState(null); // sector de la última carga terminada
     const [q, setQ] = useState('');
     const [pidiendo, setPidiendo] = useState([]);       // items del pedido nuevo
     const [famSel, setFamSel] = useState(null);        // familia abierta en 'Mi stock'
+    const timer = useRef(null);
 
     useEffect(() => {
         api.get('/wms-interno/mi-sector')
@@ -1572,9 +1740,15 @@ function TabMiSector({ depositos }) {
             setRecibidos(rec.data?.data || []);
             setSolicitudes(sol.data?.data || []);
         } catch (e) { toast.error('No se pudo cargar el sector'); }
-        finally { setCargando(false); }
+        finally { setCargando(false); setCargadoDep(dep); }
     }, [dep, q]);
-    useEffect(() => { cargar(); }, [cargar]);
+    // El buscador recarga con una pausa (350 ms, igual que el Inventario): una consulta
+    // cuando se deja de tipear, no una por tecla.
+    useEffect(() => {
+        clearTimeout(timer.current);
+        timer.current = setTimeout(cargar, q ? 350 : 0);
+        return () => clearTimeout(timer.current);
+    }, [cargar]);
 
     const cancelarRemito = async (rem) => {
         try {
@@ -1657,6 +1831,16 @@ function TabMiSector({ depositos }) {
         return Object.values(map).sort((a, b) => b.etiquetas - a.etiquetas);
     })();
     const stockFiltrado = famSel ? stock.filter(v => (v.Categoria || 'Sin familia') === famSel) : stock;
+    // Por producto: la ropa (talle × color) va en tabla; el resto, una fila por variante.
+    const gruposSector = (() => {
+        const map = new Map();
+        stockFiltrado.forEach(v => {
+            const k = v.PmaId ?? v.Producto;
+            if (!map.has(k)) map.set(k, { clave: k, producto: v.Producto, items: [] });
+            map.get(k).items.push(v);
+        });
+        return [...map.values()].map(g => ({ ...g, matriz: armarMatriz(g.items) }));
+    })();
 
     const subs = [
         // el contador son LOTES FÍSICOS (etiquetas), igual que el panel operativo anterior
@@ -1712,7 +1896,9 @@ function TabMiSector({ depositos }) {
                 ))}
             </div>
 
-            {cargando ? (
+            {/* El "Cargando..." de pantalla completa solo en la primera carga del sector: si
+                tapara también las recargas, el buscador se desmontaba en cada tecla y perdía el foco. */}
+            {cargando && cargadoDep !== dep ? (
                 <div className="flex items-center gap-2 text-slate-400 text-sm py-12 justify-center"><Loader2 size={18} className="animate-spin" /> Cargando...</div>
             ) : sub === 'stock' ? (
                 <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
@@ -1725,7 +1911,9 @@ function TabMiSector({ depositos }) {
                             <button onClick={() => setFamSel(null)} className="text-xs font-black text-slate-400 hover:text-slate-600">← todas las familias</button>
                         )}
                         <div className="relative">
-                            <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                            {cargando
+                                ? <Loader2 size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 animate-spin" />
+                                : <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />}
                             <input value={q} onChange={e => setQ(e.target.value)} placeholder="Buscar por variante o producto..."
                                 className="w-64 pl-9 pr-3 py-2 rounded-xl border border-slate-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-sky-200" />
                         </div>
@@ -1752,17 +1940,34 @@ function TabMiSector({ depositos }) {
                         <div className="divide-y divide-slate-50">
                             {stockFiltrado.length === 0 ? (
                                 <p className="px-4 py-12 text-center text-sm text-slate-400">Nada que coincida.</p>
-                            ) : stockFiltrado.map(v => (
-                                <div key={v.VarId} className="flex items-center gap-3 px-5 py-3">
-                                    <div className="flex-1 min-w-0">
-                                        <p className="text-sm font-bold text-slate-700 truncate">{v.Producto} — {v.NombreVariante}</p>
-                                        <p className="text-[11px] text-slate-400">
-                                            {[v.Talle, v.Color].filter(Boolean).join(' · ')}{(v.Talle || v.Color) ? ' · ' : ''}{v.Etiquetas} etiq.
-                                            {!famSel && v.Categoria && <span className="ml-2 uppercase font-bold text-slate-300">{v.Categoria}</span>}
+                            ) : gruposSector.map(g => (g.matriz || usaMosaico(g.items)) ? (
+                                <div key={`m-${g.clave}`} className="px-5 py-4">
+                                    <div className="flex items-baseline justify-between gap-3 mb-2">
+                                        <p className="text-sm font-bold text-slate-700 truncate">
+                                            {g.producto}
+                                            {!famSel && g.items[0]?.Categoria && <span className="ml-2 text-[11px] uppercase font-bold text-slate-300">{g.items[0].Categoria}</span>}
                                         </p>
+                                        <span className="text-[11px] font-bold text-slate-400 whitespace-nowrap">
+                                            {g.items.length} variantes · {g.items.reduce((s, v) => s + Number(v.Etiquetas || 0), 0)} etiq. · {g.items[0]?.UnidadBase}
+                                        </span>
                                     </div>
-                                    <span className="text-base font-black text-slate-800 tabular-nums font-gsanscode">{fmtCant(v.Stock)} <span className="text-[10px] text-slate-400 font-bold">{v.UnidadBase}</span></span>
+                                    {g.matriz ? <MatrizTalleColor matriz={g.matriz} /> : <MosaicoVariantes variantes={g.items} />}
                                 </div>
+                            ) : (
+                                <React.Fragment key={`l-${g.clave}`}>
+                                    {g.items.map(v => (
+                                        <div key={v.VarId} className="flex items-center gap-3 px-5 py-3">
+                                            <div className="flex-1 min-w-0">
+                                                <p className="text-sm font-bold text-slate-700 truncate">{v.Producto} — {v.NombreVariante}</p>
+                                                <p className="text-[11px] text-slate-400">
+                                                    {[v.Talle, v.Color].filter(Boolean).join(' · ')}{(v.Talle || v.Color) ? ' · ' : ''}{v.Etiquetas} etiq.
+                                                    {!famSel && v.Categoria && <span className="ml-2 uppercase font-bold text-slate-300">{v.Categoria}</span>}
+                                                </p>
+                                            </div>
+                                            <span className="text-base font-black text-slate-800 tabular-nums font-gsanscode">{fmtCant(v.Stock)} <span className="text-[10px] text-slate-400 font-bold">{v.UnidadBase}</span></span>
+                                        </div>
+                                    ))}
+                                </React.Fragment>
                             ))}
                         </div>
                     )}
@@ -2030,6 +2235,78 @@ function TabInventario({ dep, depositos = [] }) {
         } catch (e) { toast.error(e.response?.data?.error || 'No se pudo ajustar'); }
     };
 
+    // Etiquetas de una variante con sus acciones (contar, sacar, imprimir): van debajo de la
+    // fila de la variante o, en la ropa, debajo de la tabla talle × color.
+    const panelEtiquetas = (v, producto) => {
+        const enMetros = (kg) => (v.UnidadBase === 'kg' ? metrosTeoricos(kg, v.GramajeGsm, v.AnchoMetros) : null);
+        return (
+            <div className="rounded-xl border border-slate-200 overflow-hidden">
+                <div className="grid grid-cols-[70px_1fr_90px_90px_110px] gap-2 px-3 py-1.5 bg-slate-50 text-[10px] font-black uppercase tracking-wider text-slate-400">
+                    <span>#</span><span>Código</span><span className="text-right">Inicial</span><span className="text-right">Actual</span><span></span>
+                </div>
+                {(etiquetas[v.VarId] || []).map(e => (
+                    <div key={e.EtiId} className="grid grid-cols-[70px_1fr_90px_90px_110px] gap-2 px-3 py-2 border-t border-slate-100 items-center">
+                        <span className="text-xs font-black text-slate-700">#{e.EtiId}</span>
+                        <span className="text-[11px] font-mono text-slate-500 truncate">{e.CodigoBarras || '—'}</span>
+                        <span className="text-xs text-right tabular-nums font-gsanscode text-slate-500">{fmtCant(e.CantidadInicial)}</span>
+                        <span className="text-xs text-right tabular-nums font-gsanscode font-black text-slate-800">
+                            {fmtCant(e.CantidadActual)}
+                            {enMetros(e.CantidadActual) != null && <span className="block text-[10px] font-bold text-slate-400">≈ {fmtCant(enMetros(e.CantidadActual))} m</span>}
+                        </span>
+                        <div className="flex justify-end gap-1">
+                            {ajustando === e.EtiId ? (
+                                <>
+                                    <input autoFocus type="number" inputMode="decimal" min="0" step="1"
+                                        value={cantContada} onChange={ev => setCantContada(ev.target.value)}
+                                        onKeyDown={ev => { if (ev.key === 'Enter') guardarAjuste(e, v.VarId); if (ev.key === 'Escape') setAjustando(null); }}
+                                        className="w-16 px-1.5 py-1 rounded-lg border border-sky-300 text-xs text-right focus:outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none" />
+                                    <button onClick={() => guardarAjuste(e, v.VarId)} className="w-6 h-6 rounded-lg bg-emerald-500 text-white flex items-center justify-center"><Check size={12} /></button>
+                                    <button onClick={() => setAjustando(null)} className="w-6 h-6 rounded-lg border border-slate-200 text-slate-400 flex items-center justify-center"><X size={11} /></button>
+                                </>
+                            ) : (
+                                <>
+                                    <button title="Ajustar por conteo" onClick={() => { setAjustando(e.EtiId); setRetirando(null); setCantContada(String(e.CantidadActual)); }}
+                                        className="px-2 py-1 rounded-lg border border-slate-200 text-[10px] font-black text-slate-500 hover:bg-slate-50">CONTAR</button>
+                                    <button title="Retirar stock (consumo, merma, venta libre)"
+                                        onClick={() => { setRetirando(retirando === e.EtiId ? null : e.EtiId); setAjustando(null); setCantRetiro(''); }}
+                                        className="px-2 py-1 rounded-lg border border-slate-200 text-[10px] font-black text-slate-500 hover:bg-rose-50 hover:text-rose-600 hover:border-rose-200">SACAR</button>
+                                    <button title="Imprimir etiqueta"
+                                        onClick={() => imprimirEtiqueta({ etiId: e.EtiId, producto, variante: v.NombreVariante, talle: v.Talle, color: v.Color, cantidad: e.CantidadActual, unidad: v.UnidadBase, codigoBarras: e.CodigoBarras, metros: enMetros(e.CantidadActual) })}
+                                        className="w-7 h-7 rounded-lg border border-slate-200 text-slate-400 hover:text-sky-600 flex items-center justify-center"><Printer size={13} /></button>
+                                </>
+                            )}
+                        </div>
+                    </div>
+                ))}
+                {retirando && (etiquetas[v.VarId] || []).some(e => e.EtiId === retirando) && (
+                    <div className="flex flex-wrap items-center gap-2 px-3 py-2.5 border-t border-slate-100 bg-rose-50/40">
+                        <span className="text-[10px] font-black uppercase tracking-wider text-rose-700">
+                            Retirar de #{retirando}
+                        </span>
+                        <input autoFocus type="number" min="0" step="1" value={cantRetiro}
+                            onChange={ev => setCantRetiro(ev.target.value)}
+                            onKeyDown={ev => { if (ev.key === 'Enter') retirarStock((etiquetas[v.VarId] || []).find(x => x.EtiId === retirando), v.VarId); if (ev.key === 'Escape') setRetirando(null); }}
+                            placeholder="Cantidad"
+                            className="w-28 px-2.5 py-1.5 rounded-lg border border-rose-200 text-sm text-right placeholder:text-left [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-200" />
+                        <Selector size="sm" value={motivoRetiro} onChange={setMotivoRetiro}
+                            opciones={[
+                                { value: 'baja_consumo', label: 'Consumo interno' },
+                                { value: 'baja_merma', label: 'Merma / rotura' },
+                                { value: 'egreso_final', label: 'Venta libre / salida' },
+                            ]} />
+                        <button onClick={() => retirarStock((etiquetas[v.VarId] || []).find(x => x.EtiId === retirando), v.VarId)}
+                            className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-[11px] font-black">Retirar</button>
+                        <button onClick={() => setRetirando(null)}
+                            className="px-3 py-1.5 rounded-lg border border-slate-200 text-[11px] font-black text-slate-500">Cancelar</button>
+                    </div>
+                )}
+                {!(etiquetas[v.VarId] || []).length && (
+                    <p className="px-3 py-3 text-xs text-slate-400 border-t border-slate-100">Sin etiquetas activas en este depósito.</p>
+                )}
+            </div>
+        );
+    };
+
     return (
         <div>
             {/* Filtro por ubicación, igual que el sistema anterior */}
@@ -2051,7 +2328,7 @@ function TabInventario({ dep, depositos = [] }) {
             <div className="flex flex-wrap items-center gap-3 mb-4">
                 <div className="relative flex-1 min-w-[240px] max-w-md">
                     <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                    <input value={q} onChange={e => setQ(e.target.value)} placeholder="Buscar producto, variante, sku, talle o color..."
+                    <input value={q} onChange={e => setQ(e.target.value)} placeholder="Buscar producto, variante, sku, talle, color o composición..."
                         className="w-full pl-9 pr-3 py-2.5 rounded-xl border border-slate-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-sky-200" />
                 </div>
                 <label className="flex items-center gap-2 text-sm font-bold text-slate-600 cursor-pointer select-none">
@@ -2098,9 +2375,35 @@ function TabInventario({ dep, depositos = [] }) {
                                         {simMoneda(g.items[0]?.Moneda)} {g.items.reduce((a, i) => a + Number(i.Patrimonio || 0), 0).toLocaleString('es-UY', { maximumFractionDigits: 2 })}
                                     </span>
                                 </button>
-                                {abierto && (
+                                {abierto && (() => {
+                                    // Ropa: tabla talle × color; lo demás por unidades, mosaico. Cada casillero
+                                    // abre las etiquetas de su variante debajo.
+                                    const matriz = armarMatriz(g.items);
+                                    if (matriz || usaMosaico(g.items)) {
+                                        const vSel = g.items.find(v => v.VarId === varAbierta);
+                                        const elegir = v => verEtiquetas(v.VarId);
+                                        return (
+                                            <div className="border-t border-slate-100 pl-11 pr-4 py-3 space-y-3">
+                                                {matriz
+                                                    ? <MatrizTalleColor matriz={matriz} seleccionada={varAbierta} onElegir={elegir} />
+                                                    : <MosaicoVariantes variantes={g.items} seleccionada={varAbierta} onElegir={elegir} />}
+                                                {vSel && (
+                                                    <div>
+                                                        <p className="text-xs font-black text-slate-600 mb-1.5">{vSel.NombreVariante} <span className="font-bold text-slate-400">· etiquetas</span></p>
+                                                        {panelEtiquetas(vSel, g.nombre)}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        );
+                                    }
+                                    return (
                                     <div className="border-t border-slate-100 divide-y divide-slate-50">
-                                        {g.items.map(v => (
+                                        {g.items.map(v => {
+                                            // Telas por kilo con ficha completa: los kilos también en metros (aproximados).
+                                            const enMetros = (kg) => (v.UnidadBase === 'kg' ? metrosTeoricos(kg, v.GramajeGsm, v.AnchoMetros) : null);
+                                            const ficha = fichaTela(v);
+                                            const mStock = enMetros(v.Stock);
+                                            return (
                                             <div key={v.VarId}>
                                                 <button onClick={() => verEtiquetas(v.VarId)}
                                                     className="w-full flex items-center gap-3 pl-11 pr-4 py-2.5 hover:bg-slate-50/60 text-left">
@@ -2110,79 +2413,21 @@ function TabInventario({ dep, depositos = [] }) {
                                                             {[v.Talle, v.Color].filter(Boolean).join(' · ')}
                                                             {v.CodigoVariante && <span className="ml-2 font-mono">{v.CodigoVariante}</span>}
                                                         </p>
+                                                        {ficha && <p className="text-[11px] text-slate-500 font-semibold truncate" title={ficha}>{ficha}</p>}
                                                     </div>
-                                                    <span className="text-sm font-black text-slate-800 tabular-nums font-gsanscode">{fmtCant(v.Stock)} <span className="text-[10px] text-slate-400 font-bold">{v.UnidadBase}</span></span>
+                                                    <div className="text-right">
+                                                        <span className="text-sm font-black text-slate-800 tabular-nums font-gsanscode">{fmtCant(v.Stock)} <span className="text-[10px] text-slate-400 font-bold">{v.UnidadBase}</span></span>
+                                                        {mStock != null && <p className="text-[10px] text-slate-400 font-bold tabular-nums font-gsanscode">≈ {fmtCant(mStock)} m</p>}
+                                                    </div>
                                                     <span className="text-[10px] text-slate-400 font-bold w-20 text-right">{v.Etiquetas} etiq.</span>
                                                 </button>
-                                                {varAbierta === v.VarId && (
-                                                    <div className="pl-11 pr-4 pb-3">
-                                                        <div className="rounded-xl border border-slate-200 overflow-hidden">
-                                                            <div className="grid grid-cols-[70px_1fr_90px_90px_110px] gap-2 px-3 py-1.5 bg-slate-50 text-[10px] font-black uppercase tracking-wider text-slate-400">
-                                                                <span>#</span><span>Código</span><span className="text-right">Inicial</span><span className="text-right">Actual</span><span></span>
-                                                            </div>
-                                                            {(etiquetas[v.VarId] || []).map(e => (
-                                                                <div key={e.EtiId} className="grid grid-cols-[70px_1fr_90px_90px_110px] gap-2 px-3 py-2 border-t border-slate-100 items-center">
-                                                                    <span className="text-xs font-black text-slate-700">#{e.EtiId}</span>
-                                                                    <span className="text-[11px] font-mono text-slate-500 truncate">{e.CodigoBarras || '—'}</span>
-                                                                    <span className="text-xs text-right tabular-nums font-gsanscode text-slate-500">{fmtCant(e.CantidadInicial)}</span>
-                                                                    <span className="text-xs text-right tabular-nums font-gsanscode font-black text-slate-800">{fmtCant(e.CantidadActual)}</span>
-                                                                    <div className="flex justify-end gap-1">
-                                                                        {ajustando === e.EtiId ? (
-                                                                            <>
-                                                                                <input autoFocus type="number" inputMode="decimal" min="0" step="1"
-                                                                                    value={cantContada} onChange={ev => setCantContada(ev.target.value)}
-                                                                                    onKeyDown={ev => { if (ev.key === 'Enter') guardarAjuste(e, v.VarId); if (ev.key === 'Escape') setAjustando(null); }}
-                                                                                    className="w-16 px-1.5 py-1 rounded-lg border border-sky-300 text-xs text-right focus:outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none" />
-                                                                                <button onClick={() => guardarAjuste(e, v.VarId)} className="w-6 h-6 rounded-lg bg-emerald-500 text-white flex items-center justify-center"><Check size={12} /></button>
-                                                                                <button onClick={() => setAjustando(null)} className="w-6 h-6 rounded-lg border border-slate-200 text-slate-400 flex items-center justify-center"><X size={11} /></button>
-                                                                            </>
-                                                                        ) : (
-                                                                            <>
-                                                                                <button title="Ajustar por conteo" onClick={() => { setAjustando(e.EtiId); setRetirando(null); setCantContada(String(e.CantidadActual)); }}
-                                                                                    className="px-2 py-1 rounded-lg border border-slate-200 text-[10px] font-black text-slate-500 hover:bg-slate-50">CONTAR</button>
-                                                                                <button title="Retirar stock (consumo, merma, venta libre)"
-                                                                                    onClick={() => { setRetirando(retirando === e.EtiId ? null : e.EtiId); setAjustando(null); setCantRetiro(''); }}
-                                                                                    className="px-2 py-1 rounded-lg border border-slate-200 text-[10px] font-black text-slate-500 hover:bg-rose-50 hover:text-rose-600 hover:border-rose-200">SACAR</button>
-                                                                                <button title="Imprimir etiqueta"
-                                                                                    onClick={() => imprimirEtiqueta({ etiId: e.EtiId, producto: g.nombre, variante: v.NombreVariante, talle: v.Talle, color: v.Color, cantidad: e.CantidadActual, unidad: v.UnidadBase, codigoBarras: e.CodigoBarras })}
-                                                                                    className="w-7 h-7 rounded-lg border border-slate-200 text-slate-400 hover:text-sky-600 flex items-center justify-center"><Printer size={13} /></button>
-                                                                            </>
-                                                                        )}
-                                                                    </div>
-                                                                </div>
-                                                            ))}
-                                                            {retirando && (etiquetas[v.VarId] || []).some(e => e.EtiId === retirando) && (
-                                                                <div className="flex flex-wrap items-center gap-2 px-3 py-2.5 border-t border-slate-100 bg-rose-50/40">
-                                                                    <span className="text-[10px] font-black uppercase tracking-wider text-rose-700">
-                                                                        Retirar de #{retirando}
-                                                                    </span>
-                                                                    <input autoFocus type="number" min="0" step="1" value={cantRetiro}
-                                                                        onChange={ev => setCantRetiro(ev.target.value)}
-                                                                        onKeyDown={ev => { if (ev.key === 'Enter') retirarStock((etiquetas[v.VarId] || []).find(x => x.EtiId === retirando), v.VarId); if (ev.key === 'Escape') setRetirando(null); }}
-                                                                        placeholder="Cantidad"
-                                                                        className="w-28 px-2.5 py-1.5 rounded-lg border border-rose-200 text-sm text-right placeholder:text-left [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-200" />
-                                                                    <Selector size="sm" value={motivoRetiro} onChange={setMotivoRetiro}
-                                                                        opciones={[
-                                                                            { value: 'baja_consumo', label: 'Consumo interno' },
-                                                                            { value: 'baja_merma', label: 'Merma / rotura' },
-                                                                            { value: 'egreso_final', label: 'Venta libre / salida' },
-                                                                        ]} />
-                                                                    <button onClick={() => retirarStock((etiquetas[v.VarId] || []).find(x => x.EtiId === retirando), v.VarId)}
-                                                                        className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-[11px] font-black">Retirar</button>
-                                                                    <button onClick={() => setRetirando(null)}
-                                                                        className="px-3 py-1.5 rounded-lg border border-slate-200 text-[11px] font-black text-slate-500">Cancelar</button>
-                                                                </div>
-                                                            )}
-                                                            {!(etiquetas[v.VarId] || []).length && (
-                                                                <p className="px-3 py-3 text-xs text-slate-400 border-t border-slate-100">Sin etiquetas activas en este depósito.</p>
-                                                            )}
-                                                        </div>
-                                                    </div>
-                                                )}
+                                                {varAbierta === v.VarId && <div className="pl-11 pr-4 pb-3">{panelEtiquetas(v, g.nombre)}</div>}
                                             </div>
-                                        ))}
+                                            );
+                                        })}
                                     </div>
-                                )}
+                                    );
+                                })()}
                             </div>
                         );
                     })}
@@ -3835,7 +4080,7 @@ function GestionArticulos() {
     const [q, setQ] = useState('');
     const [filtro, setFiltro] = useState('todos');   // todos | sincosto
     const [edit, setEdit] = useState(null);          // VarId en edición
-    const [vals, setVals] = useState({ costo: '', moneda: 'UYU', gramaje: '', ancho: '' });
+    const [vals, setVals] = useState({ costo: '', moneda: 'UYU', gramaje: '', ancho: '', color: '', composicion: '' });
     const [guardando, setGuardando] = useState(false);
 
     const cargar = useCallback(async () => {
@@ -3849,7 +4094,7 @@ function GestionArticulos() {
     const sinCosto = filas.filter(f => !Number(f.Costo));
     const t = q.trim().toLowerCase();
     const visibles = (filtro === 'sincosto' ? [...sinCosto].sort((a, b) => b.SinValorizar - a.SinValorizar) : filas)
-        .filter(f => !t || [f.Producto, f.NombreVariante, f.CodigoVariante, f.Talle, f.Color, f.Categoria]
+        .filter(f => !t || [f.Producto, f.NombreVariante, f.CodigoVariante, f.Talle, f.Color, f.Composicion, f.Categoria]
             .some(x => String(x || '').toLowerCase().includes(t)));
 
     const guardar = async (f) => {
@@ -3858,7 +4103,7 @@ function GestionArticulos() {
         setGuardando(true);
         try {
             await api.put(`/wms-interno/gestion/articulos/${f.VarId}/costo`,
-                { costo, moneda: vals.moneda, gramaje: vals.gramaje, ancho: vals.ancho });
+                { costo, moneda: vals.moneda, gramaje: vals.gramaje, ancho: vals.ancho, color: vals.color, composicion: vals.composicion });
             toast.success(`Ficha de ${f.NombreVariante} guardada`);
             setEdit(null); cargar();
         } catch (e) { toast.error(e.response?.data?.error || 'No se pudo guardar'); }
@@ -3930,10 +4175,17 @@ function GestionArticulos() {
                                                     onKeyDown={e => { if (e.key === 'Enter') guardar(f); if (e.key === 'Escape') setEdit(null); }}
                                                     className="w-14 px-1.5 py-1.5 rounded-lg border border-slate-200 text-xs text-right tabular-nums font-gsanscode [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-200" />
                                             </div>
-                                        ) : f.GramajeGsm > 0 && f.AnchoMetros > 0 ? (
-                                            <div>
-                                                <p className="text-xs font-bold text-slate-600 tabular-nums font-gsanscode">{fmtCosto(f.GramajeGsm)} g/m² · {fmtCosto(f.AnchoMetros)} m</p>
-                                                <p className="text-[10px] text-slate-400 font-bold tabular-nums font-gsanscode">≈ {fmtCosto(1000 / (f.GramajeGsm * f.AnchoMetros))} m/kg</p>
+                                        ) : f.GramajeGsm > 0 || f.AnchoMetros > 0 || f.Composicion ? (
+                                            <div className="min-w-0">
+                                                {(f.GramajeGsm > 0 || f.AnchoMetros > 0) && (
+                                                    <p className="text-xs font-bold text-slate-600 tabular-nums font-gsanscode">
+                                                        {[f.GramajeGsm > 0 && `${fmtCosto(f.GramajeGsm)} g/m²`, f.AnchoMetros > 0 && `${fmtCosto(f.AnchoMetros)} m`].filter(Boolean).join(' · ')}
+                                                    </p>
+                                                )}
+                                                {f.GramajeGsm > 0 && f.AnchoMetros > 0 && (
+                                                    <p className="text-[10px] text-slate-400 font-bold tabular-nums font-gsanscode">≈ {fmtCosto(1000 / (f.GramajeGsm * f.AnchoMetros))} m/kg</p>
+                                                )}
+                                                {f.Composicion && <p className="text-[10px] text-slate-500 font-semibold truncate" title={f.Composicion}>{f.Composicion}</p>}
                                             </div>
                                         ) : (
                                             <span className="text-sm text-slate-300">—</span>
@@ -3964,10 +4216,28 @@ function GestionArticulos() {
                                                 className="px-3 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-700 text-white text-[11px] font-black disabled:opacity-50">Guardar</button>
                                             <button onClick={() => setEdit(null)} className="px-2 py-1.5 rounded-lg border border-slate-200 text-slate-400 text-[11px] font-black">✕</button>
                                         </>) : (
-                                            <button onClick={() => { setEdit(f.VarId); setVals({ costo: Number(f.Costo) || '', moneda: f.Moneda || 'UYU', gramaje: f.GramajeGsm ?? '', ancho: f.AnchoMetros ?? '' }); }}
+                                            <button onClick={() => { setEdit(f.VarId); setVals({ costo: Number(f.Costo) || '', moneda: f.Moneda || 'UYU', gramaje: f.GramajeGsm ?? '', ancho: f.AnchoMetros ?? '', color: f.Color ?? '', composicion: f.Composicion ?? '' }); }}
                                                 className="w-8 h-8 rounded-lg border border-slate-200 text-slate-400 hover:text-sky-600 hover:border-sky-300 flex items-center justify-center"><Pencil size={13} /></button>
                                         )}
                                     </div>
+                                    {editando && (
+                                        <div className="col-span-full flex flex-wrap items-center justify-end gap-3 pb-1">
+                                            <label className="flex items-center gap-1.5">
+                                                <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">Color</span>
+                                                <input value={vals.color} maxLength={50} placeholder="Ej.: Blanco"
+                                                    onChange={e => setVals(x => ({ ...x, color: e.target.value }))}
+                                                    onKeyDown={e => { if (e.key === 'Enter') guardar(f); if (e.key === 'Escape') setEdit(null); }}
+                                                    className="w-36 px-2 py-1.5 rounded-lg border border-slate-200 text-xs font-semibold text-slate-700 outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-200" />
+                                            </label>
+                                            <label className="flex items-center gap-1.5">
+                                                <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">Composición</span>
+                                                <input value={vals.composicion} maxLength={200} placeholder="Ej.: 96% Polyester, 4% Spandex"
+                                                    onChange={e => setVals(x => ({ ...x, composicion: e.target.value }))}
+                                                    onKeyDown={e => { if (e.key === 'Enter') guardar(f); if (e.key === 'Escape') setEdit(null); }}
+                                                    className="w-72 px-2 py-1.5 rounded-lg border border-slate-200 text-xs font-semibold text-slate-700 outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-200" />
+                                            </label>
+                                        </div>
+                                    )}
                                 </div>
                             );
                         })}
@@ -3977,7 +4247,8 @@ function GestionArticulos() {
             <p className="text-[11px] text-slate-400">
                 El <b>costo de referencia</b> valoriza el stock cuyos lotes entraron sin costo propio de compra.
                 <b> Sin valorizar</b> son las unidades que hoy suman $0 al patrimonio por no tener ni lo uno ni lo otro.
-                <b> Tela</b> es la ficha textil: gramaje (g/m²) y ancho del rollo — juntos dan los <b>metros por kg</b> (1000 ÷ gramaje × ancho) para los rollos que se compran por peso.
+                <b> Tela</b> es la ficha textil: gramaje (g/m²), ancho del rollo y composición — gramaje y ancho juntos dan los <b>metros por kg</b> (1000 ÷ gramaje × ancho) para los rollos que se compran por peso, y el Inventario muestra los metros aproximados de cada rollo.
+                Color y composición se editan con el lápiz, en la línea de abajo.
             </p>
         </div>
     );

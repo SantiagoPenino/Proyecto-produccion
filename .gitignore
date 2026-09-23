@@ -54,3 +54,5 @@ docs/multitela-costo-por-orden-plan.md
 nul
 docs
 backend/.env.bak-antes-wms-interno
+
+backend/consultas/

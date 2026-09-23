@@ -1,5 +1,9 @@
-import * as pdfjsLib from 'pdfjs-dist';
-import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+// pdf.js en su versión LEGACY (23/09): trae los polyfills que la normal da por sentados (Promise.try y
+// otros). Con la normal, en un Safari anterior a 18.2 (iPhone o Mac sin actualizar) el portal no podía
+// leer los PDF que sube el cliente. Todos los que usan pdf.js importan ESTA misma ruta: así comparten
+// el módulo y su GlobalWorkerOptions.workerSrc.
+import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
+import pdfjsWorker from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url';
 
 // Worker configurado para Vite
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;

@@ -1009,6 +1009,15 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
         return null;
     };
 
+    // Al volver a Pendientes el backend le borra a la orden la marca de impreso/calandrado, salvo a
+    // las de contador (TPU, DIRECTA, MIMAKI), que vuelven a la mesa con su avance. Se avisa antes,
+    // porque cuando entre en otro lote va a tener que imprimirse de nuevo (backend: utils/salidaDeLote).
+    const pierdeMarcaAlSacar = (o) => {
+        const marcada = printedOrderIds.includes(o.id) || !!o.printed || !!o.calandered;
+        const conAvance = getCantidadImpresa(o) > 0 || (o.cantidadImpresa || 0) > 0 || (o.cantidadCortada || 0) > 0;
+        return marcada && !conAvance;
+    };
+
     // Acción de Desasignar (Undo)
     const handleUnassign = async (order) => {
         if (readOnly) return;
@@ -1034,11 +1043,15 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
             if (!r.isConfirmed) return;
         }
 
+        const avisoMarca = pierdeMarcaAlSacar(order)
+            ? '<br/><br/>Está marcada como impresa: se le borra la marca y, cuando entre en otro lote, va a tener que imprimirse de nuevo.'
+            : '';
+
         // Check if it's the last order
         if (orders.length === 1) {
             const r = await confirmModal({
                 title: 'Es la última orden del lote',
-                html: 'Si la retirás, el lote quedará <b>vacío y se cancelará (cerrará) automáticamente</b>, liberando la máquina.',
+                html: 'Si la retirás, el lote quedará <b>vacío y se cancelará (cerrará) automáticamente</b>, liberando la máquina.' + avisoMarca,
                 icon: 'warning',
                 confirmButtonColor: '#ef4444',
                 confirmButtonText: 'Quitar y cerrar lote'
@@ -1047,7 +1060,7 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
         } else {
             const r = await confirmModal({
                 title: '¿Quitar orden del lote?',
-                html: `La orden <b>${order.code || order.CodigoOrden}</b> volverá a Pendientes.`,
+                html: `La orden <b>${order.code || order.CodigoOrden}</b> volverá a Pendientes.` + avisoMarca,
                 icon: 'question',
                 confirmButtonColor: '#06b6d4',
                 confirmButtonText: 'Sí, quitar'
@@ -1068,7 +1081,12 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
     const handleUnassignMultiple = async () => {
         if (readOnly || !selectedOrderIds.length) return;
 
-        if (!window.confirm(`¿Estás seguro de desasignar ${selectedOrderIds.length} órdenes seleccionadas del rollo?`)) {
+        const marcadas = orders.filter(o => selectedOrderIds.includes(o.id) && pierdeMarcaAlSacar(o)).length;
+        const avisoMarcas = marcadas === 0 ? ''
+            : marcadas === 1
+                ? '\n\nUna está marcada como impresa: se le borra la marca y va a tener que imprimirse de nuevo.'
+                : `\n\n${marcadas} están marcadas como impresas: se les borra la marca y van a tener que imprimirse de nuevo.`;
+        if (!window.confirm(`¿Estás seguro de desasignar ${selectedOrderIds.length} órdenes seleccionadas del rollo?${avisoMarcas}`)) {
             return;
         }
 

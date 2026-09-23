@@ -17,13 +17,22 @@ import { consultasService } from '../../../services/api';
 // Props:
 //   orden    — la orden (code, area); se muestra para que el operario sepa qué frena
 //   archivo  — { id, nombre } o null si la consulta es sobre la orden entera
+//   lote     — { nombre, estado, maquina } si la orden está en un lote: al enviar sale de él
 //   onClose  — cerrar sin crear
 //   onCreada — creada con éxito: el padre recarga
 const MAX_FOTOS = 5;                  // espeja multerConsultasConfig
 const MAX_BYTES = 5 * 1024 * 1024;    // 5 MB por foto, igual que el backend
 const MIN_PREGUNTA = 10;              // el backend rechaza por debajo de esto
 
-const ModalConsultaCliente = ({ orden, archivo = null, onClose, onCreada }) => {
+/** "en la cola de EPSON 1" / "en pausa en EPSON 1" / "en mesa" — dónde está el lote hoy. */
+const dondeEstaElLote = (lote) => {
+    const estado = String(lote?.estado || '').trim().toLowerCase();
+    if (estado === 'pausado') return lote.maquina ? `en pausa en ${lote.maquina}` : 'en pausa';
+    if (estado === 'en cola' && lote.maquina) return `en la cola de ${lote.maquina}`;
+    return 'en mesa';
+};
+
+const ModalConsultaCliente = ({ orden, archivo = null, lote = null, onClose, onCreada }) => {
     const [motivos, setMotivos] = useState([]);
     const [motivo, setMotivo] = useState(null);
     const [pregunta, setPregunta] = useState('');
@@ -85,14 +94,17 @@ const ModalConsultaCliente = ({ orden, archivo = null, onClose, onCreada }) => {
         if (!puedeEnviar) return;
         setEnviando(true);
         try {
-            await consultasService.crear({
+            const r = await consultasService.crear({
                 ordenId  : orden.id,
                 archivoId: archivo?.id || null,
                 motivoId : motivo.MotConIdMotivo,
                 pregunta : pregunta.trim(),
                 fotos    : fotos.map(f => f.file),
             });
-            toast.success('Consulta enviada. La orden queda frenada hasta que el cliente responda.');
+            const salio = r?.loteSalida;
+            toast.success(salio
+                ? `Consulta enviada. La orden salió del lote ${salio.nombre}${salio.loteVacio ? ', que quedó vacío y se cerró,' : ''} y queda frenada hasta que el cliente responda.`
+                : 'Consulta enviada. La orden queda frenada hasta que el cliente responda.');
             onCreada?.();
             onClose?.();
         } catch (e) {
@@ -224,12 +236,20 @@ const ModalConsultaCliente = ({ orden, archivo = null, onClose, onCreada }) => {
                     </div>
 
                     {/* QUÉ PASA AL ENVIAR */}
-                    <div className="bg-amber-50 border border-amber-200 rounded-xl p-3">
+                    <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 space-y-2">
+                        {lote && (
+                            <p className="text-xs text-amber-800 font-medium leading-relaxed">
+                                <i className="fa-solid fa-layer-group text-amber-600 mr-1.5" />
+                                Está en el lote <b>{lote.nombre}</b>, {dondeEstaElLote(lote)}. Al enviarla <b>sale del lote</b>
+                                {lote.maquina ? ' y de la máquina' : ''}.
+                            </p>
+                        )}
                         <p className="text-xs text-amber-800 font-medium leading-relaxed">
                             <i className="fa-solid fa-hand text-amber-600 mr-1.5" />
                             Al enviarla, <b>la orden {orden?.code} queda frenada</b>: sale de la grilla activa y no se
-                            puede asignar a un lote hasta que el cliente responda. Si aprueba, vuelve a donde estaba;
-                            si cancela, se cancela {archivo ? 'el archivo' : 'la orden'}.
+                            puede asignar a un lote hasta que el cliente responda. Si aprueba, {lote
+                                ? 'vuelve a Pendiente y hay que armarla de nuevo en un lote'
+                                : 'vuelve a donde estaba'}; si cancela, se cancela {archivo ? 'el archivo' : 'la orden'}.
                         </p>
                     </div>
                 </div>

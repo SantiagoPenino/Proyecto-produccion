@@ -504,6 +504,14 @@ const MainAppContent = ({ menuItems = [] }) => {
 
         socket.emit('join:helpdesk_admin');
 
+        // Los avisos de tickets se cierran a su tiempo aunque la pestaña esté en segundo plano.
+        // sonner pausa la cuenta regresiva mientras la pestaña no está a la vista (sin opción para
+        // desactivarlo en 2.0.7): con la app abierta de fondo se juntaban cientos de avisos.
+        // Con la pestaña a la vista sigue mandando sonner, así que pasar el mouse lo sigue pausando.
+        const cerrarAunqueEsteOculta = (id, duration) => {
+            setTimeout(() => { if (document.hidden) toast.dismiss(id); }, duration);
+        };
+
         const handleUpdate = (data, isNew = false) => {
             apiClient.get('/tickets').then(res => {
                 if (res.success && Array.isArray(res.data)) {
@@ -515,7 +523,7 @@ const MainAppContent = ({ menuItems = [] }) => {
             if (data) {
                 if (isNew) {
                     const duration = 10000;
-                    toast.custom((t) => (
+                    const toastId = toast.custom((t) => (
                         <div 
                             className="relative flex items-center gap-3 w-full bg-zinc-100 p-4 rounded-none shadow-lg border border-zinc-200 cursor-pointer overflow-hidden min-w-[300px] group" 
                             onClick={() => {
@@ -541,9 +549,10 @@ const MainAppContent = ({ menuItems = [] }) => {
                             </div>
                         </div>
                     ), { duration });
+                    cerrarAunqueEsteOculta(toastId, duration);
                 } else if (data.autor === 'client') {
                     const duration = 8000;
-                    toast.custom((t) => (
+                    const toastId = toast.custom((t) => (
                         <div 
                             className="relative flex items-center gap-3 w-full bg-zinc-100 p-4 rounded-none shadow-lg border border-zinc-200 cursor-pointer overflow-hidden min-w-[300px] group" 
                             onClick={() => {
@@ -569,6 +578,7 @@ const MainAppContent = ({ menuItems = [] }) => {
                             </div>
                         </div>
                     ), { duration });
+                    cerrarAunqueEsteOculta(toastId, duration);
                 }
             }
         };

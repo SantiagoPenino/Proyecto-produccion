@@ -19,6 +19,14 @@ const Punticos = ({ total, recibidos }) => (
     </div>
 );
 
+// Dónde está un bulto que falta, en palabras: "en tránsito · REM-006301", "en ECOUV"...
+const dondeEsta = (f) => {
+    const lugar = f.Estado === 'EN_TRANSITO'
+        ? 'en tránsito'
+        : f.Estado === 'EN_STOCK' ? `en ${f.Ubicacion || 'su área'}` : String(f.Estado || '').toLowerCase();
+    return f.Remito ? `${lugar} · ${f.Remito}` : lugar;
+};
+
 const EsperandoBultosView = () => {
     const { user } = useAuth();
     const queryClient = useQueryClient();
@@ -43,7 +51,19 @@ const EsperandoBultosView = () => {
             toast.error('No se pudo resolver la orden para forzar.');
             return;
         }
-        const r = await Swal.fire({
+        // Completo: ya no falta ningún bulto que pueda llegar (los perdidos o reemplazados por una
+        // reposición no se esperan). Es el mismo ingreso, sin el aviso de "faltan bultos".
+        const r = await Swal.fire(o.Completo ? {
+            icon: 'question',
+            title: '¿Ingresar la orden?',
+            html: `Ya llegaron todos los bultos que se esperan de <strong>${o.OrdCodigoOrden}</strong>.<br><br>Se ingresa el <strong>pedido completo</strong> (todas sus órdenes), se contabiliza y se avisa al cliente.`,
+            showCancelButton: true,
+            confirmButtonText: 'Sí, ingresar',
+            cancelButtonText: 'Cancelar',
+            confirmButtonColor: '#059669',
+            cancelButtonColor: '#6b7280',
+            reverseButtons: true,
+        } : {
             icon: 'warning',
             title: '¿Forzar ingreso?',
             html: `Vas a forzar <strong>${o.OrdCodigoOrden}</strong> con <strong>${o.BultosRecibidos} de ${o.BultosEsperados}</strong> bultos del pedido.<br><br>Se ingresa el <strong>pedido completo</strong> (todas sus órdenes), se contabiliza y se avisa al cliente aunque falten bultos.`,
@@ -96,6 +116,12 @@ const EsperandoBultosView = () => {
                             <div className="flex-1 min-w-0">
                                 <div className="font-bold text-slate-800 text-sm truncate">{o.OrdCodigoOrden}</div>
                                 <div className="text-xs text-slate-500 truncate">{o.Cliente || 'Sin cliente'}</div>
+                                {!o.Completo && (o.Faltantes || []).length > 0 && (
+                                    <div className="text-xs text-rose-600 truncate mt-0.5" title={o.Faltantes.map(f => `${f.CodigoEtiqueta} (${f.CodigoOrden}): ${dondeEsta(f)}`).join('\n')}>
+                                        Falta {o.Faltantes.slice(0, 2).map(f => `${f.CodigoEtiqueta} · ${dondeEsta(f)}`).join(' | ')}
+                                        {o.Faltantes.length > 2 && ` y ${o.Faltantes.length - 2} más`}
+                                    </div>
+                                )}
                             </div>
 
                             <div className="flex items-center gap-2 shrink-0">
@@ -105,22 +131,39 @@ const EsperandoBultosView = () => {
                                 </span>
                             </div>
 
-                            <div
-                                className={`text-xs font-bold px-2.5 py-1 rounded-full whitespace-nowrap flex items-center gap-1 shrink-0 ${
-                                    alerta ? 'bg-rose-50 text-rose-600' : 'bg-amber-50 text-amber-600'
-                                }`}
-                            >
-                                <i className={`fa-solid ${alerta ? 'fa-triangle-exclamation' : 'fa-clock'}`}></i>
-                                {dias === 0 ? 'hoy' : `hace ${dias} ${dias === 1 ? 'día' : 'días'}`}
-                            </div>
+                            {o.Completo ? (
+                                <div className="text-xs font-bold px-2.5 py-1 rounded-full whitespace-nowrap flex items-center gap-1 shrink-0 bg-emerald-50 text-emerald-700">
+                                    <i className="fa-solid fa-circle-check"></i>
+                                    Completo
+                                </div>
+                            ) : (
+                                <div
+                                    className={`text-xs font-bold px-2.5 py-1 rounded-full whitespace-nowrap flex items-center gap-1 shrink-0 ${
+                                        alerta ? 'bg-rose-50 text-rose-600' : 'bg-amber-50 text-amber-600'
+                                    }`}
+                                >
+                                    <i className={`fa-solid ${alerta ? 'fa-triangle-exclamation' : 'fa-clock'}`}></i>
+                                    {dias === 0 ? 'hoy' : `hace ${dias} ${dias === 1 ? 'día' : 'días'}`}
+                                </div>
+                            )}
 
-                            <button
-                                onClick={() => handleForzar(o)}
-                                disabled={forzarMut.isPending}
-                                className="shrink-0 text-xs font-bold px-3 py-1.5 rounded-lg border border-amber-300 text-amber-700 bg-white hover:bg-amber-50 transition-colors disabled:opacity-50 whitespace-nowrap"
-                            >
-                                <i className="fa-solid fa-forward mr-1"></i>Forzar
-                            </button>
+                            {o.Completo ? (
+                                <button
+                                    onClick={() => handleForzar(o)}
+                                    disabled={forzarMut.isPending}
+                                    className="shrink-0 text-xs font-bold px-3 py-1.5 rounded-lg border border-emerald-300 text-emerald-700 bg-white hover:bg-emerald-50 transition-colors disabled:opacity-50 whitespace-nowrap"
+                                >
+                                    <i className="fa-solid fa-right-to-bracket mr-1"></i>Ingresar
+                                </button>
+                            ) : (
+                                <button
+                                    onClick={() => handleForzar(o)}
+                                    disabled={forzarMut.isPending}
+                                    className="shrink-0 text-xs font-bold px-3 py-1.5 rounded-lg border border-amber-300 text-amber-700 bg-white hover:bg-amber-50 transition-colors disabled:opacity-50 whitespace-nowrap"
+                                >
+                                    <i className="fa-solid fa-forward mr-1"></i>Forzar
+                                </button>
+                            )}
                         </div>
                     );
                 })}

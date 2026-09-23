@@ -35,12 +35,13 @@ const authHeaders = () => {
 
 // Abre un PDF y devuelve la página 1 con sus dimensiones base (a escala 1).
 const abrirPdf = async (buf) => {
-    const pdfjsLib = await import('pdfjs-dist');
+    // pdf.js LEGACY, la misma ruta que src/client-portal/api/fileService.js (ver la nota ahí).
+    const pdfjsLib = await import('pdfjs-dist/legacy/build/pdf.mjs');
     // El worker se configura ACÁ y no se asume: en el portal lo setea fileService al arrancar,
     // pero este visor también corre en la app interna (modo interno), donde nadie lo configuró
     // y pdf.js moría con 'No "GlobalWorkerOptions.workerSrc" specified'.
     if (!pdfjsLib.GlobalWorkerOptions.workerSrc) {
-        const worker = await import('pdfjs-dist/build/pdf.worker.min.mjs?url');
+        const worker = await import('pdfjs-dist/legacy/build/pdf.worker.min.mjs?url');
         pdfjsLib.GlobalWorkerOptions.workerSrc = worker.default;
     }
     const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
