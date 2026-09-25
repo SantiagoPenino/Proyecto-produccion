@@ -1166,9 +1166,21 @@ class ERPSyncService {
                 // establecido" puede pisar el monto pactado. Sin esta excepción, un pedido en
                 // "Por área" (PRO en $0 por diseño) se queda sin línea PRO para volver a
                 // "Precio establecido" — bug real visto en vivo (14-sep-2026).
-                if (!esFacturable && !d.esProMadre) {
+                // EXCEPCIÓN 2 (25-sep-2026): la línea cubierta 100% por un plan de metros
+                // (Prepago / Rollo Pre-Comprado) nace en $0 A PROPÓSITO, pero es la única
+                // que conserva la CANTIDAD de la orden. Sin ella: postControlArchivo /
+                // completarOrden ven SUM(Cantidad)=0 y no generan etiqueta ("SIN ETIQUETA:
+                // NO SE PUEDE DESPACHAR"), no hay bulto, no entra a depósito y no se rebaja
+                // el rollo (caso SUB-26932, PODIUM2024). Se inserta con EsFacturable=0: no se
+                // cobra ni sale en la factura, pero la etiqueta y el depósito la ven.
+                const cubiertaPorPlan = !!(d.desglose && d.desglose.cobertura && d.desglose.cobertura.tipo === 'PLAN')
+                    || /prepago/i.test(String(d.Perfiles || ''));
+                if (!esFacturable && !d.esProMadre && !cubiertaPorPlan) {
                     logger.info(`[ERPSync] ${d.OrdenID}: línea no facturable (hermana consolidada o subtotal 0) — no se inserta en PedidosCobranzaDetalle.`);
                     continue;
+                }
+                if (!esFacturable && cubiertaPorPlan) {
+                    logger.info(`[ERPSync] ${d.OrdenID}: línea cubierta por plan (${cant} a $0) — se inserta NO facturable para que la orden conserve su cantidad (etiqueta/depósito).`);
                 }
 
                 // Desglose congelado (lista / descuento / recargos). INV-PRE.03: en la línea
