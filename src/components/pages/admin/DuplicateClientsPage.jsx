@@ -102,7 +102,8 @@ const DuplicateClientsPage = () => {
             }));
         } catch (error) {
             console.error(error);
-            toast.error('Error al guardar cambios');
+            // El server explica el rechazo (ej. IDCliente que ya tiene otro cliente)
+            toast.error(error.response?.data?.error || 'Error al guardar cambios');
         } finally {
             setSaving(prev => ({ ...prev, [client.CodCliente]: false }));
         }

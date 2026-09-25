@@ -1806,61 +1806,63 @@ exports.getRollosActivos = async (req, res) => {
 
         const pool = await getPool();
 
-        // Re-construcción limpia de la query con NOLOCK
-        const finalQuery = `
-            SELECT 
-                r.RolloID as id, 
-                r.Nombre as nombre, 
-                r.ColorHex as color, 
+        // [24/09] Una consulta por pantalla, en lugar de una sola con las dos variantes prendidas y
+        // apagadas por constantes. Y el filtro de área se agrega solo si viene: el
+        // "(@AreaID IS NULL OR r.AreaID = @AreaID)" de antes obligaba a recorrer todos los lotes.
+        const filtroArea = areaId ? 'r.AreaID = @AreaID AND ' : '';
+        const columnasLote = `
+                r.RolloID as id,
+                r.Nombre as nombre,
+                r.ColorHex as color,
                 r.CapacidadMaxima as MetrosTotales,
-                r.Estado, 
+                r.Estado,
                 r.MaquinaID,
-                ce.Nombre as NombreMaquina
+                ce.Nombre as NombreMaquina`;
+
+        const finalQuery = isControlView ? `
+            SELECT ${columnasLote}
             FROM dbo.Rollos r WITH (NOLOCK)
             LEFT JOIN dbo.ConfigEquipos ce WITH (NOLOCK) ON r.MaquinaID = ce.EquipoID
-            WHERE (@AreaID IS NULL OR r.AreaID = @AreaID)
-            AND r.Estado NOT IN ('Cerrado', 'Cancelado')
-            AND (
-                (${isControlView ? 1 : 0} = 0 AND r.Estado != 'Finalizado')
-                OR (
-                    ${isControlView ? 1 : 0} = 1 AND (
-                        r.Estado IN ('En maquina', 'Produccion', 'Imprimiendo')
-                        -- Incluir Finalizado solo si aún tiene órdenes no completadas
-                        OR (
-                            r.Estado = 'Finalizado'
-                            AND EXISTS (
-                                SELECT 1 FROM dbo.Ordenes o WITH (NOLOCK)
-                                WHERE o.RolloID = r.RolloID
-                                  AND o.Estado NOT IN ('Finalizado', 'CANCELADO', 'Entregado')
-                                  AND ISNULL(o.EstadoenArea,'') NOT IN ('Pronto', 'PRONTO', 'En Transito', 'EN TRANSITO', 'En Terminaciones')
-                            )
-                        )
-                    )
-                )
-            )
-            -- SB Control: ocultar lotes en una IMPRESORA (SeparacionImpresion=1) que tengan órdenes de tela
-            -- (Sublimacion Tela / Tela de Cliente). Esas van impresora → calandra → control, así que no deben
-            -- aparecer en Control hasta pasar a la calandra. Un lote mixto (tela+papel) se oculta entero.
-            AND (
-                ${isControlView ? 1 : 0} = 0
-                OR NOT (
-                    ISNULL(ce.SeparacionImpresion, 0) = 1
-                    AND EXISTS (
-                        SELECT 1 FROM dbo.Ordenes o WITH (NOLOCK)
-                        WHERE o.RolloID = r.RolloID AND o.Variante LIKE '%Tela%'
-                    )
-                )
-            )
-            -- ASIGNAR A LOTE: no se ofrecen los lotes que ya están en una CALANDRA. Ese lote ya pasó
-            -- por la impresora, así que sumarle órdenes nuevas las dejaría sin imprimir. Se detecta por
-            -- NOMBRE ('calandra%'), el mismo criterio que usa el resto del sistema (no SeparacionImpresion,
-            -- que está en 0 en impresoras reales como MIMAKI). Los lotes sin máquina (Mesa de Armado)
-            -- siguen apareciendo. En Control de Calidad NO aplica: ahí se controla justamente lo calandrado.
-            AND (
-                ${isControlView ? 1 : 0} = 1
-                OR ce.Nombre IS NULL
-                OR LOWER(LTRIM(ce.Nombre)) NOT LIKE 'calandra%'
-            )
+            -- Lotes con alguna orden todavía no completada. [24/09] Se calcula UNA vez por llamada. Antes
+            -- era un EXISTS por lote, y como los lotes quedan en 'Finalizado' para siempre, SQL armaba en
+            -- cada llamada un índice temporal de Ordenes y lo consultaba una vez por cada lote finalizado
+            -- del área: ~65.000 lecturas por llamada en producción (~1.900 así, en la base local).
+            LEFT JOIN (
+                SELECT o.RolloID
+                FROM dbo.Ordenes o WITH (NOLOCK)
+                WHERE o.RolloID IS NOT NULL
+                  AND o.Estado NOT IN ('Finalizado', 'CANCELADO', 'Entregado')
+                  AND ISNULL(o.EstadoenArea,'') NOT IN ('Pronto', 'PRONTO', 'En Transito', 'EN TRANSITO', 'En Terminaciones')
+                GROUP BY o.RolloID
+            ) pend ON pend.RolloID = r.RolloID
+            WHERE ${filtroArea}r.Estado NOT IN ('Cerrado', 'Cancelado')
+              AND (
+                  r.Estado IN ('En maquina', 'Produccion', 'Imprimiendo')
+                  -- Incluir Finalizado solo si aún tiene órdenes no completadas
+                  OR (r.Estado = 'Finalizado' AND pend.RolloID IS NOT NULL)
+              )
+              -- SB Control: ocultar lotes en una IMPRESORA (SeparacionImpresion=1) que tengan órdenes de tela
+              -- (Sublimacion Tela / Tela de Cliente). Esas van impresora → calandra → control, así que no deben
+              -- aparecer en Control hasta pasar a la calandra. Un lote mixto (tela+papel) se oculta entero.
+              AND NOT (
+                  ISNULL(ce.SeparacionImpresion, 0) = 1
+                  AND EXISTS (
+                      SELECT 1 FROM dbo.Ordenes o WITH (NOLOCK)
+                      WHERE o.RolloID = r.RolloID AND o.Variante LIKE '%Tela%'
+                  )
+              )
+            ORDER BY r.FechaCreacion DESC
+        ` : `
+            SELECT ${columnasLote}
+            FROM dbo.Rollos r WITH (NOLOCK)
+            LEFT JOIN dbo.ConfigEquipos ce WITH (NOLOCK) ON r.MaquinaID = ce.EquipoID
+            WHERE ${filtroArea}r.Estado NOT IN ('Cerrado', 'Cancelado', 'Finalizado')
+              -- ASIGNAR A LOTE: no se ofrecen los lotes que ya están en una CALANDRA. Ese lote ya pasó
+              -- por la impresora, así que sumarle órdenes nuevas las dejaría sin imprimir. Se detecta por
+              -- NOMBRE ('calandra%'), el mismo criterio que usa el resto del sistema (no SeparacionImpresion,
+              -- que está en 0 en impresoras reales como MIMAKI). Los lotes sin máquina (Mesa de Armado)
+              -- siguen apareciendo. En Control de Calidad NO aplica: ahí se controla justamente lo calandrado.
+              AND (ce.Nombre IS NULL OR LOWER(LTRIM(ce.Nombre)) NOT LIKE 'calandra%')
             ORDER BY r.FechaCreacion DESC
         `;
 

@@ -362,13 +362,22 @@ async function egresarVentaCompat(items, ref = {}) {
  * (CantidadEnviada = lo real) y la diferencia NO genera discrepancia (no es faltante:
  * simplemente se pidió más de lo que había — el front lo muestra).
  */
-async function crearRemito({ depOrigenId, depDestinoId, items, obs = null, usuarioId = null }) {
+async function crearRemito({ depOrigenId, depDestinoId, items, obs = null, usuarioId = null, solId = null }) {
     if (!depOrigenId || !depDestinoId || depOrigenId === depDestinoId) throw new Error('Depósitos de origen y destino inválidos');
     if (!Array.isArray(items) || !items.length) throw new Error('El remito no tiene items');
     const pool = await getPool();
     const tran = new sql.Transaction(pool);
     await tran.begin();
     try {
+        // [24/09] Despacho de un pedido de insumos: el pedido queda ATENDIDO en la misma
+        // transacción que el remito. Va primero: si dos personas despachan el mismo pedido,
+        // la segunda espera el bloqueo de la fila y ya lo encuentra atendido.
+        if (solId) {
+            const rSol = await new sql.Request(tran).input('S', sql.Int, solId)
+                .query(`UPDATE dbo.Wms_Solicitudes SET Estado = 'ATENDIDA' WHERE SolId = @S AND Estado = 'PENDIENTE';
+                        SELECT @@ROWCOUNT AS n;`);
+            if (!rSol.recordset[0].n) throw new Error('El pedido ya no está pendiente: lo atendió o lo canceló otra persona');
+        }
         const rRem = await new sql.Request(tran)
             .input('O', sql.Int, depOrigenId).input('D', sql.Int, depDestinoId)
             .input('Obs', sql.NVarChar(sql.MAX), obs).input('Usr', sql.Int, usuarioId)

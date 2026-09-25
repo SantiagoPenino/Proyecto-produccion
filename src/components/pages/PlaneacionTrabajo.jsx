@@ -18,6 +18,7 @@ import { DragDropContext, Droppable, Draggable } from '@hello-pangea/dnd';
 import { motion } from 'framer-motion';
 import { Listbox, Transition } from '@headlessui/react';
 import { socket } from '../../services/socketService';
+import useRecargaConFreno from '../../hooks/useRecargaConFreno';
 import { printEtiquetaLote } from '../../utils/printHelper';
 import { isTabletDevice } from '../../utils/device';
 
@@ -223,37 +224,22 @@ const PlaneacionTrabajo = ({ AreaID }) => {
         refetchProd();
     };
 
-    // Listeners para actualizaciones en tiempo real.
-    // Throttle con trailing, el mismo de AreaView: cada cambio de CUALQUIER orden disparaba las dos
-    // consultas del tablero en cada pantalla de Planeación abierta (nginx, 18/09: el tablero de DTF
-    // pedido varias veces por segundo desde una misma sede). Regla: como máximo UN refresco por
-    // ventana; el primer evento sale casi al toque y el resto de la ráfaga lo cubre una única
-    // ejecución al cierre de la ventana.
+    // Listeners para actualizaciones en tiempo real, con freno de 8 s y pausa con la pestaña oculta
+    // (hooks/useRecargaConFreno): cada cambio de CUALQUIER orden disparaba las dos consultas del
+    // tablero en cada pantalla de Planeación abierta (nginx, 18/09: el tablero de DTF pedido varias
+    // veces por segundo desde una misma sede).
     // Las acciones propias (arrastrar, asignar, crear lote) siguen llamando a refreshBoard() directo.
+    const avisarRecarga = useRecargaConFreno(refreshBoard);
     useEffect(() => {
-        const REFETCH_WINDOW_MS = 8000;
-        let refetchTimer = null;
-        let lastRefetchAt = 0;
-        const handleUpdate = () => {
-            if (refetchTimer) return; // ya hay un refresco agendado que cubre este evento
-            const elapsed = Date.now() - lastRefetchAt;
-            const wait = elapsed >= REFETCH_WINDOW_MS ? 300 : REFETCH_WINDOW_MS - elapsed;
-            refetchTimer = setTimeout(() => {
-                refetchTimer = null;
-                lastRefetchAt = Date.now();
-                refreshBoard();
-            }, wait);
-        };
-        socket.on('server:order_updated', handleUpdate);
-        socket.on('server:ordersUpdated', handleUpdate);
-        socket.on('lotes:updated', handleUpdate);
+        socket.on('server:order_updated', avisarRecarga);
+        socket.on('server:ordersUpdated', avisarRecarga);
+        socket.on('lotes:updated', avisarRecarga);
         return () => {
-            if (refetchTimer) clearTimeout(refetchTimer);
-            socket.off('server:order_updated', handleUpdate);
-            socket.off('server:ordersUpdated', handleUpdate);
-            socket.off('lotes:updated', handleUpdate);
+            socket.off('server:order_updated', avisarRecarga);
+            socket.off('server:ordersUpdated', avisarRecarga);
+            socket.off('lotes:updated', avisarRecarga);
         };
-    }, [refetchRolls, refetchProd]);
+    }, [avisarRecarga]);
 
     // HANDLERS
     const handleToggleOrder = (orderId, isSelected) => {

@@ -6,6 +6,7 @@ import { ArrowUp, ArrowDown, ChevronsUp, Lock, Layers, ListOrdered, RefreshCw, C
 import { rollsService } from '../../services/modules/rollsService';
 import { areasService } from '../../services/modules/areasService';
 import { socket } from '../../services/socketService';
+import useRecargaConFreno from '../../hooks/useRecargaConFreno';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -238,28 +239,32 @@ export default function CoordinacionView() {
     useEffect(() => { loadData(); }, [loadData]);
 
     // ─── Socket Listener ───────────────────────────────────────────────────
-    useEffect(() => {
-        const handleServerUpdate = () => {
-            // Recargar datos sin mostrar el loader gigante (para no molestar al usuario)
-            if (selectedArea) {
-                rollsService.getBoard(selectedArea.code).then(data => {
-                    const sorted = sortPendingOrders(data.pendingOrders || []);
-                    setPendingOrders(sorted);
-                    const movable = (data.rolls || []).filter(r => MOVABLE_STATES.includes((r.status || '').toLowerCase()));
-                    const locked  = (data.rolls || []).filter(r => !MOVABLE_STATES.includes((r.status || '').toLowerCase()));
-                    setRolls([...movable, ...locked]);
-                }).catch(e => console.error("Error en socket reload:", e));
-            }
-        };
+    // Recargaba el kanban entero con CADA server:order_updated, que el server emite orden por orden
+    // (mover un lote de 20 órdenes eran 20 recargas por cada Coordinación abierta; el kanban llegó a
+    // 139 llamadas por minuto, 24/09). Freno de 8 s y pausa con la pestaña oculta, ver
+    // hooks/useRecargaConFreno. Las acciones propias siguen llamando a loadData() directo.
+    const avisarRecarga = useRecargaConFreno(() => {
+        // Recargar datos sin mostrar el loader gigante (para no molestar al usuario)
+        if (selectedArea) {
+            rollsService.getBoard(selectedArea.code).then(data => {
+                const sorted = sortPendingOrders(data.pendingOrders || []);
+                setPendingOrders(sorted);
+                const movable = (data.rolls || []).filter(r => MOVABLE_STATES.includes((r.status || '').toLowerCase()));
+                const locked  = (data.rolls || []).filter(r => !MOVABLE_STATES.includes((r.status || '').toLowerCase()));
+                setRolls([...movable, ...locked]);
+            }).catch(e => console.error("Error en socket reload:", e));
+        }
+    });
 
-        socket.on('server:order_updated', handleServerUpdate);
-        socket.on('server:new_order', handleServerUpdate);
-        
+    useEffect(() => {
+        socket.on('server:order_updated', avisarRecarga);
+        socket.on('server:new_order', avisarRecarga);
+
         return () => {
-            socket.off('server:order_updated', handleServerUpdate);
-            socket.off('server:new_order', handleServerUpdate);
+            socket.off('server:order_updated', avisarRecarga);
+            socket.off('server:new_order', avisarRecarga);
         };
-    }, [selectedArea]);
+    }, [avisarRecarga]);
 
     // ── Order movement ─────────────────────────────────────────────────────
 

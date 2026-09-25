@@ -455,7 +455,7 @@ exports.backupDatabase = async (req, res) => {
 // ─── POST /api/sysadmin/client-error ──────────────────────
 // #14 — Frontend error reporting (no auth required — mounted separately)
 exports.reportClientError = async (req, res) => {
-    const { message, stack, url, userAgent, userId, timestamp } = req.body;
+    const { message, stack, source, url, userAgent, userId, timestamp } = req.body;
     const ip = (req.ip || '').replace(/^::ffff:/, '');
 
     // Store in memory + log
@@ -470,7 +470,14 @@ exports.reportClientError = async (req, res) => {
     global.__frontendErrors.unshift(entry);
     if (global.__frontendErrors.length > 200) global.__frontendErrors.length = 200;
 
-    logger.error(`[FRONTEND_ERROR] ${entry.message} | url=${url} | user=${userId} | ip=${ip}`);
+    // Dónde se produjo: archivo:línea:columna y los primeros pasos del stack, en una sola línea.
+    // Antes el log decía solo el mensaje ("Cannot read properties of undefined (reading 'x')")
+    // y el stack quedaba en memoria, que se pierde con cada reinicio.
+    const pasos = String(stack || '').split('\n').map(l => l.trim())
+        .filter(l => /:\d+:\d+\)?$/.test(l))           // solo los pasos (Chrome "at f (url:l:c)", Safari "f@url:l:c")
+        .slice(0, 3).join(' ← ').substring(0, 600);
+    const donde = [source ? `en=${String(source).substring(0, 200)}` : null, pasos ? `stack=${pasos}` : null].filter(Boolean).join(' | ');
+    logger.error(`[FRONTEND_ERROR] ${entry.message} | url=${url} | user=${userId} | ip=${ip}${donde ? ` | ${donde}` : ''}`);
 
     // #15 — Error accumulation alert check
     const recentErrors = global.__frontendErrors.filter(e =>

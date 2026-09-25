@@ -116,8 +116,12 @@ const procesarTransaccion = async (req, res) => {
     const s = io(req); if (s) { s.emit('actualizado',{type:'actualizacion'}); s.emit('retiros:update',{type:'pago'}); }
     return res.status(201).json(resultado);
   } catch (err) {
-    logger.error('[CAJA] procesarTransaccion:', err.message);
-    return res.status(500).json({ success:false, error:err.message });
+    // Un rechazo de los controles (ej. orden ya facturada: statusCode 409) no es una falla:
+    // va como aviso y con su código, no como error 500.
+    const status = err.statusCode || 500;
+    if (status < 500) logger.warn('[CAJA] procesarTransaccion rechazado:', err.message);
+    else logger.error('[CAJA] procesarTransaccion:', err.message);
+    return res.status(status).json({ success:false, error:err.message });
   }
 };
 

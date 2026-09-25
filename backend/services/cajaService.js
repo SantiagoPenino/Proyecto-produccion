@@ -842,7 +842,9 @@ async function procesarTransaccion(payload) {
           (['PENDIENTE', 'PARCIAL', 'VENCIDO'].includes(String(f.DeudaEstado).toUpperCase())
             ? ' (deuda pendiente: cobrala por "Pago de Deudas")'
             : ' (paga: entregá sin cobrar)'));
-        throw new Error(`No se cobró el retiro — ${det.join(' · ')}. Cada orden lleva UN solo comprobante; destildá esas órdenes del cobro.`);
+        const eGuard = new Error(`No se cobró el retiro — ${det.join(' · ')}. Cada orden lleva UN solo comprobante; destildá esas órdenes del cobro.`);
+        eGuard.statusCode = 409;   // rechazo esperado del control, no una falla del sistema (ver cajaController)
+        throw eGuard;
       }
     }
   }

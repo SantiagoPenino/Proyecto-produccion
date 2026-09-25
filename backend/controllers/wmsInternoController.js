@@ -220,8 +220,10 @@ exports.getPanel = async (req, res) => {
                 WHERE e.Estado = 'activo' AND e.CantidadActual > 0
                 GROUP BY ISNULL(v.Moneda, 'UYU')
             `),
+            // Catalogo = "Diversidad de catálogo" del sistema viejo: TODAS las variantes, tengan stock o no.
             pool.request().query(`
-                SELECT SUM(CantidadActual) AS Unidades, COUNT(DISTINCT VarId) AS Variantes
+                SELECT SUM(CantidadActual) AS Unidades, COUNT(DISTINCT VarId) AS Variantes,
+                       (SELECT COUNT(*) FROM dbo.Wms_Variantes WHERE Activa = 1) AS Catalogo
                 FROM dbo.Wms_Etiquetas WHERE Estado = 'activo' AND CantidadActual > 0
             `),
             // Más consumido este mes (egresos + bajas; traslados NO son consumo)
@@ -245,46 +247,52 @@ exports.getPanel = async (req, res) => {
                 GROUP BY p.Nombre, v.NombreVariante
                 ORDER BY SUM(c.Cant) DESC
             `),
-            // Anomalías: variantes con salidas HOY muy por encima de su promedio diario (30 días)
+            // Anomalías, con la regla del panel del sistema viejo (24/09): UNIDADES que salieron en las
+            // últimas 24 h por consumo interno o salida final, contra su promedio diario de 7 días. Pico si
+            // superan 2,5 veces ese promedio y son al menos 5. Se muestran todas (tope 50), como allá; las ventas
+            // web no cuentan. Nuestro
+            // registro guarda las salidas en negativo; el histórico del viejo, en positivo.
             pool.request().query(`
                 WITH salidas AS (
-                    SELECT e.VarId, m.Fecha
+                    SELECT e.VarId, -m.Cantidad AS Cant, m.Fecha
                     FROM dbo.Wms_Movimientos m
                     JOIN dbo.Wms_Etiquetas e ON e.EtiId = m.EtiId
-                    WHERE m.Cantidad < 0 AND m.Tipo IN ('egreso_venta_web','baja_consumo','egreso_final','egreso_auto')
-                      AND m.Fecha >= DATEADD(DAY, -30, GETDATE())
+                    WHERE m.Tipo IN ('baja_consumo','egreso_final') AND m.Fecha >= DATEADD(DAY, -7, GETDATE())
                     UNION ALL
-                    SELECT e.VarId, h.Fecha
+                    SELECT e.VarId, h.Cantidad, h.Fecha
                     FROM dbo.Wms_HistoricoExterno h
                     JOIN dbo.Wms_Etiquetas e ON e.EtiId = h.EtiquetaId
-                    WHERE h.Cantidad IS NOT NULL AND h.Tipo IN ('egreso_venta_web','baja_consumo','egreso_final','egreso_auto')
-                      AND h.Fecha >= DATEADD(DAY, -30, GETDATE())
+                    WHERE h.Cantidad IS NOT NULL AND h.Tipo IN ('baja_consumo','egreso_final')
+                      AND h.Fecha >= DATEADD(DAY, -7, GETDATE())
                 )
-                SELECT TOP 5 p.Nombre AS Producto, v.NombreVariante,
-                       SUM(CASE WHEN CAST(s.Fecha AS DATE) = CAST(GETDATE() AS DATE) THEN 1 ELSE 0 END) AS Hoy,
-                       CAST(COUNT(*) / 30.0 AS DECIMAL(10,1)) AS PromedioDia
+                SELECT TOP 50 p.Nombre AS Producto, v.NombreVariante,
+                       SUM(CASE WHEN s.Fecha >= DATEADD(DAY, -1, GETDATE()) THEN s.Cant ELSE 0 END) AS Hoy,
+                       CAST(SUM(s.Cant) / 7.0 AS DECIMAL(10,1)) AS PromedioDia
                 FROM salidas s
                 JOIN dbo.Wms_Variantes v ON v.VarId = s.VarId
                 JOIN dbo.Wms_ProductosMaestros p ON p.PmaId = v.PmaId
                 GROUP BY p.Nombre, v.NombreVariante
-                HAVING SUM(CASE WHEN CAST(s.Fecha AS DATE) = CAST(GETDATE() AS DATE) THEN 1 ELSE 0 END) >= 3
-                   AND SUM(CASE WHEN CAST(s.Fecha AS DATE) = CAST(GETDATE() AS DATE) THEN 1 ELSE 0 END) > 3 * (COUNT(*) / 30.0)
-                ORDER BY Hoy DESC
+                HAVING SUM(CASE WHEN s.Fecha >= DATEADD(DAY, -1, GETDATE()) THEN s.Cant ELSE 0 END) >= 5
+                   AND SUM(CASE WHEN s.Fecha >= DATEADD(DAY, -1, GETDATE()) THEN s.Cant ELSE 0 END) > 2.5 * (SUM(s.Cant) / 7.0)
+                ORDER BY Hoy DESC, p.Nombre, v.NombreVariante
             `),
-            // Stock crítico global vs límites de la variante (C: crítica / A: alerta)
+            // Stock crítico global vs límites de la variante (C: crítica / A: alerta), con las reglas del
+            // sistema viejo: stock 0 es "Sin stock" y no entra (decisión de Santiago, así estaba allá);
+            // crítico si llega a su crítica, alerta si llega a su alerta.
             pool.request().query(`
                 SELECT TOP 50 p.Nombre AS Producto, c.Nombre AS Familia, v.NombreVariante,
                        v.CantidadCritica, v.CantidadAlerta, v.CantidadIdeal,
-                       ISNULL(s.Stock, 0) AS StockGlobal,
-                       CASE WHEN ISNULL(s.Stock, 0) <= v.CantidadCritica THEN 'CRITICO' ELSE 'ALERTA' END AS Estado
+                       s.Stock AS StockGlobal,
+                       CASE WHEN v.CantidadCritica > 0 AND s.Stock <= v.CantidadCritica THEN 'CRITICO' ELSE 'ALERTA' END AS Estado
                 FROM dbo.Wms_Variantes v
                 JOIN dbo.Wms_ProductosMaestros p ON p.PmaId = v.PmaId
                 LEFT JOIN dbo.Wms_Categorias c ON c.CatId = p.CatId
-                OUTER APPLY (SELECT SUM(e.CantidadActual) AS Stock FROM dbo.Wms_Etiquetas e
+                CROSS APPLY (SELECT ISNULL(SUM(e.CantidadActual), 0) AS Stock FROM dbo.Wms_Etiquetas e
                              WHERE e.VarId = v.VarId AND e.Estado = 'activo') s
-                WHERE v.Activa = 1 AND (v.CantidadCritica > 0 OR v.CantidadAlerta > 0)
-                  AND ISNULL(s.Stock, 0) <= CASE WHEN v.CantidadAlerta > 0 THEN v.CantidadAlerta ELSE v.CantidadCritica END
-                ORDER BY CASE WHEN ISNULL(s.Stock, 0) <= v.CantidadCritica THEN 0 ELSE 1 END, ISNULL(s.Stock, 0) ASC
+                WHERE v.Activa = 1 AND s.Stock > 0
+                  AND ((v.CantidadCritica > 0 AND s.Stock <= v.CantidadCritica)
+                    OR (v.CantidadAlerta > 0 AND s.Stock <= v.CantidadAlerta))
+                ORDER BY CASE WHEN v.CantidadCritica > 0 AND s.Stock <= v.CantidadCritica THEN 0 ELSE 1 END, s.Stock ASC
             `),
             // Distribución por depósito: unidades y capital en cada moneda + total en USD
             // (convertido con la cotización del sistema — nunca con un TC inventado)
@@ -316,15 +324,17 @@ exports.getPanel = async (req, res) => {
                 GROUP BY ISNULL(c.Nombre, 'Sin familia')
                 ORDER BY SUM(e.CantidadActual) DESC
             `),
-            // Salud global: variantes con límite configurado, en riesgo vs sanas
+            // Salud global: variantes con límite configurado, en riesgo vs sanas. Las de stock 0 ("Sin
+            // stock") quedan fuera de las dos cuentas, como en el sistema viejo.
             pool.request().query(`
                 SELECT
-                    SUM(CASE WHEN ISNULL(s.Stock, 0) <= CASE WHEN v.CantidadAlerta > 0 THEN v.CantidadAlerta ELSE v.CantidadCritica END THEN 1 ELSE 0 END) AS EnRiesgo,
+                    SUM(CASE WHEN (v.CantidadCritica > 0 AND s.Stock <= v.CantidadCritica)
+                                OR (v.CantidadAlerta > 0 AND s.Stock <= v.CantidadAlerta) THEN 1 ELSE 0 END) AS EnRiesgo,
                     COUNT(*) AS ConLimite
                 FROM dbo.Wms_Variantes v
-                OUTER APPLY (SELECT SUM(e.CantidadActual) AS Stock FROM dbo.Wms_Etiquetas e
+                CROSS APPLY (SELECT ISNULL(SUM(e.CantidadActual), 0) AS Stock FROM dbo.Wms_Etiquetas e
                              WHERE e.VarId = v.VarId AND e.Estado = 'activo') s
-                WHERE v.Activa = 1 AND (v.CantidadCritica > 0 OR v.CantidadAlerta > 0)
+                WHERE v.Activa = 1 AND (v.CantidadCritica > 0 OR v.CantidadAlerta > 0) AND s.Stock > 0
             `),
             // Quiebres críticos por almacén: SOLO donde hay un mínimo configurado PARA ESE
             // depósito (Wms_AlertasDepositos). Usar el límite global de la variante por
@@ -340,7 +350,7 @@ exports.getPanel = async (req, res) => {
                     JOIN dbo.Wms_Depositos d ON d.DepId = a.DepId AND d.Activo = 1
                     OUTER APPLY (SELECT SUM(e.CantidadActual) AS Stock FROM dbo.Wms_Etiquetas e
                                  WHERE e.VarId = a.VarId AND e.DepId = a.DepId AND e.Estado = 'activo') s
-                    WHERE a.CantidadCritica > 0 AND ISNULL(s.Stock, 0) <= a.CantidadCritica
+                    WHERE a.CantidadCritica > 0 AND ISNULL(s.Stock, 0) > 0 AND s.Stock <= a.CantidadCritica
                     GROUP BY d.Nombre
                     ORDER BY COUNT(*) DESC;
             `),
@@ -350,7 +360,7 @@ exports.getPanel = async (req, res) => {
             success: true,
             data: {
                 valorizacion: valorizacion.recordset,
-                volumen: volumen.recordset[0] || { Unidades: 0, Variantes: 0 },
+                volumen: volumen.recordset[0] || { Unidades: 0, Variantes: 0, Catalogo: 0 },
                 topConsumo: topConsumo.recordset,
                 anomalias: anomalias.recordset,
                 criticos: criticos.recordset,
@@ -370,7 +380,19 @@ const GRUPOS_HISTORIAL = {
     TRASLADOS: ['traslado_salida', 'traslado_entrada', 'recepcion_confirmada'],
     INGRESOS: ['ingreso', 'ingreso_compra', 'apertura_migracion', 'ingreso_auditoria_libre', 'fraccionamiento_ingreso'],
     EGRESOS: ['egreso_venta_web', 'baja_consumo', 'egreso_final', 'egreso_auto', 'fraccionamiento_salida'],
+    // [24/09] Lo que gasta un sector: consumo y merma. Es el grupo que abre el link del bloque
+    // "Gasto en insumos por sector" del Panel.
+    CONSUMOS: ['baja_consumo', 'baja_merma'],
     AJUSTES: ['ajuste_conteo', 'anulacion'],
+};
+// Primer día del mes y del siguiente para un 'YYYY-MM' ('' si no es válido). Se pasan como texto
+// y se castean en SQL, así no dependen de la zona horaria de la conexión.
+const rangoMes = (mes) => {
+    const m = String(mes || '').match(/^(\d{4})-(\d{2})$/);
+    if (!m) return null;
+    const a = +m[1], mm = +m[2];
+    const pad = (n) => String(n).padStart(2, '0');
+    return { ini: `${a}-${pad(mm)}-01`, fin: mm === 12 ? `${a + 1}-01-01` : `${a}-${pad(mm + 1)}-01` };
 };
 exports.getHistorial = async (req, res) => {
     try {
@@ -379,6 +401,8 @@ exports.getHistorial = async (req, res) => {
         const tipos = GRUPOS_HISTORIAL[grupo] || null;
         const q = String(req.query.q || '').trim();
         const fecha = String(req.query.fecha || '').trim();      // YYYY-MM-DD
+        const dep = parseInt(req.query.dep, 10) || null;           // [24/09] depósito (origen o destino)
+        const mes = rangoMes(req.query.mes);                       // [24/09] 'YYYY-MM'
         const pagina = Math.max(0, parseInt(req.query.pagina, 10) || 0);
         const PAGE = 60;
 
@@ -391,6 +415,9 @@ exports.getHistorial = async (req, res) => {
         const r = await pool.request()
             .input('Q', sql.NVarChar(100), q ? `%${q}%` : null)
             .input('F', sql.Date, fecha || null)
+            .input('Dep', sql.Int, dep)
+            .input('MesIni', sql.VarChar(10), mes ? mes.ini : null)
+            .input('MesFin', sql.VarChar(10), mes ? mes.fin : null)
             .input('Skip', sql.Int, pagina * PAGE)
             .input('Take', sql.Int, PAGE)
             .query(`
@@ -435,6 +462,8 @@ exports.getHistorial = async (req, res) => {
                 WHERE 1 = 1
                   ${filtroTipos}
                   AND (@F IS NULL OR CAST(u.Fecha AS DATE) = @F)
+                  AND (@MesIni IS NULL OR (u.Fecha >= CAST(@MesIni AS DATE) AND u.Fecha < CAST(@MesFin AS DATE)))
+                  AND (@Dep IS NULL OR u.DepOrigenId = @Dep OR u.DepDestinoId = @Dep)
                   AND (@Q IS NULL OR p.Nombre LIKE @Q OR v.NombreVariante LIKE @Q
                        OR rem.Numeracion LIKE @Q
                        OR CAST(u.EtiId AS VARCHAR) = REPLACE(@Q, '%', ''))
@@ -442,6 +471,110 @@ exports.getHistorial = async (req, res) => {
                 OFFSET @Skip ROWS FETCH NEXT @Take ROWS ONLY
             `);
         res.json({ success: true, data: r.recordset, pagina, pageSize: PAGE });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+};
+
+// GET /gasto-sectores?mes=YYYY-MM — [24/09] gasto en insumos por sector: consumo + merma del mes,
+// valorizados al costo de la etiqueta (o el de referencia de la variante) y pasados a USD y UYU con la
+// cotización del día de cada consumo. Junta los movimientos propios con los importados del sistema
+// anterior, como el Panel. Para el mes en curso, "anterior" es el mismo tramo de días del mes pasado
+// (del 1 al de hoy); para un mes cerrado, el mes pasado entero.
+exports.getGastoSectores = async (req, res) => {
+    try {
+        const pool = await getPool();
+        const hoy = new Date();
+        const m = String(req.query.mes || '').match(/^(\d{4})-(\d{2})$/);
+        const anio = m ? +m[1] : hoy.getFullYear();
+        const mes = m ? +m[2] : hoy.getMonth() + 1;
+        const enCurso = anio === hoy.getFullYear() && mes === hoy.getMonth() + 1;
+        const pad = (n) => String(n).padStart(2, '0');
+        const ymd = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+        const ini = new Date(anio, mes - 1, 1);
+        const fin = enCurso ? new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate() + 1) : new Date(anio, mes, 1);
+        const antIni = new Date(anio, mes - 2, 1);
+        // Mismo tramo de días; si el mes anterior es más corto, termina en su último día.
+        const antFin = enCurso ? new Date(Math.min(new Date(anio, mes - 2, hoy.getDate() + 1), ini)) : ini;
+
+        const r = await pool.request()
+            .input('Ini', sql.VarChar(10), ymd(ini)).input('Fin', sql.VarChar(10), ymd(fin))
+            .input('AntIni', sql.VarChar(10), ymd(antIni)).input('AntFin', sql.VarChar(10), ymd(antFin))
+            .query(`
+                DECLARE @TCUlt DECIMAL(18,4) = ISNULL((SELECT TOP 1 CotDolar FROM dbo.Cotizaciones ORDER BY CotFecha DESC), 40.0);
+                DECLARE @y TABLE (DepId INT, VarId INT, Producto NVARCHAR(200), NombreVariante NVARCHAR(200), UnidadBase VARCHAR(20),
+                                  Moneda VARCHAR(10), Periodo VARCHAR(10), Cant DECIMAL(18,4), CostoUnit DECIMAL(18,4),
+                                  USD DECIMAL(18,4), UYU DECIMAL(18,4));
+                WITH mov AS (
+                    SELECT m.Fecha, m.EtiId, e.VarId, ABS(m.Cantidad) AS Cant, m.DepOrigenId AS DepId
+                    FROM dbo.Wms_Movimientos m JOIN dbo.Wms_Etiquetas e ON e.EtiId = m.EtiId
+                    WHERE m.Tipo IN ('baja_consumo', 'baja_merma')
+                      AND m.Fecha >= CAST(@AntIni AS DATE) AND m.Fecha < CAST(@Fin AS DATE)
+                    UNION ALL
+                    SELECT h.Fecha, h.EtiquetaId, h.VarianteId, ABS(h.Cantidad), h.DepOrigenId
+                    FROM dbo.Wms_HistoricoExterno h
+                    WHERE h.Tipo IN ('baja_consumo', 'baja_merma') AND h.Cantidad IS NOT NULL
+                      AND h.Fecha >= CAST(@AntIni AS DATE) AND h.Fecha < CAST(@Fin AS DATE)
+                ), x AS (
+                    SELECT mov.DepId, mov.VarId, p.Nombre AS Producto, v.NombreVariante, p.UnidadBase,
+                           ISNULL(v.Moneda, 'UYU') AS Moneda,
+                           CASE WHEN mov.Fecha >= CAST(@Ini AS DATE) THEN 'ACTUAL'
+                                WHEN mov.Fecha < CAST(@AntFin AS DATE) THEN 'ANTERIOR' END AS Periodo,
+                           mov.Cant,
+                           COALESCE(NULLIF(e.CostoUnitarioReal, 0), v.Costo, 0) AS CostoUnit,
+                           -- cotización del día del consumo (la última anterior o igual a esa fecha)
+                           ISNULL((SELECT TOP 1 c.CotDolar FROM dbo.Cotizaciones c WHERE c.CotFecha <= mov.Fecha ORDER BY c.CotFecha DESC), @TCUlt) AS TC
+                    FROM mov
+                    LEFT JOIN dbo.Wms_Etiquetas e ON e.EtiId = mov.EtiId
+                    LEFT JOIN dbo.Wms_Variantes v ON v.VarId = mov.VarId
+                    LEFT JOIN dbo.Wms_ProductosMaestros p ON p.PmaId = v.PmaId
+                )
+                INSERT INTO @y
+                SELECT DepId, VarId, Producto, NombreVariante, UnidadBase, Moneda, Periodo, Cant, CostoUnit,
+                       CASE WHEN Moneda = 'USD' THEN Cant * CostoUnit ELSE Cant * CostoUnit / NULLIF(TC, 0) END,
+                       CASE WHEN Moneda = 'USD' THEN Cant * CostoUnit * TC ELSE Cant * CostoUnit END
+                FROM x WHERE Periodo IS NOT NULL;
+
+                -- 1) por sector y período
+                SELECT y.Periodo, y.DepId, d.Nombre AS Sector,
+                       SUM(y.USD) AS USD, SUM(y.UYU) AS UYU, SUM(y.Cant) AS Unidades, COUNT(*) AS Consumos,
+                       SUM(CASE WHEN y.CostoUnit = 0 THEN 1 ELSE 0 END) AS SinCosto
+                FROM @y y LEFT JOIN dbo.Wms_Depositos d ON d.DepId = y.DepId
+                GROUP BY y.Periodo, y.DepId, d.Nombre;
+
+                -- 2) los 5 insumos más caros de cada sector en el mes
+                SELECT t.DepId, t.VarId, t.Producto, t.NombreVariante, t.UnidadBase, t.Unidades, t.USD, t.UYU
+                FROM (
+                    SELECT y.DepId, y.VarId, y.Producto, y.NombreVariante, y.UnidadBase,
+                           SUM(y.Cant) AS Unidades, SUM(y.USD) AS USD, SUM(y.UYU) AS UYU,
+                           ROW_NUMBER() OVER (PARTITION BY y.DepId ORDER BY SUM(y.USD) DESC) AS Orden
+                    FROM @y y WHERE y.Periodo = 'ACTUAL'
+                    GROUP BY y.DepId, y.VarId, y.Producto, y.NombreVariante, y.UnidadBase
+                ) t WHERE t.Orden <= 5
+                ORDER BY t.DepId, t.Orden;
+            `);
+
+        const porDep = {};
+        for (const f of r.recordsets[0]) {
+            const k = f.DepId ?? 0;
+            porDep[k] ??= { DepId: f.DepId, Nombre: f.Sector || 'Sin depósito', USD: 0, UYU: 0, USDAnterior: 0, UYUAnterior: 0, Unidades: 0, Consumos: 0, SinCosto: 0 };
+            const s = porDep[k];
+            if (f.Periodo === 'ACTUAL') {
+                s.USD += Number(f.USD); s.UYU += Number(f.UYU); s.Unidades += Number(f.Unidades);
+                s.Consumos += Number(f.Consumos); s.SinCosto += Number(f.SinCosto);
+            } else { s.USDAnterior += Number(f.USD); s.UYUAnterior += Number(f.UYU); }
+        }
+        const sectores = Object.values(porDep).sort((a, b) => b.USD - a.USD);
+        const suma = (campo) => sectores.reduce((t, s) => t + s[campo], 0);
+        const detalle = {};
+        for (const d of r.recordsets[1]) (detalle[d.DepId ?? 0] ??= []).push(d);
+        res.json({ success: true, data: {
+            mes: `${anio}-${pad(mes)}`, enCurso,
+            desde: ymd(ini), hasta: ymd(new Date(fin.getTime() - 1)),
+            anterior: { desde: ymd(antIni), hasta: ymd(new Date(antFin.getTime() - 1)) },
+            total: { USD: suma('USD'), UYU: suma('UYU') },
+            totalAnterior: { USD: suma('USDAnterior'), UYU: suma('UYUAnterior') },
+            sinCosto: suma('SinCosto'),
+            sectores, detalle,
+        } });
     } catch (e) { res.status(500).json({ error: e.message }); }
 };
 
@@ -659,6 +792,31 @@ exports.crearSolicitud = async (req, res) => {
         try { await tran.rollback(); } catch (_) {}
         res.status(500).json({ error: e.message });
     }
+};
+
+// POST /solicitudes/:id/despachar { depOrigenId, items:[{varId, cantidad}] } — [24/09] arma el
+// remito hacia el sector que pidió y deja el pedido ATENDIDO, las dos cosas en una transacción
+// (antes eran dos pasos a mano: Trasladar y después "Marcar atendido"). Si en el origen hay
+// menos de lo pedido, sale lo disponible, igual que en Trasladar.
+exports.despacharSolicitud = async (req, res) => {
+    try {
+        const solId = parseInt(req.params.id, 10);
+        const pool = await getPool();
+        const rS = await pool.request().input('S', sql.Int, solId)
+            .query(`SELECT SolId, Numeracion, DepSolicitanteId, Estado FROM dbo.Wms_Solicitudes WHERE SolId = @S`);
+        const sol = rS.recordset[0];
+        if (!sol) return res.status(404).json({ error: 'El pedido no existe' });
+        if (sol.Estado !== 'PENDIENTE') {
+            const txt = { ATENDIDA: 'atendido', CANCELADA: 'cancelado', CANCELADO: 'cancelado', APROBADA: 'aprobado' }[sol.Estado] || String(sol.Estado).toLowerCase();
+            return res.status(409).json({ error: `El pedido ya está ${txt}` });
+        }
+        const { depOrigenId, items } = req.body || {};
+        const r = await svc.crearRemito({
+            depOrigenId: parseInt(depOrigenId, 10), depDestinoId: sol.DepSolicitanteId,
+            items: items || [], obs: `Despacho del pedido ${sol.Numeracion}`, usuarioId: uid(req), solId,
+        });
+        res.json({ success: true, ...r });
+    } catch (e) { res.status(400).json({ error: e.message }); }
 };
 
 // POST /solicitudes/:id/estado { estado } — PENDIENTE / ATENDIDA / CANCELADA

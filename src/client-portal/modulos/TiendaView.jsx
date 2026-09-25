@@ -75,9 +75,18 @@ const parseVariante = (nombre) => {
     if (i < 0) return null;
     return { talle: tokens[i], color: tokens.slice(i + 1).join(' ') };
 };
-// [STOCK] Placeholder fijo mientras no exista el sistema de stock de la tienda: se muestra
-// como "disponibles" en la ficha y hace de tope del contador de cantidad. Sin conexión real.
-const DISPONIBLES_PLACEHOLDER = 12;
+// [STOCK 24/09] El disponible que se muestra es el REAL de la variante: viene en el catálogo
+// (`stock` por variante, del WMS; null = el WMS no contestó y no se muestra nada). Antes era un
+// número fijo (12) de cuando la tienda no tenía stock. La tienda vende también sin stock (regla
+// del backend, checkoutTienda), así que el dato informa y avisa, pero no frena el contador.
+const MAX_CANTIDAD = 999;
+const textoDisponibles = (stock, cantidad) => {
+    if (stock == null) return null;
+    const n = Number(stock);
+    if (n <= 0) return { texto: 'Sin stock por ahora. Se puede pedir igual.', alerta: true };
+    if (cantidad > n) return { texto: `Solo ${n.toLocaleString('es-UY')} disponibles ahora. Se puede pedir igual.`, alerta: true };
+    return { texto: `${n.toLocaleString('es-UY')} disponibles`, alerta: false };
+};
 
 // [FOTOS POR COLOR — matching 21/08] Igualdad exacta primero (color de DATO contra el color
 // de la foto) y recién después "el texto contiene el color", quedándose con el MÁS LARGO:
@@ -292,6 +301,7 @@ export const TiendaView = () => {
                 // Si hay foto del color de la variante (dato Color o el nombre), esa; si no, la portada.
                 foto: fotoDeColor(producto.fotosColor, variante.color || variante.nombre)?.url
                     || producto.fotos?.[0] || null,
+                stock: variante.stock ?? null,   // disponible real al agregar (null = sin dato)
                 cantidad,
             }];
         });
@@ -299,10 +309,10 @@ export const TiendaView = () => {
         // El cierre del modal lo dispara la propia ficha (cerrar()) para que corra la
         // animación de salida — acá no se desmonta en seco.
     };
-    // Mismo tope que el contador de la ficha (DISPONIBLES_PLACEHOLDER, stock aún sin conectar).
+    // Mismo tope que el contador de la ficha. El stock no frena: se vende también sin stock.
     const cambiarCantidad = (key, delta) => setCarrito(prev => prev
         .map(it => `${it.proIdProducto}:${it.wmsVarianteId}` === key
-            ? { ...it, cantidad: Math.min(DISPONIBLES_PLACEHOLDER, Math.max(1, it.cantidad + delta)) } : it));
+            ? { ...it, cantidad: Math.min(MAX_CANTIDAD, Math.max(1, it.cantidad + delta)) } : it));
     const quitarItem = (key) => setCarrito(prev => prev.filter(it => `${it.proIdProducto}:${it.wmsVarianteId}` !== key));
 
     // [ANIMACIÓN CERRAR CARRITO 18/08] Al cerrar, primero corre la animación de salida
@@ -695,8 +705,8 @@ export const TiendaView = () => {
                                                         <NumeroAnimado n={it.cantidad} className="text-base font-black text-zinc-100 font-gsanscode leading-none" />
                                                         <span className="text-[10px] tracking-wider text-zinc-600 mt-0.5">UNID.</span>
                                                     </div>
-                                                    <button onClick={() => cambiarCantidad(key, +1)} disabled={it.cantidad >= DISPONIBLES_PLACEHOLDER}
-                                                        className={`w-5 h-5 rounded-full flex items-center justify-center transition-colors ${it.cantidad >= DISPONIBLES_PLACEHOLDER
+                                                    <button onClick={() => cambiarCantidad(key, +1)} disabled={it.cantidad >= MAX_CANTIDAD}
+                                                        className={`w-5 h-5 rounded-full flex items-center justify-center transition-colors ${it.cantidad >= MAX_CANTIDAD
                                                             ? 'text-zinc-600 cursor-not-allowed'
                                                             : 'bg-brand-cyan/10 text-brand-cyan hover:bg-brand-cyan/20'}`}><Plus size={10} /></button>
                                                 </div>
@@ -1168,16 +1178,20 @@ const FichaProducto = ({ producto, onCerrar, onAgregar, onIniciarPedido }) => {
                                                 <NumeroAnimado n={cantidad} className="text-base font-black text-zinc-100 font-gsanscode leading-none" />
                                                 <span className="text-[10px] tracking-wider text-zinc-600 mt-0.5">UNID.</span>
                                             </div>
-                                            <button onClick={() => setCantidad(c => Math.min(DISPONIBLES_PLACEHOLDER, c + 1))} disabled={cantidad >= DISPONIBLES_PLACEHOLDER}
-                                                className={`w-5 h-5 rounded-full flex items-center justify-center transition-colors ${cantidad >= DISPONIBLES_PLACEHOLDER
+                                            <button onClick={() => setCantidad(c => Math.min(MAX_CANTIDAD, c + 1))} disabled={cantidad >= MAX_CANTIDAD}
+                                                className={`w-5 h-5 rounded-full flex items-center justify-center transition-colors ${cantidad >= MAX_CANTIDAD
                                                     ? 'text-zinc-600 cursor-not-allowed'
                                                     : 'bg-brand-cyan/10 text-brand-cyan hover:bg-brand-cyan/20'}`}><Plus size={10} /></button>
                                         </div>
                                     </div>
-                                    {/* [STOCK] Placeholder visual con número FIJO, sin conectar a nada:
-                                        el sistema de stock de la tienda no existe todavía. Cuando esté,
-                                        acá va el disponible real de la variante elegida (y el tope del +). */}
-                                    <p className="text-[11px] font-bold text-zinc-500 text-right -mt-1"><span className="font-gsanscode">{DISPONIBLES_PLACEHOLDER}</span> disponibles</p>
+                                    {/* [STOCK 24/09] Disponible real de la variante elegida (ver textoDisponibles).
+                                        Sin dato del WMS no se muestra nada. */}
+                                    {(() => {
+                                        const d = textoDisponibles(varSel?.stock, cantidad);
+                                        return d ? (
+                                            <p className={`text-[11px] font-bold text-right -mt-1 ${d.alerta ? 'text-amber-400' : 'text-zinc-500'}`}>{d.texto}</p>
+                                        ) : null;
+                                    })()}
                                     <button
                                         onClick={() => { onAgregar(producto, varSel, cantidad); cerrar(); }}
                                         disabled={sinPrecio}

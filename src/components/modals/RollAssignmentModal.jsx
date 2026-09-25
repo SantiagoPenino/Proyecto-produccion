@@ -70,8 +70,9 @@ const RollAssignmentModal = ({ isOpen, onClose, selectedIds = [], selectedOrders
             };
             await ordersService.assignRoll(payload);
             
-            queryClient.invalidateQueries(['rollsBoard', areaCode]);
-            queryClient.invalidateQueries(['productionBoard', areaCode]);
+            // Forma v5 ({ queryKey }): con la lista suelta de la v4 se recargaban todas las consultas (24/09).
+            queryClient.invalidateQueries({ queryKey: ['rollsBoard', areaCode] });
+            queryClient.invalidateQueries({ queryKey: ['productionBoard', areaCode] });
             
             const rollDisplayName = mode === 'existing' ? selectedRoll?.nombre : rollName;
             const msg = selectedIds.length === 1 

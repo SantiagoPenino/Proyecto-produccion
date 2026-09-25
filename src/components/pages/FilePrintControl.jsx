@@ -11,6 +11,7 @@ import FileControlCard from '../production/components/FileControlCard';
 import FallaAnnotator from '../production/components/FallaAnnotator';
 
 import { socket } from '../../services/socketService';
+import useRecargaConFreno from '../../hooks/useRecargaConFreno';
 import Toast from '../ui/Toast';
 import { printLabelsHelper } from '../../utils/printHelper';
 
@@ -161,28 +162,22 @@ const FilePrintControl = ({ areaCode }) => {
     } catch (error) { console.error("Error rollos:", error); }
   }, [areaCode]);
 
+  // Producción emite order_updated/ordersUpdated todo el día (WSP, entregas, otras áreas): sin freno
+  // se recargaban los rollos por CADA evento. [24/09] Freno de 8 s y pausa con la pestaña oculta, ver
+  // hooks/useRecargaConFreno: un Control que no se está mirando no pide la lista de lotes.
+  const avisarRollos = useRecargaConFreno(fetchRollos);
+
   useEffect(() => {
     fetchRollos();
-    // Throttle con trailing: producción emite order_updated/ordersUpdated todo el día (WSP,
-    // entregas, otras áreas) — sin esto se recargaban los rollos por CADA evento.
-    const ROLLOS_WINDOW_MS = 8000;
-    let rollosTimer = null;
-    let lastRollosRun = 0;
-    const fetchRollosThrottled = () => {
-      if (rollosTimer) return; // ya hay una ejecución agendada que cubre este evento
-      const wait = Math.max(300, ROLLOS_WINDOW_MS - (Date.now() - lastRollosRun));
-      rollosTimer = setTimeout(() => { rollosTimer = null; lastRollosRun = Date.now(); fetchRollos(); }, wait);
-    };
-    socket.on('server:order_updated', fetchRollosThrottled);
-    socket.on('server:ordersUpdated', fetchRollosThrottled);
-    socket.on('lotes:updated', fetchRollosThrottled);
+    socket.on('server:order_updated', avisarRollos);
+    socket.on('server:ordersUpdated', avisarRollos);
+    socket.on('lotes:updated', avisarRollos);
     return () => {
-      clearTimeout(rollosTimer);
-      socket.off('server:order_updated', fetchRollosThrottled);
-      socket.off('server:ordersUpdated', fetchRollosThrottled);
-      socket.off('lotes:updated', fetchRollosThrottled);
+      socket.off('server:order_updated', avisarRollos);
+      socket.off('server:ordersUpdated', avisarRollos);
+      socket.off('lotes:updated', avisarRollos);
     };
-  }, [fetchRollos]);
+  }, [fetchRollos, avisarRollos]);
 
   // 2. Load Orders when Roll changes
   useEffect(() => {

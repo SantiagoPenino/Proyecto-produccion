@@ -37,6 +37,7 @@ import MatrixSidebar from "../../layout/MatrixSidebar";
 
 import { ordersService, rollsService, areasService } from '../../../services/api';
 import { SOCKET_URL } from '../../../services/apiClient';
+import useRecargaConFreno from '../../../hooks/useRecargaConFreno';
 import { useAuth } from '../../../context/AuthContext';
 
 // --- SUBCOMPONENT: MAGIC BUTTON ---
@@ -333,33 +334,24 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
 
     const queryClient = useQueryClient();
 
+    // Recarga por avisos del server: los eventos pueden venir en ráfaga O espaciados cada 1-2 s (ej. el
+    // job de WSP avisa orden por orden; entregas múltiples). Freno de 8 s y pausa con la pestaña oculta:
+    // ver hooks/useRecargaConFreno.
+    const avisarRecarga = useRecargaConFreno(() => {
+        refetch(); // refrescar lista principal
+        // Refrescar también los tableros hijos (Planeación, Kanban, etc)
+        // [24/09] Forma de React Query v5 ({ queryKey }). Con la lista suelta de la v4, v5 no filtra:
+        // invalida TODAS las consultas activas y cancela/relanza las que están en vuelo, así que cada
+        // recarga le pedía la planilla 3 veces al server (569 pedidos por minuto en producción).
+        if (areaKey) {
+            queryClient.invalidateQueries({ queryKey: ['rollsBoard', areaKey] });
+            queryClient.invalidateQueries({ queryKey: ['productionBoard', areaKey] });
+        }
+    });
+
     // Socket.io: escuchar actualizaciones en tiempo real
     useEffect(() => {
         const socket = io(SOCKET_URL);
-        let refetchTimer = null;
-
-        // Throttle con trailing de la parte pesada: los eventos pueden venir en ráfaga O espaciados
-        // cada 1-2s (ej. el job de WSP avisa orden por orden; entregas múltiples) — un debounce corto
-        // NO los coalesce y termina refetcheando por cada evento en cada pantalla abierta.
-        // Regla: máximo UN refetch por ventana; el primer evento sale casi al toque (UI ágil) y el
-        // resto de la ráfaga queda cubierto por una única ejecución al cierre de la ventana.
-        const REFETCH_WINDOW_MS = 8000;
-        let lastRefetchAt = 0;
-        const doRefetch = () => {
-            lastRefetchAt = Date.now();
-            refetch(); // refrescar lista principal
-            // Refrescar también los tableros hijos (Planeación, Kanban, etc)
-            if (areaKey) {
-                queryClient.invalidateQueries(['rollsBoard', areaKey]);
-                queryClient.invalidateQueries(['productionBoard', areaKey]);
-            }
-        };
-        const scheduleRefetch = () => {
-            if (refetchTimer) return; // ya hay una ejecución agendada que cubre este evento
-            const elapsed = Date.now() - lastRefetchAt;
-            const wait = elapsed >= REFETCH_WINDOW_MS ? 300 : REFETCH_WINDOW_MS - elapsed;
-            refetchTimer = setTimeout(() => { refetchTimer = null; doRefetch(); }, wait);
-        };
 
         const handleSocketUpdate = (payload) => {
             console.log('🔔 Evento socket update:', payload);
@@ -408,8 +400,8 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
                 setTimeout(() => setFlashingRows([]), 3000);
             }
 
-            // Parte pesada (refetch + invalidaciones): debounced para coalescer ráfagas
-            scheduleRefetch();
+            // Parte pesada (refetch + invalidaciones): con freno y en pausa si la pestaña está oculta
+            avisarRecarga();
         };
 
         socket.on('server:order_updated', handleSocketUpdate);
@@ -418,7 +410,6 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
         socket.on('lotes:updated', handleSocketUpdate);
 
         return () => {
-            clearTimeout(refetchTimer);
             toast.dismiss(); // al salir de la vista de área, descolgar toasts de orden que sigan en pantalla (no deben verse fuera de /area/df)
             // socket es el singleton compartido (socket.io multiplexa por URL): NO hacer
             // socket.disconnect() — eso baja el socket de TODA la app y deja los listeners
@@ -429,7 +420,7 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
             socket.off('server:new_order', handleSocketUpdate);
             socket.off('lotes:updated', handleSocketUpdate);
         };
-    }, [refetch, areaKey, queryClient]);
+    }, [avisarRecarga, areaKey]);
 
     // 4. COMPUTED FILTERS (Dynamic based on data)
     const availablePriorities = useMemo(() => {
