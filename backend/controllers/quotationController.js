@@ -853,7 +853,20 @@ exports.saveQuotation = async (req, res) => {
             // a "Precio establecido" no tenía ninguna línea PRO para pisarle el precio (bug
             // real visto en vivo, 14-sep-2026, mismo motivo que la excepción en erpSyncService.js).
             const esProMadreLinea = proMadreOrdenID != null && parseInt(linea.OrdenID) === proMadreOrdenID;
-            if (!esFacturableLinea && !esProMadreLinea) continue;
+            // (25-sep-2026) Línea cubierta 100% por plan de metros (Prepago / Rollo): está en
+            // $0 y no facturable A PROPÓSITO, pero es la que le da la CANTIDAD a la orden para
+            // la etiqueta y el ingreso a depósito (que rebaja el rollo). Esta pantalla borra y
+            // re-inserta todas las líneas: sin esta excepción, guardar cualquier cosa del
+            // pedido la hacía desaparecer (misma causa que en erpSyncService.js).
+            let cubiertaPorPlan = /prepago/i.test(String(linea.PerfilAplicado || ''))
+                || /cubierto.*por plan/i.test(String(linea.LogPrecioAplicado || ''));
+            if (!cubiertaPorPlan && linea.DesgloseJSON) {
+                try {
+                    const dj = typeof linea.DesgloseJSON === 'string' ? JSON.parse(linea.DesgloseJSON) : linea.DesgloseJSON;
+                    cubiertaPorPlan = !!(dj && dj.cobertura && dj.cobertura.tipo === 'PLAN');
+                } catch { /* sin desglose legible: se decide por perfil/log */ }
+            }
+            if (!esFacturableLinea && !esProMadreLinea && !cubiertaPorPlan) continue;
 
             const dz = normalizarDesgloseLinea(linea, puLinea);
             const lineaMon = linea.Moneda || moneda;
