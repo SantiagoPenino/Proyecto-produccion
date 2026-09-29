@@ -361,6 +361,8 @@ const TIPOS_REFERENCIA_FALLBACK = [
     { Codigo: 'LOGO_BORDADO',      Nombre: 'Logo a Bordar' },
     { Codigo: 'PREDISENO_BORDADO', Nombre: 'Prediseño del Cliente (referencia)' },
     { Codigo: 'REFERENCIA',        Nombre: 'Referencia General' },
+    // [SOLICITUDES] PDF con todo lo de la solicitud; lo adjunta solo la conversión a pedido.
+    { Codigo: 'FICHA_PEDIDO',      Nombre: 'Ficha del pedido' },
 ];
 exports.getTiposArchivoReferencia = async (req, res) => {
     try {

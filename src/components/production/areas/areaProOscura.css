@@ -1,0 +1,37 @@
+/* ============================================================================
+   Área Producción (PRO = producto terminado) en oscuro, para diferenciarla del resto.
+   Mismos colores que la ficha de Solicitudes (fichaPedido.css).
+   Solo aplica dentro de .area-pro-oscura (lo pone AreaView cuando el área es PRO).
+   Los modales que se abren encima (.fixed: ficha de la orden, etc.) NO se tocan.
+   ============================================================================ */
+.area-pro-oscura {
+  --pro-bg: #0E1628; --pro-surface: #16213A; --pro-soft: #1B2844; --pro-hover: #22304F;
+  --pro-ink: #E7ECF5; --pro-muted: #9AA6BE; --pro-line: #2B3a5A; --pro-accent: #F5C231;
+  background-color: var(--pro-bg) !important;
+  color: var(--pro-ink) !important;
+}
+
+/* Fondos */
+.area-pro-oscura :is(.bg-white, .bg-zinc-50, .bg-slate-50, .bg-gray-50, .bg-neutral-50):not(.fixed *) { background-color: var(--pro-surface) !important; }
+.area-pro-oscura :is(.bg-zinc-100, .bg-zinc-200, .bg-slate-100, .bg-slate-200, .bg-gray-100, .bg-gray-200):not(.fixed *) { background-color: var(--pro-soft) !important; }
+.area-pro-oscura [class~="bg-zinc-50/50"]:not(.fixed *), .area-pro-oscura [class~="bg-white/80"]:not(.fixed *), .area-pro-oscura [class~="bg-white/90"]:not(.fixed *) { background-color: var(--pro-bg) !important; }
+.area-pro-oscura :is(.hover\:bg-zinc-50, .hover\:bg-zinc-100, .hover\:bg-slate-50, .hover\:bg-slate-100, .hover\:bg-gray-50, .hover\:bg-white):hover:not(.fixed *) { background-color: var(--pro-hover) !important; }
+.area-pro-oscura tr:hover:not(.fixed *) > td { background-color: rgba(255, 255, 255, .03); }
+
+/* Bordes */
+.area-pro-oscura :is([class*="border-zinc-"], [class*="border-slate-"], [class*="border-gray-"]):not(.fixed *) { border-color: var(--pro-line) !important; }
+.area-pro-oscura :is([class*="divide-zinc-"], [class*="divide-slate-"], [class*="divide-gray-"]):not(.fixed *) > * { border-color: var(--pro-line) !important; }
+.area-pro-oscura :is(table, thead, tbody, tr, th, td):not(.fixed *) { border-color: var(--pro-line) !important; }
+
+/* Textos */
+.area-pro-oscura :is(.text-black, .text-zinc-900, .text-zinc-800, .text-zinc-700, .text-zinc-600, .text-slate-900, .text-slate-800, .text-slate-700, .text-slate-600, .text-gray-900, .text-gray-800, .text-gray-700, .text-gray-600):not(.fixed *) { color: var(--pro-ink) !important; }
+.area-pro-oscura :is(.text-zinc-500, .text-zinc-400, .text-zinc-300, .text-slate-500, .text-slate-400, .text-slate-300, .text-gray-500, .text-gray-400):not(.fixed *) { color: var(--pro-muted) !important; }
+
+/* Campos */
+.area-pro-oscura :is(input, select, textarea):not(.fixed *) {
+  background-color: var(--pro-soft) !important; color: var(--pro-ink) !important; border-color: var(--pro-line) !important; color-scheme: dark;
+}
+.area-pro-oscura :is(input, textarea):not(.fixed *)::placeholder { color: #6B7894 !important; }
+
+/* Títulos del encabezado en claro */
+.area-pro-oscura header h1:not(.fixed *), .area-pro-oscura header h2:not(.fixed *) { color: var(--pro-ink) !important; }

@@ -28,6 +28,7 @@
  */
 
 const { sql, getPool } = require('../config/db');
+const { siguienteCodigoVenta } = require('../utils/codigoVenta');
 const driveService = require('../services/driveService');
 const axios = require('axios');
 const { PDFDocument, StandardFonts, rgb } = require('pdf-lib')
@@ -2436,11 +2437,7 @@ exports.createWebOrder = async (req, res) => {
                 const proximoAncla = areasComponente.has('EMB') ? 'EMB'
                     : (areasComponente.has('EST') ? 'EST' : (item.destinoSinServicios || 'DEPOSITO'));
 
-                const maxVenRes = await new sql.Request(transaction).query(`
-                    SELECT ISNULL(MAX(CAST(SUBSTRING(NoDocERP, 5, LEN(NoDocERP)) AS INT)), 0) + 1 as NextID
-                    FROM PedidosCobranza WHERE NoDocERP LIKE 'VEN-%'
-                `);
-                const codigoVenta = `VEN-${maxVenRes.recordset[0].NextID.toString().padStart(4, '0')}`;
+                const codigoVenta = await siguienteCodigoVenta(transaction);
 
                 const insertPC = await new sql.Request(transaction)
                     .input('NoDocERP', sql.NVarChar, codigoVenta)

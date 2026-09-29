@@ -5,32 +5,19 @@ const logger = require('../utils/logger');
 
 /*
  * ══════════════════════════════════════════════════════════════════════════
- *  DESPIECE DE MOLDES ESCALADOS — PDF de plotter → piezas y talles
+ *  CONTORNOS DEL PDF DEL MOLDE (para las siluetas de las piezas de TizadaPro)
  * ══════════════════════════════════════════════════════════════════════════
- *  Un molde escalado es un PDF de plotter a escala 1:1 (el de camisetas con
- *  costadillo mide 500 x 500 cm) donde las piezas están dibujadas una encima
- *  de otra: el mismo frente repetido en los 10 talles, anidado. Ese conjunto
- *  de contornos concéntricos es lo que acá se llama un NIDO.
+ *  TizadaPro guarda, por pieza y talle, la caja (bbox) que ocupa cada pieza en
+ *  el PDF del molde, pero no el dibujo. Este servicio lee los trazos vectoriales
+ *  de ese PDF (pdfjs, solo getOperatorList: sin render ni binarios) y devuelve
+ *  cada contorno con su caja en puntos PDF; tizadaProService los cruza con las
+ *  cajas de TizadaPro y así cada contorno recibe su nombre de pieza y su talle.
+ *  Verificado 28-sep-2026 sobre "Short basket 4 piezas.pdf": las 12 cajas
+ *  probadas coinciden con un trazo (con el eje Y invertido: TizadaPro mide
+ *  desde arriba, el PDF desde abajo).
  *
- *  El archivo NO trae nada escrito: cero items de texto, cero metadatos. No
- *  dice qué pieza es cada nido ni a qué talle corresponde cada contorno. Lo
- *  único que hay es geometría, y con eso alcanza para dos de las tres cosas:
- *
- *   1) SEPARAR las piezas → dos trazos que se solapan fuerte son el mismo
- *      nido (un frente talle XS está adentro del frente talle 6XL). Union-
- *      find sobre el solapamiento de bounding boxes.
- *   2) ORDENAR los talles → dentro de un nido, ordenados por área de menor
- *      a mayor, el contorno n-ésimo es el talle n-ésimo de la curva. El
- *      escalado de moldería es monótono, siempre.
- *   3) NOMBRAR las piezas → esto NO se puede sacar del archivo. Lo hace el
- *      usuario en pantalla, una vez por molde, contra PiezasPrenda.
- *
- *  Medido sobre el archivo real (15-sep-2026): 333 trazos → 303 útiles →
- *  33 nidos, de los cuales 30 son piezas (3 bandas x 10) y 3 son los
- *  cuadritos de talles que el CAD dibuja al costado.
- *
- *  Depende de pdfjs-dist, y SOLO de getOperatorList: no renderiza nada, así
- *  que no necesita canvas ni ningún binario nativo.
+ *  El despiece por nidos/bandas de la versión anterior (moldes escalados) ya
+ *  no se usa: TizadaPro es el dueño del molde.
  */
 
 const PT2CM = 2.54 / 72;              // el PDF está en puntos: 72 pt = 1 pulgada
@@ -306,4 +293,4 @@ function validarDespiece(r) {
     return null;
 }
 
-module.exports = { parsearMolde, validarDespiece };
+module.exports = { leerTrazos, aSvgPath, PT2CM };

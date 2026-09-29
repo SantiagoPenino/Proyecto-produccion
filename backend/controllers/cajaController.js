@@ -9,6 +9,7 @@ const contabilidadCore = require('../services/contabilidadCore'); // ERP Core
 const { getPool, sql } = require('../config/db');
 const pdfService  = require('../services/pdfService');
 const { estamparAreaLineas } = require('../services/areaLineaService');
+const { resolverCuentaDineroCliente } = require('../services/cuentaDineroCliente');
 
 // ─────────────────────────────────────────────
 const io = (req) => req.app.get('socketio');
@@ -1513,6 +1514,15 @@ const procesarPagoDeudaInterno = async (req, res) => {
     const esParcial       = sumDeudas - totalACubrir > 0.01;
     if (difCambio) logger.info(`[PAGO-DEUDA] Diferencia de cambio ${difCambio.toFixed(2)} ${monedaBaseStr} → ${difCambio > 0 ? 'GANANCIA 4.2.1' : 'PERDIDA 5.2.01'} (tope ${limiteDif.toFixed(2)})`);
     if (exceso > 0.01) logger.info(`[PAGO-DEUDA] Excedente ${exceso.toFixed(2)} ${monedaBaseStr} → saldo a favor (deudas=${sumDeudas.toFixed(2)} pagado=${totalPagadoBase.toFixed(2)})`);
+    // La pre-factura (cobro contado de un documento recién emitido) manda permitirExcedente:false:
+    // ahí pagar de más no es un anticipo, es un error de carga. Antes se registraba igual como
+    // "saldo a favor por pago excedente" con plata que nunca entró (Mazzoni PC-4851, 28-09-2026).
+    if (exceso > 0.01 && header && header.permitirExcedente === false) {
+      return res.status(400).json({
+        success: false,
+        error: `El pago (${totalPagadoBase.toFixed(2)} ${monedaBaseStr}) supera lo pendiente del documento (${sumDeudas.toFixed(2)} ${monedaBaseStr}) en ${exceso.toFixed(2)}. No se registró ningún cobro: cargalo por el importe pendiente exacto.`
+      });
+    }
     if (esParcial)     logger.info(`[PAGO-DEUDA] Pago parcial: deudas=${sumDeudas.toFixed(2)} pagado=${totalPagadoBase.toFixed(2)}`);
 
     const pool = await getPool();
@@ -2347,6 +2357,9 @@ const procesarPagoDeudaInterno = async (req, res) => {
         await contabilidadSvc.registrarMovimiento({
           CueIdCuenta:      cueSaldoFavor,
           MovTipo:          'ANTICIPO',
+          // Atado al pago que lo generó: así anular el cobro (recibo o documento) anula
+          // también el excedente. Sin esto quedaba vivo e inflaba el saldo (28-09-2026).
+          PagIdPago:        primerPagIdPago || null,
           MovConcepto:      ('Saldo a favor por pago excedente - ' + (header.observaciones || 'Pago de deuda')).substring(0, 300),
           MovImporte:       exceso,   // positivo = crédito = saldo a favor
           MovUsuarioAlta:   usuarioId,
@@ -2886,7 +2899,7 @@ const generarNotaCreditoExterna = async (req, res) => {
       //    (que filtra WHERE CfeEstado IS NOT NULL) y de cualquier acción de envío/edición/anulación.
       const stubId = await contabilidadCore.crearDocumentoContable({
         header: {
-          cueIdCuenta: monId === 2 ? 119 : 118,
+          cueIdCuenta: await resolverCuentaDineroCliente({ clienteId: cliente.CliIdCliente, monedaId: monId, transaction, usuarioId: req.user?.id }),
           clienteId: cliente.CliIdCliente,
           monedaId: monId,
           tipo: esFacturaOrigen ? 'E-Factura Externa' : 'E-Ticket Externo',
@@ -2953,7 +2966,7 @@ const generarNotaCreditoExterna = async (req, res) => {
 
       const ncId = await contabilidadCore.crearDocumentoContable({
         header: {
-          cueIdCuenta: monId === 2 ? 119 : 118,
+          cueIdCuenta: await resolverCuentaDineroCliente({ clienteId: cliente.CliIdCliente, monedaId: monId, transaction, usuarioId: req.user?.id }),
           clienteId: cliente.CliIdCliente,
           monedaId: monId,
           tipo: ncTipo,

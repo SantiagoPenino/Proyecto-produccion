@@ -148,10 +148,22 @@ export default function CierreCicloPreviewModal({
       setCuentasBilletera(todas.filter(c =>
         !c.CueEsPrincipal && !c.CueRestringida
         && (c.CueModalidadFiscal || 'ANTICIPO_A_FACTURAR') !== 'PREPAGO_FACTURADO' && c.CueActiva !== false));
-      // Saldo real de las principales: el cierre lo aplica SOLO a la factura antes que nada
+      // Saldo real de las principales: el cierre lo aplica SOLO a la factura antes que nada.
+      // Se lee del LIBRO (saldo-libro: movimientos vivos sin ORDEN), que es la misma cuenta
+      // que hace el backend al aplicar el saldo a favor. CueSaldoActual en producción suma
+      // las ORDEN y daba negativo: la pantalla no veía el a favor y proponía cobrar el total.
       const sp = {};
-      todas.filter(c => c.CueEsPrincipal).forEach(c => { sp[c.CueTipo === 'DINERO_USD' ? 'USD' : 'UYU'] = Number(c.CueSaldoActual || 0); });
-      setSaldoPrincipal(sp);
+      const principales = todas.filter(c => c.CueEsPrincipal);
+      principales.forEach(c => { sp[c.CueTipo === 'DINERO_USD' ? 'USD' : 'UYU'] = Number(c.CueSaldoActual || 0); });
+      setSaldoPrincipal({ ...sp });
+      Promise.all(principales.map(c => api.get(`/contabilidad/cuentas/${c.CueIdCuenta}/saldo-libro`)
+        .then(rs => ({ mon: c.CueTipo === 'DINERO_USD' ? 'USD' : 'UYU', saldo: Number(rs.data?.data?.saldo) }))
+        .catch(() => null)))
+        .then(res => {
+          const real = { ...sp };
+          res.filter(x => x && !isNaN(x.saldo)).forEach(x => { real[x.mon] = x.saldo; });
+          setSaldoPrincipal(real);
+        });
     }).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [paso]);
@@ -551,6 +563,28 @@ export default function CierreCicloPreviewModal({
     const pagosValidosContado = (docType !== 'FACTURA' && docCond === 'CONTADO' && restaCobrarFinal > 0.01)
       ? pagosContado.filter(p => parseFloat(p.monto) > 0 && p.metodoPagoId)
       : [];
+    // CONTADO = el cliente paga todo ahora. Los medios tienen que sumar EXACTO lo que resta
+    // después del saldo a favor: sin medios sería un contado sin plata (deuda escondida), y de
+    // más generaba un "saldo a favor por pago excedente" con plata que nunca entró (28-09-2026).
+    if (docType !== 'FACTURA' && docCond === 'CONTADO' && restaCobrarFinal > 0.01) {
+      const aFactura = (p) => {
+        const m = parseFloat(p.monto) || 0;
+        const monP = p.moneda || (parseInt(p.monedaId, 10) === 2 ? 'USD' : 'UYU');
+        if (monP === monedaFactura) return m;
+        return monP === 'USD' ? m * cotDolar : m / cotDolar;
+      };
+      const sumaMedios = pagosValidosContado.reduce((s, p) => s + aFactura(p), 0);
+      if (!pagosValidosContado.length) {
+        toast.error(`Elegiste CONTADO pero no cargaste medios de pago por ${simbolo} ${fmt(restaCobrarFinal)}. Si no entra plata ahora, emití a CRÉDITO: lo que resta queda pendiente en el documento.`, { duration: 12000 });
+        setWorking(false);
+        return;
+      }
+      if (Math.abs(sumaMedios - restaCobrarFinal) > 0.05) {
+        toast.error(`Los medios suman ${simbolo} ${fmt(sumaMedios)} y hay que cobrar ${simbolo} ${fmt(restaCobrarFinal)}. Ajustá los medios a ese importe exacto: no se cobra de menos ni de más desde acá.`, { duration: 12000 });
+        setWorking(false);
+        return;
+      }
+    }
     const pagoSaldoSinCuenta = pagosValidosContado.find(p =>
       /saldo de cuenta/i.test(metodosPago.find(m => m.MPaIdMetodoPago === parseInt(p.metodoPagoId))?.MPaDescripcionMetodo || '') && !p.cueIdCuenta);
     if (pagoSaldoSinCuenta) {
@@ -715,7 +749,9 @@ export default function CierreCicloPreviewModal({
                 moneda: monedaFactura,
                 monedaId: monedaFactura === 'USD' ? 2 : 1,
                 cotizacionTC: cotDolar,
-                permitirExcedente: true,
+                // Nunca de más: si por la cotización del día los medios superan lo pendiente,
+                // el backend lo rechaza y avisa (antes lo registraba como saldo a favor fantasma).
+                permitirExcedente: false,
                 observaciones: `Cobro contado de ${emision?.docNumero || `doc #${docIdEmitido}`} (pre-factura)`,
                 admin: true,
               },
@@ -1532,16 +1568,36 @@ export default function CierreCicloPreviewModal({
             {docType !== 'FACTURA' && !todoCubiertoPorPrepago && (
               <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
                 <h4 className="text-xs font-black uppercase tracking-widest text-slate-500 mb-3">¿Cómo se paga este documento?</h4>
+                {/* Cuenta clara antes de elegir: total, saldo a favor que se aplica solo, y lo que resta.
+                    El saldo a favor viene del libro (misma fórmula que usa el backend al aplicarlo). */}
+                <div className="mb-3 rounded-xl border border-slate-200 bg-slate-50 p-3 grid grid-cols-1 sm:grid-cols-3 gap-2 text-[11px]">
+                  <div>
+                    <div className="font-black uppercase tracking-wider text-slate-500">Total del documento</div>
+                    <div className="font-mono font-black text-slate-800 text-sm">{simbolo} {fmt(granTotalNeto)}</div>
+                  </div>
+                  <div>
+                    <div className="font-black uppercase tracking-wider text-emerald-600">Saldo a favor que se aplica solo</div>
+                    <div className="font-mono font-black text-emerald-700 text-sm">{simbolo} {fmt(cubreElegida + cubrePrincipalFinal)}</div>
+                    <div className="text-[10px] text-slate-400">a favor disponible {simbolo} {fmt(principalAFavor)}{cuentaElegida ? ` + ${codigoCuenta(cuentaElegida)}` : ''}</div>
+                  </div>
+                  <div>
+                    <div className={`font-black uppercase tracking-wider ${restaCobrarFinal > 0.01 ? 'text-rose-600' : 'text-emerald-600'}`}>Resta</div>
+                    <div className={`font-mono font-black text-sm ${restaCobrarFinal > 0.01 ? 'text-rose-600' : 'text-emerald-700'}`}>{simbolo} {fmt(restaCobrarFinal)}</div>
+                    <div className="text-[10px] text-slate-400">
+                      {restaCobrarFinal <= 0.01 ? 'nada que cobrar: el documento nace pago' : (docCond === 'CONTADO' ? 'se cobra AHORA con los medios de abajo' : 'queda PENDIENTE en el documento')}
+                    </div>
+                  </div>
+                </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <button type="button" onClick={() => setDocCond('CONTADO')}
                     className={`text-left rounded-xl border-2 p-4 transition-all ${docCond === 'CONTADO' ? 'border-emerald-500 bg-emerald-50 shadow-sm' : 'border-slate-200 bg-white hover:border-emerald-300'}`}>
-                    <span className={`text-sm font-black uppercase ${docCond === 'CONTADO' ? 'text-emerald-700' : 'text-slate-700'}`}>Contado</span>
-                    <p className="text-[11px] text-slate-500 mt-1">Se cobra <strong>ahora</strong>: si el saldo a favor del cliente cubre el total, el documento nace pago; si no alcanza, queda pendiente de cobro inmediato.</p>
+                    <span className={`text-sm font-black uppercase ${docCond === 'CONTADO' ? 'text-emerald-700' : 'text-slate-700'}`}>Contado{restaCobrarFinal > 0.01 ? `: cobrar ahora ${simbolo} ${fmt(restaCobrarFinal)}` : ''}</span>
+                    <p className="text-[11px] text-slate-500 mt-1">El cliente paga <strong>todo ahora</strong>: el saldo a favor se aplica solo y lo que resta entra por los medios de pago, por ese importe exacto. Si no entra plata ahora, no es contado.</p>
                   </button>
                   <button type="button" onClick={() => setDocCond('CREDITO')}
                     className={`text-left rounded-xl border-2 p-4 transition-all ${docCond === 'CREDITO' ? 'border-amber-500 bg-amber-50 shadow-sm' : 'border-slate-200 bg-white hover:border-amber-300'}`}>
-                    <span className={`text-sm font-black uppercase ${docCond === 'CREDITO' ? 'text-amber-700' : 'text-slate-700'}`}>Crédito</span>
-                    <p className="text-[11px] text-slate-500 mt-1">El cliente paga <strong>después</strong>: el documento genera deuda en su estado de cuenta y se cobra por Pago de Deudas.</p>
+                    <span className={`text-sm font-black uppercase ${docCond === 'CREDITO' ? 'text-amber-700' : 'text-slate-700'}`}>Crédito{restaCobrarFinal > 0.01 ? `: dejar ${simbolo} ${fmt(restaCobrarFinal)} pendientes` : ''}</span>
+                    <p className="text-[11px] text-slate-500 mt-1">El saldo a favor se aplica solo y <strong>lo que resta queda debiendo</strong> en el documento: aparece en Cobrar / Registrar pago y en el estado de cuenta como saldo negativo.</p>
                   </button>
                 </div>
               </div>
@@ -1554,9 +1610,9 @@ export default function CierreCicloPreviewModal({
               <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
                 <h4 className="text-xs font-black uppercase tracking-widest text-slate-500 mb-1">Forma de pago</h4>
                 <p className="text-[11px] text-slate-400 mb-3">
-                  El saldo a favor de la <strong>cuenta principal</strong> se aplica solo, antes que nada; lo que cobres acá cancela el resto
-                  (si cobrás de más, el excedente queda como saldo a favor). Podés dejarlo vacío para que la factura
-                  se cubra solo con el saldo a favor.
+                  El saldo a favor de la <strong>cuenta principal</strong> se aplica solo, antes que nada. Los medios de abajo tienen que
+                  sumar <strong>exactamente lo que resta</strong>: ni menos (quedaría deuda en un contado) ni más (no se aceptan excedentes desde acá).
+                  Si no entra plata ahora, elegí Crédito.
                 </p>
 
                 {/* ¿De qué cuenta sale el saldo a favor que cubre la factura? */}

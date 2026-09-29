@@ -119,19 +119,31 @@
   elección (libre / restringido / fija); cobro (aparte = línea propia, o incluida en el
   precio cerrado). Cada opción concreta de técnica tiene su **artículo que la cotiza** y sus
   medidas como datos.
-- **RN-CFG.04** **Componentes** de confección (cuello, manga, puño, costado) con opciones
-  permitidas, una predeterminada y precio extra opcional. **Apliques** con posición,
-  técnica, opción, cantidad e "incluido".
-- **RN-CFG.05** **Variantes por combinación cartesiana** de opciones marcadas: código
-  autoasignado + código legible; precio calculado = base + extras, pisable con precio
-  manual por variante; **upsert que conserva** estado y overrides de las existentes; tope de
-  seguridad de combinaciones; las combinaciones inalcanzables no se borran solas (pueden
-  estar referenciadas) pero se reportan obsoletas.
+- **RN-CFG.04** **El molde vive en TizadaPro**, el sistema externo de tizadas (misma base de
+  datos del servidor, sin API). Piezas, talles, modelos (combinaciones de piezas), telas
+  permitidas por molde y por pieza, arte por pieza y consumo de tela son de TizadaPro; el
+  configurador **solo lo lee, nunca lo escribe**. Cada producto confeccionado se vincula a
+  su molde por la clave estable de TizadaPro (no por su número interno, que cambia al
+  restaurar la base). Si TizadaPro no se puede leer, la pantalla sigue y lo avisa.
+- **RN-CFG.05** Sobre el molde vinculado, el producto define **qué modelos se venden** (con
+  uno que se ofrece primero) y **qué telas se ofrecen**, siempre dentro de las que el molde
+  admite. El precio de la tela es el de la **lista de precios**: se muestra, pero no se
+  cambia desde el configurador (es competencia de Precios). Los
+  **apliques** (posición sobre una pieza del molde, técnica, opción, cantidad e "incluido")
+  se mantienen. No existen componentes ni variantes propias: dos telas o dos modelos del
+  mismo producto **no son dos artículos**.
 - **RN-CFG.06** **Ficha de diseño** imprimible, guardada como una unidad (todo o nada):
   referencia, marca, material (sugiere la tela del cliente), tallas, dibujo técnico propio
   (distinto de la foto de catálogo) con **anotaciones posicionadas en porcentaje**, campos
   libres etiqueta/valor, y **costuras** clasificadas con un catálogo chico de tipos ISO,
   con sugerencia automática por despiece.
+- **RN-CFG.07** **Árbol de productos**: el catálogo del configurador se ordena en tres
+  niveles, **Familia** (categoría de stock) → **Etiqueta** → **Producto**. La etiqueta dice
+  **para qué es** el producto (ej. Básquet, Fútbol, Vóley); lo que trae el nombre (FP, +B,
+  +DTF) es parte del nombre y no forma nivel del árbol. Una misma etiqueta sirve en varias
+  familias. Asignar, crear o renombrar una etiqueta se aplica al instante y no mueve ni
+  borra artículos; un producto puede no tener etiqueta. En este árbol nunca se muestran las
+  variantes de depósito ni el uso en órdenes.
 
 ## 6. Interacciones
 

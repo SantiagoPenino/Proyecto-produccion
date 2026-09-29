@@ -365,7 +365,11 @@ async function crearRetiro(transaction, { ordIds, totalCost, lugarRetiro, usuari
     ordIds.forEach((id, i) => ordDataReq.input(`ord${i}`, sql.Int, id));
     const ordDataRes = await ordDataReq.query(`
         SELECT od.OrdIdOrden, od.ProIdProducto, od.OrdCantidad, od.PagIdPago, od.MonIdMoneda, od.OrdCostoFinal,
-               o.EstadoDependencia
+               o.EstadoDependencia,
+               -- Pagada según la cobranza (mismo cruce que getPickupOrders del portal)
+               CASE WHEN EXISTS (SELECT 1 FROM dbo.PedidosCobranza pc WITH(NOLOCK)
+                                 WHERE pc.NoDocERP = od.OrdCodigoOrden AND pc.EstadoCobro = 'Pagado')
+                    THEN 1 ELSE 0 END AS CobPagado
         FROM   dbo.OrdenesDeposito od WITH(NOLOCK)
         LEFT JOIN dbo.Ordenes o WITH(NOLOCK) ON o.CodigoOrden = od.OrdCodigoOrden
         WHERE  od.OrdIdOrden IN (${ordParamsClause})
@@ -417,6 +421,17 @@ async function crearRetiro(transaction, { ordIds, totalCost, lugarRetiro, usuari
     const ordenesQueNecesitanCredito = [];
     for (const orden of ordenesData) {
         if (orden.PagIdPago) continue; // ya pagada
+        if (orden.CobPagado) {
+            logger.info(`[RETIRO] Orden ${orden.OrdIdOrden} pagada según la cobranza → cubierta, pasa.`);
+            continue;
+        }
+        // Costo 0 = no hay nada que cobrar → no frena en el pago (cualquier tipo de cliente).
+        // Antes solo pasaba si era rollo o si el libro mostraba metros descontados; si no,
+        // el retiro nacía FRENADO pidiendo pagar $0.
+        if ((parseFloat(orden.OrdCostoFinal) || 0) <= 0) {
+            logger.info(`[RETIRO] Orden ${orden.OrdIdOrden} con costo 0 → nada que cobrar, pasa.`);
+            continue;
+        }
 
         // Devolución de excedente de tela cliente: SIEMPRE $0 por diseño, nunca pasa por
         // caja aunque el cliente no tenga plan/rollo/billetera abiertos (ver

@@ -405,7 +405,9 @@ const OrderRouteTracker = ({ steps = [], title = "Hoja de Ruta (Flujo de Áreas)
                     const linealSteps = graph.linearSteps || rawSteps;
                     return (
                 <div className="overflow-x-auto pb-6 pt-2">
-                    <div className="flex items-start justify-center min-w-max px-4 mx-auto gap-0">
+                    {/* isolation: la fila arma su propia capa, así las líneas (-z-10) quedan delante del fondo blanco
+                        de la tarjeta (antes quedaban detrás y no se veían) y detrás de los círculos. */}
+                    <div className="flex items-start justify-center min-w-max px-4 mx-auto gap-0" style={{ isolation: 'isolate' }}>
                         {mostrarInicio && (
                             <div className="flex flex-col items-center relative shrink-0 pr-6 group">
                                 <div className="absolute top-7 left-14 w-6 h-1 -translate-y-1/2 -z-10 bg-slate-200"></div>

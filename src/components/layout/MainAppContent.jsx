@@ -50,7 +50,6 @@ const TransportControlPage = lazyWithRetry(() => import('../pages/TransportContr
 const EcoUvFinishing = lazyWithRetry(() => import('../pages/EcoUvFinishing'));
 const EcouvConfigPage = lazyWithRetry(() => import('../pages/EcouvConfigPage'));
 const ConfigurarProductosPage = lazyWithRetry(() => import('../pages/ConfigurarProductosPage')); // Configurador de productos (prendas/combos + EcoUV embebido)
-const MoldesPage = lazyWithRetry(() => import('../pages/MoldesPage')); // Moldes escalados: despiece del PDF del plotter + rotulado de piezas
 const PlanificacionPage = lazyWithRetry(() => import('../pages/PlanificacionPage')); // Agenda/calendario de capacidad por área
 const WebRetirosPage = lazyWithRetry(() => import('../logistics/WebRetirosPage'));
 const ClientsIntegration = lazyWithRetry(() => import('../pages/ClientsIntegration'));
@@ -97,7 +96,9 @@ const PedidoPrendaPage = lazyWithRetry(() => import('../pages/ventas/PedidoPrend
 const SolicitudesVendedorPage = lazyWithRetry(() => import('../pages/ventas/SolicitudesVendedorPage'));
 const SolicitudVendedorForm = lazyWithRetry(() => import('../pages/ventas/SolicitudVendedorForm'));
 const SolicitudVendedorDetalle = lazyWithRetry(() => import('../pages/ventas/SolicitudVendedorDetalle'));
+const SolicitudImprimible = lazyWithRetry(() => import('../pages/ventas/SolicitudImprimible'));
 const BandejaDisenoPage = lazyWithRetry(() => import('../pages/ventas/BandejaDisenoPage'));
+const SolicitudDisenoPage = lazyWithRetry(() => import('../pages/ventas/SolicitudDisenoPage'));
 const AuditDepositoView = lazyWithRetry(() => import('../pages/AuditDepositoView'));
 const AdminEditarOrdenView = lazyWithRetry(() => import('../pages/AdminEditarOrdenView'));
 const ContabilidadCuentasView    = lazyWithRetry(() => import('../pages/ContabilidadCuentasView'));
@@ -730,6 +731,8 @@ const MainAppContent = ({ menuItems = [] }) => {
                 <Route path="/ventas/solicitudes" element={<SolicitudesVendedorPage />} />
                 <Route path="/ventas/solicitudes/nueva" element={<SolicitudVendedorForm />} />
                 <Route path="/ventas/solicitudes/:id/editar" element={<SolicitudVendedorForm />} />
+                <Route path="/ventas/solicitudes/:id/imprimir" element={<SolicitudImprimible />} />
+                <Route path="/ventas/solicitudes/:id/diseno" element={<SolicitudDisenoPage />} />
                 <Route path="/ventas/solicitudes/:id" element={<SolicitudVendedorDetalle />} />
                 <Route path="/ventas/bandeja-diseno" element={<BandejaDisenoPage />} />
                 <Route path="/admin/duplicate-clients" element={<DuplicateClientsPage />} />
@@ -998,9 +1001,6 @@ const DynamicRouter = ({ menuItems }) => {
     // Configurador de Productos (11-ago): match directo por path hasta que exista el ítem
     // de menú (backend/scripts/menu_configurar_productos.sql, cuelga de Configuración).
     if (normalizedPath === '/configurar-productos') return <ConfigurarProductosPage />;
-    // Moldes escalados (15-sep): match directo por path hasta que exista el ítem
-    // de menú (backend/scripts/menu_moldes.sql, cuelga de Configuración).
-    if (normalizedPath === '/moldes') return <MoldesPage />;
     // Planificación (13-ago): match directo por path hasta que exista el ítem de menú
     // (backend/scripts/menu_planificacion.sql, cuelga de Producción).
     if (normalizedPath === '/produccion/planificacion') return <PlanificacionPage />;
@@ -1065,7 +1065,6 @@ const DynamicRouter = ({ menuItems }) => {
     if (menuItem.Ruta === '/produccion/terminaciones' || menuItem.Ruta === '/area/ecouv/terminaciones') return <Navigate to="/area/terminac" replace />;
     if (menuItem.Ruta === '/area/ecouv/config') return <EcouvConfigPage />;
     if (menuItem.Ruta === '/configurar-productos') return <ConfigurarProductosPage />;
-    if (menuItem.Ruta === '/moldes') return <MoldesPage />;
     if (menuItem.Ruta === '/produccion/planificacion') return <PlanificacionPage />;
     if (menuItem.Ruta === '/logistica' || menuItem.Ruta.toLowerCase() === '/logistica/') return <LogisticsDashboard />;
     if (menuItem.Ruta === '/ops/inventory') return <LogisticsDashboard />;

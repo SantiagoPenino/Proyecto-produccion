@@ -6,6 +6,7 @@ import { CirclePile, AlertTriangle } from "lucide-react";
 import { LayoutGrid, CalendarCheck, ScanLine, Truck, ListChecks, CalendarClock } from "lucide-react";
 import Tippy from '@tippyjs/react';
 import 'tippy.js/dist/tippy.css';
+import './areaProOscura.css'; // [SOLICITUDES] área PRO en oscuro (solo aplica con la clase area-pro-oscura)
 import Swal from 'sweetalert2';
 import { toast } from 'react-toastify';
 // Componentes de Vistas
@@ -1055,7 +1056,7 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
     );
 
     return (
-        <div className="absolute inset-0 flex flex-col bg-zinc-50 overflow-hidden font-sans text-zinc-800 z-10">
+        <div className={`absolute inset-0 flex flex-col bg-zinc-50 overflow-hidden font-sans text-zinc-800 z-10${isPro ? ' area-pro-oscura' : ''}`}>
             <StockRequestModal isOpen={isStockOpen} onClose={() => setIsStockOpen(false)} areaName={areaConfig.name} areaCode={areaKey} />
             <NewOrderModal isOpen={isNewOrderOpen} onClose={() => { setIsNewOrderOpen(false); refetch(); }} areaName={areaConfig.name} areaCode={areaKey} />
             {/* "Reportar falla" → solicitud a Servicio Técnico (máquina del área ya elegible + historial del área) */}
@@ -1108,6 +1109,15 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
                                 title="Abrir el formulario interno de pedido de prendas"
                             >
                                 <i className="fa-solid fa-plus"></i> <span className="tablet:hidden">Ingresar Orden</span><span className="hidden tablet:inline">Ingresar</span>
+                            </button>
+                        )}
+                        {isPro && (
+                            <button
+                                className={`${btnBaseClass} px-3 h-8 text-xs tablet:px-2 tablet:h-7 tablet:text-[11px] ${btnSecondaryClass}`}
+                                onClick={() => navigate('/ventas/solicitudes')}
+                                title="Abrir las solicitudes de los vendedores (lo que entra a producir)"
+                            >
+                                <i className="fa-solid fa-clipboard-list"></i> Solicitudes
                             </button>
                         )}
                         <button className={`${btnBaseClass} px-3 h-8 text-xs tablet:px-2 tablet:h-7 tablet:text-[11px] ${isActive('') ? btnPrimaryClass : btnSecondaryClass}`} onClick={() => goTo('')}><LayoutGrid size={14} /> Planilla</button>

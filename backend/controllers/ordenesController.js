@@ -271,11 +271,16 @@ const getClientePorIDReact = async (pool, idReactQR) => {
 
 
 // Helper: Buscar Producto Local por IDProdReact que llega en QR
-const getProductoPorIDReact = async (pool, idProdReactQR) => {
+// IDProdReact NO es único (mykonos new 567 = Cuadro canvas 25x25 349 = 121; Adis Deportivo
+// new 564 = Colocación de ojales 429 = 213): con TOP 1 sin orden, 18 SUB entraron a depósito
+// como Canvas/Ojales. Si se pasa codigoOrden, manda el artículo que la orden tiene en
+// producción (Ordenes.ProIdProducto) cuando es uno de los candidatos.
+const getProductoPorIDReact = async (pool, idProdReactQR, codigoOrden = null) => {
   const idNum = parseInt(String(idProdReactQR), 10);
   if (isNaN(idNum)) return null;
   const result = await pool.request()
     .input('IDProdReact', sql.Int, idNum)
+    .input('CodigoOrden', sql.VarChar(100), codigoOrden)
     .query(`
       SELECT TOP 1 a.ProIdProducto,
         LTRIM(RTRIM(a.Descripcion)) AS ProductoNombre,
@@ -283,6 +288,11 @@ const getProductoPorIDReact = async (pool, idProdReactQR) => {
         CASE ISNULL(a.MonIdMoneda, 1) WHEN 2 THEN 'USD' ELSE '$U' END AS MonSimbolo
       FROM Articulos a WITH(NOLOCK)
       WHERE a.IDProdReact = @IDProdReact
+      ORDER BY CASE WHEN EXISTS (
+                 SELECT 1 FROM dbo.Ordenes o WITH(NOLOCK)
+                 WHERE o.CodigoOrden = @CodigoOrden AND o.ProIdProducto = a.ProIdProducto
+               ) THEN 0 ELSE 1 END,
+               a.ProIdProducto
     `);
   return result.recordset.length > 0 ? result.recordset[0] : null;
 };
@@ -443,7 +453,7 @@ const createOrden = async (req, res) => {
         const clienteMapeado = await getClientePorIDReact(pool, CodigoClienteQR);
         if (!clienteMapeado) return res.status(404).json({ error: 'Cliente no mapeado o inexistente vía IDReact.' });
 
-        const productoMapeado = await getProductoPorIDReact(pool, IdProductoQR);
+        const productoMapeado = await getProductoPorIDReact(pool, IdProductoQR, CodigoOrden);
         if (!productoMapeado) return res.status(405).json({ error: 'Producto no mapeado o inexistente vía IDProdReact.' });
 
         // Para XSB/XDF: guardar el producto de Sheets (tela real), no el del QR
@@ -529,7 +539,7 @@ const createOrden = async (req, res) => {
     }
     const reqClientId = clienteMapeado.CliIdCliente;
 
-    const productoMapeado = await getProductoPorIDReact(pool, IdProductoQR);
+    const productoMapeado = await getProductoPorIDReact(pool, IdProductoQR, CodigoOrden);
     if (!productoMapeado) {
       return res.status(405).json({ error: 'Producto no encontrado asociando IDProdReact.' });
     }
@@ -1238,7 +1248,7 @@ const parseQROrden = async (req, res) => {
     }
 
     // Buscar Producto Validado por su Helper
-    const productoData = await getProductoPorIDReact(pool, IdProductoQR);
+    const productoData = await getProductoPorIDReact(pool, IdProductoQR, CodigoOrden);
 
     if (!productoData) {
       return res.status(404).json({ valid: false, error: 'Producto Web (IDProdReact) no encontrado en base local.' });

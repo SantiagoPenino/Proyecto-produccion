@@ -62,6 +62,7 @@ const contabilidadSvc  = require('./contabilidadService');
 const contabilidadCore = require('./contabilidadCore'); // ERP + resolverLineasDesdeMotor
 const motorContable    = require('./motorContable');     // Motor de Eventos: fuente de verdad
 const { estamparAreaLineas } = require('./areaLineaService');
+const { resolverCuentaDineroCliente } = require('./cuentaDineroCliente');
 const { absorberSobregiroEnPlan } = require('./planSobregiroService');
 
 
@@ -1624,7 +1625,8 @@ async function procesarTransaccion(payload) {
 
              const docIdDocumento = await contabilidadCore.crearDocumentoContable({
                header: {
-                 cueIdCuenta: isOrdenUSD ? 119 : 118,
+                 // Cuenta de dinero DEL CLIENTE (antes 119/118 fijas: cuentas de otros clientes)
+                 cueIdCuenta: await resolverCuentaDineroCliente({ clienteId: header.clienteId || 1, monedaId, transaction }),
                  clienteId: header.clienteId || 1,
                  monedaId: monedaId,
                  tipo: tipoDocVal,
@@ -1798,6 +1800,9 @@ async function procesarTransaccion(payload) {
                     CueTipo:        isOrdenUSD ? 'DINERO_USD' : 'DINERO_UYU',
                   }, transaction);
                   pagosPreviosOrden = vinc.total || 0;
+                  // La deuda POR ORDEN se cierra: desde acá la deuda es la del documento
+                  // (si no, quedaba VENCIDO para siempre y aparecía como "orden sin facturar").
+                  await contabilidadSvc.cerrarDeudasPorOrdenFacturada({ DocIdDocumento: docIdDocumento, OrdIds: allOdIds }, transaction);
                 }
                 logger.info(`[CAJA-CFE] Linked ORDEN/ORDEN_ANTICIPO movements to DocIdDocumento=${docIdDocumento}`);
               }
@@ -2499,10 +2504,10 @@ async function generarCFEDesdeOrdenesDirectas({ orderIds, clienteId, monto, mone
       WHERE CliIdCliente = @cli AND CueTipo = @tipo AND CueActiva = 1
       ORDER BY CueEsPrincipal DESC, CueIdCuenta ASC
     `);
-  // Fallback a cuentas genéricas si el cliente aún no tiene cuenta propia
+  // Sin cuenta propia se le crea (antes caía a 119/118, cuentas de otros clientes)
   const cueIdCuenta = cueRes.recordset.length > 0
     ? cueRes.recordset[0].CueIdCuenta
-    : (monedaId === 2 ? 119 : 118);
+    : await resolverCuentaDineroCliente({ clienteId, monedaId });
 
   // 6 + 7. Resolver líneas de detalle fiscal desde OrdenesDeposito e insertar DocumentosContables
   const lineasCFEDirectas = await contabilidadCore.resolverLineasDetalle({
@@ -2570,6 +2575,8 @@ async function generarCFEDesdeOrdenesDirectas({ orderIds, clienteId, monto, mone
     OrdIds:         allMcOrdIds,
     CueTipo:        Number(monedaId) === 2 ? 'DINERO_USD' : 'DINERO_UYU',
   });
+  // La deuda POR ORDEN se cierra: desde acá la deuda es la del documento.
+  await contabilidadSvc.cerrarDeudasPorOrdenFacturada({ DocIdDocumento: docId, OrdIds: allMcOrdIds });
 
   // Query order details for the descriptive concept
   let orderDetails = [];
@@ -2671,20 +2678,24 @@ async function generarCFEDesdeOrdenesDirectas({ orderIds, clienteId, monto, mone
  *     (para los ingresos genéricos "Consumidor Final" no hay ninguno → no-op).
  *   - Asiento contable   → Cont_AsientosCabecera.AsiEstado = 0 (excluye el de egresos).
  */
-async function anularReciboInterno({ tcaId, usuarioId, motivo }) {
+async function anularReciboInterno({ tcaId, usuarioId, motivo, transaction: txExterna = null }) {
   if (!tcaId) throw new Error('tcaId es obligatorio.');
 
+  // Con `transaction` externa (anulación de un documento desde la bandeja CFE) se trabaja
+  // adentro de ella y NO se confirma ni se revierte acá: lo decide el llamador.
   const pool = await getPool();
-  const transaction = pool.transaction();
-  await transaction.begin();
+  const transaction = txExterna || pool.transaction();
+  if (!txExterna) await transaction.begin();
 
   try {
-    // 1. Validar existencia y que no esté ya anulado
+    // 1. Validar existencia y que no esté ya anulado (se guarda la observación ORIGINAL:
+    //    sirve para reconocer el excedente viejo del paso 5.a-bis, antes de que el paso 3 la pise)
     const tcaRes = await new sql.Request(transaction)
       .input('TcaId', sql.Int, tcaId)
-      .query(`SELECT TcaEstado FROM dbo.TransaccionesCaja WITH(UPDLOCK) WHERE TcaIdTransaccion = @TcaId`);
+      .query(`SELECT TcaEstado, TcaObservaciones, TcaFecha, TcaClienteId FROM dbo.TransaccionesCaja WITH(UPDLOCK) WHERE TcaIdTransaccion = @TcaId`);
     if (!tcaRes.recordset.length) throw new Error(`Recibo ${tcaId} no encontrado.`);
     if (tcaRes.recordset[0].TcaEstado === 'ANULADO') throw new Error('El recibo ya está anulado.');
+    const tcaOriginal = tcaRes.recordset[0];
 
     // 2. Bloquear si existe un CFE aceptado por DGI vinculado
     const docsRes = await new sql.Request(transaction)
@@ -2731,6 +2742,39 @@ async function anularReciboInterno({ tcaId, usuarioId, motivo }) {
         .input('CueId',   sql.Int,           mov.CueIdCuenta)
         .input('Importe', sql.Decimal(18,4), mov.MovImporte)
         .query(`UPDATE dbo.CuentasCliente SET CueSaldoActual = CueSaldoActual - @Importe WHERE CueIdCuenta = @CueId`);
+    }
+
+    // 5.a-bis EXCEDENTE VIEJO. Hasta el 28-09-2026 el "Saldo a favor por pago excedente"
+    //     del pago de deudas se registraba sin PagIdPago ni documento, así que el filtro de
+    //     arriba no lo alcanzaba y quedaba vivo al anular el cobro (Mazzoni PC-4851, +1.009,86
+    //     fantasma). Los nuevos ya nacen atados al pago; los viejos se reconocen por su
+    //     concepto (que lleva la observación original de la transacción), la cuenta del
+    //     mismo cliente y la fecha (a menos de 5 minutos de la transacción).
+    const excViejosRes = await new sql.Request(transaction)
+      .input('TcaId',   sql.Int,            tcaId)
+      .input('Cli',     sql.Int,            tcaOriginal.TcaClienteId)
+      .input('Concepto', sql.NVarChar(300), ('Saldo a favor por pago excedente - ' + (tcaOriginal.TcaObservaciones || 'Pago de deuda')).substring(0, 300))
+      .input('Fecha',   sql.DateTime,       tcaOriginal.TcaFecha)
+      .query(`
+        SELECT m.MovIdMovimiento, m.CueIdCuenta, m.MovImporte
+        FROM dbo.MovimientosCuenta m
+        JOIN dbo.CuentasCliente cc ON cc.CueIdCuenta = m.CueIdCuenta AND cc.CliIdCliente = @Cli
+        WHERE (m.MovAnulado IS NULL OR m.MovAnulado = 0)
+          AND m.MovTipo = 'ANTICIPO' AND m.PagIdPago IS NULL AND m.DocIdDocumento IS NULL
+          AND m.MovConcepto = @Concepto
+          AND ABS(DATEDIFF(SECOND, @Fecha, m.MovFecha)) <= 300`);
+    for (const mov of excViejosRes.recordset) {
+      await new sql.Request(transaction)
+        .input('Mid', sql.Int, mov.MovIdMovimiento)
+        .input('TcaId', sql.Int, tcaId)
+        .query(`UPDATE dbo.MovimientosCuenta SET MovAnulado = 1,
+                  MovObservaciones = LEFT(ISNULL(MovObservaciones,'') + ' | Anulado con el cobro TCA ' + CAST(@TcaId AS VARCHAR(20)), 500)
+                WHERE MovIdMovimiento = @Mid`);
+      await new sql.Request(transaction)
+        .input('CueId',   sql.Int,           mov.CueIdCuenta)
+        .input('Importe', sql.Decimal(18,4), mov.MovImporte)
+        .query(`UPDATE dbo.CuentasCliente SET CueSaldoActual = CueSaldoActual - @Importe WHERE CueIdCuenta = @CueId`);
+      logger.info(`[CAJA] Recibo ${tcaId}: excedente viejo ${mov.MovIdMovimiento} (${Number(mov.MovImporte).toFixed(2)}) anulado con el cobro.`);
     }
 
     // 5.b DEVOLVERLE LA DEUDA A LOS DOCUMENTOS QUE ESTE COBRO HABÍA PAGADO.
@@ -2823,7 +2867,7 @@ async function anularReciboInterno({ tcaId, usuarioId, motivo }) {
         SET DocEstado = 'ANULADO'
         WHERE TcaIdTransaccion = @TcaId AND ISNULL(DocEstado,'') <> 'ANULADO'`);
 
-    await transaction.commit();
+    if (!txExterna) await transaction.commit();
     const nDeudas = impRes.recordset.length;
     const impRepuesto = impRes.recordset.reduce((s, i) => s + Number(i.Repone || 0), 0);
     logger.info(`[CAJA] 🔄 Recibo interno ${tcaId} anulado por usuario ${usuarioId} (${movsRes.recordset.length} movs revertidos, ${nDeudas} deuda(s) repuesta(s) por ${impRepuesto.toFixed(2)}).`);
@@ -2837,7 +2881,7 @@ async function anularReciboInterno({ tcaId, usuarioId, motivo }) {
     };
 
   } catch (err) {
-    try { await transaction.rollback(); } catch (_) {}
+    if (!txExterna) { try { await transaction.rollback(); } catch (_) {} }
     logger.error(`[CAJA] ❌ anularReciboInterno: ${err.message}`);
     throw err;
   }

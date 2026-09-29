@@ -5,6 +5,7 @@ import { Loader2, Palette, RefreshCw, Users } from 'lucide-react';
 import { solicitudesVendedorService as svc } from '../../../services/modules/solicitudesVendedorService';
 import { fmtFechaHora } from '../../../utils/fechas';
 import OrderDetailModal from '../../production/components/OrderDetailModal';
+import './fichaPedido.css';
 import { BTN_PRIMARIO, BTN_SECUNDARIO, ESTADO_PARTE, NOMBRE_PARTE, Pill, PillModificada, TIPO_TRABAJO, errorDe } from './solicitudesComunes';
 
 /**
@@ -45,15 +46,17 @@ export default function BandejaDisenoPage() {
     const tomar = async (pa) => {
         if (!window.confirm(`Vas a tomar "${NOMBRE_PARTE[pa.Tipo]}" de ${pa.ClienteNombre} (${pa.NombreTrabajo}). Queda a tu nombre y deja de estar disponible para los demás diseñadores.${pa.Modificada ? '\n\nTiene un cambio del vendedor: al tomarlo lo das por aceptado.' : ''} ¿Tomarlo?`)) return;
         setBusy(true);
-        try { await svc.tomar(pa.ParteID); toast.success('Trabajo tomado: quedó a tu nombre.'); navigate(`/ventas/solicitudes/${pa.SolicitudID}`); }
+        try { await svc.tomar(pa.ParteID); toast.success('Trabajo tomado: quedó a tu nombre.'); navigate(`/ventas/solicitudes/${pa.SolicitudID}/diseno`); }
         catch (e) { toast.error(errorDe(e)); await cargar(); }
         finally { setBusy(false); }
     };
 
-    if (!perfil) return <div className="p-10 flex justify-center"><Loader2 className="animate-spin text-indigo-500" /></div>;
+    if (!perfil) return <div className="fp fp-oscuro"><div className="p-10 flex justify-center"><Loader2 className="animate-spin" /></div></div>;
 
     return (
-        <div className="p-4 md:p-6 space-y-4">
+        <>
+        <div className="fp fp-oscuro">
+        <div className="space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
                     <h1 className="text-xl font-black text-slate-800 flex items-center gap-2"><Palette size={22} className="text-indigo-500" /> Bandeja de Diseño</h1>
@@ -72,7 +75,7 @@ export default function BandejaDisenoPage() {
             ) : (
                 <>
                     <Tabla titulo={`Mis trabajos (${data.mias.length})`} vacio="No tenés trabajos tomados." rows={data.mias} mias
-                        accion={(pa) => <button onClick={() => navigate(`/ventas/solicitudes/${pa.SolicitudID}`)} className={BTN_PRIMARIO}>{pa.Modificada ? 'Abrir y aceptar el cambio' : pa.Estado === 'DISENADO' ? 'Abrir (sustituir archivo)' : 'Abrir y subir el diseño'}</button>} />
+                        accion={(pa) => <button onClick={() => navigate(`/ventas/solicitudes/${pa.SolicitudID}/diseno`)} className={BTN_PRIMARIO}>{pa.Modificada ? 'Abrir y aceptar el cambio' : pa.Estado === 'DISENADO' ? 'Abrir (sustituir archivo)' : 'Abrir y subir el diseño'}</button>} />
                     <Tabla titulo={`Disponibles para tomar (${data.disponibles.length})`} vacio="No hay trabajos esperando en la bandeja." rows={data.disponibles}
                         accion={(pa) => (
                             <span className="inline-flex gap-1">
@@ -83,9 +86,12 @@ export default function BandejaDisenoPage() {
                     <EnProduccion rows={enProduccion} onVerSolicitud={(sid) => navigate(`/ventas/solicitudes/${sid}`)} onAbrir={(o) => setFicha({ id: o.OrdenID, area: o.AreaID, codigo: o.CodigoOrden, cliente: o.Cliente })} />
                 </>
             )}
-            {/* La MISMA ficha que se abre con el ojito en el área: desde acá se sube la matriz / el boceto / el arte. */}
-            <OrderDetailModal order={ficha} onClose={() => { setFicha(null); cargar(); }} onOrderUpdated={cargar} />
         </div>
+        </div>
+            {/* La MISMA ficha que se abre con el ojito en el área: desde acá se sube la matriz / el boceto / el arte.
+                Va fuera del tema oscuro: es una pantalla de producción y se ve igual que en las áreas. */}
+            <OrderDetailModal order={ficha} onClose={() => { setFicha(null); cargar(); }} onOrderUpdated={cargar} />
+        </>
     );
 }
 

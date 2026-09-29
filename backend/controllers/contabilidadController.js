@@ -607,6 +607,27 @@ exports.actualizarConfigCuenta = async (req, res) => {
  * GET /api/contabilidad/cuentas/:CueIdCuenta/movimientos
  * Query params: ?desde=YYYY-MM-DD&hasta=YYYY-MM-DD&top=100
  */
+// Saldo REAL de una cuenta de dinero según el libro: suma de movimientos vivos sin ORDEN ni
+// ORDEN_ANTICIPO. Es la misma fórmula con la que el backend aplica el saldo a favor a una
+// deuda nueva (crearDeudaDocumento), así la pre-factura muestra lo mismo que después pasa.
+// CuentasCliente.CueSaldoActual NO sirve para esto (en prod suma las ORDEN).
+exports.getSaldoLibroCuenta = async (req, res) => {
+  try {
+    const cue = parseInt(req.params.CueIdCuenta, 10);
+    if (!cue) return res.status(400).json({ success: false, error: 'Cuenta inválida' });
+    const pool = await getPool();
+    const r = await pool.request().input('Cue', sql.Int, cue).query(`
+      SELECT ISNULL(SUM(MovImporte), 0) AS Saldo
+      FROM dbo.MovimientosCuenta WITH(NOLOCK)
+      WHERE CueIdCuenta = @Cue AND (MovAnulado IS NULL OR MovAnulado = 0)
+        AND MovTipo NOT IN ('ORDEN', 'ORDEN_ANTICIPO')`);
+    res.json({ success: true, data: { CueIdCuenta: cue, saldo: Number(r.recordset[0]?.Saldo || 0) } });
+  } catch (err) {
+    logger.error('[CONTAB] getSaldoLibroCuenta:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
+
 exports.getMovimientos = async (req, res) => {
   try {
     const { CueIdCuenta } = req.params;
@@ -4532,10 +4553,9 @@ exports.consumirDesdeSaldo = async (req, res) => {
       // Contra-asiento: revierte la venta asentada al entrar la ORDEN (la definitiva la pone
       // la carga prepago o "Facturar consumos" — criterio: venta al facturar)
       await asientoVentaOrdenBilletera(transaction, { importe: importeOrden, monedaId: monOrden, clienteId: mov.CliIdCliente, concepto: `${codigo} cubierta por ${nomCta}`, reversa: true });
-      // La orden queda paga y el retiro puede salir Abonado
+      // El retiro puede salir Abonado. El estado de la ORDEN no se toca (pago ≠ estado).
       if (mov.OrdIdOrden) {
         await new sql.Request(transaction).input('Id', sql.Int, mov.OrdIdOrden).query(`
-          UPDATE dbo.OrdenesDeposito SET OrdEstadoActual = CASE WHEN OrdEstadoActual = 1 THEN 7 ELSE OrdEstadoActual END WHERE OrdIdOrden = @Id;
           UPDATE r SET OReEstadoActual = CASE WHEN OReEstadoActual = 1 THEN 3 WHEN OReEstadoActual = 5 THEN 8 ELSE OReEstadoActual END
           FROM dbo.OrdenesRetiro r JOIN dbo.OrdenesDeposito d ON d.OReIdOrdenRetiro = r.OReIdOrdenRetiro
           WHERE d.OrdIdOrden = @Id AND NOT EXISTS (
@@ -4638,10 +4658,7 @@ exports.consumirOrdenDesdeSaldoEnPartes = async ({ movId, partes, cot, UsuarioAl
       if (mov.OrdIdOrden) await svc.cancelarDeuda({ ordId: mov.OrdIdOrden, cueId: mov.CueIdCuenta }, transaction);
       // Contra-asiento por el TOTAL de la orden (igual que el consumo de una sola cuenta)
       await asientoVentaOrdenBilletera(transaction, { importe: importeOrden, monedaId: monOrden, clienteId: mov.CliIdCliente, concepto: `${codigo} cubierta por ${nombres.join(' + ')}`, reversa: true });
-      if (mov.OrdIdOrden) {
-        await new sql.Request(transaction).input('Id', sql.Int, mov.OrdIdOrden).query(`
-          UPDATE dbo.OrdenesDeposito SET OrdEstadoActual = CASE WHEN OrdEstadoActual = 1 THEN 7 ELSE OrdEstadoActual END WHERE OrdIdOrden = @Id;`);
-      }
+      // El estado de la ORDEN no se toca: el pago es independiente del estado.
       await transaction.commit();
       logger.info(`[CONSUMO_SALDO] MovId=${movId} orden=${codigo} repartida entre ${partes.length} billeteras: ${partes.map(p => `"${p.cuenta}" -${p.mon === 2 ? 'US$' : '$'} ${Number(p.importeCta).toFixed(2)}`).join(' + ')} (consumos ${refs.join(', ')}).`);
       return { code: 200, success: true, data: { consumoIds: refs } };
@@ -4937,8 +4954,7 @@ exports.consumoManualCuenta = async (req, res) => {
           .query('UPDATE dbo.MovimientosCuenta SET MovObservaciones = @Obs WHERE MovIdMovimiento = @M');
         if (ordenMov.OrdIdOrden) await svc.cancelarDeuda({ ordId: ordenMov.OrdIdOrden, cueId: ordenMov.CueIdCuenta }, transaction);
         // (ciclo: el cierre ignora la ORDEN por la marca CUBIERTO_CUENTA; no se tocan totales)
-        if (od?.OrdIdOrden) await new sql.Request(transaction).input('Id', sql.Int, od.OrdIdOrden)
-          .query('UPDATE dbo.OrdenesDeposito SET OrdEstadoActual = CASE WHEN OrdEstadoActual = 1 THEN 7 ELSE OrdEstadoActual END WHERE OrdIdOrden = @Id');
+        // El estado de la ORDEN no se toca: el pago es independiente del estado.
         // Contra-asiento: revierte la venta asentada al entrar la ORDEN (criterio: venta al facturar)
         await asientoVentaOrdenBilletera(transaction, { importe: Math.abs(Number(ordenMov.MovImporte)), monedaId: ordenMov.MonOrden, clienteId: c.CliIdCliente, concepto: `${codigo} cubierta por ${nomCta}`, reversa: true });
         detalle = ` La orden ${codigo} queda PAGA y sale de "pendiente de facturar".`;

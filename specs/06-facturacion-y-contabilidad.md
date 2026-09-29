@@ -216,6 +216,20 @@ ANULADO (solo si NUNCA llegó a DGI)
   cierre. Pre-factura multimoneda: las órdenes de otras cuentas se **trasladan** a la
   cuenta base con nota de trazabilidad (sin mover plata) — sin esto quedaban "pendientes
   de facturar" tras haberse cobrado (doble cobro).
+- **RN-FAC.26** (28-sep-2026) **Contado y crédito en la pre-factura**. El saldo a favor
+  de la cuenta principal (medido por el libro: movimientos vivos sin ORDEN, misma fórmula
+  que aplica el backend) se aplica solo, antes que nada. **Contado** = el cliente paga todo
+  al emitir: los medios de pago deben sumar **exactamente** lo que resta; sin medios o con
+  otro importe no se emite. **Crédito** = lo que resta queda pendiente en el documento y
+  aparece en cobranzas y en el estado de cuenta como saldo negativo. Un "contado sin plata"
+  no existe: es crédito. Desde la pre-factura nunca se registra excedente: el pago de
+  deudas con `permitirExcedente: false` rechaza cobrar de más.
+- **RN-FAC.27** (28-sep-2026) **Anular un documento anula los cobros hechos sobre él**:
+  las transacciones de caja cuyas imputaciones cubren solo deudas de ese documento se
+  anulan enteras (transacción, pagos, recibo, movimientos, excedente y asiento). Si un
+  cobro también cubría otros documentos, se conserva y la bandeja avisa. El "saldo a favor
+  por pago excedente" nace atado al pago que lo generó; los anteriores se reconocen por
+  concepto, cliente y fecha al anular el cobro.
 
 ## 7. Plan de cuentas, motor y asientos
 

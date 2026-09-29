@@ -53,6 +53,7 @@ router.put('/cuentas/:CueIdCuenta/articulos-permitidos', ctrl.setArticulosPermit
 router.patch('/cuentas/:CueIdCuenta/configuracion', ctrl.actualizarConfigCuenta);
 router.patch('/clientes/:CliIdCliente/dgi', ctrl.actualizarClienteDGI);
 router.get('/cuentas/:CueIdCuenta/movimientos', ctrl.getMovimientos);
+router.get('/cuentas/:CueIdCuenta/saldo-libro', ctrl.getSaldoLibroCuenta);   // saldo real (libro sin ORDEN) para la pre-factura
 router.post('/movimientos/ajuste', ctrl.registrarAjusteManual);
 router.post('/movimientos/pago-anticipado', ctrl.registrarPagoAnticipado);
 router.post('/movimientos/saldo-inicial', ctrl.registrarSaldoInicial);
@@ -120,6 +121,11 @@ router.get('/reportes/top-clientes-detalle',  reportesVentasCtrl.getTopClientesD
 router.get('/reportes/top-productos',         reportesVentasCtrl.getTopProductos);
 router.get('/reportes/top-productos-detalle', reportesVentasCtrl.getTopProductosDetalle);
 router.get('/reportes/arbol-ventas',          reportesVentasCtrl.getArbolVentas);
+// Resumen Mensual: evolución del año + comparación con el año anterior (maqueta 28-sep-2026).
+// Las ventas históricas (año anterior, cargadas a mano) solo las edita Admin / Administracion.
+router.get('/reportes/ventas-mensuales',      reportesVentasCtrl.getVentasMensuales);
+router.get('/reportes/ventas-historicas',     reportesVentasCtrl.getVentasHistoricas);
+router.put('/reportes/ventas-historicas',     soloInternoConRol(['Admin', 'Administracion']), reportesVentasCtrl.guardarVentasHistoricas);
 // Configuración de sectores comerciales y clasificación del catálogo de artículos
 router.get('/reportes/sectores',              reportesVentasCtrl.getSectores);
 router.post('/reportes/sectores',             reportesVentasCtrl.guardarSector);

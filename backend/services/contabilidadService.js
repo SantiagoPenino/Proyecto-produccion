@@ -2179,6 +2179,8 @@ async function getDeudasPorCliente(CliIdCliente, modo = 'TODO') {
       WHERE cc.CliIdCliente = @CliIdCliente
         AND d.DDeEstado IN ('PENDIENTE', 'PARCIAL', 'VENCIDO')
         AND d.DDeImportePendiente > 0.01
+        -- orden ya facturada = no es deuda (ver SQL_EXCLUIR_ORDEN_YA_FACTURADA)
+        AND ${SQL_EXCLUIR_ORDEN_YA_FACTURADA('d')}
         -- Neutraliza el bug de DeudaDocumento DUPLICADA (el cierre de ciclo con cambio de precio genera
         -- 2 filas por el mismo documento → el cobro sumaba doble). Criterio del equipo (fix_saldo_por_cliente.sql):
         -- LA FACTURA MANDA → por cada documento dejamos SOLO la fila cuyo importe original coincide con el
@@ -2894,6 +2896,8 @@ async function getTodasLasDeudasVivas() {
       LEFT JOIN dbo.Ordenes ordERP WITH(NOLOCK) ON ordERP.OrdenID = d.OrdIdOrden
       WHERE d.DDeEstado IN ('PENDIENTE', 'PARCIAL', 'VENCIDO')
         AND d.DDeImportePendiente > 0.01
+        -- orden ya facturada = no es deuda (ver SQL_EXCLUIR_ORDEN_YA_FACTURADA)
+        AND ${SQL_EXCLUIR_ORDEN_YA_FACTURADA('d')}
       -- Más reciente primero (dentro de cada cliente). DDeIdDocumento desempata para que
       -- el orden sea estable: varias deudas del mismo día no se barajan entre recargas.
       ORDER BY cli.Nombre ASC, d.DDeFechaEmision DESC, d.DDeIdDocumento DESC
@@ -2995,6 +2999,8 @@ async function getAntiguedadDeuda(modo = 'TODO') {
     JOIN      dbo.DeudaDocumento d   ON d.CueIdCuenta   = c.CueIdCuenta
                                     AND d.DDeEstado IN ('PENDIENTE', 'VENCIDO', 'PARCIAL')
                                     ${filtroCondicion}
+                                    -- orden ya facturada = no es deuda (ver SQL_EXCLUIR_ORDEN_YA_FACTURADA)
+                                    AND ${SQL_EXCLUIR_ORDEN_YA_FACTURADA('d')}
     WHERE c.CueActiva = 1
       AND c.CueTipo IN ('DINERO_UYU', 'DINERO_USD', 'CORRIENTE', 'CREDITO')
     GROUP BY c.CliIdCliente, cli.Nombre, c.CueTipo, mon.MonSimbolo, cli.VendedorID
@@ -3717,9 +3723,10 @@ async function cerrarCicloCompleto({
           ${linkQueryAdd}
       `);
 
-      // Factura nacida TOTALMENTE cubierta por el saldo a favor → sus órdenes quedan PAGAS
-      // y el retiro Abonado. Sin esto seguían "cobrables" en caja y se facturaban de nuevo
+      // Factura nacida TOTALMENTE cubierta por el saldo a favor → el retiro queda Abonado.
+      // Sin esto seguían "cobrables" en caja y se facturaban de nuevo
       // (caso SUB-12304: ET-4059 del cierre + ET-4060 del cobro del retiro, 24-ago-2026).
+      // El estado de la ORDEN no se toca: el pago es independiente del estado.
       if (importePendiente <= 0.01) {
         try {
           const ordsCubiertas = await pool.request()
@@ -3730,10 +3737,6 @@ async function cerrarCicloCompleto({
             // OrdIdOrden puede apuntar a Ordenes (ERP): la fila real del depósito se resuelve
             // también por código, siempre acotada al cliente del ciclo.
             await pool.request().input('Id', sql.Int, o.OrdIdOrden).input('Cli', sql.Int, ciclo.CliIdCliente).query(`
-              UPDATE od SET od.OrdEstadoActual = CASE WHEN od.OrdEstadoActual = 1 THEN 7 ELSE od.OrdEstadoActual END
-              FROM dbo.OrdenesDeposito od
-              WHERE od.CliIdCliente = @Cli
-                AND (od.OrdIdOrden = @Id OR od.OrdCodigoOrden IN (SELECT CodigoOrden FROM dbo.Ordenes WITH(NOLOCK) WHERE OrdenID = @Id));
               UPDATE r SET OReEstadoActual = CASE WHEN OReEstadoActual = 1 THEN 3 WHEN OReEstadoActual = 5 THEN 8 ELSE OReEstadoActual END
               FROM dbo.OrdenesRetiro r
               JOIN dbo.OrdenesDeposito d ON d.OReIdOrdenRetiro = r.OReIdOrdenRetiro
@@ -5152,14 +5155,11 @@ async function consumirPrepagoDelCiclo(pool, {
           .input('Obs', sql.NVarChar(500), `CUBIERTO_CUENTA_${consumosAHacer[0].cueId} (cierre ciclo #${CicIdCiclo}) ${refs.map(id => `Ref#${id}`).join(' ')}`)
           .query('UPDATE dbo.MovimientosCuenta SET MovObservaciones = @Obs WHERE MovIdMovimiento = @M');
       }
-      // Orden paga + retiro Abonado (mismo criterio que una orden cubierta al ingreso)
+      // Retiro Abonado (mismo criterio que una orden cubierta al ingreso). El estado de la
+      // ORDEN no se toca: el pago es independiente del estado (sigue su curso → aviso).
       const idRef = ordIdDeposito || ord.OrdIdOrden;
       if (idRef) {
         await pool.request().input('Id', sql.Int, idRef).input('Cli', sql.Int, CliIdCliente).query(`
-          UPDATE od SET od.OrdEstadoActual = CASE WHEN od.OrdEstadoActual = 1 THEN 7 ELSE od.OrdEstadoActual END
-          FROM dbo.OrdenesDeposito od
-          WHERE od.CliIdCliente = @Cli
-            AND (od.OrdIdOrden = @Id OR od.OrdCodigoOrden IN (SELECT CodigoOrden FROM dbo.Ordenes WITH(NOLOCK) WHERE OrdenID = @Id));
           UPDATE r SET OReEstadoActual = CASE WHEN OReEstadoActual = 1 THEN 3 WHEN OReEstadoActual = 5 THEN 8 ELSE OReEstadoActual END
           FROM dbo.OrdenesRetiro r
           JOIN dbo.OrdenesDeposito d ON d.OReIdOrdenRetiro = r.OReIdOrdenRetiro
@@ -5452,13 +5452,11 @@ async function resincronizarConsumosBilletera({ OrdIdOrden, UsuarioAlta = 70, nu
     }
   }
 
-  // 7) Estado de la orden: con resto vuelve a pendiente; cubierta entera queda pronta
+  // 7) Estado de la orden: con resto vuelve a pendiente (limpia el 7 que ponía el código
+  //    viejo). Cubierta entera NO toca el estado: el pago es independiente del estado.
   if (restoDespues > 0.009) {
     await rq().input('Id', sql.Int, od.OrdIdOrden)
       .query('UPDATE dbo.OrdenesDeposito SET OrdEstadoActual = CASE WHEN OrdEstadoActual = 7 THEN 1 ELSE OrdEstadoActual END WHERE OrdIdOrden = @Id AND PagIdPago IS NULL');
-  } else {
-    await rq().input('Id', sql.Int, od.OrdIdOrden)
-      .query('UPDATE dbo.OrdenesDeposito SET OrdEstadoActual = CASE WHEN OrdEstadoActual = 1 THEN 7 ELSE OrdEstadoActual END WHERE OrdIdOrden = @Id');
   }
 
   const mensaje = detalle.length ? `Billetera re-sincronizada: ${detalle.join('; ')}.` : null;
@@ -5754,7 +5752,66 @@ async function vincularPagosPorOrdenAlDocumento({ DocIdDocumento, CliIdCliente, 
   return { total, movimientos: (res.recordset || []).length };
 }
 
+/**
+ * cerrarDeudasPorOrdenFacturada
+ * ----------------------------------------------------------------------------
+ * Al emitir un documento por un conjunto de órdenes, la deuda POR ORDEN de cada
+ * una (DeudaDocumento con OrdIdOrden y sin DocIdDocumento) deja de existir: la
+ * deuda pasa a ser la del documento (si es a crédito, nace su propia fila; si es
+ * contado, se cobró en caja). Sin esto la fila por orden quedaba VENCIDO para
+ * siempre y Antigüedad / Cobranzas la mostraban como "orden sin facturar" (caso
+ * Micaela Tripicchio SUB-20323, 28-sep-2026: facturada en ET-8100 y cobrada por
+ * Mercado Pago, seguía vencida; en local había 1.701 así por US$ 48.868 + $ 50.344).
+ * Se marca CANCELADA (mismo estado que usa cancelarDeuda) y no COBRADO, porque
+ * anular el documento vuelve a abrir las deudas CANCELADA de la orden
+ * (contabilidadController ~4729) — con COBRADO no se reabrirían.
+ * @param {object} p
+ * @param {number}   p.DocIdDocumento
+ * @param {number[]} p.OrdIds  OrdIdOrden de las órdenes que entran al documento
+ * @returns {Promise<number>} filas cerradas
+ */
+async function cerrarDeudasPorOrdenFacturada({ DocIdDocumento, OrdIds }, transaction = null) {
+  const ids = (OrdIds || []).map(Number).filter(n => Number.isInteger(n) && n > 0);
+  if (!DocIdDocumento || ids.length === 0) return 0;
+  const pool = await getPool();
+  const req = transaction ? new sql.Request(transaction) : pool.request();
+  req.input('Doc', sql.Int, DocIdDocumento);
+  ids.forEach((id, i) => req.input(`o${i}`, sql.Int, id));
+  const res = await req.query(`
+    UPDATE dbo.DeudaDocumento
+    SET    DDeEstado = 'CANCELADA',
+           DDeImportePendiente = 0,
+           DDeObservaciones = LEFT(CONCAT(ISNULL(DDeObservaciones + ' | ', ''), 'Orden facturada en documento #', @Doc, ' (', CONVERT(CHAR(10), GETDATE(), 120), ')'), 500)
+    WHERE  DocIdDocumento IS NULL
+      AND  OrdIdOrden IN (${ids.map((_, i) => `@o${i}`).join(',')})
+      AND  DDeEstado IN ('PENDIENTE','PARCIAL','VENCIDO')
+  `);
+  const n = res.rowsAffected?.[0] || 0;
+  if (n > 0) logger.info(`[CONTABILIDAD] Doc #${DocIdDocumento}: ${n} deuda(s) por orden cerradas (la deuda pasa al documento).`);
+  return n;
+}
+
+/**
+ * Fragmento SQL para los REPORTES de deuda: excluye las deudas por orden (sin
+ * documento) cuya orden ya fue facturada — el movimiento ORDEN de la cuenta tiene
+ * DocIdDocumento estampado y ese documento no está anulado. Es la red de seguridad
+ * para las filas históricas que quedaron abiertas antes de cerrarDeudasPorOrdenFacturada
+ * (en prod se limpian con scripts/PROD_cerrar_deudas_orden_ya_facturada.sql).
+ * `d` debe ser el alias de dbo.DeudaDocumento.
+ */
+const SQL_EXCLUIR_ORDEN_YA_FACTURADA = (d = 'd') => `NOT (
+      ${d}.DocIdDocumento IS NULL AND ${d}.OrdIdOrden IS NOT NULL
+      AND EXISTS (
+        SELECT 1 FROM dbo.MovimientosCuenta mf WITH(NOLOCK)
+        JOIN dbo.DocumentosContables df WITH(NOLOCK) ON df.DocIdDocumento = mf.DocIdDocumento AND df.DocEstado <> 'ANULADO'
+        WHERE mf.MovTipo = 'ORDEN' AND mf.OrdIdOrden = ${d}.OrdIdOrden AND mf.CueIdCuenta = ${d}.CueIdCuenta
+          AND (mf.MovAnulado IS NULL OR mf.MovAnulado = 0) AND mf.DocIdDocumento IS NOT NULL
+      )
+    )`;
+
 module.exports = {
+  cerrarDeudasPorOrdenFacturada,
+  SQL_EXCLUIR_ORDEN_YA_FACTURADA,
   // Cuentas
   obtenerOCrearCuenta,
   getSaldoRealCuenta,
@@ -6031,11 +6088,8 @@ async function procesarEventoContable(evtCodigo, data) {
             resSubmayor.cubiertoPorSaldo = true;
             saltarDinero = true;
             logger.info(`[MOTOR] ${evtCodigo}: Orden ${CodigoOrden} cubierta ENTERA repartida entre ${partesExtra.length} billeteras: ${partesExtra.map(p => `"${p.cuenta}" -${p.mon === 2 ? 'US$' : '$'} ${p.importeCta.toFixed(2)}`).join(' + ')}${cotUsada ? ` (@ cot. ${cotUsada})` : ''}. Sin deuda en la principal.`);
-            if (ctaAuto.OrdIdDeposito) {
-              await pool.request().input('Id', sql.Int, ctaAuto.OrdIdDeposito).query(`
-                UPDATE dbo.OrdenesDeposito SET OrdEstadoActual = CASE WHEN OrdEstadoActual = 1 THEN 7 ELSE OrdEstadoActual END WHERE OrdIdOrden = @Id;
-              `);
-            }
+            // El pago NO toca OrdEstadoActual: la orden sigue Ingresado y el cron la avisa.
+            // La cobertura la lee el retiro del CONSUMO_CUENTA (verificarCuentaRestringida).
           } else if (importeCta > 0.001) {
             const marca = parcial ? 'CUBIERTO_PARCIAL_CUENTA' : 'CUBIERTO_CUENTA';
             resSubmayor = await registrarMovimiento({
@@ -6056,14 +6110,9 @@ async function procesarEventoContable(evtCodigo, data) {
               resSubmayor.cubiertoPorSaldo = true;
               saltarDinero = true;
               logger.info(`[MOTOR] ${evtCodigo}: Orden ${CodigoOrden} (ProId=${ctaAuto.ProIdProductoUsado}) cubierta ENTERA por "${nomCta}" (#${ctaAuto.CueIdCuenta}${ctaAuto.CueRestringida ? ', restringida' : ', libre'}): -${importeCta}${cotUsada ? ` @ ${cotUsada}` : ''}. Saldo resultante=${resSubmayor.SaldoResultante}. Sin deuda en la principal.`);
-              // Igual que una orden cubierta 100% por saldo: queda paga y el retiro puede salir
-              // Abonado. SOLO con el OrdIdOrden REAL del depósito (el del evento puede ser el
-              // ID del ERP y pisar una fila ajena de OrdenesDeposito).
-              if (ctaAuto.OrdIdDeposito) {
-                await pool.request().input('Id', sql.Int, ctaAuto.OrdIdDeposito).query(`
-                  UPDATE dbo.OrdenesDeposito SET OrdEstadoActual = CASE WHEN OrdEstadoActual = 1 THEN 7 ELSE OrdEstadoActual END WHERE OrdIdOrden = @Id;
-                `);
-              }
+              // El pago NO toca OrdEstadoActual: la orden sigue Ingresado y el cron la avisa
+              // (antes pasaba 1 → 7 y se salteaba el WhatsApp). El retiro sale Abonado por el
+              // CONSUMO_CUENTA (verificarCuentaRestringida), no por el estado.
             } else {
               // Cubrió una parte: el resto (en la moneda de la orden) sigue el camino normal → principal
               const restoOrden = r2(importeOrdenAbs - importeCta / factor);
@@ -6240,9 +6289,7 @@ async function procesarEventoContable(evtCodigo, data) {
         // 2.5. AUTO-MARCAR ORDEN COMO PAGADA SI FUE CUBIERTA 100% POR SALDO
         if (evt.EvtGeneraDeuda && resSubmayor?.cubiertoPorSaldo === true && OrdIdOrden) {
            logger.info(`[MOTOR] Orden ${CodigoOrden} cubierta totalmente por Saldo a Favor. Auto-marcando como paga.`);
-           await pool.request().input('Id', sql.Int, OrdIdOrden).query(`
-             UPDATE dbo.OrdenesDeposito SET OrdEstadoActual = CASE WHEN OrdEstadoActual = 1 THEN 7 ELSE OrdEstadoActual END WHERE OrdIdOrden = @Id;
-           `);
+           // El pago NO toca OrdEstadoActual de la orden (sigue Ingresado → el cron la avisa).
            // Chequear si la orden de retiro padre también debe pasar a abonada
            await pool.request().input('Id', sql.Int, OrdIdOrden).query(`
              UPDATE r SET OReEstadoActual = CASE WHEN OReEstadoActual = 1 THEN 3 WHEN OReEstadoActual = 5 THEN 8 ELSE OReEstadoActual END

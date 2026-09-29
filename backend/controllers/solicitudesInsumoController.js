@@ -8,6 +8,7 @@
  *  - vincular una PRE nueva (desde Ingreso de materiales): recién ahí nace la orden de falla
  */
 const { getPool, sql } = require('../config/db');
+const { siguienteCodigoVenta } = require('../utils/codigoVenta');
 const logger = require('../utils/logger');
 const { changeOrderState } = require('../services/stateManagerService');
 const libro = require('../services/libroEntregasService');
@@ -230,8 +231,7 @@ exports.decidir = async (req, res) => {
  * genera deuda ni factura.
  */
 async function crearVenInterna(tx, s, user) {
-    const maxResult = await new sql.Request(tx).query(`SELECT ISNULL(MAX(CAST(SUBSTRING(NoDocERP, 5, LEN(NoDocERP)) AS INT)), 0) + 1 as NextID FROM PedidosCobranza WHERE NoDocERP LIKE 'VEN-%'`);
-    const codigo = `VEN-${String(maxResult.recordset[0].NextID).padStart(4, '0')}`;
+    const codigo = await siguienteCodigoVenta(tx);
     const cantidad = s.Cantidad != null && Number(s.Cantidad) > 0 ? Number(s.Cantidad) : 1;
     let wms = s.WmsVarianteId || null, prod = s.ProIdProducto || null;
     // [VENTA/COMBO] Qué prenda sacar del stock: la de la venta de retiro de LA MISMA prenda que

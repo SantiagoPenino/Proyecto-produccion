@@ -1,7 +1,9 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
-import { ClipboardList, LayoutGrid, List, Plus, RefreshCw } from 'lucide-react';
+import { CalendarDays, ClipboardList, LayoutGrid, List, Plus, RefreshCw } from 'lucide-react';
+import CalendarioSolicitudes from './CalendarioSolicitudes';
+import './fichaPedido.css';
 import { solicitudesVendedorService as svc } from '../../../services/modules/solicitudesVendedorService';
 import { fmtFecha, fmtFechaHora } from '../../../utils/fechas';
 import { BTN_PRIMARIO, ESTADO_SOLICITUD, INPUT, Pill, PillModificada, Sello, errorDe, plata } from './solicitudesComunes';
@@ -45,7 +47,8 @@ export default function SolicitudesVendedorPage() {
     const visibles = rows.filter(s => sello === 'LISTOS' ? s.Listo === true : sello === 'FALTA' ? s.Listo === false : true);
 
     return (
-        <div className="p-4 md:p-6 space-y-4">
+        <div className="fp fp-oscuro">
+        <div className="space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
                     <h1 className="text-xl font-black text-slate-800 flex items-center gap-2"><ClipboardList size={22} className="text-indigo-500" /> Solicitudes de vendedores</h1>
@@ -73,6 +76,7 @@ export default function SolicitudesVendedorPage() {
                     <div className="ml-auto flex items-center gap-1">
                         <button onClick={() => cambiarVista('fichas')} className={`p-2 rounded-lg border ${vista === 'fichas' ? 'bg-indigo-600 text-white border-indigo-600' : 'border-slate-200 bg-white text-slate-500 hover:bg-slate-50'}`} title="Ver como fichas"><LayoutGrid size={14} /></button>
                         <button onClick={() => cambiarVista('tabla')} className={`p-2 rounded-lg border ${vista === 'tabla' ? 'bg-indigo-600 text-white border-indigo-600' : 'border-slate-200 bg-white text-slate-500 hover:bg-slate-50'}`} title="Ver como tabla"><List size={14} /></button>
+                        <button onClick={() => cambiarVista('calendario')} className={`p-2 rounded-lg border ${vista === 'calendario' ? 'bg-indigo-600 text-white border-indigo-600' : 'border-slate-200 bg-white text-slate-500 hover:bg-slate-50'}`} title="Calendario de entregas"><CalendarDays size={14} /></button>
                         <button onClick={cargar} className="p-2 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-500" title="Actualizar"><RefreshCw size={14} className={loading ? 'animate-spin' : ''} /></button>
                     </div>
                 </div>
@@ -86,6 +90,8 @@ export default function SolicitudesVendedorPage() {
                     <input type="date" value={filtros.hasta} onChange={set('hasta')} className={INPUT} title="Fecha de solicitud hasta" />
                 </div>
             </div>
+
+            {vista === 'calendario' && <CalendarioSolicitudes onAbrir={(sid) => navigate(`/ventas/solicitudes/${sid}`)} />}
 
             {vista === 'fichas' && (
                 <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
@@ -139,6 +145,7 @@ export default function SolicitudesVendedorPage() {
                     </table>
                 </div>
             </div>}
+        </div>
         </div>
     );
 }

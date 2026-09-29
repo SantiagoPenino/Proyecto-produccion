@@ -37,12 +37,29 @@ export const solicitudesVendedorService = {
     /** payload: { CodArticulo?, Material?, Copias? } — tela y copias de un diseño pronto ya subido */
     definirProduccionArchivo: (id, archivoId, payload) => dato(api.put(`${BASE}/${id}/archivos/${archivoId}/produccion`, payload)),
 
+    /** Molde del producto del catálogo (modelos ofrecidos con piezas y telas fijas, telas ofrecidas) + lo ya elegido. */
+    moldeDelProducto: (id, productoSolId) => dato(api.get(`${BASE}/${id}/productos/${productoSolId}/molde`)),
+    /** payload: { modeloClave, piezas: [{ pieza, telaProIdProducto, archivoId, nota }], parcial? } */
+    guardarSublimacion: (id, productoSolId, payload) => dato(api.put(`${BASE}/${id}/productos/${productoSolId}/sublimacion`, payload)),
+    /** payload: { comoSeDefine, notaTalles, medidas, terminacion, medidasPrenda, tablaEstandar, personalizacion, listaCerrada } */
+    guardarTalles: (id, productoSolId, payload) => dato(api.put(`${BASE}/${id}/productos/${productoSolId}/talles`, payload)),
+    /** Tizadas terminadas en TizadaPro (base externa, solo lectura). parteId filtra por el molde del producto; todas=1 las muestra igual. */
+    tizadasTizadaPro: (parteId, todas) => dato(api.get(`${BASE}/tizadapro/trabajos`, { params: { parteId: parteId || undefined, todas: todas ? 1 : undefined } })),
+    /** Vincula una tizada de TizadaPro a la producción principal (guarda copia del resultado). forzar = aunque sea de otro molde. */
+    vincularTizada: (parteId, trabajoId, forzar) => dato(api.post(`${BASE}/partes/${parteId}/tizada`, { trabajoId, forzar: !!forzar })),
+
     /** Convierte UN producto de la solicitud en pedido de producción (un pedido por producto). */
     /** bobinaId: solo cuando el corte es con tela del cliente (se elige al convertir) */
     convertir: (id, productoSolId, bobinaId) => dato(api.post(`${BASE}/${id}/productos/${productoSolId}/convertir`, { bobinaId: bobinaId || null })),
     bobinas: (id) => dato(api.get(`${BASE}/${id}/bobinas`)),
     reintentarArchivos: (id, productoSolId) => dato(api.post(`${BASE}/${id}/productos/${productoSolId}/reintentar-archivos`)),
 
+    /** Ficha del pedido en PDF (Blob): todo lo de la solicitud, la misma que se adjunta al pedido al convertir. */
+    fichaPdf: async (id) => (await api.get(`${BASE}/${id}/ficha-pdf`, { responseType: 'blob' })).data,
+    /** ¿Se llega a la fecha de entrega? Recorre los sectores sobre la carga real de cada uno. */
+    estimarPlazo: (id) => dato(api.get(`${BASE}/${id}/plazo`)),
+    /** Calendario: entregas comprometidas + trabajo planificado de los pedidos ya convertidos. */
+    calendario: (desde, hasta) => dato(api.get(`${BASE}/calendario`, { params: { desde, hasta } })),
     bandeja: () => dato(api.get(`${BASE}/bandeja-diseno`)),
     /** Órdenes de Bordado y TPU que ya están en producción y todavía esperan su diseño (solo lectura). */
     disenosEnProduccion: () => dato(api.get(`${BASE}/disenos-en-produccion`)),

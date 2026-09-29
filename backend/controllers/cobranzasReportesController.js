@@ -22,6 +22,8 @@ const { getPool, sql } = require('../config/db');
 const logger = require('../utils/logger');
 
 const VIVAS = `('PENDIENTE', 'VENCIDO', 'PARCIAL')`;
+// Deudas por orden cuya orden ya fue facturada no son deuda (misma regla que Antigüedad)
+const { SQL_EXCLUIR_ORDEN_YA_FACTURADA } = require('../services/contabilidadService');
 
 const condEsVenta = (alias = 'doc') => `(
     (
@@ -88,6 +90,7 @@ exports.getCobranzasVencimientos = async (req, res) => {
               AND d.DDeImportePendiente > 0
               AND cc.CueActiva = 1
               AND cc.CueTipo IN ('DINERO_UYU', 'DINERO_USD', 'CORRIENTE', 'CREDITO')
+              AND ${SQL_EXCLUIR_ORDEN_YA_FACTURADA('d')}
             ORDER BY d.DDeFechaVencimiento ASC, d.DDeImportePendiente DESC
         `);
         res.json({ success: true, data: result.recordset });
@@ -267,6 +270,7 @@ exports.getCobranzasClientes = async (req, res) => {
                 JOIN dbo.CuentasCliente cc WITH(NOLOCK) ON cc.CueIdCuenta = d.CueIdCuenta
                 WHERE d.DDeEstado IN ${VIVAS} AND d.DDeImportePendiente > 0 AND cc.CueActiva = 1
                   AND cc.CueTipo IN ('DINERO_UYU', 'DINERO_USD', 'CORRIENTE', 'CREDITO')
+                  AND ${SQL_EXCLUIR_ORDEN_YA_FACTURADA('d')}
                 GROUP BY cc.CliIdCliente, CASE WHEN cc.CueTipo = 'DINERO_USD' THEN 'USD' ELSE 'UYU' END
             )
             SELECT v.CliIdCliente, RTRIM(cli.Nombre) AS Cliente, RTRIM(ISNULL(cli.TelefonoTrabajo, '')) AS Telefono,
