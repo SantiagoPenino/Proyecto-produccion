@@ -30,7 +30,7 @@ function evaluarProducto(sol, p, archivos, extra = []) {
   const general = (a) => !a.ProductoSolID && !a.ParteID && !a.EventoID;
   const arch = (roles) => vig.some(a => roles.includes(a.Rol) && (delProducto(a) || general(a)));
 
-  c(t(sol.NombreTrabajo), 'Nombre del pedido');
+  c(t(sol.NombreTrabajo), 'Nombre del trabajo');
   c(!!sol.VendedorID, 'Vendedor');
   c(t(d.tipoTrabajo) || (p.TipoFabricacion === 'PRODUCTO_TERMINADO' && !!p.ProIdProducto), 'Tipo de trabajo definido');
   c(arch(['BOCETO', 'ARTE_CLIENTE', 'REFERENCIA', 'DISENO_PRONTO']) || !!d.muestraFisica, 'Boceto, ficha técnica o muestra de referencia');
@@ -55,12 +55,15 @@ function evaluarProducto(sol, p, archivos, extra = []) {
   if (dis.origen === 'CLIENTE') c(!!dis.verificado, 'Archivo de diseño entregado y verificado');
   if (dis.origen === 'TALLER') c(!!dis.aprobado, 'Diseño aprobado por escrito por el cliente');
 
+  // 25-sep: la muestra se marca POR PRODUCTO ("Requiere confección de muestra"; producto nuevo o
+  // producción grande la requieren siempre). "Se le ofreció / qué respondió" ya no se pide.
+  // Solicitudes viejas: si la cabecera tenía la muestra aprobada (o rechazada), se sigue respetando.
   const mu = f.muestra || {};
-  c(!!mu.ofrecida && t(mu.respuesta), 'Muestra ofrecida y respuesta registrada');
-  if ((d.productoNuevo || d.produccionGrande) && mu.respuesta !== 'RECHAZO') c(!!mu.aprobada, 'Muestra aprobada por el cliente');
+  const pideMuestra = !!d.requiereMuestra;   // la marca el vendedor (producto nuevo / producción grande la tildan solos, pero se puede destildar)
+  if (pideMuestra && mu.respuesta !== 'RECHAZO') c(!!d.muestraAprobada || !!mu.aprobada, 'Muestra aprobada por el cliente');
   c(!!sol.FechaEntrega, 'Fecha concreta en que el cliente necesita el trabajo');
-  c(!!f.plazoOk, 'Plazo informado y aceptado');
-  c(t(f.indicaciones) || !!f.sinIndicaciones, 'Indicaciones adicionales anotadas');
+  // 25-sep: "Plazo informado y aceptado" e "Indicaciones del cliente" dejaron de pedirse (las
+  // indicaciones van en Observaciones generales, que es libre y no frena el ingreso).
   if (f.dondeSeCose === 'EXTERNO' && !t(f.tallerExterno)) luego.push('Nombre del taller externo');
 
   // Lo técnico de la conversión (precio pactado, seña, datos de cada servicio, diseño pronto…)

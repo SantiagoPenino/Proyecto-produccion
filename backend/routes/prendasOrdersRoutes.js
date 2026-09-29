@@ -65,6 +65,10 @@ router.get('/productos-terminados', verifyToken, async (req, res) => {
         const request = pool.request();
         if (categoria) request.input('Cat', require('mssql').VarChar, categoria);
         if (grupo) request.input('Grp', require('mssql').VarChar, grupo);
+        // Etiqueta del configurador (Básquet, Fútbol…) y estado: el árbol de la solicitud es
+        // Familia › Etiqueta › Producto. Si la base todavía no tiene la etiqueta (falta
+        // docs/migrations/configurador_etiquetas.sql), viene NULL y el árbol sale sin ese nivel.
+        const conEtiqueta = (await pool.request().query(`SELECT COL_LENGTH('dbo.ProductoVentaConfig', 'EtiquetaID') AS c`)).recordset[0].c != null;
         const r = await request.query(`
             SELECT
                 a.ProIdProducto,
@@ -74,11 +78,18 @@ router.get('/productos-terminados', verifyToken, async (req, res) => {
                 LTRIM(RTRIM(sa.Articulo))   AS Categoria,
                 a.MonIdMoneda,
                 pb.Precio,
-                ISNULL(vc.CantidadVariantes, 0) AS CantidadVariantes
+                ISNULL(vc.CantidadVariantes, 0) AS CantidadVariantes,
+                ISNULL(img.url_imagen, fd.DibujoUrl) AS Imagen,   -- foto del producto; si no hay, el dibujo de la ficha de diseño
+                vcfg.Estado, vcfg.CantidadMinima, vcfg.CantidadFija, LTRIM(RTRIM(pb.Moneda)) AS Moneda,
+                ${conEtiqueta ? 'vcfg.EtiquetaID, etq.Nombre AS Etiqueta' : 'CAST(NULL AS INT) AS EtiquetaID, CAST(NULL AS NVARCHAR(100)) AS Etiqueta'}
             FROM dbo.Articulos a
             INNER JOIN dbo.StockArt sa
                 ON LTRIM(RTRIM(sa.CodStock)) = LTRIM(RTRIM(a.CodStock))
             LEFT JOIN dbo.PreciosBase pb ON pb.ProIdProducto = a.ProIdProducto
+            LEFT JOIN dbo.ProductoVentaConfig vcfg ON vcfg.ProIdProducto = a.ProIdProducto
+            ${conEtiqueta ? 'LEFT JOIN dbo.ProductoEtiqueta etq ON etq.EtiquetaID = vcfg.EtiquetaID' : ''}
+            OUTER APPLY (SELECT TOP 1 url_imagen FROM dbo.Articulos_Imagenes i WHERE i.Idproid = a.ProIdProducto ORDER BY i.orden) img
+            LEFT JOIN dbo.ProductoFichaDiseno fd ON fd.ProIdProducto = a.ProIdProducto
             LEFT JOIN (
                 SELECT Idproid, COUNT(*) AS CantidadVariantes
                 FROM dbo.Articulos_WMS_Variantes GROUP BY Idproid
@@ -88,6 +99,7 @@ router.get('/productos-terminados', verifyToken, async (req, res) => {
               AND ISNULL(a.Mostrar, 1) = 1
               ${categoria ? 'AND LTRIM(RTRIM(sa.Articulo)) = @Cat' : ''}
               ${grupo ? 'AND LTRIM(RTRIM(sa.Grupo)) = @Grp' : ''}
+              ${req.query.publicados === '1' ? "AND vcfg.Estado = 'PUBLICADO'" : ''}
             ORDER BY Categoria, Descripcion
         `);
         res.json({ success: true, data: r.recordset });
@@ -115,7 +127,7 @@ router.get('/productos-terminados/:proIdProducto/servicios', verifyToken, async 
         const proId = parseInt(req.params.proIdProducto, 10);
         const r = await pool.request()
             .input('PID', sql.Int, proId)
-            .query(`SELECT AreaID, Obligatorio FROM dbo.ProductoTerminadoServicios WHERE ProIdProducto = @PID`);
+            .query(`SELECT AreaID, Obligatorio, Modo, Cobro FROM dbo.ProductoTerminadoServicios WHERE ProIdProducto = @PID`);
 
         const comboItems = await pool.request()
             .input('PID', sql.Int, proId)

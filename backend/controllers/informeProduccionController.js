@@ -344,7 +344,8 @@ exports.generarInforme = async (req, res) => {
         const fecha = new Date().toISOString().slice(0, 10);
         res.setHeader('Content-Type', 'application/pdf');
         res.setHeader('Content-Disposition', `attachment; filename="informe-produccion-${fecha}.pdf"`);
-        res.send(pdf);
+        // puppeteer ≥ 22 devuelve Uint8Array: res.send lo serializaría como JSON → PDF inválido
+        res.end(Buffer.from(pdf));
 
         logger.info('[INFORME] PDF enviado correctamente.');
     } catch (err) {

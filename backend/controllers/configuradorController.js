@@ -18,8 +18,10 @@ const { upsertPrecioBase } = require('./stockArtController');
  *     (catálogo general) + ProductoTecnicaOpciones (permitidas por producto).
  *   - Venta: ProductoVentaConfig (origen/cantidades/estado) +
  *     ProductoOrigenVariantes (surtido del paquete).
- *   - Confeccionados: ComponenteOpciones (+ ProductoComponentes) y
- *     ProductoApliques.
+ *   - Confeccionados: el molde vive en TizadaPro (services/tizadaProService.js,
+ *     solo lectura). Acá se vincula el producto a su molde (TizadaProMoldeRef) y se
+ *     elige qué modelos (ProductoModelos) y qué telas (ProductoTelas) se
+ *     venden. Los apliques (ProductoApliques) se ubican sobre una pieza del molde.
  *  El precio NUNCA vive acá: PreciosBase vía upsertPrecioBase.
  */
 
@@ -31,7 +33,6 @@ const ESTADOS = ['BORRADOR', 'PUBLICADO'];
 // (sublimación/corte/costura — casi siempre obligatoria, 12-ago).
 const AREAS_TECNICA = ['EMB', 'DF', 'TPU', 'SB', 'TWC', 'TWT'];
 const AREAS_APLIQUE = ['EMB', 'DF', 'TPU', 'ETIQUETA'];
-const TIPOS_COMPONENTE = ['CUELLO', 'MANGA', 'PUNO', 'COSTADO'];
 // La familia/categoría del producto vive en StockArt (Grupo 2.1) desde el
 // 12-ago — se administra con GET /stockart?grupo=2.1, POST /stockart y
 // PUT /stockart/articulos/:cod/mover (mismo mecanismo que EcoUV). La
@@ -84,10 +85,32 @@ async function fetchStockLocalWms() {
 //  PRODUCTOS CONFIGURABLES
 // ═════════════════════════════════════════════════════════════════════════
 
+// ¿Ya se corrió docs/migrations/configurador_etiquetas.sql? (tabla ProductoEtiqueta +
+// columna ProductoVentaConfig.EtiquetaID). Si el backend se despliega antes que el
+// SQL, el listado sigue saliendo plano en vez de romperse. Solo se cachea el "sí".
+let _tieneEtiquetas = false;
+async function tieneEtiquetas(pool) {
+    if (_tieneEtiquetas) return true;
+    const r = await pool.request().query(`SELECT COL_LENGTH('dbo.ProductoVentaConfig', 'EtiquetaID') AS c`);
+    _tieneEtiquetas = r.recordset[0].c != null;
+    return _tieneEtiquetas;
+}
+const FALTA_SQL_ETIQUETAS = 'Falta correr docs/migrations/configurador_etiquetas.sql en esta base.';
+
+// ¿Ya se corrió docs/migrations/configurador_tizadapro.sql? (TizadaProMoldeRef + ProductoModelos + ProductoTelas)
+let _tieneTizadaPro = false;
+async function tieneTizadaPro(pool) {
+    if (_tieneTizadaPro) return true;
+    const r = await pool.request().query(`SELECT COL_LENGTH('dbo.ProductoVentaConfig', 'TizadaProMoldeRef') AS c, OBJECT_ID('dbo.ProductoTelas', 'U') AS t, OBJECT_ID('dbo.ProductoAvios', 'U') AS av`);
+    _tieneTizadaPro = r.recordset[0].c != null && r.recordset[0].t != null && r.recordset[0].av != null;
+    return _tieneTizadaPro;
+}
+
 // GET /api/configurador/productos — lista con config + técnicas + precio
 exports.getProductos = async (req, res) => {
     try {
         const pool = await getPool();
+        const conEtiqueta = await tieneEtiquetas(pool);
         const r = await pool.request().query(`
             SELECT
                 a.ProIdProducto,
@@ -100,12 +123,14 @@ exports.getProductos = async (req, res) => {
                 img.url_imagen AS Imagen,
                 vc.OrigenTipo, vc.OrigenProIdProducto, vc.CantidadMinima, vc.CantidadFija,
                 vc.ValidarStock, vc.Estado, vc.EsCombo,
+                ${conEtiqueta ? 'vc.EtiquetaID, etq.Nombre AS Etiqueta,' : ''}
                 tecnicas.Lista AS Tecnicas,
                 ISNULL(wv.CantidadVariantes, 0) AS CantidadVariantes,
                 ISNULL(ci.Items, 0) AS ComboItems
             FROM dbo.Articulos a
             INNER JOIN dbo.StockArt sa ON LTRIM(RTRIM(sa.CodStock)) = LTRIM(RTRIM(a.CodStock))
             LEFT JOIN dbo.ProductoVentaConfig vc ON vc.ProIdProducto = a.ProIdProducto
+            ${conEtiqueta ? 'LEFT JOIN dbo.ProductoEtiqueta etq ON etq.EtiquetaID = vc.EtiquetaID' : ''}
             OUTER APPLY (SELECT TOP 1 Precio, Moneda FROM dbo.PreciosBase p
                          WHERE p.ProIdProducto = a.ProIdProducto
                          ORDER BY p.UltimaActualizacion DESC) pb
@@ -141,6 +166,7 @@ exports.getProductoFicha = async (req, res) => {
     if (!Number.isInteger(proId)) return res.status(400).json({ error: 'ProIdProducto inválido.' });
     try {
         const pool = await getPool();
+        const conTizada = await tieneTizadaPro(pool);
         const rq = () => pool.request().input('PID', sql.Int, proId);
 
         const datos = await rq().query(`
@@ -158,9 +184,10 @@ exports.getProductoFicha = async (req, res) => {
             WHERE a.ProIdProducto = @PID AND ISNULL(a.borrar, 0) = 0`);
         if (!datos.recordset.length) return res.status(404).json({ error: 'Producto no encontrado.' });
 
-        const [config, tecnicas, opciones, surtido, componentes, apliques, comboItems, comboSrv, fichaDiseno, fdAnot, fdExtra, fdCost, fdPiezas] = await Promise.all([
+        const [config, tecnicas, opciones, surtido, modelos, telas, avios, apliques, comboItems, comboSrv, fichaDiseno, fdAnot, fdExtra, fdCost] = await Promise.all([
             rq().query(`SELECT OrigenTipo, OrigenProIdProducto, CantidadMinima, CantidadFija,
-                               ValidarStock, Estado, EsCombo, CodigoCorto, FechaRegistro, FechaModif
+                               ValidarStock, Estado, EsCombo, FechaRegistro, FechaModif,
+                               ${conTizada ? 'TizadaProMoldeRef' : 'CAST(NULL AS NVARCHAR(128)) AS TizadaProMoldeRef'}
                         FROM dbo.ProductoVentaConfig WHERE ProIdProducto = @PID`),
             rq().query(`SELECT AreaID, Obligatorio, Modo, Cobro
                         FROM dbo.ProductoTerminadoServicios WHERE ProIdProducto = @PID`),
@@ -172,10 +199,18 @@ exports.getProductoFicha = async (req, res) => {
                         FROM dbo.ProductoOrigenVariantes pov
                         LEFT JOIN dbo.Articulos_WMS_Variantes v ON v.wms_variante_id = pov.WmsVarianteId
                         WHERE pov.ProIdProducto = @PID`),
-            rq().query(`SELECT pc.OpcionID, pc.EsDefault, c.Tipo, c.SubTipo, c.Codigo, c.Nombre
-                        FROM dbo.ProductoComponentes pc
-                        INNER JOIN dbo.ComponenteOpciones c ON c.OpcionID = pc.OpcionID
-                        WHERE pc.ProIdProducto = @PID`),
+            // Modelos y telas ofrecidos (docs/migrations/configurador_tizadapro.sql); sin el script, vacíos
+            conTizada ? rq().query(`SELECT ModeloClave, ModeloNombre, EsDefault, Orden FROM dbo.ProductoModelos
+                                    WHERE ProIdProducto = @PID ORDER BY ISNULL(Orden, 999), ID`) : { recordset: [] },
+            conTizada ? rq().query(`SELECT t.TelaProIdProducto, t.EsDefault, t.Orden,
+                                           LTRIM(RTRIM(a.CodArticulo)) AS CodArticulo, LTRIM(RTRIM(a.Descripcion)) AS Material, a.anchoimprimible AS Ancho
+                                    FROM dbo.ProductoTelas t
+                                    LEFT JOIN dbo.Articulos a ON a.ProIdProducto = t.TelaProIdProducto
+                                    WHERE t.ProIdProducto = @PID ORDER BY ISNULL(t.Orden, 999), t.ID`) : { recordset: [] },
+            // Avíos (insumos que no son tela) para la ficha de producción
+            conTizada ? rq().query(`SELECT ID, Nombre, ArtProIdProducto, Cantidad, Unidad, Medida, Nota, Orden,
+                                           CASE WHEN COL_LENGTH('dbo.ProductoAvios', 'AvioID') IS NULL THEN NULL ELSE AvioID END AS AvioID
+                                    FROM dbo.ProductoAvios WHERE ProIdProducto = @PID ORDER BY ISNULL(Orden, 999), ID`) : { recordset: [] },
             rq().query(`SELECT ApliqueID, Posicion, AreaID, TecnicaOpcionID, Cantidad, Incluido, Orden
                         FROM dbo.ProductoApliques WHERE ProIdProducto = @PID ORDER BY ISNULL(Orden, 999), ApliqueID`),
             rq().query(`SELECT ci.ID, ci.ItemProIdProducto, ci.WmsVarianteId, ci.Cantidad, ci.Orden,
@@ -197,13 +232,7 @@ exports.getProductoFicha = async (req, res) => {
             rq().query(`SELECT ExtraID, Etiqueta, Valor FROM dbo.ProductoFichaDisenoExtra
                         WHERE ProIdProducto = @PID ORDER BY ISNULL(Orden, 999), ExtraID`),
             rq().query(`SELECT ID, UnionNombre, CodigoISO FROM dbo.ProductoFichaDisenoCosturas
-                        WHERE ProIdProducto = @PID ORDER BY ISNULL(Orden, 999), ID`),
-            // Piezas del despiece de la combinación DEFAULT (⭐) — para sugerir costuras
-            // automáticas, igual que dzFdRenderCosturasAuto del HTML.
-            rq().query(`SELECT DISTINCT p.NombrePieza, p.Zona
-                        FROM dbo.ProductoComponentes pc
-                        INNER JOIN dbo.ComponenteOpcionPiezas p ON p.OpcionID = pc.OpcionID
-                        WHERE pc.ProIdProducto = @PID AND pc.EsDefault = 1`)
+                        WHERE ProIdProducto = @PID ORDER BY ISNULL(Orden, 999), ID`)
         ]);
 
         // Nombre del producto de origen (si hay)
@@ -216,25 +245,6 @@ exports.getProductoFicha = async (req, res) => {
             origen = o.recordset[0] || null;
         }
 
-        // Costuras sugeridas por pieza (heurística por nombre, portada del HTML del
-        // jefe — ahí decía "ISO 512" para manga, código que no existe en el resto
-        // del mismo archivo; se usa 504/Overlock como el resto de las piezas de
-        // manga en su propio catálogo de operaciones, para no dejar un ISO huérfano).
-        const sugerirCosturaPorPieza = (nombre) => {
-            const n = (nombre || '').toLowerCase();
-            if (/cuello|rib|puno|puño/.test(n)) return { iso: 'ISO 406', nombre: 'recubierta' };
-            if (/manga|sisa/.test(n)) return { iso: 'ISO 504', nombre: 'armado de manga' };
-            if (/delantero|espalda/.test(n)) return { iso: 'ISO 504', nombre: 'hombros/costados' };
-            return { iso: 'ISO 504', nombre: 'unión general (overlock)' };
-        };
-        const costurasSugeridas = [];
-        const vistasPz = new Set();
-        fdPiezas.recordset.forEach(pz => {
-            const s = sugerirCosturaPorPieza(pz.NombrePieza);
-            const key = pz.NombrePieza + s.iso;
-            if (!vistasPz.has(key)) { vistasPz.add(key); costurasSugeridas.push({ pieza: pz.NombrePieza, iso: s.iso, nombre: s.nombre }); }
-        });
-
         res.json({
             success: true,
             data: {
@@ -244,7 +254,9 @@ exports.getProductoFicha = async (req, res) => {
                 tecnicas: tecnicas.recordset,
                 opcionesPermitidas: opciones.recordset,
                 surtido: surtido.recordset,
-                componentes: componentes.recordset,
+                modelos: modelos.recordset,
+                telas: telas.recordset,
+                avios: avios.recordset,
                 apliques: apliques.recordset,
                 comboItems: comboItems.recordset.map(ci => ({
                     ...ci,
@@ -253,8 +265,7 @@ exports.getProductoFicha = async (req, res) => {
                 fichaDiseno: fichaDiseno.recordset[0] || null,
                 fichaDisenoAnotaciones: fdAnot.recordset,
                 fichaDisenoExtra: fdExtra.recordset,
-                fichaDisenoCosturas: fdCost.recordset,
-                costurasSugeridas
+                fichaDisenoCosturas: fdCost.recordset
             }
         });
     } catch (e) {
@@ -298,7 +309,7 @@ function validarVenta(body) {
 }
 
 // Reemplaza los sets hijos (solo los que vienen en el body; undefined = no tocar)
-async function aplicarSetsHijos(transaction, proId, body) {
+async function aplicarSetsHijos(transaction, proId, body, conTizada = false) {
     const del = (tabla) => new sql.Request(transaction)
         .input('PID', sql.Int, proId)
         .query(`DELETE FROM dbo.${tabla} WHERE ProIdProducto = @PID`);
@@ -336,15 +347,59 @@ async function aplicarSetsHijos(transaction, proId, body) {
                 .query(`INSERT INTO dbo.ProductoOrigenVariantes (ProIdProducto, WmsVarianteId) VALUES (@PID, @VID)`);
         }
     }
-    if (body.componentes !== undefined) {
-        await del('ProductoComponentes');
-        for (const c of (body.componentes || [])) {
-            const id = Number(c.opcionId ?? c);
-            if (!Number.isInteger(id) || id <= 0) continue;
+    // Modelos del molde de TizadaPro que se ofrecen (clave de la variante + nombre copiado)
+    if (body.modelos !== undefined && conTizada) {
+        await del('ProductoModelos');
+        let orden = 1;
+        for (const m of (body.modelos || [])) {
+            const clave = String(m.clave ?? m.modeloClave ?? '').trim().slice(0, 96);
+            if (!clave) continue;
             await new sql.Request(transaction)
-                .input('PID', sql.Int, proId).input('OID', sql.Int, id)
-                .input('Def', sql.Bit, c.esDefault ? 1 : 0)
-                .query(`INSERT INTO dbo.ProductoComponentes (ProIdProducto, OpcionID, EsDefault) VALUES (@PID, @OID, @Def)`);
+                .input('PID', sql.Int, proId).input('Cl', sql.NVarChar(96), clave)
+                .input('Nom', sql.NVarChar(320), m.nombre ? String(m.nombre).trim().slice(0, 320) : null)
+                .input('Def', sql.Bit, m.esDefault ? 1 : 0).input('Ord', sql.Int, orden)
+                .query(`INSERT INTO dbo.ProductoModelos (ProIdProducto, ModeloClave, ModeloNombre, EsDefault, Orden) VALUES (@PID, @Cl, @Nom, @Def, @Ord)`);
+            orden++;
+        }
+    }
+    // Telas ofrecidas (el precio es el de PreciosBase de la tela; acá no se edita)
+    if (body.telas !== undefined && conTizada) {
+        await del('ProductoTelas');
+        let orden = 1;
+        for (const t of (body.telas || [])) {
+            const telaId = Number(t.telaProIdProducto ?? t);
+            if (!Number.isInteger(telaId) || telaId <= 0) continue;
+            await new sql.Request(transaction)
+                .input('PID', sql.Int, proId).input('Tela', sql.Int, telaId)
+                .input('Def', sql.Bit, t.esDefault ? 1 : 0).input('Ord', sql.Int, orden)
+                .query(`INSERT INTO dbo.ProductoTelas (ProIdProducto, TelaProIdProducto, EsDefault, Orden) VALUES (@PID, @Tela, @Def, @Ord)`);
+            orden++;
+        }
+    }
+    // Avíos: nombre libre + cantidad por prenda (+ artículo del insumo si existe, medida por talle y nota)
+    if (body.avios !== undefined && conTizada) {
+        const conAvioId = (await new sql.Request(transaction).query(`SELECT COL_LENGTH('dbo.ProductoAvios', 'AvioID') AS c`)).recordset[0].c != null;
+        await del('ProductoAvios');
+        let orden = 1;
+        for (const av of (body.avios || [])) {
+            const nombre = String(av.nombre || '').trim().slice(0, 200);
+            if (!nombre) continue;
+            const cant = Number(av.cantidad);
+            const avioId = Number.isInteger(Number(av.avioId)) && Number(av.avioId) > 0 ? Number(av.avioId) : null;
+            await new sql.Request(transaction)
+                .input('PID', sql.Int, proId).input('Nom', sql.NVarChar(200), nombre).input('AvioID', sql.Int, avioId)
+                .input('Art', sql.Int, Number.isInteger(Number(av.artProIdProducto)) && Number(av.artProIdProducto) > 0 ? Number(av.artProIdProducto) : null)
+                .input('Cant', sql.Decimal(10, 2), Number.isFinite(cant) && cant > 0 ? cant : 1)
+                .input('Uni', sql.NVarChar(20), av.unidad ? String(av.unidad).trim().slice(0, 20) : null)
+                .input('Med', sql.NVarChar(200), av.medida ? String(av.medida).trim().slice(0, 200) : null)
+                .input('Nota', sql.NVarChar(400), av.nota ? String(av.nota).trim().slice(0, 400) : null)
+                .input('Ord', sql.Int, orden)
+                .query(conAvioId
+                    ? `INSERT INTO dbo.ProductoAvios (ProIdProducto, Nombre, ArtProIdProducto, Cantidad, Unidad, Medida, Nota, Orden, AvioID)
+                        VALUES (@PID, @Nom, @Art, @Cant, @Uni, @Med, @Nota, @Ord, @AvioID)`
+                    : `INSERT INTO dbo.ProductoAvios (ProIdProducto, Nombre, ArtProIdProducto, Cantidad, Unidad, Medida, Nota, Orden)
+                        VALUES (@PID, @Nom, @Art, @Cant, @Uni, @Med, @Nota, @Ord)`);
+            orden++;
         }
     }
     if (body.comboItems !== undefined) {
@@ -465,6 +520,7 @@ exports.guardarProductoConfig = async (req, res) => {
             if (!o.recordset.length) return res.status(400).json({ error: 'El producto de origen no existe.' });
         }
 
+        const conTizada = await tieneTizadaPro(pool);
         const transaction = new sql.Transaction(pool);
         await transaction.begin();
         try {
@@ -480,8 +536,8 @@ exports.guardarProductoConfig = async (req, res) => {
                 .input('FijaSet', sql.Bit, body.cantidadFija !== undefined ? 1 : 0)
                 .input('VStock', sql.Bit, body.validarStock !== undefined ? (body.validarStock ? 1 : 0) : null)
                 .input('Est', sql.VarChar(12), body.estado !== undefined ? body.estado : null)
-                .input('CC', sql.VarChar(3), body.codigoCorto !== undefined ? (body.codigoCorto ? String(body.codigoCorto).toUpperCase().slice(0, 3) : null) : null)
-                .input('CCSet', sql.Bit, body.codigoCorto !== undefined ? 1 : 0)
+                .input('MRef', sql.NVarChar(128), body.tizadaProMoldeRef !== undefined ? (body.tizadaProMoldeRef ? String(body.tizadaProMoldeRef).trim().slice(0, 128) : null) : null)
+                .input('MRefSet', sql.Bit, body.tizadaProMoldeRef !== undefined && conTizada ? 1 : 0)
                 .query(`
                     IF EXISTS (SELECT 1 FROM dbo.ProductoVentaConfig WHERE ProIdProducto = @PID)
                         UPDATE dbo.ProductoVentaConfig SET
@@ -491,13 +547,13 @@ exports.guardarProductoConfig = async (req, res) => {
                             CantidadFija        = CASE WHEN @FijaSet = 1 THEN @Fija ELSE CantidadFija END,
                             ValidarStock        = ISNULL(@VStock, ValidarStock),
                             Estado              = ISNULL(@Est, Estado),
-                            CodigoCorto         = CASE WHEN @CCSet = 1 THEN @CC ELSE CodigoCorto END,
+                            ${conTizada ? 'TizadaProMoldeRef = CASE WHEN @MRefSet = 1 THEN @MRef ELSE TizadaProMoldeRef END,' : ''}
                             FechaModif          = GETDATE()
                         WHERE ProIdProducto = @PID
                     ELSE
                         INSERT INTO dbo.ProductoVentaConfig
-                            (ProIdProducto, OrigenTipo, OrigenProIdProducto, CantidadMinima, CantidadFija, ValidarStock, Estado, CodigoCorto)
-                        VALUES (@PID, ISNULL(@Ori,'CONFECCIONADO'), @OriPID, @Min, @Fija, ISNULL(@VStock,1), ISNULL(@Est,'BORRADOR'), @CC)
+                            (ProIdProducto, OrigenTipo, OrigenProIdProducto, CantidadMinima, CantidadFija, ValidarStock, Estado${conTizada ? ', TizadaProMoldeRef' : ''})
+                        VALUES (@PID, ISNULL(@Ori,'CONFECCIONADO'), @OriPID, @Min, @Fija, ISNULL(@VStock,1), ISNULL(@Est,'BORRADOR')${conTizada ? ', @MRef' : ''})
                 `);
 
             // Upsert de ProductoFichaDiseno (encabezado + campos del pie) — todo o nada,
@@ -527,7 +583,23 @@ exports.guardarProductoConfig = async (req, res) => {
                     `);
             }
 
-            await aplicarSetsHijos(transaction, proId, body);
+            await aplicarSetsHijos(transaction, proId, body, conTizada);
+
+            // Para PUBLICAR un confeccionado: molde de TizadaPro definido y cada aplique sobre una
+            // técnica que el producto tiene activa (se valida contra lo que quedó guardado).
+            const estadoFinal = await new sql.Request(transaction).input('PID', sql.Int, proId)
+                .query(`SELECT Estado, OrigenTipo, ISNULL(EsCombo, 0) AS EsCombo${conTizada ? ', TizadaProMoldeRef' : ''} FROM dbo.ProductoVentaConfig WHERE ProIdProducto = @PID`);
+            const ef = estadoFinal.recordset[0];
+            if (ef && ef.Estado === 'PUBLICADO' && !ef.EsCombo && ef.OrigenTipo === 'CONFECCIONADO') {
+                const faltas = [];
+                if (conTizada && !ef.TizadaProMoldeRef) faltas.push('Falta vincular el molde de TizadaPro (paso "Molde, telas y apliques").');
+                const chk = await new sql.Request(transaction).input('PID', sql.Int, proId).query(`
+                    SELECT DISTINCT ap.AreaID FROM dbo.ProductoApliques ap
+                    WHERE ap.ProIdProducto = @PID AND ap.AreaID <> 'ETIQUETA'
+                      AND NOT EXISTS (SELECT 1 FROM dbo.ProductoTerminadoServicios s WHERE s.ProIdProducto = @PID AND s.AreaID = ap.AreaID)`);
+                if (chk.recordset.length) faltas.push(`Hay apliques de una técnica que el producto no tiene activa (${chk.recordset.map(x => x.AreaID).join(', ')}): activala en "Técnicas" o quitá el aplique.`);
+                if (faltas.length) { const e = new Error('No se puede publicar. ' + faltas.join(' ')); e.status = 400; throw e; }
+            }
             await transaction.commit();
         } catch (txErr) {
             await transaction.rollback();
@@ -544,6 +616,7 @@ exports.guardarProductoConfig = async (req, res) => {
         logger.info(`[Configurador] Config guardada para ProIdProducto ${proId} por ${req.user?.username || 'N/A'}`);
         res.json({ success: true });
     } catch (e) {
+        if (e.status) return res.status(e.status).json({ error: e.message });   // regla de negocio (ej. no se puede publicar)
         logger.error('[Configurador] guardarProductoConfig:', e);
         res.status(500).json({ error: e.message });
     }
@@ -607,6 +680,16 @@ exports.crearProducto = async (req, res) => {
                         VALUES (@PID, @Ori, @OriPID, @Min, @Fija, @VStock, @Est, @Combo)`);
 
             await aplicarSetsHijos(transaction, proId, req.body);
+            // Un confeccionado nuevo nace con las técnicas de CONSTRUCCIÓN (sublimación, corte y
+            // costura) obligatorias e incluidas en el precio (decisión del usuario, 28-sep). Solo si
+            // el alta no trajo técnicas propias.
+            if (!esCombo && req.body.tecnicas === undefined) {
+                for (const area of ['SB', 'TWC', 'TWT']) {
+                    await new sql.Request(transaction).input('PID', sql.Int, proId).input('Area', sql.VarChar(10), area)
+                        .query(`INSERT INTO dbo.ProductoTerminadoServicios (ProIdProducto, AreaID, Obligatorio, Modo, Cobro)
+                                VALUES (@PID, @Area, 1, 'LIBRE', 'INCLUIDA')`);
+                }
+            }
             await transaction.commit();
         } catch (txErr) {
             await transaction.rollback();
@@ -722,227 +805,6 @@ exports.updateTecnicaOpcion = async (req, res) => {
 };
 
 // ═════════════════════════════════════════════════════════════════════════
-//  CATÁLOGO DE COMPONENTES (ComponenteOpciones — confeccionados)
-// ═════════════════════════════════════════════════════════════════════════
-
-// GET /api/configurador/componentes (?all=1 incluye inactivos)
-// Trae las Piezas de cada opción anidadas (despiece: nombre, cantidad, zona, forma).
-exports.getComponentes = async (req, res) => {
-    try {
-        const pool = await getPool();
-        const all = req.query.all === '1';
-        const [opciones, piezas] = await Promise.all([
-            pool.request().query(`
-                SELECT OpcionID, Tipo, SubTipo, Codigo, Nombre, NotaMolde, NotaTallesFemeninos,
-                       AnchoRefMm, PrecioExtra, Activo, Orden
-                FROM dbo.ComponenteOpciones
-                ${all ? '' : 'WHERE Activo = 1'}
-                ORDER BY Tipo, ISNULL(Orden, 999), Codigo
-            `),
-            pool.request().query(`SELECT ID, OpcionID, NombrePieza, Cantidad, Zona, Forma FROM dbo.ComponenteOpcionPiezas ORDER BY ID`)
-        ]);
-        const data = opciones.recordset.map(o => ({
-            ...o,
-            piezas: piezas.recordset.filter(p => p.OpcionID === o.OpcionID)
-        }));
-        res.json({ success: true, data });
-    } catch (e) {
-        logger.error('[Configurador] getComponentes:', e);
-        res.status(500).json({ error: e.message });
-    }
-};
-
-// PUT /api/configurador/componentes/:id/piezas — reemplaza el set completo (patrón
-// transaccional de siempre: borra e inserta de nuevo, body = { piezas: [...] }).
-exports.setPiezasComponente = async (req, res) => {
-    const id = parseInt(req.params.id, 10);
-    if (!Number.isInteger(id)) return res.status(400).json({ error: 'ID inválido.' });
-    const piezas = Array.isArray(req.body?.piezas) ? req.body.piezas : [];
-    try {
-        const pool = await getPool();
-        const existe = await pool.request().input('ID', sql.Int, id)
-            .query(`SELECT 1 FROM dbo.ComponenteOpciones WHERE OpcionID = @ID`);
-        if (!existe.recordset.length) return res.status(404).json({ error: 'Componente no encontrado.' });
-
-        const transaction = new sql.Transaction(pool);
-        await transaction.begin();
-        try {
-            await new sql.Request(transaction).input('ID', sql.Int, id)
-                .query(`DELETE FROM dbo.ComponenteOpcionPiezas WHERE OpcionID = @ID`);
-            for (const p of piezas) {
-                if (!p.nombrePieza || !String(p.nombrePieza).trim()) continue;
-                await new sql.Request(transaction)
-                    .input('OID', sql.Int, id)
-                    .input('Nom', sql.NVarChar(100), String(p.nombrePieza).trim())
-                    .input('Cnt', sql.Int, Number.isInteger(Number(p.cantidad)) && Number(p.cantidad) > 0 ? Number(p.cantidad) : 1)
-                    .input('Zona', sql.VarChar(20), p.zona ? String(p.zona).trim() : null)
-                    .input('Forma', sql.VarChar(30), p.forma ? String(p.forma).trim() : null)
-                    .query(`INSERT INTO dbo.ComponenteOpcionPiezas (OpcionID, NombrePieza, Cantidad, Zona, Forma)
-                            VALUES (@OID, @Nom, @Cnt, @Zona, @Forma)`);
-            }
-            await transaction.commit();
-        } catch (txErr) {
-            await transaction.rollback();
-            throw txErr;
-        }
-        res.json({ success: true });
-    } catch (e) {
-        logger.error('[Configurador] setPiezasComponente:', e);
-        res.status(500).json({ error: e.message });
-    }
-};
-
-// POST /api/configurador/componentes
-exports.crearComponenteOpcion = async (req, res) => {
-    const { tipo, subTipo, codigo, nombre, notaMolde, notaTallesFemeninos, anchoRefMm, precioExtra, orden } = req.body || {};
-    if (!TIPOS_COMPONENTE.includes(tipo)) return res.status(400).json({ error: `Tipo inválido (${TIPOS_COMPONENTE.join(' | ')}).` });
-    if (!codigo || !codigo.trim()) return res.status(400).json({ error: 'El código es obligatorio (ej. CR-04).' });
-    if (!nombre || !nombre.trim()) return res.status(400).json({ error: 'El nombre es obligatorio.' });
-    try {
-        const pool = await getPool();
-        const r = await pool.request()
-            .input('Tipo', sql.VarChar(15), tipo)
-            .input('Sub', sql.VarChar(20), subTipo ? String(subTipo).trim() : null)
-            .input('Cod', sql.VarChar(10), codigo.trim().toUpperCase())
-            .input('Nom', sql.NVarChar(100), nombre.trim())
-            .input('NM', sql.NVarChar(200), notaMolde ? String(notaMolde).trim() : null)
-            .input('NF', sql.NVarChar(200), notaTallesFemeninos ? String(notaTallesFemeninos).trim() : null)
-            .input('An', sql.Decimal(9, 2), anchoRefMm != null && anchoRefMm !== '' ? anchoRefMm : null)
-            .input('PE', sql.Decimal(18, 2), precioExtra != null && precioExtra !== '' ? precioExtra : null)
-            .input('Ord', sql.Int, Number.isInteger(Number(orden)) ? Number(orden) : null)
-            .query(`INSERT INTO dbo.ComponenteOpciones
-                        (Tipo, SubTipo, Codigo, Nombre, NotaMolde, NotaTallesFemeninos, AnchoRefMm, PrecioExtra, Orden)
-                    OUTPUT INSERTED.OpcionID
-                    VALUES (@Tipo, @Sub, @Cod, @Nom, @NM, @NF, @An, @PE, @Ord)`);
-        res.json({ success: true, opcionId: r.recordset[0].OpcionID });
-    } catch (e) {
-        if (/UQ_ComponenteOpciones/.test(e.message)) return res.status(409).json({ error: 'Ese código ya existe.' });
-        logger.error('[Configurador] crearComponenteOpcion:', e);
-        res.status(500).json({ error: e.message });
-    }
-};
-
-// PUT /api/configurador/componentes/:id
-exports.updateComponenteOpcion = async (req, res) => {
-    const id = parseInt(req.params.id, 10);
-    if (!Number.isInteger(id)) return res.status(400).json({ error: 'ID inválido.' });
-    const { nombre, subTipo, notaMolde, notaTallesFemeninos, anchoRefMm, precioExtra, activo, orden } = req.body || {};
-    try {
-        const pool = await getPool();
-        const r = await pool.request()
-            .input('ID', sql.Int, id)
-            .input('Nom', sql.NVarChar(100), nombre !== undefined ? String(nombre).trim() : null)
-            .input('Sub', sql.VarChar(20), subTipo !== undefined ? (subTipo ? String(subTipo).trim() : null) : null)
-            .input('SubSet', sql.Bit, subTipo !== undefined ? 1 : 0)
-            .input('NM', sql.NVarChar(200), notaMolde !== undefined ? (notaMolde ? String(notaMolde).trim() : null) : null)
-            .input('NMSet', sql.Bit, notaMolde !== undefined ? 1 : 0)
-            .input('NF', sql.NVarChar(200), notaTallesFemeninos !== undefined ? (notaTallesFemeninos ? String(notaTallesFemeninos).trim() : null) : null)
-            .input('NFSet', sql.Bit, notaTallesFemeninos !== undefined ? 1 : 0)
-            .input('An', sql.Decimal(9, 2), anchoRefMm !== undefined ? (anchoRefMm === '' || anchoRefMm == null ? null : anchoRefMm) : null)
-            .input('AnSet', sql.Bit, anchoRefMm !== undefined ? 1 : 0)
-            .input('PE', sql.Decimal(18, 2), precioExtra !== undefined ? (precioExtra === '' || precioExtra == null ? null : precioExtra) : null)
-            .input('PESet', sql.Bit, precioExtra !== undefined ? 1 : 0)
-            .input('Act', sql.Bit, activo !== undefined ? (activo ? 1 : 0) : null)
-            .input('Ord', sql.Int, orden !== undefined ? (Number.isInteger(Number(orden)) ? Number(orden) : null) : null)
-            .input('OrdSet', sql.Bit, orden !== undefined ? 1 : 0)
-            .query(`UPDATE dbo.ComponenteOpciones SET
-                        Nombre = ISNULL(@Nom, Nombre),
-                        SubTipo = CASE WHEN @SubSet = 1 THEN @Sub ELSE SubTipo END,
-                        NotaMolde = CASE WHEN @NMSet = 1 THEN @NM ELSE NotaMolde END,
-                        NotaTallesFemeninos = CASE WHEN @NFSet = 1 THEN @NF ELSE NotaTallesFemeninos END,
-                        AnchoRefMm = CASE WHEN @AnSet = 1 THEN @An ELSE AnchoRefMm END,
-                        PrecioExtra = CASE WHEN @PESet = 1 THEN @PE ELSE PrecioExtra END,
-                        Activo = ISNULL(@Act, Activo),
-                        Orden = CASE WHEN @OrdSet = 1 THEN @Ord ELSE Orden END
-                    WHERE OpcionID = @ID`);
-        if (!r.rowsAffected[0]) return res.status(404).json({ error: 'Componente no encontrado.' });
-        res.json({ success: true });
-    } catch (e) {
-        logger.error('[Configurador] updateComponenteOpcion:', e);
-        res.status(500).json({ error: e.message });
-    }
-};
-
-// ═════════════════════════════════════════════════════════════════════════
-//  NOMENCLADOR DE PIEZAS (Frente / Espalda / Manga izquierda / ...)
-//  De acá sale el combo de Posición del aplique: antes era texto libre.
-//  Tabla dbo.PiezasPrenda — docs/migrations/configurador_nomenclador_piezas.sql
-// ═════════════════════════════════════════════════════════════════════════
-
-// GET /api/configurador/piezas (?all=1 incluye las inactivas)
-exports.getPiezas = async (req, res) => {
-    try {
-        const pool = await getPool();
-        const all = req.query.all === '1';
-        const r = await pool.request().query(`
-            SELECT PiezaID, Codigo, Nombre, Familia, AdmiteAplique, Activo, Orden
-            FROM dbo.PiezasPrenda
-            ${all ? '' : 'WHERE Activo = 1'}
-            ORDER BY ISNULL(Orden, 999), Codigo
-        `);
-        res.json({ success: true, data: r.recordset });
-    } catch (e) {
-        logger.error('[Configurador] getPiezas:', e);
-        res.status(500).json({ error: e.message });
-    }
-};
-
-// POST /api/configurador/piezas
-exports.crearPieza = async (req, res) => {
-    const { codigo, nombre, familia, admiteAplique, orden } = req.body || {};
-    if (!codigo || !String(codigo).trim()) return res.status(400).json({ error: 'El código es obligatorio (ej. PZ-10).' });
-    if (!nombre || !String(nombre).trim()) return res.status(400).json({ error: 'El nombre es obligatorio.' });
-    try {
-        const pool = await getPool();
-        const r = await pool.request()
-            .input('Cod', sql.VarChar(10), String(codigo).trim().toUpperCase())
-            .input('Nom', sql.NVarChar(100), String(nombre).trim())
-            .input('Fam', sql.NVarChar(60), familia ? String(familia).trim() : null)
-            .input('Apl', sql.Bit, admiteAplique === false ? 0 : 1)
-            .input('Ord', sql.Int, Number.isInteger(Number(orden)) ? Number(orden) : null)
-            .query(`INSERT INTO dbo.PiezasPrenda (Codigo, Nombre, Familia, AdmiteAplique, Orden)
-                    OUTPUT INSERTED.PiezaID
-                    VALUES (@Cod, @Nom, @Fam, @Apl, @Ord)`);
-        res.json({ success: true, piezaId: r.recordset[0].PiezaID });
-    } catch (e) {
-        if (/UQ_PiezasPrenda/.test(e.message)) return res.status(409).json({ error: 'Ese código ya existe.' });
-        logger.error('[Configurador] crearPieza:', e);
-        res.status(500).json({ error: e.message });
-    }
-};
-
-// PUT /api/configurador/piezas/:id — mismo patrón "undefined = no tocar"
-exports.updatePieza = async (req, res) => {
-    const id = parseInt(req.params.id, 10);
-    if (!Number.isInteger(id)) return res.status(400).json({ error: 'ID inválido.' });
-    const { nombre, familia, admiteAplique, activo, orden } = req.body || {};
-    try {
-        const pool = await getPool();
-        const r = await pool.request()
-            .input('ID', sql.Int, id)
-            .input('Nom', sql.NVarChar(100), nombre !== undefined ? String(nombre).trim() : null)
-            .input('Fam', sql.NVarChar(60), familia !== undefined ? (familia ? String(familia).trim() : null) : null)
-            .input('FamSet', sql.Bit, familia !== undefined ? 1 : 0)
-            .input('Apl', sql.Bit, admiteAplique !== undefined ? (admiteAplique ? 1 : 0) : null)
-            .input('Act', sql.Bit, activo !== undefined ? (activo ? 1 : 0) : null)
-            .input('Ord', sql.Int, orden !== undefined ? (Number.isInteger(Number(orden)) ? Number(orden) : null) : null)
-            .input('OrdSet', sql.Bit, orden !== undefined ? 1 : 0)
-            .query(`UPDATE dbo.PiezasPrenda SET
-                        Nombre = ISNULL(@Nom, Nombre),
-                        Familia = CASE WHEN @FamSet = 1 THEN @Fam ELSE Familia END,
-                        AdmiteAplique = ISNULL(@Apl, AdmiteAplique),
-                        Activo = ISNULL(@Act, Activo),
-                        Orden = CASE WHEN @OrdSet = 1 THEN @Ord ELSE Orden END
-                    WHERE PiezaID = @ID`);
-        if (!r.rowsAffected[0]) return res.status(404).json({ error: 'Pieza no encontrada.' });
-        res.json({ success: true });
-    } catch (e) {
-        logger.error('[Configurador] updatePieza:', e);
-        res.status(500).json({ error: e.message });
-    }
-};
-
-// ═════════════════════════════════════════════════════════════════════════
 //  PRODUCTOS DEL LOCAL (selector del paso Origen)
 // ═════════════════════════════════════════════════════════════════════════
 
@@ -1006,178 +868,14 @@ exports.getProductosLocal = async (req, res) => {
     }
 };
 
-// ═════════════════════════════════════════════════════════════════════════
-//  VARIANTES (confeccionados — motor cartesiano, pedido 12-ago: "las
-//  variantes pudieran ser [lo siguiente]"). Combina las opciones elegidas
-//  en ProductoComponentes por tipo (CUELLO×MANGA×PUÑO×COSTADO...); un tipo
-//  sin ninguna opción marcada queda afuera de la combinación. Código =
-//  CodigoCorto (3 letras) + correlativo de 6 dígitos, igual que el motor.py
-//  del USER Studio. Consumo de tela y Estadísticas quedaron afuera de la
-//  Etapa B: son dato real de producción/ventas, no configuración.
-// ═════════════════════════════════════════════════════════════════════════
-
-function cartesianoComponentes(porTipo) {
-    const tipos = Object.keys(porTipo).filter(t => porTipo[t].length > 0);
-    let combos = [{}];
-    for (const tipo of tipos) {
-        const next = [];
-        for (const combo of combos) {
-            for (const op of porTipo[tipo]) next.push({ ...combo, [tipo]: op });
-        }
-        combos = next;
-    }
-    return combos;
-}
-
-const claveNaturalVariante = (combo) => Object.entries(combo)
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([tipo, o]) => `${tipo}:${o.OpcionID}`)
-    .join('|');
-
-// POST /api/configurador/productos/:proId/variantes/generar — genera o
-// actualiza todas las combinaciones. Upsert por ClaveNatural: las que ya
-// existían conservan Activa/PrecioManual (solo se recalcula el precio
-// automático); las nuevas nacen Activa=1.
-exports.generarVariantes = async (req, res) => {
-    const proId = parseInt(req.params.proId, 10);
-    if (!Number.isInteger(proId)) return res.status(400).json({ error: 'ProIdProducto inválido.' });
-    try {
-        const pool = await getPool();
-
-        const [prod, comp] = await Promise.all([
-            pool.request().input('PID', sql.Int, proId).query(`
-                SELECT TOP 1 a.ProIdProducto, LTRIM(RTRIM(a.Descripcion)) AS Descripcion,
-                       vc.CodigoCorto, pb.Precio
-                FROM dbo.Articulos a
-                LEFT JOIN dbo.ProductoVentaConfig vc ON vc.ProIdProducto = a.ProIdProducto
-                OUTER APPLY (SELECT TOP 1 Precio FROM dbo.PreciosBase p
-                             WHERE p.ProIdProducto = a.ProIdProducto ORDER BY p.UltimaActualizacion DESC) pb
-                WHERE a.ProIdProducto = @PID AND ISNULL(a.borrar, 0) = 0`),
-            pool.request().input('PID', sql.Int, proId).query(`
-                SELECT pc.OpcionID, c.Tipo, c.Codigo, c.Nombre, ISNULL(c.PrecioExtra, 0) AS PrecioExtra
-                FROM dbo.ProductoComponentes pc
-                INNER JOIN dbo.ComponenteOpciones c ON c.OpcionID = pc.OpcionID
-                WHERE pc.ProIdProducto = @PID AND c.Activo = 1`)
-        ]);
-        if (!prod.recordset.length) return res.status(404).json({ error: 'Producto no encontrado.' });
-        const p = prod.recordset[0];
-        if (!comp.recordset.length) return res.status(400).json({ error: 'El producto todavía no tiene componentes elegidos (paso Componentes y apliques).' });
-
-        const porTipo = {};
-        comp.recordset.forEach(c => { (porTipo[c.Tipo] = porTipo[c.Tipo] || []).push(c); });
-        const combos = cartesianoComponentes(porTipo);
-        if (combos.length > 2000) return res.status(400).json({ error: `Demasiadas combinaciones (${combos.length}) — revisá cuántas opciones tiene marcadas cada componente.` });
-
-        const prefijo = (p.CodigoCorto || String(p.ProIdProducto)).toUpperCase().slice(0, 3);
-        const precioBase = Number(p.Precio) || 0;
-
-        const existentes = await pool.request().input('PID', sql.Int, proId).query(`
-            SELECT ClaveNatural, MAX(TRY_CAST(RIGHT(Codigo, 6) AS INT)) OVER () AS MaxNum
-            FROM dbo.ProductoVariantes WHERE ProIdProducto = @PID`);
-        let siguienteNum = (existentes.recordset[0]?.MaxNum || 0) + 1;
-        const clavesExistentes = new Set(existentes.recordset.map(r => r.ClaveNatural));
-
-        let creadas = 0, actualizadas = 0;
-        const transaction = new sql.Transaction(pool);
-        await transaction.begin();
-        try {
-            for (const combo of combos) {
-                const clave = claveNaturalVariante(combo);
-                const legible = [prefijo, ...Object.values(combo).map(o => o.Codigo)].join('-').slice(0, 150);
-                const precioCalc = precioBase + Object.values(combo).reduce((s, o) => s + (Number(o.PrecioExtra) || 0), 0);
-                const seleccionesJson = JSON.stringify(Object.fromEntries(Object.entries(combo).map(([t, o]) => [t, o.OpcionID])));
-
-                if (clavesExistentes.has(clave)) {
-                    await new sql.Request(transaction)
-                        .input('PID', sql.Int, proId).input('Clave', sql.VarChar(400), clave)
-                        .input('Legible', sql.VarChar(150), legible)
-                        .input('Precio', sql.Decimal(18, 2), precioCalc)
-                        .query(`UPDATE dbo.ProductoVariantes SET CodigoLegible = @Legible, PrecioCalculado = @Precio
-                                WHERE ProIdProducto = @PID AND ClaveNatural = @Clave`);
-                    actualizadas++;
-                } else {
-                    const codigo = `${prefijo}${String(siguienteNum).padStart(6, '0')}`;
-                    siguienteNum++;
-                    await new sql.Request(transaction)
-                        .input('PID', sql.Int, proId).input('Cod', sql.VarChar(20), codigo)
-                        .input('Legible', sql.VarChar(150), legible)
-                        .input('Sel', sql.NVarChar(sql.MAX), seleccionesJson)
-                        .input('Clave', sql.VarChar(400), clave)
-                        .input('Precio', sql.Decimal(18, 2), precioCalc)
-                        .query(`INSERT INTO dbo.ProductoVariantes
-                                    (ProIdProducto, Codigo, CodigoLegible, Selecciones, ClaveNatural, PrecioCalculado, Activa)
-                                VALUES (@PID, @Cod, @Legible, @Sel, @Clave, @Precio, 1)`);
-                    creadas++;
-                }
-            }
-            await transaction.commit();
-        } catch (txErr) {
-            await transaction.rollback();
-            throw txErr;
-        }
-
-        // Variantes que ya existían pero su combinación ya no es alcanzable con las
-        // opciones actuales (se sacó/agregó un tipo de componente) — quedan en la
-        // tabla (no se borran solas, podrían tener referencias) pero se avisan.
-        const clavesValidas = new Set(combos.map(claveNaturalVariante));
-        const obsoletas = [...clavesExistentes].filter(c => !clavesValidas.has(c)).length;
-
-        logger.info(`[Configurador] Variantes generadas para ProIdProducto ${proId}: ${creadas} nuevas, ${actualizadas} actualizadas, ${obsoletas} obsoletas por ${req.user?.username || 'N/A'}`);
-        res.json({ success: true, total: combos.length, creadas, actualizadas, obsoletas });
-    } catch (e) {
-        logger.error('[Configurador] generarVariantes:', e);
-        res.status(500).json({ error: e.message });
-    }
-};
-
-// GET /api/configurador/productos/:proId/variantes
-exports.getVariantes = async (req, res) => {
-    const proId = parseInt(req.params.proId, 10);
-    if (!Number.isInteger(proId)) return res.status(400).json({ error: 'ProIdProducto inválido.' });
-    try {
-        const pool = await getPool();
-        const r = await pool.request().input('PID', sql.Int, proId).query(`
-            SELECT VarianteID, Codigo, CodigoLegible, Selecciones, PrecioCalculado, PrecioManual, Activa, FechaCreacion
-            FROM dbo.ProductoVariantes WHERE ProIdProducto = @PID ORDER BY Codigo`);
-        res.json({ success: true, data: r.recordset.map(v => ({ ...v, Selecciones: JSON.parse(v.Selecciones) })) });
-    } catch (e) {
-        logger.error('[Configurador] getVariantes:', e);
-        res.status(500).json({ error: e.message });
-    }
-};
-
-// PUT /api/configurador/variantes/:id — togglear Activa y/o fijar PrecioManual (override)
-exports.updateVariante = async (req, res) => {
-    const id = parseInt(req.params.id, 10);
-    if (!Number.isInteger(id)) return res.status(400).json({ error: 'ID inválido.' });
-    const { activa, precioManual } = req.body || {};
-    try {
-        const pool = await getPool();
-        const r = await pool.request()
-            .input('ID', sql.Int, id)
-            .input('Act', sql.Bit, activa !== undefined ? (activa ? 1 : 0) : null)
-            .input('PM', sql.Decimal(18, 2), precioManual !== undefined ? (precioManual === '' || precioManual == null ? null : precioManual) : null)
-            .input('PMSet', sql.Bit, precioManual !== undefined ? 1 : 0)
-            .query(`UPDATE dbo.ProductoVariantes SET
-                        Activa = ISNULL(@Act, Activa),
-                        PrecioManual = CASE WHEN @PMSet = 1 THEN @PM ELSE PrecioManual END
-                    WHERE VarianteID = @ID`);
-        if (!r.rowsAffected[0]) return res.status(404).json({ error: 'Variante no encontrada.' });
-        res.json({ success: true });
-    } catch (e) {
-        logger.error('[Configurador] updateVariante:', e);
-        res.status(500).json({ error: e.message });
-    }
-};
-
 // GET /api/configurador/costuras-iso — catálogo chico para el selector de la
 // ficha de diseño (clasificación ISO 4915, no el catálogo de operaciones/SAM)
 exports.getCosturasIso = async (req, res) => {
     try {
         const pool = await getPool();
         const r = await pool.request().query(`
-            SELECT CosturaISOID, CodigoISO, Nombre FROM dbo.CosturasISO
-            WHERE Activo = 1 ORDER BY CodigoISO`);
+            SELECT CosturaISOID, CodigoISO, Nombre, Activo FROM dbo.CosturasISO
+            ${req.query.all === '1' ? '' : 'WHERE Activo = 1'} ORDER BY CodigoISO`);
         res.json({ success: true, data: r.recordset });
     } catch (e) {
         logger.error('[Configurador] getCosturasIso:', e);
@@ -1210,4 +908,315 @@ exports.subirDibujoFicha = async (req, res) => {
         logger.error('[Configurador] subirDibujoFicha:', e);
         res.status(500).json({ error: e.message });
     }
+};
+
+
+// ═════════════════════════════════════════════════════════════════════════
+//  ETIQUETA — nivel intermedio del árbol del configurador
+//  Familia (StockArt) → Etiqueta (para qué es: Básquet, Fútbol, Vóley…) → Producto.
+//  Lo que trae el nombre (FP, +B, +DTF) es parte del nombre, no del árbol.
+//  Modelo: docs/migrations/configurador_etiquetas.sql. Asignar/crear/renombrar se
+//  aplica al instante (igual que mover de familia), no espera al "Guardar".
+// ═════════════════════════════════════════════════════════════════════════
+
+// GET /api/configurador/etiquetas — todas, con cuántos productos tiene cada una
+exports.getEtiquetas = async (req, res) => {
+    try {
+        const pool = await getPool();
+        if (!(await tieneEtiquetas(pool))) return res.json({ success: true, data: [], faltaSql: true });
+        const r = await pool.request().query(`
+            SELECT e.EtiquetaID, e.Nombre, COUNT(vc.ProIdProducto) AS Productos
+            FROM dbo.ProductoEtiqueta e
+            LEFT JOIN dbo.ProductoVentaConfig vc ON vc.EtiquetaID = e.EtiquetaID
+            WHERE e.Activo = 1
+            GROUP BY e.EtiquetaID, e.Nombre
+            ORDER BY e.Nombre`);
+        res.json({ success: true, data: r.recordset });
+    } catch (e) {
+        logger.error('[Configurador] getEtiquetas:', e);
+        res.status(500).json({ error: e.message });
+    }
+};
+
+// POST /api/configurador/etiquetas — { nombre } → crea (o devuelve la existente con ese nombre)
+exports.crearEtiqueta = async (req, res) => {
+    const nombre = String(req.body?.nombre || '').trim().slice(0, 100);
+    if (!nombre) return res.status(400).json({ error: 'Poné el nombre de la etiqueta.' });
+    try {
+        const pool = await getPool();
+        if (!(await tieneEtiquetas(pool))) return res.status(409).json({ error: FALTA_SQL_ETIQUETAS });
+        const r = await pool.request().input('Nom', sql.NVarChar(100), nombre).query(`
+            IF NOT EXISTS (SELECT 1 FROM dbo.ProductoEtiqueta WHERE Nombre = @Nom)
+                INSERT INTO dbo.ProductoEtiqueta (Nombre) VALUES (@Nom);
+            SELECT EtiquetaID, Nombre FROM dbo.ProductoEtiqueta WHERE Nombre = @Nom;`);
+        logger.info(`[Configurador] Etiqueta "${nombre}" (#${r.recordset[0].EtiquetaID}) por ${req.user?.username || 'N/A'}`);
+        res.json({ success: true, data: r.recordset[0] });
+    } catch (e) {
+        logger.error('[Configurador] crearEtiqueta:', e);
+        res.status(500).json({ error: e.message });
+    }
+};
+
+// PUT /api/configurador/etiquetas/:id — { nombre } → renombra (afecta a todos sus productos)
+exports.renombrarEtiqueta = async (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    const nombre = String(req.body?.nombre || '').trim().slice(0, 100);
+    if (!Number.isInteger(id)) return res.status(400).json({ error: 'Etiqueta inválida.' });
+    if (!nombre) return res.status(400).json({ error: 'Poné el nombre de la etiqueta.' });
+    try {
+        const pool = await getPool();
+        if (!(await tieneEtiquetas(pool))) return res.status(409).json({ error: FALTA_SQL_ETIQUETAS });
+        const dup = await pool.request().input('ID', sql.Int, id).input('Nom', sql.NVarChar(100), nombre)
+            .query(`SELECT 1 FROM dbo.ProductoEtiqueta WHERE Nombre = @Nom AND EtiquetaID <> @ID`);
+        if (dup.recordset.length) return res.status(409).json({ error: `Ya existe una etiqueta llamada "${nombre}".` });
+        const r = await pool.request().input('ID', sql.Int, id).input('Nom', sql.NVarChar(100), nombre)
+            .query(`UPDATE dbo.ProductoEtiqueta SET Nombre = @Nom WHERE EtiquetaID = @ID; SELECT @@ROWCOUNT AS n;`);
+        if (!r.recordset[0].n) return res.status(404).json({ error: 'Etiqueta no encontrada.' });
+        res.json({ success: true });
+    } catch (e) {
+        logger.error('[Configurador] renombrarEtiqueta:', e);
+        res.status(500).json({ error: e.message });
+    }
+};
+
+// PUT /api/configurador/productos/:proId/etiqueta — { etiquetaId: number|null }
+// null = el producto queda sin etiqueta. Si todavía no tenía ProductoVentaConfig,
+// la crea con los mismos defaults que guardarProductoConfig.
+exports.asignarEtiqueta = async (req, res) => {
+    const proId = parseInt(req.params.proId, 10);
+    if (!Number.isInteger(proId)) return res.status(400).json({ error: 'ProIdProducto inválido.' });
+    const raw = req.body?.etiquetaId;
+    const etiquetaId = raw == null || raw === '' ? null : parseInt(raw, 10);
+    if (raw != null && raw !== '' && !Number.isInteger(etiquetaId)) return res.status(400).json({ error: 'Etiqueta inválida.' });
+    try {
+        const pool = await getPool();
+        if (!(await tieneEtiquetas(pool))) return res.status(409).json({ error: FALTA_SQL_ETIQUETAS });
+        const existe = await pool.request().input('PID', sql.Int, proId)
+            .query(`SELECT 1 FROM dbo.Articulos WHERE ProIdProducto = @PID AND ISNULL(borrar,0) = 0`);
+        if (!existe.recordset.length) return res.status(404).json({ error: 'Producto no encontrado.' });
+        if (etiquetaId != null) {
+            const e = await pool.request().input('ID', sql.Int, etiquetaId)
+                .query(`SELECT 1 FROM dbo.ProductoEtiqueta WHERE EtiquetaID = @ID`);
+            if (!e.recordset.length) return res.status(400).json({ error: 'La etiqueta no existe.' });
+        }
+        await pool.request().input('PID', sql.Int, proId).input('EID', sql.Int, etiquetaId).query(`
+            IF EXISTS (SELECT 1 FROM dbo.ProductoVentaConfig WHERE ProIdProducto = @PID)
+                UPDATE dbo.ProductoVentaConfig SET EtiquetaID = @EID, FechaModif = GETDATE() WHERE ProIdProducto = @PID
+            ELSE
+                INSERT INTO dbo.ProductoVentaConfig (ProIdProducto, OrigenTipo, ValidarStock, Estado, EtiquetaID)
+                VALUES (@PID, 'CONFECCIONADO', 1, 'BORRADOR', @EID)`);
+        logger.info(`[Configurador] ProIdProducto ${proId} → etiqueta ${etiquetaId ?? '(ninguna)'} por ${req.user?.username || 'N/A'}`);
+        res.json({ success: true });
+    } catch (e) {
+        logger.error('[Configurador] asignarEtiqueta:', e);
+        res.status(500).json({ error: e.message });
+    }
+};
+
+// ═════════════════════════════════════════════════════════════════════════
+//  MOLDES DE TIZADAPRO (solo lectura — services/tizadaProService.js)
+//  El configurador no carga moldes: los vincula. TizadaPro es el dueño de las
+//  piezas, los talles, los modelos y las telas permitidas por pieza.
+// ═════════════════════════════════════════════════════════════════════════
+
+// GET /api/configurador/tizadapro/moldes — moldes activos con modelos, piezas, talles y telas
+exports.getTizadaProMoldes = async (req, res) => {
+    try {
+        const pool = await getPool();
+        const lista = await require('../services/tizadaProService').moldes(pool, { soloActivos: req.query.todos !== '1' });
+        res.json({ success: true, data: lista });
+    } catch (e) {
+        if (e.status) return res.status(e.status).json({ error: e.message });
+        logger.error('[Configurador] getTizadaProMoldes:', e);
+        res.status(500).json({ error: e.message });
+    }
+};
+
+// POST /api/configurador/tizadapro/moldes/:ref/pdf — sube el PDF del molde y arma las siluetas de
+// sus piezas cruzando los contornos del PDF con las cajas por pieza/talle de TizadaPro.
+exports.subirPdfMoldeTizadaPro = async (req, res) => {
+    if (!req.file) return res.status(400).json({ error: 'No se subió ningún PDF.' });
+    try {
+        const pool = await getPool();
+        const r = await require('../services/tizadaProService').procesarPdfMolde(pool, String(req.params.ref || ''), req.file.path, req.file.filename);
+        logger.info(`[Configurador] PDF de molde ${req.params.ref} procesado por ${req.user?.username || 'N/A'}: ${r.contornos} contornos`);
+        res.json({ success: true, data: r });
+    } catch (e) {
+        try { require('fs').unlinkSync(req.file.path); } catch (_) { /* nada */ }
+        if (e.status) return res.status(e.status).json({ error: e.message });
+        logger.error('[Configurador] subirPdfMoldeTizadaPro:', e);
+        res.status(500).json({ error: e.message });
+    }
+};
+
+// POST /api/configurador/tizadapro/moldes/procesar-carpeta — lee los PDFs de la carpeta de moldes y
+// arma las siluetas de los moldes que aún no las tienen (el nombre del archivo no importa).
+exports.procesarCarpetaMoldes = async (req, res) => {
+    try {
+        const pool = await getPool();
+        const r = await require('../services/tizadaProService').procesarCarpetaMoldes(pool);
+        logger.info(`[Configurador] Carpeta de moldes leída por ${req.user?.username || 'N/A'}: ${r.procesados.length} molde(s) con silueta nueva`);
+        res.json({ success: true, data: r });
+    } catch (e) {
+        if (e.status) return res.status(e.status).json({ error: e.message });
+        logger.error('[Configurador] procesarCarpetaMoldes:', e);
+        res.status(500).json({ error: e.message });
+    }
+};
+
+// GET /api/configurador/tizadapro/moldes/:ref — un molde por su clave estable (legacy_id)
+exports.getTizadaProMolde = async (req, res) => {
+    try {
+        const pool = await getPool();
+        const lista = await require('../services/tizadaProService').moldes(pool, { ref: String(req.params.ref || ''), soloActivos: false });
+        if (!lista.length) return res.status(404).json({ error: 'Ese molde ya no está en TizadaPro.' });
+        res.json({ success: true, data: lista[0] });
+    } catch (e) {
+        if (e.status) return res.status(e.status).json({ error: e.message });
+        logger.error('[Configurador] getTizadaProMolde:', e);
+        res.status(500).json({ error: e.message });
+    }
+};
+
+// ═════════════════════════════════════════════════════════════════════════
+//  NOMBRE Y CÓDIGO DEL PRODUCTO (Articulos.Descripcion / CodArticulo)
+//  El nombre se cambia siempre. El código solo si el producto todavía no tiene
+//  pedidos ni cobranzas (esas tablas guardan el código como texto y quedarían
+//  desparejas); al cambiarlo se arrastra a las tablas de precios del artículo.
+// ═════════════════════════════════════════════════════════════════════════
+// PUT /api/configurador/productos/:proId/identidad — { descripcion, codArticulo }
+exports.actualizarIdentidad = async (req, res) => {
+    const proId = parseInt(req.params.proId, 10);
+    if (!Number.isInteger(proId)) return res.status(400).json({ error: 'ProIdProducto inválido.' });
+    const descripcion = String(req.body?.descripcion || '').trim();
+    const codArticulo = req.body?.codArticulo === undefined ? undefined : String(req.body.codArticulo || '').trim();
+    if (!descripcion) return res.status(400).json({ error: 'El nombre es obligatorio.' });
+    if (descripcion.length > 100) return res.status(400).json({ error: 'El nombre no puede pasar de 100 caracteres.' });
+    if (codArticulo !== undefined && (!codArticulo || codArticulo.length > 20)) return res.status(400).json({ error: 'El código tiene que tener entre 1 y 20 caracteres.' });
+    try {
+        const pool = await getPool();
+        const act = await pool.request().input('PID', sql.Int, proId).query(`
+            SELECT LTRIM(RTRIM(CodArticulo)) AS Cod, LTRIM(RTRIM(CodStock)) AS CodStock, LTRIM(RTRIM(Descripcion)) AS Descripcion,
+                   (SELECT COUNT(*) FROM dbo.Ordenes o WHERE o.ProIdProducto = a.ProIdProducto) AS Ordenes,
+                   (SELECT COUNT(*) FROM dbo.PedidosCobranzaDetalle d WHERE d.ProIdProducto = a.ProIdProducto) AS Cobranzas
+            FROM dbo.Articulos a WHERE a.ProIdProducto = @PID AND ISNULL(a.borrar, 0) = 0`);
+        const a = act.recordset[0];
+        if (!a) return res.status(404).json({ error: 'Producto no encontrado.' });
+        const cambiaCod = codArticulo !== undefined && codArticulo !== a.Cod;
+        if (cambiaCod) {
+            if (a.Ordenes || a.Cobranzas) return res.status(409).json({ error: `El código no se puede cambiar: el producto ya tiene ${a.Ordenes} pedido(s) y ${a.Cobranzas} cobranza(s) con el código ${a.Cod}. El nombre sí se puede cambiar.` });
+            const dup = await pool.request().input('Cod', sql.VarChar(20), codArticulo).input('CS', sql.VarChar(20), a.CodStock).input('PID', sql.Int, proId)
+                .query(`SELECT TOP 1 LTRIM(RTRIM(Descripcion)) AS d FROM dbo.Articulos WHERE LTRIM(RTRIM(CodArticulo)) = @Cod AND LTRIM(RTRIM(CodStock)) = @CS AND ProIdProducto <> @PID AND ISNULL(borrar, 0) = 0`);
+            if (dup.recordset.length) return res.status(409).json({ error: `El código ${codArticulo} ya lo usa "${dup.recordset[0].d}" en la misma familia.` });
+        }
+        const transaction = new sql.Transaction(pool);
+        await transaction.begin();
+        try {
+            const rq = () => new sql.Request(transaction).input('PID', sql.Int, proId).input('Desc', sql.VarChar(100), descripcion).input('Cod', sql.VarChar(20), cambiaCod ? codArticulo : a.Cod).input('Viejo', sql.VarChar(20), a.Cod);
+            await rq().query(`UPDATE dbo.Articulos SET Descripcion = @Desc${cambiaCod ? ', CodArticulo = @Cod' : ''} WHERE ProIdProducto = @PID`);
+            if (cambiaCod) {
+                // Las tablas de precios guardan el código como texto: se arrastra el nuevo
+                for (const t of ['PreciosBase', 'PreciosEspecialesItems', 'PerfilesItems']) {
+                    await rq().query(`UPDATE dbo.${t} SET CodArticulo = @Cod WHERE ProIdProducto = @PID`);
+                }
+            }
+            await transaction.commit();
+        } catch (txErr) { await transaction.rollback(); throw txErr; }
+        logger.info(`[Configurador] Identidad ProIdProducto ${proId}: "${a.Descripcion}" [${a.Cod}] → "${descripcion}" [${cambiaCod ? codArticulo : a.Cod}] por ${req.user?.username || 'N/A'}`);
+        res.json({ success: true, data: { descripcion, codArticulo: cambiaCod ? codArticulo : a.Cod, codigoCambiado: cambiaCod } });
+    } catch (e) {
+        logger.error('[Configurador] actualizarIdentidad:', e);
+        res.status(500).json({ error: e.message });
+    }
+};
+
+// ═════════════════════════════════════════════════════════════════════════
+//  CATÁLOGO DE AVÍOS (dbo.CatalogoAvios — sección H de configurador_tizadapro.sql)
+//  Cierres, botones, elásticos, etiquetas… con su unidad. Los productos eligen de acá.
+// ═════════════════════════════════════════════════════════════════════════
+const UNIDADES_AVIO = ['u', 'par', 'm', 'cm'];
+async function tieneCatalogoAvios(pool) {
+    const r = await pool.request().query(`SELECT OBJECT_ID('dbo.CatalogoAvios', 'U') AS t`);
+    return r.recordset[0].t != null;
+}
+// GET /api/configurador/avios (?all=1 incluye inactivos)
+exports.getAvios = async (req, res) => {
+    try {
+        const pool = await getPool();
+        if (!(await tieneCatalogoAvios(pool))) return res.json({ success: true, data: [], faltaSql: true });
+        const r = await pool.request().query(`
+            SELECT a.AvioID, a.Nombre, a.Unidad, a.ArtProIdProducto, a.Activo, a.Orden, LTRIM(RTRIM(x.Descripcion)) AS Articulo,
+                   (SELECT COUNT(*) FROM dbo.ProductoAvios pa WHERE pa.AvioID = a.AvioID) AS Usos
+            FROM dbo.CatalogoAvios a LEFT JOIN dbo.Articulos x ON x.ProIdProducto = a.ArtProIdProducto
+            ${req.query.all === '1' ? '' : 'WHERE a.Activo = 1'} ORDER BY ISNULL(a.Orden, 999), a.Nombre`);
+        res.json({ success: true, data: r.recordset });
+    } catch (e) { logger.error('[Configurador] getAvios:', e); res.status(500).json({ error: e.message }); }
+};
+// POST /api/configurador/avios — { nombre, unidad, artProIdProducto? }
+exports.crearAvio = async (req, res) => {
+    const nombre = String(req.body?.nombre || '').trim().slice(0, 200);
+    const unidad = UNIDADES_AVIO.includes(req.body?.unidad) ? req.body.unidad : 'u';
+    if (!nombre) return res.status(400).json({ error: 'Poné el nombre del avío.' });
+    try {
+        const pool = await getPool();
+        if (!(await tieneCatalogoAvios(pool))) return res.status(409).json({ error: 'Falta correr docs/migrations/configurador_tizadapro.sql (sección H) en esta base.' });
+        const r = await pool.request().input('Nom', sql.NVarChar(200), nombre).input('Uni', sql.NVarChar(20), unidad)
+            .input('Art', sql.Int, Number.isInteger(Number(req.body?.artProIdProducto)) && Number(req.body.artProIdProducto) > 0 ? Number(req.body.artProIdProducto) : null)
+            .query(`INSERT INTO dbo.CatalogoAvios (Nombre, Unidad, ArtProIdProducto) OUTPUT INSERTED.AvioID VALUES (@Nom, @Uni, @Art)`)
+            .catch(e => { if (/UQ_CatalogoAvios/.test(e.message)) { const x = new Error('Ya hay un avío con ese nombre.'); x.status = 409; throw x; } throw e; });
+        res.json({ success: true, data: { AvioID: r.recordset[0].AvioID } });
+    } catch (e) { if (e.status) return res.status(e.status).json({ error: e.message }); logger.error('[Configurador] crearAvio:', e); res.status(500).json({ error: e.message }); }
+};
+// PUT /api/configurador/avios/:id — { nombre?, unidad?, artProIdProducto?, activo?, orden? }
+exports.updateAvio = async (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isInteger(id)) return res.status(400).json({ error: 'Avío inválido.' });
+    const b = req.body || {}; const sets = [];
+    const rq = (await getPool()).request().input('ID', sql.Int, id);
+    if (b.nombre !== undefined) { const n = String(b.nombre || '').trim().slice(0, 200); if (!n) return res.status(400).json({ error: 'El nombre no puede quedar vacío.' }); sets.push('Nombre = @Nom'); rq.input('Nom', sql.NVarChar(200), n); }
+    if (b.unidad !== undefined) { sets.push('Unidad = @Uni'); rq.input('Uni', sql.NVarChar(20), UNIDADES_AVIO.includes(b.unidad) ? b.unidad : 'u'); }
+    if (b.artProIdProducto !== undefined) { sets.push('ArtProIdProducto = @Art'); rq.input('Art', sql.Int, Number.isInteger(Number(b.artProIdProducto)) && Number(b.artProIdProducto) > 0 ? Number(b.artProIdProducto) : null); }
+    if (b.activo !== undefined) { sets.push('Activo = @Act'); rq.input('Act', sql.Bit, b.activo ? 1 : 0); }
+    if (b.orden !== undefined) { sets.push('Orden = @Ord'); rq.input('Ord', sql.Int, Number.isInteger(Number(b.orden)) ? Number(b.orden) : null); }
+    if (!sets.length) return res.status(400).json({ error: 'Nada para cambiar.' });
+    try {
+        const r = await rq.query(`UPDATE dbo.CatalogoAvios SET ${sets.join(', ')} WHERE AvioID = @ID; SELECT @@ROWCOUNT AS n;`)
+            .catch(e => { if (/UQ_CatalogoAvios/.test(e.message)) { const x = new Error('Ya hay un avío con ese nombre.'); x.status = 409; throw x; } throw e; });
+        if (!r.recordset[0].n) return res.status(404).json({ error: 'Avío no encontrado.' });
+        res.json({ success: true });
+    } catch (e) { if (e.status) return res.status(e.status).json({ error: e.message }); logger.error('[Configurador] updateAvio:', e); res.status(500).json({ error: e.message }); }
+};
+
+// ═════════════════════════════════════════════════════════════════════════
+//  CATÁLOGO DE COSTURAS (dbo.CosturasISO) — alta y edición
+// ═════════════════════════════════════════════════════════════════════════
+// POST /api/configurador/costuras-iso — { codigoISO, nombre }
+exports.crearCosturaIso = async (req, res) => {
+    const codigo = String(req.body?.codigoISO || '').trim().slice(0, 20);
+    const nombre = String(req.body?.nombre || '').trim().slice(0, 200);
+    if (!codigo || !nombre) return res.status(400).json({ error: 'Poné el código (ej. ISO 504) y el nombre de la costura.' });
+    try {
+        const pool = await getPool();
+        const dup = await pool.request().input('C', sql.VarChar(20), codigo).query(`SELECT 1 FROM dbo.CosturasISO WHERE CodigoISO = @C`);
+        if (dup.recordset.length) return res.status(409).json({ error: `Ya existe una costura con el código ${codigo}.` });
+        const r = await pool.request().input('C', sql.VarChar(20), codigo).input('N', sql.VarChar(200), nombre)
+            .query(`INSERT INTO dbo.CosturasISO (CodigoISO, Nombre, Activo) OUTPUT INSERTED.CosturaISOID VALUES (@C, @N, 1)`);
+        res.json({ success: true, data: { CosturaISOID: r.recordset[0].CosturaISOID } });
+    } catch (e) { logger.error('[Configurador] crearCosturaIso:', e); res.status(500).json({ error: e.message }); }
+};
+// PUT /api/configurador/costuras-iso/:id — { codigoISO?, nombre?, activo? }
+exports.updateCosturaIso = async (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isInteger(id)) return res.status(400).json({ error: 'Costura inválida.' });
+    const b = req.body || {}; const sets = [];
+    const rq = (await getPool()).request().input('ID', sql.Int, id);
+    if (b.codigoISO !== undefined) { const c = String(b.codigoISO || '').trim().slice(0, 20); if (!c) return res.status(400).json({ error: 'El código no puede quedar vacío.' }); sets.push('CodigoISO = @C'); rq.input('C', sql.VarChar(20), c); }
+    if (b.nombre !== undefined) { const n = String(b.nombre || '').trim().slice(0, 200); if (!n) return res.status(400).json({ error: 'El nombre no puede quedar vacío.' }); sets.push('Nombre = @N'); rq.input('N', sql.VarChar(200), n); }
+    if (b.activo !== undefined) { sets.push('Activo = @A'); rq.input('A', sql.Bit, b.activo ? 1 : 0); }
+    if (!sets.length) return res.status(400).json({ error: 'Nada para cambiar.' });
+    try {
+        const r = await rq.query(`UPDATE dbo.CosturasISO SET ${sets.join(', ')} WHERE CosturaISOID = @ID; SELECT @@ROWCOUNT AS n;`);
+        if (!r.recordset[0].n) return res.status(404).json({ error: 'Costura no encontrada.' });
+        res.json({ success: true });
+    } catch (e) { logger.error('[Configurador] updateCosturaIso:', e); res.status(500).json({ error: e.message }); }
 };

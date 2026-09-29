@@ -21,7 +21,7 @@ export const ESTADO_PARTE = {
 
 export const NOMBRE_PARTE = { PRINCIPAL: 'Producción principal (sublimación)', BORDADO: 'Bordado', DTF: 'Estampado DTF', TPU: 'Estampado TPU' };
 export const TIPO_TRABAJO = { REVISAR: 'Revisar el arte del cliente', DESDE_CERO: 'Diseñar desde cero' };
-export const ROL_ARCHIVO = { ARTE_CLIENTE: 'Arte del cliente', REFERENCIA: 'Referencia', BOCETO: 'Boceto de ubicación', PLANILLA: 'Planilla de talles y nombres', TIZADA: 'Tizada / molde', DISENO_PRONTO: 'Diseño pronto' };
+export const ROL_ARCHIVO = { ARTE_CLIENTE: 'Arte del cliente', REFERENCIA: 'Referencia', BOCETO: 'Boceto de ubicación', PLANILLA: 'Planilla de talles y nombres', TIZADA: 'Tizada / molde', DISENO_PRONTO: 'Diseño pronto', COMPROBANTE: 'Comprobante de pago' };
 export const MONEDA = { 1: '$', 2: 'US$' };
 
 export const errorDe = (e) => e?.response?.data?.error || e?.message || 'Error inesperado';
@@ -227,6 +227,35 @@ export function Checklist({ ch, titulo, compacto }) {
             {!compacto && ch.ok.length > 0 && <ul className="text-xs text-emerald-800 space-y-0.5">{ch.ok.map((x, i) => <li key={i} className="flex gap-1.5"><span className="font-black">✓</span><span>{x}</span></li>)}</ul>}
             {compacto && ch.ok.length > 0 && <div className="text-[11px] text-emerald-800">✓ {ch.ok.length} requisito{ch.ok.length === 1 ? '' : 's'} cumplido{ch.ok.length === 1 ? '' : 's'}</div>}
             {ch.luego.length > 0 && <div className="mt-2 pt-2 border-t border-dashed border-slate-300 text-[11px] text-amber-700">Se puede completar después, no frena: {ch.luego.join(' · ')}</div>}
+        </div>
+    );
+}
+
+/** Visor de un PDF generado en el servidor (Blob). Se muestra ACÁ, en un modal: no depende de
+ *  pestañas emergentes (que el navegador bloquea cuando el PDF tarda en llegar). Desde el modal
+ *  se descarga o se abre en pestaña nueva con un clic real del usuario. */
+export function VisorPdf({ blob, nombre, onClose }) {
+    const [url, setUrl] = useState(null);
+    useEffect(() => {
+        if (!blob) return undefined;
+        const u = URL.createObjectURL(blob instanceof Blob ? blob : new Blob([blob], { type: 'application/pdf' }));
+        setUrl(u);
+        return () => URL.revokeObjectURL(u);
+    }, [blob]);
+    if (!blob) return null;
+    return (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-3" onClick={onClose}>
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-5xl h-[92vh] flex flex-col" onClick={e => e.stopPropagation()}>
+                <div className="flex items-center justify-between gap-3 px-4 py-2.5 border-b border-slate-200">
+                    <h3 className="text-sm font-black text-slate-800 truncate">{nombre || 'Ficha del pedido'}</h3>
+                    <div className="flex items-center gap-2">
+                        {url && <a href={url} download={nombre || 'ficha.pdf'} className={BTN_SECUNDARIO}>Descargar</a>}
+                        {url && <button type="button" onClick={() => window.open(url, '_blank')} className={BTN_SECUNDARIO}>Abrir en pestaña nueva</button>}
+                        <button type="button" onClick={onClose} className="p-1 rounded-lg hover:bg-slate-100 text-slate-500"><X size={16} /></button>
+                    </div>
+                </div>
+                {url ? <iframe title={nombre || 'PDF'} src={url} className="flex-1 w-full rounded-b-2xl" /> : <div className="flex-1 flex items-center justify-center"><Loader2 className="animate-spin" /></div>}
+            </div>
         </div>
     );
 }

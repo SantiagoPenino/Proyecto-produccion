@@ -53,11 +53,6 @@ const ORIGENES = [
     { id: 'AMBOS', t: 'Local o del cliente', d: 'El cliente elige el origen al pedir.', icon: 'fa-shuffle' },
 ];
 
-const TIPOS_COMP = [
-    { id: 'CUELLO', label: 'Cuello' }, { id: 'MANGA', label: 'Manga' },
-    { id: 'PUNO', label: 'Puño' }, { id: 'COSTADO', label: 'Costado' },
-];
-
 const MODOS = [
     { id: 'LIBRE', label: 'Libre elección', hint: 'todas las opciones activas del catálogo' },
     { id: 'RESTRINGIDO', label: 'Solo las marcadas', hint: 'el cliente elige entre las tildadas' },
@@ -118,48 +113,154 @@ const SizeBox = ({ w, h }) => {
     );
 };
 
-// ── Dibujos de componentes (portados de la maqueta USER Studio) ──────────
-const IS = '#1f2937';
-const COMP_SVGS = {
-    'cuello-redondo': <><path d="M14 14H46V20C46 26 38 30 30 30C22 30 14 26 14 20Z" fill="#eef2ff" stroke={IS} strokeWidth="2" /></>,
-    'cuello-v': <><path d="M14 14H46V18L30 36L14 18Z" fill="#eef2ff" stroke={IS} strokeWidth="2" /><path d="M14 18L30 36L46 18" fill="none" stroke={IS} strokeWidth="2" /></>,
-    'cuello-polo': <><path d="M14 14H46V20H14Z" fill="#eef2ff" stroke={IS} strokeWidth="2" /><path d="M26 20L30 40L34 20" fill="#fff" stroke={IS} strokeWidth="2" /><circle cx="30" cy="27" r="1.6" /><circle cx="30" cy="33" r="1.6" /></>,
-    'cuello-camisa': <><path d="M14 16H46V21L38 29L30 24L22 29L14 21Z" fill="#eef2ff" stroke={IS} strokeWidth="2" strokeLinejoin="round" /><path d="M30 24V16" stroke={IS} strokeWidth="1.2" strokeDasharray="2 2" /></>,
-    'cuello-mao': <><rect x="14" y="16" width="32" height="9" rx="4.5" fill="#eef2ff" stroke={IS} strokeWidth="2" /><path d="M30 16V25" stroke={IS} strokeWidth="1.2" strokeDasharray="2 2" /></>,
-    'manga-pegada': <><path d="M22 14H38L46 24L40 30L38 24V46H22V24L20 30L14 24Z" fill="#eef2ff" stroke={IS} strokeWidth="2" strokeLinejoin="round" /></>,
-    'manga-raglan': <><path d="M22 14H38L48 40L40 44L34 24V46H26V24L20 44L12 40Z" fill="#eef2ff" stroke={IS} strokeWidth="2" strokeLinejoin="round" /><path d="M22 14L34 24M38 14L26 24" stroke={IS} strokeWidth="1.5" /></>,
-    'puno-dobladillo': <><rect x="18" y="18" width="24" height="24" rx="2" fill="#eef2ff" stroke={IS} strokeWidth="2" /><line x1="18" y1="36" x2="42" y2="36" stroke={IS} strokeWidth="1.5" /></>,
-    'puno-vivo': <><rect x="18" y="18" width="24" height="24" rx="2" fill="#eef2ff" stroke={IS} strokeWidth="2" /><rect x="18" y="36" width="24" height="6" fill={IS} opacity=".35" /></>,
-    'puno-vivo-ancho': <><rect x="18" y="18" width="24" height="24" rx="2" fill="#eef2ff" stroke={IS} strokeWidth="2" /><rect x="18" y="33" width="24" height="9" fill={IS} opacity=".35" /></>,
-    'costado-simple': <><path d="M22 14H38V46H22Z" fill="#eef2ff" stroke={IS} strokeWidth="2" /></>,
-    'costado-fino': <><path d="M22 14H38V46H22Z" fill="#eef2ff" stroke={IS} strokeWidth="2" /><rect x="22" y="14" width="3" height="32" fill={IS} opacity=".4" /><rect x="35" y="14" width="3" height="32" fill={IS} opacity=".4" /></>,
-    'costado-ancho': <><path d="M22 14H38V46H22Z" fill="#eef2ff" stroke={IS} strokeWidth="2" /><rect x="22" y="14" width="6" height="32" fill={IS} opacity=".4" /><rect x="32" y="14" width="6" height="32" fill={IS} opacity=".4" /></>,
+// ── Resumen del molde de TizadaPro (solo lectura) ─────────────────────────
+// Talles agrupados por curva y en orden real (no alfabético): bebé (meses), niño, adulto, femenino.
+const ORDEN_ADULTO = ['XS', 'S', 'M', 'L', 'XL', '2XL', '3XL', '4XL', '5XL', '6XL', '7XL', '8XL'];
+const agruparTalles = (talles) => {
+    const g = { bebe: [], nino: [], adulto: [], fem: [], otros: [] };
+    (talles || []).forEach(t => {
+        const x = String(t).trim();
+        if (/^\d+(-\d+)?M$/i.test(x)) g.bebe.push(x);
+        else if (/^\d+$/.test(x)) g.nino.push(x);
+        else if (/fem$/i.test(x)) g.fem.push(x);
+        else if (ORDEN_ADULTO.includes(x.toUpperCase())) g.adulto.push(x);
+        else g.otros.push(x);
+    });
+    const num = (x) => parseInt(x, 10) || 0;
+    g.bebe.sort((a, b) => num(a) - num(b));
+    g.nino.sort((a, b) => num(a) - num(b));
+    const rank = (x) => ORDEN_ADULTO.indexOf(x.toUpperCase().replace(/FEM$/, ''));
+    g.adulto.sort((a, b) => rank(a) - rank(b));
+    g.fem.sort((a, b) => rank(a) - rank(b));
+    return [['Bebé', g.bebe], ['Niño', g.nino], ['Adulto', g.adulto], ['Femenino', g.fem], ['Otros', g.otros]].filter(([, l]) => l.length);
 };
-const compIconKey = (codigo) => {
-    const c = (codigo || '').toUpperCase();
-    if (c.startsWith('CR-')) return 'cuello-redondo';
-    if (c.startsWith('CV-')) return 'cuello-v';
-    if (c.startsWith('CP-')) return 'cuello-polo';
-    if (c.startsWith('CS-')) return 'cuello-camisa';
-    if (c.startsWith('CM-')) return 'cuello-mao';
-    if (c === 'MG-01') return 'manga-pegada';
-    if (c.startsWith('MG-')) return 'manga-raglan';
-    if (c === 'TM-01') return 'puno-dobladillo';
-    if (c === 'TM-03') return 'puno-vivo-ancho';
-    if (c.startsWith('TM-')) return 'puno-vivo';
-    if (c === 'CT-02') return 'costado-fino';
-    if (c === 'CT-03') return 'costado-ancho';
-    if (c.startsWith('CT-')) return 'costado-simple';
-    return null;
-};
-const CompIcon = ({ codigo, size = 42 }) => {
-    const key = compIconKey(codigo);
+// Silueta a escala de una pieza (rectángulo que ocupa en el talle guía). TizadaPro no expone el
+// contorno real en su base: para ver la forma hay que abrir el molde en TizadaPro.
+const SiluetaPieza = ({ ancho, alto, svgPath }) => {
+    if (svgPath) {
+        return (
+            <svg viewBox="0 0 100 100" className="w-10 h-10" title={`${ancho} × ${alto} cm`}>
+                <path d={svgPath} fill="#e0e7ff" stroke="#4f46e5" strokeWidth="2.5" strokeLinejoin="round" />
+            </svg>
+        );
+    }
+    if (!ancho || !alto) return <div className="w-10 h-10 rounded border border-dashed border-slate-200" title="Sin medidas en TizadaPro" />;
+    const k = Math.min(40 / ancho, 40 / alto);
+    const w = Math.max(6, Math.round(ancho * k)), h = Math.max(6, Math.round(alto * k));
+    // Rectángulo punteado = el espacio que ocupa la pieza (ancho × alto reales), NO su contorno
     return (
-        <svg viewBox="0 0 60 60" width={size} height={size} xmlns="http://www.w3.org/2000/svg">
-            {key ? COMP_SVGS[key] : <rect x="16" y="16" width="28" height="28" rx="3" fill="#f1f5f9" stroke={IS} strokeWidth="2" />}
-        </svg>
+        <div className="w-10 h-10 flex items-center justify-center" title={`Ocupa ${ancho} × ${alto} cm. Es el espacio de la pieza, no su forma: el contorno está solo en el PDF del molde, en TizadaPro.`}>
+            <div className="border border-dashed border-slate-400 bg-slate-100/60 rounded-[2px]" style={{ width: w, height: h }} />
+        </div>
     );
 };
+const MoldeResumen = ({ molde, modeloVista = '', setModeloVista, vendidos, onLeerCarpeta, leyendoCarpeta }) => {
+    const modelo = (molde.modelos || []).find(m => m.clave === modeloVista) || null;
+    const detalle = molde.piezasDetalle || [];
+    // Piezas en vista: las del modelo elegido (por id_en_molde) o todas las del molde
+    const enVista = modelo && modelo.piezasIds?.length ? detalle.filter(d => modelo.piezasIds.includes(d.idEnMolde)) : detalle;
+    const piezas = enVista.map(d => d.nombre);
+    const conSilueta = enVista.filter(d => d.svgPath).length;
+    const telaDe = (pz) => ((molde.telasPorPieza || {})[pz] || []).map(x => x.nombre).join(', ');
+    const telaDePieza = (d) => telaDe(d.nombre) || telaDe(d.generico);
+    const fijas = enVista.filter(telaDePieza).length;
+    const grupos = agruparTalles(molde.talles);
+    return (
+        <div className="mt-3 grid gap-4 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+            <div className="rounded-xl border border-slate-200 bg-white overflow-hidden">
+                <div className="flex items-center justify-between px-3 py-2 bg-slate-50 border-b border-slate-100">
+                    <span className="text-[11px] font-black uppercase tracking-wider text-slate-500">Piezas {modelo ? 'del modelo' : 'del molde'}</span>
+                    <span className="text-[11px] text-slate-400">{modelo ? `${piezas.length} de ${detalle.length} piezas del molde` : `${piezas.length} piezas`} · {fijas} con tela fija</span>
+                </div>
+                {(molde.modelos || []).length > 0 && setModeloVista && (
+                    <div className="flex items-center gap-2 px-3 py-2 border-b border-slate-100 text-[11px]">
+                        <span className="font-bold text-slate-500">Ver las piezas de</span>
+                        <select value={modeloVista} onChange={e => setModeloVista(e.target.value)} className="border border-slate-200 rounded-lg px-2 py-1 text-xs font-bold bg-white">
+                            <option value="">Todo el molde ({detalle.length} piezas)</option>
+                            {(molde.modelos || []).map(m => <option key={m.clave} value={m.clave}>{m.nombre}{vendidos?.has(m.clave) ? (vendidos.get(m.clave)?.esDefault ? ' ⭐' : ' ✓') : ''}</option>)}
+                        </select>
+                    </div>
+                )}
+                <div className="flex flex-wrap items-center gap-2 px-3 py-2 border-b border-slate-100 text-[11px]">
+                    {onLeerCarpeta && conSilueta === 0 && (
+                        <button type="button" onClick={onLeerCarpeta} disabled={leyendoCarpeta} className="ml-auto order-last rounded-lg border border-slate-300 px-2.5 py-1 font-bold text-slate-600 hover:border-slate-400 disabled:opacity-50"
+                            title="Busca en la carpeta de PDFs de moldes del servidor y arma las siluetas de los moldes que aún no las tienen">
+                            <i className="fa-solid fa-folder-open mr-1"></i>{leyendoCarpeta ? 'Leyendo la carpeta…' : 'Leer PDFs de la carpeta de moldes'}
+                        </button>
+                    )}
+                    {conSilueta > 0
+                        ? <span className="text-emerald-700 font-bold"><i className="fa-solid fa-circle-check mr-1"></i>Siluetas reales: {conSilueta} de {piezas.length} piezas</span>
+                        : <span className="text-slate-500">Los cuadros muestran el espacio que ocupa cada pieza, no su forma.</span>}
+                </div>
+                <table className="w-full text-xs">
+                    <tbody>
+                        {enVista.map((det, i) => {
+                            const pz = det.nombre;
+                            const tela = telaDePieza(det);
+                            return (
+                                <tr key={det.idEnMolde ?? pz} className={i % 2 ? 'bg-slate-50/50' : ''}>
+                                    <td className="pl-3 py-1 w-14"><SiluetaPieza ancho={det?.anchoCm} alto={det?.altoCm} svgPath={det?.svgPath} /></td>
+                                    <td className="px-2 py-1.5 whitespace-nowrap">
+                                        <div className="font-bold text-slate-700">{det.generico && det.generico !== pz ? <>{det.generico} <span className="font-normal text-slate-400">· {pz}</span></> : pz}</div>
+                                        {det.anchoCm && det.altoCm && <div className="text-[10px] text-slate-400">{det.anchoCm} × {det.altoCm} cm · talle {molde.talleGuia}</div>}
+                                    </td>
+                                    <td className="px-3 py-1.5 text-right">
+                                        {tela
+                                            ? <span className="inline-flex items-center gap-1.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-100 px-2 py-0.5 font-bold whitespace-nowrap" title="Tela fija del molde en TizadaPro"><i className="fa-solid fa-lock text-[9px]"></i>{tela}</span>
+                                            : <span className="text-slate-400">tela del pedido</span>}
+                                    </td>
+                                </tr>
+                            );
+                        })}
+                        {enVista.length === 0 && <tr><td className="px-3 py-3 text-slate-400" colSpan={3}>{modelo ? 'Este modelo no tiene piezas asignadas en TizadaPro.' : 'El molde no tiene piezas cargadas en TizadaPro.'}</td></tr>}
+                    </tbody>
+                </table>
+                {fijas > 0 && <div className="px-3 py-2 border-t border-slate-100 text-[10.5px] text-slate-400">Las piezas con candado van siempre en esa tela, la elija el cliente o no. Se cambia en TizadaPro.</div>}
+            </div>
+            <div className="rounded-xl border border-slate-200 bg-white overflow-hidden">
+                <div className="flex items-center justify-between px-3 py-2 bg-slate-50 border-b border-slate-100">
+                    <span className="text-[11px] font-black uppercase tracking-wider text-slate-500">Talles</span>
+                    <span className="text-[11px] text-slate-400">{(molde.talles || []).length} en total</span>
+                </div>
+                <div className="p-3 space-y-2.5">
+                    {grupos.map(([nombre, lista]) => (
+                        <div key={nombre} className="flex items-start gap-2">
+                            <span className="w-16 shrink-0 text-[10px] font-black uppercase tracking-wider text-slate-400 pt-1">{nombre}</span>
+                            <div className="flex flex-wrap gap-1">
+                                {lista.map(t => <span key={t} className="rounded-md bg-slate-100 text-slate-700 px-1.5 py-0.5 font-mono text-[10.5px]">{t.replace(/fem$/i, '')}</span>)}
+                            </div>
+                        </div>
+                    ))}
+                    {grupos.length === 0 && <div className="text-xs text-slate-400">El molde no tiene talles cargados en TizadaPro.</div>}
+                </div>
+            </div>
+        </div>
+    );
+};
+
+// Grupo de opciones excluyentes con check (una sola elegida), para las tarjetas de técnicas
+const GrupoCheck = ({ titulo, children, className = '' }) => (
+    <div className={`rounded-lg border border-slate-200 bg-white px-3 py-2 ${className}`}>
+        <div className="text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1">{titulo}</div>
+        <div className="flex flex-wrap gap-x-4 gap-y-1">{children}</div>
+    </div>
+);
+// Un solo check que cambia de texto según esté marcado o no (obligatoria/opcional, incluida/aparte)
+const CheckUnico = ({ on, onChange, si, no }) => (
+    <button type="button" onClick={() => onChange(!on)} className="flex items-start gap-2 text-left w-full py-0.5">
+        <i className={`mt-0.5 text-base ${on ? 'fa-solid fa-square-check text-emerald-600' : 'fa-regular fa-square text-slate-300'}`}></i>
+        <span className="text-xs">
+            <span className="font-bold text-slate-800">{on ? si[0] : no[0]}</span>
+            <span className="block text-[10.5px] text-slate-400 leading-tight">{on ? si[1] : no[1]}</span>
+        </span>
+    </button>
+);
+const OpcionCheck = ({ on, onClick, children, hint }) => (
+    <button type="button" onClick={onClick} className={`flex items-start gap-1.5 text-left text-xs py-0.5 ${on ? 'text-slate-800' : 'text-slate-500 hover:text-slate-700'}`}>
+        <i className={`mt-0.5 ${on ? 'fa-solid fa-circle-check text-emerald-600' : 'fa-regular fa-circle text-slate-300'}`}></i>
+        <span><span className={on ? 'font-bold' : 'font-medium'}>{children}</span>{hint && <span className="block text-[10.5px] text-slate-400 font-normal leading-tight">{hint}</span>}</span>
+    </button>
+);
 
 const ToolCard = ({ icon, iconBg, title, subtitle, onClick, footer }) => (
     <button onClick={onClick}
@@ -209,7 +310,7 @@ const fichaToForm = (d) => ({
     origenTipo: d.config?.OrigenTipo || 'CONFECCIONADO',
     origenProIdProducto: d.config?.OrigenProIdProducto || null,
     origenNombre: d.origen?.Descripcion || null,
-    codigoCorto: d.config?.CodigoCorto || '',
+    tizadaProMoldeRef: d.config?.TizadaProMoldeRef || '',
     validarStock: d.config ? !!d.config.ValidarStock : true,
     estado: d.config?.Estado || 'BORRADOR',
     esCombo: !!d.config?.EsCombo,
@@ -220,11 +321,14 @@ const fichaToForm = (d) => ({
         const t = (d.tecnicas || []).find(x => x.AreaID === a.id);
         return [a.id, t
             ? { on: true, obligatorio: !!t.Obligatorio, modo: t.Modo || 'LIBRE', cobro: t.Cobro || 'APARTE' }
-            : { on: false, obligatorio: true, modo: 'LIBRE', cobro: 'APARTE' }];
+            // Toda técnica nace obligatoria e incluida en el precio del producto (28-sep).
+            : { on: false, obligatorio: true, modo: 'LIBRE', cobro: 'INCLUIDA' }];
     })),
     opcionesPermitidas: new Set((d.opcionesPermitidas || []).map(o => o.TecnicaOpcionID)),
     surtido: new Set((d.surtido || []).map(s => s.WmsVarianteId)),
-    componentes: new Map((d.componentes || []).map(c => [c.OpcionID, !!c.EsDefault])),
+    // Molde de TizadaPro: qué modelos y qué telas (con precio propio) se venden
+    modelos: new Map((d.modelos || []).map(m => [m.ModeloClave, { nombre: m.ModeloNombre || '', esDefault: !!m.EsDefault }])),
+    telas: new Map((d.telas || []).map(t => [t.TelaProIdProducto, { codArticulo: t.CodArticulo || '', material: t.Material || '', esDefault: !!t.EsDefault }])),
     apliques: (d.apliques || []).map(a => ({
         ...partirPosicion(a.Posicion), areaId: a.AreaID, tecnicaOpcionId: a.TecnicaOpcionID || '',
         cantidad: a.Cantidad || 1, incluido: !!a.Incluido
@@ -250,11 +354,11 @@ const fichaToForm = (d) => ({
     fichaDisenoAnotaciones: (d.fichaDisenoAnotaciones || []).map(a => ({ x: Number(a.PosX), y: Number(a.PosY), texto: a.Texto })),
     fichaDisenoExtra: (d.fichaDisenoExtra || []).map(c => ({ label: c.Etiqueta, valor: c.Valor || '' })),
     fichaDisenoCosturas: (d.fichaDisenoCosturas || []).map(c => ({ union: c.UnionNombre, iso: c.CodigoISO })),
-    costurasSugeridas: d.costurasSugeridas || [],
+    avios: (d.avios || []).map(a => ({ avioId: a.AvioID || '', nombre: a.Nombre || '', cantidad: a.Cantidad ?? 1, unidad: a.Unidad || 'u', medida: a.Medida || '', nota: a.Nota || '' })),
 });
 
 const formToPayload = (f) => ({
-    ...(f.esCombo ? {} : { codigoCorto: f.codigoCorto || null }),
+    ...(f.esCombo ? {} : { tizadaProMoldeRef: f.tizadaProMoldeRef || null }),
     origenTipo: f.origenTipo,
     origenProIdProducto: (f.origenTipo === 'LOCAL' || f.origenTipo === 'AMBOS') ? (f.origenProIdProducto || null) : null,
     cantidadMinima: f.politica === 'MINIMA' && f.cantidadMinima ? Number(f.cantidadMinima) : null,
@@ -271,7 +375,8 @@ const formToPayload = (f) => ({
     })),
     opcionesPermitidas: [...f.opcionesPermitidas],
     surtido: [...f.surtido],
-    componentes: [...f.componentes.entries()].map(([opcionId, esDefault]) => ({ opcionId, esDefault })),
+    modelos: [...f.modelos.entries()].map(([clave, m]) => ({ clave, nombre: m.nombre, esDefault: m.esDefault })),
+    telas: [...f.telas.entries()].map(([telaProIdProducto, t]) => ({ telaProIdProducto, esDefault: t.esDefault })),
     apliques: f.apliques
         .map(a => ({ ...a, posicion: unirPosicion(a.pieza, a.detalle) }))
         .filter(a => a.posicion)
@@ -301,20 +406,22 @@ const formToPayload = (f) => ({
         fichaDisenoAnotaciones: f.fichaDisenoAnotaciones.map(a => ({ x: a.x, y: a.y, texto: a.texto })),
         fichaDisenoExtra: f.fichaDisenoExtra.filter(c => (c.label || '').trim()).map(c => ({ label: c.label.trim(), valor: c.valor || '' })),
         fichaDisenoCosturas: f.fichaDisenoCosturas.filter(c => c.union && c.iso).map(c => ({ union: c.union, iso: c.iso })),
+        avios: f.avios.filter(a => (a.nombre || '').trim()).map(a => ({ avioId: a.avioId || null, nombre: a.nombre.trim(), cantidad: Number(a.cantidad) || 1, unidad: a.unidad || null, medida: a.medida || null, nota: a.nota || null })),
     }),
 });
 
 // ═════════════════════════════════════════════════════════════════════════
 export default function ConfigurarProductosPage() {
     const [familia, setFamilia] = useState('prendas');       // 'prendas' | 'ecouv'
-    const [vista, setVista] = useState('confeccionados');     // 'confeccionados' | 'combos' | 'tecnicas' | 'componentes'
+    const [vista, setVista] = useState('confeccionados');     // 'confeccionados' | 'combos' | 'tecnicas'
 
     // Datos compartidos
     const [productos, setProductos] = useState([]);
     const [tecnicasCat, setTecnicasCat] = useState([]);       // TecnicaOpciones (all)
-    const [componentesCat, setComponentesCat] = useState([]); // ComponenteOpciones (all)
-    const [piezasCat, setPiezasCat] = useState([]);           // PiezasPrenda (nomenclador de piezas)
-    const [costurasIsoCat, setCosturasIsoCat] = useState([]); // CosturasISO (catálogo chico, ficha de diseño)
+    const [moldesTp, setMoldesTp] = useState([]);             // moldes de TizadaPro (solo lectura): modelos, piezas, talles, telas
+    const [moldesTpError, setMoldesTpError] = useState(null);  // TizadaPro no se puede leer (base o permiso)
+    const [costurasIsoCat, setCosturasIsoCat] = useState([]); // CosturasISO (catálogo, ficha de diseño; incluye inactivas)
+    const [aviosCat, setAviosCat] = useState([]);             // CatalogoAvios (incluye inactivos)
     const [locales, setLocales] = useState([]);               // productos del local
     const [stockDisponible, setStockDisponible] = useState(true);
     const [familiasCat, setFamiliasCat] = useState([]);        // variantes StockArt del grupo 2.1 (familias reales)
@@ -338,11 +445,14 @@ export default function ConfigurarProductosPage() {
     const [nuevaFamiliaNombre, setNuevaFamiliaNombre] = useState('');
     const [creandoFamilia, setCreandoFamilia] = useState(false);
 
-    // Variantes (paso 5 del confeccionado — motor cartesiano de Componentes)
-    const [variantes, setVariantes] = useState([]);
-    const [variantesLoading, setVariantesLoading] = useState(false);
-    const [generandoVariantes, setGenerandoVariantes] = useState(false);
-    const [variantesObsoletas, setVariantesObsoletas] = useState(0);
+    // Etiqueta (árbol: Familia → Etiqueta → Producto). Dice para qué es el producto
+    // (Básquet, Fútbol…). Se aplica al instante, igual que mover de familia.
+    const [etiquetasCat, setEtiquetasCat] = useState([]);                // ProductoEtiqueta (todas)
+    const [etiquetasAbiertas, setEtiquetasAbiertas] = useState(() => new Set()); // clave "familia|etiquetaId"
+    const [showNuevaEtiqueta, setShowNuevaEtiqueta] = useState(false);
+    const [nuevaEtiquetaNombre, setNuevaEtiquetaNombre] = useState('');
+    const [renombreEtiqueta, setRenombreEtiqueta] = useState(null);      // null = no renombrando; string = nombre en edición
+    const [guardandoEtiqueta, setGuardandoEtiqueta] = useState(false);
 
     // Ficha de diseño (paso 6 del confeccionado)
     const [subiendoDibujo, setSubiendoDibujo] = useState(false);
@@ -364,16 +474,14 @@ export default function ConfigurarProductosPage() {
 
     const loadCatalogos = useCallback(async () => {
         try {
-            const [t, c, iso, pz] = await Promise.all([
+            const [t, iso, av] = await Promise.all([
                 api.get(`${API}/tecnicas?all=1`),
-                api.get(`${API}/componentes?all=1`),
-                api.get(`${API}/costuras-iso`),
-                api.get(`${API}/piezas?all=1`),
+                api.get(`${API}/costuras-iso?all=1`),
+                api.get(`${API}/avios?all=1`),
             ]);
             setTecnicasCat(t.data?.data || []);
-            setComponentesCat(c.data?.data || []);
             setCosturasIsoCat(iso.data?.data || []);
-            setPiezasCat(pz.data?.data || []);
+            setAviosCat(av.data?.data || []);
         } catch (e) {
             toast.error('Error cargando catálogos: ' + (e.response?.data?.error || e.message));
         }
@@ -401,23 +509,16 @@ export default function ConfigurarProductosPage() {
         }
     }, []);
 
-    useEffect(() => { loadProductos(); loadCatalogos(); loadLocales(); loadFamilias(); }, [loadProductos, loadCatalogos, loadLocales, loadFamilias]);
-
-    const loadVariantes = useCallback(async (proId) => {
-        if (!proId) return;
-        setVariantesLoading(true);
+    // Moldes de TizadaPro. Si no se puede leer (falta la base o el permiso), la pantalla sigue y el paso Molde lo avisa.
+    const loadMoldesTp = useCallback(async () => {
         try {
-            const { data } = await api.get(`${API}/productos/${proId}/variantes`);
-            setVariantes(data.data || []);
+            const { data } = await api.get(`${API}/tizadapro/moldes`);
+            setMoldesTp(data.data || []); setMoldesTpError(null);
         } catch (e) {
-            toast.error('Error cargando variantes: ' + (e.response?.data?.error || e.message));
-        } finally { setVariantesLoading(false); }
+            setMoldesTp([]); setMoldesTpError(e.response?.data?.error || e.message);
+        }
     }, []);
-
-    // Al entrar al paso Variantes, traer lo que ya esté generado para este producto
-    useEffect(() => {
-        if (paso === 'variantes' && form?.proId) loadVariantes(form.proId);
-    }, [paso, form?.proId, loadVariantes]);
+    useEffect(() => { loadProductos(); loadCatalogos(); loadLocales(); loadFamilias(); loadMoldesTp(); }, [loadProductos, loadCatalogos, loadLocales, loadFamilias, loadMoldesTp]);
 
     const loadEcouvStats = useCallback(async () => {
         try {
@@ -490,40 +591,6 @@ export default function ConfigurarProductosPage() {
         } finally { setFichaLoading(false); }
     };
 
-    const generarVariantes = async () => {
-        if (!form?.proId) return;
-        setGenerandoVariantes(true);
-        try {
-            const { data } = await api.post(`${API}/productos/${form.proId}/variantes/generar`);
-            setVariantesObsoletas(data.obsoletas || 0);
-            toast.success(`✅ ${data.creadas} nueva(s) · ${data.actualizadas} actualizada(s)${data.obsoletas ? ` — ⚠ ${data.obsoletas} obsoleta(s)` : ''}`);
-            await loadVariantes(form.proId);
-        } catch (e) {
-            toast.error('Error generando variantes: ' + (e.response?.data?.error || e.message));
-        } finally { setGenerandoVariantes(false); }
-    };
-
-    const toggleVarianteActiva = async (v) => {
-        const next = !v.Activa;
-        setVariantes(prev => prev.map(x => x.VarianteID === v.VarianteID ? { ...x, Activa: next } : x));
-        try {
-            await api.put(`${API}/variantes/${v.VarianteID}`, { activa: next });
-        } catch (e) {
-            setVariantes(prev => prev.map(x => x.VarianteID === v.VarianteID ? { ...x, Activa: !next } : x));
-            toast.error('Error: ' + (e.response?.data?.error || e.message));
-        }
-    };
-
-    const guardarPrecioManualVariante = async (v, valorStr) => {
-        const valor = valorStr === '' ? null : Number(valorStr);
-        if (valorStr !== '' && !Number.isFinite(valor)) return;
-        try {
-            await api.put(`${API}/variantes/${v.VarianteID}`, { precioManual: valor });
-            setVariantes(prev => prev.map(x => x.VarianteID === v.VarianteID ? { ...x, PrecioManual: valor } : x));
-        } catch (e) {
-            toast.error('Error: ' + (e.response?.data?.error || e.message));
-        }
-    };
 
     // El dibujo se sube al toque (como el resto de las imágenes de la app) — no
     // espera al "Guardar cambios" del producto, así el usuario ve el resultado ya.
@@ -533,7 +600,9 @@ export default function ConfigurarProductosPage() {
         try {
             const fd = new FormData();
             fd.append('dibujo', file);
-            const { data } = await api.post(`${API}/productos/${form.proId}/ficha-diseno/dibujo`, fd);
+            // El cliente HTTP manda JSON por defecto: sin este header el FormData viaja como JSON y el
+            // servidor responde "No se subió ninguna imagen" (400).
+            const { data } = await api.post(`${API}/productos/${form.proId}/ficha-diseno/dibujo`, fd, { headers: { 'Content-Type': 'multipart/form-data' } });
             setF({ fichaDiseno: { ...form.fichaDiseno, dibujoUrl: data.dibujoUrl } });
             toast.success('✅ Dibujo cargado');
         } catch (e) {
@@ -576,6 +645,13 @@ export default function ConfigurarProductosPage() {
             return toast.error('Poné la cantidad mínima (entero mayor a 0).');
         if (!form.esCombo && form.politica === 'PAQUETE' && (!form.cantidadFija || Number(form.cantidadFija) <= 0))
             return toast.error('Poné la cantidad fija del paquete (entero mayor a 0).');
+        if (!form.esCombo && form.apliques.some(ap => !ap.pieza))
+            return toast.error('Cada aplique necesita una pieza del molde. Elegila en "Molde, telas y apliques".');
+        if (!form.esCombo && form.estado === 'PUBLICADO' && form.origenTipo === 'CONFECCIONADO') {
+            if (!form.tizadaProMoldeRef) return toast.error('Para publicar, primero vinculá el molde de TizadaPro (paso "Molde, telas y apliques").');
+            const apagadas = form.apliques.filter(ap => ap.areaId !== 'ETIQUETA' && !form.tecnicas[ap.areaId]?.on).map(ap => areaMeta(ap.areaId).label);
+            if (apagadas.length) return toast.error(`Para publicar, los apliques tienen que ser de técnicas activas. Activá ${[...new Set(apagadas)].join(', ')} en "Técnicas" o quitá esos apliques.`);
+        }
         setSaving(true);
         try {
             await api.put(`${API}/productos/${form.proId}`, formToPayload(form));
@@ -618,7 +694,7 @@ export default function ConfigurarProductosPage() {
     }, [productos]);
 
     const productosFiltrados = useMemo(() => productos.filter(p => {
-        if (busca && !(`${p.Descripcion} ${p.CodArticulo}`.toLowerCase().includes(busca.toLowerCase()))) return false;
+        if (busca && !(`${p.Descripcion} ${p.CodArticulo} ${p.Etiqueta || ''}`.toLowerCase().includes(busca.toLowerCase()))) return false;
         if (filtroEstado === 'PUBLICADO' || filtroEstado === 'BORRADOR') return p.Estado === filtroEstado;
         if (filtroEstado === 'SIN') return !p.Estado;
         return true;
@@ -637,13 +713,103 @@ export default function ConfigurarProductosPage() {
             (g[f] = g[f] || []).push(p);
         });
         const orden = [...familiasCat.map(v => v.Articulo).sort((a, b) => a.localeCompare(b)), 'Sin clasificar'];
-        return orden.filter(f => g[f]?.length).map(f => ({ nombre: f, items: g[f] }));
+        return orden.filter(f => g[f]?.length).map(f => {
+            // Dentro de la familia: un nodo por etiqueta (Básquet, Fútbol…) con sus
+            // productos, y después los productos sin etiqueta, sueltos.
+            const porEtiqueta = new Map();
+            const sueltos = [];
+            g[f].forEach(p => {
+                if (p.EtiquetaID) {
+                    if (!porEtiqueta.has(p.EtiquetaID)) porEtiqueta.set(p.EtiquetaID, { tipo: 'etiqueta', id: p.EtiquetaID, nombre: p.Etiqueta || '', items: [] });
+                    porEtiqueta.get(p.EtiquetaID).items.push(p);
+                } else sueltos.push({ tipo: 'item', p });
+            });
+            const etiquetas = [...porEtiqueta.values()].sort((a, b) => a.nombre.localeCompare(b.nombre));
+            return { nombre: f, items: g[f], nodos: [...etiquetas, ...sueltos], etiquetas: etiquetas.length };
+        });
     }, [confeccionadosFiltrados, familiasCat]);
     const toggleGrupo = (nombre) => setGruposCerrados(prev => {
         const next = new Set(prev);
         next.has(nombre) ? next.delete(nombre) : next.add(nombre);
         return next;
     });
+    const toggleEtiqueta = (clave) => setEtiquetasAbiertas(prev => {
+        const next = new Set(prev);
+        next.has(clave) ? next.delete(clave) : next.add(clave);
+        return next;
+    });
+
+    // Etiquetas: catálogo + asignar / crear / renombrar (se aplica al instante)
+    const loadEtiquetas = useCallback(async () => {
+        try {
+            const { data } = await api.get(`${API}/etiquetas`);
+            setEtiquetasCat(data.data || []);
+        } catch (e) {
+            toast.error('Error cargando etiquetas: ' + (e.response?.data?.error || e.message));
+        }
+    }, []);
+    useEffect(() => { loadEtiquetas(); }, [loadEtiquetas]);
+    useEffect(() => { setShowNuevaEtiqueta(false); setNuevaEtiquetaNombre(''); setRenombreEtiqueta(null); }, [form?.proId]);
+    const asignarEtiqueta = async (etiquetaId) => {
+        if (!form) return;
+        setGuardandoEtiqueta(true);
+        try {
+            await api.put(`${API}/productos/${form.proId}/etiqueta`, { etiquetaId });
+            toast.success(etiquetaId ? '✅ Etiqueta asignada' : '✅ Etiqueta quitada');
+            await Promise.all([loadProductos(), loadEtiquetas()]);
+        } catch (e) {
+            toast.error('Error asignando etiqueta: ' + (e.response?.data?.error || e.message));
+        } finally { setGuardandoEtiqueta(false); }
+    };
+    const crearYAsignarEtiqueta = async () => {
+        const nombre = nuevaEtiquetaNombre.trim();
+        if (!nombre) return toast.error('Poné el nombre de la etiqueta.');
+        if (!form) return;
+        setGuardandoEtiqueta(true);
+        try {
+            const { data } = await api.post(`${API}/etiquetas`, { nombre });
+            await api.put(`${API}/productos/${form.proId}/etiqueta`, { etiquetaId: data.data.EtiquetaID });
+            toast.success(`✅ Etiqueta "${nombre}" creada y asignada`);
+            setNuevaEtiquetaNombre(''); setShowNuevaEtiqueta(false);
+            await Promise.all([loadProductos(), loadEtiquetas()]);
+        } catch (e) {
+            toast.error('Error creando etiqueta: ' + (e.response?.data?.error || e.message));
+        } finally { setGuardandoEtiqueta(false); }
+    };
+    const renombrarEtiqueta = async (id) => {
+        const nombre = String(renombreEtiqueta || '').trim();
+        if (!nombre) return toast.error('Poné el nombre de la etiqueta.');
+        setGuardandoEtiqueta(true);
+        try {
+            await api.put(`${API}/etiquetas/${id}`, { nombre });
+            toast.success('✅ Etiqueta renombrada');
+            setRenombreEtiqueta(null);
+            await Promise.all([loadProductos(), loadEtiquetas()]);
+        } catch (e) {
+            toast.error('Error renombrando: ' + (e.response?.data?.error || e.message));
+        } finally { setGuardandoEtiqueta(false); }
+    };
+
+    // Fila de un producto en la lista (suelto o dentro de su etiqueta). Siempre con su nombre completo.
+    const filaProducto = (p, anidado = false) => (
+        <button key={p.ProIdProducto} onClick={() => abrirProducto(p.ProIdProducto)}
+            className={`w-full text-left px-3 py-2.5 hover:bg-slate-50 transition-colors flex items-center gap-2.5 ${form?.proId === p.ProIdProducto ? 'bg-indigo-50/60 border-l-4 border-indigo-500' : 'border-l-4 border-transparent'}`}>
+            <Thumb src={p.Imagen} size={anidado ? 32 : 36} icon="fa-shirt" />
+            <div className="flex-1 min-w-0">
+                <div className="flex items-center justify-between gap-2">
+                    <span className="font-bold text-[13px] text-slate-700 truncate">{p.Descripcion}</span>
+                    {p.Estado === 'PUBLICADO' && <span className="text-[10px] font-black text-emerald-600 flex-shrink-0">● PUB</span>}
+                    {p.Estado === 'BORRADOR' && <span className="text-[10px] font-black text-slate-400 flex-shrink-0">○ BORR</span>}
+                </div>
+                <div className="flex items-center gap-2 mt-0.5 text-[11px] text-slate-400">
+                    <span className="font-mono">{p.CodArticulo}</span>
+                    <span>{fmtPrecio(p.Precio, p.Moneda)}</span>
+                    {p.CantidadMinima && <span>mín. {p.CantidadMinima}</span>}
+                    {p.Tecnicas && <span className="truncate">{p.Tecnicas}</span>}
+                </div>
+            </div>
+        </button>
+    );
 
     const origenSel = useMemo(() => locales.find(l => l.ProIdProducto === form?.origenProIdProducto) || null, [locales, form?.origenProIdProducto]);
 
@@ -658,14 +824,104 @@ export default function ConfigurarProductosPage() {
             { id: 'origen', n: 1, label: 'Origen' },
             { id: 'tecnicas', n: 2, label: 'Técnicas' },
             { id: 'precio', n: 3, label: 'Precio y cantidades' },
-            ...(form.origenTipo === 'CONFECCIONADO' ? [{ id: 'confeccion', n: 4, label: 'Componentes y apliques' }] : []),
-            ...(form.origenTipo === 'CONFECCIONADO' ? [{ id: 'variantes', n: 5, label: 'Variantes' }] : []),
-            ...(form.origenTipo === 'CONFECCIONADO' ? [{ id: 'ficha', n: 6, label: 'Ficha de diseño' }] : []),
-            { id: 'resumen', n: form.origenTipo === 'CONFECCIONADO' ? 7 : 4, label: 'Revisar y publicar' },
+            ...(form.origenTipo === 'CONFECCIONADO' ? [{ id: 'molde', n: 4, label: 'Molde, telas y apliques' }] : []),
+            ...(form.origenTipo === 'CONFECCIONADO' ? [{ id: 'ficha', n: 5, label: 'Ficha de diseño' }] : []),
+            { id: 'resumen', n: form.origenTipo === 'CONFECCIONADO' ? 6 : 4, label: 'Revisar y publicar' },
         ];
     }, [form]);
 
     const setF = (patch) => setForm(prev => ({ ...prev, ...patch }));
+    // Primera opción activa del catálogo de una técnica (default de un aplique nuevo); '' = opción libre
+    const primeraOpcionDe = (areaId) => tecnicasCat.find(o => o.AreaID === areaId && o.Activo)?.TecnicaOpcionID ?? '';
+    const moldeSel = useMemo(() => (form?.tizadaProMoldeRef ? moldesTp.find(m => m.ref === form.tizadaProMoldeRef) || null : null), [moldesTp, form?.tizadaProMoldeRef]);
+    // Material y Tallas de la ficha salen del molde de TizadaPro y de las telas ofrecidas.
+    // Se rellenan solos cuando están vacíos; el usuario puede pisarlos o volver al automático.
+    const autoFicha = useMemo(() => {
+        if (!moldeSel) return { material: '', tallas: '' };
+        const telas = [...(form?.telas || new Map()).values()];
+        const primera = telas.find(t => t.esDefault) || telas[0];
+        const material = telas.length ? (telas.length === 1 ? primera.material : `${primera.material} (o ${telas.filter(t => t !== primera).map(t => t.material).join(', ')})`) : '';
+        const tallas = agruparTalles(moldeSel.talles).map(([g, l]) => `${g} ${l[0].replace(/fem$/i, '')}–${l[l.length - 1].replace(/fem$/i, '')}`).join(' · ');
+        return { material, tallas };
+    }, [moldeSel, form?.telas]);
+    useEffect(() => {
+        if (!form || form.esCombo || !moldeSel) return;
+        const patch = {};
+        if (!form.fichaDiseno.material && autoFicha.material) patch.material = autoFicha.material;
+        if (!form.fichaDiseno.tallas && autoFicha.tallas) patch.tallas = autoFicha.tallas;
+        if (Object.keys(patch).length) setForm(prev => ({ ...prev, fichaDiseno: { ...prev.fichaDiseno, ...patch } }));
+    }, [autoFicha, form?.proId]);
+
+    // Foto del producto (Articulos_Imagenes): la que ve el cliente en el pedido web y la solicitud.
+    // Mismo endpoint que Marketing › Productos; se aplica al instante.
+    const [subiendoFoto, setSubiendoFoto] = useState(false);
+    const subirFoto = async (file) => {
+        if (!form || !file) return;
+        setSubiendoFoto(true);
+        try {
+            const fd = new FormData();
+            fd.append('image', file);
+            const res = await api.post(`/products-integration/upload-image/${form.proId}`, fd, { headers: { 'Content-Type': 'multipart/form-data' } });
+            const url = res.data?.imageUrl || null;
+            if (url) setForm(prev => ({ ...prev, imagen: url }));
+            toast.success('✅ Foto del producto actualizada');
+            loadProductos();
+        } catch (e) {
+            toast.error('No se pudo subir la foto: ' + (e.response?.data?.error || e.message));
+        } finally { setSubiendoFoto(false); }
+    };
+
+    // Nombre y código del artículo (se aplican al instante, no esperan al Guardar)
+    const [editIdent, setEditIdent] = useState(null);
+    const [guardandoIdent, setGuardandoIdent] = useState(false);
+    useEffect(() => { setEditIdent(null); }, [form?.proId]);
+    const guardarIdentidad = async () => {
+        if (!form || !editIdent) return;
+        if (!editIdent.descripcion.trim()) return toast.error('Poné el nombre del producto.');
+        if (!editIdent.codArticulo.trim()) return toast.error('Poné el código del producto.');
+        setGuardandoIdent(true);
+        try {
+            const { data } = await api.put(`${API}/productos/${form.proId}/identidad`, { descripcion: editIdent.descripcion.trim(), codArticulo: editIdent.codArticulo.trim() });
+            toast.success(`✅ Ahora es "${data.data.descripcion}" [${data.data.codArticulo}]`);
+            setEditIdent(null);
+            setForm(prev => ({ ...prev, descripcion: data.data.descripcion, codArticulo: data.data.codArticulo }));
+            loadProductos();
+        } catch (e) {
+            toast.error('No se pudo cambiar: ' + (e.response?.data?.error || e.message));
+        } finally { setGuardandoIdent(false); }
+    };
+    // Siluetas: leer la carpeta de PDFs de moldes del servidor (TIZADAPRO_MOLDES_DIR)
+    const [leyendoCarpeta, setLeyendoCarpeta] = useState(false);
+    const leerCarpetaMoldes = async () => {
+        setLeyendoCarpeta(true);
+        try {
+            const { data } = await api.post(`${API}/tizadapro/moldes/procesar-carpeta`);
+            const r = data.data;
+            if (!r.pdfs) toast.warning(`La carpeta ${r.carpeta} no tiene PDFs.`);
+            else if (!r.procesados.length) toast.warning(`Ningún PDF de la carpeta coincide con un molde sin siluetas (${r.pdfs} PDF, ${r.moldesSinSilueta} moldes pendientes).`);
+            else toast.success(`✅ Siluetas armadas: ${r.procesados.map(x => `${x.molde} (${x.piezas} piezas)`).join(' · ')}${r.sinCoincidencia.length ? ` · sin coincidencia: ${r.sinCoincidencia.join(', ')}` : ''}`);
+            await loadMoldesTp();
+        } catch (e) {
+            toast.error('No se pudo leer la carpeta: ' + (e.response?.data?.error || e.message));
+        } finally { setLeyendoCarpeta(false); }
+    };
+    // Qué modelo se muestra en la tabla de piezas ('' = todas las piezas del molde)
+    const [modeloVista, setModeloVista] = useState('');
+    useEffect(() => {
+        const entradas = [...(form?.modelos || new Map()).entries()];
+        setModeloVista((entradas.find(([, v]) => v.esDefault) || entradas[0] || [''])[0] || '');
+    }, [form?.proId, form?.tizadaProMoldeRef]);
+    // Piezas donde puede ir un aplique: las de los modelos que se venden (unión), por su nombre
+    // genérico (Frente, Cuello…). Si todavía no se marcó ningún modelo, todas las del molde.
+    const piezasParaApliques = useMemo(() => {
+        if (!moldeSel) return [];
+        const vendidos = (moldeSel.modelos || []).filter(m => form?.modelos?.has(m.clave));
+        const ids = new Set(vendidos.flatMap(m => m.piezasIds || []));
+        const det = (moldeSel.piezasDetalle || []).filter(d => !vendidos.length || ids.has(d.idEnMolde));
+        return [...new Set(det.map(d => d.generico || d.nombre))];
+    }, [moldeSel, form?.modelos]);
+    // Técnicas que admiten aplique: las de decoración activas en el paso Técnicas, más Etiqueta (siempre)
+    const tecnicasApliqueActivas = useMemo(() => [...AREAS_DECORACION.filter(x => form?.tecnicas?.[x.id]?.on), AREA_APLIQUE_EXTRA], [form?.tecnicas]);
 
     // ── render ───────────────────────────────────────────────────────────
     return (
@@ -735,8 +991,8 @@ export default function ConfigurarProductosPage() {
                             ['confeccionados', '👕 Productos Confeccionados', confeccionadosFiltrados.length],
                             ['combos', '📦 Combos y Promos', combosFiltrados.length],
                             ['tecnicas', 'Catálogo de técnicas', null],
-                            ['componentes', 'Componentes (confección)', null],
-                            ['piezas', 'Piezas de la prenda', null],
+                            ['avios', 'Catálogo de avíos', null],
+                            ['costuras', 'Catálogo de costuras', null],
                         ].map(([id, label, count]) => (
                             <button key={id} onClick={() => setVista(id)}
                                 className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition-colors ${vista === id ? 'bg-slate-800 text-white' : 'text-slate-500 hover:bg-slate-100'}`}>
@@ -804,25 +1060,32 @@ export default function ConfigurarProductosPage() {
                                                         {publicados > 0 && <span className="ml-auto text-[9px] font-black text-emerald-600">{publicados} pub.</span>}
                                                     </button>
                                                     {!cerrado && <div className="divide-y divide-slate-50">
-                                                        {g.items.map(p => (
-                                                            <button key={p.ProIdProducto} onClick={() => abrirProducto(p.ProIdProducto)}
-                                                                className={`w-full text-left px-3 py-2.5 hover:bg-slate-50 transition-colors flex items-center gap-2.5 ${form?.proId === p.ProIdProducto ? 'bg-indigo-50/60 border-l-4 border-indigo-500' : 'border-l-4 border-transparent'}`}>
-                                                                <Thumb src={p.Imagen} size={36} icon="fa-shirt" />
-                                                                <div className="flex-1 min-w-0">
-                                                                    <div className="flex items-center justify-between gap-2">
-                                                                        <span className="font-bold text-[13px] text-slate-700 truncate">{p.Descripcion}</span>
-                                                                        {p.Estado === 'PUBLICADO' && <span className="text-[10px] font-black text-emerald-600 flex-shrink-0">● PUB</span>}
-                                                                        {p.Estado === 'BORRADOR' && <span className="text-[10px] font-black text-slate-400 flex-shrink-0">○ BORR</span>}
-                                                                    </div>
-                                                                    <div className="flex items-center gap-2 mt-0.5 text-[11px] text-slate-400">
-                                                                        <span className="font-mono">{p.CodArticulo}</span>
-                                                                        <span>{fmtPrecio(p.Precio, p.Moneda)}</span>
-                                                                        {p.CantidadMinima && <span>mín. {p.CantidadMinima}</span>}
-                                                                        {p.Tecnicas && <span className="truncate">{p.Tecnicas}</span>}
-                                                                    </div>
+                                                        {g.nodos.map(n => {
+                                                            if (n.tipo === 'item') return filaProducto(n.p);
+                                                            // Nodo etiqueta (Básquet, Fútbol…): se despliega con sus productos.
+                                                            // Abierto si lo abrió el usuario, si hay búsqueda, o si contiene el producto abierto.
+                                                            const clave = `${g.nombre}|${n.id}`;
+                                                            const abierta = !!busca || etiquetasAbiertas.has(clave) || n.items.some(p => p.ProIdProducto === form?.proId);
+                                                            const pubEt = n.items.filter(p => p.Estado === 'PUBLICADO').length;
+                                                            return (
+                                                                <div key={`etq-${n.id}`}>
+                                                                    <button onClick={() => toggleEtiqueta(clave)} aria-expanded={abierta}
+                                                                        className="w-full text-left pl-2 pr-3 py-2 hover:bg-slate-50 transition-colors flex items-center gap-2 border-l-4 border-transparent">
+                                                                        <i className={`fa-solid fa-chevron-${abierta ? 'down' : 'right'} text-[9px] text-slate-400 w-3 text-center`}></i>
+                                                                        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-indigo-50 text-indigo-700 text-[12px] font-black">
+                                                                            <i className="fa-solid fa-tag text-[10px]"></i>{n.nombre}
+                                                                        </span>
+                                                                        <span className="text-[11px] text-slate-400">{n.items.length} producto{n.items.length === 1 ? '' : 's'}</span>
+                                                                        {pubEt > 0 && <span className="ml-auto text-[9px] font-black text-emerald-600">{pubEt} pub.</span>}
+                                                                    </button>
+                                                                    {abierta && (
+                                                                        <div className="ml-5 border-l-2 border-indigo-100 divide-y divide-slate-50">
+                                                                            {n.items.map(p => filaProducto(p, true))}
+                                                                        </div>
+                                                                    )}
                                                                 </div>
-                                                            </button>
-                                                        ))}
+                                                            );
+                                                        })}
                                                     </div>}
                                                 </div>
                                             );
@@ -874,11 +1137,41 @@ export default function ConfigurarProductosPage() {
                                     <div>
                                         {/* Header del editor */}
                                         <div className="flex items-center gap-3 px-5 py-4 border-b border-slate-100 flex-wrap">
+                                            {!form.esCombo && (
+                                                <label className={`relative cursor-pointer group ${subiendoFoto ? 'opacity-50 pointer-events-none' : ''}`} title={form.imagen ? 'Cambiar la foto del producto' : 'Subir la foto del producto (la ve el cliente en el pedido web y en la solicitud)'}>
+                                                    <Thumb src={form.imagen} size={56} rounded="rounded-xl" icon="fa-shirt" />
+                                                    <span className="absolute inset-0 rounded-xl bg-slate-900/55 text-white text-[10px] font-black flex items-center justify-center opacity-0 group-hover:opacity-100 text-center leading-tight px-1">{subiendoFoto ? '…' : (form.imagen ? 'Cambiar foto' : 'Subir foto')}</span>
+                                                    <input type="file" accept="image/*" className="hidden" disabled={subiendoFoto} onChange={e => { const file = e.target.files?.[0]; e.target.value = ''; if (file) subirFoto(file); }} />
+                                                </label>
+                                            )}
                                             <div className="flex-1 min-w-[220px]">
-                                                <div className="font-black text-slate-800">{form.descripcion}</div>
-                                                <div className="text-[11px] text-slate-400 font-mono">
-                                                    {form.codArticulo} · {form.categoria || 'sin categoría'} · {fmtPrecio(form.precio === '' ? null : form.precio, form.moneda)}
-                                                </div>
+                                                {editIdent ? (
+                                                    <div className="flex flex-wrap items-center gap-2">
+                                                        <input value={editIdent.descripcion} maxLength={100} autoFocus placeholder="Nombre del producto"
+                                                            onChange={e => setEditIdent({ ...editIdent, descripcion: e.target.value })}
+                                                            onKeyDown={e => { if (e.key === 'Enter') guardarIdentidad(); if (e.key === 'Escape') setEditIdent(null); }}
+                                                            className="min-w-[240px] flex-1 border border-indigo-300 rounded-lg px-2.5 py-1.5 text-sm font-black text-slate-800" />
+                                                        <input value={editIdent.codArticulo} maxLength={20} placeholder="Código"
+                                                            onChange={e => setEditIdent({ ...editIdent, codArticulo: e.target.value })}
+                                                            onKeyDown={e => { if (e.key === 'Enter') guardarIdentidad(); if (e.key === 'Escape') setEditIdent(null); }}
+                                                            className="w-32 border border-indigo-300 rounded-lg px-2.5 py-1.5 text-sm font-mono" />
+                                                        <button onClick={guardarIdentidad} disabled={guardandoIdent}
+                                                            className="bg-indigo-600 text-white rounded-lg px-3 py-1.5 text-xs font-bold disabled:opacity-50">{guardandoIdent ? '…' : 'Guardar nombre y código'}</button>
+                                                        <button onClick={() => setEditIdent(null)} className="text-slate-400 text-xs px-1" title="Cancelar">×</button>
+                                                        <span className="w-full text-[10px] text-slate-400">El código solo se puede cambiar si el producto todavía no tiene pedidos. Se aplica al instante.</span>
+                                                    </div>
+                                                ) : (
+                                                    <>
+                                                        <div className="font-black text-slate-800 flex items-center gap-2">
+                                                            {form.descripcion}
+                                                            <button type="button" onClick={() => setEditIdent({ descripcion: form.descripcion, codArticulo: form.codArticulo })}
+                                                                className="text-slate-300 hover:text-indigo-600 text-xs" title="Cambiar el nombre o el código del producto"><i className="fa-solid fa-pen"></i></button>
+                                                        </div>
+                                                        <div className="text-[11px] text-slate-400 font-mono">
+                                                            {form.codArticulo} · {form.categoria || 'sin categoría'} · {fmtPrecio(form.precio === '' ? null : form.precio, form.moneda)}
+                                                        </div>
+                                                    </>
+                                                )}
                                             </div>
                                             <span className={`px-3 py-1 rounded-full text-[11px] font-black ${form.estado === 'PUBLICADO' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
                                                 {form.estado === 'PUBLICADO' ? '● PUBLICADO' : '○ BORRADOR'}
@@ -922,6 +1215,64 @@ export default function ConfigurarProductosPage() {
                                                 {form.categoria === 'Prendas' && <span className="text-[11px] font-bold text-amber-600 ml-1">⚠ sin clasificar — elegí una</span>}
                                             </div>
                                         )}
+
+                                        {/* Etiqueta = para qué es el producto (Básquet, Fútbol…). Es el nivel del
+                                            árbol entre la familia y el producto. Se aplica al instante, como la familia. */}
+                                        {!form.esCombo && (() => {
+                                            const actual = productos.find(p => p.ProIdProducto === form.proId);
+                                            const etqId = actual?.EtiquetaID || null;
+                                            const etqNombre = actual?.Etiqueta || '';
+                                            return (
+                                                <div className="flex items-center gap-2.5 px-5 py-2.5 border-b border-slate-100 bg-slate-50/50 flex-wrap">
+                                                    <span className="text-[11px] font-black uppercase tracking-wider text-slate-400">Etiqueta</span>
+                                                    <div className="flex gap-1.5 flex-wrap items-center">
+                                                        <Pill on={!etqId} disabled={guardandoEtiqueta} onClick={() => etqId && asignarEtiqueta(null)}>Sin etiqueta</Pill>
+                                                        {etiquetasCat.map(e => (
+                                                            <Pill key={e.EtiquetaID} on={etqId === e.EtiquetaID} disabled={guardandoEtiqueta}
+                                                                onClick={() => e.EtiquetaID !== etqId && asignarEtiqueta(e.EtiquetaID)}>
+                                                                <i className="fa-solid fa-tag text-[9px] mr-1 opacity-60"></i>{e.Nombre}
+                                                            </Pill>
+                                                        ))}
+                                                        {!showNuevaEtiqueta ? (
+                                                            <button type="button" onClick={() => { setShowNuevaEtiqueta(true); setRenombreEtiqueta(null); }}
+                                                                className="px-3 py-1.5 rounded-full text-xs font-bold border border-dashed border-slate-300 text-slate-400 hover:border-slate-400 hover:text-slate-600">
+                                                                + Nueva etiqueta
+                                                            </button>
+                                                        ) : (
+                                                            <span className="inline-flex gap-1.5 items-center">
+                                                                <input value={nuevaEtiquetaNombre} onChange={e => setNuevaEtiquetaNombre(e.target.value)}
+                                                                    onKeyDown={e => e.key === 'Enter' && crearYAsignarEtiqueta()}
+                                                                    placeholder="Ej. Hándbol" autoFocus
+                                                                    className="border border-indigo-300 rounded-full px-3 py-1.5 text-xs w-32" />
+                                                                <button onClick={crearYAsignarEtiqueta} disabled={guardandoEtiqueta}
+                                                                    className="bg-indigo-600 text-white rounded-full px-3 py-1.5 text-xs font-bold disabled:opacity-50">
+                                                                    {guardandoEtiqueta ? '…' : 'Crear y asignar'}
+                                                                </button>
+                                                                <button onClick={() => { setShowNuevaEtiqueta(false); setNuevaEtiquetaNombre(''); }} className="text-slate-400 text-xs px-1" title="Cancelar">×</button>
+                                                            </span>
+                                                        )}
+                                                        {etqId && (renombreEtiqueta === null ? (
+                                                            <button type="button" onClick={() => { setRenombreEtiqueta(etqNombre); setShowNuevaEtiqueta(false); }}
+                                                                className="px-2 py-1.5 text-xs font-bold text-slate-400 hover:text-slate-600" title="Cambia el nombre de la etiqueta en todos los productos que la tienen">
+                                                                ✎ Renombrar etiqueta
+                                                            </button>
+                                                        ) : (
+                                                            <span className="inline-flex gap-1.5 items-center">
+                                                                <input value={renombreEtiqueta} onChange={e => setRenombreEtiqueta(e.target.value)}
+                                                                    onKeyDown={e => e.key === 'Enter' && renombrarEtiqueta(etqId)}
+                                                                    autoFocus className="border border-indigo-300 rounded-full px-3 py-1.5 text-xs w-36" />
+                                                                <button onClick={() => renombrarEtiqueta(etqId)} disabled={guardandoEtiqueta}
+                                                                    className="bg-indigo-600 text-white rounded-full px-3 py-1.5 text-xs font-bold disabled:opacity-50">
+                                                                    {guardandoEtiqueta ? '…' : 'Guardar nombre'}
+                                                                </button>
+                                                                <button onClick={() => setRenombreEtiqueta(null)} className="text-slate-400 text-xs px-1" title="Cancelar">×</button>
+                                                            </span>
+                                                        ))}
+                                                    </div>
+                                                    <span className="text-[11px] text-slate-400 w-full">Para qué es el producto. Agrupa la lista: Camisetas › Básquet › …</span>
+                                                </div>
+                                            );
+                                        })()}
 
                                         {/* Pasos */}
                                         <div className="flex gap-1.5 px-5 pt-4 flex-wrap">
@@ -1028,30 +1379,46 @@ export default function ConfigurarProductosPage() {
                                                         const opcionesArea = tecnicasCat.filter(o => o.AreaID === a.id && o.Activo);
                                                         return (
                                                             <div key={a.id} className={`border rounded-xl overflow-hidden ${t.on ? 'border-slate-300' : 'border-slate-200 opacity-60'}`}>
-                                                                <div className="flex items-center gap-3 px-4 py-3 bg-white">
-                                                                    <div className={`w-9 h-9 rounded-lg bg-gradient-to-br ${a.grad} text-white flex items-center justify-center`}>
-                                                                        <i className={`fa-solid ${a.icon} text-sm`}></i>
-                                                                    </div>
-                                                                    <div className="flex-1">
-                                                                        <div className="font-black text-sm text-slate-800">{a.label}</div>
-                                                                        <div className="text-[11px] text-slate-400">{a.desc}</div>
-                                                                    </div>
-                                                                    <Toggle on={t.on} onChange={v => setF({ tecnicas: { ...form.tecnicas, [a.id]: { ...t, on: v } } })} />
-                                                                </div>
-                                                                {t.on && (
-                                                                    <div className="border-t border-slate-100 bg-slate-50/60 px-4 py-3 space-y-3">
-                                                                        <div className="flex flex-wrap gap-1.5">
-                                                                            {MODOS.map(m => (
-                                                                                <Pill key={m.id} on={t.modo === m.id} title={m.hint}
-                                                                                    onClick={() => setF({ tecnicas: { ...form.tecnicas, [a.id]: { ...t, modo: m.id } } })}>
-                                                                                    {m.label}
-                                                                                </Pill>
-                                                                            ))}
+                                                                {(() => {
+                                                                    const setT = (patch) => setF({ tecnicas: { ...form.tecnicas, [a.id]: { ...t, ...patch } } });
+                                                                    const conOpciones = opcionesArea.length > 0;
+                                                                    const ejemplo = conOpciones && opcionesArea[0].Precio != null ? `p. ej. ${opcionesArea[0].Nombre}: ${fmtPrecio(opcionesArea[0].Precio, opcionesArea[0].Moneda)}` : '';
+                                                                    const eligiendo = t.on && conOpciones && (t.modo === 'RESTRINGIDO' || t.modo === 'FIJA');
+                                                                    return (<>
+                                                                    {/* Todo en una línea: técnica · obligatoria · incluida · (qué opción) · interruptor */}
+                                                                    <div className="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-2.5 bg-white">
+                                                                        <div className="flex items-center gap-2.5 min-w-[190px]">
+                                                                            <div className={`w-8 h-8 rounded-lg bg-gradient-to-br ${a.grad} text-white flex items-center justify-center flex-shrink-0`}>
+                                                                                <i className={`fa-solid ${a.icon} text-xs`}></i>
+                                                                            </div>
+                                                                            <div className="font-black text-sm text-slate-800" title={a.desc}>{a.label}</div>
                                                                         </div>
-                                                                        {(t.modo === 'RESTRINGIDO' || t.modo === 'FIJA') && (
+                                                                        {t.on && (<>
+                                                                            <div className="min-w-[170px]">
+                                                                                <CheckUnico on={t.obligatorio} onChange={v => setT({ obligatorio: v })}
+                                                                                    si={['Obligatoria', 'el producto siempre la lleva']} no={['Opcional', 'el cliente decide si la agrega']} />
+                                                                            </div>
+                                                                            <div className="min-w-[230px]">
+                                                                                <CheckUnico on={t.cobro === 'INCLUIDA'} onChange={v => setT({ cobro: v ? 'INCLUIDA' : 'APARTE' })}
+                                                                                    si={['Incluida en el precio del producto', 'no suma nada al pedido']} no={['Se cobra como servicio independiente', `según lista de precios${ejemplo ? ', ' + ejemplo : ''}`]} />
+                                                                            </div>
+                                                                            {conOpciones && (
+                                                                                <label className="flex items-center gap-1.5 text-[11px] font-bold text-slate-500">Opción
+                                                                                    <select value={t.modo} onChange={e => setT({ modo: e.target.value })} className="border border-slate-200 rounded-lg px-2 py-1 text-xs font-bold text-slate-700 bg-white">
+                                                                                        <option value="LIBRE">Cualquiera del catálogo</option>
+                                                                                        <option value="RESTRINGIDO">Solo las marcadas</option>
+                                                                                        <option value="FIJA">Una fija</option>
+                                                                                    </select>
+                                                                                </label>
+                                                                            )}
+                                                                        </>)}
+                                                                        <div className="ml-auto"><Toggle on={t.on} onChange={v => setF({ tecnicas: { ...form.tecnicas, [a.id]: { ...t, on: v } } })} /></div>
+                                                                    </div>
+                                                                    {eligiendo && (
+                                                                        <div className="border-t border-slate-100 bg-slate-50/60 px-4 py-3">
                                                                             <div>
                                                                                 <p className="text-[11px] font-bold text-slate-400 mb-1.5">
-                                                                                    {t.modo === 'FIJA' ? 'La opción que se aplica siempre (una sola):' : 'Especificaciones permitidas para este producto:'}
+                                                                                    {t.modo === 'FIJA' ? 'Marcá la opción que se aplica siempre (una sola):' : 'Marcá las opciones que puede elegir el cliente:'}
                                                                                 </p>
                                                                                 <div className="flex flex-wrap gap-2">
                                                                                     {opcionesArea.map(o => {
@@ -1078,48 +1445,25 @@ export default function ConfigurarProductosPage() {
                                                                                             </button>
                                                                                         );
                                                                                     })}
-                                                                                    {opcionesArea.length === 0 && <span className="text-xs text-slate-400">Sin opciones en el catálogo — cargalas en “Catálogo de técnicas”.</span>}
                                                                                 </div>
                                                                             </div>
                                                                         )}
-                                                                        <div className="flex flex-wrap gap-6">
-                                                                            <div>
-                                                                                <p className="text-[11px] font-bold text-slate-400 mb-1.5">💲 ¿Cómo se cobra?</p>
-                                                                                <div className="flex gap-1.5 flex-wrap">
-                                                                                    <Pill on={t.cobro === 'APARTE'} onClick={() => setF({ tecnicas: { ...form.tecnicas, [a.id]: { ...t, cobro: 'APARTE' } } })}>Se cobra aparte (según catálogo)</Pill>
-                                                                                    <Pill on={t.cobro === 'INCLUIDA'} onClick={() => setF({ tecnicas: { ...form.tecnicas, [a.id]: { ...t, cobro: 'INCLUIDA' } } })}>Incluida en el precio del producto</Pill>
-                                                                                </div>
-                                                                            </div>
-                                                                            <div>
-                                                                                <p className="text-[11px] font-bold text-slate-400 mb-1.5">En el pedido, esta técnica es…</p>
-                                                                                <div className="flex gap-1.5 flex-wrap">
-                                                                                    <Pill on={t.obligatorio} onClick={() => setF({ tecnicas: { ...form.tecnicas, [a.id]: { ...t, obligatorio: true } } })}>Obligatoria — el producto siempre la lleva</Pill>
-                                                                                    <Pill on={!t.obligatorio} onClick={() => setF({ tecnicas: { ...form.tecnicas, [a.id]: { ...t, obligatorio: false } } })}>Opcional — el cliente decide si la agrega</Pill>
-                                                                                </div>
-                                                                            </div>
+                                                                            {(a.id === 'EMB' || a.id === 'TPU') && <p className="text-[10.5px] text-slate-400 mt-2">La matriz se cobra solo la primera vez.</p>}
                                                                         </div>
-                                                                        {/* Resumen en criollo del efecto de esta combinación */}
-                                                                        <p className="text-[11px] font-bold text-slate-600 bg-white border border-slate-200 rounded-lg px-3 py-2">
-                                                                            {t.obligatorio ? 'El producto siempre lleva ' : 'El cliente elige si agrega '}
-                                                                            {a.label.toLowerCase()}
-                                                                            {t.cobro === 'INCLUIDA'
-                                                                                ? ' y ya está incluido en el precio: no genera línea de cobro aparte.'
-                                                                                : '; al cotizar se suma como línea propia, con el precio del catálogo, además del precio del producto.'}
-                                                                            {(a.id === 'EMB' || a.id === 'TPU') && ` La matriz ${a.id === 'EMB' ? 'de bordado' : 'TPU'} se cobra la primera vez (trabajo nuevo); el reuso no.`}
-                                                                        </p>
-                                                                    </div>
-                                                                )}
+                                                                    )}
+                                                                    </>);
+                                                                })()}
                                                             </div>
                                                         );
                                                 };
                                                 return (
                                                     <div className="space-y-5">
                                                         <div>
-                                                            <p className="text-[11px] font-black uppercase tracking-wider text-slate-400 mb-2">🔧 Construcción — arma la prenda, casi siempre obligatoria</p>
+                                                            <p className="text-[11px] font-black uppercase tracking-wider text-slate-400 mb-2">Construcción</p>
                                                             <div className="space-y-3">{AREAS_CONSTRUCCION.map(renderTecnicaCard)}</div>
                                                         </div>
                                                         <div>
-                                                            <p className="text-[11px] font-black uppercase tracking-wider text-slate-400 mb-2">🎨 Decoración — el cliente elige si la agrega</p>
+                                                            <p className="text-[11px] font-black uppercase tracking-wider text-slate-400 mb-2">Decoración</p>
                                                             <div className="space-y-3">{AREAS_DECORACION.map(renderTecnicaCard)}</div>
                                                         </div>
                                                     </div>
@@ -1317,190 +1661,154 @@ export default function ConfigurarProductosPage() {
                                             )}
 
                                             {/* ── PASO COMPONENTES Y APLIQUES (confeccionados) ── */}
-                                            {paso === 'confeccion' && (
+                                            {paso === 'molde' && (
                                                 <div className="space-y-4">
+                                                    {/* Molde de TizadaPro (solo lectura): el molde, sus piezas, talles y modelos viven allá */}
                                                     <div className="border border-slate-200 rounded-xl p-4">
-                                                        <p className="text-[11px] font-black uppercase tracking-wider text-slate-400 mb-3">
-                                                            Componentes — qué opciones ofrece este producto <span className="normal-case font-bold">(⭐ = default)</span>
-                                                        </p>
-                                                        {TIPOS_COMP.map(tc => {
-                                                            const ops = componentesCat.filter(c => c.Tipo === tc.id && c.Activo);
-                                                            if (!ops.length) return null;
-                                                            return (
-                                                                <div key={tc.id} className="mb-4">
-                                                                    <p className="text-xs font-bold text-slate-500 mb-1.5">{tc.label}</p>
-                                                                    <div className="grid gap-2" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(106px, 1fr))' }}>
-                                                                        {ops.map(o => {
-                                                                            const sel = form.componentes.has(o.OpcionID);
-                                                                            const def = form.componentes.get(o.OpcionID) === true;
-                                                                            return (
-                                                                                <button key={o.OpcionID} type="button"
-                                                                                    title={`${o.NotaMolde || ''}${o.NotaTallesFemeninos ? ` · Fem: ${o.NotaTallesFemeninos}` : ''}`}
-                                                                                    onClick={() => {
-                                                                                        const next = new Map(form.componentes);
-                                                                                        if (!sel) next.set(o.OpcionID, false);
-                                                                                        else if (!def) {
-                                                                                            // 2º clic = marcar default (único por tipo)
-                                                                                            ops.forEach(x => { if (next.has(x.OpcionID)) next.set(x.OpcionID, false); });
-                                                                                            next.set(o.OpcionID, true);
-                                                                                        } else next.delete(o.OpcionID);
-                                                                                        setF({ componentes: next });
-                                                                                    }}
-                                                                                    className={`relative rounded-xl border-2 p-2 pb-1.5 flex flex-col items-center gap-0.5 bg-white transition-all ${def ? 'border-amber-400 bg-amber-50/40 shadow-sm' : sel ? 'border-emerald-500 bg-emerald-50/30 shadow-sm' : 'border-slate-200 hover:border-slate-300'}`}>
-                                                                                    {def && <span className="absolute top-1 right-1 text-[11px]">⭐</span>}
-                                                                                    {sel && !def && <span className="absolute top-1 right-1 w-4 h-4 rounded-full bg-emerald-500 text-white text-[9px] font-black flex items-center justify-center">✓</span>}
-                                                                                    <CompIcon codigo={o.Codigo} />
-                                                                                    <span className="font-mono text-[9px] font-black text-slate-400 bg-slate-100 rounded px-1">{o.Codigo}</span>
-                                                                                    <span className="text-[10.5px] font-bold text-slate-600 leading-tight text-center">{o.Nombre}</span>
-                                                                                    <span className="text-[9px] font-black h-3">
-                                                                                        {def && <span className="text-amber-600">DEFAULT </span>}
-                                                                                        {o.PrecioExtra != null && <span className="text-emerald-600">+${Number(o.PrecioExtra).toLocaleString('es-UY')}</span>}
-                                                                                    </span>
-                                                                                </button>
-                                                                            );
-                                                                        })}
-                                                                    </div>
-                                                                </div>
-                                                            );
-                                                        })}
-                                                        <p className="text-[11px] text-slate-400">Clic = ofrecer · segundo clic = marcar default ⭐ · tercer clic = quitar.</p>
+                                                        <p className="text-[11px] font-black uppercase tracking-wider text-slate-400 mb-1">Molde de TizadaPro</p>
+                                                        <p className="text-[11px] text-slate-400 mb-3">El molde, sus piezas, sus talles y sus modelos se cargan en TizadaPro. Acá solo se elige cuál es el de este producto.</p>
+                                                        {moldesTpError && <div className="bg-rose-50 border border-rose-200 text-rose-700 rounded-lg px-3 py-2 text-xs font-bold mb-3">No se pudo leer TizadaPro: {moldesTpError}</div>}
+                                                        <div className="flex flex-wrap items-center gap-2">
+                                                            <select value={form.tizadaProMoldeRef || ''} disabled={!!moldesTpError}
+                                                                onChange={e => setF({ tizadaProMoldeRef: e.target.value, modelos: new Map(), telas: new Map() })}
+                                                                className="min-w-[280px] border border-slate-200 rounded-lg px-2.5 py-2 text-sm font-bold">
+                                                                <option value="">Sin molde vinculado</option>
+                                                                {form.tizadaProMoldeRef && !moldeSel && <option value={form.tizadaProMoldeRef}>{form.tizadaProMoldeRef} (ya no está en TizadaPro)</option>}
+                                                                {moldesTp.map(m => <option key={m.ref} value={m.ref}>{m.nombre}{m.completo ? '' : ' (sin piezas o talles)'}</option>)}
+                                                            </select>
+                                                            <button type="button" onClick={loadMoldesTp} className="text-xs font-bold text-slate-500 hover:text-slate-700" title="Volver a leer los moldes de TizadaPro">↻ Actualizar</button>
+                                                            <span className="text-[11px] text-slate-400">Cambiar el molde borra los modelos y las telas elegidos.</span>
+                                                            {moldeSel && <span className="text-[10px] font-mono text-slate-300 ml-auto" title="Clave del molde en TizadaPro">{moldeSel.ref}</span>}
+                                                        </div>
                                                     </div>
+
+                                                    {moldeSel && (
+                                                        <div className="border border-slate-200 rounded-xl p-4">
+                                                            <p className="text-[11px] font-black uppercase tracking-wider text-slate-400 mb-1">Modelos que se venden <span className="normal-case font-bold">(⭐ = el que se ofrece primero)</span></p>
+                                                            <p className="text-[11px] text-slate-400 mb-3">Cada modelo es una combinación de piezas armada en TizadaPro (ej. cuello V con costadillo fino). Marcá los que el cliente puede pedir.</p>
+                                                            {moldeSel.modelos.length === 0 ? (
+                                                                <p className="text-xs text-amber-600 font-bold">Este molde no tiene modelos cargados en TizadaPro: el producto se vende con su única forma.</p>
+                                                            ) : (
+                                                                <div className="grid gap-2" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(230px, 1fr))' }}>
+                                                                    {moldeSel.modelos.map(m => {
+                                                                        const sel = form.modelos.has(m.clave);
+                                                                        const def = form.modelos.get(m.clave)?.esDefault === true;
+                                                                        return (
+                                                                            <button key={m.clave} type="button" title={m.piezas.join(' · ')}
+                                                                                onClick={() => {
+                                                                                    const next = new Map(form.modelos);
+                                                                                    if (!sel) next.set(m.clave, { nombre: m.nombre, esDefault: false });
+                                                                                    else if (!def) { next.forEach((v, k) => next.set(k, { ...v, esDefault: false })); next.set(m.clave, { nombre: m.nombre, esDefault: true }); }
+                                                                                    else next.delete(m.clave);
+                                                                                    setF({ modelos: next });
+                                                                                }}
+                                                                                className={`relative rounded-xl border-2 p-3 text-left bg-white transition-all ${def ? 'border-amber-400 bg-amber-50/40 shadow-sm' : sel ? 'border-emerald-500 bg-emerald-50/30 shadow-sm' : 'border-slate-200 hover:border-slate-300'}`}>
+                                                                                {def && <span className="absolute top-1.5 right-2 text-[11px]">⭐</span>}
+                                                                                {sel && !def && <span className="absolute top-1.5 right-2 w-4 h-4 rounded-full bg-emerald-500 text-white text-[9px] font-black flex items-center justify-center">✓</span>}
+                                                                                <div className="text-[12px] font-bold text-slate-700 pr-5">{m.nombre}</div>
+                                                                                {m.grupo && <div className="text-[10px] text-slate-400">{m.grupo}</div>}
+                                                                                <div className="text-[10px] text-slate-400 mt-1">{m.piezas.length} piezas</div>
+                                                                            </button>
+                                                                        );
+                                                                    })}
+                                                                </div>
+                                                            )}
+                                                            <p className="text-[11px] text-slate-400 mt-2">Clic = se vende · segundo clic = ⭐ primero · tercer clic = quitar.</p>
+                                                        </div>
+                                                    )}
+
+                                                    {moldeSel && <MoldeResumen molde={moldeSel} modeloVista={modeloVista} setModeloVista={setModeloVista} vendidos={form.modelos} onLeerCarpeta={leerCarpetaMoldes} leyendoCarpeta={leyendoCarpeta} />}
+
+                                                    {moldeSel && (
+                                                        <div className="border border-slate-200 rounded-xl p-4">
+                                                            <p className="text-[11px] font-black uppercase tracking-wider text-slate-400 mb-1">Telas que se ofrecen</p>
+                                                            <p className="text-[11px] text-slate-400 mb-3">Solo las que el molde admite en TizadaPro. El precio que se muestra es el de la lista de precios de la tela: acá no se cambia.</p>
+                                                            {moldeSel.telas.length === 0 ? (
+                                                                <p className="text-xs text-amber-600 font-bold">El molde no tiene telas permitidas cargadas en TizadaPro. Cargalas allá y tocá ↻ Actualizar.</p>
+                                                            ) : (
+                                                                <div className="space-y-1.5">
+                                                                    {moldeSel.telas.map(t => {
+                                                                        const id = t.proIdProducto;
+                                                                        const sel = id != null && form.telas.has(id);
+                                                                        const v = sel ? form.telas.get(id) : null;
+                                                                        return (
+                                                                            <div key={t.nombre} className={`flex flex-wrap items-center gap-2 rounded-lg border px-3 py-1.5 ${sel ? 'border-emerald-300 bg-emerald-50/30' : 'border-slate-200'}`}>
+                                                                                <Toggle on={sel} disabled={id == null} onChange={on => {
+                                                                                    const next = new Map(form.telas);
+                                                                                    if (on) next.set(id, { codArticulo: t.codArticulo, material: t.nombre, esDefault: next.size === 0 });
+                                                                                    else next.delete(id);
+                                                                                    setF({ telas: next });
+                                                                                }} />
+                                                                                <span className={`text-sm font-bold flex-1 min-w-[160px] ${id == null ? 'text-rose-600' : 'text-slate-700'}`} title={t.aviso || ''}>{t.nombre}{t.aviso ? <span className="block text-[10px] font-normal">{t.aviso}</span> : null}</span>
+                                                                                {t.anchoCm && <span className="text-[11px] text-slate-400">{t.anchoCm} cm</span>}
+                                                                                <span className="text-[11px] text-slate-500" title="Precio base de la tela en la lista de precios. Se cambia desde Precios, no acá.">{t.precioBase != null ? fmtPrecio(t.precioBase, t.moneda) : 'sin precio en la lista'}</span>
+                                                                                {sel && <>
+                                                                                    <button type="button" title="Tela que se ofrece primero"
+                                                                                        onClick={() => { const next = new Map(form.telas); next.forEach((x, k) => next.set(k, { ...x, esDefault: k === id })); setF({ telas: next }); }}
+                                                                                        className={`text-[11px] font-bold px-2 py-1 rounded-full border ${v.esDefault ? 'bg-amber-100 border-amber-300 text-amber-700' : 'border-slate-200 text-slate-400 hover:border-slate-400'}`}>{v.esDefault ? '⭐ primera' : 'hacer primera'}</button>
+                                                                                </>}
+                                                                            </div>
+                                                                        );
+                                                                    })}
+                                                                </div>
+                                                            )}
+                                                            {Object.keys(moldeSel.telasPorPieza || {}).length > 0 && (
+                                                                <p className="text-[11px] text-slate-500 mt-3">Las telas de arriba son para el cuerpo. {Object.keys(moldeSel.telasPorPieza).join(', ')} van en la tela fija que dice el molde (ver la lista de piezas, más arriba). Eso se cambia en TizadaPro.</p>
+                                                            )}
+                                                        </div>
+                                                    )}
 
                                                     <div className="border border-slate-200 rounded-xl p-4">
                                                         <p className="text-[11px] font-black uppercase tracking-wider text-slate-400 mb-1">Apliques — posición · técnica · cantidad</p>
-                                                        <p className="text-[11px] text-slate-400 mb-3">La pieza sale del nomenclador (pestaña “Piezas de la prenda”). El detalle es libre: dónde exactamente dentro de esa pieza.</p>
+                                                        <p className="text-[11px] text-slate-400 mb-3">Solo con las técnicas de decoración activas en el paso Técnicas{AREAS_DECORACION.some(x => form.tecnicas[x.id].on) ? ` (${AREAS_DECORACION.filter(x => form.tecnicas[x.id].on).map(x => x.label).join(', ')})` : ': hoy ninguna, solo Etiqueta'}. La pieza es de los modelos que se venden{moldeSel && form.modelos.size ? ` (${[...form.modelos.values()].map(m => m.nombre).join(', ')})` : ' (todavía no marcaste ninguno: se listan todas las del molde)'}.</p>
                                                         <div className="space-y-2">
-                                                            {form.apliques.map((ap, i) => (
-                                                                <div key={i} className="flex flex-wrap items-center gap-2 border border-slate-200 rounded-lg px-3 py-2">
-                                                                    {(() => {
-                                                                        // Piezas del nomenclador que admiten aplique, de esta familia (o de todas).
-                                                                        // Si el aplique ya tenía una posición escrita a mano que no está en el
-                                                                        // nomenclador, se agrega arriba para no perderla al guardar.
-                                                                        const delCatalogo = piezasCat
-                                                                            .filter(p => p.Activo && p.AdmiteAplique && (!p.Familia || p.Familia === form.categoria))
-                                                                            .map(p => p.Nombre);
-                                                                        const opciones = ap.pieza && !delCatalogo.includes(ap.pieza)
-                                                                            ? [ap.pieza, ...delCatalogo] : delCatalogo;
-                                                                        return (
-                                                                            <select value={ap.pieza || ''} title="¿En qué pieza de la prenda va?"
-                                                                                onChange={e => { const next = [...form.apliques]; next[i] = { ...ap, pieza: e.target.value }; setF({ apliques: next }); }}
-                                                                                className="min-w-[150px] border border-slate-200 rounded-lg px-2 py-1.5 text-sm font-bold">
-                                                                                <option value="">¿En qué pieza va?</option>
-                                                                                {opciones.map(n => <option key={n} value={n}>{n}</option>)}
-                                                                            </select>
-                                                                        );
-                                                                    })()}
-                                                                    <input value={ap.detalle || ''} placeholder="Detalle (ej. pecho izquierdo)"
-                                                                        onChange={e => { const next = [...form.apliques]; next[i] = { ...ap, detalle: e.target.value }; setF({ apliques: next }); }}
-                                                                        className="flex-1 min-w-[140px] border border-slate-200 rounded-lg px-2.5 py-1.5 text-sm" />
-                                                                    <select value={ap.areaId}
-                                                                        onChange={e => { const next = [...form.apliques]; next[i] = { ...ap, areaId: e.target.value, tecnicaOpcionId: '' }; setF({ apliques: next }); }}
-                                                                        className="border border-slate-200 rounded-lg px-2 py-1.5 text-xs font-bold">
-                                                                        {[...AREAS, AREA_APLIQUE_EXTRA].map(a => <option key={a.id} value={a.id}>{a.label}</option>)}
-                                                                    </select>
-                                                                    {ap.areaId !== 'ETIQUETA' && (
-                                                                        <select value={ap.tecnicaOpcionId}
-                                                                            onChange={e => { const next = [...form.apliques]; next[i] = { ...ap, tecnicaOpcionId: e.target.value ? Number(e.target.value) : '' }; setF({ apliques: next }); }}
-                                                                            className="border border-slate-200 rounded-lg px-2 py-1.5 text-xs">
-                                                                            <option value="">Opción libre</option>
-                                                                            {tecnicasCat.filter(o => o.AreaID === ap.areaId && o.Activo).map(o => (
-                                                                                <option key={o.TecnicaOpcionID} value={o.TecnicaOpcionID}>{o.Nombre}</option>
-                                                                            ))}
+                                                            {form.apliques.map((ap, i) => {
+                                                                // Piezas del molde de TizadaPro, con la tela fija si la tienen (ej. "Cuello · Rib New").
+                                                                const piezasMolde = piezasParaApliques;
+                                                                const opciones = ap.pieza && !piezasMolde.includes(ap.pieza) ? [ap.pieza, ...piezasMolde] : piezasMolde;
+                                                                const telaDePieza = (pz) => ((moldeSel?.telasPorPieza || {})[pz] || []).map(x => x.nombre).join(', ');
+                                                                const opcionesTecnica = tecnicasCat.filter(o => o.AreaID === ap.areaId && o.Activo);
+                                                                const set = (patch) => { const next = [...form.apliques]; next[i] = { ...ap, ...patch }; setF({ apliques: next }); };
+                                                                return (
+                                                                    <div key={i} className="flex flex-wrap items-center gap-2 border border-slate-200 rounded-lg px-3 py-2">
+                                                                        <select value={ap.areaId} title="Técnica del aplique (solo las que el producto tiene activas en Técnicas)"
+                                                                            onChange={e => set({ areaId: e.target.value, tecnicaOpcionId: primeraOpcionDe(e.target.value) })}
+                                                                            className={`border rounded-lg px-2 py-1.5 text-sm font-bold ${tecnicasApliqueActivas.some(x => x.id === ap.areaId) ? 'border-slate-200' : 'border-rose-400 text-rose-700'}`}>
+                                                                            {tecnicasApliqueActivas.map(x => <option key={x.id} value={x.id}>{x.label}</option>)}
+                                                                            {!tecnicasApliqueActivas.some(x => x.id === ap.areaId) && <option value={ap.areaId}>{areaMeta(ap.areaId).label} (técnica apagada)</option>}
                                                                         </select>
-                                                                    )}
-                                                                    <input type="number" min="1" value={ap.cantidad} title="Cantidad"
-                                                                        onChange={e => { const next = [...form.apliques]; next[i] = { ...ap, cantidad: e.target.value }; setF({ apliques: next }); }}
-                                                                        className="w-16 border border-slate-200 rounded-lg px-2 py-1.5 text-sm text-center" />
-                                                                    <label className="flex items-center gap-1.5 text-[11px] font-bold text-slate-500">
-                                                                        <Toggle on={ap.incluido} onChange={v => { const next = [...form.apliques]; next[i] = { ...ap, incluido: v }; setF({ apliques: next }); }} />
-                                                                        {ap.incluido ? 'incluido' : 'se cobra'}
-                                                                    </label>
-                                                                    <button type="button" onClick={() => setF({ apliques: form.apliques.filter((_, j) => j !== i) })}
-                                                                        className="text-red-400 hover:text-red-600 font-black px-1">×</button>
-                                                                </div>
-                                                            ))}
+                                                                        <select value={ap.pieza || ''} title="¿En qué pieza de la prenda va? (obligatorio)"
+                                                                            onChange={e => set({ pieza: e.target.value })}
+                                                                            className={`min-w-[170px] border rounded-lg px-2 py-1.5 text-sm font-bold ${ap.pieza ? 'border-slate-200' : 'border-rose-400'}`}>
+                                                                            {!ap.pieza && <option value="">{moldeSel ? 'Elegí la pieza (obligatorio)' : 'Elegí primero el molde de TizadaPro'}</option>}
+                                                                            {opciones.map(n => <option key={n} value={n}>{n}{telaDePieza(n) ? ` · ${telaDePieza(n)}` : ''}</option>)}
+                                                                        </select>
+                                                                        {ap.areaId !== 'ETIQUETA' && (
+                                                                            <select value={ap.tecnicaOpcionId} title="Opción del catálogo de esta técnica"
+                                                                                onChange={e => set({ tecnicaOpcionId: e.target.value ? Number(e.target.value) : '' })}
+                                                                                className="border border-slate-200 rounded-lg px-2 py-1.5 text-xs">
+                                                                                {opcionesTecnica.map(o => <option key={o.TecnicaOpcionID} value={o.TecnicaOpcionID}>{o.Nombre}</option>)}
+                                                                                <option value="">Opción libre{opcionesTecnica.length ? '' : ' (sin opciones en el catálogo)'}</option>
+                                                                            </select>
+                                                                        )}
+                                                                        <input value={ap.detalle || ''} placeholder="Observaciones (ej. pecho izquierdo)"
+                                                                            onChange={e => set({ detalle: e.target.value })}
+                                                                            className="flex-1 min-w-[160px] border border-slate-200 rounded-lg px-2.5 py-1.5 text-sm" />
+                                                                        <label className="flex items-center gap-1.5 text-[11px] font-bold text-slate-500 whitespace-nowrap">
+                                                                            <Toggle on={ap.incluido} onChange={v => set({ incluido: v })} />
+                                                                            {ap.incluido ? 'incluido' : 'se cobra'}
+                                                                        </label>
+                                                                        <button type="button" title="Quitar este aplique" onClick={() => setF({ apliques: form.apliques.filter((_, j) => j !== i) })}
+                                                                            className="text-red-400 hover:text-red-600 font-black px-1">×</button>
+                                                                    </div>
+                                                                );
+                                                            })}
                                                         </div>
                                                         <button type="button"
-                                                            onClick={() => setF({ apliques: [...form.apliques, { pieza: '', detalle: '', areaId: 'EMB', tecnicaOpcionId: '', cantidad: 1, incluido: true }] })}
+                                                            onClick={() => { const areaId = tecnicasApliqueActivas[0].id; setF({ apliques: [...form.apliques, { pieza: piezasParaApliques[0] || '', detalle: '', areaId, tecnicaOpcionId: primeraOpcionDe(areaId), cantidad: 1, incluido: true }] }); }}
                                                             className="mt-2 border border-dashed border-slate-300 rounded-lg px-3 py-1.5 text-xs font-bold text-slate-500 hover:border-slate-400">
                                                             + Agregar aplique
                                                         </button>
-                                                    </div>
-                                                </div>
-                                            )}
-
-                                            {/* ── PASO VARIANTES ── */}
-                                            {paso === 'variantes' && (
-                                                <div className="space-y-4 max-w-3xl">
-                                                    <div className="border border-slate-200 rounded-xl p-4">
-                                                        <p className="text-[11px] font-black uppercase tracking-wider text-slate-400 mb-1">Código corto — prefijo de las variantes</p>
-                                                        <p className="text-xs text-slate-500 mb-2">
-                                                            Cada variante se arma como <span className="font-mono font-bold">PREFIJO + número</span>, ej. <span className="font-mono font-bold text-indigo-600">{(form.codigoCorto || String(form.proId)).toUpperCase().slice(0, 3)}000001</span>.
-                                                        </p>
-                                                        <input value={form.codigoCorto} maxLength={3}
-                                                            onChange={e => setF({ codigoCorto: e.target.value.toUpperCase().slice(0, 3) })}
-                                                            placeholder={String(form.proId)}
-                                                            className="w-24 border border-slate-200 rounded-lg px-2.5 py-1.5 text-sm font-mono font-bold uppercase text-center" />
-                                                        <span className="text-[11px] text-slate-400 ml-2">Se guarda con "Guardar cambios", abajo.</span>
-                                                    </div>
-
-                                                    <div className="border border-slate-200 rounded-xl p-4">
-                                                        <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
-                                                            <div>
-                                                                <p className="text-[11px] font-black uppercase tracking-wider text-slate-400">Variantes generadas</p>
-                                                                <p className="text-xs text-slate-500">Una fila por cada combinación de las opciones marcadas en "Componentes y apliques".</p>
-                                                            </div>
-                                                            <button type="button" onClick={generarVariantes} disabled={generandoVariantes}
-                                                                className="bg-indigo-600 text-white rounded-lg px-4 py-2 text-xs font-bold disabled:opacity-50">
-                                                                {generandoVariantes ? 'Generando…' : (variantes.length ? '🔄 Actualizar variantes' : '⚙️ Generar variantes')}
-                                                            </button>
-                                                        </div>
-
-                                                        {variantesObsoletas > 0 && (
-                                                            <div className="mb-3 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-[11px] font-bold text-amber-700">
-                                                                ⚠ {variantesObsoletas} variante(s) vieja(s) quedaron con una combinación que ya no es alcanzable (se sacó o agregó un componente). No se borran solas — revisalas antes de publicar.
-                                                            </div>
-                                                        )}
-
-                                                        {variantesLoading ? (
-                                                            <div className="text-xs text-slate-400 py-6 text-center">Cargando variantes…</div>
-                                                        ) : variantes.length === 0 ? (
-                                                            <div className="text-xs text-slate-400 py-6 text-center">
-                                                                Todavía no hay variantes generadas. Elegí los Componentes en el paso anterior y tocá "Generar variantes".
-                                                            </div>
-                                                        ) : (
-                                                            <div className="overflow-x-auto -mx-1">
-                                                                <table className="w-full text-xs">
-                                                                    <thead>
-                                                                        <tr className="text-left text-[10px] font-black uppercase tracking-wider text-slate-400 border-b border-slate-100">
-                                                                            <th className="px-1 py-2">Código</th>
-                                                                            <th className="px-1 py-2">Combinación</th>
-                                                                            <th className="px-1 py-2">Precio calculado</th>
-                                                                            <th className="px-1 py-2">Precio manual (override)</th>
-                                                                            <th className="px-1 py-2 text-center">Activa</th>
-                                                                        </tr>
-                                                                    </thead>
-                                                                    <tbody>
-                                                                        {variantes.map(v => (
-                                                                            <tr key={v.VarianteID} className={`border-b border-slate-50 ${v.Activa ? '' : 'opacity-40'}`}>
-                                                                                <td className="px-1 py-2 font-mono font-bold text-slate-700">{v.Codigo}</td>
-                                                                                <td className="px-1 py-2 text-slate-500">{v.CodigoLegible}</td>
-                                                                                <td className="px-1 py-2 text-slate-600">{fmtPrecio(v.PrecioCalculado, form.moneda)}</td>
-                                                                                <td className="px-1 py-2">
-                                                                                    <input type="number" defaultValue={v.PrecioManual ?? ''} placeholder="—"
-                                                                                        onBlur={e => { if (e.target.value !== String(v.PrecioManual ?? '')) guardarPrecioManualVariante(v, e.target.value); }}
-                                                                                        className="w-24 border border-slate-200 rounded-lg px-2 py-1 text-xs" />
-                                                                                </td>
-                                                                                <td className="px-1 py-2 text-center">
-                                                                                    <Toggle on={v.Activa} onChange={() => toggleVarianteActiva(v)} />
-                                                                                </td>
-                                                                            </tr>
-                                                                        ))}
-                                                                    </tbody>
-                                                                </table>
-                                                                <p className="text-[11px] text-slate-400 mt-2">{variantes.length} variante(s) · {variantes.filter(v => v.Activa).length} activa(s)</p>
-                                                            </div>
-                                                        )}
                                                     </div>
                                                 </div>
                                             )}
@@ -1579,21 +1887,28 @@ export default function ConfigurarProductosPage() {
                                                     </div>
 
                                                     <div className="border border-slate-200 rounded-xl p-4">
-                                                        <p className="text-[11px] font-black uppercase tracking-wider text-slate-400 mb-3">Campos del pie</p>
-                                                        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-                                                            {[['material', 'Material'], ['tallas', 'Tallas'], ['marcacion', 'Marcación'], ['colores', 'Colores'], ['proveedor', 'Proveedor']].map(([k, label]) => (
+                                                        <p className="text-[11px] font-black uppercase tracking-wider text-slate-400 mb-1">Datos de la prenda</p>
+                                                        <p className="text-[11px] text-slate-400 mb-3">Material y tallas salen del molde de TizadaPro y de las telas que se ofrecen. Se pueden pisar; "↻ automático" vuelve a lo del molde.</p>
+                                                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                                            {[['material', 'Material', autoFicha.material], ['tallas', 'Tallas', autoFicha.tallas], ['marcacion', 'Marcación', null]].map(([k, label, auto]) => (
                                                                 <div key={k}>
-                                                                    <label className="text-[11px] font-bold text-slate-500 block mb-1">{label}</label>
-                                                                    <input value={form.fichaDiseno[k]}
+                                                                    <label className="text-[11px] font-bold text-slate-500 flex items-center justify-between mb-1">{label}
+                                                                        {auto != null && form.fichaDiseno[k] !== auto && auto && (
+                                                                            <button type="button" onClick={() => setF({ fichaDiseno: { ...form.fichaDiseno, [k]: auto } })} className="text-[10px] font-bold text-indigo-600 hover:underline">↻ automático</button>
+                                                                        )}
+                                                                    </label>
+                                                                    <input value={form.fichaDiseno[k]} placeholder={auto || (k === 'marcacion' ? 'Cómo se marca el talle (etiqueta, estampa…)' : '')}
                                                                         onChange={e => setF({ fichaDiseno: { ...form.fichaDiseno, [k]: e.target.value } })}
-                                                                        className="w-full border border-slate-200 rounded-lg px-2.5 py-1.5 text-sm" />
+                                                                        className={`w-full border rounded-lg px-2.5 py-1.5 text-sm ${auto != null && form.fichaDiseno[k] && form.fichaDiseno[k] === auto ? 'border-slate-200 text-slate-600 bg-slate-50' : 'border-slate-200'}`} />
+                                                                    {auto != null && !form.fichaDiseno[k] && !auto && <p className="text-[10px] text-amber-600 mt-1">{k === 'material' ? 'Marcá las telas que se ofrecen en "Molde, telas y apliques".' : 'Vinculá el molde de TizadaPro para tomar los talles.'}</p>}
                                                                 </div>
                                                             ))}
                                                         </div>
                                                     </div>
 
                                                     <div className="border border-slate-200 rounded-xl p-4">
-                                                        <p className="text-[11px] font-black uppercase tracking-wider text-slate-400 mb-3">Campos extra</p>
+                                                        <p className="text-[11px] font-black uppercase tracking-wider text-slate-400 mb-1">Notas sueltas</p>
+                                                        <p className="text-[11px] text-slate-400 mb-3">Lo que no entra arriba ni en Avíos, como etiqueta y valor. Salen al pie de la ficha impresa.</p>
                                                         <div className="space-y-2">
                                                             {form.fichaDisenoExtra.map((c, i) => (
                                                                 <div key={i} className="flex items-center gap-2">
@@ -1615,6 +1930,38 @@ export default function ConfigurarProductosPage() {
                                                     </div>
 
                                                     <div className="border border-slate-200 rounded-xl p-4">
+                                                        <p className="text-[11px] font-black uppercase tracking-wider text-slate-400 mb-1">Avíos</p>
+                                                        <p className="text-[11px] text-slate-400 mb-3">Todo lo que lleva la prenda y no es tela. Se eligen del "Catálogo de avíos"; acá va la cantidad por prenda y la medida, que puede variar por talle.</p>
+                                                        <div className="space-y-2">
+                                                            {form.avios.map((av, i) => {
+                                                                const set = (patch) => { const next = [...form.avios]; next[i] = { ...av, ...patch }; setF({ avios: next }); };
+                                                                return (
+                                                                    <div key={i} className="flex flex-wrap items-center gap-2 border border-slate-200 rounded-lg px-3 py-2">
+                                                                        <select value={av.avioId || ''} title="Avío del catálogo"
+                                                                            onChange={e => { const c = aviosCat.find(x => String(x.AvioID) === e.target.value); set(c ? { avioId: c.AvioID, nombre: c.Nombre, unidad: c.Unidad || 'u' } : { avioId: '' }); }}
+                                                                            className={`min-w-[200px] border rounded-lg px-2.5 py-1.5 text-sm font-bold ${av.avioId ? 'border-slate-200' : 'border-rose-400'}`}>
+                                                                            <option value="">{aviosCat.filter(x => x.Activo).length ? 'Elegí el avío…' : 'Cargá avíos en "Catálogo de avíos"'}</option>
+                                                                            {aviosCat.filter(x => x.Activo || x.AvioID === av.avioId).map(x => <option key={x.AvioID} value={x.AvioID}>{x.Nombre}{x.Activo ? '' : ' (inactivo)'}</option>)}
+                                                                        </select>
+                                                                        <input type="number" min="0.01" step="0.01" value={av.cantidad} title="Cantidad por prenda" onChange={e => set({ cantidad: e.target.value })}
+                                                                            className="w-20 border border-slate-200 rounded-lg px-2 py-1.5 text-sm text-center" />
+                                                                        <span className="text-xs text-slate-500 w-8">{av.unidad || 'u'}</span>
+                                                                        <input value={av.medida} placeholder="Medida por talle (ej. S–M 55 cm · L–XXL 60 cm)" onChange={e => set({ medida: e.target.value })}
+                                                                            className="min-w-[220px] flex-1 border border-slate-200 rounded-lg px-2.5 py-1.5 text-sm" />
+                                                                        <input value={av.nota} placeholder="Nota" onChange={e => set({ nota: e.target.value })}
+                                                                            className="min-w-[120px] border border-slate-200 rounded-lg px-2.5 py-1.5 text-sm" />
+                                                                        <button type="button" title="Quitar" onClick={() => setF({ avios: form.avios.filter((_, j) => j !== i) })} className="text-red-400 hover:text-red-600 font-black px-1">×</button>
+                                                                    </div>
+                                                                );
+                                                            })}
+                                                        </div>
+                                                        <button type="button" onClick={() => { const c = aviosCat.find(x => x.Activo); setF({ avios: [...form.avios, { avioId: c ? c.AvioID : '', nombre: c ? c.Nombre : '', cantidad: 1, unidad: c ? (c.Unidad || 'u') : 'u', medida: '', nota: '' }] }); }}
+                                                            className="mt-2 border border-dashed border-slate-300 rounded-lg px-3 py-1.5 text-xs font-bold text-slate-500 hover:border-slate-400">
+                                                            + Agregar avío
+                                                        </button>
+                                                    </div>
+
+                                                    <div className="border border-slate-200 rounded-xl p-4">
                                                         <p className="text-[11px] font-black uppercase tracking-wider text-slate-400 mb-1">Costuras (ISO)</p>
                                                         <p className="text-xs text-slate-500 mb-3">Elegí las costuras de la lista ISO 4915. Abajo, las que sugiere el despiece de la combinación ⭐ default.</p>
                                                         <div className="space-y-2 mb-2">
@@ -1626,7 +1973,7 @@ export default function ConfigurarProductosPage() {
                                                                     <select value={c.iso}
                                                                         onChange={e => setF({ fichaDisenoCosturas: form.fichaDisenoCosturas.map((x, j) => j === i ? { ...x, iso: e.target.value } : x) })}
                                                                         className="flex-1 border border-slate-200 rounded-lg px-2.5 py-1.5 text-sm">
-                                                                        {costurasIsoCat.map(o => <option key={o.CosturaISOID} value={o.CodigoISO}>{o.CodigoISO} — {o.Nombre}</option>)}
+                                                                        {costurasIsoCat.filter(o => o.Activo !== false || o.CodigoISO === c.iso).map(o => <option key={o.CosturaISOID} value={o.CodigoISO}>{o.CodigoISO} — {o.Nombre}</option>)}
                                                                     </select>
                                                                     <button type="button" onClick={() => setF({ fichaDisenoCosturas: form.fichaDisenoCosturas.filter((_, j) => j !== i) })}
                                                                         className="text-red-400 hover:text-red-600 font-black px-1">×</button>
@@ -1634,28 +1981,11 @@ export default function ConfigurarProductosPage() {
                                                             ))}
                                                         </div>
                                                         <button type="button"
-                                                            onClick={() => setF({ fichaDisenoCosturas: [...form.fichaDisenoCosturas, { union: '', iso: costurasIsoCat[0]?.CodigoISO || '' }] })}
+                                                            onClick={() => setF({ fichaDisenoCosturas: [...form.fichaDisenoCosturas, { union: '', iso: costurasIsoCat.find(o => o.Activo !== false)?.CodigoISO || '' }] })}
                                                             className="border border-dashed border-slate-300 rounded-lg px-3 py-1.5 text-xs font-bold text-slate-500 hover:border-slate-400">
                                                             + Agregar costura
                                                         </button>
 
-                                                        <p className="text-[11px] font-black uppercase tracking-wider text-slate-400 mt-4 mb-2">Costuras del despiece <span className="normal-case font-bold">(automáticas)</span></p>
-                                                        {form.costurasSugeridas.length === 0 ? (
-                                                            <p className="text-xs text-slate-400">Marcá una opción ⭐ default en "Componentes y apliques" con piezas cargadas para ver costuras sugeridas acá.</p>
-                                                        ) : (
-                                                            <div className="space-y-1.5">
-                                                                {form.costurasSugeridas.map((s, i) => (
-                                                                    <div key={i} className="flex items-center gap-2 text-xs">
-                                                                        <span className="font-bold text-slate-600 w-32 truncate">{s.pieza}</span>
-                                                                        <span className="font-mono text-slate-500">{s.iso}</span>
-                                                                        <span className="text-slate-400 flex-1">{s.nombre}</span>
-                                                                        <button type="button"
-                                                                            onClick={() => setF({ fichaDisenoCosturas: [...form.fichaDisenoCosturas, { union: s.pieza, iso: s.iso }] })}
-                                                                            className="text-indigo-600 hover:text-indigo-800 font-bold">+ usar</button>
-                                                                    </div>
-                                                                ))}
-                                                            </div>
-                                                        )}
                                                     </div>
 
                                                     <div className="flex items-center gap-3">
@@ -1724,18 +2054,28 @@ export default function ConfigurarProductosPage() {
                                                                     <table className="w-full text-xs border-t-2 border-slate-800 pt-2">
                                                                         <tbody>
                                                                             <tr>
-                                                                                <td className="font-bold py-1 pr-2 w-20">Material</td><td className="py-1">{form.fichaDiseno.material}</td>
-                                                                                <td className="font-bold py-1 pr-2 pl-4 w-20">Colores</td><td className="py-1">{form.fichaDiseno.colores}</td>
+                                                                                <td className="font-bold py-1 pr-2 w-20">Material</td><td className="py-1" colSpan={3}>{form.fichaDiseno.material}</td>
                                                                             </tr>
                                                                             <tr>
-                                                                                <td className="font-bold py-1 pr-2">Tallas</td><td className="py-1">{form.fichaDiseno.tallas}</td>
-                                                                                <td className="font-bold py-1 pr-2 pl-4">Proveedor</td><td className="py-1">{form.fichaDiseno.proveedor}</td>
+                                                                                <td className="font-bold py-1 pr-2">Tallas</td><td className="py-1" colSpan={3}>{form.fichaDiseno.tallas}</td>
                                                                             </tr>
                                                                             <tr>
                                                                                 <td className="font-bold py-1 pr-2">Marcación</td><td className="py-1" colSpan={3}>{form.fichaDiseno.marcacion}</td>
                                                                             </tr>
                                                                         </tbody>
                                                                     </table>
+                                                                    {form.avios.filter(a => a.nombre.trim()).length > 0 && (
+                                                                        <table className="w-full text-xs mt-3">
+                                                                            <thead><tr className="border-b-2 border-slate-800 text-left"><th className="py-1 pr-2">Avío</th><th className="py-1 pr-2">Cant./prenda</th><th className="py-1 pr-2">Medida por talle</th><th className="py-1">Nota</th></tr></thead>
+                                                                            <tbody>
+                                                                                {form.avios.filter(a => a.nombre.trim()).map((a, i) => (
+                                                                                    <tr key={i} className="border-b border-slate-100">
+                                                                                        <td className="py-1 pr-2 font-bold">{a.nombre}</td><td className="py-1 pr-2">{a.cantidad} {a.unidad}</td><td className="py-1 pr-2">{a.medida}</td><td className="py-1">{a.nota}</td>
+                                                                                    </tr>
+                                                                                ))}
+                                                                            </tbody>
+                                                                        </table>
+                                                                    )}
                                                                 </div>
 
                                                                 <div className="fdp-noprint flex items-center gap-2 mt-4">
@@ -1797,24 +2137,15 @@ export default function ConfigurarProductosPage() {
                                                             <div className="flex justify-between px-4 py-2.5"><span className="text-slate-400 font-bold">Familia</span><span className={`font-bold ${form.categoria !== 'Prendas' ? 'text-slate-700' : 'text-amber-600'}`}>{form.categoria !== 'Prendas' ? form.categoria : '⚠ sin clasificar'}</span></div>
                                                         )}
                                                         <div className="flex justify-between px-4 py-2.5"><span className="text-slate-400 font-bold">Origen</span><span className="font-bold text-slate-700">{form.esCombo ? `Combo de ${form.comboItems.length} productos del local` : `${ORIGENES.find(o => o.id === form.origenTipo)?.t}${origenSel ? ` — ${origenSel.Descripcion}` : ''}`}</span></div>
-                                                        <div className="flex justify-between px-4 py-2.5"><span className="text-slate-400 font-bold">Técnicas</span><span className="font-bold text-slate-700">{form.esCombo ? 'por producto (ver composición)' : (AREAS.filter(a => form.tecnicas[a.id].on).map(a => `${a.label} (${form.tecnicas[a.id].modo.toLowerCase()}${form.tecnicas[a.id].cobro === 'INCLUIDA' ? ', incluida' : ''})`).join(' · ') || 'ninguna')}</span></div>
+                                                        <div className="flex justify-between px-4 py-2.5"><span className="text-slate-400 font-bold">Técnicas</span><span className="font-bold text-slate-700">{form.esCombo ? 'por producto (ver composición)' : (AREAS.filter(a => form.tecnicas[a.id].on).map(a => { const conOpc = tecnicasCat.some(o => o.AreaID === a.id && o.Activo); const det = [conOpc ? form.tecnicas[a.id].modo.toLowerCase() : null, form.tecnicas[a.id].cobro === 'INCLUIDA' ? 'incluida' : null].filter(Boolean).join(', '); return det ? `${a.label} (${det})` : a.label; }).join(' · ') || 'ninguna')}</span></div>
                                                         <div className="flex justify-between px-4 py-2.5"><span className="text-slate-400 font-bold">Precio</span><span className="font-bold text-slate-700">{fmtPrecio(form.precio === '' ? null : form.precio, form.moneda)}{form.politica === 'PAQUETE' ? ' el paquete' : ' /u sin servicios'}</span></div>
                                                         <div className="flex justify-between px-4 py-2.5 gap-4"><span className="text-slate-400 font-bold">Cantidad</span><span className="font-bold text-slate-700 text-right">{form.politica === 'LIBRE' ? 'libre'
                                                             : form.politica === 'MINIMA' ? `mínimo ${form.cantidadMinima || '—'} u`
                                                             : form.comboItems.length > 0 ? `paquete armado: ${form.comboItems.map(it => `${it.cantidad}× ${it.itemNombre || `#${it.itemProIdProducto}`}${it.wmsVarianteId ? ` (${it.varianteNombre})` : ''}`).join(' + ')}`
                                                             : `paquete fijo de ${form.cantidadFija || '—'} u${form.surtido.size ? ` · surtido: ${form.surtido.size} variantes` : ' · surtido: todas'}`}</span></div>
-                                                        {form.origenTipo === 'CONFECCIONADO' && (() => {
-                                                            const extraDefault = [...form.componentes.entries()]
-                                                                .filter(([, esDefault]) => esDefault)
-                                                                .reduce((sum, [opcionId]) => sum + (Number(componentesCat.find(c => c.OpcionID === opcionId)?.PrecioExtra) || 0), 0);
-                                                            const base = form.precio === '' ? 0 : Number(form.precio) || 0;
-                                                            return (<>
-                                                                <div className="flex justify-between px-4 py-2.5"><span className="text-slate-400 font-bold">Confección</span><span className="font-bold text-slate-700">{form.componentes.size} opciones de componente · {form.apliques.length} apliques</span></div>
-                                                                {extraDefault > 0 && (
-                                                                    <div className="flex justify-between px-4 py-2.5"><span className="text-slate-400 font-bold">Precio con componentes por default</span><span className="font-bold text-slate-700">{fmtPrecio(base, form.moneda)} + {fmtPrecio(extraDefault, form.moneda)} = <b className="text-emerald-700">{fmtPrecio(base + extraDefault, form.moneda)}</b></span></div>
-                                                                )}
-                                                            </>);
-                                                        })()}
+                                                        {form.origenTipo === 'CONFECCIONADO' && (
+                                                            <div className="flex justify-between px-4 py-2.5 gap-4"><span className="text-slate-400 font-bold">Molde (TizadaPro)</span><span className={`font-bold text-right ${form.tizadaProMoldeRef ? 'text-slate-700' : 'text-amber-600'}`}>{form.tizadaProMoldeRef ? `${moldeSel?.nombre || form.tizadaProMoldeRef} · ${form.modelos.size} modelos · ${form.telas.size} telas · ${form.apliques.length} apliques` : '⚠ sin molde vinculado'}</span></div>
+                                                        )}
                                                         <div className="flex justify-between px-4 py-2.5"><span className="text-slate-400 font-bold">Validar stock</span><span className="font-bold text-slate-700">{form.validarStock ? 'Sí' : 'No (contingencia)'}</span></div>
                                                     </div>
                                                     <div className={`flex items-center gap-3 border-2 rounded-xl p-4 ${form.estado === 'PUBLICADO' ? 'border-emerald-300 bg-emerald-50/50' : 'border-slate-200'}`}>
@@ -1841,16 +2172,9 @@ export default function ConfigurarProductosPage() {
                     {vista === 'tecnicas' && (
                         <CatalogoTecnicas tecnicas={tecnicasCat} onReload={loadCatalogos} />
                     )}
+                    {vista === 'avios' && <CatalogoAvios avios={aviosCat} onReload={loadCatalogos} />}
+                    {vista === 'costuras' && <CatalogoCosturas costuras={costurasIsoCat} onReload={loadCatalogos} />}
 
-                    {/* ── CATÁLOGO DE COMPONENTES ── */}
-                    {vista === 'componentes' && (
-                        <CatalogoComponentes componentes={componentesCat} onReload={loadCatalogos} />
-                    )}
-
-                    {/* ── NOMENCLADOR DE PIEZAS ── */}
-                    {vista === 'piezas' && (
-                        <CatalogoPiezas piezas={piezasCat} familias={familiasCat} onReload={loadCatalogos} />
-                    )}
                 </div>
             )}
         </div>
@@ -1984,354 +2308,109 @@ function CatalogoTecnicas({ tecnicas, onReload }) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════
-//  Catálogo de componentes (nomenclador CR/CV/CP/CS/CM · MG · TM · CT)
+//  Catálogo de avíos: cierres, botones, elásticos, etiquetas… (dbo.CatalogoAvios)
 // ═════════════════════════════════════════════════════════════════════════
-function CatalogoComponentes({ componentes, onReload }) {
-    const [editId, setEditId] = useState(null);
-    const [draft, setDraft] = useState({});
-    const [saving, setSaving] = useState(false);
-    const [nuevo, setNuevo] = useState(null); // { tipo, subTipo, codigo, nombre }
+function CatalogoAvios({ avios, onReload }) {
+    const [edits, setEdits] = useState({});
+    const [savingId, setSavingId] = useState(null);
+    const [nuevo, setNuevo] = useState({ nombre: '', unidad: 'u' });
     const [creando, setCreando] = useState(false);
-
-    const SUBTIPOS_CUELLO = ['REDONDO', 'EN V', 'POLO', 'CAMISA', 'MAO'];
-
-    const [piezas, setPiezas] = useState([]); // piezas de la opción en edición (despiece)
-    const abrirEdicion = (c) => {
-        setEditId(c.OpcionID);
-        setDraft({
-            nombre: c.Nombre || '', notaMolde: c.NotaMolde || '',
-            notaTallesFemeninos: c.NotaTallesFemeninos || '', anchoRefMm: c.AnchoRefMm ?? '',
-            precioExtra: c.PrecioExtra ?? '',
-        });
-        setPiezas((c.piezas || []).map(p => ({ nombrePieza: p.NombrePieza, cantidad: p.Cantidad, zona: p.Zona || '', forma: p.Forma || '' })));
+    const val = (a, k, orig) => edits[a.AvioID]?.[k] ?? (orig ?? '');
+    const setVal = (id, k, v) => setEdits(prev => ({ ...prev, [id]: { ...prev[id], [k]: v } }));
+    const guardar = async (a) => {
+        const e = edits[a.AvioID]; if (!e) return;
+        setSavingId(a.AvioID);
+        try { await api.put(`${API}/avios/${a.AvioID}`, e); toast.success('✅ Avío guardado'); setEdits(prev => { const n = { ...prev }; delete n[a.AvioID]; return n; }); onReload(); }
+        catch (err) { toast.error('Error: ' + (err.response?.data?.error || err.message)); }
+        finally { setSavingId(null); }
     };
-
-    const guardarEdicion = async (c) => {
-        if (!draft.nombre.trim()) return toast.error('El nombre es obligatorio.');
-        setSaving(true);
-        try {
-            await Promise.all([
-                api.put(`${API}/componentes/${c.OpcionID}`, draft),
-                api.put(`${API}/componentes/${c.OpcionID}/piezas`, { piezas: piezas.filter(p => p.nombrePieza.trim()) }),
-            ]);
-            toast.success(`✅ ${c.Codigo} guardado`);
-            setEditId(null);
-            onReload();
-        } catch (err) {
-            toast.error('Error: ' + (err.response?.data?.error || err.message));
-        } finally { setSaving(false); }
-    };
-
-    const toggleActivo = async (c) => {
-        try {
-            await api.put(`${API}/componentes/${c.OpcionID}`, { activo: !c.Activo });
-            toast.success(c.Activo ? `${c.Codigo} desactivado` : `${c.Codigo} activado`);
-            onReload();
-        } catch (err) { toast.error('Error: ' + (err.response?.data?.error || err.message)); }
-    };
-
+    const toggle = async (a) => { try { await api.put(`${API}/avios/${a.AvioID}`, { activo: !a.Activo }); onReload(); } catch (err) { toast.error('Error: ' + (err.response?.data?.error || err.message)); } };
     const crear = async () => {
-        if (!nuevo?.codigo?.trim() || !nuevo?.nombre?.trim()) return toast.error('Código y nombre son obligatorios.');
+        if (!nuevo.nombre.trim()) return toast.error('Poné el nombre del avío.');
         setCreando(true);
-        try {
-            await api.post(`${API}/componentes`, nuevo);
-            toast.success('✅ Componente creado');
-            setNuevo(null);
-            onReload();
-        } catch (err) {
-            toast.error('Error: ' + (err.response?.data?.error || err.message));
-        } finally { setCreando(false); }
+        try { await api.post(`${API}/avios`, nuevo); toast.success('✅ Avío creado'); setNuevo({ nombre: '', unidad: 'u' }); onReload(); }
+        catch (err) { toast.error('Error: ' + (err.response?.data?.error || err.message)); }
+        finally { setCreando(false); }
     };
-
-    // Tarjeta visual de un componente (mismo lenguaje que el editor de producto)
-    const Card = (c) => (
-        <button key={c.OpcionID} type="button" onClick={() => (editId === c.OpcionID ? setEditId(null) : abrirEdicion(c))}
-            className={`relative rounded-xl border-2 p-2.5 pb-2 flex flex-col items-center gap-1 bg-white transition-all text-center
-                ${editId === c.OpcionID ? 'border-indigo-500 shadow-md' : 'border-slate-200 hover:border-slate-300 hover:shadow-sm'}
-                ${!c.Activo ? 'opacity-45' : ''}`}>
-            {!c.Activo && <span className="absolute top-1.5 left-1.5 text-[9px] font-black text-slate-400"><i className="fa-solid fa-eye-slash"></i></span>}
-            <i className="fa-solid fa-pen absolute top-1.5 right-1.5 text-[9px] text-slate-300"></i>
-            <CompIcon codigo={c.Codigo} size={54} />
-            <span className="font-mono text-[9.5px] font-black text-slate-500 bg-slate-100 rounded px-1.5">{c.Codigo}</span>
-            <span className="text-[11px] font-bold text-slate-700 leading-tight">{c.Nombre}</span>
-            {(c.NotaMolde || c.NotaTallesFemeninos || c.AnchoRefMm) && (
-                <span className="text-[9px] text-slate-400 leading-tight">
-                    {[c.NotaMolde, c.NotaTallesFemeninos ? `Fem: ${c.NotaTallesFemeninos.toLowerCase()}` : null, c.AnchoRefMm ? `${c.AnchoRefMm} mm` : null]
-                        .filter(Boolean).join(' · ')}
-                </span>
-            )}
-            <span className="flex gap-1">
-                {c.PrecioExtra != null && <span className="text-[9px] font-black bg-emerald-100 text-emerald-700 rounded px-1">+${Number(c.PrecioExtra).toLocaleString('es-UY')}</span>}
-                {c.piezas?.length > 0 && <span className="text-[9px] font-black bg-slate-100 text-slate-500 rounded px-1">{c.piezas.length} pza{c.piezas.length > 1 ? 's' : ''}</span>}
-            </span>
-        </button>
-    );
-
-    // Panel de edición con campos etiquetados (aparece bajo el grupo al tocar una tarjeta)
-    const EditPanel = (c) => (
-        <div key={`edit-${c.OpcionID}`} className="mt-3 border-2 border-indigo-300 rounded-xl bg-indigo-50/40 p-4">
-            <div className="flex items-center gap-3 mb-3">
-                <CompIcon codigo={c.Codigo} size={40} />
-                <span className="font-mono text-xs font-black text-slate-600 bg-white border border-slate-200 rounded px-1.5 py-0.5">{c.Codigo}</span>
-                <span className="font-black text-sm text-slate-800">{c.Nombre}</span>
-                <button onClick={() => toggleActivo(c)}
-                    className={`ml-auto text-xs font-bold px-3 py-1.5 rounded-lg border ${c.Activo ? 'text-slate-500 border-slate-200 bg-white' : 'text-amber-700 border-amber-300 bg-amber-50'}`}>
-                    <i className={`fa-solid ${c.Activo ? 'fa-eye' : 'fa-eye-slash'} mr-1.5`}></i>
-                    {c.Activo ? 'Activo — clic para ocultar' : 'Inactivo — clic para activar'}
-                </button>
-                <button onClick={() => setEditId(null)} className="text-slate-400 hover:text-slate-600 font-black px-1">×</button>
-            </div>
-            <div className="grid md:grid-cols-2 gap-3">
-                <label className="text-[11px] font-bold text-slate-500">Nombre
-                    <input value={draft.nombre} onChange={e => setDraft({ ...draft, nombre: e.target.value })}
-                        className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm font-bold bg-white" />
-                </label>
-                <label className="text-[11px] font-bold text-slate-500">Ancho de referencia (mm) <span className="font-normal text-slate-400">— vivos y fajas</span>
-                    <input type="number" step="0.5" value={draft.anchoRefMm} onChange={e => setDraft({ ...draft, anchoRefMm: e.target.value })}
-                        placeholder="—" className="block w-32 mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white" />
-                </label>
-                <label className="text-[11px] font-bold text-slate-500">Nota de molde <span className="font-normal text-slate-400">— propio / compartido / sobre boceto</span>
-                    <input value={draft.notaMolde} onChange={e => setDraft({ ...draft, notaMolde: e.target.value })}
-                        placeholder="Ej. Mismo molde de frente que CV-01" className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white" />
-                </label>
-                <label className="text-[11px] font-bold text-slate-500">Talles femeninos <span className="font-normal text-slate-400">— qué cambia</span>
-                    <input value={draft.notaTallesFemeninos} onChange={e => setDraft({ ...draft, notaTallesFemeninos: e.target.value })}
-                        placeholder="Ej. Cruce invertido" className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white" />
-                </label>
-                <label className="text-[11px] font-bold text-slate-500">Precio extra <span className="font-normal text-slate-400">— constructiva por ahora, se guarda para cuando se cotice</span>
-                    <div className="flex items-center gap-1.5 mt-1">
-                        <input type="number" step="0.01" value={draft.precioExtra} onChange={e => setDraft({ ...draft, precioExtra: e.target.value })}
-                            placeholder="0.00 (sin extra)" className="block w-32 border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white" />
-                    </div>
-                </label>
-            </div>
-
-            {/* Piezas del despiece que aporta esta opción */}
-            <div className="mt-4 pt-3 border-t border-indigo-200">
-                <p className="text-[11px] font-bold text-slate-500 mb-2">Piezas que aporta al despiece</p>
-                <div className="space-y-1.5">
-                    {piezas.map((p, i) => (
-                        <div key={i} className="flex flex-wrap items-center gap-1.5 bg-white border border-slate-200 rounded-lg px-2.5 py-1.5">
-                            <input value={p.nombrePieza} placeholder="Nombre de la pieza (ej. Cuello redondo)"
-                                onChange={e => { const next = [...piezas]; next[i] = { ...p, nombrePieza: e.target.value }; setPiezas(next); }}
-                                className="flex-1 min-w-[140px] border border-slate-200 rounded px-2 py-1 text-xs" />
-                            <input type="number" min="1" value={p.cantidad} title="Cantidad"
-                                onChange={e => { const next = [...piezas]; next[i] = { ...p, cantidad: e.target.value }; setPiezas(next); }}
-                                className="w-14 border border-slate-200 rounded px-2 py-1 text-xs text-center" />
-                            <select value={p.zona} onChange={e => { const next = [...piezas]; next[i] = { ...p, zona: e.target.value }; setPiezas(next); }}
-                                className="border border-slate-200 rounded px-1.5 py-1 text-xs">
-                                <option value="">zona…</option>
-                                <option value="base">base</option>
-                                <option value="contraste">contraste</option>
-                            </select>
-                            <input value={p.forma} placeholder="forma (hoja de corte)"
-                                onChange={e => { const next = [...piezas]; next[i] = { ...p, forma: e.target.value }; setPiezas(next); }}
-                                className="w-28 border border-slate-200 rounded px-2 py-1 text-xs" />
-                            <button type="button" onClick={() => setPiezas(piezas.filter((_, j) => j !== i))}
-                                className="text-red-400 hover:text-red-600 font-black px-1">×</button>
-                        </div>
-                    ))}
-                    {piezas.length === 0 && <p className="text-[11px] text-slate-400">Sin piezas — puede ser correcto (ej. costadillo "sin", cartera "sin").</p>}
-                </div>
-                <button type="button" onClick={() => setPiezas([...piezas, { nombrePieza: '', cantidad: 1, zona: '', forma: '' }])}
-                    className="mt-2 border border-dashed border-slate-300 rounded-lg px-3 py-1.5 text-xs font-bold text-slate-500 hover:border-slate-400">
-                    + Agregar pieza
-                </button>
-            </div>
-
-            <div className="flex justify-end mt-3">
-                <button onClick={() => guardarEdicion(c)} disabled={saving}
-                    className="bg-slate-800 text-white rounded-lg px-5 py-2 text-sm font-bold hover:bg-slate-700 disabled:opacity-50">
-                    {saving ? 'Guardando…' : '💾 Guardar'}
-                </button>
-            </div>
-        </div>
-    );
-
-    const grupoGrid = (lista) => (
-        <div className="grid gap-2.5" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(118px, 1fr))' }}>
-            {lista.map(Card)}
-        </div>
-    );
-
     return (
-        <div className="space-y-5">
-            <p className="text-xs text-slate-400 max-w-3xl">
-                El nomenclador de opciones constructivas, como en la lámina de cuellos: tocá una tarjeta para editar su
-                nombre y sus notas. Son constructivas — no cotizan (el precio queda previsto para más adelante).
-            </p>
-            {TIPOS_COMP.map(tc => {
-                const delTipo = componentes.filter(c => c.Tipo === tc.id);
-                const enEdicion = delTipo.find(c => c.OpcionID === editId);
-                return (
-                    <div key={tc.id} className="bg-white rounded-2xl border border-slate-200 p-4">
-                        <div className="flex items-center gap-3 mb-3">
-                            <span className="font-black text-slate-800 uppercase tracking-tight">{tc.label}</span>
-                            <span className="text-[11px] text-slate-400 font-bold">{delTipo.length} opciones</span>
-                            <button onClick={() => setNuevo({ tipo: tc.id, subTipo: '', codigo: '', nombre: '' })}
-                                className="ml-auto text-xs font-bold text-indigo-500 hover:text-indigo-700">+ Agregar</button>
-                        </div>
-
-                        {nuevo?.tipo === tc.id && (
-                            <div className="border-2 border-dashed border-indigo-300 rounded-xl bg-indigo-50/40 p-3.5 mb-3 flex flex-wrap gap-2 items-end">
-                                <label className="text-[11px] font-bold text-slate-500">Código
-                                    <input value={nuevo.codigo} onChange={e => setNuevo({ ...nuevo, codigo: e.target.value.toUpperCase() })}
-                                        placeholder="CR-04" className="block w-24 mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm font-mono bg-white" autoFocus />
-                                </label>
-                                <label className="flex-1 min-w-[180px] text-[11px] font-bold text-slate-500">Nombre
-                                    <input value={nuevo.nombre} onChange={e => setNuevo({ ...nuevo, nombre: e.target.value })}
-                                        onKeyDown={e => e.key === 'Enter' && crear()}
-                                        placeholder="Ej. Cuello redondo con tapeta" className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white" />
-                                </label>
-                                {tc.id === 'CUELLO' && (
-                                    <label className="text-[11px] font-bold text-slate-500">Familia
-                                        <select value={nuevo.subTipo} onChange={e => setNuevo({ ...nuevo, subTipo: e.target.value })}
-                                            className="block mt-1 border border-slate-200 rounded-lg px-2 py-2 text-sm bg-white">
-                                            <option value="">—</option>
-                                            {SUBTIPOS_CUELLO.map(s => <option key={s}>{s}</option>)}
-                                        </select>
-                                    </label>
-                                )}
-                                <button onClick={crear} disabled={creando}
-                                    className="bg-slate-800 text-white rounded-lg px-4 py-2 text-xs font-bold disabled:opacity-50">{creando ? '…' : 'Crear'}</button>
-                                <button onClick={() => setNuevo(null)} className="text-xs font-bold text-slate-400 px-2 py-2">Cancelar</button>
-                            </div>
-                        )}
-
-                        {tc.id === 'CUELLO' ? (
-                            // Agrupado por familia, como la lámina del PDF
-                            [...SUBTIPOS_CUELLO, ''].map(st => {
-                                const grupo = delTipo.filter(c => (c.SubTipo || '') === st);
-                                if (!grupo.length) return null;
-                                return (
-                                    <div key={st || 'otros'} className="mb-3 last:mb-0">
-                                        <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1.5">{st || 'Otros'}</p>
-                                        {grupoGrid(grupo)}
-                                    </div>
-                                );
-                            })
-                        ) : grupoGrid(delTipo)}
-
-                        {enEdicion && EditPanel(enEdicion)}
-                    </div>
-                );
-            })}
+        <div className="space-y-4 max-w-4xl">
+            <p className="text-xs text-slate-400">Todo lo que lleva una prenda y no es tela: cierres, botones, elásticos, etiquetas, cordones. Se cargan una vez acá y cada producto elige cuáles lleva y en qué cantidad. Un avío inactivo no se ofrece más, pero los productos que ya lo tienen lo conservan.</p>
+            <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+                <table className="w-full text-sm">
+                    <thead><tr className="text-left text-[10px] font-black uppercase tracking-wider text-slate-400 border-b border-slate-100">
+                        <th className="px-4 py-2">Avío</th><th className="px-3 py-2 w-24">Unidad</th><th className="px-3 py-2 w-24 text-center">En uso</th><th className="px-3 py-2 w-20 text-center">Activo</th><th className="px-3 py-2 w-28"></th>
+                    </tr></thead>
+                    <tbody>
+                        {avios.map(a => (
+                            <tr key={a.AvioID} className={`border-b border-slate-50 ${a.Activo ? '' : 'opacity-50'}`}>
+                                <td className="px-4 py-1.5"><input value={val(a, 'nombre', a.Nombre)} onChange={e => setVal(a.AvioID, 'nombre', e.target.value)} className="w-full border border-transparent hover:border-slate-200 focus:border-indigo-300 rounded-lg px-2 py-1 text-sm font-bold" /></td>
+                                <td className="px-3 py-1.5"><select value={val(a, 'unidad', a.Unidad || 'u')} onChange={e => setVal(a.AvioID, 'unidad', e.target.value)} className="border border-slate-200 rounded-lg px-2 py-1 text-xs">{['u', 'par', 'm', 'cm'].map(u => <option key={u} value={u}>{u}</option>)}</select></td>
+                                <td className="px-3 py-1.5 text-center text-xs text-slate-500">{a.Usos ? `${a.Usos} producto${a.Usos === 1 ? '' : 's'}` : '—'}</td>
+                                <td className="px-3 py-1.5 text-center"><Toggle on={!!a.Activo} onChange={() => toggle(a)} /></td>
+                                <td className="px-3 py-1.5 text-right">{edits[a.AvioID] && <button onClick={() => guardar(a)} disabled={savingId === a.AvioID} className="bg-indigo-600 text-white rounded-lg px-3 py-1 text-xs font-bold disabled:opacity-50">{savingId === a.AvioID ? '…' : 'Guardar'}</button>}</td>
+                            </tr>
+                        ))}
+                        {avios.length === 0 && <tr><td colSpan={5} className="px-4 py-6 text-center text-slate-400 text-sm">Todavía no hay avíos. Cargá el primero abajo.</td></tr>}
+                    </tbody>
+                </table>
+                <div className="flex flex-wrap gap-2 px-4 py-3 border-t border-slate-100 bg-slate-50/60">
+                    <input value={nuevo.nombre} onChange={e => setNuevo({ ...nuevo, nombre: e.target.value })} onKeyDown={e => e.key === 'Enter' && crear()} placeholder="Nuevo avío (ej. Cierre frontal nylon)" className="flex-1 min-w-[220px] border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+                    <select value={nuevo.unidad} onChange={e => setNuevo({ ...nuevo, unidad: e.target.value })} className="border border-slate-200 rounded-lg px-2 py-2 text-xs">{['u', 'par', 'm', 'cm'].map(u => <option key={u} value={u}>{u}</option>)}</select>
+                    <button onClick={crear} disabled={creando} className="bg-slate-800 text-white rounded-lg px-4 py-2 text-xs font-bold disabled:opacity-50">{creando ? '…' : '+ Agregar avío'}</button>
+                </div>
+            </div>
         </div>
     );
 }
 
 // ═════════════════════════════════════════════════════════════════════════
-//  Nomenclador de piezas de la prenda (Frente / Espalda / Mangas / ...)
-//  De esta lista sale el combo de Posición del aplique. "Admite aplique"
-//  apagado = la pieza sigue en el nomenclador pero no aparece en ese combo.
+//  Catálogo de costuras (dbo.CosturasISO): código ISO 4915 + nombre
 // ═════════════════════════════════════════════════════════════════════════
-function CatalogoPiezas({ piezas, familias, onReload }) {
+function CatalogoCosturas({ costuras, onReload }) {
     const [edits, setEdits] = useState({});
     const [savingId, setSavingId] = useState(null);
-    const [nueva, setNueva] = useState({ codigo: '', nombre: '', familia: '' });
+    const [nueva, setNueva] = useState({ codigoISO: '', nombre: '' });
     const [creando, setCreando] = useState(false);
-
-    const val = (p, k, orig) => edits[p.PiezaID]?.[k] ?? (orig ?? '');
+    const val = (c, k, orig) => edits[c.CosturaISOID]?.[k] ?? (orig ?? '');
     const setVal = (id, k, v) => setEdits(prev => ({ ...prev, [id]: { ...prev[id], [k]: v } }));
-
-    const guardarFila = async (p) => {
-        const e = edits[p.PiezaID];
-        if (!e) return;
-        setSavingId(p.PiezaID);
-        try {
-            await api.put(`${API}/piezas/${p.PiezaID}`, e);
-            toast.success('✅ Pieza guardada');
-            setEdits(prev => { const n = { ...prev }; delete n[p.PiezaID]; return n; });
-            onReload();
-        } catch (err) {
-            toast.error('Error: ' + (err.response?.data?.error || err.message));
-        } finally { setSavingId(null); }
+    const guardar = async (c) => {
+        const e = edits[c.CosturaISOID]; if (!e) return;
+        setSavingId(c.CosturaISOID);
+        try { await api.put(`${API}/costuras-iso/${c.CosturaISOID}`, e); toast.success('✅ Costura guardada'); setEdits(prev => { const n = { ...prev }; delete n[c.CosturaISOID]; return n; }); onReload(); }
+        catch (err) { toast.error('Error: ' + (err.response?.data?.error || err.message)); }
+        finally { setSavingId(null); }
     };
-
-    const togglePieza = async (p, campo, valor) => {
-        try {
-            await api.put(`${API}/piezas/${p.PiezaID}`, { [campo]: valor });
-            onReload();
-        } catch (err) { toast.error('Error: ' + (err.response?.data?.error || err.message)); }
-    };
-
+    const toggle = async (c) => { try { await api.put(`${API}/costuras-iso/${c.CosturaISOID}`, { activo: !c.Activo }); onReload(); } catch (err) { toast.error('Error: ' + (err.response?.data?.error || err.message)); } };
     const crear = async () => {
-        if (!nueva.codigo.trim()) return toast.error('Poné el código de la pieza (ej. PZ-10).');
-        if (!nueva.nombre.trim()) return toast.error('Poné el nombre de la pieza.');
+        if (!nueva.codigoISO.trim() || !nueva.nombre.trim()) return toast.error('Poné el código (ej. ISO 504) y el nombre.');
         setCreando(true);
-        try {
-            await api.post(`${API}/piezas`, { ...nueva, familia: nueva.familia || null });
-            toast.success('✅ Pieza creada');
-            setNueva({ codigo: '', nombre: '', familia: '' });
-            onReload();
-        } catch (err) {
-            toast.error('Error: ' + (err.response?.data?.error || err.message));
-        } finally { setCreando(false); }
+        try { await api.post(`${API}/costuras-iso`, nueva); toast.success('✅ Costura creada'); setNueva({ codigoISO: '', nombre: '' }); onReload(); }
+        catch (err) { toast.error('Error: ' + (err.response?.data?.error || err.message)); }
+        finally { setCreando(false); }
     };
-
     return (
-        <div className="space-y-4">
-            <p className="text-xs text-slate-400 max-w-3xl">
-                Las piezas de las que está hecha una prenda. De acá sale la lista de Posición cuando se agrega un
-                aplique (bordado, DTF, TPU, grifa) a un producto, para que nadie tenga que escribirla a mano.
-                Sin familia, la pieza sirve para todas las prendas; con familia, aparece solo en esa.
-            </p>
-
+        <div className="space-y-4 max-w-4xl">
+            <p className="text-xs text-slate-400">Tipos de costura con su código ISO 4915 (pespunte, overlock, recubridora…). En la ficha de diseño de cada producto se indica qué costura lleva cada unión. Una costura inactiva no se ofrece más, pero las fichas que ya la usan la conservan.</p>
             <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
-                <div className="hidden md:grid grid-cols-[90px_1fr_180px_150px_100px_90px] gap-2 px-4 py-2 text-[10px] font-black uppercase tracking-wider text-slate-400 border-b border-slate-100">
-                    <span>Código</span><span>Nombre</span><span>Familia</span><span>¿Admite aplique?</span><span></span><span></span>
-                </div>
-                <div className="divide-y divide-slate-50">
-                    {piezas.map(p => (
-                        <div key={p.PiezaID} className={`grid md:grid-cols-[90px_1fr_180px_150px_100px_90px] gap-2 px-4 py-2 items-center ${!p.Activo ? 'opacity-50' : ''}`}>
-                            <span className="text-xs font-mono font-bold text-slate-400">{p.Codigo}</span>
-                            <input value={val(p, 'nombre', p.Nombre)} onChange={e => setVal(p.PiezaID, 'nombre', e.target.value)}
-                                className="border border-slate-200 rounded-lg px-2.5 py-1.5 text-sm font-bold" />
-                            <select value={val(p, 'familia', p.Familia)} onChange={e => setVal(p.PiezaID, 'familia', e.target.value)}
-                                className="border border-slate-200 rounded-lg px-2 py-1.5 text-xs">
-                                <option value="">Todas las prendas</option>
-                                {(familias || []).map(f => <option key={f.CodStock} value={f.Articulo}>{f.Articulo}</option>)}
-                            </select>
-                            <button onClick={() => togglePieza(p, 'admiteAplique', !p.AdmiteAplique)}
-                                title="Si está en sí, la pieza aparece en la lista de Posición del aplique"
-                                className="text-xs font-bold text-slate-500 hover:text-slate-800 text-left">
-                                <i className={`fa-solid ${p.AdmiteAplique ? 'fa-circle-check text-emerald-500' : 'fa-circle-xmark text-slate-300'} mr-1.5`}></i>
-                                {p.AdmiteAplique ? 'sí, se puede marcar' : 'no se marca'}
-                            </button>
-                            <button onClick={() => togglePieza(p, 'activo', !p.Activo)} title={p.Activo ? 'Desactivar' : 'Activar'}
-                                className="text-xs font-bold text-slate-400 hover:text-slate-600 text-left">
-                                <i className={`fa-solid ${p.Activo ? 'fa-eye' : 'fa-eye-slash'} mr-1`}></i>{p.Activo ? 'activa' : 'inactiva'}
-                            </button>
-                            {edits[p.PiezaID] ? (
-                                <button onClick={() => guardarFila(p)} disabled={savingId === p.PiezaID}
-                                    className="bg-slate-800 text-white rounded-lg px-2.5 py-1.5 text-xs font-bold disabled:opacity-50">
-                                    {savingId === p.PiezaID ? '…' : 'Guardar'}
-                                </button>
-                            ) : <span></span>}
-                        </div>
-                    ))}
-                    {piezas.length === 0 && (
-                        <p className="px-4 py-6 text-sm text-slate-400">
-                            El nomenclador está vacío: falta correr el script configurador_nomenclador_piezas.sql.
-                        </p>
-                    )}
-                </div>
+                <table className="w-full text-sm">
+                    <thead><tr className="text-left text-[10px] font-black uppercase tracking-wider text-slate-400 border-b border-slate-100">
+                        <th className="px-4 py-2 w-32">Código</th><th className="px-3 py-2">Nombre</th><th className="px-3 py-2 w-20 text-center">Activa</th><th className="px-3 py-2 w-28"></th>
+                    </tr></thead>
+                    <tbody>
+                        {costuras.map(c => (
+                            <tr key={c.CosturaISOID} className={`border-b border-slate-50 ${c.Activo === false ? 'opacity-50' : ''}`}>
+                                <td className="px-4 py-1.5"><input value={val(c, 'codigoISO', c.CodigoISO)} onChange={e => setVal(c.CosturaISOID, 'codigoISO', e.target.value)} className="w-full border border-transparent hover:border-slate-200 focus:border-indigo-300 rounded-lg px-2 py-1 text-sm font-mono font-bold" /></td>
+                                <td className="px-3 py-1.5"><input value={val(c, 'nombre', c.Nombre)} onChange={e => setVal(c.CosturaISOID, 'nombre', e.target.value)} className="w-full border border-transparent hover:border-slate-200 focus:border-indigo-300 rounded-lg px-2 py-1 text-sm" /></td>
+                                <td className="px-3 py-1.5 text-center"><Toggle on={c.Activo !== false} onChange={() => toggle(c)} /></td>
+                                <td className="px-3 py-1.5 text-right">{edits[c.CosturaISOID] && <button onClick={() => guardar(c)} disabled={savingId === c.CosturaISOID} className="bg-indigo-600 text-white rounded-lg px-3 py-1 text-xs font-bold disabled:opacity-50">{savingId === c.CosturaISOID ? '…' : 'Guardar'}</button>}</td>
+                            </tr>
+                        ))}
+                    </tbody>
+                </table>
                 <div className="flex flex-wrap gap-2 px-4 py-3 border-t border-slate-100 bg-slate-50/60">
-                    <input value={nueva.codigo} onChange={e => setNueva({ ...nueva, codigo: e.target.value })}
-                        placeholder="PZ-10" className="w-24 border border-slate-200 rounded-lg px-3 py-2 text-sm font-mono" />
-                    <input value={nueva.nombre} onChange={e => setNueva({ ...nueva, nombre: e.target.value })}
-                        onKeyDown={e => e.key === 'Enter' && crear()}
-                        placeholder="Nueva pieza (ej. Bolsillo delantero)"
-                        className="flex-1 min-w-[200px] border border-slate-200 rounded-lg px-3 py-2 text-sm" />
-                    <select value={nueva.familia} onChange={e => setNueva({ ...nueva, familia: e.target.value })}
-                        className="border border-slate-200 rounded-lg px-2 py-2 text-xs">
-                        <option value="">Todas las prendas</option>
-                        {(familias || []).map(f => <option key={f.CodStock} value={f.Articulo}>{f.Articulo}</option>)}
-                    </select>
-                    <button onClick={crear} disabled={creando}
-                        className="bg-slate-800 text-white rounded-lg px-4 py-2 text-xs font-bold disabled:opacity-50">
-                        {creando ? '…' : '+ Agregar pieza'}
-                    </button>
+                    <input value={nueva.codigoISO} onChange={e => setNueva({ ...nueva, codigoISO: e.target.value })} placeholder="ISO 401" className="w-32 border border-slate-200 rounded-lg px-3 py-2 text-sm font-mono" />
+                    <input value={nueva.nombre} onChange={e => setNueva({ ...nueva, nombre: e.target.value })} onKeyDown={e => e.key === 'Enter' && crear()} placeholder="Nombre (ej. Cadeneta 2 hilos)" className="flex-1 min-w-[220px] border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+                    <button onClick={crear} disabled={creando} className="bg-slate-800 text-white rounded-lg px-4 py-2 text-xs font-bold disabled:opacity-50">{creando ? '…' : '+ Agregar costura'}</button>
                 </div>
             </div>
         </div>

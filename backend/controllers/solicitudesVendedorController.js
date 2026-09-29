@@ -38,8 +38,31 @@ exports.bobinasDelCliente = accion('bobinasDelCliente', (pool, req) => svc.bobin
 exports.reintentarArchivos = accion('reintentarArchivos', (pool, req) => svc.reintentarArchivos(pool, req.user, id(req.params.id), id(req.params.productoSolId), req.app));
 exports.quitarArchivo     = accion('quitarArchivo',     (pool, req) => svc.quitarArchivo(pool, req.user, id(req.params.id), id(req.params.archivoId)));
 
+// Tizadas de TizadaPro: lista de trabajos terminados y vínculo con la producción principal
+exports.tizadasTizadaPro  = accion('tizadasTizadaPro',  (pool, req) => svc.tizadasTizadaPro(pool, req.user, req.query || {}));
+// Piezas, telas y arte de la sublimación (por producto del catálogo con molde de TizadaPro)
+exports.moldeDelProducto  = accion('moldeDelProducto',  (pool, req) => svc.moldeDelProducto(pool, req.user, id(req.params.id), id(req.params.productoSolId)));
+exports.guardarSublimacion = accion('guardarSublimacion', (pool, req) => svc.guardarSublimacion(pool, req.user, id(req.params.id), id(req.params.productoSolId), req.body || {}));
+exports.guardarTalles     = accion('guardarTalles',     (pool, req) => svc.guardarTalles(pool, req.user, id(req.params.id), id(req.params.productoSolId), req.body || {}));
+exports.vincularTizada    = accion('vincularTizada',    (pool, req) => svc.vincularTizada(pool, req.user, id(req.params.parteId), req.body || {}));
+
 exports.enviarADiseno     = accion('enviarADiseno',     (pool, req) => svc.enviarADiseno(pool, req.user, id(req.params.parteId), req.body || {}));
 exports.disenosEnProduccion = accion('disenosEnProduccion', (pool, req) => svc.disenosEnProduccion(pool, req.user));
+// Ficha del pedido en PDF: todo lo cargado en la solicitud (y en Diseño), organizado.
+exports.fichaPdf = async (req, res) => {
+  try {
+    const pool = await getPool();
+    const sol = await svc.obtener(pool, req.user, id(req.params.id));
+    const ficha = require('../services/solicitudesVendedorFichaPdf');
+    const pdf = await ficha.generarPdf(sol);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${ficha.nombreArchivo(sol)}"`);
+    res.setHeader('Content-Length', pdf.length);
+    res.end(pdf);
+  } catch (e) { manejar(res, e, 'fichaPdf'); }
+};
+exports.estimarPlazo      = accion('estimarPlazo',      (pool, req) => svc.estimarPlazo(pool, req.user, id(req.params.id)));
+exports.calendario        = accion('calendario',        (pool, req) => svc.calendario(pool, req.user, req.query || {}));
 exports.bandeja           = accion('bandeja',           (pool, req) => svc.bandeja(pool, req.user));
 exports.tomarParte        = accion('tomarParte',        (pool, req) => svc.tomarParte(pool, req.user, id(req.params.parteId)));
 exports.aceptarCambio     = accion('aceptarCambio',     (pool, req) => svc.aceptarCambio(pool, req.user, id(req.params.parteId)));

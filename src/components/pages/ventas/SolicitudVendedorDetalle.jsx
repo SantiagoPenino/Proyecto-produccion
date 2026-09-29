@@ -1,17 +1,20 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { toast } from 'sonner';
-import { AlertTriangle, ArrowLeft, Ban, CheckCircle2, ClipboardList, FileText, History, Loader2, MessageSquare, Paperclip, Pencil, RefreshCw, Send, Trash2, Upload } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, Ban, CalendarClock, CheckCircle2, ClipboardList, FileText, History, Loader2, MessageSquare, Paperclip, Pencil, Printer, RefreshCw, Send, Trash2, Upload } from 'lucide-react';
 import { useAuth } from '../../../context/AuthContext';
 import { fileService } from '../../../client-portal/api/fileService';
+import api from '../../../services/apiClient';
 import { solicitudesVendedorService as svc } from '../../../services/modules/solicitudesVendedorService';
 import { fmtFecha, fmtFechaHora } from '../../../utils/fechas';
 import { RESPUESTA_MUESTRA } from './checklistSolicitud';
 import OrderDetailModal from '../../production/components/OrderDetailModal';
 import {
     BTN_PELIGRO, BTN_PRIMARIO, BTN_SECUNDARIO, Campo, ESTADO_PARTE, ESTADO_SOLICITUD, INPUT, Info, MONEDA, MotivoModal,
-    NOMBRE_PARTE, Pill, PillModificada, ROL_ARCHIVO, Sello, Checklist, TIPO_TRABAJO, errorDe, plata,
+    NOMBRE_PARTE, Pill, PillModificada, ROL_ARCHIVO, Sello, Checklist, TIPO_TRABAJO, VisorPdf, errorDe, plata,
 } from './solicitudesComunes';
+import EstadoProduccionPanel from './EstadoProduccionPanel';
+import './fichaPedido.css';
 
 /**
  * Spec 41 — Detalle de una Solicitud: desde acá el vendedor adjunta archivos, libera a Diseño
@@ -19,13 +22,14 @@ import {
  * diseño pronto y acepta los cambios. Todo queda en el historial (no se edita ni se borra).
  */
 const ROLES_PARTE = ['ARTE_CLIENTE', 'REFERENCIA', 'BOCETO'];
+const normTxt = (v) => String(v || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
 // La tizada NO va acá: es el archivo de impresión de la sublimación → se sube como diseño pronto de la producción principal.
 const ROLES_PRODUCTO = ['PLANILLA', 'REFERENCIA'];
 
 // Llevan medida la producción principal (sublimación) y el DTF. Bordado y TPU NO: su archivo se sube tal cual.
 // Mismas reglas que el ingreso de pedidos de prenda (RN-SOL.14). El ancho se controla en el servidor:
 // el DTF contra el film que cargó el vendedor (al subir) y la sublimación contra la tela de cada archivo (al convertir).
-async function medirDisenoPronto(file, tipo) {
+export async function medirDisenoPronto(file, tipo) {
     if (tipo !== 'PRINCIPAL' && tipo !== 'DTF') return {};
     const m = await fileService.uploadFile(file, { allowJpeg: tipo === 'PRINCIPAL' });
     try { if (m.preview) URL.revokeObjectURL(m.preview); } catch (_) { /* nada */ }
@@ -47,7 +51,7 @@ const ESTADO_PEDIDO = {
 export default function SolicitudVendedorDetalle() {
     const { id } = useParams();
     const navigate = useNavigate();
-    const { user } = useAuth();
+    const { user } = useAuth() || {};
     const [s, setS] = useState(null);
     const [perfil, setPerfil] = useState({ esVendedor: false, esDisenador: false, esAdmin: false });
     const [busy, setBusy] = useState(false);
@@ -56,6 +60,21 @@ export default function SolicitudVendedorDetalle() {
     const [tab, setTab] = useState(null);                 // 'resumen' | 'prod-<id>' | 'precio' | 'interacciones' | 'historial'
     const [telas, setTelas] = useState([]);               // telas de sublimación (las elige el diseñador por archivo)
     const [ficha, setFicha] = useState(null);             // orden de producción abierta en su ficha (la misma del ojito)
+    const [generandoFicha, setGenerandoFicha] = useState(false);
+    const [pdf, setPdf] = useState(null);                 // ficha del pedido generada (Blob) → visor
+    // Ficha del pedido (PDF armado en el servidor, tarda unos segundos). Se muestra en un visor acá
+    // mismo: abrir una pestaña emergente después de esperar lo bloquea el navegador.
+    const abrirFicha = async () => {
+        setGenerandoFicha(true);
+        try {
+            const blob = await svc.fichaPdf(id);
+            setPdf(new Blob([blob], { type: 'application/pdf' }));
+        } catch (e) {
+            let msg = errorDe(e);
+            try { if (e?.response?.data instanceof Blob) msg = JSON.parse(await e.response.data.text()).error || msg; } catch (_) { /* sin detalle */ }
+            toast.error(`No se pudo generar la ficha: ${msg}`);
+        } finally { setGenerandoFicha(false); }
+    };
 
     const cargar = useCallback(async () => {
         try { setS(await svc.obtener(id)); }
@@ -88,7 +107,7 @@ export default function SolicitudVendedorDetalle() {
         setBusy(true);
         try {
             for (const f of lista) {
-                const medida = campos.Rol === 'DISENO_PRONTO' ? await medirDisenoPronto(f, tipoParte) : {};
+                const medida = campos.Rol === 'DISENO_PRONTO' && !campos.TizadaID ? await medirDisenoPronto(f, tipoParte) : {};
                 setSubida({ nombre: f.name, pct: 0 });
                 await svc.subirArchivo(id, f, { ...campos, ...medida }, (loaded, total) => setSubida({ nombre: f.name, pct: total ? Math.round((loaded / total) * 100) : 0 }));
             }
@@ -97,7 +116,7 @@ export default function SolicitudVendedorDetalle() {
         finally { setSubida(null); setBusy(false); await cargar(); }
     };
 
-    if (!s) return <div className="p-10 flex justify-center"><Loader2 className="animate-spin text-indigo-500" /></div>;
+    if (!s) return <div className="fp fp-oscuro"><div className="p-10 flex justify-center"><Loader2 className="animate-spin" /></div></div>;
 
     const abierta = s.Estado === 'INGRESADA' || s.Estado === 'EN_DISENO';
     const puedeVender = perfil.esVendedor && abierta;
@@ -115,7 +134,9 @@ export default function SolicitudVendedorDetalle() {
     ];
 
     return (
-        <div className="p-4 md:p-6 max-w-6xl mx-auto space-y-4">
+        <>
+        <div className="fp fp-oscuro">
+        <div className="max-w-7xl mx-auto space-y-4">
             <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
                     <div className="flex flex-wrap items-center gap-2"><Pill e={s.Estado} mapa={ESTADO_SOLICITUD} />
@@ -127,6 +148,8 @@ export default function SolicitudVendedorDetalle() {
                 <div className="flex flex-wrap items-center gap-2">
                     <button onClick={() => navigate(perfil.esVendedor ? '/ventas/solicitudes' : '/ventas/bandeja-diseno')} className={BTN_SECUNDARIO}><ArrowLeft size={14} /> Volver</button>
                     <button onClick={cargar} className={BTN_SECUNDARIO} title="Actualizar"><RefreshCw size={14} /></button>
+                    {perfil.esDisenador && <button onClick={() => navigate(`/ventas/solicitudes/${id}/diseno`)} className={BTN_SECUNDARIO} title="Tizada, PDF por hoja, diseño pronto: el trabajo de Diseño sobre esta solicitud"><Upload size={14} /> Trabajar el diseño</button>}
+                    <button onClick={abrirFicha} disabled={generandoFicha} className={BTN_PRIMARIO} title="Todo lo de la solicitud y de Diseño en un solo PDF, con los archivos en miniatura. Es la misma ficha que se adjunta al pedido al convertir.">{generandoFicha ? <Loader2 size={14} className="animate-spin" /> : <Printer size={14} />} Ficha del pedido (PDF)</button>
                     {puedeVender && <button onClick={() => navigate(`/ventas/solicitudes/${id}/editar`)} className={BTN_SECUNDARIO}><Pencil size={14} /> Editar solicitud</button>}
                     {puedeVender && <button onClick={() => setCancelando(true)} className={BTN_PELIGRO}><Ban size={14} /> Cancelar solicitud</button>}
                 </div>
@@ -174,6 +197,7 @@ export default function SolicitudVendedorDetalle() {
                             {s.PreNumero && <Info l="Presupuesto del que salió" v={<><b className="font-mono">{s.PreNumero}</b>{s.Presupuesto ? ` · ${s.Presupuesto.Moneda} ${Number(s.Presupuesto.Total || 0).toLocaleString('es-UY', { minimumFractionDigits: 2 })} · ${s.Presupuesto.Estado} · emitido ${fmtFechaHora(s.Presupuesto.FechaEmision)}` : ''}</>} />}
                             {s.Observaciones && <Info l="Observaciones generales" v={<span className="whitespace-pre-line">{s.Observaciones}</span>} />}
                             <FichaIngreso s={s} />
+                            {abierta && s.Productos.some(p => !p.PedidoNoDocERP) && <PanelPlazo s={s} id={id} />}
                             <div className="border-t border-slate-100 pt-3 space-y-2">
                                 <div>
                                     <div className="text-[10px] font-black uppercase tracking-wide text-slate-500">Archivos generales de la solicitud (opcional)</div>
@@ -220,8 +244,6 @@ export default function SolicitudVendedorDetalle() {
                 </div>
             </div>
 
-            {/* La MISMA ficha de la orden que se abre con el ojito en el área: ahí se sube la matriz / el boceto / el arte. */}
-            <OrderDetailModal order={ficha} onClose={() => { setFicha(null); cargar(); }} onOrderUpdated={cargar} />
 
             {cancelando && (
                 <MotivoModal titulo={`Cancelar la solicitud #${s.SolicitudID}`} etiquetaBoton="Cancelar la solicitud" busy={busy}
@@ -230,6 +252,12 @@ export default function SolicitudVendedorDetalle() {
                     onConfirm={async (motivo) => { if (await hacer(() => svc.cancelar(id, motivo), 'Solicitud cancelada.')) setCancelando(false); }} />
             )}
         </div>
+        </div>
+        {/* La MISMA ficha de la orden que se abre con el ojito en el área: ahí se sube la matriz / el boceto / el arte.
+            Va fuera del tema oscuro: es una pantalla de producción y se ve igual que en las áreas. */}
+        <OrderDetailModal order={ficha} onClose={() => { setFicha(null); cargar(); }} onOrderUpdated={cargar} />
+        <VisorPdf blob={pdf} nombre={`Ficha pedido SOL-${s.SolicitudID}.pdf`} onClose={() => setPdf(null)} />
+        </>
     );
 }
 
@@ -241,58 +269,56 @@ const Dato = ({ l, v }) => (
 );
 
 // Una pestaña por producto: datos del producto + tabla de servicios (una fila por servicio) + conversión a pedido.
-function ProductoTab({ s, p, n, id, user, perfil, busy, abierta, puedeVender, telas, archivosDe, hacer, subir, onAbrirFicha }) {
+export function ProductoTab({ s, p, n, id, user, perfil, busy, abierta, puedeVender, telas, archivosDe, hacer, subir, onAbrirFicha }) {
     const conv = s.Conversion.find(c => c.ProductoSolID === p.ProductoSolID) || {};
     const faltantes = conv.faltantes || [];
-    const bloqueada = !abierta || !!p.PedidoNoDocERP;
     const delProducto = archivosDe(a => a.ProductoSolID === p.ProductoSolID && !a.ParteID);
+    // Producto del catálogo con molde: la producción principal no sale a Diseño sin modelo + tela por pieza
+    const [subl, setSubl] = useState({ aplica: false });
+    const planillas = delProducto.filter(a => a.Rol === 'PLANILLA');
+    const faltaSubl = subl.aplica && !p.Datos?.sublimacion?.completo
+        ? (p.Datos?.sublimacion?.modeloClave ? 'Faltan telas en "Piezas y telas".' : 'Primero elegí el modelo y la tela de cada pieza en "Piezas y telas".')
+        : (!planillas.length && !String(p.Datos?.notaTalles || '').trim() && p.Datos?.comoSeDefine !== 'MEDIDA' ? 'Falta la planilla de talles y nombres (o la nota de talles).' : null);
+    const principal = p.Partes.find(pa => pa.Tipo === 'PRINCIPAL');
 
     return (
-        <div className="space-y-4">
+        <div className="fp-det-grid">
+        <div className="space-y-4 min-w-0">
             <div className="flex flex-wrap items-center justify-between gap-2">
                 <h2 className="text-sm font-black text-slate-800">Producto {n}: {p.TipoFabricacion === 'PRODUCTO_TERMINADO' ? (p.ProductoNombre || `Producto ${p.ProIdProducto}`) : 'Producto personalizado del cliente'} <span className="font-bold text-slate-500">· {p.Cantidad} prendas</span></h2>
                 {p.PedidoNoDocERP ? <span className="text-[10px] font-black uppercase text-emerald-700">Pedido {p.PedidoNoDocERP} · {fmtFechaHora(p.FechaConversion)}</span> : null}
             </div>
 
+            <section className="fp-zona">
+            <div className="fp-zona-tit">Solicitud del cliente <small>lo carga el vendedor</small></div>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
                 <Info l="Corte" v={p.Datos?.corte?.activo ? `${p.Datos.corte.tipoMolde} · ${p.Datos.corte.origenTela}` : 'No lleva'} />
                 <Info l="Costura" v={p.Datos?.costura?.activo ? (p.Datos.costura.instrucciones || 'Sin instrucciones especiales') : 'No lleva'} />
                 {p.Observaciones && <Info l="Observaciones" v={<span className="whitespace-pre-line">{p.Observaciones}</span>} />}
                 <DatosProducto d={p.Datos || {}} />
-                <div>
-                    <div className="text-[9px] font-black uppercase tracking-wide text-slate-400">Planilla de talles y referencias</div>
-                    <ArchivosCelda archivos={delProducto} vacio="Sin archivos" puedeQuitar={puedeVender && !p.PedidoNoDocERP} onQuitar={(a) => hacer(() => svc.quitarArchivo(id, a.ArchivoID), 'Archivo quitado.')} />
-                    {puedeVender && !p.PedidoNoDocERP && <div className="mt-1"><BotonSubir busy={busy} roles={ROLES_PRODUCTO} onFiles={(files, Rol) => subir(files, { Rol, ProductoSolID: p.ProductoSolID })} /></div>}
-                </div>
             </div>
+            </section>
 
-            <div className="overflow-x-auto border border-slate-200 rounded-xl">
-                <table className="w-full text-xs min-w-[760px]">
-                    <thead>
-                        <tr className="bg-slate-50 text-[9px] font-black uppercase tracking-wide text-slate-500 text-left">
-                            <th className="px-3 py-2 w-[22%]">Servicio</th>
-                            <th className="px-3 py-2 w-[24%]">Archivos del cliente</th>
-                            <th className="px-3 py-2 w-[32%]">Diseño pronto (lo que va a producción)</th>
-                            <th className="px-3 py-2 w-[22%]">Estado</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {p.Partes.map(pa => (
-                            <FilaServicio key={pa.ParteID} pa={pa} user={user} perfil={perfil} busy={busy} bloqueada={bloqueada} telas={telas}
-                                enProduccion={(conv.disenoProduccion || []).filter(o => o.AreaID === ({ BORDADO: 'EMB', TPU: 'TPU' })[pa.Tipo])} onAbrirFicha={onAbrirFicha}
-                                archivos={archivosDe(a => a.ParteID === pa.ParteID)}
-                                onEnviar={(tt) => hacer(() => svc.enviarADiseno(pa.ParteID, tt), `${NOMBRE_PARTE[pa.Tipo]} enviado a la bandeja de Diseño.`)}
-                                onTomar={() => hacer(() => svc.tomar(pa.ParteID), 'Trabajo tomado: quedó a tu nombre.')}
-                                onAceptar={() => hacer(() => svc.aceptarCambio(pa.ParteID), 'Cambio aceptado.')}
-                                onSubir={(files, campos) => subir(files, { ...campos, ParteID: pa.ParteID }, pa.Tipo)}
-                                onQuitar={(a) => hacer(() => svc.quitarArchivo(id, a.ArchivoID), 'Archivo quitado.')}
-                                onProduccion={(a, datos) => hacer(() => svc.definirProduccionArchivo(id, a.ArchivoID, datos), 'Tela y copias guardadas.')} />
-                        ))}
-                    </tbody>
-                </table>
-            </div>
+            {/* Todo lo que Diseño necesita de la producción principal va en UN contenedor:
+                arte del cliente → piezas y telas → planilla de talles y nombres → Enviar a Diseño */}
+            {principal && (
+                <PrincipalBloque s={s} p={p} pa={principal} id={id} perfil={perfil} busy={busy} abierta={abierta} puedeVender={puedeVender}
+                    arte={archivosDe(a => a.ParteID === principal.ParteID && a.Rol !== 'DISENO_PRONTO')} planillas={delProducto} faltaEnvio={faltaSubl}
+                    artes={archivosDe(a => a.Rol === 'ARTE_CLIENTE' && (a.ProductoSolID === p.ProductoSolID || p.Partes.some(pa => pa.ParteID === a.ParteID)))}
+                    onEstadoSubl={setSubl} hacer={hacer} subir={subir} />
+            )}
 
-            <Conversion s={s} p={p} pedido={conv.pedido} faltantes={faltantes} avisos={conv.avisos || []} checklist={conv.checklist} puedeVender={perfil.esVendedor} busy={busy} hacer={hacer} id={id} />
+            {p.Partes.some(pa => pa.Tipo !== 'PRINCIPAL') && (
+                <TablaServicios vista="cliente" titulo="Bordado y otros servicios" partes={p.Partes.filter(pa => pa.Tipo !== 'PRINCIPAL')} s={s} p={p} id={id} user={user} perfil={perfil} busy={busy} abierta={abierta} telas={telas} archivosDe={archivosDe} hacer={hacer} subir={subir} onAbrirFicha={onAbrirFicha} />
+            )}
+            {!principal && p.TipoFabricacion === 'PRODUCTO_TERMINADO' && (
+                <PiezasTelasBloque id={id} p={p} busy={busy} puede={puedeVender && !p.PedidoNoDocERP} hacer={hacer} artes={[]} onEstado={setSubl} />
+            )}
+
+        </div>
+            <aside className="fp-det-aside">
+                <Conversion s={s} p={p} pedido={conv.pedido} faltantes={faltantes} avisos={conv.avisos || []} checklist={conv.checklist} puedeVender={perfil.esVendedor} busy={busy} hacer={hacer} id={id} />
+            </aside>
         </div>
     );
 }
@@ -304,8 +330,306 @@ const ETAPA_PRODUCCION = {
     APROBADO_FALTA_ARTE: { txt: 'Aprobado · falta el arte', cls: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
 };
 
-function FilaServicio({ pa, user, perfil, busy, bloqueada, telas, archivos, onEnviar, onTomar, onAceptar, onSubir, onQuitar, onProduccion, enProduccion = [], onAbrirFicha }) {
+/* Producción principal (sublimación) en la pestaña del producto: UN contenedor con todo lo que
+   Diseño necesita, en el orden en que el vendedor lo carga: arte del cliente → piezas y telas →
+   planilla de talles y nombres → Enviar a Diseño (al final, y trabado hasta que esté todo). */
+function PrincipalBloque({ p, pa, id, perfil, busy, abierta, puedeVender, arte, planillas, artes, faltaEnvio, onEstadoSubl, hacer, subir }) {
     const [tipoTrabajo, setTipoTrabajo] = useState(pa.ArteOrigen === 'CLIENTE' ? 'REVISAR' : 'DESDE_CERO');
+    const bloqueada = !abierta || !!p.PedidoNoDocERP;
+    const puede = puedeVender && !p.PedidoNoDocERP;
+    const d = pa.Datos || {};
+    const Sub = ({ children }) => <div className="text-[9px] font-black uppercase tracking-wide text-slate-400 mb-1">{children}</div>;
+    return (
+        <section className="fp-zona">
+            <div className="fp-zona-tit flex flex-wrap items-center justify-between gap-2">
+                <span>Producción principal (sublimación) <small>arte · telas por pieza · planilla de talles → con eso se envía a Diseño</small></span>
+                <span className="flex items-center gap-1.5"><Pill e={pa.Estado} mapa={ESTADO_PARTE} />{pa.Modificada ? <PillModificada /> : null}
+                    {pa.DisenadorNombre ? <span className="text-[11px] font-bold text-slate-600 normal-case tracking-normal" style={{ fontFamily: 'Barlow, sans-serif' }}>{pa.Estado === 'DISENADO' ? 'Diseñó' : 'Lo tiene'} <b>{pa.DisenadorNombre}</b></span>
+                        : pa.Estado === 'ENVIADO_DISENO' ? <span className="text-[11px] font-bold text-slate-500 normal-case tracking-normal" style={{ fontFamily: 'Barlow, sans-serif' }}>nadie lo tomó todavía</span> : null}</span>
+            </div>
+            <div className="grid md:grid-cols-2 gap-3 text-xs">
+                <div className="space-y-0.5">
+                    {pa.IncluidoEnProducto ? <div className="text-[10px] font-bold text-slate-400">Incluido en el producto</div> : null}
+                    {d.variante && <div className="text-slate-600">{d.variante}</div>}
+                    {d.material && <div className="text-slate-600">{d.material}</div>}
+                    {pa.Observaciones ? <div className="text-slate-500 whitespace-pre-line">Indicaciones: {pa.Observaciones}</div> : <div className="text-slate-400">Sin indicaciones para Diseño.</div>}
+                </div>
+                <div>
+                    <Sub>1 · Arte del cliente <span className="normal-case font-normal">(escudos, logos, bocetos: después se asigna a cada pieza)</span></Sub>
+                    <ArchivosCelda archivos={arte} vacio="Sin archivos" puedeQuitar={puede} onQuitar={(a) => hacer(() => svc.quitarArchivo(id, a.ArchivoID), 'Archivo quitado.')} conRol />
+                    {puede && <div className="mt-1.5"><BotonSubir busy={busy} roles={ROLES_PARTE} onFiles={(files, Rol) => subir(files, { Rol, ParteID: pa.ParteID }, pa.Tipo)} /></div>}
+                </div>
+            </div>
+
+            {p.TipoFabricacion === 'PRODUCTO_TERMINADO' && <PiezasTelasBloque plano id={id} p={p} busy={busy} puede={puede} hacer={hacer} artes={artes} onEstado={onEstadoSubl} />}
+
+            <div className="pt-3 mt-3 border-t border-slate-200 text-xs">
+                <Sub>{p.TipoFabricacion === 'PRODUCTO_TERMINADO' ? '3' : '2'} · Planilla de talles y nombres <span className="normal-case font-normal">(cuántas prendas de cada talle, nombres y números) y referencias</span></Sub>
+                <div className="grid md:grid-cols-2 gap-4">
+                    <div>
+                        <ArchivosCelda archivos={planillas} vacio="Sin archivos" puedeQuitar={puede} onQuitar={(a) => hacer(() => svc.quitarArchivo(id, a.ArchivoID), 'Archivo quitado.')} conRol />
+                        {puede && <div className="mt-1.5"><BotonSubir busy={busy} roles={ROLES_PRODUCTO} onFiles={(files, Rol) => subir(files, { Rol, ProductoSolID: p.ProductoSolID })} /></div>}
+                    </div>
+                    <TallesCampos id={id} p={p} puede={puede} busy={busy} hacer={hacer} />
+                </div>
+            </div>
+
+            <div className="pt-3 mt-3 border-t border-slate-200 flex flex-wrap items-center gap-2 text-xs">
+                {pa.Estado === 'INGRESADO' ? (
+                    !bloqueada && perfil.esVendedor ? (faltaEnvio
+                        ? <span className="text-[11px] font-bold text-amber-700 inline-flex items-center gap-1"><AlertTriangle size={12} /> Todavía no se puede enviar a Diseño: {faltaEnvio}</span>
+                        : <>
+                            <select value={tipoTrabajo} onChange={e => setTipoTrabajo(e.target.value)} className="border border-slate-200 rounded-lg px-2 py-1.5 text-xs bg-white">
+                                {Object.entries(TIPO_TRABAJO).map(([k, t]) => <option key={k} value={k}>{t}</option>)}
+                            </select>
+                            <button disabled={busy} onClick={() => hacer(() => svc.enviarADiseno(pa.ParteID, tipoTrabajo), 'Producción principal enviada a la bandeja de Diseño.')} className={BTN_PRIMARIO}><Send size={12} /> Enviar a Diseño</button>
+                        </>)
+                    : <span className="text-slate-500">Todavía no se envió a Diseño.</span>
+                ) : (
+                    <span className="text-slate-600">
+                        {pa.TipoTrabajo ? <>{TIPO_TRABAJO[pa.TipoTrabajo]} · </> : null}
+                        {pa.DisenadorNombre ? <>Diseñador: <b>{pa.DisenadorNombre}</b> · </> : null}
+                        {pa.FechaDisenado ? <>Diseñado {fmtFechaHora(pa.FechaDisenado)}</> : pa.FechaInicioDiseno ? <>Diseño iniciado {fmtFechaHora(pa.FechaInicioDiseno)}</> : pa.FechaEnvioDiseno ? <>Enviado a Diseño {fmtFechaHora(pa.FechaEnvioDiseno)}</> : null}
+                        <span className="text-slate-400"> · el trabajo lo sigue Diseño desde su bandeja</span>
+                    </span>
+                )}
+            </div>
+        </section>
+    );
+}
+
+/* Lo que antes era la pestaña "Lista de talles" del formulario. Se guarda en Datos del producto
+   (PUT /productos/:id/talles). Producto del catálogo: siempre por talle y las medidas las da el
+   molde, así que solo pide la nota de talles y lo de nombres y números. Producto del cliente:
+   además "por talle / por medidas", medidas y terminación, medidas de la prenda y tabla estándar. */
+function TallesCampos({ id, p, puede, busy, hacer }) {
+    const d = p.Datos || {};
+    const catalogo = p.TipoFabricacion === 'PRODUCTO_TERMINADO';
+    const inicial = () => ({ comoSeDefine: d.comoSeDefine === 'MEDIDA' ? 'MEDIDA' : 'TALLE', notaTalles: d.notaTalles || '', medidas: d.medidas || '', terminacion: d.terminacion || '', medidasPrenda: d.medidasPrenda || '', tablaEstandar: !!d.tablaEstandar, personalizacion: !!d.personalizacion, listaCerrada: !!d.listaCerrada });
+    const [v, setV] = useState(inicial);
+    const firma = JSON.stringify(inicial());
+    useEffect(() => { setV(inicial()); }, [p.ProductoSolID, firma]);   // eslint-disable-line react-hooks/exhaustive-deps
+    const cambiado = JSON.stringify(v) !== firma;
+    const set = (c) => setV(x => ({ ...x, ...c }));
+    const porMedida = v.comoSeDefine === 'MEDIDA';
+    const chk = (k, texto, extra) => (
+        <label className="flex items-start gap-2 text-xs text-slate-700">
+            <input type="checkbox" checked={!!v[k]} disabled={!puede} onChange={e => set({ [k]: e.target.checked, ...(k === 'personalizacion' && !e.target.checked ? { listaCerrada: false } : {}) })} className="mt-0.5" />
+            <span>{texto}{extra}</span>
+        </label>
+    );
+    return (
+        <div className="space-y-2">
+            {!catalogo && (
+                <div className="flex flex-wrap gap-1">
+                    {[['TALLE', 'Por talle (prendas de vestir)'], ['MEDIDA', 'Por medidas en cm (banderas, toallas…)']].map(([k, t]) => (
+                        <button type="button" key={k} disabled={!puede} onClick={() => set({ comoSeDefine: k })}
+                            className={`px-2.5 py-1 rounded-lg border text-[11px] font-bold ${v.comoSeDefine === k ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-600 border-slate-200'}`}>{t}</button>
+                    ))}
+                </div>
+            )}
+            {porMedida ? (
+                <>
+                    <Campo label="Medidas exactas y cantidad por cada medida" ayuda="Una línea por medida: Banderas 90 x 150 cm — 50 unidades"><textarea value={v.medidas} disabled={!puede} onChange={e => set({ medidas: e.target.value })} className={INPUT} rows={3} /></Campo>
+                    <Campo label="Tipo de terminación o costura" ayuda="Dobladillo y tiras, vaina para mástil, fuelle…"><input value={v.terminacion} disabled={!puede} onChange={e => set({ terminacion: e.target.value })} className={INPUT} /></Campo>
+                </>
+            ) : (
+                <>
+                    <Campo label="Nota sobre los talles (si no adjuntás la planilla)" ayuda="Ej: S 20 · M 40 · L 30 · XL 10"><input value={v.notaTalles} disabled={!puede} onChange={e => set({ notaTalles: e.target.value })} className={INPUT} /></Campo>
+                    {!catalogo && (
+                        <>
+                            <Campo label="Medidas de la prenda (largo, ancho de pecho, manga, cintura…)"><textarea value={v.medidasPrenda} disabled={!puede} onChange={e => set({ medidasPrenda: e.target.value })} className={INPUT} rows={2} /></Campo>
+                            {chk('tablaEstandar', 'Se trabaja con la tabla de medidas estándar del taller, confirmada con el cliente')}
+                        </>
+                    )}
+                </>
+            )}
+            {chk('personalizacion', 'Lleva nombres y números (personalización individual)')}
+            {v.personalizacion && <div className="pl-5">{chk('listaCerrada', <b>Lista de nombres y números recibida, completa y cerrada.</b>, ' Se produce tal cual figura en la lista; lo que se agregue después puede cambiar costo y plazo.')}</div>}
+            {puede && cambiado && <button type="button" disabled={busy} onClick={() => hacer(() => svc.guardarTalles(id, p.ProductoSolID, v), 'Talles guardados.')} className={BTN_PRIMARIO}><CheckCircle2 size={12} /> Guardar talles</button>}
+        </div>
+    );
+}
+
+/* Trabajo de Diseño sobre la solicitud: lo usa SolicitudDisenoPage (/ventas/solicitudes/:id/diseno),
+   adonde llega el diseñador desde su bandeja. Todos los productos, con las columnas del diseñador
+   (tizada, PDF por hoja, diseño pronto, tomar, aceptar cambios). Ya no es pestaña de la solicitud. */
+export function DisenoTab({ s, id, user, perfil, busy, abierta, telas, archivosDe, hacer, subir, onAbrirFicha }) {
+    return (
+        <div className="space-y-6">
+            {s.Productos.map((p, i) => {
+                const conv = s.Conversion.find(c => c.ProductoSolID === p.ProductoSolID) || {};
+                const bloqueada = !abierta || !!p.PedidoNoDocERP;
+                const artes = archivosDe(a => a.Rol === 'ARTE_CLIENTE' && (a.ProductoSolID === p.ProductoSolID || p.Partes.some(pa => pa.ParteID === a.ParteID)));
+                return (
+                    <div key={p.ProductoSolID} className="space-y-3">
+                        {/* Banda superior: el producto y, por cada servicio, su estado, el diseñador y las acciones (tomar, aceptar cambio) */}
+                        <div className="border border-slate-200 rounded-xl p-3 bg-slate-50 space-y-2">
+                            <h2 className="text-sm font-black text-slate-800">Producto {i + 1}: {p.TipoFabricacion === 'PRODUCTO_TERMINADO' ? (p.ProductoNombre || `Producto ${p.ProIdProducto}`) : 'Producto personalizado del cliente'} <span className="font-bold text-slate-500">· {p.Cantidad} prendas</span>
+                                {p.PedidoNoDocERP ? <span className="ml-2 text-[10px] font-black uppercase text-emerald-700">Pedido {p.PedidoNoDocERP}</span> : null}</h2>
+                            <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-2">
+                                {p.Partes.map(pa => (
+                                    <EstadoParteDiseno key={pa.ParteID} pa={pa} user={user} perfil={perfil} busy={busy} bloqueada={bloqueada} onAbrirFicha={onAbrirFicha}
+                                        enProduccion={(conv.disenoProduccion || []).filter(o => o.AreaID === ({ BORDADO: 'EMB', TPU: 'TPU' })[pa.Tipo])}
+                                        onTomar={() => hacer(() => svc.tomar(pa.ParteID), 'Trabajo tomado: quedó a tu nombre.')}
+                                        onAceptar={() => hacer(() => svc.aceptarCambio(pa.ParteID), 'Cambio aceptado.')} />
+                                ))}
+                            </div>
+                        </div>
+                        {p.FichaProducto && <FichaProductoBloque f={p.FichaProducto} />}
+                        {p.TipoFabricacion === 'PRODUCTO_TERMINADO' && <PiezasTelasBloque id={id} p={p} busy={busy} puede={false} hacer={hacer} artes={artes} />}
+                        <TablaServicios vista="diseno" s={s} p={p} id={id} user={user} perfil={perfil} busy={busy} abierta={abierta} telas={telas} archivosDe={archivosDe} hacer={hacer} subir={subir} onAbrirFicha={onAbrirFicha} />
+                        {/* El pedido de producción lo crea el diseñador desde acá, con la tizada y los archivos ya cargados */}
+                        <div className="max-w-3xl">
+                            <Conversion s={s} p={p} pedido={conv.pedido} faltantes={conv.faltantes || []} avisos={conv.avisos || []} checklist={conv.checklist} puedeVender={perfil.esDisenador || perfil.esVendedor} busy={busy} hacer={hacer} id={id} />
+                        </div>
+                    </div>
+                );
+            })}
+        </div>
+    );
+}
+
+/* Ficha técnica del producto del catálogo (lo cargado en Configurar productos → Ficha de diseño).
+   Solo lectura, para que el diseñador tenga a la vista avíos, costuras, material, tallas y notas. */
+function FichaProductoBloque({ f }) {
+  const [abierta, setAbierta] = useState(true);
+  const base = (api.defaults?.baseURL || '').replace(/\/api\/?$/, '');
+  const dib = f.dibujoUrl ? (f.dibujoUrl.startsWith('http') ? f.dibujoUrl : base + f.dibujoUrl) : null;
+  return (
+    <section className="fp-zona">
+      <div className="fp-zona-tit flex flex-wrap items-center justify-between gap-2">
+        <span>Ficha técnica del producto <small>del configurador · avíos, costuras, material, tallas</small></span>
+        <button type="button" onClick={() => setAbierta(v => !v)} className={BTN_SECUNDARIO}>{abierta ? 'Ocultar' : 'Ver'}</button>
+      </div>
+      {abierta && (
+        <div className="grid md:grid-cols-[auto_1fr] gap-4 text-xs">
+          {dib && <a href={dib} target="_blank" rel="noreferrer" title="Abrir el dibujo"><img src={dib} alt="" className="w-40 max-h-40 object-contain rounded-lg border border-slate-200 bg-white" /></a>}
+          <div className="space-y-3 min-w-0">
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+              {f.ref && <Info l="Referencia" v={f.ref} />}{f.marca && <Info l="Marca" v={f.marca} />}{f.material && <Info l="Material" v={f.material} />}{f.tallas && <Info l="Tallas" v={f.tallas} />}{f.marcacion && <Info l="Marcación" v={f.marcacion} />}
+            </div>
+            <div className="grid md:grid-cols-2 gap-3">
+              <div>
+                <div className="text-[9px] font-black uppercase tracking-wide text-slate-400 mb-1">Avíos</div>
+                {f.avios.length ? (
+                  <table className="w-full"><tbody>{f.avios.map((a, i) => <tr key={i} className="border-t border-slate-100"><td className="py-1 pr-2 font-bold text-slate-800">{a.nombre}</td><td className="py-1 pr-2 text-slate-600 whitespace-nowrap">{a.cantidad ?? ''} {a.unidad}/prenda</td><td className="py-1 pr-2 text-slate-600">{a.medida || ''}</td><td className="py-1 text-slate-500">{a.nota || ''}</td></tr>)}</tbody></table>
+                ) : <div className="text-slate-400">Sin avíos cargados en el configurador.</div>}
+              </div>
+              <div>
+                <div className="text-[9px] font-black uppercase tracking-wide text-slate-400 mb-1">Costuras (ISO 4915)</div>
+                {f.costuras.length ? (
+                  <table className="w-full"><tbody>{f.costuras.map((c, i) => <tr key={i} className="border-t border-slate-100"><td className="py-1 pr-2 font-bold text-slate-800">{c.union}</td><td className="py-1 text-slate-600">{c.codigoISO}{c.nombre ? ` · ${c.nombre}` : ''}</td></tr>)}</tbody></table>
+                ) : <div className="text-slate-400">Sin costuras cargadas en el configurador.</div>}
+              </div>
+            </div>
+            {f.notas.length > 0 && <ul className="list-disc pl-5 text-slate-700">{f.notas.map((n, i) => <li key={i}>{n.etiqueta ? <b>{n.etiqueta}: </b> : null}{n.valor}</li>)}</ul>}
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+/* Estado de UN servicio en la pantalla de Diseño: pill, tipo de trabajo, diseñador, fechas, y las
+   acciones del diseñador (tomar el trabajo, aceptar un cambio del vendedor) + seguimiento en planta. */
+function EstadoParteDiseno({ pa, user, perfil, busy, bloqueada, enProduccion = [], onAbrirFicha, onTomar, onAceptar }) {
+    const esMia = pa.DisenadorID && pa.DisenadorID === user?.id;
+    return (
+        <div className={`bg-white border rounded-lg p-2 text-xs space-y-1 ${pa.Modificada ? 'border-fuchsia-300' : 'border-slate-200'}`}>
+            <div className="flex flex-wrap items-center gap-1.5"><span className="font-black text-slate-800">{pa.Nombre}</span><Pill e={pa.Estado} mapa={ESTADO_PARTE} />{pa.Modificada ? <PillModificada /> : null}</div>
+            <div className="text-slate-600">
+                {pa.TipoTrabajo ? <>{TIPO_TRABAJO[pa.TipoTrabajo]} · </> : null}
+                {pa.DisenadorNombre ? <>Diseñador: <b>{pa.DisenadorNombre}</b></> : pa.Estado === 'INGRESADO' ? 'El vendedor todavía no lo envió a Diseño.' : pa.Estado === 'ENVIADO_DISENO' ? 'Nadie lo tomó todavía.' : null}
+            </div>
+            <div className="text-[10px] text-slate-400">
+                {pa.FechaEnvioDiseno && <span>Enviado {fmtFechaHora(pa.FechaEnvioDiseno)} </span>}
+                {pa.FechaInicioDiseno && <span>· Iniciado {fmtFechaHora(pa.FechaInicioDiseno)} </span>}
+                {pa.FechaDisenado && <span>· Diseñado {fmtFechaHora(pa.FechaDisenado)}</span>}
+            </div>
+            {enProduccion.length > 0 && (
+                <div className="border border-slate-200 rounded-lg p-2 space-y-1">
+                    <div className="text-[9px] font-black uppercase tracking-wide text-slate-400">Ya es pedido — el diseño sigue en producción</div>
+                    {enProduccion.map(o => {
+                        const et = ETAPA_PRODUCCION[o.Etapa] || { txt: 'No queda diseño pendiente', cls: 'bg-emerald-50 text-emerald-700 border-emerald-200' };
+                        return (
+                            <div key={o.OrdenID} className="flex flex-wrap items-center gap-2">
+                                <span className="font-mono font-bold text-slate-700">{o.CodigoOrden}</span>
+                                <span className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-black uppercase border ${et.cls}`}>{et.txt}</span>
+                                <button type="button" onClick={() => onAbrirFicha?.({ id: o.OrdenID, area: o.AreaID, codigo: o.CodigoOrden, cliente: o.Cliente })} className="text-indigo-600 font-bold hover:underline">Abrir la ficha de la orden</button>
+                            </div>
+                        );
+                    })}
+                </div>
+            )}
+            {pa.Modificada ? (
+                <div className="border border-fuchsia-200 rounded-lg p-2">
+                    <div className="font-black text-fuchsia-700">El vendedor cambió este servicio el {fmtFechaHora(pa.ModificadaFecha)}:</div>
+                    <div className="text-slate-700 whitespace-pre-line">{pa.ModificadaDetalle}</div>
+                    {!bloqueada && (esMia || perfil.esAdmin) && pa.DisenadorID
+                        ? <button disabled={busy} onClick={onAceptar} className={`${BTN_PRIMARIO} mt-2`}><CheckCircle2 size={12} /> Acepto el cambio (estoy al tanto)</button>
+                        : !bloqueada && !pa.DisenadorID && pa.Estado === 'DISENADO' && perfil.esVendedor
+                            ? <button disabled={busy} onClick={onAceptar} className={`${BTN_PRIMARIO} mt-2`}><CheckCircle2 size={12} /> Confirmo el cambio: el diseño pronto sigue sirviendo</button>
+                            : <div className="text-[11px] text-slate-500 mt-1">{pa.DisenadorID ? `Lo tiene que aceptar ${pa.DisenadorNombre || 'el diseñador'}.` : 'Lo acepta el diseñador que tome el trabajo.'} Mientras tanto el producto no se puede convertir en pedido.</div>}
+                </div>
+            ) : null}
+            {!bloqueada && perfil.esDisenador && pa.Estado === 'ENVIADO_DISENO' && <button disabled={busy} onClick={onTomar} className={BTN_PRIMARIO}>Tomar este trabajo</button>}
+        </div>
+    );
+}
+
+/* Tabla de servicios de UN producto. vista "cliente" (pestaña del producto): servicio, archivos
+   del cliente y estado con "Enviar a Diseño". vista "diseno" (pantalla de Diseño): además la
+   columna del diseño pronto, y los archivos del cliente en solo lectura. */
+function TablaServicios({ vista, s, p, id, user, perfil, busy, abierta, telas, archivosDe, hacer, subir, onAbrirFicha, faltaSubl = null, partes = null, titulo = null }) {
+    const conv = s.Conversion.find(c => c.ProductoSolID === p.ProductoSolID) || {};
+    const bloqueada = !abierta || !!p.PedidoNoDocERP;
+    const esDiseno = vista === 'diseno';
+    // La tela de cada archivo de la sublimación se elige entre las telas que el vendedor puso en
+    // "Piezas y telas"; si no cargó nada (o no coinciden por nombre), queda el catálogo completo.
+    const elegidas = new Set((p.Datos?.sublimacion?.piezas || []).map(z => normTxt(z.telaNombre)).filter(Boolean));
+    const telasElegidas = telas.filter(t => elegidas.has(normTxt(t.Material)));
+    const telasPrincipal = telasElegidas.length ? telasElegidas : telas;
+    return (
+        <div className="overflow-x-auto border border-slate-200 rounded-xl">
+            <table className={`w-full text-xs fp-tabla-serv ${esDiseno ? 'min-w-[760px]' : 'min-w-[560px]'}`}>
+                <thead>
+                    <tr className="fp-grupo">
+                        {esDiseno
+                            ? <><th className="cli">Solicitud del cliente <small>solo lectura</small></th><th className="dis">Diseñador <small>lo que va a producción</small></th></>
+                            : <th colSpan={2} className="cli">{titulo || 'Producción principal'} <small>lo que pidió y mandó · el diseño lo sigue Diseño desde su bandeja</small></th>}
+                    </tr>
+                    <tr className="bg-slate-50 text-[9px] font-black uppercase tracking-wide text-slate-500 text-left">
+                        <th className={`px-3 py-2 ${esDiseno ? 'w-[34%]' : 'w-[45%]'}`}>{esDiseno ? 'Servicio y archivos del cliente' : 'Servicio'}</th>
+                        {!esDiseno && <th className="px-3 py-2">Archivos del cliente</th>}
+                        {esDiseno && <th className="px-3 py-2">Diseño pronto (lo que va a producción)</th>}
+                    </tr>
+                </thead>
+                <tbody>
+                    {(partes || p.Partes).map(pa => (
+                        <FilaServicio key={pa.ParteID} vista={vista} pa={pa} user={user} perfil={perfil} busy={busy} bloqueada={bloqueada} telas={telasPrincipal}
+                            archivosProducto={pa.Tipo === 'PRINCIPAL' ? archivosDe(a => a.ProductoSolID === p.ProductoSolID && !a.ParteID) : []}
+                            enProduccion={(conv.disenoProduccion || []).filter(o => o.AreaID === ({ BORDADO: 'EMB', TPU: 'TPU' })[pa.Tipo])} onAbrirFicha={onAbrirFicha}
+                            archivos={archivosDe(a => a.ParteID === pa.ParteID)} faltaEnvio={pa.Tipo === 'PRINCIPAL' ? faltaSubl : null}
+                            onEnviar={(tt) => hacer(() => svc.enviarADiseno(pa.ParteID, tt), `${NOMBRE_PARTE[pa.Tipo]} enviado a la bandeja de Diseño.`)}
+                            onTomar={() => hacer(() => svc.tomar(pa.ParteID), 'Trabajo tomado: quedó a tu nombre.')}
+                            onAceptar={() => hacer(() => svc.aceptarCambio(pa.ParteID), 'Cambio aceptado.')}
+                            onSubir={(files, campos) => subir(files, { ...campos, ParteID: pa.ParteID }, pa.Tipo)}
+                            onQuitar={(a) => hacer(() => svc.quitarArchivo(id, a.ArchivoID), 'Archivo quitado.')}
+                            onDeshacerDisenado={(lista) => hacer(async () => { for (const a of lista) await svc.quitarArchivo(id, a.ArchivoID); }, `${pa.Nombre}: volvió a "Ingresado". Ahora se puede enviar a Diseño.`)}
+                            onProduccion={(a, datos) => hacer(() => svc.definirProduccionArchivo(id, a.ArchivoID, datos), 'Tela y copias guardadas.')}
+                            tizada={(s.Tizadas || []).find(t => t.ParteID === pa.ParteID) || null}
+                            onVincularTizada={(trabajoId, forzar) => hacer(() => svc.vincularTizada(pa.ParteID, trabajoId, forzar), 'Tizada vinculada. Ahora subí el PDF de cada hoja.')} />
+                    ))}
+                </tbody>
+            </table>
+        </div>
+    );
+}
+
+function FilaServicio({ vista = 'cliente', pa, user, perfil, busy, bloqueada, telas, archivos, onEnviar, onTomar, onAceptar, onSubir, onQuitar, onProduccion, enProduccion = [], onAbrirFicha, tizada = null, onVincularTizada, faltaEnvio = null, onDeshacerDisenado, archivosProducto = [] }) {
+    const [tipoTrabajo, setTipoTrabajo] = useState(pa.ArteOrigen === 'CLIENTE' ? 'REVISAR' : 'DESDE_CERO');
+    const esDiseno = vista === 'diseno';
     const esPrincipal = pa.Tipo === 'PRINCIPAL';
     const esMia = pa.DisenadorID && pa.DisenadorID === user?.id;
     const puedeDisenar = !bloqueada && (esMia || (perfil.esAdmin && pa.DisenadorID)) && ['DISENO_INICIADO', 'DISENADO'].includes(pa.Estado);
@@ -316,113 +640,385 @@ function FilaServicio({ pa, user, perfil, busy, bloqueada, telas, archivos, onEn
     const otros = archivos.filter(a => a.Rol !== 'DISENO_PRONTO');
     const d = pa.Datos || {};
 
+    const celdaServicio = (
+        <td className="px-3 py-3 space-y-0.5">
+            <div className="font-black text-slate-800">{pa.Nombre}</div>
+            {pa.IncluidoEnProducto ? <div className="text-[10px] font-bold text-slate-400">Incluido en el producto</div> : null}
+            {pa.CantidadTotal != null && <div className="text-slate-600">{pa.CantidadTotal} en total{pa.PorPrenda != null ? ` · ${pa.PorPrenda} por prenda` : ''}</div>}
+            {pa.Ubicacion && <div className="text-slate-600">Dónde va: {pa.Ubicacion}</div>}
+            {d.variante && <div className="text-slate-600">{d.variante}</div>}
+            {d.material && <div className="text-slate-600">{d.material}</div>}
+            {d.origenPrendas && <div className="text-slate-600">Prendas: {d.origenPrendas}</div>}
+            {!esPrincipal && <div className="text-slate-500">{pa.ArteOrigen === 'CLIENTE' ? 'El arte viene listo del cliente' : 'El arte se diseña en la empresa'}</div>}
+            {pa.Observaciones && <div className="text-slate-500 whitespace-pre-line pt-1">Indicaciones: {pa.Observaciones}</div>}
+            {!esDiseno && (
+                <div className="pt-1.5 flex flex-wrap items-center gap-1.5">
+                    <Pill e={pa.Estado} mapa={ESTADO_PARTE} />{pa.Modificada ? <PillModificada /> : null}
+                    {pa.DisenadorNombre && <span className="text-[10px] text-slate-500">{pa.DisenadorNombre}</span>}
+                    {!bloqueada && perfil.esVendedor && pa.Estado === 'INGRESADO' && (faltaEnvio
+                        ? <span className="text-[10px] font-bold text-amber-700 inline-flex items-center gap-1" title={faltaEnvio}><AlertTriangle size={11} /> Para enviar a Diseño, completá "Piezas y telas"</span>
+                        : <>
+                            <select value={tipoTrabajo} onChange={e => setTipoTrabajo(e.target.value)} className="border border-slate-200 rounded-lg px-1.5 py-1 text-[11px] bg-white">
+                                {Object.entries(TIPO_TRABAJO).map(([k, t]) => <option key={k} value={k}>{t}</option>)}
+                            </select>
+                            <button disabled={busy} onClick={() => onEnviar(tipoTrabajo)} className={BTN_PRIMARIO}><Send size={12} /> Enviar a Diseño</button>
+                        </>)}
+                    {/* "Diseñado" sin pasar por Diseño (RN-SOL.20): el vendedor adjuntó el diseño pronto. Deshacerlo = quitar ese archivo. */}
+                    {!bloqueada && perfil.esVendedor && pa.Estado === 'DISENADO' && !pa.DisenadorID && prontos.length > 0 && (
+                        <button type="button" disabled={busy} className={BTN_SECUNDARIO} title="Quedó Diseñado porque se adjuntó un diseño pronto sin pasar por Diseño. Al deshacerlo se quita ese archivo y el servicio vuelve a Ingresado."
+                            onClick={() => { if (window.confirm(`${pa.Nombre} quedó "Diseñado" porque se adjuntó ${prontos.length === 1 ? `"${prontos[0].NombreOriginal}"` : prontos.length + ' archivos'} como diseño pronto sin pasar por Diseño.\n\n¿Quitar ese archivo y volver a "Ingresado"? Queda en el historial.`)) onDeshacerDisenado?.(prontos); }}>
+                            <Trash2 size={11} /> Deshacer "Diseñado"
+                        </button>
+                    )}
+                </div>
+            )}
+        </td>
+    );
+
+    // Vista Diseño: el servicio y TODOS los archivos del cliente (arte, bocetos, referencias y, en la
+    // producción principal, la planilla de talles) en una sola celda, con miniatura y link para abrirlos.
+    const celdaServicioArchivos = (
+        <td className="px-3 py-3 space-y-1">
+            <div className="font-black text-slate-800">{pa.Nombre}</div>
+            {pa.CantidadTotal != null && <div className="text-slate-600">{pa.CantidadTotal} en total{pa.PorPrenda != null ? ` · ${pa.PorPrenda} por prenda` : ''}</div>}
+            {pa.Ubicacion && <div className="text-slate-600">Dónde va: {pa.Ubicacion}</div>}
+            {d.variante && <div className="text-slate-600">{d.variante}</div>}
+            {d.material && <div className="text-slate-600">{d.material}</div>}
+            {d.origenPrendas && <div className="text-slate-600">Prendas: {d.origenPrendas}</div>}
+            {!esPrincipal && <div className="text-slate-500">{pa.ArteOrigen === 'CLIENTE' ? 'El arte viene listo del cliente' : 'El arte se diseña en la empresa'}</div>}
+            {pa.Observaciones && <div className="text-slate-500 whitespace-pre-line">Indicaciones: {pa.Observaciones}</div>}
+            <div className="pt-2">
+                <div className="text-[9px] font-black uppercase tracking-wide text-slate-400 mb-1">Archivos del cliente</div>
+                <ArchivosCelda archivos={[...otros, ...archivosProducto]} vacio="Sin archivos" conRol />
+            </div>
+        </td>
+    );
+
+    // Archivos del cliente: el vendedor los carga en la pestaña del producto; en "Diseño" se ven nomás
+    const celdaCliente = (
+        <td className="px-3 py-3">
+            <ArchivosCelda archivos={otros} vacio="Sin archivos" puedeQuitar={!esDiseno && !bloqueada && perfil.esVendedor} onQuitar={onQuitar} conRol />
+            {!esDiseno && !bloqueada && perfil.esVendedor && <div className="mt-1.5"><BotonSubir busy={busy} roles={ROLES_PARTE} onFiles={(files, Rol) => onSubir(files, { Rol })} /></div>}
+        </td>
+    );
+
+    const celdaDiseno = (
+        <td className="px-3 py-3">
+            {!prontos.length && <div className="text-slate-400">{['BORDADO', 'TPU'].includes(pa.Tipo) ? 'Sin archivo (es opcional)' : 'Todavía no hay archivo'}</div>}
+            {esPrincipal && <TizadaBloque pa={pa} tizada={tizada} prontos={prontos} puede={puedeDisenar} busy={busy} onVincular={onVincularTizada} onSubirHoja={(files, hoja) => onSubir(files, { Rol: 'DISENO_PRONTO', TizadaID: tizada.TizadaID, TizadaHoja: hoja.archivo })} />}
+            {esPrincipal && !tizada && <div className="text-[10px] text-slate-500 mb-1">Si la tizada no sale de TizadaPro, subí acá el archivo que se imprime en sublimación (uno o varios). Cada archivo lleva su tela y sus copias.</div>}
+            {['BORDADO', 'TPU'].includes(pa.Tipo) && (
+                <div className="text-[10px] text-slate-500 mb-1">
+                    {pa.Tipo === 'BORDADO'
+                        ? 'Lo que subas acá viaja como logo / boceto de referencia. La matriz (ponchado) se sube después desde la ficha de la orden, en el área de Bordado.'
+                        : 'Lo que subas acá viaja como boceto de referencia. El boceto de producción, la aprobación del cliente y el arte se hacen después desde la ficha de la orden, en el área de TPU.'}
+                </div>
+            )}
+            <ul className="space-y-2">
+                {prontos.map(a => (
+                    <li key={a.ArchivoID} className="bg-emerald-50 border border-emerald-200 rounded-lg px-2 py-1.5">
+                        <Miniatura a={a} tam={44} />
+                    <a href={a.UrlDrive} target="_blank" rel="noreferrer" className="font-bold text-indigo-700 hover:underline inline-flex items-center gap-1 break-all flex-1 min-w-0"><FileText size={12} /> {a.NombreOriginal}</a>
+                        <div className="text-[10px] text-slate-500">{a.AnchoM && a.AltoM ? `${Number(a.AnchoM).toFixed(2)} × ${Number(a.AltoM).toFixed(2)} m · ` : ''}{a.UsuarioNombre || ''} · {fmtFechaHora(a.FechaSubida)}</div>
+                        {esPrincipal && <TelaCopias a={a} telas={telas} puede={puedeDisenar} busy={busy} onGuardar={(datos) => onProduccion(a, datos)} />}
+                        {pa.Tipo === 'DTF' && <TelaCopias soloCopias a={a} telas={[]} puede={puedeSubirPronto} busy={busy} onGuardar={(datos) => onProduccion(a, datos)} />}
+                        {puedeSubirPronto && (
+                            <div className="mt-1 flex flex-wrap items-center gap-3">
+                                <BotonArchivo etiqueta="Sustituir por el archivo corregido" chico onFiles={(files) => onSubir(files, { Rol: 'DISENO_PRONTO', ReemplazaA: a.ArchivoID })} />
+                                {(prontos.length > 1 || !pa.DisenadorID) && <button type="button" disabled={busy} onClick={() => { if (window.confirm(prontos.length > 1 ? `¿Quitar "${a.NombreOriginal}" del diseño pronto de ${pa.Nombre}? No va a ir a producción. Queda registrado en el historial.` : `¿Quitar "${a.NombreOriginal}"? Es el único diseño pronto de ${pa.Nombre}: el servicio vuelve a "Ingresado" y se puede enviar a Diseño. Queda registrado en el historial.`)) onQuitar(a); }} className="text-rose-600 font-bold hover:underline inline-flex items-center gap-0.5"><Trash2 size={11} /> {prontos.length > 1 ? 'Quitar este archivo' : 'Quitar (vuelve a Ingresado)'}</button>}
+                            </div>
+                        )}
+                    </li>
+                ))}
+            </ul>
+            {puedeSubirPronto && (
+                <div className="mt-2 space-y-1">
+                    {esPrincipal && <div className="text-[10px] text-slate-500">Después de subir, elegí la tela y las copias en cada archivo.</div>}
+                    <BotonArchivo busy={busy} multiple primario onFiles={(files) => onSubir(files, { Rol: 'DISENO_PRONTO' })}
+                        etiqueta={vendedorDirecto && !puedeDisenar ? 'Adjuntar diseño pronto (arte listo del cliente, sin pasar por Diseño)' : (esPrincipal ? (prontos.length ? 'Agregar otra tizada / archivo de impresión' : 'Subir la tizada / archivo de impresión (marca el servicio como Diseñado)') : (prontos.length ? 'Agregar otro archivo de diseño pronto' : 'Subir diseño pronto (marca el servicio como Diseñado)'))} />
+                </div>
+            )}
+        </td>
+    );
+
+    const estadoBase = (
+        <>
+            <div className="flex flex-wrap items-center gap-1"><Pill e={pa.Estado} mapa={ESTADO_PARTE} />{pa.Modificada ? <PillModificada /> : null}</div>
+            {pa.TipoTrabajo && <div className="text-slate-500">{TIPO_TRABAJO[pa.TipoTrabajo]}</div>}
+            {pa.DisenadorNombre && <div className="text-slate-600">Diseñador: <b>{pa.DisenadorNombre}</b></div>}
+            {pa.FechaEnvioDiseno && <div className="text-[10px] text-slate-400">Enviado a diseño {fmtFechaHora(pa.FechaEnvioDiseno)}</div>}
+            {pa.FechaInicioDiseno && <div className="text-[10px] text-slate-400">Diseño iniciado {fmtFechaHora(pa.FechaInicioDiseno)}</div>}
+            {pa.FechaDisenado && <div className="text-[10px] text-slate-400">Diseñado {fmtFechaHora(pa.FechaDisenado)}</div>}
+        </>
+    );
+
     return (
         <tr className={`align-top border-t border-slate-200 ${pa.Modificada ? 'bg-fuchsia-50/40' : ''}`}>
-            <td className="px-3 py-3 space-y-0.5">
-                <div className="font-black text-slate-800">{pa.Nombre}</div>
-                {pa.IncluidoEnProducto ? <div className="text-[10px] font-bold text-slate-400">Incluido en el producto</div> : null}
-                {pa.CantidadTotal != null && <div className="text-slate-600">{pa.CantidadTotal} en total{pa.PorPrenda != null ? ` · ${pa.PorPrenda} por prenda` : ''}</div>}
-                {pa.Ubicacion && <div className="text-slate-600">Dónde va: {pa.Ubicacion}</div>}
-                {d.variante && <div className="text-slate-600">{d.variante}</div>}
-                {d.material && <div className="text-slate-600">{d.material}</div>}
-                {d.origenPrendas && <div className="text-slate-600">Prendas: {d.origenPrendas}</div>}
-                {!esPrincipal && <div className="text-slate-500">{pa.ArteOrigen === 'CLIENTE' ? 'El arte viene listo del cliente' : 'El arte se diseña en la empresa'}</div>}
-                {pa.Observaciones && <div className="text-slate-500 whitespace-pre-line pt-1">Indicaciones: {pa.Observaciones}</div>}
-            </td>
-
-            <td className="px-3 py-3">
-                <ArchivosCelda archivos={otros} vacio="Sin archivos" puedeQuitar={!bloqueada && perfil.esVendedor} onQuitar={onQuitar} conRol />
-                {!bloqueada && perfil.esVendedor && <div className="mt-1.5"><BotonSubir busy={busy} roles={ROLES_PARTE} onFiles={(files, Rol) => onSubir(files, { Rol })} /></div>}
-            </td>
-
-            <td className="px-3 py-3">
-                {!prontos.length && <div className="text-slate-400">{['BORDADO', 'TPU'].includes(pa.Tipo) ? 'Sin archivo (es opcional)' : 'Todavía no hay archivo'}</div>}
-                {esPrincipal && <div className="text-[10px] text-slate-500 mb-1">Acá va la <b>tizada</b>: es el archivo que se imprime en sublimación (uno o varios). Cada archivo lleva su tela y sus copias.</div>}
-                {['BORDADO', 'TPU'].includes(pa.Tipo) && (
-                    <div className="text-[10px] text-slate-500 mb-1">
-                        {pa.Tipo === 'BORDADO'
-                            ? 'Lo que subas acá viaja como logo / boceto de referencia. La matriz (ponchado) se sube después desde la ficha de la orden, en el área de Bordado.'
-                            : 'Lo que subas acá viaja como boceto de referencia. El boceto de producción, la aprobación del cliente y el arte se hacen después desde la ficha de la orden, en el área de TPU.'}
-                    </div>
-                )}
-                <ul className="space-y-2">
-                    {prontos.map(a => (
-                        <li key={a.ArchivoID} className="bg-emerald-50 border border-emerald-200 rounded-lg px-2 py-1.5">
-                            <a href={a.UrlDrive} target="_blank" rel="noreferrer" className="font-bold text-indigo-700 hover:underline inline-flex items-center gap-1 break-all"><FileText size={12} /> {a.NombreOriginal}</a>
-                            <div className="text-[10px] text-slate-500">{a.AnchoM && a.AltoM ? `${Number(a.AnchoM).toFixed(2)} × ${Number(a.AltoM).toFixed(2)} m · ` : ''}{a.UsuarioNombre || ''} · {fmtFechaHora(a.FechaSubida)}</div>
-                            {esPrincipal && <TelaCopias a={a} telas={telas} puede={puedeDisenar} busy={busy} onGuardar={(datos) => onProduccion(a, datos)} />}
-                            {pa.Tipo === 'DTF' && <TelaCopias soloCopias a={a} telas={[]} puede={puedeSubirPronto} busy={busy} onGuardar={(datos) => onProduccion(a, datos)} />}
-                            {puedeSubirPronto && (
-                                <div className="mt-1 flex flex-wrap items-center gap-3">
-                                    <BotonArchivo etiqueta="Sustituir por el archivo corregido" chico onFiles={(files) => onSubir(files, { Rol: 'DISENO_PRONTO', ReemplazaA: a.ArchivoID })} />
-                                    {prontos.length > 1 && <button type="button" disabled={busy} onClick={() => { if (window.confirm(`¿Quitar "${a.NombreOriginal}" del diseño pronto de ${pa.Nombre}? No va a ir a producción. Queda registrado en el historial.`)) onQuitar(a); }} className="text-rose-600 font-bold hover:underline inline-flex items-center gap-0.5"><Trash2 size={11} /> Quitar este archivo</button>}
-                                </div>
-                            )}
-                        </li>
-                    ))}
-                </ul>
-                {puedeSubirPronto && (
-                    <div className="mt-2 space-y-1">
-                        {esPrincipal && <div className="text-[10px] text-slate-500">Después de subir, elegí la tela y las copias en cada archivo.</div>}
-                        <BotonArchivo busy={busy} multiple primario onFiles={(files) => onSubir(files, { Rol: 'DISENO_PRONTO' })}
-                            etiqueta={vendedorDirecto && !puedeDisenar ? 'Adjuntar diseño pronto (arte listo del cliente, sin pasar por Diseño)' : (esPrincipal ? (prontos.length ? 'Agregar otra tizada / archivo de impresión' : 'Subir la tizada / archivo de impresión (marca el servicio como Diseñado)') : (prontos.length ? 'Agregar otro archivo de diseño pronto' : 'Subir diseño pronto (marca el servicio como Diseñado)'))} />
-                    </div>
-                )}
-            </td>
-
-            <td className="px-3 py-3 space-y-1">
-                {enProduccion.length > 0 && (
-                    <div className="bg-white border border-slate-200 rounded-lg p-2 mb-1 space-y-1">
-                        <div className="text-[9px] font-black uppercase tracking-wide text-slate-400">Ya es pedido — el diseño sigue en producción</div>
-                        {enProduccion.map(o => {
-                            const et = ETAPA_PRODUCCION[o.Etapa] || { txt: 'No queda diseño pendiente', cls: 'bg-emerald-50 text-emerald-700 border-emerald-200' };
-                            return (
-                                <div key={o.OrdenID}>
-                                    <div className="font-mono font-bold text-slate-700">{o.CodigoOrden}</div>
-                                    <span className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-black uppercase border ${et.cls}`}>{et.txt}</span>
-                                    <div><button type="button" onClick={() => onAbrirFicha?.({ id: o.OrdenID, area: o.AreaID, codigo: o.CodigoOrden, cliente: o.Cliente })} className="text-indigo-600 font-bold hover:underline mt-1">Abrir la ficha de la orden</button></div>
-                                </div>
-                            );
-                        })}
-                        <div className="text-[10px] text-slate-400">El estado de abajo es el que tenía en la solicitud al convertir.</div>
-                    </div>
-                )}
-                <div className="flex flex-wrap items-center gap-1"><Pill e={pa.Estado} mapa={ESTADO_PARTE} />{pa.Modificada ? <PillModificada /> : null}</div>
-                {pa.TipoTrabajo && <div className="text-slate-500">{TIPO_TRABAJO[pa.TipoTrabajo]}</div>}
-                {pa.DisenadorNombre && <div className="text-slate-600">Diseñador: <b>{pa.DisenadorNombre}</b></div>}
-                {pa.FechaEnvioDiseno && <div className="text-[10px] text-slate-400">Enviado a diseño {fmtFechaHora(pa.FechaEnvioDiseno)}</div>}
-                {pa.FechaInicioDiseno && <div className="text-[10px] text-slate-400">Diseño iniciado {fmtFechaHora(pa.FechaInicioDiseno)}</div>}
-                {pa.FechaDisenado && <div className="text-[10px] text-slate-400">Diseñado {fmtFechaHora(pa.FechaDisenado)}</div>}
-
-                {pa.Modificada ? (
-                    <div className="bg-white border border-fuchsia-200 rounded-lg p-2 mt-1">
-                        <div className="font-black text-fuchsia-700">El vendedor cambió este servicio el {fmtFechaHora(pa.ModificadaFecha)}:</div>
-                        <div className="text-slate-700 whitespace-pre-line">{pa.ModificadaDetalle}</div>
-                        {!bloqueada && (esMia || perfil.esAdmin) && pa.DisenadorID
-                            ? <button disabled={busy} onClick={onAceptar} className={`${BTN_PRIMARIO} mt-2`}><CheckCircle2 size={12} /> Acepto el cambio (estoy al tanto)</button>
-                            : !bloqueada && !pa.DisenadorID && pa.Estado === 'DISENADO' && perfil.esVendedor
-                                ? <><div className="text-[11px] text-slate-500 mt-1">Este servicio no pasó por Diseño (el diseño pronto lo adjuntó el vendedor): no hay diseñador que lo acepte. Revisá que el archivo siga sirviendo con el cambio.</div>
-                                    <button disabled={busy} onClick={onAceptar} className={`${BTN_PRIMARIO} mt-2`}><CheckCircle2 size={12} /> Confirmo el cambio: el diseño pronto sigue sirviendo</button></>
-                                : <div className="text-[11px] text-slate-500 mt-1">{pa.DisenadorID ? `Lo tiene que aceptar ${pa.DisenadorNombre || 'el diseñador'}: entra a esta misma solicitud desde su Bandeja de Diseño y acá le aparece el botón "Acepto el cambio".` : 'Lo acepta el diseñador que tome el trabajo desde la Bandeja de Diseño.'} Mientras tanto el producto no se puede convertir en pedido.</div>}
-                    </div>
-                ) : null}
-
-                {!bloqueada && perfil.esVendedor && pa.Estado === 'INGRESADO' && (
-                    <div className="pt-1 space-y-1">
-                        <select value={tipoTrabajo} onChange={e => setTipoTrabajo(e.target.value)} className="block w-full border border-slate-200 rounded-lg px-2 py-1.5 text-xs bg-white">
-                            {Object.entries(TIPO_TRABAJO).map(([k, t]) => <option key={k} value={k}>{t}</option>)}
-                        </select>
-                        <button disabled={busy} onClick={() => onEnviar(tipoTrabajo)} className={BTN_PRIMARIO}><Send size={12} /> Enviar a Diseño</button>
-                    </div>
-                )}
-                {!bloqueada && perfil.esDisenador && pa.Estado === 'ENVIADO_DISENO' && <button disabled={busy} onClick={onTomar} className={BTN_PRIMARIO}>Tomar este trabajo</button>}
-            </td>
+            {esDiseno ? celdaServicioArchivos : <>{celdaServicio}{celdaCliente}</>}
+            {esDiseno ? celdaDiseno : null}
         </tr>
     );
 }
 
 // Tela y copias de UN archivo de la producción principal. Las carga el diseñador; el archivo
 // es siempre normal (sin escala ni raport).
+/* Tizada de TizadaPro vinculada a la producción principal. TizadaPro genera la tizada
+   (una hoja PDF por tela, con ancho y consumo); acá se elige cuál es y se sube A MANO el
+   PDF de cada hoja, porque TizadaPro no expone los archivos. La tela, el ancho y los metros
+   de cada PDF salen de la hoja vinculada (no se mide el archivo). */
+/* Piezas y telas de la sublimación: para un producto del catálogo con molde de TizadaPro, el
+   vendedor elige el MODELO (los modelos que el producto ofrece) y, pieza por pieza, la TELA
+   (entre las que el producto ofrece; una pieza con tela fija en el molde no se elige) y el
+   ARTE del cliente que va en esa pieza. Es lo que el diseñador necesita para armar la tizada;
+   hasta que está completo, la producción principal no se manda a Diseño. */
+function PiezasTelasBloque({ id, p, busy, puede, hacer, artes = [], onEstado, plano = false }) {
+    const zona = plano ? 'pt-3 mt-3 border-t border-slate-200' : 'fp-zona';
+    const tit = plano ? 'fp-subtit' : 'fp-zona-tit';
+    const [info, setInfo] = useState(null);      // respuesta de moldeDelProducto
+    const [modelo, setModelo] = useState('');
+    const [piezas, setPiezas] = useState({});    // pieza → { telaProIdProducto, archivoId, nota }
+    const [editando, setEditando] = useState(false);
+    const guardado = p.Datos?.sublimacion || null;
+
+    useEffect(() => {
+        let vivo = true;
+        svc.moldeDelProducto(id, p.ProductoSolID).then(r => {
+            if (!vivo) return;
+            setInfo(r); onEstado?.({ aplica: !!r.aplica });
+            const m = r.elegido?.modeloClave || r.modelos?.find(x => x.esDefault)?.clave || r.modelos?.[0]?.clave || '';
+            setModelo(m);
+            const ini = {};
+            (r.elegido?.piezas || []).forEach(z => { ini[z.pieza] = { telaProIdProducto: z.telaProIdProducto || '', archivoId: z.archivoId || '', nota: z.nota || '' }; });
+            setPiezas(ini);
+            setEditando(!r.elegido);
+        }).catch(() => { if (vivo) { setInfo({ aplica: false }); onEstado?.({ aplica: false }); } });
+        return () => { vivo = false; };
+    }, [id, p.ProductoSolID, guardado?.fecha]);   // eslint-disable-line react-hooks/exhaustive-deps
+
+    if (!info || !info.aplica) return null;
+    const mod = info.modelos.find(m => m.clave === modelo) || info.modelos[0];
+    const telaDefault = info.telas.find(t => t.esDefault) || info.telas[0];
+    const set = (pieza, campo, v) => setPiezas(prev => ({ ...prev, [pieza]: { ...(prev[pieza] || {}), [campo]: v } }));
+    const todasEn = (v) => setPiezas(prev => { const n = { ...prev }; (mod?.piezas || []).forEach(z => { if (!z.telaFija) n[z.pieza] = { ...(n[z.pieza] || {}), telaProIdProducto: v }; }); return n; });
+    const guardar = () => hacer(() => svc.guardarSublimacion(id, p.ProductoSolID, {
+        modeloClave: mod.clave,
+        piezas: (mod?.piezas || []).map(z => ({ pieza: z.pieza, ...(piezas[z.pieza] || {}) })),
+    }), 'Piezas y telas guardadas.').then(ok => { if (ok) setEditando(false); });
+
+    const Silueta = ({ z }) => z.svgPath
+        ? <svg viewBox="0 0 100 100" className="w-8 h-8 shrink-0"><path d={z.svgPath} fill="#c7d2fe" stroke="#4f46e5" strokeWidth="2" vectorEffect="non-scaling-stroke" /></svg>
+        : <span className="w-8 h-8 shrink-0 rounded border border-dashed border-slate-300 inline-block" />;
+
+    // Vista resumen (ya guardado y no editando)
+    if (!editando && guardado) {
+        return (
+            <section className={zona}>
+                <div className={`${tit} flex flex-wrap items-center justify-between gap-2`}>
+                    <span>{plano ? '2 · ' : ''}Piezas y telas <small>modelo {guardado.modeloNombre} · para el diseñador</small></span>
+                    <span className="flex items-center gap-2">
+                        {guardado.completo ? <span className="text-[10px] font-black uppercase text-emerald-700 inline-flex items-center gap-1"><CheckCircle2 size={12} /> Completo</span> : <span className="text-[10px] font-black uppercase text-amber-700 inline-flex items-center gap-1"><AlertTriangle size={12} /> Faltan telas</span>}
+                        {puede && <button type="button" disabled={busy} onClick={() => setEditando(true)} className={BTN_SECUNDARIO}><Pencil size={11} /> Cambiar</button>}
+                    </span>
+                </div>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+                    {guardado.piezas.map(z => {
+                        const det = mod?.piezas.find(x => x.pieza === z.pieza);
+                        return (
+                            <div key={z.pieza} className="flex items-center gap-2 border border-slate-200 rounded-lg px-2 py-1.5 bg-white">
+                                {(() => { const arte = z.archivoId ? artes.find(a => a.ArchivoID === z.archivoId) : null; return arte ? <Miniatura a={arte} tam={40} /> : det ? <Silueta z={det} /> : null; })()}
+                                <div className="min-w-0">
+                                    <div className="font-black text-slate-800 truncate">{z.generico || z.pieza}{z.generico && z.generico !== z.pieza ? <span className="font-normal text-slate-400"> · {z.pieza}</span> : null}</div>
+                                    <div className={z.telaNombre ? 'text-slate-700' : 'text-rose-600 font-bold'}>{z.telaNombre || 'Sin tela'}{z.fija ? <span className="text-[10px] text-slate-400"> · fija del molde</span> : null}</div>
+                                    <div className="text-[10px] text-slate-500 truncate">{z.archivoNombre ? <>Arte: {z.archivoNombre}</> : 'Sin arte asignado'}{z.nota ? <> · {z.nota}</> : null}</div>
+                                </div>
+                            </div>
+                        );
+                    })}
+                </div>
+            </section>
+        );
+    }
+
+    if (!puede) return (
+        <section className={zona}>
+            <div className={tit}>{plano ? '2 · ' : ''}Piezas y telas <small>para el diseñador</small></div>
+            <div className="text-xs text-amber-700">El vendedor todavía no cargó el modelo ni la tela de cada pieza.</div>
+        </section>
+    );
+
+    return (
+        <section className={zona}>
+            <div className={tit}>{plano ? '2 · ' : ''}Piezas y telas <small>qué tela y qué arte lleva cada pieza · lo lee el diseñador para armar la tizada</small></div>
+            <div className="flex flex-wrap items-end gap-3 mb-3 text-xs">
+                <label className="min-w-[220px]">
+                    <div className="text-[9px] font-black uppercase tracking-wide text-slate-400">Modelo <span className="font-normal normal-case">(molde {info.moldeNombre})</span></div>
+                    <select value={mod?.clave || ''} onChange={e => setModelo(e.target.value)} className={INPUT} disabled={info.modelos.length <= 1}>
+                        {info.modelos.map(m => <option key={m.clave} value={m.clave}>{m.nombre}{m.esDefault ? ' ★' : ''} · {m.piezas.length} piezas</option>)}
+                    </select>
+                </label>
+                {info.telas.length > 0 && (
+                    <label className="min-w-[220px]">
+                        <div className="text-[9px] font-black uppercase tracking-wide text-slate-400">Poner todas las piezas en</div>
+                        <select value="" onChange={e => { if (e.target.value) todasEn(e.target.value); }} className={INPUT}>
+                            <option value="">Elegir una tela…</option>
+                            {info.telas.map(t => <option key={t.proIdProducto} value={t.proIdProducto}>{t.nombre}</option>)}
+                        </select>
+                    </label>
+                )}
+                {!info.telas.length && <div className="text-rose-600 font-bold">El molde no tiene telas que existan en nuestro catálogo: revisá TizadaPro y Configurar productos.</div>}
+                {info.telas.length > 0 && info.telasDelMolde && <div className="text-[10px] text-slate-500 pb-1.5">El producto no recorta telas en Configurar productos: se ofrecen todas las que admite el molde ({info.telas.length}).</div>}
+            </div>
+            <div className="overflow-x-auto">
+                <table className="w-full text-xs min-w-[640px]">
+                    <thead>
+                        <tr className="bg-slate-50 text-[9px] font-black uppercase tracking-wide text-slate-500 text-left">
+                            <th className="px-2 py-1.5 w-[26%]">Pieza</th>
+                            <th className="px-2 py-1.5 w-[28%]">Tela</th>
+                            <th className="px-2 py-1.5 w-[28%]">Arte del cliente</th>
+                            <th className="px-2 py-1.5">Nota</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {(mod?.piezas || []).map(z => {
+                            const v = piezas[z.pieza] || {};
+                            return (
+                                <tr key={z.pieza} className="border-t border-slate-100 align-middle">
+                                    <td className="px-2 py-1.5">
+                                        <div className="flex items-center gap-2">
+                                            <Silueta z={z} />
+                                            <div className="min-w-0">
+                                                <div className="font-black text-slate-800">{z.generico || z.pieza}</div>
+                                                {z.generico && z.generico !== z.pieza ? <div className="text-[10px] text-slate-400">{z.pieza}</div> : null}
+                                            </div>
+                                        </div>
+                                    </td>
+                                    <td className="px-2 py-1.5">
+                                        {z.telaFija
+                                            ? <div className="text-slate-700">{z.telaFija.nombre} <span className="text-[10px] text-slate-400">· fija del molde</span></div>
+                                            : (
+                                                <select value={v.telaProIdProducto || ''} onChange={e => set(z.pieza, 'telaProIdProducto', e.target.value)} className={INPUT + (!v.telaProIdProducto ? ' border-rose-300' : '')}>
+                                                    <option value="">Elegir tela…</option>
+                                                    {info.telas.map(t => <option key={t.proIdProducto} value={t.proIdProducto}>{t.nombre}{telaDefault?.proIdProducto === t.proIdProducto ? ' ★' : ''}</option>)}
+                                                </select>
+                                            )}
+                                    </td>
+                                    <td className="px-2 py-1.5">
+                                        <select value={v.archivoId || ''} onChange={e => set(z.pieza, 'archivoId', e.target.value)} className={INPUT}>
+                                            <option value="">Sin arte (lo diseña el taller)</option>
+                                            {artes.map(a => <option key={a.ArchivoID} value={a.ArchivoID}>{a.NombreOriginal}</option>)}
+                                        </select>
+                                    </td>
+                                    <td className="px-2 py-1.5"><input value={v.nota || ''} onChange={e => set(z.pieza, 'nota', e.target.value)} placeholder="Ej: color, ubicación del arte" className={INPUT} maxLength={200} /></td>
+                                </tr>
+                            );
+                        })}
+                    </tbody>
+                </table>
+            </div>
+            {!artes.length && <div className="text-[10px] text-slate-500 mt-1">Para asignar un arte por pieza, subilo primero como "Arte del cliente" en la producción principal (tabla de abajo).</div>}
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+                <button type="button" disabled={busy || !mod} onClick={guardar} className={BTN_PRIMARIO}><CheckCircle2 size={12} /> Guardar piezas y telas</button>
+                {guardado && <button type="button" disabled={busy} onClick={() => setEditando(false)} className={BTN_SECUNDARIO}>Cancelar</button>}
+                <span className="text-[10px] text-slate-500">Hasta que cada pieza tenga su tela, la producción principal no se puede enviar a Diseño.</span>
+            </div>
+        </section>
+    );
+}
+
+function TizadaBloque({ pa, tizada, prontos, puede, busy, onVincular, onSubirHoja }) {
+    const [abierto, setAbierto] = useState(false);
+    const [lista, setLista] = useState(null);      // { moldeRef, trabajos, totalSinFiltro }
+    const [cargando, setCargando] = useState(false);
+    const [todas, setTodas] = useState(false);
+    const [error, setError] = useState(null);
+    const cargar = async (verTodas) => {
+        setCargando(true); setError(null);
+        try { setLista(await svc.tizadasTizadaPro(pa.ParteID, verTodas)); }
+        catch (e) { setError(errorDe(e)); setLista(null); }
+        finally { setCargando(false); }
+    };
+    const abrir = () => { setAbierto(true); setTodas(false); cargar(false); };
+    const elegir = async (t) => {
+        const ok = await onVincular(t.trabajoId, lista?.moldeRef && t.moldeRef && lista.moldeRef !== t.moldeRef);
+        if (ok !== false) setAbierto(false);
+    };
+    const res = tizada?.Resultado || null;
+    const hojaSubida = (h) => prontos.find(a => a.TizadaID === tizada.TizadaID && a.TizadaHoja === h.archivo);
+    const fmtM = (cm) => (cm ? (Number(cm) / 100).toFixed(2) + ' m' : '—');
+
+    return (
+        <div className="mb-2 rounded-lg border border-indigo-200 bg-indigo-50/40 px-2.5 py-2">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+                <div className="text-[10px] font-black uppercase tracking-wide text-indigo-700">Tizada (TizadaPro)</div>
+                {puede && !abierto && (
+                    <button type="button" disabled={busy} onClick={abrir} className="text-[11px] font-bold text-indigo-700 hover:underline">
+                        {tizada ? 'Cambiar tizada' : 'Vincular tizada de TizadaPro'}
+                    </button>
+                )}
+            </div>
+
+            {!tizada && !abierto && <div className="text-[11px] text-slate-500 mt-1">Todavía no hay una tizada vinculada. {puede ? 'Generala en TizadaPro y después vinculala acá.' : 'La vincula el diseñador que tiene el trabajo.'}</div>}
+
+            {tizada && res && (
+                <div className="mt-1 space-y-1.5">
+                    <div className="text-[11px] text-slate-700"><b>{tizada.MoldeNombre || res.molde}</b> · trabajo {tizada.TrabajoRef || tizada.TrabajoID} · {tizada.Piezas ?? res.piezas ?? '?'} piezas · {fmtFechaHora(tizada.FechaTizada)} · vinculó {tizada.UsuarioNombre || ''}</div>
+                    <ul className="space-y-1">
+                        {(res.hojas || []).map(h => {
+                            const a = hojaSubida(h);
+                            return (
+                                <li key={h.archivo} className={`rounded-md border px-2 py-1.5 text-[11px] ${a ? 'border-emerald-200 bg-emerald-50' : 'border-amber-200 bg-amber-50'}`}>
+                                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                                        <span><b>{h.material || h.tela}</b> · {fmtM(h.consumoCm)} de largo × {fmtM(h.anchoCm)} de ancho · {h.paginas} {h.paginas === 1 ? 'página' : 'páginas'}{h.aprovechamiento != null ? ` · ${h.aprovechamiento}% aprovechado` : ''}</span>
+                                        {a ? <span className="font-black text-emerald-700">✓ PDF subido: {a.NombreOriginal}</span>
+                                            : puede ? <BotonArchivo chico primario busy={busy} etiqueta={`Subir el PDF de esta hoja (${h.archivo})`} onFiles={(files) => onSubirHoja(files, h)} />
+                                                : <span className="font-bold text-amber-700">Falta el PDF</span>}
+                                    </div>
+                                </li>
+                            );
+                        })}
+                    </ul>
+                    {res.avisos?.length > 0 && <div className="text-[10px] text-amber-700">Avisos de TizadaPro: {res.avisos.join(' · ')}</div>}
+                </div>
+            )}
+
+            {abierto && (
+                <div className="mt-2 bg-white border border-slate-200 rounded-md p-2">
+                    <div className="flex items-center justify-between gap-2 flex-wrap mb-1.5">
+                        <div className="text-[11px] font-bold text-slate-700">Tizadas terminadas en TizadaPro{lista?.moldeRef && !todas ? ' · solo del molde de este producto' : ''}</div>
+                        <div className="flex items-center gap-2">
+                            {lista?.moldeRef && <button type="button" onClick={() => { setTodas(!todas); cargar(!todas); }} className="text-[10px] font-bold text-slate-500 hover:underline">{todas ? 'Solo las del molde del producto' : `Ver todas (${lista.totalSinFiltro})`}</button>}
+                            <button type="button" onClick={() => cargar(todas)} className="text-[10px] font-bold text-slate-500 hover:underline">↻ Actualizar</button>
+                            <button type="button" onClick={() => setAbierto(false)} className="text-[10px] font-bold text-slate-400 hover:text-slate-600">Cancelar</button>
+                        </div>
+                    </div>
+                    {cargando && <div className="text-[11px] text-slate-400 py-2">Leyendo TizadaPro…</div>}
+                    {error && <div className="text-[11px] text-rose-700 font-bold py-1">{error}</div>}
+                    {!cargando && !error && lista && lista.trabajos.length === 0 && (
+                        <div className="text-[11px] text-slate-500 py-1">No hay tizadas terminadas{lista.moldeRef && !todas ? ' de este molde' : ''} en los últimos 15 días. Generala en TizadaPro y tocá ↻ Actualizar.</div>
+                    )}
+                    {!cargando && !error && lista && lista.trabajos.length > 0 && (
+                        <ul className="divide-y divide-slate-100 max-h-64 overflow-y-auto">
+                            {lista.trabajos.map(t => (
+                                <li key={t.trabajoId} className="py-1.5 flex items-center justify-between gap-2 flex-wrap">
+                                    <div className="text-[11px]">
+                                        <div className="font-bold text-slate-700">{t.molde} <span className="font-normal text-slate-400">· {t.ref || t.trabajoId} · {fmtFechaHora(t.fecha)}</span></div>
+                                        <div className="text-slate-500">{t.piezas ?? '?'} piezas · {t.hojas.map(h => `${h.material || h.tela} ${fmtM(h.consumoCm)}`).join(' · ')}</div>
+                                        {t.hojas.some(h => !h.codArticulo) && <div className="text-rose-600 font-bold">Tiene una tela que no está en el catálogo de Sublimación.</div>}
+                                    </div>
+                                    <button type="button" disabled={busy || t.hojas.some(h => !h.codArticulo)} onClick={() => elegir(t)}
+                                        className="text-[11px] font-black px-2.5 py-1 rounded-full bg-indigo-600 text-white disabled:opacity-50">
+                                        {lista.moldeRef && t.moldeRef && lista.moldeRef !== t.moldeRef ? 'Usar igual (otro molde)' : 'Usar esta tizada'}
+                                    </button>
+                                </li>
+                            ))}
+                        </ul>
+                    )}
+                </div>
+            )}
+        </div>
+    );
+}
+
 function TelaCopias({ a, telas, puede, busy, onGuardar, soloCopias }) {
     const [copias, setCopias] = useState(a.Copias || 1);
     useEffect(() => { setCopias(a.Copias || 1); }, [a.Copias]);
@@ -454,16 +1050,34 @@ function TelaCopias({ a, telas, puede, busy, onGuardar, soloCopias }) {
     );
 }
 
+// Miniatura de un archivo de Drive. Si Drive no la da (archivo sin compartir, formato sin vista previa
+// o todavía subiendo), muestra la extensión. El clic abre SIEMPRE el archivo real.
+const driveIdDe = (url) => { const m = String(url || '').match(/\/d\/([a-zA-Z0-9_-]{10,})|[?&]id=([a-zA-Z0-9_-]{10,})/); return m ? (m[1] || m[2]) : null; };
+function Miniatura({ a, tam = 64 }) {
+    const [error, setError] = useState(false);
+    const idDrive = driveIdDe(a.UrlDrive);
+    const src = idDrive && !error ? `https://drive.google.com/thumbnail?id=${idDrive}&sz=w300` : null;
+    const ext = (String(a.NombreOriginal || '').split('.').pop() || '').toUpperCase().slice(0, 4);
+    return (
+        <a href={a.UrlDrive} target="_blank" rel="noreferrer" className="fp-mini" style={{ width: tam, height: tam }} title={`Abrir "${a.NombreOriginal}"`}>
+            {src ? <img src={src} alt="" loading="lazy" onError={() => setError(true)} /> : <span className="fp-mini-ext">{ext || <FileText size={16} />}</span>}
+        </a>
+    );
+}
+
 function ArchivosCelda({ archivos, vacio, puedeQuitar, onQuitar, conRol }) {
     if (!archivos.length) return <div className="text-slate-400">{vacio}</div>;
     return (
         <ul className="space-y-1.5">
             {archivos.map(a => (
-                <li key={a.ArchivoID}>
-                    <a href={a.UrlDrive} target="_blank" rel="noreferrer" className="font-bold text-indigo-700 hover:underline inline-flex items-center gap-1 break-all"><FileText size={12} /> {a.NombreOriginal}</a>
+                <li key={a.ArchivoID} className="fp-archivo">
+                    <Miniatura a={a} />
+                    <div className="min-w-0">
+                    <a href={a.UrlDrive} target="_blank" rel="noreferrer" className="font-bold text-indigo-700 hover:underline inline-flex items-center gap-1 break-all">{a.NombreOriginal}</a>
                     <div className="text-[10px] text-slate-500">
                         {conRol || a.Rol ? (ROL_ARCHIVO[a.Rol] || a.Rol) : ''} · {a.UsuarioNombre || ''} · {fmtFechaHora(a.FechaSubida)}
                         {puedeQuitar && onQuitar && <button onClick={() => { if (window.confirm(`¿Quitar "${a.NombreOriginal}" de la solicitud? Queda registrado en el historial.`)) onQuitar(a); }} className="ml-2 text-rose-600 hover:underline inline-flex items-center gap-0.5"><Trash2 size={11} /> Quitar</button>}
+                    </div>
                     </div>
                 </li>
             ))}
@@ -513,7 +1127,7 @@ function Conversion({ s, p, pedido, faltantes, avisos = [], checklist, puedeVend
 
     return (
         <div className="text-xs space-y-2">
-            <Checklist ch={checklist || { listo: faltantes.length === 0, faltan: faltantes, ok: [], luego: [] }} titulo={faltantes.length ? 'Lo rojo frena el ingreso a producción. Lo verde ya está.' : 'Este producto tiene todo para convertirse en pedido de producción.'} />
+            <EstadoProduccionPanel ch={checklist || { listo: faltantes.length === 0, faltan: faltantes, ok: [], luego: [] }} />
             {faltantes.length ? (
                 <>
                     <div className="mt-2 text-[11px] text-slate-600 bg-white border border-slate-200 rounded-lg p-2">
@@ -719,10 +1333,9 @@ function FichaIngreso({ s }) {
             <div className="text-[10px] font-black uppercase tracking-wide text-slate-500 mb-2">Ficha de ingreso a producción</div>
             <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-xs">
                 <Info l="Dónde se cose" v={f.dondeSeCose === 'EXTERNO' ? `Taller externo${f.tallerExterno ? `: ${f.tallerExterno}` : ' (sin nombre)'}` : 'Nuestro taller'} />
-                <Info l="Muestra" v={!mu.ofrecida ? <span className="text-rose-600 font-bold">No se ofreció / sin registrar</span> : <>Ofrecida · {RESPUESTA_MUESTRA[mu.respuesta] || <span className="text-rose-600 font-bold">respuesta sin registrar</span>}{mu.respuesta !== 'RECHAZO' && <> · aprobada: {si(mu.aprobada)}</>}</>} />
+                {mu.ofrecida && <Info l="Muestra" v={<>Ofrecida · {RESPUESTA_MUESTRA[mu.respuesta] || <span className="text-rose-600 font-bold">respuesta sin registrar</span>}{mu.respuesta !== 'RECHAZO' && <> · aprobada: {si(mu.aprobada)}</>}</>} />}
                 <Info l="Fecha que necesita el cliente" v={s.FechaEntrega ? `${fmtFecha(s.FechaEntrega)}${s.FechaEntregaHasta ? ` → ${fmtFecha(s.FechaEntregaHasta)}` : ''}` : <span className="text-rose-600 font-bold">Sin fecha</span>} />
-                <Info l="Plazo verificado, informado y aceptado" v={si(f.plazoOk)} />
-                <div className="col-span-2"><Info l="Indicaciones del cliente" v={f.indicaciones ? <span className="whitespace-pre-line">{f.indicaciones}</span> : f.sinIndicaciones ? 'No hay indicaciones especiales (ya se preguntó)' : <span className="text-rose-600 font-bold">Sin anotar</span>} /></div>
+                {f.indicaciones && <div className="col-span-2"><Info l="Indicaciones del cliente" v={<span className="whitespace-pre-line">{f.indicaciones}</span>} /></div>}
                 {f.notasInternas && <div className="col-span-full"><Info l="Notas internas (taller)" v={<span className="whitespace-pre-line">{f.notasInternas}</span>} /></div>}
             </div>
         </div>
@@ -733,7 +1346,7 @@ function FichaIngreso({ s }) {
 function DatosProducto({ d }) {
     const e = d.espec || {};
     const dis = d.diseno || {};
-    const marcas = [d.productoNuevo && 'Producto nuevo', d.produccionGrande && 'Producción grande', d.muestraFisica && 'Muestra física o molde del cliente', d.tablaEstandar && 'Tabla de medidas estándar del taller', d.personalizacion && (d.listaCerrada ? 'Nombres y números: lista cerrada' : 'Nombres y números: lista SIN cerrar')].filter(Boolean);
+    const marcas = [d.productoNuevo && 'Producto nuevo', d.produccionGrande && 'Producción grande', d.muestraFisica && 'Muestra física o molde del cliente', d.requiereMuestra && (d.muestraAprobada ? 'Muestra: aprobada por el cliente' : 'Muestra: requiere confección, SIN aprobar'), d.tablaEstandar && 'Tabla de medidas estándar del taller', d.personalizacion && (d.listaCerrada ? 'Nombres y números: lista cerrada' : 'Nombres y números: lista SIN cerrar')].filter(Boolean);
     return (
         <>
             {d.tipoTrabajo && <Info l="Tipo de trabajo" v={d.tipoTrabajo} />}
@@ -758,5 +1371,62 @@ function DatosProducto({ d }) {
             )}
             {dis.origen && <Info l="Diseño" v={dis.origen === 'NO' ? 'No lleva diseño' : dis.origen === 'CLIENTE' ? <>Lo entrega el cliente · archivo verificado: {dis.verificado ? 'sí' : 'no'}</> : <>Lo hace el taller · propuesta aprobada por escrito: {dis.aprobado ? 'sí' : 'no'}</>} />}
         </>
+    );
+}
+
+// ¿Se llega a la fecha que pide el cliente? Recorre los sectores por los que va a pasar el pedido,
+// en orden, sobre la cola REAL de cada uno (el mismo motor de Planificación), y compara la última
+// fecha contra la fecha de entrega. Es una estimación: no crea nada ni reserva capacidad.
+const VEREDICTO = {
+    SI: { txt: 'Se llega', cls: 'bg-emerald-50 text-emerald-800 border-emerald-300' },
+    RIESGO: { txt: 'Justo — en riesgo', cls: 'bg-amber-50 text-amber-800 border-amber-300' },
+    NO: { txt: 'NO se llega', cls: 'bg-rose-50 text-rose-800 border-rose-300' },
+    SIN_FECHA: { txt: 'Falta la fecha de entrega para comparar', cls: 'bg-slate-50 text-slate-700 border-slate-300' },
+    SIN_DATOS: { txt: 'No se pudo proyectar ningún sector', cls: 'bg-slate-50 text-slate-700 border-slate-300' },
+};
+function PanelPlazo({ s, id }) {
+    const [r, setR] = useState(null);
+    const [busy, setBusy] = useState(false);
+    const calcular = async () => { setBusy(true); try { setR(await svc.estimarPlazo(id)); } catch (e) { toast.error(errorDe(e)); } finally { setBusy(false); } };
+    useEffect(() => { if (s.FechaEntrega) calcular(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [id, s.FechaEntrega]);
+    const v = r ? (VEREDICTO[r.veredicto] || VEREDICTO.SIN_DATOS) : null;
+    const f = (d) => (d ? d.split('-').reverse().join('/') : '—');
+    return (
+        <div className="border-t border-slate-100 pt-3 text-xs space-y-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="text-[10px] font-black uppercase tracking-wide text-slate-500 flex items-center gap-1"><CalendarClock size={12} /> ¿Se llega a la fecha de entrega? — carga real de cada sector</div>
+                <button onClick={calcular} disabled={busy} className={BTN_SECUNDARIO}>{busy ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />} {r ? 'Recalcular' : 'Calcular con la carga de hoy'}</button>
+            </div>
+            {!r && !busy && <div className="text-slate-500">{s.FechaEntrega ? 'Calculando…' : 'Cargá la fecha que necesita el cliente (Editar solicitud) y se calcula solo.'}</div>}
+            {r && (
+                <>
+                    <div className={`rounded-xl border p-3 ${v.cls}`}>
+                        <div className="text-sm font-black">{v.txt}{r.margenDias !== null && r.veredicto !== 'SIN_FECHA' ? ` · ${r.margenDias >= 0 ? `${r.margenDias} día${r.margenDias === 1 ? '' : 's'} de margen` : `${-r.margenDias} día${-r.margenDias === 1 ? '' : 's'} tarde`}` : ''}</div>
+                        <div className="mt-0.5">Entrando hoy al final de la cola de cada sector, el pedido terminaría el <b>{f(r.fechaEstimadaFin)}</b>{r.fechaEntrega ? <> · el cliente lo necesita el <b>{f(r.fechaEntrega)}</b></> : null}.</div>
+                        {r.sinProyeccion.length > 0 && <div className="mt-1 text-[11px]">Sin proyectar (no tienen cargada la velocidad de sus máquinas en Configuración → Equipos): <b>{r.sinProyeccion.join(', ')}</b>. La fecha de arriba no los cuenta.</div>}
+                        <div className="mt-1 text-[11px] opacity-80">Es una estimación con la cola de hoy: no reserva lugar.</div>
+                    </div>
+                    {r.productos.map(p => (
+                        <div key={p.productoSolId} className="overflow-x-auto">
+                            {r.productos.length > 1 && <div className="font-bold text-slate-700 mb-1">{p.nombre} · {p.prendas} prendas → {f(p.fechaEstimadaFin)}</div>}
+                            <table className="w-full text-[11px]">
+                                <thead><tr className="text-[9px] font-black uppercase text-slate-400 text-left"><th className="py-1 pr-2">Sector</th><th className="py-1 pr-2">Trabajo de este pedido</th><th className="py-1 pr-2">Cola actual del sector</th><th className="py-1 pr-2">Empieza después de</th><th className="py-1">Terminaría</th></tr></thead>
+                                <tbody>
+                                    {p.sectores.map(x => (
+                                        <tr key={x.area} className="border-t border-slate-100">
+                                            <td className="py-1 pr-2 font-bold text-slate-800">{x.nombre}</td>
+                                            <td className="py-1 pr-2 text-slate-600">{x.nota}{x.estimada ? <span className="text-amber-700"> (estimado)</span> : null}</td>
+                                            <td className="py-1 pr-2 text-slate-600">{x.tieneCapacidad && x.carga ? `${x.carga.ordenes} órdenes · ${Math.round(x.carga.pendiente)} ${x.carga.unidad || ''} pendientes · ${x.carga.capacidadDia != null ? `${Math.round(x.carga.capacidadDia)} ${x.carga.unidad || ''}/día` : ''}` : <span className="text-rose-600">sin capacidad cargada</span>}</td>
+                                            <td className="py-1 pr-2 text-slate-500">{x.empiezaDespuesDe.length ? x.empiezaDespuesDe.join(' y ') : 'hoy'}</td>
+                                            <td className={`py-1 font-bold ${x.fechaEstimada && r.fechaEntrega && x.fechaEstimada > r.fechaEntrega ? 'text-rose-700' : 'text-slate-800'}`}>{x.fechaEstimada ? f(x.fechaEstimada) : '—'}</td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+                    ))}
+                </>
+            )}
+        </div>
     );
 }

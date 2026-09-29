@@ -168,7 +168,7 @@ async function estadosConversion(pool, sol) {
 
 // Bobinas de tela que el cliente de la solicitud tiene disponibles hoy (para elegir al convertir).
 async function bobinasDelCliente(pool, user, base, solicitudId) {
-  base.exigirVendedor(user);
+  if (!base.esVendedor(user) && !(await base.esDisenador(pool, user))) throw fallo(403, 'El pedido lo crea el diseñador que tiene el trabajo (o el vendedor).');
   const sol = await base.cabecera(pool, solicitudId);
   const c = (await pool.request().input('Cod', sql.Int, sol.CodCliente)
     .query('SELECT CodCliente, CliIdCliente, RTRIM(LTRIM(IDCliente)) AS IDCliente FROM dbo.Clientes WHERE CodCliente = @Cod')).recordset[0];
@@ -242,8 +242,9 @@ async function disenoProduccionDePedido(pool, noDocERP) {
   return r.recordset;
 }
 
+// 28-sep: el pedido lo crea el DISEÑADOR desde su pantalla de Diseño (con la tizada y los archivos ya cargados); el vendedor también puede.
 async function convertir(pool, user, base, solicitudId, productoSolId, b, app) {
-  base.exigirVendedor(user);
+  if (!base.esVendedor(user) && !(await base.esDisenador(pool, user))) throw fallo(403, 'El pedido lo crea el diseñador que tiene el trabajo (o el vendedor).');
   const sol = await base.obtener(pool, user, solicitudId);
   base.exigirAbierta(sol);
   const p = sol.Productos.find(x => x.ProductoSolID === productoSolId);
@@ -273,12 +274,22 @@ async function convertir(pool, user, base, solicitudId, productoSolId, b, app) {
       await rollbackSeguro(transaction, `solicitudesVendedor.convertir ${solicitudId}/${productoSolId}`);
       throw err;
     }
+    // Ficha del pedido (PDF con todo lo de la solicitud) → referencia "FICHA_PEDIDO" de la orden PRO.
+    // Después de responder: tarda (arma el PDF y lo sube a Drive) y si falla la conversión ya quedó hecha.
+    setImmediate(async () => {
+      const ficha = require('./solicitudesVendedorFichaPdf');
+      const r = await ficha.adjuntarAlPedido(pool, () => base.obtener(pool, user, solicitudId), solicitudId, resultado.noDocERP, user, app);
+      if (r) {
+        await base.registrarEvento(pool, user, { solicitudId, productoSolId, tipo: 'CONVERSION', texto: `Ficha del pedido (PDF) adjuntada a ${r.codigoOrden} como referencia.` })
+          .catch(e => require('../utils/logger').warn(`[FICHA-PDF] evento SOL-${solicitudId}: ${e.message}`));
+      }
+    });
   }
   return resultado;
 }
 
-const reintentarArchivos = (pool, user, base, solicitudId, productoSolId, app) => {
-  base.exigirVendedor(user);
+const reintentarArchivos = async (pool, user, base, solicitudId, productoSolId, app) => {
+  if (!base.esVendedor(user) && !(await base.esDisenador(pool, user))) throw fallo(403, 'El pedido lo crea el diseñador que tiene el trabajo (o el vendedor).');
   return procesador.reintentarArchivos(pool, { origen: ORIGEN, idExterno: idExternoDe(solicitudId, productoSolId), usuarioInterno: user, app });
 };
 

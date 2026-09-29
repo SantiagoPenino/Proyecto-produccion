@@ -25,10 +25,19 @@ router.post('/partes/:parteId/enviar-diseno', ctrl.enviarADiseno);
 router.post('/partes/:parteId/tomar', ctrl.tomarParte);
 router.post('/partes/:parteId/aceptar-cambio', ctrl.aceptarCambio);
 
+// Tizadas de TizadaPro (base externa del mismo servidor, solo lectura)
+router.get('/tizadapro/trabajos', ctrl.tizadasTizadaPro);          // tizadas terminadas para elegir (?dias=15)
+router.post('/partes/:parteId/tizada', ctrl.vincularTizada);       // vincular una a la producción principal
+
+// Calendario de entregas y trabajo planificado (solo lectura)
+router.get('/calendario', ctrl.calendario);
+
 // Solicitudes
 router.get('/', ctrl.listar);
 router.post('/', ctrl.crear);
 router.get('/:id', ctrl.obtener);
+router.get('/:id/plazo', ctrl.estimarPlazo);
+router.get('/:id/ficha-pdf', ctrl.fichaPdf);   // ficha del pedido en PDF (la misma que se adjunta al pedido al convertir)   // ¿se llega a la fecha de entrega? (sobre la cola real de cada sector)
 router.put('/:id', ctrl.actualizar);
 router.put('/:id/precio', ctrl.guardarPrecio);
 router.post('/:id/sena/confirmar', ctrl.confirmarSena);
@@ -37,6 +46,11 @@ router.post('/:id/cancelar', ctrl.cancelar);
 router.post('/:id/archivos', upload.single('file'), ctrl.subirArchivo);
 router.delete('/:id/archivos/:archivoId', ctrl.quitarArchivo);
 router.put('/:id/archivos/:archivoId/produccion', ctrl.definirProduccionArchivo);   // tela + copias de un diseño pronto
+
+// Sublimación: modelo + tela y arte por pieza (producto del catálogo con molde de TizadaPro)
+router.get('/:id/productos/:productoSolId/molde', ctrl.moldeDelProducto);
+router.put('/:id/productos/:productoSolId/sublimacion', ctrl.guardarSublimacion);
+router.put('/:id/productos/:productoSolId/talles', ctrl.guardarTalles);          // lista de talles / medidas / nombres y números
 
 // Conversión a pedido de producción (un pedido por producto)
 router.get('/:id/bobinas', ctrl.bobinasDelCliente);   // tela del cliente: la bobina se elige al convertir

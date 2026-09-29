@@ -1137,6 +1137,299 @@ function TopProductosSection({ opciones }) {
 // ─── Resumen Mensual (multimoneda unificada) ─────────────────────────────────
 // Reutiliza el endpoint de Ventas por Área con el rango del mes; la unificación
 // a un TC de referencia (editable) es de esta pantalla.
+// ─── Resumen Mensual: evolución del año + comparación con el año anterior ─────
+// Maqueta "Resumen Mensual – Evolución y Comparación" (28-sep-2026). Datos de
+// /contabilidad/reportes/ventas-mensuales (un dato por mes, TC promedio del mes);
+// el año anterior sale de dbo.VentasHistoricas, cargado a mano en la tabla de abajo.
+const MESES_CORTO = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
+const MESES_LARGO = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
+const fmtCorto = (v, sym) => {
+    if (v == null) return '';
+    const a = Math.abs(v);
+    if (a >= 1e6) return `${sym} ${(v / 1e6).toLocaleString('es-UY', { maximumFractionDigits: 1 })} M`;
+    if (a >= 1e3) return `${sym} ${Math.round(v / 1e3).toLocaleString('es-UY')} k`;
+    return `${sym} ${Math.round(v).toLocaleString('es-UY')}`;
+};
+const fmtPct = (v) => (v > 0 ? '+' : '') + Number(v).toLocaleString('es-UY', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + ' %';
+const niceMax = (m) => { if (!(m > 0)) return 1; const p = Math.pow(10, Math.floor(Math.log10(m))); const s = [1, 2, 2.5, 5, 10].find(x => x * p >= m / 4); return Math.ceil(m / (s * p)) * s * p; };
+// Total unificado de un mes: pesos + dólares al TC promedio de ESE mes (o al de referencia si el mes no tiene cotización)
+const unifMes = (m, unif, tcRef) => {
+    if (!m || !m.origen) return null;
+    const tc = m.tc || tcRef || 1;
+    return unif === 'UYU' ? m.uyu + m.usd * tc : m.uyu / tc + m.usd;
+};
+const PillVar = ({ v }) => v == null
+    ? <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold bg-slate-100 text-slate-400">sin dato</span>
+    : <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold ${v >= 0 ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>{v >= 0 ? '▲' : '▼'} {fmtPct(v)}</span>;
+const StatBox = ({ k, children }) => (
+    <div className="rounded-lg border border-slate-100 px-3 py-2">
+        <div className="text-[11px] text-slate-400">{k}</div>
+        <div className="font-bold text-sm text-slate-800 tabular-nums">{children}</div>
+    </div>
+);
+const EJE = { W: 1100, H: 330, L: 78, T: 26, B: 40 };
+const ejeY = (max, steps = 5, sym) => Array.from({ length: steps + 1 }, (_, i) => {
+    const v = max * i / steps, y = EJE.T + (EJE.H - EJE.T - EJE.B) * (1 - i / steps);
+    return (
+        <g key={i}>
+            <line x1={EJE.L} x2={EJE.W - 8} y1={y} y2={y} stroke="#e2e8f0" strokeWidth="1" />
+            <text x={EJE.L - 8} y={y + 4} textAnchor="end" fontSize="11" fill="#94a3b8" fontFamily="ui-monospace, monospace">{fmtCorto(v, sym) || '0'}</text>
+        </g>
+    );
+});
+const barraPath = (x, top, bw, base, r = 4) => `M${x},${base} V${top + r} Q${x},${top} ${x + r},${top} H${x + bw - r} Q${x + bw},${top} ${x + bw},${top + r} V${base} Z`;
+
+function TooltipBarra({ tip }) {
+    if (!tip) return null;
+    return (
+        <div className="absolute pointer-events-none bg-white border border-slate-200 rounded-lg shadow-lg px-3 py-2 text-xs z-10 min-w-[180px]"
+            style={{ left: tip.x + 14, top: tip.y - 10 }}>
+            <p className="font-bold text-slate-700 mb-1">{tip.titulo}</p>
+            {tip.filas.map(([k, v]) => <p key={k} className="flex justify-between gap-4 font-mono tabular-nums text-slate-600"><span>{k}</span><span>{v}</span></p>)}
+        </div>
+    );
+}
+
+// Visual 1: un dato por mes del año; el mes seleccionado se resalta, el mes en curso va rayado
+function EvolucionAnual({ anio, meses, mesEnCurso, mesSel, onMesSel, unif, tcRef, etiqAmbito }) {
+    const [tip, setTip] = useState(null);
+    const boxRef = useRef(null);
+    const sym = unif === 'UYU' ? '$' : 'US$';
+    const d = (meses || []).map(m => unifMes(m, unif, tcRef));
+    const enCurso = mesEnCurso ? mesEnCurso - 1 : 12; // índice 0-based; si el año no es el actual, todos cerrados
+    const cerrados = d.map((v, i) => ({ v, i })).filter(x => x.v != null && x.i < enCurso);
+    const avg = cerrados.length ? cerrados.reduce((a, x) => a + x.v, 0) / cerrados.length : null;
+    const max = niceMax(Math.max(0, ...d.filter(v => v != null)) * 1.08);
+    const { W, H, L, T, B } = EJE;
+    const cw = (W - L - 8) / 12, bw = Math.min(46, cw * 0.58);
+    const y = v => T + (H - T - B) * (1 - v / max);
+    const acum = cerrados.reduce((a, x) => a + x.v, 0);
+    const mejor = cerrados.length ? cerrados.reduce((a, x) => (x.v > a.v ? x : a)) : null;
+    const sel = d[mesSel], ant = mesSel > 0 ? d[mesSel - 1] : null;
+    const varSel = sel != null && ant ? (sel - ant) / ant * 100 : null;
+    const mover = (e, i) => {
+        const r = boxRef.current.getBoundingClientRect();
+        const v = d[i], p = i > 0 && d[i - 1] != null && d[i - 1] ? (v - d[i - 1]) / d[i - 1] * 100 : null;
+        setTip({ x: e.clientX - r.left, y: e.clientY - r.top, titulo: `${MESES_LARGO[i]} ${anio}${i === enCurso ? ' · en curso' : ''}${meses[i]?.origen === 'historico' ? ' · cargado a mano' : ''}`,
+            filas: [['Venta', `${sym} ${fmtMoney(v)}`], ...(meses[i]?.origen === 'sistema' ? [['Documentos', fmtInt(meses[i].docs)]] : []), ...(p != null ? [['vs mes anterior', fmtPct(p)]] : []), ...(avg ? [['vs promedio', fmtPct((v - avg) / avg * 100)]] : [])] });
+    };
+    return (
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-4">
+            <div className="flex items-start justify-between gap-3 flex-wrap mb-1">
+                <div>
+                    <h3 className="font-bold text-slate-700 text-sm">Evolución de ventas {anio} <span className="ml-1 px-1.5 py-0.5 rounded text-[10px] font-extrabold uppercase border border-brand-cyan text-brand-cyan align-middle">Nueva</span></h3>
+                    <p className="text-[11px] text-slate-400">Total unificado por mes en {unif === 'UYU' ? 'pesos' : 'dólares'}{etiqAmbito ? ` · ${etiqAmbito}` : ''}. Cada mes usa su propio TC promedio. El mes seleccionado se resalta; el mes en curso se muestra rayado.</p>
+                </div>
+                <div className="flex items-center gap-4 text-[11px] text-slate-500">
+                    <span className="flex items-center gap-1.5"><i className="w-2.5 h-2.5 rounded-sm" style={{ background: '#0b7fa0' }} />Mes cerrado</span>
+                    <span className="flex items-center gap-1.5"><i className="w-2.5 h-2.5 rounded-sm border border-[#0b7fa0]" style={{ background: 'repeating-linear-gradient(45deg,#0b7fa0 0 2px,transparent 2px 5px)' }} />Mes en curso</span>
+                    <span className="flex items-center gap-1.5"><i className="w-3.5 border-t-2 border-dashed border-slate-400" />Promedio</span>
+                </div>
+            </div>
+            <div ref={boxRef} className="relative overflow-x-auto">
+                <svg viewBox={`0 0 ${W} ${H}`} className="block w-full min-w-[640px] h-auto" role="img" aria-label={`Ventas por mes ${anio}`}>
+                    <defs><pattern id="hatchEvo" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" fill="#fff" /><rect width="2.4" height="6" fill="#0b7fa0" /></pattern></defs>
+                    {ejeY(max, 5, sym)}
+                    {d.map((v, i) => {
+                        const cx = L + cw * i + cw / 2;
+                        return (
+                            <g key={i}>
+                                <text x={cx} y={H - B + 18} textAnchor="middle" fontSize="12" fontWeight={i === mesSel ? 800 : 600} fill={i === mesSel ? '#0f172a' : '#64748b'}>{MESES_CORTO[i]}</text>
+                                {v == null ? <text x={cx} y={H - B - 8} textAnchor="middle" fontSize="11" fill="#94a3b8">sin datos</text> : (() => {
+                                    const top = y(v), x = cx - bw / 2, esCurso = i === enCurso;
+                                    const fill = esCurso ? 'url(#hatchEvo)' : (i === mesSel || mesSel >= enCurso ? '#0b7fa0' : '#9fd0df');
+                                    return (<>
+                                        <path d={barraPath(x, top, bw, H - B)} fill={fill} stroke={esCurso ? '#0b7fa0' : 'none'} strokeWidth="1.5" />
+                                        <text x={cx} y={top - 7} textAnchor="middle" fontSize="11" fontWeight={i === mesSel ? 800 : 600} fill="#475569" fontFamily="ui-monospace, monospace" stroke="#fff" strokeWidth="4" paintOrder="stroke">{fmtCorto(v, sym)}</text>
+                                    </>);
+                                })()}
+                                <rect x={L + cw * i} y={T} width={cw} height={H - T - B} fill="transparent" style={{ cursor: 'pointer' }}
+                                    onMouseMove={v == null ? undefined : (e) => mover(e, i)} onMouseLeave={() => setTip(null)} onClick={() => onMesSel(i)} />
+                            </g>
+                        );
+                    })}
+                    {avg != null && (<>
+                        <line x1={L} x2={W - 8} y1={y(avg)} y2={y(avg)} stroke="#94a3b8" strokeWidth="1.5" strokeDasharray="5 4" />
+                        <text x={W - 10} y={y(avg) - 6} textAnchor="end" fontSize="11" fontWeight="700" fill="#475569">Promedio {fmtCorto(avg, sym)}</text>
+                    </>)}
+                    <line x1={L} x2={W - 8} y1={H - B} y2={H - B} stroke="#94a3b8" strokeWidth="1" />
+                </svg>
+                <TooltipBarra tip={tip} />
+            </div>
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 mt-3">
+                <StatBox k={`Acumulado meses cerrados${cerrados.length ? ` (${MESES_CORTO[cerrados[0].i]}–${MESES_CORTO[cerrados[cerrados.length - 1].i]})` : ''}`}>{sym} {fmtMoney(acum)}</StatBox>
+                <StatBox k="Promedio mensual (meses cerrados)">{avg == null ? '—' : `${sym} ${fmtMoney(avg)}`}</StatBox>
+                <StatBox k="Mejor mes">{mejor ? `${MESES_LARGO[mejor.i]} · ${fmtCorto(mejor.v, sym)}` : '—'}</StatBox>
+                <StatBox k={`${MESES_LARGO[mesSel]} vs mes anterior${mesSel === enCurso ? ' (en curso)' : ''}`}><PillVar v={varSel} /></StatBox>
+            </div>
+        </div>
+    );
+}
+
+// Visual 2: año actual contra año anterior, mes a mes, más la tabla editable del año anterior
+function ComparacionAnual({ anio, meses, mesesAnt, mesEnCurso, mesSel, onMesSel, unif, tcRef, tcRefAnt, ambitoParams, etiqAmbito, onGuardado }) {
+    const [tip, setTip] = useState(null);
+    const boxRef = useRef(null);
+    const [edit, setEdit] = useState(Array(12).fill(''));   // montos USD del año anterior en edición
+    const [sucio, setSucio] = useState(false);
+    const [pegar, setPegar] = useState(null);                // null = cerrado; string = texto del textarea
+    const [msg, setMsg] = useState('');
+    const [guardando, setGuardando] = useState(false);
+    const sym = unif === 'UYU' ? '$' : 'US$';
+    const anioAnt = anio - 1;
+    const a = (meses || []).map(m => unifMes(m, unif, tcRef));
+    const b = (mesesAnt || []).map(m => unifMes(m, unif, tcRefAnt));
+    const enCurso = mesEnCurso ? mesEnCurso - 1 : 12;
+
+    // Lo cargado (en USD) alimenta la tabla editable
+    useEffect(() => {
+        setEdit((mesesAnt || []).map(m => (m && m.origen === 'historico' && m.usd ? String(m.usd) : '')));
+        setSucio(false);
+    }, [mesesAnt]);
+
+    const { W, H, L, T, B } = EJE;
+    const vals = [...a, ...b].filter(v => v != null);
+    const max = niceMax(Math.max(1, ...vals) * 1.05);
+    const cw = (W - L - 8) / 12, bw = Math.min(22, cw * 0.3), gap = 2;
+    const y = v => T + (H - T - B) * (1 - v / max);
+    const hasta = Math.min(mesSel, enCurso - 1);
+    let s26 = 0, s25 = 0, mejor = null;
+    for (let i = 0; i <= hasta; i++) if (a[i] != null && b[i]) { s26 += a[i]; s25 += b[i]; const p = (a[i] - b[i]) / b[i]; if (!mejor || p > mejor.p) mejor = { i, p }; }
+    const pa = s25 ? (s26 - s25) / s25 * 100 : null;
+    const mover = (e, i) => {
+        const r = boxRef.current.getBoundingClientRect();
+        const p = a[i] != null && b[i] ? (a[i] - b[i]) / b[i] * 100 : null;
+        setTip({ x: e.clientX - r.left, y: e.clientY - r.top, titulo: `${MESES_LARGO[i]}${i === enCurso ? ` · ${anio} en curso` : ''}`,
+            filas: [[String(anio), a[i] == null ? '—' : `${sym} ${fmtMoney(a[i])}`], [String(anioAnt), b[i] == null ? '—' : `${sym} ${fmtMoney(b[i])}`], ['Variación', p == null ? 'sin dato' : fmtPct(p)]] });
+    };
+
+    const guardar = async () => {
+        setGuardando(true); setMsg('');
+        try {
+            const mesesBody = edit.map((v, i) => ({ mes: i + 1, monto: String(v).trim() === '' ? null : Number(v) }));
+            if (mesesBody.some(m => m.monto != null && !(m.monto >= 0))) { setMsg('Revisá los montos: tienen que ser números mayores o iguales a 0.'); return; }
+            const r = await api.put('/contabilidad/reportes/ventas-historicas', { anio: anioAnt, ...ambitoParams, moneda: 'USD', meses: mesesBody });
+            setMsg(`Ventas ${anioAnt} guardadas (${r.data.guardados} meses).`); setSucio(false);
+            onGuardado && onGuardado();
+        } catch (e) {
+            setMsg(e.response?.status === 403 ? 'Solo un usuario de administración puede cargar las ventas del año anterior.' : (e.response?.data?.error || e.message));
+        } finally { setGuardando(false); }
+    };
+    const aplicarPegado = () => {
+        const parts = String(pegar || '').split(/[\t\n;]+/).map(x => x.trim()).filter(Boolean);
+        const nums = parts.map(x => { const c = x.replace(/[^\d,.\-]/g, ''); const norm = /,\d{1,2}$/.test(c) ? c.replace(/\./g, '').replace(',', '.') : c.replace(/[.,](?=\d{3}(\D|$))/g, ''); return parseFloat(norm); });
+        if (!nums.length || nums.some(isNaN)) { setMsg('Revisá los datos pegados: se esperan números, uno por mes (enero a diciembre).'); return; }
+        setEdit(prev => prev.map((v, i) => (i < nums.length ? String(nums[i]) : v)));
+        setSucio(true); setPegar(null);
+        setMsg(`Se cargaron ${Math.min(nums.length, 12)} meses. Apretá "Guardar ventas ${anioAnt}" para conservarlos.`);
+    };
+    let t26 = 0, t25 = 0;
+    for (let i = 0; i < 12; i++) if (i < enCurso && a[i] != null && b[i] != null) { t26 += a[i]; t25 += b[i]; }
+    const tp = t25 ? (t26 - t25) / t25 * 100 : null;
+
+    return (
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-4">
+            <div className="flex items-start justify-between gap-3 flex-wrap mb-1">
+                <div>
+                    <h3 className="font-bold text-slate-700 text-sm">Comparación con el año anterior <span className="ml-1 px-1.5 py-0.5 rounded text-[10px] font-extrabold uppercase border border-brand-cyan text-brand-cyan align-middle">Nueva</span></h3>
+                    <p className="text-[11px] text-slate-400">{anio} contra {anioAnt}, mes a mes, en {unif === 'UYU' ? 'pesos' : 'dólares'}{etiqAmbito ? ` · ${etiqAmbito}` : ''}. Las ventas {anioAnt} se cargan en la tabla de abajo (en US$).</p>
+                </div>
+                <div className="flex items-center gap-4 text-[11px] text-slate-500">
+                    <span className="flex items-center gap-1.5"><i className="w-2.5 h-2.5 rounded-sm" style={{ background: '#0b7fa0' }} />Ventas {anio}</span>
+                    <span className="flex items-center gap-1.5"><i className="w-2.5 h-2.5 rounded-sm" style={{ background: '#d9730d' }} />Ventas {anioAnt}</span>
+                </div>
+            </div>
+            <div ref={boxRef} className="relative overflow-x-auto">
+                <svg viewBox={`0 0 ${W} ${H}`} className="block w-full min-w-[640px] h-auto" role="img" aria-label={`Ventas ${anio} contra ${anioAnt} por mes`}>
+                    <defs><pattern id="hatchComp" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" fill="#fff" /><rect width="2.4" height="6" fill="#0b7fa0" /></pattern></defs>
+                    {ejeY(max, 5, sym)}
+                    {Array.from({ length: 12 }, (_, i) => {
+                        const cx = L + cw * i + cw / 2;
+                        const p = a[i] != null && b[i] ? (a[i] - b[i]) / b[i] * 100 : null;
+                        return (
+                            <g key={i}>
+                                <text x={cx} y={H - B + 18} textAnchor="middle" fontSize="12" fontWeight={i === mesSel ? 800 : 600} fill={i === mesSel ? '#0f172a' : '#64748b'}>{MESES_CORTO[i]}</text>
+                                {b[i] != null && <path d={barraPath(cx - bw - gap / 2, y(b[i]), bw, H - B, Math.min(4, bw / 2))} fill="#d9730d" />}
+                                {a[i] != null && <path d={barraPath(cx + gap / 2, y(a[i]), bw, H - B, Math.min(4, bw / 2))} fill={i === enCurso ? 'url(#hatchComp)' : '#0b7fa0'} stroke={i === enCurso ? '#0b7fa0' : 'none'} strokeWidth="1.2" />}
+                                {p != null && <text x={cx} y={Math.min(y(a[i]), y(b[i])) - 7} textAnchor="middle" fontSize="11" fontWeight="800" fill={p >= 0 ? '#138a4f' : '#c2372f'}>{p >= 0 ? '▲' : '▼'}{Math.abs(p).toLocaleString('es-UY', { maximumFractionDigits: 0 })}%</text>}
+                                <rect x={L + cw * i} y={T} width={cw} height={H - T - B} fill="transparent" style={{ cursor: 'pointer' }}
+                                    onMouseMove={(e) => mover(e, i)} onMouseLeave={() => setTip(null)} onClick={() => onMesSel(i)} />
+                            </g>
+                        );
+                    })}
+                    <line x1={L} x2={W - 8} y1={H - B} y2={H - B} stroke="#94a3b8" strokeWidth="1" />
+                </svg>
+                <TooltipBarra tip={tip} />
+            </div>
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 mt-3">
+                <StatBox k={`Acumulado ${anio} (${hasta >= 0 ? `Ene–${MESES_CORTO[hasta]}` : '—'}, meses cerrados con dato en los dos años)`}>{sym} {fmtMoney(s26)}</StatBox>
+                <StatBox k={`Acumulado ${anioAnt} (mismos meses)`}>{sym} {fmtMoney(s25)}</StatBox>
+                <StatBox k="Variación acumulada"><PillVar v={pa} /></StatBox>
+                <StatBox k="Mayor crecimiento">{mejor ? `${MESES_LARGO[mejor.i]} · ${fmtPct(mejor.p * 100)}` : '—'}</StatBox>
+            </div>
+
+            <div className="mt-3 border border-slate-100 rounded-lg overflow-x-auto">
+                <table className="w-full text-xs min-w-[640px]">
+                    <thead className="bg-slate-50 border-b border-slate-200 text-slate-500">
+                        <tr>
+                            <th className="px-3 py-2 text-left font-semibold">Mes</th>
+                            <th className="px-3 py-2 text-right font-semibold">Ventas {anioAnt} (US$, se carga acá)</th>
+                            <th className="px-3 py-2 text-right font-semibold">Ventas {anio} ({unif})</th>
+                            <th className="px-3 py-2 text-right font-semibold">Ventas {anioAnt} ({unif})</th>
+                            <th className="px-3 py-2 text-right font-semibold">Diferencia</th>
+                            <th className="px-3 py-2 text-right font-semibold">Variación</th>
+                        </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50">
+                        {Array.from({ length: 12 }, (_, i) => {
+                            const dif = a[i] != null && b[i] != null ? a[i] - b[i] : null;
+                            const p = dif != null && b[i] ? dif / b[i] * 100 : null;
+                            return (
+                                <tr key={i} className={i === mesSel ? 'bg-cyan-50/40' : ''}>
+                                    <td className="px-3 py-1.5 font-semibold text-slate-700">{MESES_LARGO[i]}{i === enCurso && <span className="text-slate-400 font-normal"> (en curso)</span>}</td>
+                                    <td className="px-3 py-1.5 text-right">
+                                        <input type="number" min="0" step="1" value={edit[i]} placeholder="—" aria-label={`Ventas ${anioAnt} ${MESES_LARGO[i]} en US$`}
+                                            onChange={e => { const v = e.target.value; setEdit(prev => prev.map((x, j) => (j === i ? v : x))); setSucio(true); setMsg('Cambios sin guardar'); }}
+                                            className="w-32 text-right font-mono text-xs border border-slate-300 rounded-lg px-2 py-1 outline-none focus:ring-2 focus:ring-brand-cyan/30" />
+                                    </td>
+                                    <td className="px-3 py-1.5 text-right font-mono tabular-nums">{a[i] == null ? '—' : `${sym} ${fmtMoney(a[i])}`}</td>
+                                    <td className="px-3 py-1.5 text-right font-mono tabular-nums">{b[i] == null ? '—' : `${sym} ${fmtMoney(b[i])}`}</td>
+                                    <td className="px-3 py-1.5 text-right font-mono tabular-nums">{dif == null ? '—' : `${sym} ${fmtMoney(dif)}`}</td>
+                                    <td className="px-3 py-1.5 text-right"><PillVar v={p} /></td>
+                                </tr>
+                            );
+                        })}
+                        <tr className="bg-slate-100 border-t-2 border-slate-300 font-bold">
+                            <td className="px-3 py-2 text-slate-800">Acumulado meses cerrados</td>
+                            <td></td>
+                            <td className="px-3 py-2 text-right font-mono tabular-nums">{sym} {fmtMoney(t26)}</td>
+                            <td className="px-3 py-2 text-right font-mono tabular-nums">{sym} {fmtMoney(t25)}</td>
+                            <td className="px-3 py-2 text-right font-mono tabular-nums">{sym} {fmtMoney(t26 - t25)}</td>
+                            <td className="px-3 py-2 text-right"><PillVar v={tp} /></td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+            <div className="flex items-center gap-2 flex-wrap mt-2">
+                <button onClick={guardar} disabled={guardando || !sucio}
+                    className="px-3 py-1.5 bg-brand-cyan text-white text-xs font-semibold rounded-lg disabled:opacity-40">{guardando ? 'Guardando…' : `Guardar ventas ${anioAnt}`}</button>
+                <button onClick={() => setPegar(p => (p == null ? '' : null))}
+                    className="px-3 py-1.5 bg-white border border-slate-300 text-slate-700 text-xs font-semibold rounded-lg">Pegar desde Excel</button>
+                <span className={`text-xs font-semibold ${sucio ? 'text-amber-600' : 'text-emerald-600'}`}>{msg}</span>
+                <span className="text-[11px] text-slate-400 ml-auto">Solo administración puede guardar. Se guarda para {etiqAmbito || 'toda la empresa'}.</span>
+            </div>
+            {pegar != null && (
+                <div className="mt-2">
+                    <textarea value={pegar} onChange={e => setPegar(e.target.value)} rows={4}
+                        placeholder={`Pegá acá los 12 montos de ${anioAnt} en US$, uno por línea o separados por tabulación (enero a diciembre).`}
+                        className="w-full font-mono text-xs border border-slate-300 rounded-lg px-2 py-1.5 outline-none focus:ring-2 focus:ring-brand-cyan/30" />
+                    <button onClick={aplicarPegado} className="mt-1 px-3 py-1.5 bg-brand-cyan text-white text-xs font-semibold rounded-lg">Aplicar</button>
+                </div>
+            )}
+        </div>
+    );
+}
+
 function ResumenMensualSection({ opciones }) {
     const hoy = new Date();
     const MESES_L = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
@@ -1151,8 +1444,27 @@ function ResumenMensualSection({ opciones }) {
     const [porSector, setPorSector] = useState({});
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState(null);
+    // Series anuales para las visuales nuevas: el año elegido y el anterior
+    const [serie, setSerie] = useState(null);      // { anio, mesEnCurso, tcReferencia, meses[12] }
+    const [serieAnt, setSerieAnt] = useState(null);
+    const [errorSerie, setErrorSerie] = useState(null);
 
     const tcEff = Number(tc) > 0 ? Number(tc) : (Number(opciones.cotizacionDolar) || 40);
+
+    const cargarSeries = useCallback(async () => {
+        setErrorSerie(null);
+        try {
+            const [ra, rb] = await Promise.all([
+                api.get('/contabilidad/reportes/ventas-mensuales', { params: { anio, ...paramsAmbito(ambito) } }),
+                api.get('/contabilidad/reportes/ventas-mensuales', { params: { anio: anio - 1, ...paramsAmbito(ambito) } }),
+            ]);
+            setSerie(ra.data); setSerieAnt(rb.data);
+        } catch (e) {
+            setErrorSerie(e.response?.data?.error || e.message);
+            setSerie(null); setSerieAnt(null);
+        }
+    }, [anio, ambito]);
+    useEffect(() => { cargarSeries(); }, [cargarSeries]);
 
     const cargar = useCallback(async () => {
         setLoading(true); setError(null);
@@ -1245,6 +1557,19 @@ function ResumenMensualSection({ opciones }) {
                         <KpiCard label={`Total unificado (${unif === 'UYU' ? 'pesos' : 'dólares'})`} value={`${symU} ${fmtMoney(totUnif)}`}
                             sub={`TC 1 USD = ${fmtMoney(tcEff)} UYU`} color="#8b5cf6" />
                     </div>
+
+                    {/* ── Visuales nuevas (maqueta 28-sep-2026): evolución del año + comparación con el anterior.
+                          Respetan VER POR y "Unificar en"; el PERÍODO solo marca el mes resaltado. ── */}
+                    {errorSerie && <div className="bg-red-50 border border-red-200 text-red-600 text-xs rounded-xl px-4 py-3">No se pudieron cargar las series anuales: {errorSerie}</div>}
+                    {serie && (
+                        <EvolucionAnual anio={anio} meses={serie.meses} mesEnCurso={serie.mesEnCurso} mesSel={mes} onMesSel={setMes}
+                            unif={unif} tcRef={Number(tc) > 0 ? Number(tc) : serie.tcReferencia} etiqAmbito={ambito !== 'Todas' ? etiquetaAmbito(ambito, opciones) : ''} />
+                    )}
+                    {serie && serieAnt && (
+                        <ComparacionAnual anio={anio} meses={serie.meses} mesesAnt={serieAnt.meses} mesEnCurso={serie.mesEnCurso} mesSel={mes} onMesSel={setMes}
+                            unif={unif} tcRef={Number(tc) > 0 ? Number(tc) : serie.tcReferencia} tcRefAnt={Number(tc) > 0 ? Number(tc) : serieAnt.tcReferencia}
+                            ambitoParams={paramsAmbito(ambito)} etiqAmbito={ambito !== 'Todas' ? etiquetaAmbito(ambito, opciones) : ''} onGuardado={cargarSeries} />
+                    )}
 
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                         <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-4">

@@ -12,6 +12,10 @@ const WmsOrderPage = forwardRef(({ embedded = false, initialClient = null, onCar
     const [catalog, setCatalog] = useState([]);
     const [loading, setLoading] = useState(false);
     const [syncing, setSyncing] = useState(false);
+    // Freno de doble clic en "Confirmar": el ref corta en seco (el state tarda un render),
+    // el state apaga el botón. Sin esto, dos clics seguidos crearon VEN-2431 dos veces.
+    const [confirmando, setConfirmando] = useState(false);
+    const confirmandoRef = useRef(false);
     const [searchTerm, setSearchTerm] = useState('');
     const [hideOutOfStock, setHideOutOfStock] = useState(true);
     const [showImages, setShowImages] = useState(true);
@@ -355,6 +359,9 @@ const WmsOrderPage = forwardRef(({ embedded = false, initialClient = null, onCar
             total: totalCart
         };
 
+        if (confirmandoRef.current) return { success: false, message: 'El pedido ya se está registrando' };
+        confirmandoRef.current = true;
+        setConfirmando(true);
         try {
             const res = await wmsService.createOrder(orderData);
             if (res.success) {
@@ -372,6 +379,9 @@ const WmsOrderPage = forwardRef(({ embedded = false, initialClient = null, onCar
         } catch (error) {
             toast.error('Error al generar el pedido');
             return { success: false, message: error?.response?.data?.error || error?.message || 'Error al generar el pedido' };
+        } finally {
+            confirmandoRef.current = false;
+            setConfirmando(false);
         }
     };
 
@@ -1004,17 +1014,17 @@ const WmsOrderPage = forwardRef(({ embedded = false, initialClient = null, onCar
                                 <button
                                     type="button"
                                     onClick={handleCheckout}
-                                    disabled={cart.length === 0 || !selectedClient}
+                                    disabled={cart.length === 0 || !selectedClient || confirmando}
                                     title={!selectedClient ? 'Debes seleccionar un cliente antes de confirmar' : ''}
                                     className={`rounded-2xl font-bold text-white transition-all duration-300 flex items-center justify-center gap-2 ${t('w-2/3 py-4 text-lg', 'w-full py-2.5 text-sm')} ${
-                                        cart.length > 0 && selectedClient
+                                        cart.length > 0 && selectedClient && !confirmando
                                         ? 'bg-blue-600 hover:bg-blue-500 shadow-lg shadow-blue-600/30 hover:-translate-y-1'
                                         : 'bg-slate-800 text-slate-600 cursor-not-allowed'
                                     }`}
                                 >
                                     {!selectedClient && cart.length > 0
                                         ? <><i className="fa-solid fa-user-slash text-sm"></i> Sin cliente</>
-                                        : 'Confirmar'
+                                        : confirmando ? 'Registrando pedido…' : 'Confirmar'
                                     }
                                 </button>
                             </div>

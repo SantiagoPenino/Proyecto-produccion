@@ -1,4 +1,5 @@
 const { getPool, sql } = require('../config/db');
+const { siguienteCodigoVenta } = require('../utils/codigoVenta');
 const logger = require('../utils/logger');
 const { calcularFechasOrden } = require('../services/fechaPrometidaService');
 
@@ -601,12 +602,7 @@ async function crearVentaTienda(pool, { cliIdCliente, clienteNombre, lineas, mon
     await transaction.begin();
     let pedidoId, codigoVenta;
     try {
-        const maxResult = await transaction.request().query(`
-            SELECT ISNULL(MAX(CAST(SUBSTRING(NoDocERP, 5, LEN(NoDocERP)) AS INT)), 0) + 1 as NextID
-            FROM PedidosCobranza
-            WHERE NoDocERP LIKE 'VEN-%'
-        `);
-        codigoVenta = `VEN-${maxResult.recordset[0].NextID.toString().padStart(4, '0')}`;
+        codigoVenta = await siguienteCodigoVenta(transaction);
 
         // [MARCA TIENDA 18/08] Origen + ModoRetiro NORMALIZADO en la cabecera (no el
         // texto libre del nomenclador): el filtro de preparación compara por igualdad.

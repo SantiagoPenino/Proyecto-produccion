@@ -462,8 +462,10 @@ const ContabilidadBandejaCFE = ({ initialCliente = null, embedded = false, autoN
         if (!window.confirm(`¿Seguro que deseas ANULAR la factura ${doc.DocSerie}-${doc.DocNumero}? Esto revertirá el asiento contable.`)) return;
         
         try {
-            await api.put(`/contabilidad/cfe/documentos/${doc.DocIdDocumento}/anular`);
+            const { data } = await api.put(`/contabilidad/cfe/documentos/${doc.DocIdDocumento}/anular`);
             toast.success('Factura anulada correctamente');
+            // Cobros de caja que pagaban el documento: se anularon con él, o quedaron porque cubren otros
+            (data?.avisos || []).forEach(a => toast.warning(a, { duration: 12000 }));
             fetchDocumentos();
         } catch (err) {
             toast.error('Error anulando: ' + (err.response?.data?.error || err.message));
@@ -516,7 +518,8 @@ const ContabilidadBandejaCFE = ({ initialCliente = null, embedded = false, autoN
                     toast.info(respNc.data.avisoRecurso, { duration: 12000 });
                 }
             } else {
-                await api.put(`/contabilidad/cfe/documentos/${doc.DocIdDocumento}/anular`);
+                const rAn = await api.put(`/contabilidad/cfe/documentos/${doc.DocIdDocumento}/anular`);
+                (rAn?.data?.avisos || []).forEach(a => toast.warning(a, { duration: 12000 }));
             }
 
             toast.loading('Cargando datos para regeneración...', { id: toastId });

@@ -1,4 +1,5 @@
 const { getPool, sql } = require('../config/db');
+const { siguienteCodigoVenta } = require('../utils/codigoVenta');
 const logger = require('../utils/logger');
 const { calcularFechasOrden } = require('../services/fechaPrometidaService');
 // Dynamic import for fetch if needed, but since Node 18 it's native.
@@ -252,14 +253,7 @@ exports.createOrder = async (req, res) => {
         await transaction.begin();
 
         try {
-            // Get next VEN code
-            const maxResult = await transaction.request().query(`
-                SELECT ISNULL(MAX(CAST(SUBSTRING(NoDocERP, 5, LEN(NoDocERP)) AS INT)), 0) + 1 as NextID 
-                FROM PedidosCobranza 
-                WHERE NoDocERP LIKE 'VEN-%'
-            `);
-            const nextId = maxResult.recordset[0].NextID;
-            const codigoVenta = `VEN-${nextId.toString().padStart(4, '0')}`;
+            const codigoVenta = await siguienteCodigoVenta(transaction);
 
             // 1. Insert header
             const insertHeader = await transaction.request()

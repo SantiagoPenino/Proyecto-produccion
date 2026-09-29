@@ -1544,3 +1544,207 @@ exports.getTopProductosDetalle = async (req, res) => {
         res.status(500).json({ success: false, error: err.message });
     }
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RESUMEN MENSUAL: EVOLUCIÓN DEL AÑO + COMPARACIÓN CON EL AÑO ANTERIOR
+// (maqueta "Resumen Mensual – Evolución y Comparación", 28-sep-2026)
+//
+// ventas-mensuales: un dato por mes del año pedido, mismo universo y mismo
+// reparto por área/sector que ventas-por-area (DocTotal × peso del área), con el
+// TC promedio de cada mes (dbo.Cotizaciones) para que los meses pasados no cambien
+// cuando cambia la cotización del día. Un mes sin documentos en el sistema cae a
+// dbo.VentasHistoricas (cargado a mano) y se marca origen 'historico': así se
+// cubren 2025 entero y los meses de 2026 anteriores al arranque del sistema.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Clave del ámbito tal como la guarda VentasHistoricas y la usa la pantalla:
+// '' = total empresa, 'S:<sector>' o 'A:<área>'.
+const claveAmbito = (params) => params.sector ? `S:${params.sector}` : params.area ? `A:${params.area}` : '';
+
+let _tieneVentasHistoricas = null;
+const tieneVentasHistoricas = async () => {
+    if (_tieneVentasHistoricas !== null) return _tieneVentasHistoricas;
+    try {
+        const pool = await getPool();
+        const r = await pool.request().query(`
+            SELECT COUNT(*) AS N FROM INFORMATION_SCHEMA.TABLES
+            WHERE TABLE_SCHEMA = 'dbo' AND TABLE_NAME = 'VentasHistoricas'`);
+        _tieneVentasHistoricas = Number(r.recordset[0]?.N || 0) > 0;
+        if (!_tieneVentasHistoricas) logger.warn('[CONTABILIDAD-REPORTES] dbo.VentasHistoricas no existe: correr scripts/add_ventas_historicas.sql');
+    } catch { _tieneVentasHistoricas = false; }
+    return _tieneVentasHistoricas;
+};
+
+const leerHistoricas = async (anio, ambito) => {
+    if (!(await tieneVentasHistoricas())) return [];
+    const pool = await getPool();
+    const r = await pool.request()
+        .input('anio', sql.Int, anio)
+        .input('ambito', sql.NVarChar(60), ambito)
+        .query(`
+            SELECT VhiMes AS Mes, VhiMoneda AS Moneda, VhiMonto AS Monto, VhiUsuario AS Usuario, VhiFechaCarga AS FechaCarga
+            FROM dbo.VentasHistoricas WITH(NOLOCK)
+            WHERE VhiAnio = @anio AND VhiAmbito = @ambito
+            ORDER BY VhiMes`);
+    return r.recordset;
+};
+
+/**
+ * GET /api/contabilidad/reportes/ventas-mensuales?anio=2026&sector=|area=&dgi=
+ * Devuelve { anio, mesEnCurso, tcReferencia, meses: [{ mes, uyu, usd, docs, tc, origen }] }
+ *   origen: 'sistema' (documentos), 'historico' (VentasHistoricas) o null (sin datos).
+ */
+exports.getVentasMensuales = async (req, res) => {
+    try {
+        await tieneDcdArea();
+        const pool = await getPool();
+        const params = extractParams(req.query);
+        const anio = parseInt(req.query.anio) || new Date().getFullYear();
+        const ambito = claveAmbito(params);
+
+        const r = pool.request();
+        bindFiltrosComunes(r, { ...params, fechaDesde: `${anio}-01-01`, fechaHasta: `${anio}-12-31` });
+        const condAreas = condAreasIn(await areasDeFiltro(params), areaDesdeCodigo('dcd.OrdCodigoOrden'), r);
+        const filtro = filtroAreaArticulo(condAreas, params.articulo, 'doc');
+        const filtroDgi = condDgi('doc', params.dgi);
+
+        const ventas = await r.query(`
+            ${filtro.cte ? `;WITH ${filtro.cte}` : ''}
+            SELECT MONTH(doc.DocFechaEmision) AS Mes, doc.MonIdMoneda,
+                   SUM(doc.DocTotal * ${filtro.peso}) AS Total, COUNT(*) AS Docs
+            FROM dbo.DocumentosContables doc WITH(NOLOCK)
+            ${filtro.join}
+            WHERE ${COND_ES_VENTA}
+              AND doc.DocEstado <> 'ANULADO'
+              ${filtroDgi ? `AND ${filtroDgi}` : ''}
+              AND doc.DocFechaEmision >= @fechaDesde AND doc.DocFechaEmision <= @fechaHasta
+            GROUP BY MONTH(doc.DocFechaEmision), doc.MonIdMoneda
+        `);
+
+        // TC promedio de cada mes del año (y el último cargado, de referencia)
+        const cot = await pool.request().input('anio', sql.Int, anio).query(`
+            SELECT MONTH(CotFecha) AS Mes, AVG(CotDolar) AS Tc
+            FROM dbo.Cotizaciones WITH(NOLOCK)
+            WHERE YEAR(CotFecha) = @anio AND CotDolar > 0
+            GROUP BY MONTH(CotFecha);
+            SELECT TOP 1 CotDolar FROM dbo.Cotizaciones WITH(NOLOCK) WHERE CotDolar > 0 ORDER BY CotFecha DESC;
+        `);
+        const tcMes = {};
+        for (const x of cot.recordsets[0]) tcMes[x.Mes] = Number(x.Tc);
+        const tcReferencia = Number(cot.recordsets[1][0]?.CotDolar) || null;
+
+        const hist = await leerHistoricas(anio, ambito);
+
+        const hoy = new Date();
+        const meses = [];
+        for (let m = 1; m <= 12; m++) {
+            const filas = ventas.recordset.filter(x => x.Mes === m);
+            const h = hist.filter(x => x.Mes === m);
+            const fila = { mes: m, uyu: 0, usd: 0, docs: 0, tc: tcMes[m] ? Number(tcMes[m].toFixed(4)) : null, origen: null, sistemaUyu: 0, sistemaUsd: 0 };
+            for (const x of filas) {
+                if (x.MonIdMoneda === 2) fila.sistemaUsd += Number(x.Total || 0); else fila.sistemaUyu += Number(x.Total || 0);
+                fila.docs += Number(x.Docs || 0);
+            }
+            // Si administración cargó el mes a mano, ese valor manda (los meses anteriores
+            // al arranque del sistema pueden tener algún documento suelto, ej. abril-2026
+            // con 1 documento). Lo que tiene el sistema se devuelve igual (sistemaUyu/Usd,
+            // docs) para que la pantalla lo pueda mostrar.
+            if (h.length) {
+                for (const x of h) { if (x.Moneda === 'USD') fila.usd += Number(x.Monto || 0); else fila.uyu += Number(x.Monto || 0); }
+                fila.origen = 'historico';
+            } else if (filas.length) {
+                fila.uyu = fila.sistemaUyu; fila.usd = fila.sistemaUsd;
+                fila.origen = 'sistema';
+            }
+            fila.sistemaUyu = Number(fila.sistemaUyu.toFixed(2));
+            fila.sistemaUsd = Number(fila.sistemaUsd.toFixed(2));
+            fila.uyu = Number(fila.uyu.toFixed(2));
+            fila.usd = Number(fila.usd.toFixed(2));
+            meses.push(fila);
+        }
+
+        res.json({
+            success: true,
+            anio, ambito,
+            mesEnCurso: anio === hoy.getFullYear() ? hoy.getMonth() + 1 : null,
+            tcReferencia,
+            historicasDisponibles: await tieneVentasHistoricas(),
+            meses,
+        });
+    } catch (err) {
+        logger.error('[CONTABILIDAD-REPORTES] getVentasMensuales:', err.message);
+        res.status(500).json({ success: false, error: err.message });
+    }
+};
+
+/** GET /api/contabilidad/reportes/ventas-historicas?anio=2025&sector=|area= */
+exports.getVentasHistoricas = async (req, res) => {
+    try {
+        const params = extractParams(req.query);
+        const anio = parseInt(req.query.anio);
+        if (!anio) return res.status(400).json({ success: false, error: 'Falta el parámetro anio' });
+        res.json({ success: true, anio, ambito: claveAmbito(params), disponible: await tieneVentasHistoricas(), data: await leerHistoricas(anio, claveAmbito(params)) });
+    } catch (err) {
+        logger.error('[CONTABILIDAD-REPORTES] getVentasHistoricas:', err.message);
+        res.status(500).json({ success: false, error: err.message });
+    }
+};
+
+/**
+ * PUT /api/contabilidad/reportes/ventas-historicas
+ * body { anio, sector?, area?, moneda: 'USD'|'UYU', meses: [{ mes: 1..12, monto: número | null }] }
+ * monto null/vacío borra el mes. Solo Admin / Administracion (lo controla la ruta).
+ */
+exports.guardarVentasHistoricas = async (req, res) => {
+    try {
+        if (!(await tieneVentasHistoricas())) {
+            return res.status(409).json({ success: false, error: 'Falta crear la tabla VentasHistoricas (scripts/add_ventas_historicas.sql).' });
+        }
+        const b = req.body || {};
+        const anio = parseInt(b.anio);
+        const moneda = String(b.moneda || 'USD').toUpperCase();
+        if (!anio || anio < 2000 || anio > 2100) return res.status(400).json({ success: false, error: 'Año inválido' });
+        if (!['USD', 'UYU'].includes(moneda)) return res.status(400).json({ success: false, error: 'Moneda inválida (USD o UYU)' });
+        if (!Array.isArray(b.meses) || !b.meses.length) return res.status(400).json({ success: false, error: 'Faltan los meses' });
+        const ambito = claveAmbito({ sector: b.sector || null, area: b.area || null });
+        const usuario = String(req.user?.username || req.user?.name || req.user?.id || '').substring(0, 100);
+
+        const pool = await getPool();
+        const tx = new sql.Transaction(pool);
+        await tx.begin();
+        try {
+            let guardados = 0, borrados = 0;
+            for (const m of b.meses) {
+                const mes = parseInt(m.mes);
+                if (!(mes >= 1 && mes <= 12)) continue;
+                const monto = (m.monto === null || m.monto === undefined || m.monto === '') ? null : Number(m.monto);
+                if (monto !== null && !(monto >= 0)) return res.status(400).json({ success: false, error: `Monto inválido en el mes ${mes}` });
+                const rq = new sql.Request(tx)
+                    .input('anio', sql.Int, anio).input('mes', sql.Int, mes)
+                    .input('ambito', sql.NVarChar(60), ambito).input('moneda', sql.Char(3), moneda);
+                if (monto === null) {
+                    const d = await rq.query(`DELETE FROM dbo.VentasHistoricas WHERE VhiAnio = @anio AND VhiMes = @mes AND VhiAmbito = @ambito AND VhiMoneda = @moneda`);
+                    borrados += d.rowsAffected[0] || 0;
+                } else {
+                    await rq.input('monto', sql.Decimal(18, 2), monto).input('usuario', sql.NVarChar(100), usuario).query(`
+                        MERGE dbo.VentasHistoricas AS t
+                        USING (SELECT @anio AS A, @mes AS M, @ambito AS Am, @moneda AS Mo) AS s
+                          ON t.VhiAnio = s.A AND t.VhiMes = s.M AND t.VhiAmbito = s.Am AND t.VhiMoneda = s.Mo
+                        WHEN MATCHED THEN UPDATE SET VhiMonto = @monto, VhiUsuario = @usuario, VhiFechaCarga = GETDATE()
+                        WHEN NOT MATCHED THEN INSERT (VhiAnio, VhiMes, VhiAmbito, VhiMoneda, VhiMonto, VhiUsuario, VhiFechaCarga)
+                             VALUES (@anio, @mes, @ambito, @moneda, @monto, @usuario, GETDATE());`);
+                    guardados++;
+                }
+            }
+            await tx.commit();
+            logger.info(`[CONTABILIDAD-REPORTES] Ventas históricas ${anio} '${ambito}' ${moneda}: ${guardados} guardados, ${borrados} borrados (${usuario})`);
+            res.json({ success: true, guardados, borrados, data: await leerHistoricas(anio, ambito) });
+        } catch (e) {
+            try { await tx.rollback(); } catch { /* ya cerrada */ }
+            throw e;
+        }
+    } catch (err) {
+        logger.error('[CONTABILIDAD-REPORTES] guardarVentasHistoricas:', err.message);
+        res.status(500).json({ success: false, error: err.message });
+    }
+};

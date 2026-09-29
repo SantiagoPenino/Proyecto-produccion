@@ -3,6 +3,7 @@ const logger = require('../utils/logger');
 const { rollbackSeguro } = require('../utils/rollbackSeguro');
 const { esDeadlock } = require('../utils/reintentarDeadlock');
 const { estamparAreaLineas } = require('../services/areaLineaService');
+const { resolverCuentaDineroCliente } = require('../services/cuentaDineroCliente');
 
 // ID del cliente genérico "Consumidor Final" — no tiene cuenta corriente propia
 const CONSUMIDOR_FINAL_ID = 2089;
@@ -859,7 +860,8 @@ exports.crearFacturaManual = async (req, res) => {
         const docTipoStr = config.Detalle || '';
         const docId = await crearDocumentoContable({
             header: {
-                cueIdCuenta: MonIdMoneda === 2 ? 119 : 118,
+                // Cuenta de dinero DEL CLIENTE (antes 119/118 fijas: cuentas de otros clientes)
+                cueIdCuenta: await resolverCuentaDineroCliente({ clienteId: CliIdCliente || 2089, monedaId: MonIdMoneda, transaction, usuarioId: req.user?.id }),
                 clienteId: CliIdCliente || 2089, // 2089 = CONSUMIDOR FINAL genérico (1 es un cliente real)
                 monedaId: MonIdMoneda,
                 tipo: docTipoStr,
@@ -1220,6 +1222,42 @@ exports.anularFactura = async (req, res) => {
             .input('id', sql.Int, id)
             .query("UPDATE dbo.MovimientosCuenta SET DocIdDocumento = NULL, CicIdCiclo = NULL WHERE DocIdDocumento = @id AND MovTipo IN ('ORDEN', 'ENTREGA')");
 
+        // Cobros hechos SOBRE este documento desde caja (pago de deudas, cobro contado de la
+        // pre-factura): hasta el 28-09-2026 quedaban vivos al anular el documento — la
+        // transacción seguía COBRADA y su "saldo a favor por pago excedente" inflaba la cuenta
+        // (Mazzoni PC-4851). Si el cobro cubría SOLO deudas de este documento se anula entero
+        // (transacción, pagos, recibo, movimientos, excedente, asiento) con la misma rutina
+        // que usa la bandeja interna; si también cubría otros documentos, se deja y se avisa.
+        const avisos = [];
+        const cobrosRes = await transaction.request()
+            .input('id', sql.Int, id)
+            .query(`
+                SELECT DISTINCT p.PagTcaIdTransaccion AS TcaId
+                FROM dbo.ImputacionPago ip
+                JOIN dbo.Pagos p ON p.PagIdPago = ip.PagIdPago
+                JOIN dbo.DeudaDocumento dd ON dd.DDeIdDocumento = ip.DDeIdDocumento
+                JOIN dbo.TransaccionesCaja t ON t.TcaIdTransaccion = p.PagTcaIdTransaccion
+                WHERE dd.DocIdDocumento = @id AND p.PagTcaIdTransaccion IS NOT NULL
+                  AND p.PagTipoMovimiento <> 'ANULADO' AND t.TcaEstado <> 'ANULADO'`);
+        for (const { TcaId } of cobrosRes.recordset) {
+            if (tcaId && Number(TcaId) === Number(tcaId)) continue;   // la venta propia ya se revirtió arriba
+            const otrosRes = await transaction.request()
+                .input('tca', sql.Int, TcaId).input('id', sql.Int, id)
+                .query(`
+                    SELECT COUNT(*) AS n
+                    FROM dbo.ImputacionPago ip
+                    JOIN dbo.Pagos p ON p.PagIdPago = ip.PagIdPago
+                    JOIN dbo.DeudaDocumento dd ON dd.DDeIdDocumento = ip.DDeIdDocumento
+                    WHERE p.PagTcaIdTransaccion = @tca AND dd.DocIdDocumento <> @id`);
+            if (Number(otrosRes.recordset[0]?.n || 0) > 0) {
+                avisos.push(`El cobro de caja #${TcaId} también cubre otros documentos: no se anuló. Revisalo en Caja.`);
+                continue;
+            }
+            const { anularReciboInterno } = require('../services/cajaService');
+            await anularReciboInterno({ tcaId: TcaId, usuarioId, motivo: `Anulación del documento #${id}`, transaction });
+            avisos.push(`Se anuló también el cobro de caja #${TcaId} que pagaba este documento (con su excedente, si lo tenía).`);
+        }
+
         // Revertir en DeudaDocumento
         await transaction.request()
             .input('id', sql.Int, id)
@@ -1236,7 +1274,7 @@ exports.anularFactura = async (req, res) => {
         }
 
         await transaction.commit();
-        res.json({ success: true, message: 'Documento anulado correctamente' });
+        res.json({ success: true, message: 'Documento anulado correctamente', avisos });
     } catch (err) {
         logger.error('Error anulando documento CFE:', err);
         await rollbackSeguro(transaction, `anularFactura doc ${id}`);
@@ -1442,6 +1480,9 @@ exports.editarFactura = async (req, res) => {
             }
         }
 
+        // Cuenta de dinero DEL CLIENTE para el encabezado (antes 119/118 fijas: cuentas de otros clientes)
+        const cuentaHeader = await resolverCuentaDineroCliente({ clienteId: CliIdCliente || 2089, monedaId: MonIdMoneda, transaction, usuarioId: req.user?.id });
+
         // 1. Actualizar cabecera del documento
         await transaction.request()
             .input('id', sql.Int, id)
@@ -1454,7 +1495,7 @@ exports.editarFactura = async (req, res) => {
             .input('subtotal', sql.Decimal(18, 2), DocSubtotal)
             .input('iva', sql.Decimal(18, 2), DocImpuestos)
             .input('total', sql.Decimal(18, 2), DocTotal)
-            .input('cuenta', sql.Int, MonIdMoneda === 2 ? 119 : 118)
+            .input('cuenta', sql.Int, cuentaHeader)
             .input('obs', sql.NVarChar(500), DocObservaciones || '')
             // Los largos van al tamaño REAL de cada columna (DocCliNombre/Direccion 255,
             // Documento 50). Estaban en 200/20: un nombre o dirección más largo que eso hacía

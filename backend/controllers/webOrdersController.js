@@ -4130,6 +4130,7 @@ exports.getPickupOrders = async (req, res) => {
                     o.OrdCostoFinal AS CostoFinal,
                     o.OrdFechaEstadoActual AS FechaEstado,
                     o.OrdFechaIngresoOrden AS FechaIngreso,
+                    o.PagIdPago,
                     e.EOrNombreEstado AS Estado,
                     c.IDCliente AS IdCliente,
                     c.TelefonoTrabajo AS Celular,
@@ -4222,9 +4223,9 @@ exports.getPickupOrders = async (req, res) => {
 
             let finalAmount = cob ? parseFloat(cob.MontoTotal) : (parseFloat(o.CostoFinal) || 0);
             let isPaid = cob ? cob.EstadoCobro === 'Pagado' : false;
-            // Cubierta entera por la billetera ⇒ PAGA: no entra en el total a cobrar y el
-            // retiro se confirma sin pasar por la pasarela (nace Abonado por cobertura).
-            if (o.CubiertaBilletera === 1) isPaid = true;
+            // Cubierta entera por la billetera, o ya cobrada (PagIdPago: caja/cobertura) ⇒ PAGA:
+            // no entra en el total a cobrar y el retiro se confirma sin pasar por la pasarela.
+            if (o.CubiertaBilletera === 1 || o.PagIdPago != null) isPaid = true;
             // Cubierta PARCIAL ⇒ a cobrar queda SOLO el resto que vive en la cuenta corriente
             // (cobrar el total original duplicaría la parte que la billetera ya pagó).
             else if (o.ParcialBilletera === 1 && o.RestoCtaCte != null) {
