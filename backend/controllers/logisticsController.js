@@ -848,7 +848,9 @@ exports.createRemito = async (req, res) => {
             throw inner;
         }
     } catch (err) {
-        logger.error("Error createRemito:", err);
+        // Pedido incompleto / candado de Depósito (statusCode 400): la regla funcionando, no una falla.
+        if (err.statusCode && err.statusCode < 500) logger.warn(`Rechazado createRemito: ${err.message}`);
+        else logger.error("Error createRemito:", err);
         res.status(err.statusCode || 500).json({ error: err.message });
     }
 };
@@ -2374,7 +2376,8 @@ if (triggerReversal || triggerForward) {
             throw inner;
         }
     } catch (err) {
-        logger.error("Error receiveDispatch:", err);
+        if (err.statusCode && err.statusCode < 500) logger.warn(`Rechazado receiveDispatch: ${err.message}`);
+        else logger.error("Error receiveDispatch:", err);
         res.status(err.statusCode || 500).json({ error: err.message });
     }
 };

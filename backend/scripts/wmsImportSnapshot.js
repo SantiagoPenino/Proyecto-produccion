@@ -88,6 +88,13 @@ async function cargarOrigen() {
     return data;
 }
 
+// Las #tablas nacen con la collation del SERVIDOR (tempdb) y las Wms_* con la de la BASE. En producción no
+// coinciden (SQL_Latin1_General_CP1_CI_AS contra Modern_Spanish_CI_AS, 24/09) y comparar un texto de una con
+// uno de la otra corta con "Cannot resolve the collation conflict". Solo afecta a claves de texto: una
+// numérica o un GUID no tienen collation, y ponerles COLLATE es un error.
+const TIPOS_TEXTO = [sql.VarChar, sql.NVarChar, sql.Char, sql.NChar, sql.Text, sql.NText];
+const collateBase = (tipo) => (TIPOS_TEXTO.includes(tipo?.type || tipo) ? ' COLLATE DATABASE_DEFAULT' : '');
+
 // ── Upsert genérico: bulk a #stg + MERGE (rápido y re-ejecutable) ────────────
 // cols: [[nombreDestino, tipoSql, fn(filaOrigen)]...]
 // opts.pk        → clave del MERGE (nunca se updatea)
@@ -119,10 +126,11 @@ async function upsert(pool, tabla, cols, filas, { pk, identity = false, reload =
             `;
         } else {
             const sets = nombres.filter(n => n !== pk).map(n => `T.${n} = S.${n}`).join(', ');
+            const tipoPk = (cols.find(([n]) => n === pk) || [])[1];
             cuerpo = `
                 ${identity ? `SET IDENTITY_INSERT dbo.${tabla} ON;` : ''}
                 MERGE dbo.${tabla} AS T
-                USING #stg_${tabla} AS S ON T.${pk} = S.${pk}
+                USING #stg_${tabla} AS S ON T.${pk} = S.${pk}${collateBase(tipoPk)}
                 ${sets ? `WHEN MATCHED THEN UPDATE SET ${sets}` : ''}
                 WHEN NOT MATCHED THEN INSERT (${nombres.join(', ')}) VALUES (${nombres.map(n => 'S.' + n).join(', ')});
                 ${identity ? `SET IDENTITY_INSERT dbo.${tabla} OFF; DECLARE @m INT = (SELECT ISNULL(MAX(${pk}), 0) FROM dbo.${tabla}); DBCC CHECKIDENT('dbo.${tabla}', RESEED, @m);` : ''}
@@ -218,7 +226,7 @@ async function borrarAusentes(pool, planes) {
             await req().bulk(k);
             const r = await req().query(`
                 DELETE T FROM dbo.${p.tabla} AS T
-                WHERE ${p.solo ? p.solo + ' AND ' : ''}NOT EXISTS (SELECT 1 FROM ${tmp} AS K WHERE K.k = T.${p.col});
+                WHERE ${p.solo ? p.solo + ' AND ' : ''}NOT EXISTS (SELECT 1 FROM ${tmp} AS K WHERE K.k${collateBase(p.tipo)} = T.${p.col});
                 SELECT @@ROWCOUNT AS n;
                 DROP TABLE ${tmp};`);
             const n = r.recordset[0].n;

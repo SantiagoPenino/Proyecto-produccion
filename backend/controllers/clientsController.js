@@ -4,6 +4,25 @@ const logger = require('../utils/logger');
 
 const ERP_API_BASE = process.env.ERP_API_URL;
 
+// IDCliente único (24/09/2026): es el usuario del portal y va dentro del QR del tótem. El login
+// toma el PRIMER cliente con ese IDCliente, así que con dos iguales uno de los dos no puede
+// entrar nunca (36 pares en producción el 24/09). El registro del portal ya lo controlaba; el
+// panel no. Misma comparación que el login: sin espacios y sin distinguir mayúsculas (la
+// collation de la base es CI). Devuelve el cliente que ya lo usa, o null.
+async function idClienteEnUso(pool, idCliente, codClienteExcluir = null) {
+    const v = String(idCliente ?? '').trim();
+    if (!v) return null;
+    const r = await pool.request()
+        .input('V', sql.NVarChar(255), v)
+        .input('CC', sql.Int, codClienteExcluir != null ? parseInt(codClienteExcluir, 10) : null)
+        .query(`SELECT TOP 1 CodCliente, LTRIM(RTRIM(Nombre)) AS Nombre FROM dbo.Clientes WITH (NOLOCK)
+                WHERE LTRIM(RTRIM(IDCliente)) = @V AND (@CC IS NULL OR CodCliente <> @CC)`);
+    return r.recordset[0] || null;
+}
+const msgIdClienteEnUso = (idCliente, otro) =>
+    `El IDCliente "${String(idCliente).trim()}" ya lo tiene ${otro.Nombre || 'otro cliente'} (cliente ${otro.CodCliente}). ` +
+    'Es el usuario con el que se entra al portal: dos clientes con el mismo no pueden entrar los dos. Elegí otro.';
+
 // Google Sheets service (carga protegida)
 let sheetsService = null;
 try { sheetsService = require('../services/sheetsService'); } catch (e) { console.warn('[clientsController] sheetsService no disponible:', e.message); }
@@ -355,6 +374,9 @@ exports.createClient = async (req, res) => {
         const safeString = (val) => (val !== undefined && val !== null && val !== '') ? String(val) : null;
         const safeInt    = (val) => (val !== undefined && val !== null && val !== '') ? parseInt(val) : null;
 
+        const otroConEseId = await idClienteEnUso(pool, idCliente);
+        if (otroConEseId) return res.status(409).json({ error: msgIdClienteEnUso(idCliente, otroConEseId) });
+
         // Determinar CodCliente
         let nextId = null;
         if (codCliente) {
@@ -583,13 +605,17 @@ exports.updateClientLink = async (req, res) => {
 
     try {
         const pool = await getPool();
+        // Vincular pisa el IDCliente con el código de React: si ese código ya es de otro
+        // cliente, se frenaría uno de los dos logins (ver idClienteEnUso).
+        const otroConEseId = await idClienteEnUso(pool, codigoReact, codCliente);
+        if (otroConEseId) return res.status(409).json({ error: msgIdClienteEnUso(codigoReact, otroConEseId) });
         await pool.request()
             .input('CC', sql.Int, codCliente)
             .input('CR', sql.NVarChar(50), codigoReact ? String(codigoReact).trim() : null)
             .input('IR', sql.NVarChar(50), idReact ? String(idReact).trim() : null)
             .query(`
-                UPDATE dbo.Clientes 
-                SET IDCliente = @CR, IDReact = @IR 
+                UPDATE dbo.Clientes
+                SET IDCliente = @CR, IDReact = @IR
                 WHERE CodCliente = @CC
             `);
 
@@ -894,6 +920,18 @@ exports.updateClient = async (req, res) => {
         const pool = await getPool();
         const safeStr = (val, max = 500) => (val !== undefined && val !== null) ? String(val).substring(0, max) : null;
         const safeInt = (val) => (val !== undefined && val !== null && val !== '') ? parseInt(val) : null;
+
+        // Solo si se CAMBIA el IDCliente: editar otro dato de un cliente que ya comparte el
+        // suyo (los pares de antes del control) tiene que seguir funcionando.
+        if (IDCliente !== undefined && IDCliente !== null) {
+            const act = await pool.request().input('CC', sql.Int, safeInt(codCliente))
+                .query('SELECT IDCliente FROM dbo.Clientes WITH (NOLOCK) WHERE CodCliente = @CC');
+            const actual = String(act.recordset[0]?.IDCliente ?? '').trim().toLowerCase();
+            if (String(IDCliente).trim().toLowerCase() !== actual) {
+                const otroConEseId = await idClienteEnUso(pool, IDCliente, codCliente);
+                if (otroConEseId) return res.status(409).json({ error: msgIdClienteEnUso(IDCliente, otroConEseId) });
+            }
+        }
 
         await pool.request()
             .input('CC',     sql.Int,          safeInt(codCliente))

@@ -3,6 +3,7 @@ import Swal from 'sweetalert2';
 import { DragDropContext, Droppable, Draggable } from '@hello-pangea/dnd';
 import { rollsService } from '../../services/api';
 import { socket as socketService } from '../../services/socketService';
+import useRecargaConFreno from '../../hooks/useRecargaConFreno';
 import CreateRollModal from '../modals/CreateRollModal';
 import KanbanCard from '../production/components/KanbanCard';
 import RollDetailsModal from '../modals/RollDetailsModal';
@@ -124,16 +125,13 @@ const RollsKanban = ({ areaCode }) => {
 
     useEffect(() => { loadBoard(); }, [areaCode]);
 
-    // SOCKET SYNC LISTENER
+    // SOCKET SYNC LISTENER — recargaba el kanban entero con CADA server:ordersUpdated. Freno de 8 s y
+    // pausa con la pestaña oculta, ver hooks/useRecargaConFreno (24/09).
+    const avisarRecarga = useRecargaConFreno(loadBoard);
     useEffect(() => {
-        const handleSync = (data) => {
-            console.log("⚡ [Socket] New Orders Synced:", data);
-            loadBoard();
-        };
-
-        socketService.on('server:ordersUpdated', handleSync);
-        return () => socketService.off('server:ordersUpdated', handleSync);
-    }, [areaCode]); // Re-bind if areaCode changes, though loadBoard uses current state/props logic
+        socketService.on('server:ordersUpdated', avisarRecarga);
+        return () => socketService.off('server:ordersUpdated', avisarRecarga);
+    }, [avisarRecarga]);
 
 
     // LÓGICA DE EDICIÓN DE NOMBRE

@@ -10,6 +10,7 @@ import { ConfirmationModal } from '../pautas/ConfirmationModal';
 const Tpu3DViewer = lazy(() => import('./Tpu3DViewer'));
 import ConsultaClienteModal from './ConsultaClienteModal';
 import { socket } from '../../services/socketService';
+import useRecargaConFreno from '../../hooks/useRecargaConFreno';
 
 const STATUS_CONFIG = {
     zombie: {
@@ -348,28 +349,16 @@ export const FactoryView = () => {
     }, [debouncedSearch]);
 
     // ── Socket: actualización en tiempo real cuando cambia estado de una orden ──
+    // El job de WSP avisa órdenes de a una (eventos cada 1-2 s): freno de 8 s y pausa con la pestaña
+    // oculta, ver hooks/useRecargaConFreno.
+    const avisarRecarga = useRecargaConFreno(() => {
+        recargar({ silencioso: true });
+        // Frenar una orden por consulta mueve su estado, así que llega por el mismo
+        // evento: sin esto la tarjeta no muestra la consulta hasta recargar la página.
+        fetchConsultas();
+    });
+
     useEffect(() => {
-        let debounceTimer = null;
-
-        // Throttle con trailing: el job de WSP avisa órdenes de a una (eventos cada 1-2s) y un
-        // debounce corto refetchea por CADA evento. Máximo un fetch por ventana por cliente;
-        // el primero sale casi al toque y la ráfaga queda cubierta por la ejecución final.
-        const FETCH_WINDOW_MS = 8000;
-        let lastFetchAt = 0;
-        const handleOrderUpdate = () => {
-            if (debounceTimer) return; // ya hay un fetch agendado que cubre este evento
-            const elapsed = Date.now() - lastFetchAt;
-            const wait = elapsed >= FETCH_WINDOW_MS ? 300 : FETCH_WINDOW_MS - elapsed;
-            debounceTimer = setTimeout(() => {
-                debounceTimer = null;
-                lastFetchAt = Date.now();
-                recargar({ silencioso: true });
-                // Frenar una orden por consulta mueve su estado, así que llega por el mismo
-                // evento: sin esto la tarjeta no muestra la consulta hasta recargar la página.
-                fetchConsultas();
-            }, wait);
-        };
-
         // Suscripción a los avisos de LAS ÓRDENES DEL CLIENTE (backend/utils/avisosOrdenesPortal.js):
         // suscripto, el server deja de mandarle los avisos de toda la planta y le manda
         // 'portal:mis_ordenes' solo cuando cambia una orden suya. Se repite al reconectar porque el
@@ -379,18 +368,17 @@ export const FactoryView = () => {
         suscribir();
         socket.on('connect', suscribir);
 
-        socket.on('portal:mis_ordenes', handleOrderUpdate);
-        socket.on('server:ordersUpdated', handleOrderUpdate);
-        socket.on('server:order_updated', handleOrderUpdate);
+        socket.on('portal:mis_ordenes', avisarRecarga);
+        socket.on('server:ordersUpdated', avisarRecarga);
+        socket.on('server:order_updated', avisarRecarga);
 
         return () => {
-            clearTimeout(debounceTimer);
             socket.off('connect', suscribir);
-            socket.off('portal:mis_ordenes', handleOrderUpdate);
-            socket.off('server:ordersUpdated', handleOrderUpdate);
-            socket.off('server:order_updated', handleOrderUpdate);
+            socket.off('portal:mis_ordenes', avisarRecarga);
+            socket.off('server:ordersUpdated', avisarRecarga);
+            socket.off('server:order_updated', avisarRecarga);
         };
-    }, []);
+    }, [avisarRecarga]);
 
     // Agrupación por Proyecto
     // Normaliza el docId a su parte numérica para que "DTF-416" y "416" agrupen igual.

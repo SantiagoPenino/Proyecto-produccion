@@ -22,8 +22,10 @@ const RollSplitModal = ({ isOpen, onClose, roll, areaId }) => {
         mutationFn: rollsService.splitRoll,
         onSuccess: () => {
             toast.success("Lote dividido y restante reasignado correctamente");
-            queryClient.invalidateQueries(['productionBoard']);
-            queryClient.invalidateQueries(['rolls']);
+            // Forma v5 ({ queryKey }), 24/09. 'rolls' no era ninguna consulta: solo refrescaba porque la lista
+            // suelta de la v4 recargaba TODO. El kanban de lotes es 'rollsBoard'.
+            queryClient.invalidateQueries({ queryKey: ['productionBoard'] });
+            queryClient.invalidateQueries({ queryKey: ['rollsBoard'] });
             onClose();
         },
         onError: (err) => {

@@ -8,6 +8,7 @@ const ctrl = require('../controllers/wmsInternoController');
 router.get('/depositos', verifyToken, ctrl.getDepositos);
 router.get('/panel', verifyToken, ctrl.getPanel);
 router.get('/historial', verifyToken, ctrl.getHistorial);
+router.get('/gasto-sectores', verifyToken, ctrl.getGastoSectores);
 router.get('/inventario', verifyToken, ctrl.getInventario);
 router.get('/variantes', verifyToken, ctrl.buscarVariantes);
 router.get('/variantes/:id/etiquetas', verifyToken, ctrl.getEtiquetasVariante);
@@ -32,6 +33,7 @@ router.post('/mi-sector', verifyToken, ctrl.setMiSector);
 router.get('/solicitudes', verifyToken, ctrl.getSolicitudes);
 router.get('/solicitudes/:id', verifyToken, ctrl.getSolicitudDetalle);
 router.post('/solicitudes', verifyToken, ctrl.crearSolicitud);
+router.post('/solicitudes/:id/despachar', verifyToken, ctrl.despacharSolicitud);
 router.post('/solicitudes/:id/estado', verifyToken, ctrl.setEstadoSolicitud);
 router.get('/compras', verifyToken, ctrl.getCompras);
 // Gestión de sistema (maestros)

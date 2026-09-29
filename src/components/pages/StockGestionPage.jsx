@@ -12,7 +12,7 @@ import {
     Printer, Check, X, AlertTriangle, Boxes, ScanLine, Plus, Trash2, ArrowRight, ArrowUpRight, PackageCheck,
     LayoutDashboard, DollarSign, TrendingUp, Layers, History, ShoppingCart, Lock, Unlock, CircleDot,
     MapPin, Inbox, Send, Paperclip, FileText, Upload, CalendarDays, CalendarOff, ChevronLeft,
-    Factory, Anchor, Ship, CheckCircle2, Pencil, Settings, Workflow, ChevronUp, Activity
+    Factory, Anchor, Ship, CheckCircle2, Pencil, Settings, Workflow, ChevronUp, Activity, MinusCircle
 } from 'lucide-react';
 
 // Los pasos de cada plantilla traen su icono por nombre (columna Icono, migrada del
@@ -36,6 +36,13 @@ const simMoneda = (cod) => String(cod || '').toUpperCase() === 'USD' ? 'US$' : '
 // Capital Case para textos que vienen con casing inconsistente ('JIAXING ZHEJIANG' → 'Jiaxing Zhejiang').
 // CSS capitalize no alcanza: solo sube la primera letra, no baja el resto.
 const capitalizar = (v) => String(v || '').toLowerCase().replace(/\S+/g, w => w.charAt(0).toUpperCase() + w.slice(1));
+// Los últimos n meses como opciones de selector: { value: 'YYYY-MM', label: 'Septiembre de 2026' }.
+const ultimosMeses = (n = 12) => Array.from({ length: n }, (_, i) => {
+    const hoy = new Date();
+    const d = new Date(hoy.getFullYear(), hoy.getMonth() - i, 1);
+    const texto = d.toLocaleDateString('es-UY', { month: 'long', year: 'numeric' });
+    return { value: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`, label: texto.charAt(0).toUpperCase() + texto.slice(1) };
+});
 // Ficha textil (1/09): metros teóricos de un peso en kg → 1000·kg / (g/m² × ancho).
 // null si falta cualquiera de los tres datos — el que llama decide no mostrar nada.
 const metrosTeoricos = (kg, gramaje, ancho) => {
@@ -561,7 +568,7 @@ function ModalRemito({ remId, onCerrar }) {
 }
 
 // Autocomplete de variantes (lo usan Ingreso y Remitos)
-function BuscadorVariante({ onElegir, placeholder = 'Buscar producto o variante...' }) {
+function BuscadorVariante({ onElegir, placeholder = 'Buscar producto o variante...', autoFocus = false, grande = false }) {
     const [q, setQ] = useState('');
     const [res, setRes] = useState([]);
     const [abierto, setAbierto] = useState(false);
@@ -584,10 +591,12 @@ function BuscadorVariante({ onElegir, placeholder = 'Buscar producto o variante.
     }, [q]);
     return (
         <div className="relative">
-            <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <Search size={grande ? 18 : 15} className={`absolute top-1/2 -translate-y-1/2 text-slate-400 ${grande ? 'left-4' : 'left-3'}`} />
             <input value={q} onChange={e => setQ(e.target.value)} onFocus={() => q.trim().length >= 2 && setAbierto(true)}
-                placeholder={placeholder}
-                className="w-full pl-9 pr-3 py-2.5 rounded-xl border border-slate-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-sky-200" />
+                placeholder={placeholder} autoFocus={autoFocus}
+                className={`w-full pr-3 rounded-xl border bg-white focus:outline-none focus:ring-2 focus:ring-sky-200 ${grande
+                    ? 'pl-11 py-3.5 text-base border-sky-300'
+                    : 'pl-9 py-2.5 text-sm border-slate-200'}`} />
             {buscando && <Loader2 size={15} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-300 animate-spin" />}
             {/* Sin esto el campo queda mudo cuando no hay match y parece que no funciona */}
             {abierto && buscado && res.length === 0 && (
@@ -621,6 +630,8 @@ const StockGestionPage = () => {
     const [depositos, setDepositos] = useState([]);
     const [dep, setDep] = useState(5);
     const [pendDisc, setPendDisc] = useState(0);
+    // [24/09] Filtros con los que abrir el Historial desde el Panel ("Ver todos los consumos de X")
+    const [irHistorial, setIrHistorial] = useState(null);
 
     useEffect(() => {
         api.get('/wms-interno/depositos').then(r => setDepositos(r.data?.data || [])).catch(() => toast.error('No se pudieron cargar los depósitos'));
@@ -682,8 +693,9 @@ const StockGestionPage = () => {
                 ))}
             </div>
 
-            {tab === 'panel' && <TabPanel />}
-            {tab === 'global' && <InventarioGlobal dep={dep} depositos={depositos} nombreDep={nombreDep} onDiscrepancias={setPendDisc} />}
+            {tab === 'panel' && <TabPanel onVerConsumos={(f) => { setIrHistorial({ ...f, grupo: 'CONSUMOS', clave: Date.now() }); setTab('global'); }} />}
+            {tab === 'global' && <InventarioGlobal dep={dep} depositos={depositos} nombreDep={nombreDep} onDiscrepancias={setPendDisc}
+                irA={irHistorial} onIrAConsumido={() => setIrHistorial(null)} />}
             {tab === 'sector' && <TabMiSector depositos={depositos} />}
             {tab === 'compras' && <TabCompras depositos={depositos} depDefault={dep} />}
             {tab === 'gestion' && <TabGestion depositos={depositos} />}
@@ -803,8 +815,8 @@ function imprimirReporteGerencial(d) {
                 <td class="r ${r.Estado === 'CRITICO' ? 'crit' : 'aler'}">${num(r.StockGlobal)}</td>
                 <td class="r">C: ${r.CantidadCritica} / A: ${r.CantidadAlerta}</td></tr>`))}
 
-        ${(d.anomalias || []).length ? tabla('Anomalías de consumo (hoy)',
-            ['Artículo', { t: 'Salidas hoy', r: 1 }, { t: 'Promedio/día', r: 1 }],
+        ${(d.anomalias || []).length ? tabla('Anomalías de consumo (24 h)',
+            ['Artículo', { t: 'Salidas en 24 h', r: 1 }, { t: 'Promedio/día', r: 1 }],
             filas(d.anomalias, r => `<tr><td>${r.Producto} — ${r.NombreVariante}</td><td class="r">${r.Hoy}</td><td class="r">${r.PromedioDia}</td></tr>`)) : ''}
 
         <div class="pie">Sistema de Gestión de Producción · Stock</div>
@@ -835,7 +847,7 @@ function BarraAnomalias({ anomalias = [] }) {
             <span className="text-[10px] font-black uppercase tracking-widest shrink-0 hidden sm:inline">Anomalías detectadas</span>
             <span className="text-sm font-bold truncate flex-1">
                 {a.Producto} — {a.NombreVariante}
-                <span className="ml-2 font-black">({a.Hoy} {a.Hoy === 1 ? 'salida' : 'salidas'} hoy)</span>
+                <span className="ml-2 font-black">({fmtCant(a.Hoy)} {Number(a.Hoy) === 1 ? 'salida' : 'salidas'} en 24 h)</span>
                 <span className="ml-2 text-white/70 font-semibold">promedio {Number(a.PromedioDia) < 0.1 ? '<0,1' : a.PromedioDia}/día</span>
             </span>
             {n > 1 && (
@@ -858,7 +870,163 @@ const tooltipStyle = {
     labelStyle: { fontWeight: 900, color: '#0f172a' },
 };
 
-function TabPanel() {
+/* ── GASTO EN INSUMOS POR SECTOR (bloque del Panel) ─────────────────────── */
+// [24/09] Cuánto gastó cada sector en el mes: consumo + merma × costo de cada insumo, en USD o UYU con la
+// cotización del día de cada consumo (GET /gasto-sectores; trae las dos monedas, el botón no vuelve a
+// pedir). El mes en curso se compara con el mismo tramo de días del mes anterior. Tocar una fila muestra
+// los insumos más caros del sector; el link abre el Historial ya filtrado por sector y mes.
+function PanelGastoSectores({ onVerConsumos }) {
+    const meses = useMemo(() => ultimosMeses(12), []);
+    const [mes, setMes] = useState(meses[0].value);
+    const [moneda, setMoneda] = useState('USD');
+    const [datos, setDatos] = useState(null);
+    const [cargando, setCargando] = useState(true);
+    const [depSel, setDepSel] = useState(null);
+
+    useEffect(() => {
+        let vivo = true;
+        setCargando(true);
+        api.get(`/wms-interno/gasto-sectores?mes=${mes}`)
+            .then(r => { if (!vivo) return; setDatos(r.data?.data || null); setDepSel(null); })
+            .catch(() => { if (vivo) toast.error('No se pudo cargar el gasto por sector'); })
+            .finally(() => { if (vivo) setCargando(false); });
+        return () => { vivo = false; };
+    }, [mes]);
+
+    const k = moneda, kAnt = `${moneda}Anterior`;
+    const sim = simMoneda(moneda);
+    const plata = (n, dec = 0) => `${sim} ${Number(n || 0).toLocaleString('es-UY', { minimumFractionDigits: dec, maximumFractionDigits: dec })}`;
+    const sectores = (datos?.sectores || []).slice().sort((a, b) => Number(b[k]) - Number(a[k]));
+    const total = Number(datos?.total?.[k] || 0);
+    const totalAnt = Number(datos?.totalAnterior?.[k] || 0);
+    const max = Math.max(1, ...sectores.map(s => Number(s[k]) || 0));
+    const sel = sectores.find(s => s.DepId === depSel) || sectores[0] || null;
+    const detalle = sel ? (datos?.detalle?.[sel.DepId ?? 0] || []) : [];
+    const mesLabel = meses.find(x => x.value === mes)?.label || mes;
+    const [anio, nroMes] = mes.split('-').map(Number);
+    const mesAnterior = new Date(anio, nroMes - 2, 1).toLocaleDateString('es-UY', { month: 'long' });
+    const diaHasta = datos?.hasta ? Number(datos.hasta.slice(-2)) : null;
+    const diaHastaAnt = datos?.anterior?.hasta ? Number(datos.anterior.hasta.slice(-2)) : null;
+
+    // Más gasto que antes en rojo, menos en verde, como en la maqueta.
+    const Variacion = ({ actual, anterior, chico = false }) => {
+        if (!(anterior > 0)) return <span className={`font-bold text-slate-400 ${chico ? 'text-xs' : 'text-base'}`}>{actual > 0 ? 'nuevo' : '—'}</span>;
+        const p = (actual - anterior) / anterior * 100;
+        const sube = p > 0.05, baja = p < -0.05;
+        return (
+            <span className={`font-black tabular-nums ${chico ? 'text-xs' : 'text-base'} ${sube ? 'text-rose-600' : baja ? 'text-emerald-600' : 'text-slate-400'}`}>
+                {sube ? '▲ ' : baja ? '▼ ' : ''}{Math.abs(p).toLocaleString('es-UY', { maximumFractionDigits: 1 })} %
+            </span>
+        );
+    };
+
+    return (
+        <div className="bg-white rounded-2xl border border-slate-200 p-5">
+            <div className="flex flex-wrap items-center gap-3 mb-4">
+                <div className="w-9 h-9 rounded-xl bg-slate-100 flex items-center justify-center"><DollarSign size={17} className="text-slate-500" /></div>
+                <div className="flex-1 min-w-[220px]">
+                    <h3 className="text-base font-black text-slate-800">Gasto en insumos por sector</h3>
+                    <p className="text-xs text-slate-500">Consumo y merma del mes × costo de cada insumo, sumado por sector.</p>
+                </div>
+                <div className="flex bg-slate-100 rounded-xl p-0.5">
+                    {['USD', 'UYU'].map(mo => (
+                        <button key={mo} onClick={() => setMoneda(mo)}
+                            className={`h-8 px-3.5 rounded-lg text-xs font-black ${moneda === mo ? 'bg-slate-800 text-white' : 'text-slate-500 hover:text-slate-700'}`}>{mo}</button>
+                    ))}
+                </div>
+                <Selector value={mes} onChange={setMes} opciones={meses} ancho="w-52" />
+            </div>
+
+            {cargando ? (
+                <div className="flex items-center gap-2 text-slate-400 text-sm py-12 justify-center"><Loader2 size={18} className="animate-spin" /> Calculando...</div>
+            ) : !datos || sectores.length === 0 ? (
+                <p className="text-center py-12 text-sm text-slate-400">Sin consumos registrados en {mesLabel.toLowerCase()}.</p>
+            ) : (
+                <div className="grid lg:grid-cols-[1fr_320px] gap-6 items-start">
+                    <div>
+                        <div className="flex flex-wrap items-end gap-8 pb-4 border-b border-slate-100">
+                            <div>
+                                <p className="text-3xl xl:text-4xl font-black tabular-nums font-gsanscode leading-none tracking-tight text-slate-800">{plata(total)}</p>
+                                <p className="text-[11px] font-black uppercase tracking-wider text-slate-400 mt-2">
+                                    Gasto total en insumos · {mesLabel}{datos.enCurso && diaHasta ? ` (1 al ${diaHasta})` : ''}
+                                </p>
+                            </div>
+                            <div className="pb-0.5">
+                                <Variacion actual={total} anterior={totalAnt} />
+                                <p className="text-[11px] font-black uppercase tracking-wider text-slate-400 mt-1">
+                                    vs {mesAnterior}{datos.enCurso && diaHastaAnt ? ` (1 al ${diaHastaAnt})` : ''}
+                                </p>
+                            </div>
+                        </div>
+                        <div className="grid grid-cols-[140px_minmax(0,1fr)_100px_60px_70px] gap-3 mt-4 mb-1 px-2 text-[10px] font-black uppercase tracking-wider text-slate-400">
+                            <span>Sector</span><span /><span className="text-right">Gasto</span><span className="text-right">% mes</span><span className="text-right">vs ant.</span>
+                        </div>
+                        <div className="space-y-1">
+                            {sectores.map(s => {
+                                const v = Number(s[k]) || 0;
+                                const activo = sel?.DepId === s.DepId;
+                                return (
+                                    <button key={s.DepId ?? 'sin'} onClick={() => setDepSel(s.DepId)}
+                                        className={`w-full grid grid-cols-[140px_minmax(0,1fr)_100px_60px_70px] gap-3 items-center px-2 py-2 rounded-xl text-left ${activo ? 'bg-sky-50' : 'hover:bg-slate-50'}`}>
+                                        <span className="text-sm font-bold text-slate-700 truncate">{s.Nombre}</span>
+                                        <span className="block h-3.5 rounded bg-slate-100 overflow-hidden">
+                                            <span className={`block h-full rounded ${activo ? 'bg-sky-600' : 'bg-sky-300'}`} style={{ width: `${Math.max(2, v / max * 100)}%` }} />
+                                        </span>
+                                        <span className="text-sm font-black tabular-nums font-gsanscode text-right text-slate-800">{plata(v)}</span>
+                                        <span className="text-xs text-slate-500 text-right tabular-nums">{total > 0 ? (v / total * 100).toLocaleString('es-UY', { maximumFractionDigits: 1 }) : '0'} %</span>
+                                        <span className="text-right"><Variacion actual={v} anterior={Number(s[kAnt]) || 0} chico /></span>
+                                    </button>
+                                );
+                            })}
+                        </div>
+                        {datos.sinCosto > 0 && (
+                            <p className="text-[11px] text-amber-600 font-semibold mt-3">
+                                {datos.sinCosto} consumo{datos.sinCosto !== 1 ? 's' : ''} sin costo cargado no suma{datos.sinCosto !== 1 ? 'n' : ''}. El costo se carga en Gestión de Sistema → Artículos.
+                            </p>
+                        )}
+                    </div>
+
+                    {sel && (
+                        <aside className="bg-slate-50 border border-slate-200 rounded-2xl p-5 flex flex-col gap-3">
+                            <div className="flex items-center justify-between gap-2">
+                                <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">Detalle del sector</span>
+                                <span className="text-[11px] font-black text-sky-700 bg-sky-100 rounded-full px-2.5 py-0.5">{sel.Nombre}</span>
+                            </div>
+                            <div>
+                                <p className="text-2xl font-black tabular-nums font-gsanscode text-slate-800 leading-none">{plata(sel[k])}</p>
+                                <p className="text-xs text-slate-500 mt-1.5">
+                                    {fmtCant(sel.Unidades)} unidades en {sel.Consumos} consumo{sel.Consumos !== 1 ? 's' : ''} · los {detalle.length} insumos más caros del mes
+                                </p>
+                            </div>
+                            <div className="divide-y divide-slate-200">
+                                {detalle.map(d => {
+                                    const g = Number(d[k]) || 0, u = Number(d.Unidades) || 0;
+                                    return (
+                                        <div key={d.VarId} className="py-2.5">
+                                            <div className="flex items-start justify-between gap-3 text-sm font-bold text-slate-700">
+                                                <span className="min-w-0 truncate">{d.Producto} — {d.NombreVariante}</span>
+                                                <span className="tabular-nums font-gsanscode whitespace-nowrap">{plata(g)}</span>
+                                            </div>
+                                            <p className="text-[11px] text-slate-400">{fmtCant(u)} {d.UnidadBase} × {u > 0 ? plata(g / u, 2) : '—'}</p>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                            {onVerConsumos && (
+                                <button onClick={() => onVerConsumos({ dep: sel.DepId, mes })}
+                                    className="mt-auto text-left text-xs font-black text-sky-600 hover:text-sky-700">
+                                    Ver todos los consumos de {sel.Nombre} →
+                                </button>
+                            )}
+                        </aside>
+                    )}
+                </div>
+            )}
+        </div>
+    );
+}
+
+function TabPanel({ onVerConsumos }) {
     const [datos, setDatos] = useState(null);
     const [cargando, setCargando] = useState(true);
 
@@ -924,17 +1092,20 @@ function TabPanel() {
                 <Card icono={DollarSign} titulo="Activos valorizados (USD)" valor={`US$ ${fmtPlata(val('USD'))}`} tono="emerald" />
                 <Card icono={DollarSign} titulo="Activos valorizados (UYU)" valor={`$ ${fmtPlata(val('UYU'))}`} tono="emerald" />
                 <Card icono={Boxes} titulo="Volumen físico (unidades)" valor={fmtCant(datos.volumen.Unidades)} />
-                <Card icono={Layers} titulo="Diversidad de catálogo" valor={fmtCant(datos.volumen.Variantes)} sub="variantes con stock" />
+                <Card icono={Layers} titulo="Diversidad de catálogo" valor={fmtCant(datos.volumen.Catalogo ?? datos.volumen.Variantes)} sub="variantes en el catálogo" />
                 <Card icono={TrendingUp} titulo="Más consumido este mes" tag="Top consumo" tono="rose"
                     valor={top ? fmtCant(top.Unidades) : '—'}
                     sub={top ? `${top.Producto} — ${top.NombreVariante}` : 'sin consumo este mes'}
                     acento="text-rose-600" />
             </div>
 
+            {/* Gasto en insumos por sector (24/09): primer bloque ancho, debajo de las tarjetas */}
+            <PanelGastoSectores onVerConsumos={onVerConsumos} />
+
             {/* Anomalías + ordenador de compras */}
             <div className="grid lg:grid-cols-[1fr_1.6fr] gap-4 items-start">
                 <div className="space-y-4">
-                    <Panel icono={TrendingUp} titulo="Anomalías en consumo (hoy)">
+                    <Panel icono={TrendingUp} titulo="Anomalías en consumo (24 h)">
                         {datos.anomalias.length === 0 ? (
                             <p className="text-sm text-emerald-600 font-bold py-6 text-center">✓ Consumo dentro de lo normal</p>
                         ) : (
@@ -943,7 +1114,7 @@ function TabPanel() {
                                     <div key={i} className="border-l-4 border-amber-400 bg-amber-50/50 rounded-r-xl px-3 py-2.5">
                                         <p className="text-sm font-bold text-slate-700">{a.Producto} — {a.NombreVariante}</p>
                                         <p className="text-[11px] text-slate-500 font-semibold flex justify-between mt-0.5">
-                                            <span className="text-amber-700 font-black">↗ {a.Hoy} salidas hoy</span>
+                                            <span className="text-amber-700 font-black">↗ {fmtCant(a.Hoy)} salidas en 24 h</span>
                                             <span>Promedio normal: {Number(a.PromedioDia) < 0.1 ? '<0,1' : a.PromedioDia}/día</span>
                                         </p>
                                     </div>
@@ -1087,6 +1258,9 @@ function TabSolicitudes({ depositos }) {
     const [cargando, setCargando] = useState(true);
     const [abierta, setAbierta] = useState(null);
     const [det, setDet] = useState({});
+    // [24/09] Despachar desde acá: SolId → { origen, cant: {SolItId: '…'}, disp: {VarId: n}, origenDisp }
+    const [despacho, setDespacho] = useState({});
+    const [despachando, setDespachando] = useState(null);
 
     const cargar = useCallback(async () => {
         setCargando(true);
@@ -1098,13 +1272,68 @@ function TabSolicitudes({ depositos }) {
     }, [estado]);
     useEffect(() => { cargar(); }, [cargar]);
 
-    const verDetalle = async (id) => {
+    // Por defecto sale del depósito central (el que abastece a los sectores), si existe.
+    const origenPorDefecto = (sol) => {
+        const otros = depositos.filter(d => d.DepId !== sol.DepSolicitanteId);
+        return (otros.find(d => /centro|central|general/i.test(d.Nombre || '')) || otros[0])?.DepId || null;
+    };
+    // Lo que hay de cada artículo en el depósito de origen, para ver antes de despachar si alcanza.
+    // Si mientras tanto cambiaron el origen, la respuesta vieja se descarta.
+    const cargarDisponible = async (solId, items, origen) => {
+        if (!origen) return;
+        const pares = await Promise.all(items.map(it =>
+            api.get(`/wms-interno/variantes/${it.VarId}/etiquetas?dep=${origen}`)
+                .then(r => [it.VarId, (r.data?.data || []).reduce((s, e) => s + Number(e.CantidadActual || 0), 0)])
+                .catch(() => [it.VarId, null])));
+        setDespacho(prev => prev[solId]?.origen === origen
+            ? { ...prev, [solId]: { ...prev[solId], disp: Object.fromEntries(pares), origenDisp: origen } }
+            : prev);
+    };
+    const cambiarOrigen = (sol, origen) => {
+        setDespacho(prev => ({ ...prev, [sol.SolId]: { ...prev[sol.SolId], origen, disp: {}, origenDisp: null } }));
+        cargarDisponible(sol.SolId, det[sol.SolId] || [], origen);
+    };
+
+    const verDetalle = async (sol) => {
+        const id = sol.SolId;
         if (abierta === id) { setAbierta(null); return; }
         setAbierta(id);
         try {
             const r = await api.get(`/wms-interno/solicitudes/${id}`);
-            setDet(prev => ({ ...prev, [id]: r.data?.data || [] }));
+            const items = r.data?.data || [];
+            setDet(prev => ({ ...prev, [id]: items }));
+            if (sol.Estado === 'PENDIENTE' && !despacho[id]) {
+                const origen = origenPorDefecto(sol);
+                setDespacho(prev => ({ ...prev, [id]: {
+                    origen, disp: {}, origenDisp: null,
+                    cant: Object.fromEntries(items.map(it => [it.SolItId, String(Number(it.CantidadSolicitada))])),
+                } }));
+                cargarDisponible(id, items, origen);
+            }
         } catch (e) { toast.error('No se pudo cargar el pedido'); }
+    };
+
+    // Arma el remito hacia el sector que pidió y deja el pedido atendido, en una sola transacción.
+    const despachar = async (sol) => {
+        const d = despacho[sol.SolId];
+        if (!d?.origen) return toast.error('Elegí de qué depósito sale');
+        const items = (det[sol.SolId] || [])
+            .map(it => ({ varId: it.VarId, cantidad: parseFloat(String(d.cant?.[it.SolItId] ?? '').replace(',', '.')) }))
+            .filter(i => i.cantidad > 0);
+        if (!items.length) return toast.error('No hay nada para enviar');
+        setDespachando(sol.SolId);
+        try {
+            const r = await api.post(`/wms-interno/solicitudes/${sol.SolId}/despachar`, { depOrigenId: d.origen, items });
+            const salieron = r.data?.items || [];
+            const cortos = items.length - salieron.length + salieron.filter(i => i.enviada < i.pedida - 0.0001).length;
+            toast.success(`Remito ${r.data.numeracion} en camino a ${sol.Deposito || 'el sector'}: el pedido quedó atendido`
+                + (cortos ? `. De ${cortos} artículo${cortos !== 1 ? 's' : ''} no alcanzó el stock y salió lo que había` : ''),
+                { duration: 8000 });
+            setDespacho(prev => { const n = { ...prev }; delete n[sol.SolId]; return n; });
+            setAbierta(null);
+            cargar();
+        } catch (e) { toast.error(e.response?.data?.error || 'No se pudo despachar'); }
+        finally { setDespachando(null); }
     };
     const marcar = async (sol, nuevoEstado) => {
         try {
@@ -1135,7 +1364,7 @@ function TabSolicitudes({ depositos }) {
                 <div className="space-y-2">
                     {lista.map(sol => (
                         <div key={sol.SolId} className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
-                            <button onClick={() => verDetalle(sol.SolId)} className="w-full flex items-center gap-3 px-4 py-3 hover:bg-slate-50 text-left">
+                            <button onClick={() => verDetalle(sol)} className="w-full flex items-center gap-3 px-4 py-3 hover:bg-slate-50 text-left">
                                 {abierta === sol.SolId ? <ChevronDown size={16} className="text-slate-400" /> : <ChevronRight size={16} className="text-slate-400" />}
                                 <span className="text-sm font-black text-slate-700 w-28 font-gsanscode">{sol.Numeracion}</span>
                                 <span className="text-sm font-bold text-slate-600 flex-1 truncate">{sol.Deposito || `Depósito ${sol.DepSolicitanteId}`}</span>
@@ -1146,25 +1375,55 @@ function TabSolicitudes({ depositos }) {
                             {abierta === sol.SolId && (
                                 <div className="border-t border-slate-100">
                                     <div className="divide-y divide-slate-50">
-                                        {(det[sol.SolId] || []).map(it => (
-                                            <div key={it.SolItId} className="flex items-center gap-3 pl-11 pr-4 py-2.5">
-                                                <div className="flex-1 min-w-0">
-                                                    <p className="text-sm font-bold text-slate-700 truncate">{it.Producto} — {it.NombreVariante}</p>
-                                                    <p className="text-[11px] text-slate-400">{[it.Talle, it.Color].filter(Boolean).join(' · ')}</p>
+                                        {(det[sol.SolId] || []).map(it => {
+                                            const d = despacho[sol.SolId];
+                                            const pendiente = sol.Estado === 'PENDIENTE' && d;
+                                            // undefined = cargando (o cambiaron el origen), null = no se pudo leer
+                                            const hay = d && d.origenDisp === d.origen ? d.disp?.[it.VarId] : undefined;
+                                            return (
+                                                <div key={it.SolItId} className="flex items-center gap-3 pl-11 pr-4 py-2.5">
+                                                    <div className="flex-1 min-w-0">
+                                                        <p className="text-sm font-bold text-slate-700 truncate">{it.Producto} — {it.NombreVariante}</p>
+                                                        <p className="text-[11px] text-slate-400">{[it.Talle, it.Color].filter(Boolean).join(' · ')}</p>
+                                                    </div>
+                                                    <span className="text-sm font-black text-slate-800 tabular-nums font-gsanscode">
+                                                        {pendiente && <span className="text-[10px] text-slate-400 font-bold mr-1">pidió</span>}
+                                                        {fmtCant(it.CantidadSolicitada)} <span className="text-[10px] text-slate-400 font-bold">{it.UnidadBase}</span>
+                                                    </span>
+                                                    {pendiente && (
+                                                        <>
+                                                            <span className={`w-24 text-right text-[11px] font-bold ${hay == null ? 'text-slate-300' : hay < Number(it.CantidadSolicitada) ? 'text-amber-600' : 'text-slate-400'}`}>
+                                                                {hay === undefined ? '…' : hay === null ? 'sin dato' : `hay ${fmtCant(hay)}`}
+                                                            </span>
+                                                            <input type="number" min="0" step="any" value={d.cant?.[it.SolItId] ?? ''} title="Cantidad a enviar"
+                                                                onChange={e => {
+                                                                    const val = e.target.value;
+                                                                    setDespacho(prev => ({ ...prev, [sol.SolId]: { ...prev[sol.SolId], cant: { ...prev[sol.SolId].cant, [it.SolItId]: val } } }));
+                                                                }}
+                                                                className="w-24 px-2 py-1.5 rounded-lg border border-slate-200 text-sm text-right [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100" />
+                                                        </>
+                                                    )}
                                                 </div>
-                                                <span className="text-sm font-black text-slate-800 tabular-nums font-gsanscode">
-                                                    {fmtCant(it.CantidadSolicitada)} <span className="text-[10px] text-slate-400 font-bold">{it.UnidadBase}</span>
-                                                </span>
-                                            </div>
-                                        ))}
+                                            );
+                                        })}
                                     </div>
                                     {sol.Estado === 'PENDIENTE' && (
                                         <div className="flex flex-wrap items-center gap-2 px-4 py-3 bg-slate-50 border-t border-slate-100">
-                                            <p className="text-[11px] text-slate-500 font-semibold flex-1">
-                                                Para despacharlo, armá un remito desde <b>Trasladar</b> hacia {sol.Deposito}; después marcalo atendido.
+                                            <p className="w-full text-[11px] text-slate-500 font-semibold">
+                                                Despachar arma el remito hacia {sol.Deposito || 'el sector'} con estas cantidades y deja el pedido atendido.
+                                                Si en el origen hay menos, sale lo que hay.
                                             </p>
-                                            <button onClick={() => marcar(sol, 'ATENDIDA')}
-                                                className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black">Marcar atendido</button>
+                                            <span className="text-xs font-bold text-slate-500">Sale de</span>
+                                            <Selector value={despacho[sol.SolId]?.origen ?? ''} onChange={v => cambiarOrigen(sol, v)} size="sm" ancho="w-56"
+                                                opciones={depositos.filter(x => x.DepId !== sol.DepSolicitanteId).map(x => ({ value: x.DepId, label: x.Nombre || `Depósito ${x.DepId}` }))} />
+                                            <span className="flex-1" />
+                                            <button onClick={() => despachar(sol)} disabled={despachando === sol.SolId || !despacho[sol.SolId]}
+                                                className="flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black disabled:opacity-50">
+                                                {despachando === sol.SolId ? <Loader2 size={14} className="animate-spin" /> : <Truck size={14} />}
+                                                Despachar a {sol.Deposito || 'el sector'}
+                                            </button>
+                                            <button onClick={() => marcar(sol, 'ATENDIDA')} title="Si ya se despachó por otro lado: cierra el pedido sin armar remito"
+                                                className="px-3 py-2 rounded-xl border border-slate-200 text-xs font-black text-slate-500 hover:bg-white">Marcar atendido sin despachar</button>
                                             <button onClick={() => marcar(sol, 'CANCELADA')}
                                                 className="px-3 py-2 rounded-xl border border-slate-200 text-xs font-black text-slate-500 hover:bg-white">Cancelar</button>
                                         </div>
@@ -1359,15 +1618,22 @@ function TabPeso({ dep }) {
 }
 
 /* ── INVENTARIO GLOBAL: mismas solapas que el sistema anterior ────────────── */
-function InventarioGlobal({ dep, depositos, nombreDep, onDiscrepancias }) {
+function InventarioGlobal({ dep, depositos, nombreDep, onDiscrepancias, irA = null, onIrAConsumido = null }) {
     const [sub, setSub] = useState('acciones');
     const [pend, setPend] = useState(0);
+    // [24/09] Filtros del Historial cuando se llega desde el Panel. Se copian acá y se avisa al padre,
+    // así la próxima vez que se entre a Inventario Global se abre el panel de siempre.
+    const [histInicial, setHistInicial] = useState(irA);
 
     useEffect(() => {
         api.get('/wms-interno/discrepancias?estado=PENDIENTE')
             .then(r => { const n = (r.data?.data || []).length; setPend(n); onDiscrepancias?.(n); })
             .catch(() => {});
     }, [onDiscrepancias]);
+    useEffect(() => {
+        if (!irA) return;
+        setHistInicial(irA); setSub('historial'); onIrAConsumido?.();
+    }, [irA]);
 
     const solapas = [
         { id: 'acciones', label: 'Panel', icono: LayoutDashboard },
@@ -1427,7 +1693,7 @@ function InventarioGlobal({ dep, depositos, nombreDep, onDiscrepancias }) {
             )}
 
             {sub === 'inventario' && <TabInventario dep={dep} depositos={depositos} />}
-            {sub === 'historial' && <TabHistorial />}
+            {sub === 'historial' && <TabHistorial inicial={histInicial} depositos={depositos} />}
             {sub === 'diferencias' && <TabDiferencias onCambio={(n) => { setPend(n); onDiscrepancias?.(n); }} />}
             {sub === 'ingreso' && <TabIngreso dep={dep} nombreDep={nombreDep} />}
             {sub === 'etiqueta' && <TabIngreso dep={dep} nombreDep={nombreDep} />}
@@ -1692,6 +1958,113 @@ function MosaicoVariantes({ variantes, seleccionada = null, onElegir = null }) {
     );
 }
 
+/* ── CONSUMIR DESDE MI SECTOR ────────────────────────────────────────────── */
+// [24/09] Como el "Consumir" del sistema anterior: el operario da de baja lo que usó de un lote
+// de SU sector (baja_consumo, mismo endpoint que Retirar stock). Arranca con el lote más viejo
+// elegido, igual que el FIFO de los traslados; se puede elegir otro.
+function ModalConsumo({ variante, dep, nombreSector, onCerrar, onHecho }) {
+    const [etiquetas, setEtiquetas] = useState(null);   // null = cargando
+    const [sel, setSel] = useState(null);
+    const [cantidad, setCantidad] = useState('');
+    const [guardando, setGuardando] = useState(false);
+    const porUnidad = String(variante.UnidadBase || '').toLowerCase() === 'uni';
+
+    useEffect(() => {
+        let vivo = true;
+        api.get(`/wms-interno/variantes/${variante.VarId}/etiquetas?dep=${dep}`)
+            .then(r => {
+                if (!vivo) return;
+                const lista = [...(r.data?.data || [])].sort((a, b) => a.EtiId - b.EtiId);
+                setEtiquetas(lista);
+                setSel(lista[0] || null);
+            })
+            .catch(() => { if (vivo) { setEtiquetas([]); toast.error('No se pudieron cargar los lotes'); } });
+        return () => { vivo = false; };
+    }, [variante.VarId, dep]);
+
+    const confirmar = async () => {
+        const n = parseFloat(String(cantidad).replace(',', '.'));
+        if (!sel) return toast.error('Elegí de qué lote sale');
+        if (!(n > 0)) return toast.error('Escribí cuánto se consumió');
+        if (porUnidad && n % 1 !== 0) return toast.error('Este artículo se consume por unidades enteras');
+        if (n > Number(sel.CantidadActual) + 0.0001) return toast.error(`El lote #${sel.EtiId} tiene ${fmtCant(sel.CantidadActual)}`);
+        setGuardando(true);
+        try {
+            const r = await api.post(`/wms-interno/etiquetas/${sel.EtiId}/baja`, { cantidad: n, motivo: 'baja_consumo' });
+            toast.success(`Consumo registrado: ${fmtCant(r.data?.salio ?? n)} ${variante.UnidadBase || ''} del lote #${sel.EtiId}`);
+            onHecho();
+            onCerrar();
+        } catch (e) { toast.error(e.response?.data?.error || 'No se pudo registrar el consumo'); }
+        finally { setGuardando(false); }
+    };
+
+    return createPortal(
+        <div className="fixed inset-0 z-[6000] flex items-start justify-center p-4 overflow-y-auto bg-slate-900/70" onClick={onCerrar}>
+            <div onClick={e => e.stopPropagation()} className="bg-white rounded-2xl shadow-2xl w-full max-w-lg my-16 overflow-hidden">
+                <div className="flex items-start gap-3 px-6 py-4 border-b border-slate-100">
+                    <div className="flex-1 min-w-0">
+                        <p className="text-[10px] font-black uppercase tracking-wider text-rose-500">Consumir en {nombreSector}</p>
+                        <p className="text-base font-black text-slate-800 truncate">{variante.Producto}</p>
+                        <p className="text-sm text-slate-500 truncate">{variante.NombreVariante}</p>
+                    </div>
+                    <button onClick={onCerrar} className="w-8 h-8 rounded-lg border border-slate-200 text-slate-400 hover:bg-slate-50 flex items-center justify-center shrink-0"><X size={15} /></button>
+                </div>
+                <div className="px-6 py-5 space-y-4">
+                    {etiquetas === null ? (
+                        <div className="flex items-center gap-2 text-slate-400 text-sm py-8 justify-center"><Loader2 size={16} className="animate-spin" /> Cargando lotes...</div>
+                    ) : etiquetas.length === 0 ? (
+                        <p className="text-sm text-slate-400 py-6 text-center">No quedan lotes con stock de este artículo en {nombreSector}.</p>
+                    ) : (
+                        <>
+                            <div>
+                                <p className="text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1.5">¿De qué lote sale?</p>
+                                <div className="rounded-xl border border-slate-200 divide-y divide-slate-50 max-h-52 overflow-y-auto">
+                                    {etiquetas.map(e => (
+                                        <button key={e.EtiId} onClick={() => setSel(e)}
+                                            className={`w-full flex items-center gap-3 px-3 py-2.5 text-left ${sel?.EtiId === e.EtiId ? 'bg-sky-50' : 'hover:bg-slate-50'}`}>
+                                            <span className="text-xs font-black text-slate-700 w-20 font-gsanscode">#{e.EtiId}</span>
+                                            <span className="text-[11px] text-slate-400 flex-1">ingresó {fmtFecha(e.FechaIngreso)}</span>
+                                            <span className="text-sm font-black text-slate-800 tabular-nums font-gsanscode">
+                                                {fmtCant(e.CantidadActual)} <span className="text-[10px] text-slate-400 font-bold">{variante.UnidadBase}</span>
+                                            </span>
+                                            {sel?.EtiId === e.EtiId && <Check size={14} className="text-sky-600" />}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                            <div>
+                                <p className="text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1.5">¿Cuánto se consumió?</p>
+                                <div className="flex items-center gap-2">
+                                    <input type="number" min="0" step={porUnidad ? '1' : '0.01'} value={cantidad} autoFocus
+                                        onChange={e => setCantidad(e.target.value)}
+                                        onKeyDown={e => { if (e.key === 'Enter') confirmar(); }}
+                                        placeholder="Cantidad"
+                                        className="w-36 px-3 py-2.5 rounded-xl border border-slate-200 text-base text-right placeholder:text-left [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none outline-none focus:border-rose-400 focus:ring-2 focus:ring-rose-100" />
+                                    <span className="text-sm font-bold text-slate-400">{variante.UnidadBase}</span>
+                                    {sel && (
+                                        <button onClick={() => setCantidad(String(Number(sel.CantidadActual)))}
+                                            className="ml-auto text-xs font-black text-slate-400 hover:text-slate-600">
+                                            Todo el lote ({fmtCant(sel.CantidadActual)})
+                                        </button>
+                                    )}
+                                </div>
+                            </div>
+                        </>
+                    )}
+                </div>
+                <div className="flex justify-end gap-2 px-6 py-4 bg-slate-50 border-t border-slate-100">
+                    <button onClick={onCerrar} className="px-4 py-2.5 rounded-xl border border-slate-200 bg-white text-sm font-black text-slate-500 hover:bg-slate-100">Cancelar</button>
+                    <button onClick={confirmar} disabled={guardando || !sel}
+                        className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-sm font-black disabled:opacity-40">
+                        {guardando ? <Loader2 size={15} className="animate-spin" /> : <MinusCircle size={15} />} Registrar consumo
+                    </button>
+                </div>
+            </div>
+        </div>,
+        document.body
+    );
+}
+
 /* ── MI SECTOR (vista del operario sobre SU depósito) ────────────────────── */
 function TabMiSector({ depositos }) {
     const [sector, setSector] = useState(undefined);   // undefined = cargando
@@ -1712,6 +2085,7 @@ function TabMiSector({ depositos }) {
     const [q, setQ] = useState('');
     const [pidiendo, setPidiendo] = useState([]);       // items del pedido nuevo
     const [famSel, setFamSel] = useState(null);        // familia abierta en 'Mi stock'
+    const [consumiendo, setConsumiendo] = useState(null); // variante con la ventana de consumo abierta
     const timer = useRef(null);
 
     useEffect(() => {
@@ -1791,6 +2165,7 @@ function TabMiSector({ depositos }) {
             cargar();
         } catch (e) { toast.error(e.response?.data?.error || 'No se pudo recibir'); }
     };
+    const agregarAlPedido = (v) => setPidiendo(p => p.some(i => i.VarId === v.VarId) ? p : [...p, { ...v, cantidad: '' }]);
     const enviarPedido = async () => {
         const items = pidiendo.filter(i => parseFloat(i.cantidad) > 0).map(i => ({ varId: i.VarId, cantidad: parseFloat(i.cantidad) }));
         if (!items.length) return toast.error('Agregá lo que necesitás');
@@ -1902,6 +2277,10 @@ function TabMiSector({ depositos }) {
                 <div className="flex items-center gap-2 text-slate-400 text-sm py-12 justify-center"><Loader2 size={18} className="animate-spin" /> Cargando...</div>
             ) : sub === 'stock' ? (
                 <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+                    {consumiendo && (
+                        <ModalConsumo variante={consumiendo} dep={dep} nombreSector={sector?.Deposito || 'tu sector'}
+                            onCerrar={() => setConsumiendo(null)} onHecho={cargar} />
+                    )}
                     <div className="flex flex-wrap items-center gap-3 px-5 py-4 border-b border-slate-100">
                         <Boxes size={17} className="text-slate-400" />
                         <h3 className="text-base font-black text-slate-700 flex-1">
@@ -1951,7 +2330,12 @@ function TabMiSector({ depositos }) {
                                             {g.items.length} variantes · {g.items.reduce((s, v) => s + Number(v.Etiquetas || 0), 0)} etiq. · {g.items[0]?.UnidadBase}
                                         </span>
                                     </div>
-                                    {g.matriz ? <MatrizTalleColor matriz={g.matriz} /> : <MosaicoVariantes variantes={g.items} />}
+                                    <p className="text-[11px] font-bold text-rose-500 -mt-1 mb-2 flex items-center gap-1">
+                                        <MinusCircle size={12} /> Tocá una variante para registrar un consumo
+                                    </p>
+                                    {g.matriz
+                                        ? <MatrizTalleColor matriz={g.matriz} onElegir={setConsumiendo} />
+                                        : <MosaicoVariantes variantes={g.items} onElegir={setConsumiendo} />}
                                 </div>
                             ) : (
                                 <React.Fragment key={`l-${g.clave}`}>
@@ -1965,6 +2349,10 @@ function TabMiSector({ depositos }) {
                                                 </p>
                                             </div>
                                             <span className="text-base font-black text-slate-800 tabular-nums font-gsanscode">{fmtCant(v.Stock)} <span className="text-[10px] text-slate-400 font-bold">{v.UnidadBase}</span></span>
+                                            <button onClick={() => setConsumiendo(v)} title="Registrar lo que se consumió de este artículo"
+                                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100 text-xs font-black shrink-0">
+                                                <MinusCircle size={13} /> Consumir
+                                            </button>
                                         </div>
                                     ))}
                                 </React.Fragment>
@@ -2099,24 +2487,23 @@ function TabMiSector({ depositos }) {
 
                     {modoPedido === 'nueva' ? (
                         <div className="bg-white rounded-2xl border border-slate-200 p-5 space-y-4">
-                            <div className="flex flex-col md:flex-row md:items-center gap-3">
-                                <div className="flex-1">
-                                    <p className="text-base font-black text-slate-800">Nueva solicitud de insumos</p>
-                                    <p className="text-xs text-slate-500 mt-0.5">Elegí los artículos que necesitás y enviá la solicitud a Logística.</p>
-                                </div>
-                                <div className="w-full md:w-80"><BuscadorVariante placeholder="Agregar artículo..."
-                                    onElegir={(v) => setPidiendo(p => p.some(i => i.VarId === v.VarId) ? p : [...p, { ...v, cantidad: '' }])} /></div>
+                            <div>
+                                <p className="text-base font-black text-slate-800">Nueva solicitud de insumos</p>
+                                <p className="text-xs text-slate-500 mt-0.5">Elegí los artículos que necesitás y enviá la solicitud a Logística.</p>
                             </div>
 
                             {pidiendo.length === 0 ? (
-                                <div className="rounded-2xl border-2 border-dashed border-slate-200 py-14 flex flex-col items-center text-center px-6">
-                                    <div className="w-12 h-12 rounded-full border-2 border-slate-200 flex items-center justify-center mb-3">
-                                        <Plus size={22} className="text-slate-300" />
+                                // [24/09] El buscador va ADENTRO del carrito vacío, grande y con el cursor puesto: chico
+                                // y arriba a la derecha no se veía, y no quedaba claro cómo se agregaba un artículo.
+                                <div className="rounded-2xl border-2 border-dashed border-sky-200 bg-sky-50/40 py-10 px-6 flex flex-col items-center text-center">
+                                    <p className="text-sm font-black text-slate-700">¿Qué necesitás?</p>
+                                    <p className="text-xs text-slate-500 mt-1 mb-4">Buscá el artículo por nombre, variante o código y tocalo para sumarlo al pedido.</p>
+                                    <div className="w-full max-w-xl text-left">
+                                        <BuscadorVariante grande autoFocus placeholder="Escribí el artículo que necesitás..." onElegir={agregarAlPedido} />
                                     </div>
-                                    <p className="text-sm font-black text-slate-600">El carrito está vacío.</p>
-                                    <p className="text-xs text-slate-400 mt-1">Buscá un artículo arriba para pedir insumos del catálogo.</p>
                                 </div>
                             ) : (
+                                <>
                                 <div className="rounded-xl border border-slate-200 divide-y divide-slate-100">
                                     {pidiendo.map((i, idx) => (
                                         <div key={i.VarId} className="flex items-center gap-3 px-3 py-2">
@@ -2129,6 +2516,8 @@ function TabMiSector({ depositos }) {
                                         </div>
                                     ))}
                                 </div>
+                                <div className="max-w-md"><BuscadorVariante placeholder="Agregar otro artículo..." onElegir={agregarAlPedido} /></div>
+                                </>
                             )}
 
                             <button onClick={enviarPedido} disabled={!pidiendo.length}
@@ -3824,10 +4213,13 @@ const ETIQUETA_TIPO = {
     fraccionamiento_salida: ['Fraccionamiento (−)', 'text-slate-600 bg-slate-50 border-slate-200'],
 };
 
-function TabHistorial() {
-    const [grupo, setGrupo] = useState('');
+function TabHistorial({ inicial = null, depositos = [] }) {
+    const [grupo, setGrupo] = useState(inicial?.grupo || '');
     const [q, setQ] = useState('');
     const [fecha, setFecha] = useState('');
+    const [dep, setDep] = useState(inicial?.dep ? String(inicial.dep) : '');   // [24/09] depósito (origen o destino)
+    const [mes, setMes] = useState(inicial?.mes || '');                        // [24/09] 'YYYY-MM'
+    const meses = useMemo(() => ultimosMeses(12), []);
     const [filas, setFilas] = useState([]);
     const [pagina, setPagina] = useState(0);
     const [hayMas, setHayMas] = useState(false);
@@ -3838,7 +4230,7 @@ function TabHistorial() {
     const cargar = useCallback(async (pag = 0, append = false) => {
         setCargando(true);
         try {
-            const params = new URLSearchParams({ grupo, q: q.trim(), fecha, pagina: String(pag) });
+            const params = new URLSearchParams({ grupo, q: q.trim(), fecha, dep, mes, pagina: String(pag) });
             const r = await api.get(`/wms-interno/historial?${params}`);
             const data = r.data?.data || [];
             setFilas(prev => append ? [...prev, ...data] : data);
@@ -3846,7 +4238,13 @@ function TabHistorial() {
             setPagina(pag);
         } catch (e) { toast.error('No se pudo cargar el historial'); }
         finally { setCargando(false); }
-    }, [grupo, q, fecha]);
+    }, [grupo, q, fecha, dep, mes]);
+
+    // Llegar desde el Panel ("Ver todos los consumos de X") con los filtros ya puestos
+    useEffect(() => {
+        if (!inicial) return;
+        setGrupo(inicial.grupo || ''); setDep(inicial.dep ? String(inicial.dep) : ''); setMes(inicial.mes || ''); setFecha('');
+    }, [inicial?.clave]);
 
     useEffect(() => {
         clearTimeout(timer.current);
@@ -3860,11 +4258,15 @@ function TabHistorial() {
         <div>
             {verRemito && <ModalRemito remId={verRemito} onCerrar={() => setVerRemito(null)} />}
             <div className="flex flex-wrap items-center gap-2 mb-4">
-                {[['', 'Todos'], ['TRASLADOS', 'Traslados'], ['INGRESOS', 'Ingresos'], ['EGRESOS', 'Egresos / Bajas'], ['AJUSTES', 'Ajustes']].map(([v, l]) => (
+                {[['', 'Todos'], ['TRASLADOS', 'Traslados'], ['INGRESOS', 'Ingresos'], ['EGRESOS', 'Egresos / Bajas'], ['CONSUMOS', 'Consumos'], ['AJUSTES', 'Ajustes']].map(([v, l]) => (
                     <button key={v} onClick={() => setGrupo(v)}
                         className={`px-3.5 py-1.5 rounded-xl text-xs font-black ${grupo === v ? 'bg-slate-800 text-white' : 'bg-white border border-slate-200 text-slate-500 hover:bg-slate-50'}`}>{l}</button>
                 ))}
                 <div className="flex-1" />
+                <Selector value={dep} onChange={setDep} size="sm" ancho="w-48"
+                    opciones={[{ value: '', label: 'Todos los depósitos' }, ...depositos.map(d => ({ value: String(d.DepId), label: d.Nombre || `Depósito ${d.DepId}` }))]} />
+                <Selector value={mes} onChange={setMes} size="sm" ancho="w-44"
+                    opciones={[{ value: '', label: 'Todos los meses' }, ...meses]} />
                 <div className="relative">
                     <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                     <input value={q} onChange={e => setQ(e.target.value)}
