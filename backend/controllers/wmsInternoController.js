@@ -479,6 +479,8 @@ exports.getHistorial = async (req, res) => {
 // cotización del día de cada consumo. Junta los movimientos propios con los importados del sistema
 // anterior, como el Panel. Para el mes en curso, "anterior" es el mismo tramo de días del mes pasado
 // (del 1 al de hoy); para un mes cerrado, el mes pasado entero.
+// El almacén CENTRAL (Tipo 'central': el Centro de stock general) no es un sector: sus consumos no
+// entran ni en las filas ni en el total (pedido del 28/09).
 exports.getGastoSectores = async (req, res) => {
     try {
         const pool = await getPool();
@@ -526,6 +528,8 @@ exports.getGastoSectores = async (req, res) => {
                     LEFT JOIN dbo.Wms_Etiquetas e ON e.EtiId = mov.EtiId
                     LEFT JOIN dbo.Wms_Variantes v ON v.VarId = mov.VarId
                     LEFT JOIN dbo.Wms_ProductosMaestros p ON p.PmaId = v.PmaId
+                    WHERE NOT EXISTS (SELECT 1 FROM dbo.Wms_Depositos dc
+                                      WHERE dc.DepId = mov.DepId AND LOWER(LTRIM(RTRIM(dc.Tipo))) = 'central')
                 )
                 INSERT INTO @y
                 SELECT DepId, VarId, Producto, NombreVariante, UnidadBase, Moneda, Periodo, Cant, CostoUnit,

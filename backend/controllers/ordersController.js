@@ -1,7 +1,7 @@
 const { getPool, sql } = require('../config/db');
 const logger = require('../utils/logger');
 const pushService = require('../services/pushNotificationService');
-const { changeOrderState } = require('../services/stateManagerService');
+const { changeOrderState, GUARD_ORDENES_RESUELTAS } = require('../services/stateManagerService');
 const { calcularFechasOrden } = require('../services/fechaPrometidaService');
 const { limpiarMarcasDeLote, resolverLoteVacio } = require('../utils/salidaDeLote');
 
@@ -268,6 +268,8 @@ exports.uploadProductionFile = async (req, res) => {
                     estado : 'Diseñado',
                     userObj: req.user || 'Sistema',
                     detalle: `Arte completo (${nArchivos + 1} capas) — lista para asignar a un lote`,
+                    // Subirle arte a una orden terminada o ya fabricada no la devuelve a producción.
+                    guard  : GUARD_ORDENES_RESUELTAS,
                     io     : req.app.get('socketio'),
                 });
                 await tx.commit();
@@ -664,7 +666,8 @@ exports.enviarAprobacionTPU = async (req, res) => {
         const check = await pool.request()
             .input('OID', sql.Int, ordenId)
             .query(`
-                SELECT o.OrdenID, o.AreaID, o.Estado, o.Nota, o.RolloID, o.FechaAprobacionCliente, o.AprobacionPendiente,
+                SELECT o.OrdenID, o.AreaID, o.Estado, o.EstadoenArea, o.Nota, o.RolloID, o.FechaAprobacionCliente, o.AprobacionPendiente,
+                       CASE WHEN ${GUARD_ORDENES_RESUELTAS} THEN 0 ELSE 1 END AS Resuelta,
                        (SELECT COUNT(*) FROM ArchivosOrden ao
                           WHERE ao.OrdenID = o.OrdenID AND ISNULL(ao.EstadoArchivo,'') <> 'Cancelado') AS archivos,
                        (SELECT COUNT(*) FROM ArchivosOrden ao
@@ -675,6 +678,20 @@ exports.enviarAprobacionTPU = async (req, res) => {
         if (!check.recordset.length) return res.status(404).json({ error: 'Orden no encontrada.' });
         const o = check.recordset[0];
         if (String(o.AreaID || '').toUpperCase() !== 'TPU') return res.status(400).json({ error: 'Solo aplica a órdenes TPU.' });
+
+        // Una orden terminada (o ya fabricada) no vuelve a producción por este botón. Las matrices
+        // migradas de la planilla vieja traen un BOCETO y ninguna fecha de aprobación, así que
+        // pasaban todos los controles de abajo: TP-352 (24/09) volvió a Pendiente, el cliente la
+        // aprobó y se fabricó sin pedido, en vez de en su reuso TPU-27406.
+        const estadoGen = String(o.Estado || '').trim().toUpperCase();
+        if (o.Resuelta || estadoGen === 'CERRADO') {
+            const error = estadoGen === 'CANCELADO'
+                ? 'La orden está cancelada: no se puede enviar a aprobación.'
+                : ['FINALIZADO', 'ENTREGADO', 'CERRADO'].includes(estadoGen)
+                    ? 'La orden ya está terminada: es una matriz. Para fabricarla de nuevo, reusala desde "Mis matrices" (se crea un pedido nuevo con su cotización).'
+                    : `La orden ya pasó por producción (${o.EstadoenArea}): no se puede enviar a aprobación.`;
+            return res.status(400).json({ error });
+        }
 
         // Reuso de matriz con cantidad distinta ([REUSO-REGEN]): el diseño ya está aprobado, así que al
         // completar las capas regeneradas la orden entra DIRECTO a producción, sin aprobación del cliente.

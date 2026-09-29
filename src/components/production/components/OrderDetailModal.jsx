@@ -144,6 +144,10 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
         /\[REUSO-REGEN\]/i.test(String(currentOrder?.Nota || currentOrder?.nota || order?.Nota || order?.nota || '')) ||
         files.some(f => /REGENERAR|ARTE BASE/i.test(String(f.TipoArchivo || f.tipo || f.NombreArchivo || f.nombre || '')))
     );
+    // Orden TPU terminada = una matriz del cliente: no se manda a aprobación ni a producción desde
+    // acá (así se reactivó por error la matriz migrada TP-352). Un trabajo nuevo con ella es un reuso.
+    const estadoGeneralUp = String(currentOrder?.status || '').trim().toUpperCase();
+    const ordenTerminadaTPU = isTPU && ['FINALIZADO', 'ENTREGADO', 'CERRADO', 'CANCELADO'].includes(estadoGeneralUp);
 
     // TPU: en qué fase está el flujo (aprobado / rechazado / en lote / quién elige las texturas).
     useEffect(() => {
@@ -2238,7 +2242,14 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                                         fondo de la pestaña, después del listado, y había que scrollear
                                         para encontrarla. */}
                                     {isTPU && productionFiles.length > 0 && (
-                                        esReusoRegen ? (
+                                        ordenTerminadaTPU ? (
+                                            <div className="flex items-center justify-center gap-2 py-3 px-3 mb-2 rounded-xl bg-slate-50 border border-slate-200 text-slate-600 text-xs font-bold text-center">
+                                                <i className="fa-solid fa-box-archive"></i>
+                                                {estadoGeneralUp === 'CANCELADO'
+                                                    ? 'Orden cancelada'
+                                                    : 'Orden terminada: es una matriz del cliente. Para fabricarla de nuevo, se reusa desde "Mis matrices".'}
+                                            </div>
+                                        ) : esReusoRegen ? (
                                             currentOrder?.status === 'Cargando...' ? (
                                                 <button onClick={handleEnviarAprobacion} className="w-full flex items-center justify-center gap-2 py-3 mb-2 rounded-xl bg-emerald-600 text-white text-sm font-bold uppercase tracking-wide hover:opacity-90 transition-opacity shadow-sm">
                                                     <i className="fa-solid fa-industry"></i> Enviar a producción

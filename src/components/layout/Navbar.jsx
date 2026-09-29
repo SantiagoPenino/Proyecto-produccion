@@ -4,13 +4,12 @@ import { useAuth } from '../../context/AuthContext';
 import { motion, AnimatePresence } from 'framer-motion';
 import api from '../../services/apiClient';
 import logoMini from '../../assets/images/logo/logo-mini.svg';
-import { Bell, BellRing } from 'lucide-react';
+import CampanaNotificaciones from './CampanaNotificaciones';
 
 const Navbar = ({ onSwitchTab, currentView, onToggleMobileMenu, isMobileMenuOpen }) => {
   const { user } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
-  const [showNotifications, setShowNotifications] = useState(false);
   const [searchRef, setSearchRef] = useState('');
   const searchInputRef = useRef(null);
   const [serverStatus, setServerStatus] = useState('ok'); // 'ok' | 'slow' | 'error'
@@ -137,19 +136,8 @@ const Navbar = ({ onSwitchTab, currentView, onToggleMobileMenu, isMobileMenuOpen
 
       {/* DERECHA: Notificaciones y Usuario */}
       <div className="flex items-center gap-6">
-        {/* Notificaciones */}
-        <div
-          className="relative cursor-pointer group"
-          onClick={() => setShowNotifications(!showNotifications)}
-        >
-          <div className="w-9 h-9 flex items-center justify-center rounded-full bg-zinc-700 text-slate-300 group-hover:bg-zinc-600 group-hover:text-white transition-colors">
-            <Bell size={20} className="group-hover:hidden" />
-            <BellRing size={20} className="hidden group-hover:block animate-[bell-ring_0.5s_ease-in-out]" />
-          </div>
-          <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-brand-magenta text-[9px] font-bold text-white border-2 border-white shadow-sm">
-            3
-          </span>
-        </div>
+        {/* Notificaciones: avisos por usuario (servicio técnico, …) */}
+        <CampanaNotificaciones />
 
         {/* Usuario */}
         <div className="flex items-center gap-4 scale-[0.80] sm:scale-100 origin-right">

@@ -657,6 +657,29 @@ exports.createRemito = async (req, res) => {
             }
 
             const idsGate = finalBultosIds.filter(id => !isNaN(id)).join(',');
+
+            // --- ORDEN CANCELADA (25/09) ---
+            // El bulto del producto de una orden cancelada no se despacha: no hay nada que entregar y
+            // el remito queda esperándolo para siempre. Caso DTF-21591: cancelada el 08/09, su bulto
+            // salió igual en REM-231455 y en REM-998757. La tela del cliente sí puede viajar (hay que
+            // devolvérsela), por eso mira solo el producto.
+            if (idsGate.length > 0) {
+                const canceladas = await new sql.Request(transaction).query(`
+                    SELECT DISTINCT b.CodigoEtiqueta, LTRIM(RTRIM(o.CodigoOrden)) AS CodigoOrden
+                    FROM Logistica_Bultos b
+                    JOIN Ordenes o ON o.OrdenID = b.OrdenID
+                    WHERE b.BultoID IN (${idsGate})
+                      AND b.Tipocontenido IN ('PROD_TERMINADO', 'EN_PROCESO')
+                      AND (b.Estado = 'CANCELADO' OR UPPER(LTRIM(RTRIM(ISNULL(o.Estado, '')))) = 'CANCELADO')
+                `);
+                if (canceladas.recordset.length > 0) {
+                    const det = canceladas.recordset.map(c => `${c.CodigoEtiqueta} (${c.CodigoOrden})`).join(', ');
+                    const err = new Error(`Bulto cancelado o de una orden cancelada, no se despacha: ${det}. Sacalo del despacho y apartalo.`);
+                    err.statusCode = 400;
+                    throw err;
+                }
+            }
+
             if (idsGate.length > 0) {
                 const ordenesGate = await new sql.Request(transaction).query(`
                     SELECT DISTINCT o.OrdenID, o.CodigoOrden, o.NoDocERP, o.AreaID
@@ -698,6 +721,34 @@ exports.createRemito = async (req, res) => {
                             throw err;
                         }
                     }
+                }
+            }
+
+            // --- AVISO: ORDEN YA ENTREGADA AL CLIENTE (25/09) ---
+            // Caso REM-396361: Terminaciones despachó a Depósito el bulto de una orden que el cliente
+            // se había llevado el día anterior, y el remito quedó abierto para siempre. Si el retiro de
+            // alguna orden del despacho ya está Entregado (OrdenesRetiro 5 — el 9 de OrdenesDeposito NO
+            // alcanza: crearRetiro también lo pone al armar el retiro), se frena con 409; el front
+            // pregunta y, si el operario confirma, reintenta con confirmarEntregadas = true.
+            // Mira solo el retiro de la PROPIA orden. Una reposición o falla que se despacha después de
+            // entregada su madre es mercadería nueva que va al cliente (caso REM-916042: EUV-22429-R1,
+            // despachada el 22/09 con la madre entregada el 15/09): avisar ahí sería una falsa alarma.
+            if (idsGate.length > 0 && !req.body?.confirmarEntregadas) {
+                const yaEntregadas = await new sql.Request(transaction).query(`
+                    SELECT DISTINCT o.CodigoOrden, CONVERT(varchar(10), r.OReFechaEstadoActual, 103) AS Fecha
+                    FROM Logistica_Bultos b
+                    JOIN Ordenes o ON o.OrdenID = b.OrdenID
+                    JOIN OrdenesDeposito od ON od.OrdCodigoOrden IN (o.CodigoOrden, o.NoDocERP)
+                    JOIN OrdenesRetiro r ON r.OReIdOrdenRetiro = od.OReIdOrdenRetiro AND r.OReEstadoActual = 5
+                    WHERE b.BultoID IN (${idsGate}) AND ISNULL(b.Tipocontenido, '') <> 'ENCOMIENDA'
+                `);
+                if (yaEntregadas.recordset.length > 0) {
+                    const det = yaEntregadas.recordset.map(x => `${x.CodigoOrden} (el ${x.Fecha})`).join(', ');
+                    const err = new Error(`Ya se entregó al cliente: ${det}. Si lo despachás igual, el remito va a quedar abierto sin nada que recibir.`);
+                    err.statusCode = 409;
+                    err.codigo = 'ORDENES_ENTREGADAS';
+                    err.ordenes = yaEntregadas.recordset;
+                    throw err;
                 }
             }
 
@@ -836,6 +887,9 @@ exports.createRemito = async (req, res) => {
                     estado   : 'En transito',
                     userObj  : req.user || req.body.usuario || usuarioId || 'Sistema',
                     detalle  : `Asignado a remito y numero del remito ${codigoRemito}`,
+                    // Despachar algo de una orden cancelada (la tela del cliente, que sí viaja) no la
+                    // saca de Cancelado: DTF-21591 volvió así dos veces a "En transito" (08/09 y 23/09).
+                    guard    : "UPPER(LTRIM(RTRIM(ISNULL(Estado, '')))) <> 'CANCELADO'",
                     io       : req.app.get('socketio')
                 });
             }
@@ -851,12 +905,12 @@ exports.createRemito = async (req, res) => {
         // Pedido incompleto / candado de Depósito (statusCode 400): la regla funcionando, no una falla.
         if (err.statusCode && err.statusCode < 500) logger.warn(`Rechazado createRemito: ${err.message}`);
         else logger.error("Error createRemito:", err);
-        res.status(err.statusCode || 500).json({ error: err.message });
+        res.status(err.statusCode || 500).json({ error: err.message, ...(err.codigo ? { codigo: err.codigo, ordenes: err.ordenes } : {}) });
     }
 };
 
 exports.createRemitoFromOrders = async (req, res) => {
-    const { areaOrigen, areaDestino, usuarioId, orderIds = [], observations } = req.body;
+    const { areaOrigen, areaDestino, usuarioId, orderIds = [], observations, confirmarEntregadas } = req.body;
     
     if (!orderIds || orderIds.length === 0) {
         return res.status(400).json({ error: "No orders provided" });
@@ -904,7 +958,8 @@ exports.createRemitoFromOrders = async (req, res) => {
             usuarioId,
             bultosIds,
             newBultos,
-            observations
+            observations,
+            confirmarEntregadas   // [25/09] el aviso de orden ya entregada también pasa por acá
         };
         
         return exports.createRemito(req, res);
@@ -1135,6 +1190,29 @@ exports.receiveDispatch = async (req, res) => {
             // solo con forzarOrdenes. En ese caso no hay remito (envioId) ni items.
             if (!itemsRecibidos) itemsRecibidos = [];
             if (!areaReceptora && Array.isArray(forzarOrdenes) && forzarOrdenes.length > 0) areaReceptora = 'DEPOSITO';
+
+            // --- ORDEN CANCELADA (25/09) ---
+            // Un bulto cancelado, o del producto de una orden cancelada, no se recibe: recibirlo lo
+            // devolvía al stock y en Depósito pasaba la orden cancelada a Finalizado. Se aparta; si la
+            // orden se reactiva, sus bultos vuelven solos (bultosCancelacionService).
+            const idsARecibir = itemsRecibidos.filter(i => i.estado === 'ESCANEADO' && !isNaN(i.bultoId)).map(i => Number(i.bultoId));
+            if (idsARecibir.length > 0) {
+                const canceladas = await new sql.Request(transaction).query(`
+                    SELECT DISTINCT b.CodigoEtiqueta, LTRIM(RTRIM(o.CodigoOrden)) AS CodigoOrden
+                    FROM Logistica_Bultos b
+                    LEFT JOIN Ordenes o ON o.OrdenID = b.OrdenID AND ISNULL(b.Tipocontenido, '') <> 'ENCOMIENDA'
+                    WHERE b.BultoID IN (${idsARecibir.join(',')})
+                      AND (b.Estado = 'CANCELADO'
+                           OR (b.Tipocontenido IN ('PROD_TERMINADO', 'EN_PROCESO')
+                               AND UPPER(LTRIM(RTRIM(ISNULL(o.Estado, '')))) = 'CANCELADO'))
+                `);
+                if (canceladas.recordset.length > 0) {
+                    const det = canceladas.recordset.map(c => c.CodigoOrden ? `${c.CodigoEtiqueta} (${c.CodigoOrden})` : c.CodigoEtiqueta).join(', ');
+                    const err = new Error(`Bulto cancelado o de una orden cancelada, no se recibe: ${det}. Apartalo; si la orden se reactiva, el bulto vuelve solo al stock.`);
+                    err.statusCode = 400;
+                    throw err;
+                }
+            }
 
             // --- GATE PEDIDO COMPLETO: a DEPOSITO solo se recibe con el pedido completo (todas las áreas) ---
             if (areaReceptora === 'DEPOSITO') {

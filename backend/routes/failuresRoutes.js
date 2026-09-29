@@ -1,13 +1,15 @@
 const express = require('express');
 const router = express.Router();
 const controller = require('../controllers/failuresController');
+const { verifyToken, soloInternoConRol } = require('../middleware/authMiddleware');
 
-router.get('/machines', controller.getMachinesByArea); // ?area=DTF
-router.get('/titles', controller.searchFailureTitles); // ?q=texto
-router.post('/titles', controller.createFailureType); 
-router.post('/', controller.createTicket);
-router.get('/', controller.getAllTickets); // GET /api/failures
-router.get('/history', controller.getHistory); // ?area=DTF
+// Catálogo de tipos de falla de producción (TiposFallas) — lo usa el panel de producción
+// (ProduccionPanelSection → POST /titles). Los tickets de mantenimiento que vivían acá
+// (TicketsMantenimiento) pasaron a Servicio Técnico: /api/servicio-tecnico (28/09/2026).
+// Antes estas rutas no pedían login.
+router.use(verifyToken, soloInternoConRol());
+
+router.get('/titles', controller.searchFailureTitles); // ?q=texto&area=DF
+router.post('/titles', controller.createFailureType);
 
 module.exports = router;
-

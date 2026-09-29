@@ -24,7 +24,7 @@ import EmbBandeja from "../EmbBandeja";
 
 // Modales y Sidebars
 import NewOrderModal from "../../modals/NewOrderModal";
-import ReportFailureModal from "../../modals/ReportFailureModal";
+import NuevaSolicitudModal from "../../servicio-tecnico/NuevaSolicitudModal";
 import StockRequestModal from "../../modals/StockRequestModal";
 import LogisticsCartModal from "../../modals/LogisticsCartModal";
 import RollAssignmentModal from "../../modals/RollAssignmentModal";
@@ -1058,7 +1058,8 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
         <div className="absolute inset-0 flex flex-col bg-zinc-50 overflow-hidden font-sans text-zinc-800 z-10">
             <StockRequestModal isOpen={isStockOpen} onClose={() => setIsStockOpen(false)} areaName={areaConfig.name} areaCode={areaKey} />
             <NewOrderModal isOpen={isNewOrderOpen} onClose={() => { setIsNewOrderOpen(false); refetch(); }} areaName={areaConfig.name} areaCode={areaKey} />
-            <ReportFailureModal isOpen={isFailureOpen} onClose={() => setIsFailureOpen(false)} areaName={areaConfig.name} areaCode={areaKey} />
+            {/* "Reportar falla" → solicitud a Servicio Técnico (máquina del área ya elegible + historial del área) */}
+            <NuevaSolicitudModal abierta={isFailureOpen} onCerrar={() => setIsFailureOpen(false)} areaInicial={areaKey} categoriaInicial="MAQUINA" conHistorialArea />
             <LogisticsCartModal isOpen={isCartOpen} onClose={() => setIsCartOpen(false)} areaName={areaConfig.name} areaCode={areaKey} onSuccess={() => refetch()} />
             <RollAssignmentModal isOpen={isRollModalOpen} onClose={() => setIsRollModalOpen(false)} selectedIds={selectedIds} areaCode={areaKey} onSuccess={() => { setSelectedIds([]); refetch(); }} />
 
@@ -1187,7 +1188,7 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
                                     <CirclePile size={24} />
                                 </button>
                             </Tippy>
-                            <Tippy content="Reportar Falla">
+                            <Tippy content="Reportar falla a Servicio Técnico">
                                 <button className="w-9 h-9 tablet:w-8 tablet:h-8 rounded-lg flex items-center justify-center transition-all shadow-sm bg-brand-magenta/10 text-brand-magenta border border-brand-magenta/20 hover:bg-brand-magenta/20" onClick={() => setIsFailureOpen(true)}>
                                     <AlertTriangle size={24} />
                                 </button>

@@ -39,6 +39,7 @@ backend/node_modules/
 backend/logs/
 backend/ComprobantesPagos/
 backend/tickets/
+backend/servicio-tecnico/
 
 *.bat
 *.sql

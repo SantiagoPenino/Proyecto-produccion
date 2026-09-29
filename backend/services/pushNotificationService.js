@@ -161,4 +161,75 @@ async function sendToOrderClient(orderId, { title, body, icon, url, tag, actions
     }
 }
 
-module.exports = { subscribe, unsubscribe, sendToClient, sendToOrderClient, VAPID_PUBLIC };
+// ── Usuarios INTERNOS ────────────────────────────────────────────────────────
+// Tabla propia (PushSuscripcionesInternas, script docs/servicio-tecnico/st-etapa1.sql):
+// PushSubscriptions guarda el CodCliente del portal en ClienteWebID y un IdUsuario ahí se
+// mezclaría con los clientes.
+async function subscribeInterno(usuarioId, subscription, dispositivo = null) {
+    const pool = await getPool();
+    await pool.request()
+        .input('U', sql.Int, usuarioId)
+        .input('Endpoint', sql.NVarChar(500), subscription.endpoint)
+        .input('P256dh', sql.NVarChar(200), subscription.keys?.p256dh || '')
+        .input('Auth', sql.NVarChar(100), subscription.keys?.auth || '')
+        .input('Disp', sql.NVarChar(200), dispositivo ? String(dispositivo).slice(0, 200) : null)
+        .query(`
+            IF EXISTS (SELECT 1 FROM dbo.PushSuscripcionesInternas WHERE Endpoint = @Endpoint)
+                UPDATE dbo.PushSuscripcionesInternas
+                SET UsuarioId = @U, KeysP256dh = @P256dh, KeysAuth = @Auth, Dispositivo = @Disp, Fecha = GETDATE()
+                WHERE Endpoint = @Endpoint
+            ELSE
+                INSERT INTO dbo.PushSuscripcionesInternas (UsuarioId, Endpoint, KeysP256dh, KeysAuth, Dispositivo)
+                VALUES (@U, @Endpoint, @P256dh, @Auth, @Disp)
+        `);
+    logger.info(`[WebPush] Suscripción interna guardada para usuario ${usuarioId}`);
+}
+
+async function unsubscribeInterno(usuarioId, endpoint) {
+    const pool = await getPool();
+    await pool.request()
+        .input('U', sql.Int, usuarioId)
+        .input('Endpoint', sql.NVarChar(500), endpoint)
+        .query(`DELETE FROM dbo.PushSuscripcionesInternas WHERE UsuarioId = @U AND Endpoint = @Endpoint`);
+}
+
+// Manda la misma push a varios usuarios internos (todos sus dispositivos). No tira.
+async function sendToUsuariosInternos(usuarioIds, { title, body, icon, url, tag }) {
+    if (!VAPID_PUBLIC || !VAPID_PRIVATE) return;
+    const ids = [...new Set((usuarioIds || []).map(Number).filter(n => Number.isInteger(n) && n > 0))];
+    if (!ids.length) return;
+    try {
+        const pool = await getPool();
+        const result = await pool.request()
+            .query(`SELECT Endpoint, KeysP256dh, KeysAuth FROM dbo.PushSuscripcionesInternas WHERE UsuarioId IN (${ids.join(',')})`);
+        if (!result.recordset.length) return;
+
+        const payload = JSON.stringify({
+            title: title || 'Aviso',
+            body: body || '',
+            icon: icon || '/assets/images/pwa.png',
+            url: url || '/',
+            tag: tag || undefined,
+        });
+        for (const sub of result.recordset) {
+            try {
+                await webpush.sendNotification({ endpoint: sub.Endpoint, keys: { p256dh: sub.KeysP256dh, auth: sub.KeysAuth } }, payload);
+            } catch (err) {
+                if (err.statusCode === 410 || err.statusCode === 404) {
+                    await pool.request().input('Endpoint', sql.NVarChar(500), sub.Endpoint)
+                        .query(`DELETE FROM dbo.PushSuscripcionesInternas WHERE Endpoint = @Endpoint`);
+                    logger.info(`[WebPush] Suscripción interna vencida eliminada: ${sub.Endpoint.substring(0, 50)}...`);
+                } else {
+                    logger.error(`[WebPush] Error enviando push interna: ${err.message}`);
+                }
+            }
+        }
+    } catch (err) {
+        logger.error(`[WebPush] sendToUsuariosInternos: ${err.message}`);
+    }
+}
+
+module.exports = {
+    subscribe, unsubscribe, sendToClient, sendToOrderClient, VAPID_PUBLIC,
+    subscribeInterno, unsubscribeInterno, sendToUsuariosInternos,
+};

@@ -20,6 +20,9 @@
 
 const sql = require('mssql');
 const logger = require('../utils/logger');
+const bultosCancelacion = require('./bultosCancelacionService');
+
+const esCancelado = (e) => String(e || '').trim().toUpperCase() === 'CANCELADO';
 
 /**
  * Extrae nombre (texto) e ID (numero) del usuario de forma segura.
@@ -165,8 +168,10 @@ async function changeOrderState(transaction, opts) {
     // 4a. Obtener las ordenes afectadas ANTES (respeta la guarda y sirve para el historial)
     const idsRes = await new sql.Request(transaction)
         .input('TID', tidType, tidVal)
-        .query(`SELECT OrdenID FROM dbo.Ordenes WHERE ${whereClause}`);
+        .query(`SELECT OrdenID, Estado FROM dbo.Ordenes WHERE ${whereClause}`);
     ordenesAfectadas = idsRes.recordset.map(o => o.OrdenID);
+    // Las que ya estaban canceladas: si este cambio las saca de Cancelado, es una reactivación (paso 6)
+    const yaCanceladas = idsRes.recordset.filter(o => esCancelado(o.Estado)).map(o => o.OrdenID);
 
     // 4b. Construir y ejecutar el UPDATE solo si hay ordenes que cumplen
     if (ordenesAfectadas.length > 0) {
@@ -194,6 +199,24 @@ async function changeOrderState(transaction, opts) {
     // 5. Registrar historial para cada orden afectada
     for (const oid of ordenesAfectadas) {
         await insertarHistorial(transaction, oid, estado, userName, detalle || `Estado actualizado a ${estado}`);
+    }
+
+    // 6. Bultos (25/09): cancelar saca del stock y de los remitos sin recibir los bultos del producto
+    //    de la orden; reactivarla se los devuelve (ver bultosCancelacionService). Va acá y no en cada
+    //    pantalla porque son muchos los caminos que cancelan: orden, pedido, archivos, cambio de
+    //    estado a mano, cascadas, jobs. Si falla, queda el aviso en el log y el cambio de estado sigue.
+    const cancela = esCancelado(estado) || esCancelado(estadoGeneral);
+    const reactivadas = cancela ? [] : yaCanceladas;
+    if (ordenesAfectadas.length > 0 && (cancela || reactivadas.length > 0)) {
+        const ids = cancela ? ordenesAfectadas : reactivadas;
+        try {
+            const r = cancela
+                ? await bultosCancelacion.sacarBultosDeCanceladas(transaction, ids, { usuarioId: userIdNum })
+                : await bultosCancelacion.devolverBultosDeReactivadas(transaction, ids, { usuarioId: userIdNum });
+            if (r.bultos > 0) logger.info(`[StateManager] ${cancela ? 'Cancelada' : 'Reactivada'} ${ids.join(',')}: ${r.bultos} bulto(s)${r.remitos ? ` y ${r.remitos} remito(s)` : ''}`);
+        } catch (e) {
+            logger.warn(`[StateManager] Bultos de la orden ${cancela ? 'cancelada' : 'reactivada'} ${ids.join(',')}: ${e.message}`);
+        }
     }
 
     logger.info(`[StateManager] ${target.type} ${target.id} => ${estado} (General: ${estadoGeneral || 'sin cambio'}) | Usuario: ${userName} | Ordenes: ${ordenesAfectadas.length}`);

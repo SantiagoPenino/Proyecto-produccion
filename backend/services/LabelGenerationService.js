@@ -212,13 +212,41 @@ class LabelGenerationService {
                     INNER JOIN Etiquetas E ON LB.CodigoEtiqueta = E.CodigoEtiqueta
                     WHERE E.OrdenID = @OID
                 `);
+                // [25/09] Remitos que pierden un bulto con esta limpieza: se recalculan después del
+                // borrado. Sin esto, un remito con todo lo demás recibido queda RECIBIDO_PARCIAL para
+                // siempre, porque nadie lo vuelve a calcular. Es preventivo: REM-231455 quedó así por
+                // otro camino (un script manual del 23/09 borró la fila de un bulto que no viajó).
+                const rEnvios = await new sql.Request(transaction).input('OID', sql.Int, ordenId).query(`
+                    SELECT DISTINCT LE.EnvioID
+                    FROM Logistica_EnvioItems LE
+                    INNER JOIN Logistica_Bultos LB ON LE.BultoID = LB.BultoID
+                    WHERE LB.OrdenID = @OID AND ISNULL(LB.Tipocontenido, '') <> 'ENCOMIENDA'
+                `);
                 await new sql.Request(transaction).input('OID', sql.Int, ordenId).query(`
                     DELETE LE FROM Logistica_EnvioItems LE
                     INNER JOIN Logistica_Bultos LB ON LE.BultoID = LB.BultoID
                     WHERE LB.OrdenID = @OID
                       AND ISNULL(LB.Tipocontenido, '') <> 'ENCOMIENDA'
                 `);
-            } catch (ign) { }
+                for (const { EnvioID } of rEnvios.recordset) {
+                    await new sql.Request(transaction)
+                        .input('EID', sql.Int, EnvioID)
+                        .input('Cod', sql.NVarChar(50), String(o.CodigoOrden || ordenId).trim())
+                        .query(`
+                            UPDATE e SET
+                                e.Estado = CASE WHEN e.Estado = 'RECIBIDO_PARCIAL'
+                                                 AND EXISTS (SELECT 1 FROM Logistica_EnvioItems i WHERE i.EnvioID = e.EnvioID)
+                                                 AND NOT EXISTS (SELECT 1 FROM Logistica_EnvioItems i WHERE i.EnvioID = e.EnvioID AND i.EstadoRecepcion = 'PENDIENTE')
+                                                THEN 'RECIBIDO_TOTAL' ELSE e.Estado END,
+                                e.Observaciones = ISNULL(e.Observaciones, '') + ' | Bulto de la orden ' + @Cod + ' quitado del remito al regenerar sus etiquetas'
+                                    + CASE WHEN NOT EXISTS (SELECT 1 FROM Logistica_EnvioItems i WHERE i.EnvioID = e.EnvioID) THEN ' (el remito quedó sin bultos)' ELSE '' END
+                            FROM Logistica_Envios e
+                            WHERE e.EnvioID = @EID
+                        `);
+                }
+            } catch (e) {
+                logger.warn(`[LabelService] limpieza logística de la orden ${ordenId}: ${e.message}`);
+            }
 
             // OJO: en bultos de ENCOMIENDA el OrdenID es el N° de OrdenesRetiro, NO de
             // Ordenes — sin el filtro, regenerar etiquetas de una orden cuyo ID coincide

@@ -3437,6 +3437,9 @@ exports.getTexturasTpu = async (req, res) => {
                 url: `/assets/textures/${encodeURIComponent(archivo)}`,
                 repeticiones: num(ajustes[archivo]?.repeticiones, REPETICIONES_DEFAULT, 1),
                 altura: num(ajustes[archivo]?.altura, ALTURA_DEFAULT, 0),
+                // Escala mínima de la trama según el grosor de su trazo (python/medir_trazo_texturas.py).
+                // null = no medida: el visor usa su mínimo general.
+                escalaMin: num(ajustes[archivo]?.escalaMin, null, 0.1),
             }));
 
         res.json({ success: true, data });

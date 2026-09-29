@@ -139,7 +139,15 @@ const distanciaInterior = (m, W, H) => {
 // 2 = el dibujo del material al doble. Se expone escala y no "repeticiones" porque es lo que se
 // está mirando — agrandar o achicar la trama — y porque el número de repeticiones depende del
 // tamaño del parche, que el cliente no tiene por qué tener en la cabeza.
-const ESCALA_MIN = 1, ESCALA_MAX = 3, ESCALA_PASO = 0.5;
+// El MÍNIMO es por textura (`escalaMin` en texturas.json, lo calcula python/medir_trazo_texturas.py
+// según el grosor del trazo): las finas (Recurso 8, Recurso 10, textura5) no bajan de 0,5, textura2
+// no se achica — decisiones del 25/09 — y las demás bajan hasta que su trazo queda como el de las
+// finas a 0,5, con piso 0,2. Más chico deforma la trama en el archivo: el relieve se rasteriza a
+// 600 dpi con umbral al 50 % (medido el 25/09). Sin prueba impresa por debajo de 1. ESCALA_MIN es
+// el mínimo de una textura sin medir.
+const ESCALA_MIN = 0.5, ESCALA_MAX = 3, ESCALA_PASO = 0.1;
+// Mínimo de UNA textura: el suyo del catálogo, entre el piso del servidor (0,1) y el tamaño de catálogo.
+const escalaMinDe = (t) => Math.min(1, Math.max(0.1, Number(t?.escalaMin) || ESCALA_MIN));
 // ALTURA_PASO queda sin usar a propósito: el slider de altura está escondido (todas las texturas
 // van al relieve máximo) y el paso es lo único que hace falta para volver a mostrarlo.
 const ALTURA_MIN = 0.5, ALTURA_MAX = 2, ALTURA_PASO = 0.25;
@@ -786,7 +794,7 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose, onAprobado, modo = 'clie
     const ajusteDe = (zona, t, fuente = ajustes) => {
         const a = fuente[zona] || {};
         return {
-            escala: acotar(Number(a.escala ?? 1), ESCALA_MIN, ESCALA_MAX),
+            escala: acotar(Number(a.escala ?? 1), escalaMinDe(t), ESCALA_MAX),
             // Altura sin control por ahora: todas las texturas van al relieve máximo. Se sigue
             // guardando y respetando lo que ya esté guardado, así que volver a mostrar el slider
             // es solo devolverlo a la barra.
@@ -2186,7 +2194,7 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose, onAprobado, modo = 'clie
                                     <label className={`flex-1 min-w-[180px] flex items-center gap-2 text-[11px] ${ui.cardTxt}`}>
                                         <span className="w-11 shrink-0">Escala</span>
                                         <input
-                                            type="range" min={ESCALA_MIN} max={ESCALA_MAX} step={ESCALA_PASO} value={ajusteActivo.escala}
+                                            type="range" min={escalaMinDe(texturaActiva)} max={ESCALA_MAX} step={ESCALA_PASO} value={ajusteActivo.escala}
                                             onChange={(e) => setAjuste('escala', Number(e.target.value))}
                                             className="flex-1 accent-cyan-400"
                                         />

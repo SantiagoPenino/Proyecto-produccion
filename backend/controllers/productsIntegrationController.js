@@ -73,8 +73,11 @@ async function crearArticuloVinculado(tran, { pmaId, nombre, variantes }) {
 // SOLO con WMS_INTERNO=true (después del cutover): antes, los productos se siguen creando en el WMS
 // externo y entran con el import (ver wmsInternoService.crearMaestroConVariantes).
 // Vocabulario: el mismo que ya usan los maestros migrados, que /stock muestra tal cual.
+// 'rollos' (28/09): vinilos, lonas, papeles, canvas y film se venden por metro pero en el stock se
+// cuentan por rollo; los 16 maestros que estaban en 'mts' se pasaron a 'rollos' en producción.
 const UNIDADES_WMS = [
-    { v: 'uni', t: 'Unidades' }, { v: 'mts', t: 'Metros' }, { v: 'kg', t: 'Kilos' }, { v: 'lts', t: 'Litros' },
+    { v: 'uni', t: 'Unidades' }, { v: 'rollos', t: 'Rollos' }, { v: 'mts', t: 'Metros' },
+    { v: 'kg', t: 'Kilos' }, { v: 'lts', t: 'Litros' },
 ];
 const TIPOS_GESTION_WMS = [
     { v: 'granel', t: 'A granel' }, { v: 'lote_individual', t: 'Lote individual' },

@@ -60,6 +60,11 @@ const MachineControl = ({ machine, onAssign, onToggleStatus, onViewDetails, onUn
     };
 
     const isFalla = (machine.status || '').toLowerCase().includes('falla');
+    // MANTENIMIENTO (Configuración → Equipos o Servicio Técnico) = fuera de servicio: no recibe lotes
+    // nuevos (ni soltando ni eligiendo de la Mesa de Armado), pero sí se le pueden SACAR los que tiene.
+    // El backend también lo controla (assignRoll, utils/estadoEquipo.js).
+    const enMantenimiento = String(machine.status || '').trim().toUpperCase() === 'MANTENIMIENTO';
+    const noRecibeLotes = isFalla || enMantenimiento;
     // Impresora = flag SeparacionImpresion de ConfigEquipos (columna dedicada, se marca en el modal de
     // equipos). En impresoras la banderita continúa el lote en una calandra en vez de ir a Calidad.
     // Parse robusto: el flag puede llegar como bit, número o CHAR '0'/'1' (un '0' string es truthy).
@@ -110,7 +115,7 @@ const MachineControl = ({ machine, onAssign, onToggleStatus, onViewDetails, onUn
 
     return (
         <div className={`min-w-0 bg-white rounded-2xl shadow-lg border-t-4 flex flex-col max-h-full transition-colors
-            ${isFalla ? 'border-brand-magenta' : isRunning ? 'border-brand-cyan' : 'border-zinc-400'}`}>
+            ${isFalla ? 'border-brand-magenta' : enMantenimiento ? 'border-amber-400' : isRunning ? 'border-brand-cyan' : 'border-zinc-400'}`}>
 
             {/* ENCABEZADO DE CONTROL */}
             <div className="p-3 tablet:p-2 border-b border-zinc-100 bg-zinc-50 rounded-t-xl flex flex-col gap-2 tablet:gap-1.5 relative z-20 shadow-sm">
@@ -128,6 +133,11 @@ const MachineControl = ({ machine, onAssign, onToggleStatus, onViewDetails, onUn
                         if (isFalla) return (
                             <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-brand-magenta/10 text-brand-magenta border border-brand-magenta/20">
                                 FALLA
+                            </span>
+                        );
+                        if (enMantenimiento) return (
+                            <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-amber-50 text-amber-600 border border-amber-200" title="No recibe lotes nuevos; los que tiene se pueden sacar">
+                                MANTENIMIENTO
                             </span>
                         );
                         return (
@@ -184,6 +194,7 @@ const MachineControl = ({ machine, onAssign, onToggleStatus, onViewDetails, onUn
                                     value={selectedRollId}
                                     onChange={(id) => {
                                         const isPending = pendingRolls.some(r => String(r.id) === String(id));
+                                        if (isPending && noRecibeLotes) return; // en mantenimiento no se le agregan lotes
                                         if (isPending) {
                                             onAssign(id);
                                             setSelectedRollId(id);
@@ -239,8 +250,8 @@ const MachineControl = ({ machine, onAssign, onToggleStatus, onViewDetails, onUn
                                                     </>
                                                 )}
 
-                                                {/* SECTION: MESA DE ARMADO */}
-                                                {pendingRolls.length > 0 && (
+                                                {/* SECTION: MESA DE ARMADO (no se ofrece si la máquina no recibe lotes) */}
+                                                {pendingRolls.length > 0 && !noRecibeLotes && (
                                                     <>
                                                         <div className={`px-3 py-1.5 text-[10px] font-bold text-zinc-400 bg-zinc-50 uppercase sticky top-0 z-[61] ${machine.rolls.length > 0 ? 'mt-1 border-t border-zinc-100' : ''}`}>Mesa de Armado</div>
                                                         {pendingRolls.map((r) => (
@@ -270,7 +281,7 @@ const MachineControl = ({ machine, onAssign, onToggleStatus, onViewDetails, onUn
                                                     </>
                                                 )}
                                                 
-                                                {machine.rolls.length === 0 && pendingRolls.length === 0 && (
+                                                {machine.rolls.length === 0 && (pendingRolls.length === 0 || noRecibeLotes) && (
                                                      <div className="px-4 py-3 text-xs text-zinc-400 italic text-center">No hay lotes disponibles</div>
                                                 )}
                                             </Listbox.Options>
@@ -301,7 +312,7 @@ const MachineControl = ({ machine, onAssign, onToggleStatus, onViewDetails, onUn
             </div>
 
             {/* TABLA / LISTA DE ROLLOS (VISIBLE) */}
-            <Droppable droppableId={String(machine.id)} isDropDisabled={(machine.status || '').toLowerCase().includes('falla')}>
+            <Droppable droppableId={String(machine.id)} isDropDisabled={noRecibeLotes}>
                 {(provided, snapshot) => (
                     <div 
                         ref={provided.innerRef} 
@@ -335,6 +346,13 @@ const MachineControl = ({ machine, onAssign, onToggleStatus, onViewDetails, onUn
                         ))}
                         {machine.rolls.length === 0 && (() => {
                             const isFalla = (machine.status || '').toLowerCase().includes('falla');
+                            if (!isFalla && enMantenimiento) return (
+                                <div className="h-32 tablet:h-24 m-3 tablet:m-1.5 border-2 border-dashed border-amber-200 rounded-xl flex flex-col items-center justify-center gap-2 bg-amber-50/60">
+                                    <PrinterX size={24} className="text-amber-500 opacity-60" />
+                                    <span className="text-xs font-black text-amber-600/70 uppercase tracking-wide">{machine.name}</span>
+                                    <span className="text-[10px] font-bold text-amber-600">En mantenimiento · no recibe lotes</span>
+                                </div>
+                            );
                             return isFalla ? (
                                 <div className="h-32 tablet:h-24 m-3 tablet:m-1.5 border-2 border-dashed border-brand-magenta/20 rounded-xl flex flex-col items-center justify-center gap-2 bg-brand-magenta/5">
                                     <PrinterX size={24} className="text-brand-magenta opacity-40" />

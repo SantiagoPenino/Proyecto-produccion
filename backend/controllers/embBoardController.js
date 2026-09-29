@@ -1,6 +1,7 @@
 const { getPool, sql } = require('../config/db');
 const logger = require('../utils/logger');
 const { changeOrderState } = require('../services/stateManagerService');
+const { fueraDeServicio, mensajeFueraDeServicio } = require('../utils/estadoEquipo');
 
 // [BANDEJA GENÉRICA] Bandeja simple de órdenes (NO lotes) — reemplaza la Mesa de
 // Armado/Control por lotes que usan el resto de las áreas. Nace para Bordado (EMB) y se
@@ -538,7 +539,7 @@ exports.getMaquinasEmb = async (req, res) => {
     try {
         const pool = await getPool();
         const r = await pool.request().input('Area', sql.VarChar(20), area).query(`
-            SELECT EquipoID, Nombre FROM ConfigEquipos WHERE AreaID = @Area AND Activo = 1 ORDER BY Nombre
+            SELECT EquipoID, Nombre, Estado FROM ConfigEquipos WHERE AreaID = @Area AND Activo = 1 ORDER BY Nombre
         `);
         res.json({ success: true, data: r.recordset });
     } catch (err) {
@@ -553,6 +554,15 @@ exports.asignarMaquina = async (req, res) => {
     if (!ordenId) return res.status(400).json({ error: 'ordenId inválido.' });
     try {
         const pool = await getPool();
+        // Máquina fuera de servicio (MANTENIMIENTO): no recibe órdenes nuevas. Sacarle una
+        // (maquinaId vacío) sí se puede. Ver utils/estadoEquipo.js.
+        if (maquinaId) {
+            const m = await pool.request().input('MID', sql.Int, maquinaId)
+                .query('SELECT Nombre, Estado FROM dbo.ConfigEquipos WHERE EquipoID = @MID');
+            if (fueraDeServicio(m.recordset[0]?.Estado)) {
+                return res.status(409).json({ error: mensajeFueraDeServicio(m.recordset[0]?.Nombre, m.recordset[0]?.Estado) });
+            }
+        }
         await pool.request()
             .input('OID', sql.Int, ordenId)
             .input('MID', sql.Int, maquinaId)

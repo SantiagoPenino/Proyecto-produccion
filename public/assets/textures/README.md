@@ -31,9 +31,18 @@ En esta misma carpeta, un archivo con la repetición y la altura de cada textura
 
 - **`repeticiones`** — cuántas veces entra a lo ancho del parche. No se puede deducir del archivo:
   los SVG traen `viewBox` pero no medida física, así que no hay tamaño real del que sacarlo.
-  Default: **12**.
+  Default: **2** (`REPETICIONES_DEFAULT` en `webOrdersController.js`).
 - **`altura`** — cuánto se marca el relieve. `0` = plano, `1` = el contraste tal cual viene del
-  archivo, más de 1 lo exagera. Default: **0.6**.
+  archivo, más de 1 lo exagera. Default: **1**.
+- **`escalaMin`** y **`trazoMm`** — NO se escriben a mano: los calcula
+  `backend/python/medir_trazo_texturas.py`. `trazoMm` es el trazo mediano del relieve a escala 1 en
+  un parche de 60 mm; `escalaMin` es hasta dónde puede achicar el cliente la trama en "Armá tu
+  matriz". Las finas quedan en 0,5 y las de trazo grueso bajan hasta 0,2. **Volvé a correr el
+  script cada vez que agregues una textura o le cambies las `repeticiones`**
+  (`python python/medir_trazo_texturas.py`, desde `backend/`). Sin `escalaMin` la textura usa 0,5.
+- **`escalaMinFija`** — (a mano, opcional) un mínimo decidido a ojo que manda sobre la cuenta: el
+  script lo respeta y lo copia a `escalaMin`. Hoy solo `textura2.svg` = 1 (no se achica). Si lo
+  cambiás, corré `python python/medir_trazo_texturas.py --recalcular` (no vuelve a medir).
 
 Lo que no esté listado usa los defaults. Si el JSON tiene un error de sintaxis se ignora entero y se
 avisa en el log — las texturas siguen funcionando.

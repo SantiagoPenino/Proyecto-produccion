@@ -892,6 +892,80 @@ exports.marcarRetiroEntregado = async (req, res) => {
     }
 };
 
+// [25/09] Bultos de las órdenes de estos retiros que siguen "en tránsito" en un remito de Logística:
+// se despacharon a Depósito pero nunca se escanearon al llegar. Caso REM-459769: la orden se entregó
+// igual y el remito quedó esperando para siempre. Dos ramas con UNION (CodigoOrden y NoDocERP) en vez
+// de un OR en el JOIN, que no usa índice (ver retiroService.marcarEntregado). Incluye las reposiciones
+// y fallas de cada orden (DTF-22306 → DTF-22306-R1, DTF-22306-F14604…): no tienen pedido de depósito
+// propio y salen con la madre (caso REM-133680). El LIKE arma el prefijo desde la madre, así que busca
+// por índice; los [ % _ del código se escapan para que no funcionen como comodín.
+async function bultosSinRecibir(pool, retiroIds) {
+    if (!retiroIds.length) return [];
+    const lista = retiroIds.map(n => parseInt(n, 10)).filter(n => !isNaN(n)).join(',');
+    if (!lista) return [];
+    const r = await pool.request().query(`
+        WITH base AS (
+            SELECT od.OReIdOrdenRetiro, o.OrdenID, o.CodigoOrden
+            FROM OrdenesDeposito od JOIN Ordenes o ON o.CodigoOrden = od.OrdCodigoOrden
+            WHERE od.OReIdOrdenRetiro IN (${lista})
+            UNION
+            SELECT od.OReIdOrdenRetiro, o.OrdenID, o.CodigoOrden
+            FROM OrdenesDeposito od JOIN Ordenes o ON o.NoDocERP = od.OrdCodigoOrden
+            WHERE od.OReIdOrdenRetiro IN (${lista})
+        ), ords AS (
+            SELECT OReIdOrdenRetiro, OrdenID, CodigoOrden FROM base
+            UNION
+            SELECT base.OReIdOrdenRetiro, h.OrdenID, h.CodigoOrden
+            FROM base
+            JOIN Ordenes h ON h.CodigoOrden LIKE REPLACE(REPLACE(REPLACE(base.CodigoOrden, '[', '[[]'), '%', '[%]'), '_', '[_]') + '-%'
+        )
+        SELECT DISTINCT ords.OReIdOrdenRetiro, ords.CodigoOrden, b.BultoID, b.CodigoEtiqueta,
+               e.EnvioID, e.CodigoRemito, e.AreaOrigenID
+        FROM ords
+        JOIN Logistica_Bultos b ON b.OrdenID = ords.OrdenID AND ISNULL(b.Tipocontenido, '') <> 'ENCOMIENDA'
+        JOIN Logistica_EnvioItems i ON i.BultoID = b.BultoID AND i.EstadoRecepcion = 'PENDIENTE'
+        JOIN Logistica_Envios e ON e.EnvioID = i.EnvioID
+             AND e.Estado IN ('ESPERANDO_RETIRO', 'EN_TRANSITO', 'EN_TRANSITO_PARCIAL', 'DESPACHADO', 'RECIBIDO_PARCIAL')
+    `);
+    return r.recordset;
+}
+
+// Entrega confirmada con bultos sin recibir: esos bultos quedan entregados al cliente y su remito se
+// recalcula. Sin nada pendiente, RECIBIDO_PARCIAL pasa a RECIBIDO_TOTAL y el que nunca se recibió, a
+// ENTREGADO (como el cierre de encomiendas). Va dentro de la transacción de la entrega del retiro.
+async function cerrarBultosEntregados(transaction, bultos, retiro) {
+    for (const b of bultos) {
+        await new sql.Request(transaction)
+            .input('EID', sql.Int, b.EnvioID)
+            .input('BID', sql.Int, b.BultoID)
+            .input('Obs', sql.NVarChar(400), ` | Bulto ${b.CodigoEtiqueta} (${b.CodigoOrden}) entregado al cliente con el retiro ${retiro} sin haberse recibido en Depósito`)
+            .query(`
+                UPDATE Logistica_EnvioItems SET EstadoRecepcion = 'ENTREGADO', FechaEscaneo = GETDATE()
+                WHERE EnvioID = @EID AND BultoID = @BID AND EstadoRecepcion = 'PENDIENTE';
+                UPDATE Logistica_Bultos SET Estado = 'ENTREGADO', UbicacionActual = 'CLIENTE_FINAL'
+                WHERE BultoID = @BID;
+                UPDATE e SET
+                    e.Estado = CASE
+                        WHEN EXISTS (SELECT 1 FROM Logistica_EnvioItems i WHERE i.EnvioID = e.EnvioID AND i.EstadoRecepcion = 'PENDIENTE') THEN e.Estado
+                        WHEN e.Estado = 'RECIBIDO_PARCIAL' THEN 'RECIBIDO_TOTAL'
+                        ELSE 'ENTREGADO' END,
+                    e.Observaciones = ISNULL(e.Observaciones, '') + @Obs
+                FROM Logistica_Envios e WHERE e.EnvioID = @EID;
+            `);
+    }
+}
+
+// Entrega SIN esos bultos (no están en el local: siguen viajando o todavía no salieron): quedan
+// pendientes para recibirlos cuando lleguen, y el remito anota que el retiro salió sin ellos.
+async function anotarBultosPendientes(transaction, bultos, retiro) {
+    for (const b of bultos) {
+        await new sql.Request(transaction)
+            .input('EID', sql.Int, b.EnvioID)
+            .input('Obs', sql.NVarChar(400), ` | Bulto ${b.CodigoEtiqueta} (${b.CodigoOrden}) no salió con el retiro ${retiro}: seguía en tránsito`)
+            .query(`UPDATE Logistica_Envios SET Observaciones = ISNULL(Observaciones, '') + @Obs WHERE EnvioID = @EID`);
+    }
+}
+
 /**
  * ENTREGAR AL CLIENTE MULTIPLES SELECCIONES DE UN CASILLERO
  */
@@ -924,6 +998,21 @@ exports.marcarRetiroEntregadoMultiple = async (req, res) => {
         const entregadas = [];
         const fallidas   = [];
 
+        // [25/09] Aviso ANTES de entregar nada: bultos de estas órdenes que nunca se recibieron en
+        // Depósito. El front muestra la lista y reintenta con confirmarBultosEnTransito:
+        //   'entregados' (o true): están en el local → se cierran como entregados al cliente;
+        //   'pendientes': no están → se entrega el retiro sin ellos y quedan para recibir.
+        const sinRecibir = await bultosSinRecibir(pool, ordenesOrdenadas.map(x => x.id));
+        const modoTransito = req.body.confirmarBultosEnTransito === 'pendientes' ? 'pendientes'
+            : req.body.confirmarBultosEnTransito ? 'entregados' : null;
+        if (sinRecibir.length > 0 && !modoTransito) {
+            return res.status(409).json({
+                error: `Hay ${sinRecibir.length} bulto(s) de estas órdenes que nunca se recibieron en Depósito.`,
+                codigo: 'BULTOS_SIN_RECIBIR',
+                bultos: sinRecibir.map(b => ({ CodigoOrden: b.CodigoOrden, CodigoEtiqueta: b.CodigoEtiqueta, CodigoRemito: b.CodigoRemito, AreaOrigenID: b.AreaOrigenID })),
+            });
+        }
+
         for (const item of ordenesOrdenadas) {
             const transaction = new sql.Transaction(pool);
             await transaction.begin();
@@ -931,6 +1020,9 @@ exports.marcarRetiroEntregadoMultiple = async (req, res) => {
                 logger.info(`[ENTREGADO MULTIPLE] ${item.ord} -> OReId ${item.id}`);
                 // marcarEntregado actualiza el historial, estados y ya elimina de OcupacionEstantes
                 await marcarEntregado(transaction, item.id, new Date(fechaEntrega), UsuarioAlta);
+                const suyos = sinRecibir.filter(b => b.OReIdOrdenRetiro === item.id);
+                if (suyos.length && modoTransito === 'pendientes') await anotarBultosPendientes(transaction, suyos, item.ord);
+                else if (suyos.length) await cerrarBultosEntregados(transaction, suyos, item.ord);
                 await transaction.commit();
                 entregadas.push(item.ord);
             } catch (errItem) {

@@ -644,6 +644,52 @@ async function marcarEntregado(transactionOrReq, OReIdOrdenRetiro, fecha, usuari
             ) + '-' + CAST(@ID AS VARCHAR);
         `);
 
+    // [25/09] Los bultos de las órdenes del retiro salen de Depósito: hasta ahora la entrega no los
+    // tocaba y quedaban "en stock" para siempre (24.494 bultos de 24.374 órdenes entregadas entre el
+    // 12/06 y el 25/09 seguían figurando en Stock Depósito). Incluye las reposiciones y fallas de cada
+    // orden (DTF-22306 → DTF-22306-R1…), que salen con la madre. Mismo estado que el cierre de
+    // encomiendas (ENTREGADO en CLIENTE_FINAL) y un movimiento de salida por bulto. Si esto falla, la
+    // entrega sigue: es registro de logística, no puede frenar al cliente en el mostrador.
+    try {
+        const reqBultos = typeof transactionOrReq.request === 'function'
+            ? transactionOrReq.request()
+            : new sql.Request(transactionOrReq);
+        await reqBultos
+            .input('ID', sql.Int, OReIdOrdenRetiro)
+            .input('Fec', sql.DateTime, fecha)
+            .input('Usr', sql.Int, usuarioId)
+            .query(`
+                DECLARE @salen TABLE (CodigoEtiqueta NVARCHAR(100) COLLATE DATABASE_DEFAULT, Ubicacion NVARCHAR(100) COLLATE DATABASE_DEFAULT);
+                DECLARE @Ret VARCHAR(30) = ISNULL((SELECT RTRIM(FormaRetiro) FROM OrdenesRetiro WHERE OReIdOrdenRetiro = @ID), 'R') + '-' + CAST(@ID AS VARCHAR);
+                WITH base AS (
+                    SELECT o.OrdenID, o.CodigoOrden
+                    FROM OrdenesDeposito od JOIN Ordenes o ON o.CodigoOrden = od.OrdCodigoOrden
+                    WHERE od.OReIdOrdenRetiro = @ID
+                    UNION
+                    SELECT o.OrdenID, o.CodigoOrden
+                    FROM OrdenesDeposito od JOIN Ordenes o ON o.NoDocERP = od.OrdCodigoOrden
+                    WHERE od.OReIdOrdenRetiro = @ID
+                ), ords AS (
+                    SELECT OrdenID FROM base
+                    UNION
+                    SELECT h.OrdenID FROM base
+                    JOIN Ordenes h ON h.CodigoOrden LIKE REPLACE(REPLACE(REPLACE(base.CodigoOrden, '[', '[[]'), '%', '[%]'), '_', '[_]') + '-%'
+                )
+                UPDATE b SET b.Estado = 'ENTREGADO', b.UbicacionActual = 'CLIENTE_FINAL'
+                OUTPUT INSERTED.CodigoEtiqueta, DELETED.UbicacionActual INTO @salen
+                FROM Logistica_Bultos b
+                WHERE b.OrdenID IN (SELECT OrdenID FROM ords)
+                  AND ISNULL(b.Tipocontenido, '') <> 'ENCOMIENDA'
+                  AND b.Estado = 'EN_STOCK' AND b.UbicacionActual IN ('DEPOSITO', 'LOGISTICA');
+
+                INSERT INTO MovimientosLogistica (CodigoBulto, TipoMovimiento, AreaID, UsuarioID, FechaHora, Observaciones, EstadoAnterior, EstadoNuevo, EsRecepcion)
+                SELECT CodigoEtiqueta, 'SALIDA', Ubicacion, @Usr, @Fec, 'Entregado al cliente con el retiro ' + @Ret, 'EN_STOCK', 'ENTREGADO', 0
+                FROM @salen;
+            `);
+    } catch (errBultos) {
+        logger.warn(`[RETIRO] No se pudieron cerrar los bultos del retiro ${OReIdOrdenRetiro}: ${errBultos.message}`);
+    }
+
     // Sincronización global con stateManagerService
     try {
         const { changeOrderState } = require('./stateManagerService');

@@ -1,7 +1,10 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { Listbox } from '@headlessui/react';
+import { useNavigate, useLocation } from 'react-router-dom';
 import api from '../../services/api';
+import { SECCIONES_STOCK } from './stockSecciones';
+import { useAuth } from '../../context/AuthContext';
 import { toast } from 'sonner';
 import QRCode from 'qrcode';
 import {
@@ -19,6 +22,37 @@ import {
 // sistema anterior). Nombre → componente Lucide; si aparece uno nuevo, cae en CircleDot.
 const ICONOS_PASO = { Package, Factory, Truck, Anchor, Ship, MapPin, CheckCircle2, Boxes, Inbox };
 
+// Tipo del depósito (Wms_Depositos.Tipo), sin importar mayúsculas ni espacios.
+const esTipoDep = (d, tipo) => String(d?.Tipo || '').trim().toLowerCase() === tipo;
+// Los tipos que usa el sistema, los mismos del anterior (28/09): 'central' = donde entran las
+// compras; 'mini_sector' = sector operativo, que en pantalla se llama "Sector". 'sector' (lo
+// guardaba este formulario entre el 01/09 y el 28/09) cuenta igual. 'tercero' no se usa.
+const esSectorDep = (d) => esTipoDep(d, 'mini_sector') || esTipoDep(d, 'sector');
+const TIPOS_DEPOSITO = [
+    { value: 'central', label: 'Central' },
+    { value: 'mini_sector', label: 'Sector' },
+    { value: '', label: 'Sin tipo' },
+];
+// Lo guardado → valor del formulario, y → rótulo de la tarjeta (un tipo desconocido se muestra tal cual)
+const tipoDepForm = (tipo) => esTipoDep({ Tipo: tipo }, 'central') ? 'central' : esSectorDep({ Tipo: tipo }) ? 'mini_sector' : '';
+const tipoDepLabel = (tipo) => {
+    const valor = tipoDepForm(tipo);
+    return valor || !tipo ? TIPOS_DEPOSITO.find(o => o.value === valor).label : String(tipo);
+};
+
+// Depósito con el que arranca una pantalla de INGRESO: el central (Tipo 'central', el Centro de
+// stock general), como en el sistema anterior, donde Ingresos entraba ahí (28/09). Si la lista de
+// depósitos todavía no llegó, arranca en `respaldo` y se corre al central apenas llega, salvo que
+// el usuario ya lo haya cambiado a mano.
+function useDepositoCentral(depositos, respaldo) {
+    const central = depositos.find(d => esTipoDep(d, 'central'))?.DepId ?? null;
+    const [valor, setValor] = useState(central ?? respaldo);
+    const tocado = useRef(false);
+    useEffect(() => { if (central && !tocado.current) setValor(central); }, [central]);
+    const cambiar = (v) => { tocado.current = true; setValor(v); };
+    return [valor, cambiar];
+}
+
 // [WMS PROPIO — F3] /stock — gestión del stock propio (tablas Wms_*, API /api/wms-interno).
 // Cuatro pestañas: Inventario (buscar → variantes → etiquetas, ajustar por conteo, imprimir),
 // Ingreso (alta de etiqueta + impresión), Remitos internos (crear = descuenta origen;
@@ -33,6 +67,19 @@ const fmtCant = (v) => {
 const fmtFecha = (v) => v ? new Date(v).toLocaleDateString('es-UY', { day: '2-digit', month: '2-digit', year: '2-digit' }) : '—';
 // Un solo símbolo por moneda en todo el módulo (la tabla trae 'U$S', acá va 'US$').
 const simMoneda = (cod) => String(cod || '').toUpperCase() === 'USD' ? 'US$' : '$';
+// Patrimonio de un producto: una suma POR MONEDA, como el sistema anterior (dólares primero). Cada
+// variante vale en la moneda de su costo; sumarlas juntas mezclaba pesos con dólares (Vinilo Brillo
+// daba "US$ 15.549" = $ 9.017 + US$ 6.532, 28/09).
+const patrimonioPorMoneda = (items) => {
+    const suma = {};
+    items.forEach(i => {
+        const mon = String(i.Moneda || 'UYU').toUpperCase();
+        suma[mon] = (suma[mon] || 0) + Number(i.Patrimonio || 0);
+    });
+    const filas = Object.entries(suma).filter(([, v]) => v !== 0)
+        .sort(([a], [b]) => (a === 'USD' ? -1 : b === 'USD' ? 1 : 0));
+    return filas.length ? filas : [[String(items[0]?.Moneda || 'UYU').toUpperCase(), 0]];
+};
 // Capital Case para textos que vienen con casing inconsistente ('JIAXING ZHEJIANG' → 'Jiaxing Zhejiang').
 // CSS capitalize no alcanza: solo sube la primera letra, no baja el resto.
 const capitalizar = (v) => String(v || '').toLowerCase().replace(/\S+/g, w => w.charAt(0).toUpperCase() + w.slice(1));
@@ -625,20 +672,52 @@ function BuscadorVariante({ onElegir, placeholder = 'Buscar producto o variante.
     );
 }
 
-const StockGestionPage = () => {
-    const [tab, setTab] = useState('panel');
+// `seccion` (28/09): cada sección es su propia página del menú (ver stockSecciones.js) y se
+// muestra sola, sin pestañas. Sin `seccion` (menú viejo, con Stock apuntando a /stock) quedan
+// las cinco con pestañas, como antes. `rutasPermitidas`: las del menú del usuario, para no
+// ofrecer un salto a una sección que su rol no ve.
+const StockGestionPage = ({ seccion = null, rutasPermitidas = null }) => {
+    const navigate = useNavigate();
+    const location = useLocation();
+    const unaSola = !!seccion;
+    const [tab, setTab] = useState(seccion || 'panel');
     const [depositos, setDepositos] = useState([]);
-    const [dep, setDep] = useState(5);
+    // El depósito elegido sobrevive al pasar de una sección a otra (cada una es otra página)
+    const [dep, setDep] = useState(() => {
+        try { return Number(sessionStorage.getItem('stock.dep')) || 5; } catch { return 5; }
+    });
+    useEffect(() => {
+        try { sessionStorage.setItem('stock.dep', String(dep)); } catch { /* sin storage: arranca en 5 */ }
+    }, [dep]);
     const [pendDisc, setPendDisc] = useState(0);
     // [24/09] Filtros con los que abrir el Historial desde el Panel ("Ver todos los consumos de X")
     const [irHistorial, setIrHistorial] = useState(null);
 
     useEffect(() => {
         api.get('/wms-interno/depositos').then(r => setDepositos(r.data?.data || [])).catch(() => toast.error('No se pudieron cargar los depósitos'));
-        api.get('/wms-interno/discrepancias?estado=PENDIENTE').then(r => setPendDisc((r.data?.data || []).length)).catch(() => {});
-    }, []);
+        if (!unaSola) api.get('/wms-interno/discrepancias?estado=PENDIENTE').then(r => setPendDisc((r.data?.data || []).length)).catch(() => {});
+    }, [unaSola]);
 
     const nombreDep = (id) => depositos.find(d => d.DepId === id)?.Nombre || `Dep ${id}`;
+
+    // Del Panel al Historial de consumos: con pestañas cambia de pestaña; con secciones va a la
+    // página de Inventario Global con los filtros, y si el rol no la ve el link no aparece.
+    const puedeIr = (ruta) => !rutasPermitidas || rutasPermitidas.includes(ruta);
+    const rutaInventario = SECCIONES_STOCK.find(s => s.id === 'global').ruta;
+    const verConsumos = (f) => {
+        const filtros = { ...f, grupo: 'CONSUMOS', clave: Date.now() };
+        if (!unaSola) { setIrHistorial(filtros); setTab('global'); return; }
+        navigate(rutaInventario, { state: { irHistorial: filtros } });
+    };
+    const irHistorialActual = unaSola ? (location.state?.irHistorial || null) : irHistorial;
+    const consumirIrHistorial = () => {
+        if (unaSola) navigate(location.pathname, { replace: true, state: null });
+        else setIrHistorial(null);
+    };
+    const actual = seccion || tab;
+    // El selector de depósito solo cambia algo en Inventario Global y Compras
+    const muestraDeposito = !unaSola || actual === 'global' || actual === 'compras';
+    const tituloSeccion = unaSola ? SECCIONES_STOCK.find(s => s.id === seccion)?.label : null;
 
     // Misma navegación que el sistema anterior, para que nadie tenga que reaprender:
     // Panel de Control · Inventario Global · Mi Sector · Compras
@@ -654,10 +733,13 @@ const StockGestionPage = () => {
         <div className="p-4 md:p-6 xl:px-10 w-full font-dmsans">
             <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
                 <div>
-                    <h1 className="text-2xl font-black text-slate-800 flex items-center gap-2"><Package size={24} className="text-sky-600" /> Stock</h1>
+                    <h1 className="text-2xl font-black text-slate-800 flex items-center gap-2">
+                        <Package size={24} className="text-sky-600" /> Stock
+                        {tituloSeccion && <span className="text-slate-400 font-bold">· {tituloSeccion}</span>}
+                    </h1>
                     <p className="text-sm text-slate-500 mt-1">Gestión del depósito propio: etiquetas, ingresos, traslados y diferencias.</p>
                 </div>
-                <div className="flex items-center gap-2">
+                {muestraDeposito && <div className="flex items-center gap-2">
                     <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">Depósito</span>
                     <Listbox value={dep} onChange={setDep}>
                         <div className="relative min-w-[180px]">
@@ -680,25 +762,27 @@ const StockGestionPage = () => {
                             </Listbox.Options>
                         </div>
                     </Listbox>
+                </div>}
+            </div>
+
+            {!unaSola && (
+                <div className="flex gap-1.5 mb-4 flex-wrap">
+                    {tabs.map(t => (
+                        <button key={t.id} onClick={() => setTab(t.id)}
+                            className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-black transition-colors ${tab === t.id ? 'bg-slate-800 text-white' : 'bg-white border border-slate-200 text-slate-500 hover:bg-slate-50'}`}>
+                            <t.icono size={15} /> {t.label}
+                            {t.badge > 0 && <span className="ml-0.5 text-[10px] bg-amber-400 text-amber-900 rounded-full px-1.5 py-0.5 font-black">{t.badge}</span>}
+                        </button>
+                    ))}
                 </div>
-            </div>
+            )}
 
-            <div className="flex gap-1.5 mb-4 flex-wrap">
-                {tabs.map(t => (
-                    <button key={t.id} onClick={() => setTab(t.id)}
-                        className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-black transition-colors ${tab === t.id ? 'bg-slate-800 text-white' : 'bg-white border border-slate-200 text-slate-500 hover:bg-slate-50'}`}>
-                        <t.icono size={15} /> {t.label}
-                        {t.badge > 0 && <span className="ml-0.5 text-[10px] bg-amber-400 text-amber-900 rounded-full px-1.5 py-0.5 font-black">{t.badge}</span>}
-                    </button>
-                ))}
-            </div>
-
-            {tab === 'panel' && <TabPanel onVerConsumos={(f) => { setIrHistorial({ ...f, grupo: 'CONSUMOS', clave: Date.now() }); setTab('global'); }} />}
-            {tab === 'global' && <InventarioGlobal dep={dep} depositos={depositos} nombreDep={nombreDep} onDiscrepancias={setPendDisc}
-                irA={irHistorial} onIrAConsumido={() => setIrHistorial(null)} />}
-            {tab === 'sector' && <TabMiSector depositos={depositos} />}
-            {tab === 'compras' && <TabCompras depositos={depositos} depDefault={dep} />}
-            {tab === 'gestion' && <TabGestion depositos={depositos} />}
+            {actual === 'panel' && <TabPanel onVerConsumos={!unaSola || puedeIr(rutaInventario) ? verConsumos : null} />}
+            {actual === 'global' && <InventarioGlobal dep={dep} depositos={depositos} nombreDep={nombreDep} onDiscrepancias={unaSola ? null : setPendDisc}
+                irA={irHistorialActual} onIrAConsumido={consumirIrHistorial} />}
+            {actual === 'sector' && <TabMiSector depositos={depositos} />}
+            {actual === 'compras' && <TabCompras depositos={depositos} depDefault={dep} />}
+            {actual === 'gestion' && <TabGestion depositos={depositos} />}
         </div>
     );
 };
@@ -1695,7 +1779,7 @@ function InventarioGlobal({ dep, depositos, nombreDep, onDiscrepancias, irA = nu
             {sub === 'inventario' && <TabInventario dep={dep} depositos={depositos} />}
             {sub === 'historial' && <TabHistorial inicial={histInicial} depositos={depositos} />}
             {sub === 'diferencias' && <TabDiferencias onCambio={(n) => { setPend(n); onDiscrepancias?.(n); }} />}
-            {sub === 'ingreso' && <TabIngreso dep={dep} nombreDep={nombreDep} />}
+            {sub === 'ingreso' && <TabIngreso dep={dep} nombreDep={nombreDep} depositos={depositos} arrancaEnCentral />}
             {sub === 'etiqueta' && <TabIngreso dep={dep} nombreDep={nombreDep} />}
             {sub === 'remitos' && <TabRemitos depositos={depositos} depDefault={dep} />}
             {sub === 'solicitudes' && <TabSolicitudes depositos={depositos} />}
@@ -2067,7 +2151,7 @@ function ModalConsumo({ variante, dep, nombreSector, onCerrar, onHecho }) {
 
 /* ── MI SECTOR (vista del operario sobre SU depósito) ────────────────────── */
 function TabMiSector({ depositos }) {
-    const [sector, setSector] = useState(undefined);   // undefined = cargando
+    const [sectorGuardado, setSector] = useState(undefined);   // undefined = cargando · null = sin sector
     const [sub, setSub] = useState('stock');
     const [stock, setStock] = useState([]);
     const [pendientes, setPendientes] = useState([]);
@@ -2087,12 +2171,20 @@ function TabMiSector({ depositos }) {
     const [famSel, setFamSel] = useState(null);        // familia abierta en 'Mi stock'
     const [consumiendo, setConsumiendo] = useState(null); // variante con la ventana de consumo abierta
     const timer = useRef(null);
+    const { user } = useAuth();
 
     useEffect(() => {
         api.get('/wms-interno/mi-sector')
             .then(r => setSector(r.data?.data?.WmsDepId ? r.data.data : null))
             .catch(() => setSector(null));
     }, []);
+
+    // Como el sistema anterior: a un ADMINISTRADOR sin sector asignado le abre el primer depósito de
+    // tipo 'mini_sector' (Impritex) para mirar, SIN guardarlo en su usuario. Si elige uno en el
+    // selector de arriba, ese sí queda guardado (28/09).
+    const esAdmin = parseInt(user?.idRol, 10) === 1 || String(user?.rol || '').toUpperCase() === 'ADMIN';
+    const miniAdmin = sectorGuardado === null && esAdmin ? depositos.find(esSectorDep) : null;
+    const sector = miniAdmin ? { WmsDepId: miniAdmin.DepId, Deposito: miniAdmin.Nombre, sinAsignar: true } : sectorGuardado;
 
     const dep = sector?.WmsDepId;
 
@@ -2235,7 +2327,9 @@ function TabMiSector({ depositos }) {
                     </p>
                 </div>
                 <div className="text-right">
-                    <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1.5">Sector asignado</p>
+                    <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1.5">
+                        {sector.sinAsignar ? 'Sin sector asignado · viendo' : 'Sector asignado'}
+                    </p>
                     <Listbox value={dep} onChange={elegirSector}>
                         <div className="relative min-w-[240px]">
                             <Listbox.Button className="w-full flex items-center gap-2 px-4 py-2.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-base font-black text-slate-700 outline-none focus:ring-2 focus:ring-sky-200 whitespace-nowrap">
@@ -2761,7 +2855,9 @@ function TabInventario({ dep, depositos = [] }) {
                                         </span>
                                     </span>
                                     <span className="text-sm font-black text-slate-600 tabular-nums font-gsanscode text-right">
-                                        {simMoneda(g.items[0]?.Moneda)} {g.items.reduce((a, i) => a + Number(i.Patrimonio || 0), 0).toLocaleString('es-UY', { maximumFractionDigits: 2 })}
+                                        {patrimonioPorMoneda(g.items).map(([mon, monto]) => (
+                                            <span key={mon} className="block">{simMoneda(mon)} {monto.toLocaleString('es-UY', { maximumFractionDigits: 2 })}</span>
+                                        ))}
                                     </span>
                                 </button>
                                 {abierto && (() => {
@@ -2827,7 +2923,11 @@ function TabInventario({ dep, depositos = [] }) {
 }
 
 /* ── INGRESO ─────────────────────────────────────────────────────────────── */
-function TabIngreso({ dep, nombreDep }) {
+// `arrancaEnCentral` (Ingresar Stock): el depósito se elige acá y arranca en el central. Sin eso
+// (Generar Etiqueta) sigue al selector "Depósito" de arriba, como antes.
+function TabIngreso({ dep, nombreDep, depositos = [], arrancaEnCentral = false }) {
+    const [depCentralSel, setDepCentralSel] = useDepositoCentral(depositos, dep);
+    const depIng = arrancaEnCentral ? depCentralSel : dep;
     const [variante, setVariante] = useState(null);
     const [cantidad, setCantidad] = useState('');
     const [medida, setMedida] = useState('');
@@ -2843,11 +2943,11 @@ function TabIngreso({ dep, nombreDep }) {
         setGuardando(true);
         try {
             const r = await api.post('/wms-interno/ingresos', {
-                varId: variante.VarId, depId: dep, cantidad: n,
+                varId: variante.VarId, depId: depIng, cantidad: n,
                 medidaSecundaria: medida || null, peso: peso || null,
                 costoUnitario: costo || 0, codigoBarras: codigo || null,
             });
-            toast.success(`Etiqueta #${r.data.etiId} creada en ${nombreDep(dep)}`);
+            toast.success(`Etiqueta #${r.data.etiId} creada en ${nombreDep(depIng)}`);
             imprimirEtiqueta({
                 etiId: r.data.etiId, producto: variante.Producto, variante: variante.NombreVariante,
                 talle: variante.Talle, color: variante.Color, cantidad: n, unidad: variante.UnidadBase, codigoBarras: codigo || null,
@@ -2861,7 +2961,15 @@ function TabIngreso({ dep, nombreDep }) {
     return (
         <div className="max-w-2xl mx-auto">
             <div className="bg-white rounded-2xl border border-slate-200 p-6 space-y-4">
-                <p className="text-sm text-slate-500">Alta de una etiqueta física en <b>{nombreDep(dep)}</b>. Al guardar se imprime sola.</p>
+                {arrancaEnCentral ? (
+                    <div className="flex flex-wrap items-center gap-3">
+                        <Selector value={depIng} onChange={(v) => setDepCentralSel(parseInt(v, 10))}
+                            opciones={depositos.map(d => ({ value: d.DepId, label: `Entra en: ${d.Nombre}` }))} />
+                        <p className="text-sm text-slate-500">Al guardar se imprime la etiqueta.</p>
+                    </div>
+                ) : (
+                    <p className="text-sm text-slate-500">Alta de una etiqueta física en <b>{nombreDep(dep)}</b>. Al guardar se imprime sola.</p>
+                )}
                 {variante ? (
                     <div className="flex items-center justify-between gap-3 bg-sky-50 border border-sky-200 rounded-xl px-3 py-2.5">
                         <div className="min-w-0">
@@ -3113,7 +3221,7 @@ function TabCompras({ depositos, depDefault }) {
     const [creando, setCreando] = useState(false);
     const [recibiendo, setRecibiendo] = useState({});   // CDetId -> cantidad
     const [bultosRec, setBultosRec] = useState({});     // CDetId -> bultos (etiquetas a abrir)
-    const [depRec, setDepRec] = useState(depDefault);
+    const [depRec, setDepRec] = useDepositoCentral(depositos, depDefault);   // recibir: arranca en el central
     const [pagoMonto, setPagoMonto] = useState('');
     const [pagoMotivo, setPagoMotivo] = useState('');
     const [archivos, setArchivos] = useState({});      // CompId -> adjuntos
@@ -3128,7 +3236,7 @@ function TabCompras({ depositos, depDefault }) {
     const [nPrv, setNPrv] = useState(''); const [nMon, setNMon] = useState('');
     const [nPla, setNPla] = useState(''); const [nRef, setNRef] = useState('');
     const [nTfa, setNTfa] = useState(''); const [nExtras, setNExtras] = useState('');
-    const [nDep, setNDep] = useState(depDefault);
+    const [nDep, setNDep] = useDepositoCentral(depositos, depDefault);       // recepción de la compra nueva: ídem
     // logística del embarque
     const [nEta, setNEta] = useState(''); const [nVol, setNVol] = useState('');
     const [nPeso, setNPeso] = useState(''); const [nInco, setNInco] = useState('');
@@ -5371,7 +5479,7 @@ function GestionDepositos() {
 
     const abrir = (d) => {
         setEdit(d ? d.DepId : 'nuevo');
-        setF(d ? { nombre: d.Nombre || '', tipo: d.Tipo || '', ubicacion: d.Ubicacion || '', activo: !!d.Activo }
+        setF(d ? { nombre: d.Nombre || '', tipo: tipoDepForm(d.Tipo), ubicacion: d.Ubicacion || '', activo: !!d.Activo }
                : { nombre: '', tipo: '', ubicacion: '', activo: true });
     };
     const guardar = async () => {
@@ -5407,7 +5515,7 @@ function GestionDepositos() {
                     <div className="grid md:grid-cols-3 gap-4">
                         <Campo label="Nombre"><input autoFocus value={f.nombre} onChange={e => setF(x => ({ ...x, nombre: e.target.value }))} className="w-full px-3 py-2 rounded-xl border border-slate-200 text-sm outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-200" /></Campo>
                         <Campo label="Tipo"><Selector value={f.tipo} onChange={v => setF(x => ({ ...x, tipo: v }))} className="w-full" ancho="w-full" placeholder="Elegir tipo..."
-                            opciones={[{ value: 'central', label: 'Central' }, { value: 'sector', label: 'Sector' }, { value: 'tercero', label: 'Tercero' }]} /></Campo>
+                            opciones={TIPOS_DEPOSITO} /></Campo>
                         <Campo label="Ubicación"><input value={f.ubicacion} onChange={e => setF(x => ({ ...x, ubicacion: e.target.value }))} className="w-full px-3 py-2 rounded-xl border border-slate-200 text-sm outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-200" /></Campo>
                     </div>
                     <div className="flex gap-2">
@@ -5428,7 +5536,7 @@ function GestionDepositos() {
                                 <div className="flex-1 min-w-0">
                                     <p className="text-base font-black text-slate-800 truncate">{d.Nombre}</p>
                                     <p className="text-[11px] font-bold text-slate-400 uppercase">
-                                        {d.Tipo || 'sin tipo'}{!d.Activo && ' · inactivo'}
+                                        {tipoDepLabel(d.Tipo)}{!d.Activo && ' · inactivo'}
                                     </p>
                                     {d.Ubicacion && <p className="text-[11px] text-slate-400 truncate">{d.Ubicacion}</p>}
                                 </div>

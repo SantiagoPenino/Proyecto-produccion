@@ -2,6 +2,7 @@ const { getPool, sql } = require('../config/db');
 const { changeOrderState, GUARD_ORDENES_RESUELTAS } = require('../services/stateManagerService');
 const { registrarAuditoria } = require('../services/trackingService');
 const { validarMetrosFalla } = require('../services/fallaValidationService');
+const { fueraDeServicio, mensajeFueraDeServicio } = require('../utils/estadoEquipo');
 const logger = require('../utils/logger');
 
 exports.getBoard = async (req, res) => {
@@ -171,8 +172,15 @@ exports.assignRoll = async (req, res) => {
         if (mid) {
             const mRes = await new sql.Request(transaction)
                 .input('MID', sql.Int, mid)
-                .query("SELECT Nombre FROM dbo.ConfigEquipos WHERE EquipoID = @MID");
+                .query("SELECT Nombre, Estado FROM dbo.ConfigEquipos WHERE EquipoID = @MID");
             const nombreMaq = (mRes.recordset[0]?.Nombre || '').trim().toLowerCase();
+
+            // Máquina fuera de servicio (MANTENIMIENTO): no recibe lotes. Sacárselos sí se puede
+            // (unassignRoll no pasa por este control). Ver utils/estadoEquipo.js.
+            if (fueraDeServicio(mRes.recordset[0]?.Estado)) {
+                await transaction.rollback();
+                return res.status(409).json({ error: mensajeFueraDeServicio(mRes.recordset[0]?.Nombre, mRes.recordset[0]?.Estado) });
+            }
 
             // TINTA UV: una orden con tinta UV solo puede ir a una máquina que tenga "UV" en el
             // nombre. La tinta define en qué equipo se imprime; mandarla a una Ecosolvente sale mal.

@@ -3745,12 +3745,6 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                 </div>
 
 
-                {/* Observaciones Finales */}
-                <div className="mt-8">
-                    <p className="block text-lg font-black text-zinc-200 mb-4 px-2">OBSERVACIONES GENERALES</p>
-                    <textarea id="observaciones-generales" name="observaciones" rows="3" className="w-full p-4 border border-zinc-700 rounded-2xl text-sm bg-custom-dark text-zinc-200 placeholder-zinc-500 focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500/30 outline-none transition-all resize-none" placeholder="Detalles importantes, instrucciones de entrega o notas adicionales..." value={generalNote} onChange={(e) => actions.setGeneralNote(e.target.value)} />
-                </div>
-
                 {/* Footer */}
                 <div className="mt-8">
                     <div className="bg-custom-dark text-white p-8 md:rounded-3xl rounded-none shadow-2xl shadow-black/30 flex flex-col md:flex-row items-center justify-between gap-8 border-y border-x-0 md:border-x border-zinc-700/50 -mx-4 md:mx-0">

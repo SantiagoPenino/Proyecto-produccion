@@ -133,6 +133,8 @@ app.use('/api/tickets', require('./routes/ticketsRoutes'));        // MÓDULO HE
 app.use('/api/consultas', require('./routes/consultasClienteRoutes')); // CONSULTA AL CLIENTE (SB/DTF/ECOUV) — pregunta puntual, NO es un hilo
 app.use('/api/tareas', require('./routes/tareasRoutes'));          // TO-DO COMPARTIDO (interno)
 app.use('/api/push', require('./routes/pushRoutes'));              // PUSH NOTIFICATIONS
+app.use('/api/servicio-tecnico', require('./routes/servicioTecnicoRoutes')); // SERVICIO TÉCNICO (docs/servicio-tecnico-plan.md)
+app.use('/api/notificaciones', require('./routes/notificacionesRoutes'));    // CAMPANITA: avisos por usuario interno
 app.use('/api/nomenclators', nomenclatorsRoutes);
 app.use('/api/routes-config', require('./routes/routesConfigRoutes'));
 app.use('/api/delivery-times', require('./routes/deliveryTimesRoutes'));
@@ -407,6 +409,9 @@ io.on('connection', (socket) => {
     // --- PORTAL: suscripción a los avisos de las órdenes del cliente ---
     socket.on('portal:suscribir', (datos, ack) => avisosOrdenesPortal.suscribir(socket, datos, ack));
 
+    // --- INTERNOS: sala por usuario para los avisos de la campanita (utils/salasUsuario.js) ---
+    socket.on('usuario:suscribir', (datos, ack) => require('./utils/salasUsuario').suscribir(socket, datos, ack));
+
     socket.on('error', (err) => {
         logger.error("[SOCKET] ERROR:", err);
     });
@@ -604,6 +609,14 @@ if (process.env.NODE_ENV !== 'test') {
                 startTelaClienteExcedenteJob();
             } catch (e) {
                 logger.error("❌ [CRON] Error cargando TelaClienteExcedente:", e.message);
+            }
+
+            // Servicio Técnico — planes de mantenimiento y avisos del día (docs/servicio-tecnico-plan.md).
+            try {
+                const { startServicioTecnicoJob } = require('./jobs/servicioTecnico.job');
+                startServicioTecnicoJob(io);
+            } catch (e) {
+                logger.error("❌ [CRON] Error cargando ServicioTecnico:", e.message);
             }
 
         } catch (error) {

@@ -503,7 +503,7 @@ export default function EmbBandeja({ area = 'EMB', fase = 'trabajo', onSelectOrd
         const nombre = maquinas.find(m => String(m.EquipoID) === String(maquinaId))?.Nombre || null;
         updateLocal(o.OrdenID, { MaquinaID: maquinaId || null, MaquinaNombre: nombre });
         try { await service.asignarMaquina(o.OrdenID, maquinaId || null); }
-        catch (e) { toast.error('Error al asignar máquina'); load(); }
+        catch (e) { toast.error(e?.response?.data?.error || 'Error al asignar máquina'); load(); }
     };
 
     const handleOperario = async (o, operarioId) => {
@@ -891,7 +891,15 @@ export default function EmbBandeja({ area = 'EMB', fase = 'trabajo', onSelectOrd
                                         className="w-full mt-1 text-sm border border-zinc-200 rounded-lg px-2 py-2 bg-white focus:outline-none focus:border-brand-cyan"
                                     >
                                         <option value="">Sin máquina</option>
-                                        {maquinas.map(m => <option key={m.EquipoID} value={m.EquipoID}>{m.Nombre}</option>)}
+                                        {maquinas.map(m => {
+                                            // En MANTENIMIENTO no recibe órdenes nuevas (la que ya la tiene la sigue mostrando).
+                                            const parada = ['MANTENIMIENTO', 'FALLA'].includes(String(m.Estado || '').trim().toUpperCase());
+                                            return (
+                                                <option key={m.EquipoID} value={m.EquipoID} disabled={parada && String(selected.MaquinaID) !== String(m.EquipoID)}>
+                                                    {m.Nombre}{parada ? ' — en mantenimiento' : ''}
+                                                </option>
+                                            );
+                                        })}
                                     </select>
                                 </div>
                                 <div>

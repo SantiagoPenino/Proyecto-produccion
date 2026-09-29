@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useRef, useCallback, Suspense, lazy } from 'react';
-import { LayoutDashboard, Warehouse, Printer, ClipboardList, Terminal, CircleUserRound, Tags, Headset, Calculator, Landmark, Shirt, Sun, Sparkles, Flame, Scissors, Pen, Shapes, PenLine, QrCode, ShieldBan, PrinterCheck, History, LayoutGrid, PackagePlus, PackageCheck, Truck, FileSearch, Boxes, Waypoints, Send, Package, Bus, ClipboardCheck, Menu, Users, Shield, Eye, Settings, Database, UserX, RefreshCw, BadgeDollarSign, Layers, BookOpen, Banknote, CreditCard, ShieldCheck, Calendar, CalendarCheck, MapPin, Store, LifeBuoy, Ticket, ScanLine, FileText, Cpu, FileDown, Inbox, Receipt, ShoppingCart, Palette, Megaphone, ScanEye, FileSignature, TrendingUp } from 'lucide-react';
+import { LayoutDashboard, Warehouse, Printer, ClipboardList, Terminal, CircleUserRound, Tags, Headset, Calculator, Landmark, Shirt, Sun, Sparkles, Flame, Scissors, Pen, Shapes, PenLine, QrCode, ShieldBan, PrinterCheck, History, LayoutGrid, PackagePlus, PackageCheck, Truck, FileSearch, Boxes, Waypoints, Send, Package, Bus, ClipboardCheck, Menu, Users, Shield, Eye, Settings, Database, UserX, RefreshCw, BadgeDollarSign, Layers, BookOpen, Banknote, CreditCard, ShieldCheck, Calendar, CalendarCheck, MapPin, Store, LifeBuoy, Ticket, ScanLine, FileText, Cpu, FileDown, Inbox, Receipt, ShoppingCart, Palette, Megaphone, ScanEye, FileSignature, TrendingUp, Wrench } from 'lucide-react';
 import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
+import { SECCIONES_STOCK } from '../pages/stockSecciones';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Toaster, toast } from 'sonner';
 import { ToastContainer, Slide } from 'react-toastify';
@@ -121,6 +122,7 @@ const ColorMatcherPage             = lazyWithRetry(() => import('../pages/ColorM
 const ReportesPage                 = lazyWithRetry(() => import('../pages/ReportesPage'));
 const ContabilidadReportesPage     = lazyWithRetry(() => import('../pages/ContabilidadReportesPage'));
 const TareasPage                   = lazyWithRetry(() => import('../pages/TareasPage'));
+const ServicioTecnicoPage          = lazyWithRetry(() => import('../pages/ServicioTecnicoPage'));
 
 // ============================================
 // 1. LUCIDE ICON MAP (override FA icons)
@@ -299,8 +301,17 @@ const lucideIconMapRaw = {
     'helpdesk': LifeBuoy,
     'helpdesk / tickets': LifeBuoy,
     'tickets': Ticket,
-    // Stock propio (WMS interno)
+    // Stock propio (WMS interno) y sus secciones (una entrada de menú cada una desde el 28/09)
     'stock': Package,
+    'panel de control': LayoutDashboard,
+    'inventario global': Boxes,
+    'mi sector': MapPin,
+    'compras': ShoppingCart,
+    'gestión de sistema': Settings,
+    'gestion de sistema': Settings,
+    // Servicio Técnico (docs/servicio-tecnico-plan.md)
+    'servicio técnico': Wrench,
+    'servicio tecnico': Wrench,
     // Marketing
     'marketing': Megaphone,
     'precios': BadgeDollarSign,
@@ -731,8 +742,9 @@ const MainAppContent = ({ menuItems = [] }) => {
                     Las de admin (/admin/base-prices, /admin/products-integration) quedan intactas. */}
                 <Route path="/admin/base-prices" element={<BasePrices hideGeneralRow hideAddCurrency />} />
                 <Route path="/marketing/precios" element={<MarketingPreciosPage />} />
-                {/* [WMS PROPIO] Gestión del stock propio (tablas Wms_*) */}
-                <Route path="/stock" element={<StockGestionPage />} />
+                {/* [WMS PROPIO] /stock y sus secciones van por DynamicRouter (28/09): así cada
+                    una respeta el menú del rol. Con esta ruta fija, cualquiera logueado abría
+                    /stock escribiendo la dirección, aunque no lo tuviera en el menú. */}
                 <Route path="/marketing/productos" element={<MarketingProductosPage />} />
                 <Route path="/admin/price-profiles" element={<PriceProfiles />} />
                 <Route path="/admin/price-catalog" element={<CustomerPriceCatalogPage />} />
@@ -772,6 +784,7 @@ const MainAppContent = ({ menuItems = [] }) => {
                 <Route path="/color"                          element={<ColorMatcherPage />} />
                 <Route path="/reportes"                      element={<ReportesPage />} />
                 <Route path="/tareas"                        element={<TareasPage />} />
+                <Route path="/servicio-tecnico"              element={<ServicioTecnicoPage />} />
                 <Route path="/*" element={<DynamicRouter menuItems={menuItems} />} />
             </Routes>
         </Suspense>
@@ -1013,6 +1026,11 @@ const DynamicRouter = ({ menuItems }) => {
         if (currentPath === '/consultas/ordenes') return <OrdersQueryView />;
         if (currentPath === '/admin/helpdesk' || currentPath === '/atencion-cliente/helpdesk') return <HelpDeskAdminView />;
         if (currentPath === '/administracion/ordenes') return <AdminEditarOrdenView />;
+        // /stock quedó como grupo sin ruta: lleva a la primera sección de Stock que ve el rol
+        if (normalizedPath === '/stock') {
+            const primera = SECCIONES_STOCK.find(s => menuItems.some(m => m.Ruta === s.ruta));
+            if (primera) return <Navigate to={primera.ruta} replace />;
+        }
 
         // En lugar del fantasma, rebotamos al usuario silenciosamente de vuelta a su dashboard
         return <Navigate to="/" replace />;
@@ -1035,6 +1053,10 @@ const DynamicRouter = ({ menuItems }) => {
     // [MARKETING 21/08] Rutas propias de marketing (menú por rol), con pantallas simples
     // propias. Las de admin quedan intactas.
     if (menuItem.Ruta === '/marketing/precios') return <MarketingPreciosPage />;
+    // Stock: cada sección es su propia entrada del menú (28/09). La ruta /stock sola es el menú
+    // viejo (antes del SQL que arma el grupo): las cinco secciones con pestañas, como antes.
+    const seccionStock = SECCIONES_STOCK.find(s => s.ruta === menuItem.Ruta);
+    if (seccionStock) return <StockGestionPage key={seccionStock.id} seccion={seccionStock.id} rutasPermitidas={menuItems.map(m => m.Ruta)} />;
     if (menuItem.Ruta === '/stock') return <StockGestionPage />;
     if (menuItem.Ruta === '/marketing/productos') return <MarketingProductosPage />;
     if (menuItem.Ruta === '/admin/price-catalog') return <CustomerPriceCatalogPage />;

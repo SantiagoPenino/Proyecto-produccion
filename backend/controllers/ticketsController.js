@@ -77,16 +77,21 @@ exports.getOrdenesRecientes = async (req, res) => {
 
         const pool = await getPool();
 
-        // CodCliente aparte y como TEXTO: Ordenes.CodCliente es nchar(10) y con un
-        // parámetro Int SQL convierte la columna (no el parámetro) y pierde el índice.
+        // El token del portal trae en `id` (y en `codCliente`) el CodCliente, NO el
+        // CliIdCliente: el resto de tickets guarda ese CodCliente en Tickets.CliIdCliente.
+        // OrdenesDeposito sí usa el CliIdCliente real, así que se resuelve acá. Antes se
+        // tomaba `id` como CliIdCliente y el selector salía vacío para todos (28/09).
         const cli = await pool.request()
-            .input('cliId', sql.Int, parseInt(req.user.id))
-            .query('SELECT CodCliente FROM dbo.Clientes WITH(NOLOCK) WHERE CliIdCliente = @cliId');
-        const codCliente = cli.recordset[0]?.CodCliente;
+            .input('cod', sql.Int, parseInt(req.user.codCliente ?? req.user.id))
+            .query('SELECT TOP 1 CliIdCliente, CodCliente FROM dbo.Clientes WITH(NOLOCK) WHERE CodCliente = @cod');
+        const cliente = cli.recordset[0];
+        if (!cliente) return res.json({ success: true, data: [] });
 
+        // CodCliente como TEXTO: Ordenes.CodCliente es nchar(10) y con un parámetro Int
+        // SQL convierte la columna (no el parámetro) y pierde el índice.
         const result = await pool.request()
-            .input('cliId', sql.Int, parseInt(req.user.id))
-            .input('cod', sql.NVarChar(10), String(codCliente ?? ''))
+            .input('cliId', sql.Int, cliente.CliIdCliente)
+            .input('cod', sql.NVarChar(10), String(cliente.CodCliente))
             .query(`
                 SELECT
                     COALESCE(prod.OrdenID, od.OrdIdOrden) AS OrdenID,

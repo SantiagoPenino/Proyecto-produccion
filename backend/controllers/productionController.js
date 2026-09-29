@@ -6,6 +6,7 @@ const path = require('path');
 const sharp = require('sharp');
 const { PDFDocument } = require('pdf-lib');
 const fileProcessingService = require('../services/fileProcessingService');
+const { sqlEquipoEnServicio } = require('../utils/estadoEquipo');
 const logger = require('../utils/logger');
 
 // --- HELPERS CONSTANTS ---
@@ -345,6 +346,7 @@ exports.toggleRollStatus = async (req, res) => {
                             SELECT TOP 1 e.EquipoID
                             FROM dbo.ConfigEquipos e
                             WHERE e.AreaID = @Area AND e.Activo = 1 AND LTRIM(LOWER(e.Nombre)) LIKE @Patron
+                              AND ${sqlEquipoEnServicio('e')} -- en MANTENIMIENTO no recibe lotes
                             ORDER BY (
                                 SELECT COUNT(*) FROM dbo.Rollos r
                                 WHERE r.MaquinaID = e.EquipoID AND r.Estado NOT IN ('Finalizado','Cerrado','Cancelado')
@@ -775,7 +777,8 @@ exports.magicSort = async (req, res) => {
             const { machineKeyword } = config;
 
             // 2.1 Buscar Máquina
-            const mRes = await new sql.Request(transaction).query(`SELECT TOP 1 EquipoID, Nombre FROM dbo.ConfigEquipos WHERE AreaID = 'ECOUV' AND Nombre LIKE '%${machineKeyword}%' AND Activo = 1`);
+            // En MANTENIMIENTO no recibe lotes: el rollo se queda en la Mesa de Armado (utils/estadoEquipo.js).
+            const mRes = await new sql.Request(transaction).query(`SELECT TOP 1 e.EquipoID, e.Nombre FROM dbo.ConfigEquipos e WHERE e.AreaID = 'ECOUV' AND e.Nombre LIKE '%${machineKeyword}%' AND e.Activo = 1 AND ${sqlEquipoEnServicio('e')}`);
             const machine = mRes.recordset[0];
 
             if (!machine) {

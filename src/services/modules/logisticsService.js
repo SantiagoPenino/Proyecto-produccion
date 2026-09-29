@@ -1,4 +1,30 @@
 import api from '../../services/api';
+import Swal from 'sweetalert2';
+
+// [25/09] Crear un remito con aviso: si alguna orden del despacho ya se entregó al cliente, el server
+// frena con 409 ORDENES_ENTREGADAS. Se pregunta y, si confirman, se reintenta con confirmarEntregadas.
+// Va acá para que lo tengan todas las pantallas que despachan (Despacho, Entrega de pedidos, carrito,
+// modal de despacho y generación de etiquetas). Si cancelan, el caller recibe el 409 con su mensaje.
+async function postRemitoConAviso(url, data) {
+    try {
+        return (await api.post(url, data)).data;
+    } catch (err) {
+        const d = err.response?.data;
+        if (err.response?.status !== 409 || d?.codigo !== 'ORDENES_ENTREGADAS') throw err;
+        const { isConfirmed } = await Swal.fire({
+            icon: 'warning',
+            title: 'Orden ya entregada',
+            text: d.error,
+            showCancelButton: true,
+            confirmButtonText: 'Despachar igual',
+            cancelButtonText: 'Cancelar',
+            confirmButtonColor: '#dc2626',
+            cancelButtonColor: '#64748b',
+        });
+        if (!isConfirmed) throw err;
+        return (await api.post(url, { ...data, confirmarEntregadas: true })).data;
+    }
+}
 
 const logisticsService = {
     // --- BULTOS (PACKING) ---
@@ -16,8 +42,7 @@ const logisticsService = {
     // --- REMITOS (DISPATCH) ---
     createRemito: async (data) => {
         // data: { codigoRemito, areaOrigen, areaDestino, usuarioId, bultosIds }
-        const response = await api.post('/logistics/remitos', data);
-        return response.data;
+        return postRemitoConAviso('/logistics/remitos', data);
     },
 
     validateDispatch: async (bultosIds) => {
@@ -33,8 +58,7 @@ const logisticsService = {
     },
 
     createRemitoFromOrders: async (data) => {
-        const response = await api.post('/logistics/remitos/from-orders', data);
-        return response.data;
+        return postRemitoConAviso('/logistics/remitos/from-orders', data);
     },
 
     getRemitoByCode: async (code) => {
@@ -127,7 +151,7 @@ const logisticsService = {
         return response.data;
     },
     createParcel: async (data) => api.post('/logistics/bultos', data).then(r => r.data),
-    createDispatch: async (data) => api.post('/logistics/remitos', data).then(r => r.data),
+    createDispatch: async (data) => postRemitoConAviso('/logistics/remitos', data),
 
     confirmTransport: async (data) => {
         const response = await api.post('/logistics/transport/confirm', data);

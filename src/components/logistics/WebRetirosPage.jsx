@@ -10,6 +10,43 @@ import {
 import { motion, AnimatePresence } from 'framer-motion';
 import api from '../../services/api'; // Axios instance base
 
+// [25/09] Entregar con aviso: si algún bulto de las órdenes figura en tránsito en un remito de
+// Logística (nunca se escaneó al llegar a Depósito), el server frena con 409 BULTOS_SIN_RECIBIR.
+// Se muestra la lista con dos salidas: "ya están acá" (quedan entregados y su remito se cierra) o
+// "entregar sin esos bultos" (el retiro sale y esos bultos quedan pendientes para cuando lleguen).
+const escaparHtml = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+async function entregarConAviso(payload) {
+  try {
+    return await api.post('/web-retiros/estantes/liberar-multiple', payload);
+  } catch (err) {
+    const d = err.response?.data;
+    if (err.response?.status !== 409 || d?.codigo !== 'BULTOS_SIN_RECIBIR') throw err;
+    const filas = (d.bultos || []).map(b =>
+      `<li><strong style="color:#00AEEF">${escaparHtml(b.CodigoOrden)}</strong>: bulto ${escaparHtml(b.CodigoEtiqueta)}, remito ${escaparHtml(b.CodigoRemito)} desde ${escaparHtml(b.AreaOrigenID)}</li>`).join('');
+    const { isConfirmed, isDenied } = await Swal.fire({
+      icon: 'warning',
+      title: 'Bultos sin recibir en Depósito',
+      html: `<div style="text-align:left;font-size:14px">Estos bultos figuran en tránsito: nunca se escanearon al llegar a Depósito.`
+        + `<ul style="margin:10px 0 10px 18px;list-style:disc">${filas}</ul>`
+        + `<b>Si están acá</b>, quedan como entregados al cliente y su remito se cierra (también se pueden recibir primero en Recepción).<br>`
+        + `<b>Si no están</b>, se entrega el resto y esos bultos quedan pendientes, para recibirlos cuando lleguen.</div>`,
+      showCancelButton: true,
+      showDenyButton: true,
+      confirmButtonText: 'Ya están acá, entregar',
+      denyButtonText: 'Entregar sin esos bultos',
+      cancelButtonText: 'Cancelar',
+      confirmButtonColor: '#dc2626',
+      denyButtonColor: '#0284c7',
+      cancelButtonColor: '#64748b',
+      background: '#212121',
+      color: '#f8fafc',
+      customClass: { popup: '!rounded-xl !pb-8 !px-2' },
+    });
+    if (!isConfirmed && !isDenied) { const e = new Error('Entrega cancelada'); e.cancelada = true; throw e; }
+    return await api.post('/web-retiros/estantes/liberar-multiple', { ...payload, confirmarBultosEnTransito: isDenied ? 'pendientes' : 'entregados' });
+  }
+}
+
 // ─── HELPER: Comprobante unificado de Orden de Retiro ───
 // Patrón: mismo encabezado que LogisticsPage + ReceptionPage (MACROSOFT TEXTIL)
 // Campos: código retiro, cliente, tipo, estado, local, monto, órdenes, fecha, firma
@@ -1298,13 +1335,14 @@ const WebRetirosPage = () => {
       // Para fuera de estante, el backend ya maneja ubicacionId='FUERA DE ESTANTE'
       // (omite el DELETE de OcupacionEstantes y llama directamente a marcarEntregado)
 
-      await api.post(`/web-retiros/estantes/liberar-multiple`, {
+      await entregarConAviso({
         ubicacionId,
         ordenesParaEntregar: ordenesSeleccionadas
       });
-      // El fetch vendrá por socket 
+      // El fetch vendrá por socket
     } catch (err) {
-      setError(err.response?.data?.error || err.message || 'Error al liberar el estante');
+      // Cancelada en el aviso de bultos sin recibir: solo se vuelve a mostrar el estante como estaba
+      if (!err.cancelada) setError(err.response?.data?.error || err.message || 'Error al liberar el estante');
       // Revertimos la UI si falla
       fetchAllData(false);
     }
@@ -1354,10 +1392,10 @@ const WebRetirosPage = () => {
     });
 
     try {
-      await api.post('/web-retiros/estantes/liberar-multiple', { ubicacionId, ordenesParaEntregar });
+      await entregarConAviso({ ubicacionId, ordenesParaEntregar });
       toast.success('Entregado correctamente.', { autoClose: 2500 });
     } catch (err) {
-      setError(err.response?.data?.error || err.message || 'Error al entregar');
+      if (!err.cancelada) setError(err.response?.data?.error || err.message || 'Error al entregar');
       fetchAllData(false);
     }
   };

@@ -144,11 +144,14 @@ self.addEventListener('notificationclick', (event) => {
     const nData = event.notification.data || {};
     // Si tocó un botón de acción con URL propia, esa manda; si no, la URL default de la notificación.
     const url = (event.action && nData.actionUrls && nData.actionUrls[event.action]) || nData.url || '/portal';
+    // Los avisos del portal abren una ventana del portal; los del sistema interno (servicio técnico,
+    // 28/09/2026) una del sistema interno. Si no hay ninguna abierta de ese lado, abre una nueva.
+    const esPortal = url.startsWith('/portal');
 
     event.waitUntil(
         clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients) => {
             for (const client of windowClients) {
-                if (client.url.includes('/portal') && 'focus' in client) {
+                if (client.url.includes('/portal') === esPortal && 'focus' in client) {
                     client.focus();
                     client.navigate(url);
                     return;

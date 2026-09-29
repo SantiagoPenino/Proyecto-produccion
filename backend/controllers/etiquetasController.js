@@ -304,7 +304,8 @@ const printEtiquetas = async (req, res) => {
               -- Un bulto CONSUMIDO ya no existe físicamente: su contenido se incorporó a
               -- otro bulto (ej. el material que entró a terminaciones y salió empaquetado).
               -- Reimprimir su etiqueta sacaría un rótulo de un paquete que no está.
-              AND ISNULL(LB.Estado, '') NOT IN ('CONSUMIDO', 'PERDIDO', 'DESPACHADO', 'PROCESADO')
+              -- CANCELADO: bulto de una orden cancelada (vuelve a EN_STOCK si se reactiva).
+              AND ISNULL(LB.Estado, '') NOT IN ('CONSUMIDO', 'PERDIDO', 'DESPACHADO', 'PROCESADO', 'CANCELADO')
               -- Un bulto que YA se incluyó en un remito (aunque ese remito se haya recibido
               -- y el bulto vuelva a EN_STOCK del otro lado) no se reimprime acá: confunde al
               -- que arma el PRÓXIMO remito con etiquetas de bultos que ya viajaron.
