@@ -170,8 +170,9 @@ const logisticsService = {
         return response.data;
     },
 
-    getActiveTransports: async () => {
-        const response = await api.get('/logistics/transport/active');
+    // filtros: { tipo: 'ENCOMIENDA'|'PRODUCCION', estado: 'ACTIVOS', q } — se aplican en el backend
+    getActiveTransports: async (filtros = {}) => {
+        const response = await api.get('/logistics/transport/active', { params: filtros });
         return response.data;
     },
 

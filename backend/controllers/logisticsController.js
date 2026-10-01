@@ -3420,10 +3420,47 @@ exports.confirmRemitoDelivery = async (req, res) => {
     }
 };
 
+// Lista de "Transporte" / "En Viaje" (TransportView). Los filtros van en la consulta, ANTES
+// del TOP 200: hasta el 28/09/2026 se traían los últimos 200 remitos de todo tipo (los de
+// producción entre áreas incluidos) y recién el navegador filtraba encomiendas y estado, así
+// que todo lo anterior a ~una semana desaparecía de la pantalla, también las encomiendas sin
+// confirmar (ej. REM-219352 del 11/09). Sin parámetros devuelve lo mismo que antes.
+//   ?tipo=ENCOMIENDA|PRODUCCION   ?estado=ACTIVOS   ?q=<remito, observación o N° de retiro>
 exports.getActiveTransports = async (req, res) => {
     try {
+        const tipo = String(req.query.tipo || '').toUpperCase();
+        const soloActivos = String(req.query.estado || '').toUpperCase() === 'ACTIVOS';
+        const q = String(req.query.q || '').trim().slice(0, 50);
+        // "RW-27161", "RT-27161" o "27161" → 27161: en las encomiendas el OrdenID del bulto es el
+        // N° de OrdenesRetiro (ver createRemito).
+        const nroRetiro = /^[A-Za-z]{0,3}-?\d{1,9}$/.test(q) ? parseInt(q.replace(/\D/g, ''), 10) : null;
+
         const pool = await getPool();
-        const r = await pool.request().query(`
+        const request = pool.request();
+        const filtros = [];
+        const esEncomienda = `EXISTS (
+                SELECT 1 FROM Logistica_EnvioItems fi
+                INNER JOIN Logistica_Bultos fb ON fi.BultoID = fb.BultoID
+                WHERE fi.EnvioID = e.EnvioID AND fb.Tipocontenido = 'ENCOMIENDA')`;
+        if (tipo === 'ENCOMIENDA') filtros.push(esEncomienda);
+        else if (tipo === 'PRODUCCION') filtros.push(`NOT ${esEncomienda}`);
+        // Los mismos estados que el botón "En Viaje" filtraba en el navegador.
+        if (soloActivos) filtros.push(`e.Estado IN ('EN_TRANSITO', 'EN_TRANSITO_PARCIAL', 'ESPERANDO_RETIRO')`);
+        if (q) {
+            request.input('Q', sql.NVarChar(120), `%${q.replace(/[%_[]/g, '[$&]')}%`);
+            const porTexto = `e.CodigoRemito LIKE @Q OR e.Observaciones LIKE @Q`;
+            if (nroRetiro) {
+                request.input('Retiro', sql.Int, nroRetiro);
+                filtros.push(`(${porTexto} OR EXISTS (
+                    SELECT 1 FROM Logistica_EnvioItems ri
+                    INNER JOIN Logistica_Bultos rb ON ri.BultoID = rb.BultoID
+                    WHERE ri.EnvioID = e.EnvioID AND rb.Tipocontenido = 'ENCOMIENDA' AND rb.OrdenID = @Retiro))`);
+            } else {
+                filtros.push(`(${porTexto})`);
+            }
+        }
+
+        const r = await request.query(`
             SELECT TOP 200
                 e.EnvioID,
                 e.CodigoRemito,
@@ -3443,6 +3480,7 @@ exports.getActiveTransports = async (req, res) => {
                     ELSE 'PRODUCCION'
                 END AS TipoEnvio
             FROM Logistica_Envios e
+            ${filtros.length ? `WHERE ${filtros.join(' AND ')}` : ''}
             ORDER BY e.FechaSalida DESC
         `);
         res.json(r.recordset);

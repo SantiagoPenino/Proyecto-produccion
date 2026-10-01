@@ -131,7 +131,7 @@ exports.getOverview = async (req, res) => {
             `), { recordset: [] }, 'metrosMaterial'),
 
             // 6. Antigüedad en horas de las activas (hoy vs días anteriores)
-            safe(() => pool.request().query(`
+            safe(() => mkR().query(`
                 SELECT
                     CASE
                         WHEN DATEDIFF(HOUR, o.FechaIngreso, GETDATE()) <  4  THEN 'Menos de 4 h'

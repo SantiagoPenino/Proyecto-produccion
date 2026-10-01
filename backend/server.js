@@ -345,7 +345,9 @@ app.get('/api/stats/public', async (req, res) => {
 });
 
 // --- API: Sync manual de precios (admin) ---
-app.post('/api/admin/sync-precios', async (req, res) => {
+// Hasta el 28/09/2026 no pedía login. La llama la consola de SysAdmin (SysAdminPage.jsx).
+const { verifyToken, soloAdmin } = require('./middleware/authMiddleware');
+app.post('/api/admin/sync-precios', verifyToken, soloAdmin, async (req, res) => {
     try {
         const { syncPriceList } = require('./cron/priceListSync');
         const result = await syncPriceList();

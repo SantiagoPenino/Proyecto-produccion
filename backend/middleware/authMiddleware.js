@@ -98,6 +98,27 @@ const soloInternoConRol = (rolesPermitidos = null) => (req, res, next) => {
 };
 
 // =====================================================================
+// MIDDLEWARE: SOLO ADMIN (usuario interno con rol Admin)
+// =====================================================================
+// Para administrar accesos y la configuración global: /api/users (alta, cambios y bajas),
+// /api/roles, /api/admin, el editor de /api/menu y los cambios de /api/configuraciones.
+// Casi todas no tenían NINGÚN middleware: sin token se podía crear un usuario con IdRol 1
+// (28/09/2026).
+// Admin = Roles.NombreRol 'Admin' / IdRol 1. 'Administracion' (IdRol 8) NO entra (mismo
+// criterio que ROLES_EDITAN_ESTADO). Va después de verifyToken.
+const esAdmin = (u) => parseInt(u?.idRol, 10) === 1 || normalizaRol(u?.role) === 'admin';
+
+const soloAdmin = (req, res, next) => {
+    const u = req.user;
+    if (!u) return res.status(401).json({ error: 'Usuario no autenticado.' });
+    // 403 y no 401: el 401 hace que el front cierre la sesión (apiClient.js).
+    if (u.userType !== 'INTERNAL' || !esAdmin(u)) {
+        return res.status(403).json({ error: 'Esta acción es solo para administradores.' });
+    }
+    next();
+};
+
+// =====================================================================
 // MIDDLEWARE: AUTORIZAR ADMIN O ÁREA
 // =====================================================================
 exports.authorizeAdminOrArea = (req, res, next) => {
@@ -129,6 +150,7 @@ const esAdminOServicioTecnico = (u) => {
 };
 
 exports.soloInternoConRol = soloInternoConRol;
+exports.soloAdmin = soloAdmin;
 exports.ROLES_EDITAN_ESTADO = ROLES_EDITAN_ESTADO;
 exports.esAdminOServicioTecnico = esAdminOServicioTecnico;
 exports.JWT_SECRET = JWT_SECRET;

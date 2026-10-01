@@ -27,11 +27,16 @@ exports.login = async (req, res) => {
         if (result.recordset.length > 0) {
             const user = result.recordset[0];
 
-            // Validación manual (si aplica).
             // OJO: `user.PasswordHash` es el alias que devuelve sp_AutenticarUsuario para
             // `Usuarios.ContrasenaHash` — la columna PasswordHash no existe.
+            // Hasta el 28/09/2026 el if era `user.PasswordHash && !chk.ok`: con ContrasenaHash
+            // NULL o vacío no se verificaba nada y se entraba con CUALQUIER contraseña. Ahora un
+            // usuario sin contraseña no entra hasta que un Admin le cargue una en Usuarios.
             const chk = await verificar(password, user.PasswordHash);
-            if (user.PasswordHash && !chk.ok) {
+            if (!chk.ok) {
+                if (!String(user.PasswordHash || '').trim()) {
+                    logger.warn(`[LOGIN] ${user.Username} no tiene contraseña cargada: rechazado hasta que un Admin le ponga una.`);
+                }
                 // Contraseña incorrecta para usuario existente -> Fallar aquí (no probar cliente)
                 // O probar cliente SOLO si el username coincide con un IDCliente
                 // Por seguridad, si existe el usuario interno, asumimos que es ese

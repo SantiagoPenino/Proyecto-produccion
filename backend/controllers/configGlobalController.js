@@ -53,7 +53,7 @@ exports.upsert = async (req, res) => {
             `);
 
         const creada = result.rowsAffected[0] === 0;
-        logger.info(`[ConfigGlobal] ${creada ? 'CREADA' : 'ACTUALIZADA'} ${clave} = "${valor}" por ${req.user?.usuario || req.user?.nombre || 'sistema'}`);
+        logger.info(`[ConfigGlobal] ${creada ? 'CREADA' : 'ACTUALIZADA'} ${clave} = "${valor}" por ${req.user?.username || req.user?.name || 'sistema'}`);
         res.json({ success: true, creada });
     } catch (err) {
         logger.error('[ConfigGlobal] upsert:', err.message);

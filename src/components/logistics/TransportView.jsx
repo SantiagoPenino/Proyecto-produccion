@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import api from '../../services/api';
 import { logisticsService } from '../../services/modules/logisticsService';
@@ -10,29 +10,45 @@ import {
     File, Camera, X, PackageCheck, Loader2, Plus, Trash2
 } from 'lucide-react';
 
-const TransportView = () => {
+// originArea: la pestaña "En Viaje" de Entrega de pedidos pasa 'LOGISTICA_ENCOMIENDAS' y arranca
+// filtrando encomiendas; desde Logística llega sin ese prop y arranca en Todos.
+const TransportView = ({ originArea } = {}) => {
     const [transports, setTransports] = useState([]);
     const [loading, setLoading] = useState(false);
     const [searchTerm, setSearchTerm] = useState('');
+    const [busqueda, setBusqueda] = useState(''); // searchTerm con debounce: es la que va al backend
     const [filterStatus, setFilterStatus] = useState('ACTIVE'); // 'ACTIVE' | 'ALL'
-    const [filterTipo, setFilterTipo] = useState('TODOS'); // 'TODOS' | 'PRODUCCION' | 'ENCOMIENDA'
+    const [filterTipo, setFilterTipo] = useState(originArea === 'LOGISTICA_ENCOMIENDAS' ? 'ENCOMIENDA' : 'TODOS'); // 'TODOS' | 'PRODUCCION' | 'ENCOMIENDA'
+    const pedidoRef = useRef(0); // descarta respuestas viejas si se tipea rápido
 
     useEffect(() => {
-        loadData();
-    }, []);
+        const t = setTimeout(() => setBusqueda(searchTerm.trim()), 400);
+        return () => clearTimeout(t);
+    }, [searchTerm]);
 
-    const loadData = async () => {
+    // Los filtros se aplican en el backend, antes del tope de 200 remitos. Hasta el 28/09/2026 se
+    // filtraba acá sobre los últimos 200 de todo tipo y lo anterior a ~una semana no aparecía.
+    const loadData = useCallback(async () => {
+        const pedido = ++pedidoRef.current;
         setLoading(true);
         try {
-            const data = await logisticsService.getActiveTransports();
-            setTransports(data);
+            const data = await logisticsService.getActiveTransports({
+                tipo: filterTipo !== 'TODOS' ? filterTipo : undefined,
+                estado: filterStatus === 'ACTIVE' ? 'ACTIVOS' : undefined,
+                q: busqueda || undefined,
+            });
+            if (pedido === pedidoRef.current) setTransports(data);
         } catch (error) {
             console.error(error);
             toast.error('Error al cargar transportes');
         } finally {
-            setLoading(false);
+            if (pedido === pedidoRef.current) setLoading(false);
         }
-    };
+    }, [filterTipo, filterStatus, busqueda]);
+
+    useEffect(() => {
+        loadData();
+    }, [loadData]);
 
     // MODAL STATE
     const [isModalOpen, setIsModalOpen] = useState(false);
@@ -248,17 +264,6 @@ const TransportView = () => {
         } catch (err) { toast.error("Error al imprimir"); }
     };
 
-    const filtered = transports.filter(t => {
-        const matchesSearch = (t.CodigoRemito || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
-            (t.Observaciones || '').toLowerCase().includes(searchTerm.toLowerCase());
-        if (!matchesSearch) return false;
-        if (filterStatus === 'ACTIVE') {
-            if (!['EN_TRANSITO', 'EN_TRANSITO_PARCIAL', 'ESPERANDO_RETIRO'].includes(t.Estado)) return false;
-        }
-        if (filterTipo !== 'TODOS' && t.TipoEnvio !== filterTipo) return false;
-        return true;
-    });
-
     return (
         <div className="p-4 md:p-6 h-full overflow-y-auto bg-slate-50/50">
             {/* Header */}
@@ -293,7 +298,7 @@ const TransportView = () => {
                 <Search size={16} className="absolute left-3 top-3 text-slate-400" />
                 <input
                     type="text"
-                    placeholder="Buscar por remito, chofer o agencia..."
+                    placeholder="Buscar por remito o N° de retiro (ej. 219352 o 27161)..."
                     className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-200 focus:ring-2 focus:ring-brand-cyan/20 outline-none text-sm"
                     value={searchTerm}
                     onChange={e => setSearchTerm(e.target.value)}
@@ -307,13 +312,13 @@ const TransportView = () => {
                         <Loader2 className="animate-spin" />
                         <span>Cargando datos...</span>
                     </div>
-                ) : filtered.length === 0 ? (
+                ) : transports.length === 0 ? (
                     <div className="text-center py-12 bg-slate-50 rounded-xl border border-dashed border-slate-300">
                         <Navigation size={40} className="text-slate-300 mb-3 mx-auto" />
                         <p className="text-slate-500 font-medium">No hay vehículos registrados con este filtro.</p>
                     </div>
                 ) : (
-                    filtered.map(t => (
+                    transports.map(t => (
                         <div
                             key={t.EnvioID}
                             className={`bg-white rounded-xl shadow-sm border p-4 hover:shadow-md transition-shadow
