@@ -22,6 +22,9 @@ import './fichaPedido.css';
  * diseño pronto y acepta los cambios. Todo queda en el historial (no se edita ni se borra).
  */
 const ROLES_PARTE = ['ARTE_CLIENTE', 'REFERENCIA', 'BOCETO'];
+// F1: nombre de la producción principal según el área del producto (ProductoVentaConfig.TecnicaPrincipal)
+const NOMBRE_PRINCIPAL = { SB: 'sublimación', DIRECTA: 'impresión directa', ECOUV: 'gran formato', DF: 'DTF' };
+const nombrePrincipal = (p) => NOMBRE_PRINCIPAL[p?.Config?.TecnicaPrincipal] || 'sublimación';
 const normTxt = (v) => String(v || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
 // La tizada NO va acá: es el archivo de impresión de la sublimación → se sube como diseño pronto de la producción principal.
 const ROLES_PRODUCTO = ['PLANILLA', 'REFERENCIA'];
@@ -278,7 +281,7 @@ export function ProductoTab({ s, p, n, id, user, perfil, busy, abierta, puedeVen
     const planillas = delProducto.filter(a => a.Rol === 'PLANILLA');
     const faltaSubl = subl.aplica && !p.Datos?.sublimacion?.completo
         ? (p.Datos?.sublimacion?.modeloClave ? 'Faltan telas en "Piezas y telas".' : 'Primero elegí el modelo y la tela de cada pieza en "Piezas y telas".')
-        : (!planillas.length && !String(p.Datos?.notaTalles || '').trim() && p.Datos?.comoSeDefine !== 'MEDIDA' ? 'Falta la planilla de talles y nombres (o la nota de talles).' : null);
+        : (!planillas.length && !String(p.Datos?.notaTalles || '').trim() && p.Datos?.comoSeDefine !== 'MEDIDA' && p.Config?.Molde !== 'NO' ? 'Falta la planilla de talles y nombres (o la nota de talles).' : null);
     const principal = p.Partes.find(pa => pa.Tipo === 'PRINCIPAL');
 
     return (
@@ -294,6 +297,9 @@ export function ProductoTab({ s, p, n, id, user, perfil, busy, abierta, puedeVen
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
                 <Info l="Corte" v={p.Datos?.corte?.activo ? `${p.Datos.corte.tipoMolde} · ${p.Datos.corte.origenTela}` : 'No lleva'} />
                 <Info l="Costura" v={p.Datos?.costura?.activo ? (p.Datos.costura.instrucciones || 'Sin instrucciones especiales') : 'No lleva'} />
+                {p.TipoFabricacion === 'PRODUCTO_TERMINADO' && (p.Datos?.accesorios || []).length > 0 && (
+                    <Info l="Accesorios de stock" v={(p.Datos.accesorios || []).filter(a => a.incluir !== false).map(a => `${(Number(a.cantidadPorUnidad) || 1) * (Number(p.Cantidad) || 0)}× ${a.nombre}${a.varianteNombre ? ` (${a.varianteNombre})` : ' (sin variante)'}${a.cobro === 'APARTE' ? ' · aparte' : ''}`).join(' · ') || 'Ninguno'} />
+                )}
                 {p.Observaciones && <Info l="Observaciones" v={<span className="whitespace-pre-line">{p.Observaciones}</span>} />}
                 <DatosProducto d={p.Datos || {}} />
             </div>
@@ -342,7 +348,7 @@ function PrincipalBloque({ p, pa, id, perfil, busy, abierta, puedeVender, arte, 
     return (
         <section className="fp-zona">
             <div className="fp-zona-tit flex flex-wrap items-center justify-between gap-2">
-                <span>Producción principal (sublimación) <small>arte · telas por pieza · planilla de talles → con eso se envía a Diseño</small></span>
+                <span>Producción principal ({nombrePrincipal(p)}) <small>{p.Config?.Molde === 'NO' ? 'arte → con eso se envía a Diseño' : 'arte · telas por pieza · planilla de talles → con eso se envía a Diseño'}</small></span>
                 <span className="flex items-center gap-1.5"><Pill e={pa.Estado} mapa={ESTADO_PARTE} />{pa.Modificada ? <PillModificada /> : null}
                     {pa.DisenadorNombre ? <span className="text-[11px] font-bold text-slate-600 normal-case tracking-normal" style={{ fontFamily: 'Barlow, sans-serif' }}>{pa.Estado === 'DISENADO' ? 'Diseñó' : 'Lo tiene'} <b>{pa.DisenadorNombre}</b></span>
                         : pa.Estado === 'ENVIADO_DISENO' ? <span className="text-[11px] font-bold text-slate-500 normal-case tracking-normal" style={{ fontFamily: 'Barlow, sans-serif' }}>nadie lo tomó todavía</span> : null}</span>
@@ -363,7 +369,7 @@ function PrincipalBloque({ p, pa, id, perfil, busy, abierta, puedeVender, arte, 
 
             {p.TipoFabricacion === 'PRODUCTO_TERMINADO' && <PiezasTelasBloque plano id={id} p={p} busy={busy} puede={puede} hacer={hacer} artes={artes} onEstado={onEstadoSubl} />}
 
-            <div className="pt-3 mt-3 border-t border-slate-200 text-xs">
+            {p.Config?.Molde !== 'NO' && <div className="pt-3 mt-3 border-t border-slate-200 text-xs">
                 <Sub>{p.TipoFabricacion === 'PRODUCTO_TERMINADO' ? '3' : '2'} · Planilla de talles y nombres <span className="normal-case font-normal">(cuántas prendas de cada talle, nombres y números) y referencias</span></Sub>
                 <div className="grid md:grid-cols-2 gap-4">
                     <div>
@@ -372,7 +378,7 @@ function PrincipalBloque({ p, pa, id, perfil, busy, abierta, puedeVender, arte, 
                     </div>
                     <TallesCampos id={id} p={p} puede={puede} busy={busy} hacer={hacer} />
                 </div>
-            </div>
+            </div>}
 
             <div className="pt-3 mt-3 border-t border-slate-200 flex flex-wrap items-center gap-2 text-xs">
                 {pa.Estado === 'INGRESADO' ? (
@@ -581,7 +587,17 @@ function EstadoParteDiseno({ pa, user, perfil, busy, bloqueada, enProduccion = [
 /* Tabla de servicios de UN producto. vista "cliente" (pestaña del producto): servicio, archivos
    del cliente y estado con "Enviar a Diseño". vista "diseno" (pantalla de Diseño): además la
    columna del diseño pronto, y los archivos del cliente en solo lectura. */
-function TablaServicios({ vista, s, p, id, user, perfil, busy, abierta, telas, archivosDe, hacer, subir, onAbrirFicha, faltaSubl = null, partes = null, titulo = null }) {
+function TablaServicios({ vista, s, p, id, user, perfil, busy, abierta, telas: telasSB, archivosDe, hacer, subir, onAbrirFicha, faltaSubl = null, partes = null, titulo = null }) {
+    // F1: si la producción principal del producto no es sublimación, las telas de cada archivo son las del área del producto
+    const areaPrincipal = p.Config?.TecnicaPrincipal || 'SB';
+    const [telasArea, setTelasArea] = useState(null);
+    useEffect(() => {
+        let vivo = true;
+        if (areaPrincipal === 'SB') { setTelasArea(null); return undefined; }
+        svc.materialesPrincipal(areaPrincipal).then(l => { if (vivo) setTelasArea(l); }).catch(() => { if (vivo) setTelasArea([]); });
+        return () => { vivo = false; };
+    }, [areaPrincipal]);
+    const telas = telasArea || telasSB;
     const conv = s.Conversion.find(c => c.ProductoSolID === p.ProductoSolID) || {};
     const bloqueada = !abierta || !!p.PedidoNoDocERP;
     const esDiseno = vista === 'diseno';
@@ -795,7 +811,16 @@ function PiezasTelasBloque({ id, p, busy, puede, hacer, artes = [], onEstado, pl
         return () => { vivo = false; };
     }, [id, p.ProductoSolID, guardado?.fecha]);   // eslint-disable-line react-hooks/exhaustive-deps
 
-    if (!info || !info.aplica) return null;
+    if (!info) return null;
+    if (!info.aplica) {
+        // F1: producto del catálogo sin molde (windflag, funda, cuadro): archivo pronto a medida fija
+        if (info.molde && info.molde !== 'OBLIGATORIO') return (
+            <div className={plano ? 'pt-3 mt-3 border-t border-slate-200 text-xs text-slate-600' : 'text-xs text-slate-600'}>
+                <span className="font-black text-slate-700">Sin molde:</span> {info.motivo}
+            </div>
+        );
+        return null;
+    }
     const mod = info.modelos.find(m => m.clave === modelo) || info.modelos[0];
     const telaDefault = info.telas.find(t => t.esDefault) || info.telas[0];
     const set = (pieza, campo, v) => setPiezas(prev => ({ ...prev, [pieza]: { ...(prev[pieza] || {}), [campo]: v } }));

@@ -59,7 +59,38 @@ exports.getPendientes = async (req, res) => {
             const aprobado = parseFloat(o.CantidadAprobadaBultos) || 0;
             maxFallaPropia = Math.max(trabajado - aprobado, 0);
         }
-        res.json({ ...data, orden: { OrdenID: o.OrdenID, CodigoOrden: o.CodigoOrden, UM: String(o.UM || '').trim(), Magnitud: o.Magnitud, maxFallaPropia },
+        // [ACCESORIOS] En PRO, los accesorios de stock del pedido (mástil, base…) son retiros VEN- con
+        // destino PRO (Ordenes AreaID PRO / VENTA_DIRECTA / "RETIRO ACCESORIO — …", ComboPedidoNoDocERP =
+        // pedido). Se listan acá para que Producción vea qué tiene que recibir y cuánto: sin todos
+        // recibidos el pedido no entra a Depósito (logisticsController.validarAccesoriosRecibidos).
+        let accesorios = [];
+        if (area === 'PRO') {
+            try {
+                const acc = await pool.request().input('Doc', sql.VarChar(50), String(o.NoDocERP).trim()).query(`
+                    SELECT a.OrdenID, LTRIM(RTRIM(a.NoDocERP)) AS Ven, a.DescripcionTrabajo, TRY_CAST(a.Magnitud AS DECIMAL(18,2)) AS Cantidad,
+                           pc.EstadoCobro, pc.MontoTotal, pc.Moneda,
+                           (SELECT COUNT(*) FROM Logistica_Bultos b WHERE b.OrdenID = a.OrdenID AND b.Estado = 'EN_STOCK' AND b.UbicacionActual = 'PRO') AS BultosEnPro,
+                           ISNULL((SELECT SUM(d.Cantidad) FROM PedidosCobranzaDetalle d WHERE d.PedidoCobranzaID = pc.ID), 0) AS Retirada
+                    FROM Ordenes a
+                    LEFT JOIN PedidosCobranza pc ON LTRIM(RTRIM(pc.NoDocERP)) = LTRIM(RTRIM(a.NoDocERP))
+                    WHERE a.AreaID = 'PRO' AND a.EstadoDependencia = 'VENTA_DIRECTA'
+                      AND a.DescripcionTrabajo LIKE 'RETIRO ACCESORIO%'
+                      AND LTRIM(RTRIM(a.ComboPedidoNoDocERP)) = @Doc
+                    ORDER BY a.OrdenID`);
+                accesorios = acc.recordset.map(r => {
+                    const est = String(r.EstadoCobro || '').toUpperCase();
+                    const nombre = String(r.DescripcionTrabajo || '').replace(/^RETIRO ACCESORIO\s*[—-]\s*/i, '');
+                    // Recibido = bulto EN_STOCK en PRO (Producción recibió el remito). Retirado sin recibir = en camino.
+                    const recibido = Number(r.BultosEnPro) > 0;
+                    const retirado = est === 'ENVIADO_PRODUCCION' || est === 'PREPARADO';
+                    const estado = est === 'CANCELADO' ? 'CANCELADO' : (recibido ? 'RECIBIDO' : (retirado ? 'EN_CAMINO' : 'FALTA_RETIRO'));
+                    return { ordenId: r.OrdenID, ven: r.Ven, nombre, cantidad: r.Cantidad != null ? Number(r.Cantidad) : null,
+                             retirada: Number(r.Retirada) || 0, estadoCobro: est, estado, bultosEnPro: Number(r.BultosEnPro) || 0,
+                             cobro: Number(r.MontoTotal) > 0 ? `${r.Moneda === 'USD' ? 'US$' : '$'} ${Number(r.MontoTotal).toFixed(2)}` : null };
+                });
+            } catch (eAcc) { logger.warn('[fallaBandeja] accesorios del pedido: ' + eAcc.message); accesorios = []; }
+        }
+        res.json({ ...data, accesorios, orden: { OrdenID: o.OrdenID, CodigoOrden: o.CodigoOrden, UM: String(o.UM || '').trim(), Magnitud: o.Magnitud, maxFallaPropia },
                    cadenaHabilitada: areasCadena.includes(area), areasUnidades,
                    // Spec 39: en estas áreas no hay prenda de repuesto en stock — una falla
                    // PROPIA (no solo un faltante) también arma la cadena completa hacia atrás,

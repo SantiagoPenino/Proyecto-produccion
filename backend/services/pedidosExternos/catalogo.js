@@ -24,6 +24,27 @@ async function materialesDe(pool, areaId, variante) {
   return r.recordset;
 }
 
+// F1 (29-sep): TODOS los materiales de impresión de un área (StockArt del Grupo del área, TipoStock
+// MATERIAL, visibles), sin fijar una variante. Es el catálogo de la producción principal cuando el
+// producto no se hace por sublimación (Impresión Directa, gran formato…). Devuelve además la
+// variante física (StockArt.Articulo) de cada material, que es lo que va en Ordenes.Variante.
+async function materialesDeArea(pool, areaId) {
+  const r = await pool.request().input('AreaID', sql.VarChar, areaId).query(`
+      SELECT dbo.articulos.CodArticulo, dbo.articulos.CodStock, dbo.articulos.Descripcion AS Material,
+             dbo.articulos.anchoimprimible AS Ancho, dbo.articulos.largoimprimible AS Largo,
+             LTRIM(RTRIM(dbo.StockArt.Articulo)) AS Variante, dbo.articulos.ProIdProducto
+      FROM dbo.StockArt
+      INNER JOIN dbo.articulos ON dbo.StockArt.CodStock = dbo.articulos.CodStock
+      INNER JOIN dbo.ConfigMapeoERP ON LTRIM(RTRIM(dbo.ConfigMapeoERP.CodigoERP)) = LTRIM(RTRIM(dbo.StockArt.Grupo))
+      WHERE LTRIM(RTRIM(dbo.ConfigMapeoERP.AreaID_Interno)) = @AreaID
+        AND ISNULL(dbo.StockArt.TipoStock, 'MATERIAL') = 'MATERIAL'
+        AND ISNULL(dbo.StockArt.mostrar, 1) = 1
+        AND ISNULL(dbo.articulos.mostrar, 1) = 1
+        AND ISNULL(dbo.articulos.borrar, 0) = 0
+      ORDER BY Variante, dbo.articulos.Descripcion`);
+  return r.recordset;
+}
+
 const limpio = (s) => String(s ?? '').trim();
 
 // Busca el material pedido dentro del catálogo: primero por código, después por nombre exacto.
@@ -73,4 +94,4 @@ async function bobinasDe(pool, cliente) {
   return r.recordset;
 }
 
-module.exports = { materialesDe, buscarMaterial, anchoDeMaterial, bobinasDe };
+module.exports = { materialesDe, materialesDeArea, buscarMaterial, anchoDeMaterial, bobinasDe };

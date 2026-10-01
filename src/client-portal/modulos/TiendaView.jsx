@@ -563,6 +563,13 @@ export const TiendaView = () => {
                                         ) : (
                                             <span className="absolute bottom-2 right-2.5 z-10 text-[10px] font-bold uppercase tracking-wide text-zinc-500">Consultar</span>
                                         )
+                                    ) : p.precio != null ? (
+                                        /* [PRECIO CATÁLOGO] a medida con precio cerrado en el configurador: se muestra, el pedido se arma en el portal */
+                                        <span className="absolute bottom-1 right-2.5 z-10 whitespace-nowrap inline-flex items-baseline gap-1 font-gsanscode font-bold">
+                                            <span className="text-[11px] text-zinc-500">{p.moneda === 'USD' ? 'US$' : '$'}</span>
+                                            <span className="text-[16px] tracking-tight text-zinc-900 tabular-nums">{(Number(p.precio) || 0).toLocaleString('es-UY', { maximumFractionDigits: 2 })}</span>
+                                            <span className="text-[9px] uppercase text-zinc-500">c/u</span>
+                                        </span>
                                     ) : (
                                         <span className="absolute bottom-2 right-2.5 z-10 text-[10px] font-bold uppercase tracking-wide text-zinc-500">A cotizar</span>
                                     )}
@@ -1206,6 +1213,18 @@ const FichaProducto = ({ producto, onCerrar, onAgregar, onIniciarPedido }) => {
                             </>
                         ) : (
                             <>
+                                {producto.precio != null ? (
+                                    /* [PRECIO CATÁLOGO] precio cerrado por unidad (configurador); el pedido igual se arma en el portal */
+                                    <div className="p-4 rounded-xl border border-zinc-700/60 bg-zinc-900/60 space-y-1">
+                                        <p className="text-sm font-black text-zinc-200 flex items-center gap-2">
+                                            {producto.tipo === 'CONFECCIONADO' ? <Scissors size={15} className="text-purple-400" /> : <Sparkles size={15} className="text-brand-cyan" />}
+                                            <PrecioFicha precio={producto.precio} moneda={producto.moneda} /> <span className="text-xs font-bold text-zinc-500">por unidad</span>
+                                        </p>
+                                        <p className="text-xs text-zinc-500 leading-relaxed">
+                                            Se fabrica a pedido con tu diseño. Iniciá el pedido, elegí la cantidad y subí el archivo; el total sale con ese precio por unidad.
+                                        </p>
+                                    </div>
+                                ) : (
                                 <div className="p-4 rounded-xl border border-zinc-700/60 bg-zinc-900/60 space-y-1">
                                     <p className="text-sm font-black text-zinc-200 flex items-center gap-2">
                                         {producto.tipo === 'CONFECCIONADO' ? <Scissors size={15} className="text-purple-400" /> : <Sparkles size={15} className="text-brand-cyan" />}
@@ -1217,6 +1236,7 @@ const FichaProducto = ({ producto, onCerrar, onAgregar, onIniciarPedido }) => {
                                             : 'El precio depende de la personalización (bordado, estampado, DTF…). Iniciá el pedido y te lo cotizamos.'}
                                     </p>
                                 </div>
+                                )}
                                 <button
                                     onClick={onIniciarPedido}
                                     className="w-full py-3 rounded-xl bg-brand-cyan text-zinc-900 text-sm font-black uppercase tracking-wide hover:bg-brand-cyan/90 transition-colors"

@@ -16,7 +16,7 @@ async function esTrabajoInternoDePedidoConPro(pool, ordenId) {
         FROM Ordenes o
         JOIN Ordenes pro ON LTRIM(RTRIM(pro.NoDocERP)) = LTRIM(RTRIM(o.NoDocERP)) AND pro.AreaID = 'PRO'
         WHERE o.OrdenID = @OID
-          AND UPPER(LTRIM(RTRIM(o.AreaID))) IN ('EMB', 'DF', 'TPU', 'EST', 'TWC', 'TWT', 'SB')
+          AND UPPER(LTRIM(RTRIM(o.AreaID))) IN ('EMB', 'DF', 'TPU', 'EST', 'TWC', 'TWT', 'SB', 'DIRECTA', 'ECOUV')   -- [F1] misma lista que erpSync/LabelGenerationService
     `);
     return r.recordset.length > 0;
 }

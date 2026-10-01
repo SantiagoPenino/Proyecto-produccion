@@ -46,12 +46,16 @@ function traducir(pedido) {
   const usaTelaCliente = !!(corte && corte.bobinaId && String(corte.origenTela || '').toUpperCase() === 'TELA CLIENTE' && corte.tipoMolde !== 'SUBLIMACION');
 
   // ── A) Producción principal: un grupo por MATERIAL|VARIANTE = una orden (jsx:1671-1746, 1797-1897)
+  // F1: el área de la principal la dice el producto (SB, DIRECTA…); la variante es la fija de sublimación
+  // o, fuera de SB, la física del material (StockArt.Articulo), igual que hace el portal.
+  const areaPrincipal = String(pedido.impresion.areaId || 'SB').toUpperCase();
   const grupos = {};
   pedido.impresion.items.forEach((it) => {
-    const key = `${it.material.nombre}| ${pedido.impresion.variante} `.toUpperCase();
+    const variante = pedido.impresion.variante || it.material.variante || '';
+    const key = `${it.material.nombre}| ${variante} `.toUpperCase();
     if (!grupos[key]) {
       grupos[key] = {
-        cabecera: { material: it.material.nombre, variante: pedido.impresion.variante, codArticulo: it.material.codArticulo, codStock: it.material.codStock },
+        cabecera: { material: it.material.nombre, variante, codArticulo: it.material.codArticulo, codStock: it.material.codStock },
         sublineas: [],
       };
     }
@@ -74,7 +78,7 @@ function traducir(pedido) {
     }
     listaServicios.push({
       esPrincipal: false,          // siempre hay orden madre PRO en "Fabricar a medida" (jsx:1870)
-      areaId: 'SB',
+      areaId: areaPrincipal,
       cabecera: grp.cabecera,
       archivos,
       items: grp.sublineas.map(sl => ({
@@ -91,11 +95,18 @@ function traducir(pedido) {
 
   // ── Orden madre PRO (jsx:2047-2060 terminado · 2070-2085 personalizado)
   if (prod.tipoFabricacion === 'TERMINADO') {
+    // Marcador de cobro (mismo que la prenda personalizada): sin él, el motor cobra el precio base
+    // del producto MÁS cada hermana (tela impresa, corte, costura…) aunque en el configurador
+    // estén "incluidas en el precio". Con [PRECIO ESTABLECIDO] la PRO vale lo pactado y las
+    // hermanas quedan consolidadas; con [FACTURA POR AREA] cada área cobra la suya.
+    const marcadorT = prod.precio?.modo === 'ESTABLECIDO' && Number(prod.precio.monto) > 0
+      ? `[PRECIO ESTABLECIDO: ${parseFloat(prod.precio.monto)} ${prod.precio.moneda}]`
+      : (prod.precio?.modo === 'POR_AREA' ? '[FACTURA POR AREA]' : '');
     listaServicios.push({
       esPrincipal: true, areaId: 'PRO', esProductoFabricado: true,
       cabecera: { material: prod.nombre || 'Prenda a Medida', proIdProducto: Number(prod.proIdProducto), variante: VARIANTE_PRO.FABRICA_TERMINADO },
       archivos: [], items: [{ cantidad: cantidadPrendas }], metadata: {},
-      notas: '[PRODUCTO FABRICADO A MEDIDA]',
+      notas: `[PRODUCTO FABRICADO A MEDIDA]${marcadorT ? ' ' + marcadorT : ''}`,
     });
   } else {
     const marcador = prod.precio.modo === 'ESTABLECIDO'
@@ -158,7 +169,8 @@ function traducir(pedido) {
   estampados.forEach(({ areaId, s }) => {
     listaServicios.push({
       esPrincipal: false, areaId: 'EST',
-      cabecera: { variante: 'Estampado', material: 'Estampado (Servicio)', codArticulo: '110', codStock: '1.1.5.1' },
+      // [ESTAMPADO] la variante dice QUÉ se estampa (DTF o TPU): se ve en la bandeja y en el listado
+      cabecera: { variante: areaId === 'TPU' ? 'Estampado TPU' : 'Estampado DTF', material: 'Estampado (Servicio)', codArticulo: '110', codStock: '1.1.5.1' },
       archivos: (s.bocetos || []).map(a => ({ name: reg.usar(a).name, tipo: 'BOCETO_ESTAMPADO' })),
       items: [],
       notas: notaDe(s),
@@ -177,7 +189,7 @@ function traducir(pedido) {
       esPrincipal: false, areaId: 'TWC',
       cabecera: { variante: 'Corte Laser', material: { name: 'Corte Laser por prenda', id: 90, codArt: '1375', codStock: '1.1.6.1' } },
       archivos, items: [],
-      notas: `Corte habilitado. Molde: ${corte.tipoMolde}. Tela: ${corte.origenTela}.`,
+      notas: '',   // [CORTE] la nota corta (qué tela llega y de dónde) la arma el creador de pedidos desde metadata
       metadata: { moldType: corte.tipoMolde, fabricOrigin: corte.origenTela, clientFabricName: corte.nombreTelaCliente || '', selectedSubOrderId: '', selectedBobinaId: usaTelaCliente ? parseInt(corte.bobinaId, 10) : null },
       chainedAfterAreaId: null,
     });
@@ -194,7 +206,7 @@ function traducir(pedido) {
 
   // ── Body final (jsx:2339-2366)
   const payload = {
-    idServicioBase: 'sublimacion',
+    idServicioBase: pedido.servicioPrincipal || 'sublimacion',
     nombreTrabajo: pedido.nombreTrabajo,
     prioridad: 'Normal',
     notasGenerales: pedido.notas || '',
@@ -203,7 +215,14 @@ function traducir(pedido) {
     bobinaId: usaTelaCliente ? parseInt(corte.bobinaId, 10) : null,
     magnitud: usaTelaCliente ? Math.round(pedido.impresion.items.reduce((acc, it) => acc + (Number(it.archivo.altoM) * (it.copias || 1)), 0) * 100) / 100 : null,
     servicios: listaServicios,
-    combosRetiro: undefined,
+    // [ACCESORIOS] artículos de stock que salen con el producto: cada uno es un retiro VEN- que
+    // Producción recibe (destino PRO), igual que un artículo del carrito sin personalizar.
+    combosRetiro: (Array.isArray(prod.accesorios) && prod.accesorios.length) ? prod.accesorios.map(a => ({
+      comboItemId: a.wmsVarianteId, wmsVarianteId: a.wmsVarianteId, itemProIdProducto: a.itemProIdProducto,
+      descripcion: `${a.nombre}${a.varianteNombre ? ` · ${a.varianteNombre}` : ''}`,
+      cantidad: a.cantidad, etiqueta: 'RETIRO ACCESORIO', destinoSinServicios: 'PRO', esAccesorio: true, cobro: a.cobro,
+      wmsDepositoId: a.wmsDepositoId || null,
+    })) : undefined,
     clienteInfo: {},
   };
   return { payload, archivos: reg.lista() };

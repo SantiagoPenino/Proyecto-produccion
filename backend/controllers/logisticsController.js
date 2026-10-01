@@ -2,8 +2,8 @@ const contabilidadService = require('../services/contabilidadService');
 const { getPool, sql } = require('../config/db');
 const logger = require('../utils/logger');
 const { changeOrderState } = require('../services/stateManagerService');
-const { isPedidoCompletoEnArea, isPedidoCompletoGlobal, sqlExistsHermanaNoPronta } = require('../services/pedidoCompletoService');
-const { totalesCobranzaDeOrden, importeOrdenParaDeposito } = require('../utils/montoTotalPedido');
+const { isPedidoCompletoEnArea, isPedidoCompletoGlobal, sqlExistsHermanaNoPronta, hermanasSinBultoPropio } = require('../services/pedidoCompletoService');
+const { totalesCobranzaDeOrden, importeOrdenParaDeposito, ordenHermanaSinCargo } = require('../utils/montoTotalPedido');
 // Spec 39: libro de entregas por orden (envío parcial, complementos, candado de Depósito sobre el libro)
 const libroEntregas = require('../services/libroEntregasService');
 const linajeOrdenes = require('../services/linajeOrdenesService');
@@ -25,7 +25,7 @@ const esHermanaDePrendaPersonalizada = async (pool, codigoOrden) => {
                 SELECT TOP 1 1 AS X
                 FROM Ordenes o
                 JOIN Ordenes madre ON madre.NoDocERP = o.NoDocERP AND madre.AreaID = 'PRO'
-                WHERE o.CodigoOrden = @Cod AND o.AreaID IN ('EMB', 'DF', 'TPU', 'EST', 'TWC', 'TWT', 'SB')
+                WHERE o.CodigoOrden = @Cod AND o.AreaID IN ('EMB', 'DF', 'TPU', 'EST', 'TWC', 'TWT', 'SB', 'DIRECTA', 'ECOUV')   -- [F1] misma lista que erpSync/LabelGenerationService
             `);
         return r.recordset.length > 0;
     } catch (e) {
@@ -781,6 +781,62 @@ exports.createRemito = async (req, res) => {
                 }
             }
 
+            // --- AVISO: EL PEDIDO SALE PARTIDO DEL ÁREA (01/10) ---
+            // Las entregas parciales entre áreas están permitidas, pero el operario tiene que SABER qué
+            // deja atrás: caso SUB-26025 (1/2) y (2/2), dos telas del mismo pedido, las dos prontas, y el
+            // remito dejó sacar una sola sin decir nada. Si del mismo pedido quedan órdenes de ESTA área
+            // fuera del despacho (prontas con bulto, o todavía en producción), se frena con 409
+            // PEDIDO_PARCIAL; el front muestra el detalle y, si confirman, reintenta con
+            // confirmarPedidoParcial = true. Solo en pedidos hechos por una persona (req.headers): los
+            // remitos automáticos (retiros WMS, consolidación en PRO) no preguntan. A DEPOSITO no aplica:
+            // ahí ya manda el candado de pedido completo.
+            if (idsGate.length > 0 && areaOrigen && areaDestino !== 'DEPOSITO' && req.headers && !req.body?.confirmarPedidoParcial) {
+                const quedan = await new sql.Request(transaction)
+                    .input('AreaOrig', sql.VarChar, String(areaOrigen).trim())
+                    .query(`
+                        SELECT LTRIM(RTRIM(h.CodigoOrden)) AS CodigoOrden, LTRIM(RTRIM(h.Material)) AS Material,
+                               LTRIM(RTRIM(ISNULL(h.Estado, ''))) AS Estado, LTRIM(RTRIM(ISNULL(h.EstadoenArea, ''))) AS EstadoenArea,
+                               LTRIM(RTRIM(CAST(h.NoDocERP AS VARCHAR(50)))) AS NoDoc,
+                               (SELECT COUNT(*) FROM Logistica_Bultos b2
+                                 WHERE b2.OrdenID = h.OrdenID AND b2.UbicacionActual = @AreaOrig AND b2.Estado = 'EN_STOCK'
+                                   AND ISNULL(b2.Tipocontenido, '') <> 'ENCOMIENDA'
+                                   AND NOT EXISTS (SELECT 1 FROM Logistica_EnvioItems ei WHERE ei.BultoID = b2.BultoID)) AS BultosListos
+                        FROM Ordenes h
+                        WHERE UPPER(LTRIM(RTRIM(h.AreaID))) = UPPER(@AreaOrig)
+                          AND LTRIM(RTRIM(CAST(h.NoDocERP AS VARCHAR(50)))) IN (
+                                SELECT DISTINCT LTRIM(RTRIM(CAST(o.NoDocERP AS VARCHAR(50))))
+                                FROM Logistica_Bultos b JOIN Ordenes o ON o.OrdenID = b.OrdenID
+                                WHERE b.BultoID IN (${idsGate}) AND ISNULL(b.Tipocontenido, '') <> 'ENCOMIENDA'
+                                  AND o.NoDocERP IS NOT NULL AND LTRIM(RTRIM(CAST(o.NoDocERP AS VARCHAR(50)))) <> ''
+                                  AND UPPER(LTRIM(RTRIM(o.AreaID))) = UPPER(@AreaOrig))
+                          AND h.OrdenID NOT IN (SELECT b.OrdenID FROM Logistica_Bultos b WHERE b.BultoID IN (${idsGate}) AND b.OrdenID IS NOT NULL)
+                          AND UPPER(LTRIM(RTRIM(ISNULL(h.Estado, '')))) NOT IN ('CANCELADO', 'FINALIZADO', 'ENTREGADO')
+                          AND LTRIM(RTRIM(ISNULL(h.EstadoenArea, ''))) NOT IN ('En transito', 'En Transito', 'En Tránsito', 'Recibido en Destino', 'Entregado', 'Ingresado')
+                          AND ISNULL(h.EstadoDependencia, '') <> 'VENTA_DIRECTA'
+                          AND (h.CodigoOrden IS NULL OR h.CodigoOrden NOT LIKE '%-F%')
+                          -- Orden PRONTA sin bulto propio: su trabajo viaja en el bulto de la hermana que sí está en
+                          -- este remito (dos Estampados sobre la misma prenda, DTF y TPU, salen en UN solo bulto:
+                          -- EST-26025 (1/2) lleva el bulto y la (2/2) no tiene). No queda nada atrás: no se avisa.
+                          AND NOT (LTRIM(RTRIM(ISNULL(h.EstadoenArea, ''))) = 'Pronto'
+                                   AND NOT EXISTS (SELECT 1 FROM Logistica_Bultos bx
+                                                   WHERE bx.OrdenID = h.OrdenID AND ISNULL(bx.Estado, '') <> 'CANCELADO'))
+                        ORDER BY h.OrdenID`);
+                if (quedan.recordset.length > 0) {
+                    const det = quedan.recordset.map(x => {
+                        const donde = Number(x.BultosListos) > 0
+                            ? `PRONTA, con ${x.BultosListos} bulto${Number(x.BultosListos) === 1 ? '' : 's'} listo${Number(x.BultosListos) === 1 ? '' : 's'} para sumar a este remito`
+                            : `todavía en producción (${x.EstadoenArea || x.Estado || 'sin estado'})`;
+                        return `${x.CodigoOrden}${x.Material ? ' · ' + x.Material : ''} — ${donde}`;
+                    }).join('\n');
+                    const docs = [...new Set(quedan.recordset.map(x => x.NoDoc))].join(', ');
+                    const err = new Error(`Del pedido ${docs} quedan en ${String(areaOrigen).trim()} fuera de este remito:\n${det}\n\nSi lo enviás así, el pedido sale del área en partes.`);
+                    err.statusCode = 409;
+                    err.codigo = 'PEDIDO_PARCIAL';
+                    err.ordenes = quedan.recordset;
+                    throw err;
+                }
+            }
+
             // --- AVISO: ORDEN YA ENTREGADA AL CLIENTE (25/09) ---
             // Caso REM-396361: Terminaciones despachó a Depósito el bulto de una orden que el cliente
             // se había llevado el día anterior, y el remito quedó abierto para siempre. Si el retiro de
@@ -949,6 +1005,23 @@ exports.createRemito = async (req, res) => {
                     guard    : "UPPER(LTRIM(RTRIM(ISNULL(Estado, '')))) <> 'CANCELADO'",
                     io       : req.app.get('socketio')
                 });
+
+                // [BULTO COMPARTIDO 01/10] La hermana SIN bulto propio (segundo Estampado de la misma prenda)
+                // viaja en este bulto: pasa a "En transito" junto con la que lo lleva. A Depósito no aplica
+                // (ahí el ingreso se procesa por pedido completo).
+                if (areaDestino !== 'DEPOSITO') {
+                    const viajan = await hermanasSinBultoPropio(transaction, oid, ['Pronto'], 'En transito');
+                    for (const hv of viajan) {
+                        await changeOrderState(transaction, {
+                            target : { type: 'ORDER', id: hv.OrdenID },
+                            estado : 'En transito',
+                            userObj: req.user || req.body.usuario || usuarioId || 'Sistema',
+                            detalle: `Viaja en el bulto de ${hv.CodigoPortadora} (remito ${codigoRemito})`,
+                            guard  : "EstadoenArea = 'Pronto'",
+                            io     : req.app.get('socketio')
+                        });
+                    }
+                }
             }
 
             await transaction.commit();
@@ -967,7 +1040,7 @@ exports.createRemito = async (req, res) => {
 };
 
 exports.createRemitoFromOrders = async (req, res) => {
-    const { areaOrigen, areaDestino, usuarioId, orderIds = [], observations, confirmarEntregadas } = req.body;
+    const { areaOrigen, areaDestino, usuarioId, orderIds = [], observations, confirmarEntregadas, confirmarPedidoParcial } = req.body;
     
     if (!orderIds || orderIds.length === 0) {
         return res.status(400).json({ error: "No orders provided" });
@@ -1016,7 +1089,8 @@ exports.createRemitoFromOrders = async (req, res) => {
             bultosIds,
             newBultos,
             observations,
-            confirmarEntregadas   // [25/09] el aviso de orden ya entregada también pasa por acá
+            confirmarEntregadas,   // [25/09] el aviso de orden ya entregada también pasa por acá
+            confirmarPedidoParcial // [01/10] y el de "el pedido sale partido del área"
         };
         
         return exports.createRemito(req, res);
@@ -1209,6 +1283,50 @@ exports.getOutgoingRemitos = async (req, res) => {
 
 // --- RECEPCION DE DESPACHOS ---
 
+// [ACCESORIOS] Un producto fabricado puede llevar accesorios de stock (mástil, base…) que salen con él.
+// Cada accesorio es una venta de retiro VEN- (Ordenes AreaID PRO / VENTA_DIRECTA, DescripcionTrabajo
+// "RETIRO ACCESORIO — …", ComboPedidoNoDocERP = pedido) que Producción recibe al confirmarse en
+// Logística WMS. A Depósito no entra nada del pedido mientras falte recibir alguno, o la cantidad
+// retirada sea menor a la que el pedido necesita (unidades × cantidad por unidad, guardada en Magnitud).
+// Lanza Error (statusCode 400) con el detalle.
+async function validarAccesoriosRecibidos(transaction, ordenes) {
+    const docs = [...new Set((ordenes || []).map(o => String(o.NoDocERP || '').trim()).filter(Boolean))];
+    if (!docs.length) return;
+    const lista = docs.map(d => `'${d.replace(/'/g, "''")}'`).join(',');
+    const r = await new sql.Request(transaction).query(`
+        SELECT LTRIM(RTRIM(a.ComboPedidoNoDocERP)) AS Doc, LTRIM(RTRIM(a.NoDocERP)) AS Ven,
+               a.DescripcionTrabajo, TRY_CAST(a.Magnitud AS DECIMAL(18,2)) AS Necesita,
+               pc.EstadoCobro,
+               ISNULL((SELECT SUM(d.Cantidad) FROM PedidosCobranzaDetalle d WHERE d.PedidoCobranzaID = pc.ID), 0) AS Retirada,
+               (SELECT COUNT(*) FROM Logistica_Bultos b WHERE b.OrdenID = a.OrdenID AND b.Estado = 'EN_STOCK' AND b.UbicacionActual = 'PRO') AS BultosEnPro
+        FROM Ordenes a
+        LEFT JOIN PedidosCobranza pc ON LTRIM(RTRIM(pc.NoDocERP)) = LTRIM(RTRIM(a.NoDocERP))
+        WHERE a.AreaID = 'PRO' AND a.EstadoDependencia = 'VENTA_DIRECTA'
+          AND a.DescripcionTrabajo LIKE 'RETIRO ACCESORIO%'
+          AND LTRIM(RTRIM(a.ComboPedidoNoDocERP)) IN (${lista})`);
+    const faltan = r.recordset.filter(x => {
+        const est = String(x.EstadoCobro || '').toUpperCase();
+        // Recibido = el bulto del accesorio está EN_STOCK en PRO (Producción recibió el remito).
+        // Retirado pero en camino (remito sin recibir) también cuenta como faltante.
+        const sinRecibir = est === 'CANCELADO' || Number(x.BultosEnPro) === 0;
+        const cantidadCorta = x.Necesita != null && Number(x.Retirada) < Number(x.Necesita);
+        return sinRecibir || cantidadCorta;
+    });
+    if (!faltan.length) return;
+    const detalle = faltan.map(x => {
+        const nombre = String(x.DescripcionTrabajo || '').replace(/^RETIRO ACCESORIO\s*[—-]\s*/i, '');
+        const est = String(x.EstadoCobro || '').toUpperCase();
+        const motivo = (!est || est === 'PENDIENTE' || est === 'EN_PREPARACION') ? 'retiro sin confirmar en Logística WMS'
+            : est === 'CANCELADO' ? 'venta cancelada'
+                : Number(x.BultosEnPro) === 0 ? 'retirado pero el remito a Producción no se recibió'
+                    : `retirados ${Number(x.Retirada)} de ${Number(x.Necesita)}`;
+        return `${nombre} ×${x.Necesita != null ? Number(x.Necesita) : '?'} (${x.Ven}: ${motivo})`;
+    }).join('; ');
+    const err = new Error(`El pedido ${faltan[0].Doc} no puede entrar a Depósito: faltan los accesorios de stock que salen con el producto — ${detalle}. Producción tiene que recibir el retiro de cada accesorio (Logística WMS) antes de mandar el pedido a Depósito.`);
+    err.statusCode = 400;
+    throw err;
+}
+
 exports.receiveDispatch = async (req, res) => {
     let { envioId, itemsRecibidos, usuarioId, areaReceptora, codigoEtiqueta, forzarOrdenes } = req.body;
     // itemsRecibidos: [{ bultoId, estado: 'ESCANEADO' | 'FALTANTE' }]
@@ -1285,6 +1403,8 @@ exports.receiveDispatch = async (req, res) => {
                           AND b.Tipocontenido = 'PROD_TERMINADO'
                     `);
                     await validarPedidosCompletos(transaction, ordenesGate.recordset, 'DEPOSITO');
+                    // [ACCESORIOS] y con los accesorios de stock del pedido ya retirados (los recibe Producción)
+                    await validarAccesoriosRecibidos(transaction, ordenesGate.recordset);
                 }
             }
 
@@ -1474,7 +1594,8 @@ exports.receiveDispatch = async (req, res) => {
                                 if (tipoBulto.includes('TELA') || tipoBulto.includes('INSUMO')) reqTypeToFulfill = 'TELA';
                                 else if (tipoBulto.includes('PRENDA')) reqTypeToFulfill = 'PRENDA';
                                 else if (tipoBulto.includes('DTF') || tipoBulto.includes('DISENO')) reqTypeToFulfill = 'DTF';
-                                else if (originAreaID === 'SB') reqTypeToFulfill = 'TELA';
+                                // [F1] Impresión Directa y Gran formato entregan tela impresa igual que Sublimación
+                                else if (['SB', 'DIRECTA', 'ECOUV'].includes(originAreaID)) reqTypeToFulfill = 'TELA';
                             }
 
                             if (reqTypeToFulfill) {
@@ -1487,11 +1608,19 @@ exports.receiveDispatch = async (req, res) => {
                                 if (searchPattern === 'PRENDAS') searchPattern = 'PRENDA';
                                 if (searchPattern === 'CORTES') searchPattern = 'CORTES';
                                 if (searchPattern === 'DTF') searchPattern = 'DISENO'; // Si definimos que DTF satisface REQ-DISENO
-                                // [PRENDAS] TPU también estampa un transfer, igual que DTF — sin esto,
-                                // un TPU llegando a Estampado nunca cumple el requisito "DTF a Estampar"
-                                // (CodigoRequisito='DTF', matcheado vía DISENO) y la orden queda
-                                // bloqueada para siempre aunque el transfer ya esté físicamente ahí.
-                                if (searchPattern === 'TPU') searchPattern = 'DISENO';
+                                // [ESTAMPADO 01/10] Cada Estampado se libera con SU transfer: el que estampa DTF
+                                // espera "DTF a Estampar" y el que estampa TPU espera "TPU a Estampar" (requisito
+                                // EST/TPU, docs/migrations/requisito_tpu_estampado.sql). Antes el TPU se trataba
+                                // como DTF (vía DISENO): al llegar el TPU se cumplía "DTF a Estampar" en TODOS los
+                                // Estampados del pedido y el del DTF quedaba liberado sin su transfer.
+                                // Si el área receptora todavía no tiene el requisito TPU configurado (base sin
+                                // migrar), se conserva el comportamiento anterior para no dejar órdenes trabadas.
+                                if (searchPattern === 'TPU') {
+                                    const tieneReqTpu = await new sql.Request(transaction)
+                                        .input('Area', sql.VarChar(50), areaReceptora)
+                                        .query(`SELECT TOP 1 1 AS x FROM ConfigRequisitosProduccion WHERE AreaID = @Area AND CodigoRequisito LIKE '%TPU%'`);
+                                    if (!tieneReqTpu.recordset.length) searchPattern = 'DISENO';
+                                }
 
                                 // Query de cumplimiento
                                 await new sql.Request(transaction)
@@ -1530,17 +1659,76 @@ exports.receiveDispatch = async (req, res) => {
                                                 req.CodigoRequisito LIKE @Type
                                                 OR (@Type LIKE '%DISENO%' AND req.CodigoRequisito LIKE '%DTF%')
                                                 OR (@Type LIKE '%DTF%' AND req.CodigoRequisito LIKE '%DISENO%')
+                                                -- [COSTURA SIN CORTE] Pedido sin orden de Corte: la tela llega directo de
+                                                -- Sublimación/Directa a Costura. Lo que llega es TELA, y el requisito de
+                                                -- Costura es CORTES ("Piezas Cortadas"): nunca coincidían y Costura quedaba
+                                                -- "esperando requisitos" para siempre (COS-26025). Sin Corte en el pedido,
+                                                -- la llegada de la tela cumple ese requisito.
+                                                OR (@Type LIKE '%TELA%' AND req.CodigoRequisito = 'CORTES'
+                                                    AND NOT EXISTS (SELECT 1 FROM Ordenes c
+                                                                    WHERE c.NoDocERP = (SELECT NoDocERP FROM Ordenes WHERE OrdenID = @OID)
+                                                                      AND c.AreaID = 'TWC' AND ISNULL(c.Estado, '') NOT IN ('CANCELADO', 'Cancelado')))
                                             )
                                             AND req.AreaID = @Area
                                         ) AS source
                                         ON (target.OrdenID = source.OrdenID AND target.RequisitoID = source.RequisitoID)
-                                        WHEN MATCHED THEN
+                                        -- un requisito que NO aplica a esa orden (ej. "TPU a Estampar" en el Estampado del DTF)
+                                        -- se deja como está: lo que llegó es de la orden hermana, no de esta
+                                        WHEN MATCHED AND NOT (target.Estado = 'CUMPLIDO' AND ISNULL(target.Observaciones, '') LIKE 'No aplica%') THEN
                                             UPDATE SET Estado = 'CUMPLIDO', FechaCumplimiento = GETDATE(), Observaciones = @Obs
                                         WHEN NOT MATCHED THEN
                                             INSERT (OrdenID, AreaID, RequisitoID, Estado, FechaCumplimiento, Observaciones)
                                             VALUES (source.OrdenID, source.AreaID, source.RequisitoID, 'CUMPLIDO', GETDATE(), @Obs);
                                     `);
                             }
+                        }
+
+                        // --- [ACCESORIOS] AUTO-FULFILL "ACCESORIOS" DE LA ORDEN MADRE PRO ---
+                        // El bulto recibido es el de un accesorio de stock (ancla VEN- "RETIRO ACCESORIO — …",
+                        // ComboPedidoNoDocERP = pedido). Si con este ya no queda ningún accesorio del pedido sin
+                        // bulto EN_STOCK en PRO, el requisito ACCESORIOS de la orden madre PRO pasa a CUMPLIDO.
+                        if (OrdenID && String(areaReceptora || '').toUpperCase() === 'PRO' && item.estado === 'ESCANEADO') {
+                            try {
+                                const accInfo = await new sql.Request(transaction).input('OID', sql.Int, OrdenID).query(`
+                                    SELECT LTRIM(RTRIM(ComboPedidoNoDocERP)) AS Doc FROM Ordenes
+                                    WHERE OrdenID = @OID AND AreaID = 'PRO' AND EstadoDependencia = 'VENTA_DIRECTA'
+                                      AND DescripcionTrabajo LIKE 'RETIRO ACCESORIO%' AND ComboPedidoNoDocERP IS NOT NULL`);
+                                const docAcc = accInfo.recordset[0]?.Doc;
+                                if (docAcc) {
+                                    // Faltantes sin contar ESTE bulto (su ubicación se actualiza más adelante en este mismo loop)
+                                    const faltanRes = await new sql.Request(transaction)
+                                        .input('Doc', sql.VarChar(50), docAcc).input('OID', sql.Int, OrdenID).query(`
+                                        SELECT COUNT(*) AS Faltan
+                                        FROM Ordenes a
+                                        LEFT JOIN PedidosCobranza pc ON LTRIM(RTRIM(pc.NoDocERP)) = LTRIM(RTRIM(a.NoDocERP))
+                                        WHERE a.AreaID = 'PRO' AND a.EstadoDependencia = 'VENTA_DIRECTA'
+                                          AND a.DescripcionTrabajo LIKE 'RETIRO ACCESORIO%'
+                                          AND LTRIM(RTRIM(a.ComboPedidoNoDocERP)) = @Doc
+                                          AND a.OrdenID <> @OID
+                                          AND ISNULL(pc.EstadoCobro, '') <> 'CANCELADO'
+                                          AND NOT EXISTS (SELECT 1 FROM Logistica_Bultos b WHERE b.OrdenID = a.OrdenID AND b.Estado = 'EN_STOCK' AND b.UbicacionActual = 'PRO')`);
+                                    if ((faltanRes.recordset[0]?.Faltan || 0) === 0) {
+                                        await new sql.Request(transaction)
+                                            .input('Doc', sql.VarChar(50), docAcc)
+                                            .input('Obs', sql.NVarChar(300), `Accesorios de stock recibidos en PRO (último: ${code})`)
+                                            .query(`
+                                            MERGE OrdenCumplimientoRequisitos AS target
+                                            USING (
+                                                SELECT m.OrdenID, req.AreaID, req.RequisitoID
+                                                FROM Ordenes m
+                                                JOIN ConfigRequisitosProduccion req ON req.AreaID = 'PRO' AND req.CodigoRequisito = 'ACCESORIOS'
+                                                WHERE LTRIM(RTRIM(m.NoDocERP)) = @Doc AND m.AreaID = 'PRO' AND ISNULL(m.EstadoDependencia, '') <> 'VENTA_DIRECTA'
+                                            ) AS source
+                                            ON (target.OrdenID = source.OrdenID AND target.RequisitoID = source.RequisitoID)
+                                            WHEN MATCHED THEN
+                                                UPDATE SET Estado = 'CUMPLIDO', FechaCumplimiento = GETDATE(), Observaciones = @Obs
+                                            WHEN NOT MATCHED THEN
+                                                INSERT (OrdenID, AreaID, RequisitoID, Estado, FechaCumplimiento, Observaciones)
+                                                VALUES (source.OrdenID, source.AreaID, source.RequisitoID, 'CUMPLIDO', GETDATE(), @Obs);`);
+                                        logger.info(`[ACCESORIOS] Pedido ${docAcc}: todos los accesorios recibidos en PRO — requisito ACCESORIOS cumplido.`);
+                                    }
+                                }
+                            } catch (eAccReq) { logger.warn('[ACCESORIOS] auto-cumplimiento en PRO: ' + eAccReq.message); }
                         }
 
                         // --- AUTO-FULFILL PRENDA DE CLIENTE (Recepción de mostrador sin OrdenID propia) ---
@@ -1747,6 +1935,19 @@ exports.receiveDispatch = async (req, res) => {
                     guard  : "EstadoenArea = 'En transito'",
                     io     : req.app.get('socketio'),
                 });
+                // [BULTO COMPARTIDO 01/10] La hermana sin bulto propio llegó dentro de este bulto: se cierra con
+                // ella. Acepta 'Pronto' además de 'En transito' para los remitos armados antes de este cambio.
+                const llegaron = await hermanasSinBultoPropio(transaction, oid, ['En transito', 'Pronto'], 'Recibido en Destino');
+                for (const hv of llegaron) {
+                    await changeOrderState(transaction, {
+                        target : { type: 'ORDER', id: hv.OrdenID },
+                        estado : 'Recibido en Destino',
+                        userObj: req.user || req.body.usuario || usuarioId || 'Sistema',
+                        detalle: `Recibida en ${areaReceptora} dentro del bulto de ${hv.CodigoPortadora}`,
+                        guard  : "EstadoenArea IN ('En transito', 'Pronto')",
+                        io     : req.app.get('socketio'),
+                    });
+                }
             }
 
             // Spec 39: si el remito traía complementos de reposición, al llegar al área que los cierra
@@ -1883,6 +2084,7 @@ exports.receiveDispatch = async (req, res) => {
                         // las líneas del pedido; sus hermanas (Bordado, DTF…) no cobran nada propio — si no,
                         // la primera en pasar marcaba el pedido como contabilizado y el resto quedaba sin cobrar.
                         let esMadrePorArea = false;
+                        let pedidoPorArea = false;
                         try {
                             const mpa = await poolLocal.request().input('OID', require('mssql').Int, L_OrdenID).query(`
                                 SELECT TOP 1 m.OrdenID FROM Ordenes o WITH(NOLOCK)
@@ -1892,6 +2094,7 @@ exports.receiveDispatch = async (req, res) => {
                                 WHERE o.OrdenID = @OID AND o.NoDocERP IS NOT NULL
                                 ORDER BY m.OrdenID`);
                             const madreId = mpa.recordset[0]?.OrdenID ? Number(mpa.recordset[0].OrdenID) : null;
+                            pedidoPorArea = !!madreId;
                             if (madreId === Number(L_OrdenID)) esMadrePorArea = true;
                             else if (madreId && ordenesAContab.includes(madreId)) {
                                 console.log(`${logPrefix} -> Hermana de pedido por área: cobra la madre PRO, se omite acá`);
@@ -2701,6 +2904,10 @@ exports.aprobarControlPRO = async (req, res) => {
         if (!chk.completo) {
             return res.status(400).json({ error: `Todavía falta${chk.faltantes.length === 1 ? '' : 'n'} ${chk.faltantes.length} componente(s) por llegar a PRO.` });
         }
+        // [ACCESORIOS] Requisito de la orden madre: los accesorios de stock (mástil, base…) tienen que
+        // estar recibidos en PRO (bulto EN_STOCK acá). Mismo control que el ingreso a Depósito.
+        try { await validarAccesoriosRecibidos(pool, [{ NoDocERP: noDocERP }]); }
+        catch (eAcc) { return res.status(400).json({ error: eAcc.message }); }
 
         // Spec 39: "reunido físicamente en PRO" no es lo mismo que "completo según el libro"
         // (puede haber una reposición abierta en una etapa anterior que nunca pasa por PRO).
@@ -3267,7 +3474,55 @@ exports.getOrderRequirements = async (req, res) => {
                     ON req.RequisitoID = cum.RequisitoID AND cum.OrdenID = @OID
                 WHERE req.AreaID = @Area
             `);
-        res.json(r.recordset);
+        // [ACCESORIOS] El requisito ACCESORIOS de PRO solo aplica si el pedido lleva accesorios de stock
+        // (anclas "RETIRO ACCESORIO"). Sin ellos se muestra cumplido como "no aplica"; con ellos, el
+        // detalle dice cuántos faltan recibir en PRO.
+        const filas = r.recordset;
+        // [ESTAMPADO] Cada Estampado estampa UN transfer: el del DTF no espera "TPU a Estampar" y el del TPU no
+        // espera "DTF a Estampar". El canal sale de la orden de la que depende (LiberaCuandoOrdenID) o de la variante.
+        if (String(areaId || '').trim().toUpperCase() === 'EST') {
+            try {
+                const ch = await pool.request().input('OID', sql.Int, ordenId).query(`
+                    SELECT o.Variante, (SELECT TOP 1 LTRIM(RTRIM(f.AreaID)) FROM Ordenes f WHERE f.OrdenID = o.LiberaCuandoOrdenID) AS FuenteAreaID
+                    FROM Ordenes o WHERE o.OrdenID = @OID`);
+                const src = `${ch.recordset[0]?.FuenteAreaID || ''} ${ch.recordset[0]?.Variante || ''}`.toUpperCase();
+                const canal = /TPU/.test(src) ? 'TPU' : (/\bDF\b|DTF/.test(src) ? 'DTF' : null);
+                if (canal) {
+                    const otro = canal === 'TPU' ? 'DTF' : 'TPU';
+                    filas.forEach((x, i) => {
+                        if (String(x.CodigoRequisito || '').trim().toUpperCase() === otro) {
+                            filas[i] = { ...x, Cumplido: 1, NoAplica: true, Observaciones: `No aplica — este Estampado es de ${canal}` };
+                        }
+                    });
+                }
+            } catch (eEst) { logger.warn('[ESTAMPADO] requisitos: ' + eEst.message); }
+        }
+        const iAcc = filas.findIndex(x => String(x.CodigoRequisito || '').toUpperCase() === 'ACCESORIOS');
+        if (iAcc >= 0) {
+            try {
+                const acc = await pool.request().input('OID', sql.Int, ordenId).query(`
+                    SELECT LTRIM(RTRIM(a.DescripcionTrabajo)) AS Nombre, LTRIM(RTRIM(a.NoDocERP)) AS Ven,
+                           (SELECT COUNT(*) FROM Logistica_Bultos b WHERE b.OrdenID = a.OrdenID AND b.Estado = 'EN_STOCK' AND b.UbicacionActual = 'PRO') AS EnPro,
+                           ISNULL(pc.EstadoCobro, '') AS EstadoCobro
+                    FROM Ordenes m
+                    JOIN Ordenes a ON LTRIM(RTRIM(a.ComboPedidoNoDocERP)) = LTRIM(RTRIM(m.NoDocERP))
+                        AND a.AreaID = 'PRO' AND a.EstadoDependencia = 'VENTA_DIRECTA' AND a.DescripcionTrabajo LIKE 'RETIRO ACCESORIO%'
+                    LEFT JOIN PedidosCobranza pc ON LTRIM(RTRIM(pc.NoDocERP)) = LTRIM(RTRIM(a.NoDocERP))
+                    WHERE m.OrdenID = @OID`);
+                const lista = acc.recordset.filter(x => x.EstadoCobro !== 'CANCELADO');
+                const faltan = lista.filter(x => Number(x.EnPro) === 0);
+                const nom = (x) => x.Nombre.replace(/^RETIRO ACCESORIO\s*[—-]\s*/i, '');
+                if (!lista.length) {
+                    filas[iAcc] = { ...filas[iAcc], Cumplido: 1, NoAplica: true, Detalle: 'No aplica: el pedido no lleva accesorios de stock.' };
+                } else {
+                    filas[iAcc] = { ...filas[iAcc], Cumplido: faltan.length ? 0 : 1,
+                        Detalle: faltan.length
+                            ? `Falta recibir en PRO: ${faltan.map(x => `${nom(x)} (${x.Ven})`).join(', ')}`
+                            : `Recibidos en PRO: ${lista.map(nom).join(', ')}` };
+                }
+            } catch (eAcc) { logger.warn('[ACCESORIOS] requisitos: ' + eAcc.message); }
+        }
+        res.json(filas);
     } catch (err) {
         logger.error(err);
         res.status(500).json({ error: err.message });
@@ -3306,6 +3561,15 @@ exports.toggleRequirement = async (req, res) => {
                                                 req.CodigoRequisito LIKE @Type
                                                 OR (@Type LIKE '%DISENO%' AND req.CodigoRequisito LIKE '%DTF%')
                                                 OR (@Type LIKE '%DTF%' AND req.CodigoRequisito LIKE '%DISENO%')
+                                                -- [COSTURA SIN CORTE] Pedido sin orden de Corte: la tela llega directo de
+                                                -- Sublimación/Directa a Costura. Lo que llega es TELA, y el requisito de
+                                                -- Costura es CORTES ("Piezas Cortadas"): nunca coincidían y Costura quedaba
+                                                -- "esperando requisitos" para siempre (COS-26025). Sin Corte en el pedido,
+                                                -- la llegada de la tela cumple ese requisito.
+                                                OR (@Type LIKE '%TELA%' AND req.CodigoRequisito = 'CORTES'
+                                                    AND NOT EXISTS (SELECT 1 FROM Ordenes c
+                                                                    WHERE c.NoDocERP = (SELECT NoDocERP FROM Ordenes WHERE OrdenID = @OID)
+                                                                      AND c.AreaID = 'TWC' AND ISNULL(c.Estado, '') NOT IN ('CANCELADO', 'Cancelado')))
                                             )
                                             AND req.AreaID = @Area
                                         ) AS source
@@ -3543,7 +3807,55 @@ exports.getOrderRequirements = async (req, res) => {
                     ON req.RequisitoID = cum.RequisitoID AND cum.OrdenID = @OID
                 WHERE req.AreaID = @Area
             `);
-        res.json(r.recordset);
+        // [ACCESORIOS] El requisito ACCESORIOS de PRO solo aplica si el pedido lleva accesorios de stock
+        // (anclas "RETIRO ACCESORIO"). Sin ellos se muestra cumplido como "no aplica"; con ellos, el
+        // detalle dice cuántos faltan recibir en PRO.
+        const filas = r.recordset;
+        // [ESTAMPADO] Cada Estampado estampa UN transfer: el del DTF no espera "TPU a Estampar" y el del TPU no
+        // espera "DTF a Estampar". El canal sale de la orden de la que depende (LiberaCuandoOrdenID) o de la variante.
+        if (String(areaId || '').trim().toUpperCase() === 'EST') {
+            try {
+                const ch = await pool.request().input('OID', sql.Int, ordenId).query(`
+                    SELECT o.Variante, (SELECT TOP 1 LTRIM(RTRIM(f.AreaID)) FROM Ordenes f WHERE f.OrdenID = o.LiberaCuandoOrdenID) AS FuenteAreaID
+                    FROM Ordenes o WHERE o.OrdenID = @OID`);
+                const src = `${ch.recordset[0]?.FuenteAreaID || ''} ${ch.recordset[0]?.Variante || ''}`.toUpperCase();
+                const canal = /TPU/.test(src) ? 'TPU' : (/\bDF\b|DTF/.test(src) ? 'DTF' : null);
+                if (canal) {
+                    const otro = canal === 'TPU' ? 'DTF' : 'TPU';
+                    filas.forEach((x, i) => {
+                        if (String(x.CodigoRequisito || '').trim().toUpperCase() === otro) {
+                            filas[i] = { ...x, Cumplido: 1, NoAplica: true, Observaciones: `No aplica — este Estampado es de ${canal}` };
+                        }
+                    });
+                }
+            } catch (eEst) { logger.warn('[ESTAMPADO] requisitos: ' + eEst.message); }
+        }
+        const iAcc = filas.findIndex(x => String(x.CodigoRequisito || '').toUpperCase() === 'ACCESORIOS');
+        if (iAcc >= 0) {
+            try {
+                const acc = await pool.request().input('OID', sql.Int, ordenId).query(`
+                    SELECT LTRIM(RTRIM(a.DescripcionTrabajo)) AS Nombre, LTRIM(RTRIM(a.NoDocERP)) AS Ven,
+                           (SELECT COUNT(*) FROM Logistica_Bultos b WHERE b.OrdenID = a.OrdenID AND b.Estado = 'EN_STOCK' AND b.UbicacionActual = 'PRO') AS EnPro,
+                           ISNULL(pc.EstadoCobro, '') AS EstadoCobro
+                    FROM Ordenes m
+                    JOIN Ordenes a ON LTRIM(RTRIM(a.ComboPedidoNoDocERP)) = LTRIM(RTRIM(m.NoDocERP))
+                        AND a.AreaID = 'PRO' AND a.EstadoDependencia = 'VENTA_DIRECTA' AND a.DescripcionTrabajo LIKE 'RETIRO ACCESORIO%'
+                    LEFT JOIN PedidosCobranza pc ON LTRIM(RTRIM(pc.NoDocERP)) = LTRIM(RTRIM(a.NoDocERP))
+                    WHERE m.OrdenID = @OID`);
+                const lista = acc.recordset.filter(x => x.EstadoCobro !== 'CANCELADO');
+                const faltan = lista.filter(x => Number(x.EnPro) === 0);
+                const nom = (x) => x.Nombre.replace(/^RETIRO ACCESORIO\s*[—-]\s*/i, '');
+                if (!lista.length) {
+                    filas[iAcc] = { ...filas[iAcc], Cumplido: 1, NoAplica: true, Detalle: 'No aplica: el pedido no lleva accesorios de stock.' };
+                } else {
+                    filas[iAcc] = { ...filas[iAcc], Cumplido: faltan.length ? 0 : 1,
+                        Detalle: faltan.length
+                            ? `Falta recibir en PRO: ${faltan.map(x => `${nom(x)} (${x.Ven})`).join(', ')}`
+                            : `Recibidos en PRO: ${lista.map(nom).join(', ')}` };
+                }
+            } catch (eAcc) { logger.warn('[ACCESORIOS] requisitos: ' + eAcc.message); }
+        }
+        res.json(filas);
     } catch (err) {
         logger.error(err);
         res.status(500).json({ error: err.message });

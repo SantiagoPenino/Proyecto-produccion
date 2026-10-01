@@ -73,6 +73,12 @@ const ReferenceItem = ({ file }) => {
                     {fileName}
                 </a>
                 <div className="flex items-center gap-2 mt-0.5">
+                    {/* La lista junta los archivos de TODO el pedido: este chip dice de qué orden es cada uno */}
+                    {(file.OrdenCodigoOrden || file.ordenCodigo) && (
+                        <span className="text-[10px] font-black text-cyan-700 bg-cyan-50 px-1.5 py-0.5 rounded border border-cyan-200 uppercase tracking-wide" title="Orden del pedido a la que pertenece este archivo">
+                            {String(file.OrdenCodigoOrden || file.ordenCodigo).trim()}
+                        </span>
+                    )}
                     <span className="text-[10px] font-bold text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200 uppercase tracking-wide">
                         {file.tipo || file.TipoArchivo || 'ADJUNTO'}
                     </span>

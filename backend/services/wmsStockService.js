@@ -50,12 +50,14 @@ async function descontarStockWmsExterno(items, ref = {}) {
         try {
             const varianteId = parseInt(item.wms_variante_id);
             const cantidad   = parseFloat(item.Cantidad);
+            // [ACCESORIOS] el ítem puede decir su depósito (deposito_id); si no, el de ventas de siempre
+            const depItem    = parseInt(item.deposito_id) || depositoId;
 
             // Buscar etiquetas activas disponibles
             const etiquetas = await sqlFetch(`
                 SELECT id, cantidad_actual FROM Stock_Etiquetas
                 WHERE variante_id = ${varianteId}
-                  AND deposito_id = ${depositoId}
+                  AND deposito_id = ${depItem}
                   AND estado = 'activo'
                   AND cantidad_actual > 0
                 ORDER BY id ASC;
@@ -64,7 +66,7 @@ async function descontarStockWmsExterno(items, ref = {}) {
             const totalDisponible = etiquetas.reduce((s, e) => s + Number(e.cantidad_actual), 0);
 
             if (totalDisponible <= 0) {
-                wmsErrors.push(`variante ${varianteId}: sin stock en depósito ${depositoId}`);
+                wmsErrors.push(`variante ${varianteId}: sin stock en depósito ${depItem}`);
                 logger.warn(`⚠️ Sin stock: variante ${varianteId}`);
                 continue;
             }
@@ -94,14 +96,14 @@ async function descontarStockWmsExterno(items, ref = {}) {
             const refTxt = [ref.refDoc, ref.refTipo, ref.refId].filter(Boolean).join(' ') || 'sin referencia';
             await sqlFetch(`
                 INSERT INTO wms_remitos_internos (numeracion, deposito_origen_id, deposito_destino_id, creado_por, estado, observaciones_generales)
-                VALUES ('${remitoCode}', ${depositoId}, ${depositoId}, 'venta', 'EGRESO_WEB', '${String(refTxt).replace(/'/g, "''")}');
+                VALUES ('${remitoCode}', ${depItem}, ${depItem}, 'venta', 'EGRESO_WEB', '${String(refTxt).replace(/'/g, "''")}');
                 DECLARE @RemId INT = SCOPE_IDENTITY();
                 ${plan.map(p => `INSERT INTO Stock_Movimientos (etiqueta_id, tipo_movimiento, cantidad_afectada, deposito_origen_id, remito_id, usuario_id)
-                VALUES (${p.etiquetaId}, 'egreso_venta_web', ${p.toma}, ${depositoId}, @RemId, 'venta');`).join('\n                ')}
+                VALUES (${p.etiquetaId}, 'egreso_venta_web', ${p.toma}, ${depItem}, @RemId, 'venta');`).join('\n                ')}
             `);
 
             const descontado = cantidad - restante;
-            logger.info(`✅ Egreso registrado: variante ${varianteId} x ${descontado} en ${plan.length} etiqueta(s) [${plan.map(p => `#${p.etiquetaId}:${p.toma}`).join(', ')}] (dep.${depositoId}) | remito: ${remitoCode} | ${refTxt}`);
+            logger.info(`✅ Egreso registrado: variante ${varianteId} x ${descontado} en ${plan.length} etiqueta(s) [${plan.map(p => `#${p.etiquetaId}:${p.toma}`).join(', ')}] (dep.${depItem}) | remito: ${remitoCode} | ${refTxt}`);
 
             // Lo que no había NO se fuerza contra ninguna etiqueta: se avisa. Forzarlo era
             // exactamente lo que generaba los negativos.

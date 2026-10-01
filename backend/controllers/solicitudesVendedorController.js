@@ -31,7 +31,7 @@ exports.confirmarSena     = accion('confirmarSena',     (pool, req) => svc.confi
 exports.agregarInteraccion = accion('agregarInteraccion', (pool, req) => svc.agregarInteraccion(pool, req.user, id(req.params.id), req.body || {}));
 exports.cancelar          = accion('cancelar',          (pool, req) => svc.cancelar(pool, req.user, id(req.params.id), req.body || {}));
 exports.subirArchivo      = accion('subirArchivo',      (pool, req) => svc.subirArchivo(pool, req.user, id(req.params.id), req.body || {}, req.file));
-exports.materialesPrincipal = accion('materialesPrincipal', (pool) => svc.materialesPrincipal(pool));
+exports.materialesPrincipal = accion('materialesPrincipal', (pool, req) => svc.materialesPrincipal(pool, req.query?.area || 'SB'));   // ?area=DIRECTA → materiales de esa área
 exports.definirProduccionArchivo = accion('definirProduccionArchivo', (pool, req) => svc.definirProduccionArchivo(pool, req.user, id(req.params.id), id(req.params.archivoId), req.body || {}));
 exports.convertir         = accion('convertir',         (pool, req) => svc.convertir(pool, req.user, id(req.params.id), id(req.params.productoSolId), req.body || {}, req.app));
 exports.bobinasDelCliente = accion('bobinasDelCliente', (pool, req) => svc.bobinasDelCliente(pool, req.user, id(req.params.id)));

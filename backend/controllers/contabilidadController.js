@@ -10,7 +10,7 @@
 
 const svc    = require('../services/contabilidadService');
 const logger = require('../utils/logger');
-const { SQL_RECALC_MONTO_TOTAL } = require('../utils/montoTotalPedido');
+const { SQL_RECALC_MONTO_TOTAL, sqlMonedaLinea, sqlLineaTocaAlCargo, sqlImporteDeOtrasOrdenes } = require('../utils/montoTotalPedido');
 const { getPool, sql } = require('../config/db');
 const { crearDocumentoContable } = require('../services/contabilidadCore');
 const contabilidadCore = require('../services/contabilidadCore');
@@ -1412,6 +1412,94 @@ exports.recargarPlan = async (req, res) => {
  * PATCH /api/contabilidad/planes/:PlaIdPlan/desactivar
  * Desactiva un plan (lo cierra).
  */
+// ── Materiales que puede consumir un plan (PlanesMetrosArticulosPermitidos) ──
+// Candidatos = artículos del MISMO grupo/área (Articulos.Grupo) que el material
+// principal del plan. El principal (PlanesMetros.ProIdProducto) queda siempre fijo.
+exports.getMaterialesPlan = async (req, res) => {
+  try {
+    const PlaIdPlan = parseInt(req.params.PlaIdPlan);
+    const pool = await getPool();
+    const rPlan = await pool.request().input('P', sql.Int, PlaIdPlan).query(`
+      SELECT pm.PlaIdPlan, pm.ProIdProducto, LTRIM(RTRIM(a.Grupo)) AS Grupo,
+             LTRIM(RTRIM(a.Descripcion)) AS NombrePrincipal, c.NombreReferencia AS Area
+      FROM dbo.PlanesMetros pm WITH(NOLOCK)
+      LEFT JOIN dbo.Articulos a WITH(NOLOCK) ON a.ProIdProducto = pm.ProIdProducto
+      LEFT JOIN dbo.ConfigMapeoERP c WITH(NOLOCK) ON LTRIM(RTRIM(c.CodigoERP)) = LTRIM(RTRIM(a.Grupo)) COLLATE Database_Default
+      WHERE pm.PlaIdPlan = @P`);
+    const plan = rPlan.recordset[0];
+    if (!plan) return res.status(404).json({ success: false, error: `No existe el plan #${PlaIdPlan}.` });
+
+    const rArts = await pool.request()
+      .input('P', sql.Int, PlaIdPlan)
+      .input('G', sql.VarChar(20), plan.Grupo || '')
+      .query(`
+        SELECT a.ProIdProducto, LTRIM(RTRIM(a.CodArticulo)) AS CodArticulo,
+               LTRIM(RTRIM(a.Descripcion)) AS Descripcion, CAST(ISNULL(a.Mostrar, 0) AS BIT) AS Mostrar,
+               CAST(CASE WHEN LTRIM(RTRIM(a.Grupo)) = @G THEN 1 ELSE 0 END AS BIT) AS MismaArea,
+               CAST(CASE WHEN EXISTS (SELECT 1 FROM dbo.PlanesMetrosArticulosPermitidos pap WITH(NOLOCK)
+                                      WHERE pap.PlaIdPlan = @P AND pap.ProIdProducto = a.ProIdProducto)
+                         THEN 1 ELSE 0 END AS BIT) AS Permitido
+        FROM dbo.Articulos a WITH(NOLOCK)
+        WHERE (@G <> '' AND LTRIM(RTRIM(a.Grupo)) = @G)
+           OR a.ProIdProducto IN (SELECT ProIdProducto FROM dbo.PlanesMetrosArticulosPermitidos WITH(NOLOCK) WHERE PlaIdPlan = @P)
+        ORDER BY a.Descripcion`);
+
+    res.json({ success: true, data: { plan, materiales: rArts.recordset } });
+  } catch (err) {
+    logger.error('[CONTABILIDAD] getMaterialesPlan:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+exports.setMaterialesPlan = async (req, res) => {
+  const PlaIdPlan = parseInt(req.params.PlaIdPlan);
+  const pedidos = Array.isArray(req.body?.proIds) ? req.body.proIds.map(n => parseInt(n)).filter(n => Number.isInteger(n)) : null;
+  if (!pedidos) return res.status(400).json({ success: false, error: 'Falta la lista de materiales (proIds).' });
+  const pool = await getPool();
+  const transaction = new sql.Transaction(pool);
+  try {
+    await transaction.begin();
+    const rPlan = await new sql.Request(transaction).input('P', sql.Int, PlaIdPlan).query(`
+      SELECT pm.ProIdProducto, LTRIM(RTRIM(a.Grupo)) AS Grupo
+      FROM dbo.PlanesMetros pm WITH(UPDLOCK, ROWLOCK)
+      LEFT JOIN dbo.Articulos a ON a.ProIdProducto = pm.ProIdProducto
+      WHERE pm.PlaIdPlan = @P`);
+    const plan = rPlan.recordset[0];
+    if (!plan) { await transaction.rollback(); return res.status(404).json({ success: false, error: `No existe el plan #${PlaIdPlan}.` }); }
+
+    // El principal va siempre; el resto tiene que ser del mismo grupo/área que el principal.
+    const ids = [...new Set([plan.ProIdProducto, ...pedidos])];
+    if (ids.length > 1) {
+      const rVal = await new sql.Request(transaction).query(`
+        SELECT ProIdProducto, LTRIM(RTRIM(Descripcion)) AS D, LTRIM(RTRIM(Grupo)) AS G
+        FROM dbo.Articulos WHERE ProIdProducto IN (${ids.join(',')})`);
+      const ajenos = rVal.recordset.filter(r => r.ProIdProducto !== plan.ProIdProducto && r.G !== plan.Grupo);
+      const noExisten = ids.filter(id => !rVal.recordset.some(r => r.ProIdProducto === id));
+      if (ajenos.length || noExisten.length) {
+        await transaction.rollback();
+        const msg = ajenos.length
+          ? `Solo se pueden agregar materiales de la misma área que el material principal. No corresponde: ${ajenos.map(r => r.D).join(', ')}.`
+          : `No existen los productos: ${noExisten.join(', ')}.`;
+        return res.status(400).json({ success: false, error: msg });
+      }
+    }
+
+    await new sql.Request(transaction).input('P', sql.Int, PlaIdPlan)
+      .query('DELETE FROM dbo.PlanesMetrosArticulosPermitidos WHERE PlaIdPlan = @P');
+    for (const id of ids) {
+      await new sql.Request(transaction).input('P', sql.Int, PlaIdPlan).input('Pro', sql.Int, id)
+        .query('INSERT INTO dbo.PlanesMetrosArticulosPermitidos (PlaIdPlan, ProIdProducto) VALUES (@P, @Pro)');
+    }
+    await transaction.commit();
+    logger.info(`[CONTABILIDAD] setMaterialesPlan Plan #${PlaIdPlan} -> ${ids.join(',')} (usr ${req.user?.id ?? '?'})`);
+    res.json({ success: true, data: { proIds: ids } });
+  } catch (err) {
+    try { await transaction.rollback(); } catch (_) { /* ya cerrada */ }
+    logger.error('[CONTABILIDAD] setMaterialesPlan:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
+
 exports.desactivarPlan = async (req, res) => {
   try {
     const PlaIdPlan = parseInt(req.params.PlaIdPlan);
@@ -1782,15 +1870,19 @@ exports.guardarPrecios = async (req, res) => {
         .query(`
           UPDATE m
           SET m.MovImporte = - CASE
-                WHEN pcM.Moneda = 'UYU' AND ccM.MonIdMoneda = 2 THEN ROUND(pcM.MontoTotal / @Cot, 2)
-                WHEN pcM.Moneda = 'USD' AND ISNULL(ccM.MonIdMoneda, 1) = 1 THEN ROUND(pcM.MontoTotal * @Cot, 2)
-                ELSE pcM.MontoTotal END
+                WHEN pcM.Moneda = 'UYU' AND ccM.MonIdMoneda = 2 THEN ROUND((pcM.MontoTotal - otr.Imp) / @Cot, 2)
+                WHEN pcM.Moneda = 'USD' AND ISNULL(ccM.MonIdMoneda, 1) = 1 THEN ROUND((pcM.MontoTotal - otr.Imp) * @Cot, 2)
+                ELSE ROUND(pcM.MontoTotal - otr.Imp, 2) END
           FROM dbo.MovimientosCuenta m
           JOIN dbo.CuentasCliente ccM ON ccM.CueIdCuenta = m.CueIdCuenta
           CROSS JOIN (SELECT MontoTotal, Moneda FROM dbo.PedidosCobranza WHERE ID = @PID) pcM
           JOIN dbo.PedidosCobranza pc ON pc.ID = @PID
+          -- Pedido partido en varias órdenes con cargo propio: a este cargo le toca el pedido
+          -- MENOS lo de sus hermanas ya asentadas (0 en el caso de siempre: un cargo por pedido).
+          CROSS APPLY (SELECT ${sqlImporteDeOtrasOrdenes({ pedidoId: '@PID', monedaPedido: 'pcM.Moneda', cot: '@Cot', m: 'm', cli: 'ccM.CliIdCliente' })} AS Imp) otr
           WHERE (m.MovAnulado IS NULL OR m.MovAnulado = 0)
             AND m.MovTipo IN ('ORDEN','ORDEN_ANTICIPO')
+            AND (otr.Imp = 0 OR pcM.MontoTotal - otr.Imp > 0.005)
             ${cicloFilter}
             AND (
               -- Match principal: por OrdenID del detalle. NoDocERP va SIN prefijo
@@ -2147,13 +2239,17 @@ exports.guardarPreciosCiclo = async (req, res) => {
         .input('Cot', sql.Decimal(18, 4), cotHoy)
         .query(`
           UPDATE m SET m.MovImporte = - CASE
-                WHEN pc.Moneda = 'UYU' AND ccM.MonIdMoneda = 2 THEN ROUND(pc.MontoTotal / @Cot, 2)
-                WHEN pc.Moneda = 'USD' AND ISNULL(ccM.MonIdMoneda, 1) = 1 THEN ROUND(pc.MontoTotal * @Cot, 2)
-                ELSE pc.MontoTotal END
+                WHEN pc.Moneda = 'UYU' AND ccM.MonIdMoneda = 2 THEN ROUND((pc.MontoTotal - otr.Imp) / @Cot, 2)
+                WHEN pc.Moneda = 'USD' AND ISNULL(ccM.MonIdMoneda, 1) = 1 THEN ROUND((pc.MontoTotal - otr.Imp) * @Cot, 2)
+                ELSE ROUND(pc.MontoTotal - otr.Imp, 2) END
           FROM dbo.MovimientosCuenta m
           JOIN dbo.CuentasCliente ccM ON ccM.CueIdCuenta = m.CueIdCuenta
           JOIN dbo.PedidosCobranza pc ON pc.ID = @PID
+          -- Pedido partido en varias órdenes con cargo propio: el pedido MENOS lo de las hermanas
+          -- ya asentadas (0 en el caso de siempre: un cargo por pedido).
+          CROSS APPLY (SELECT ${sqlImporteDeOtrasOrdenes({ pedidoId: '@PID', monedaPedido: 'pc.Moneda', cot: '@Cot', m: 'm', cli: 'ccM.CliIdCliente' })} AS Imp) otr
           WHERE m.CicIdCiclo=@cic AND m.MovTipo IN ('ORDEN','ORDEN_ANTICIPO') AND (m.MovAnulado IS NULL OR m.MovAnulado=0)
+            AND (otr.Imp = 0 OR pc.MontoTotal - otr.Imp > 0.005)
             -- Match principal por OrdenID del detalle: NoDocERP va sin prefijo y
             -- CodigoOrden con prefijo, los matches por texto casi nunca aplican (bug TDH ET-3815).
             AND ( EXISTS (SELECT 1 FROM dbo.PedidosCobranzaDetalle pcd WHERE pcd.PedidoCobranzaID=pc.ID AND pcd.OrdenID=m.OrdIdOrden)
@@ -3442,7 +3538,9 @@ exports.getOrdenesAnticipo = async (req, res) => {
                               a.Descripcion,
                               aod.Descripcion
                           ) AS Descripcion,
-                          pc.Moneda,
+                          -- Moneda del Subtotal de ESTA línea (no la de la cabecera): ver sqlMonedaLinea
+                          ${sqlMonedaLinea('pc', 'd')} AS Moneda,
+                          pc.Moneda AS MonedaPedido,
                           ISNULL(a.CodStock, aod.CodStock) AS CodStock,
                           ISNULL(sa.Articulo, saod.Articulo) AS ArticuloNombre
                    FROM dbo.PedidosCobranza pc WITH(NOLOCK)
@@ -3463,6 +3561,9 @@ exports.getOrdenesAnticipo = async (req, res) => {
                            ((SELECT MAX(pc_inner.ID) FROM dbo.PedidosCobranza pc_inner WITH(NOLOCK) WHERE pc_inner.NoDocERP = oa.CodigoOrdenStr))
                        ) AS cand(candidato)
                    )
+                   -- Pedido partido en varias órdenes: no repetir acá las líneas de las hermanas
+                   -- que ya tienen su propio cargo (ver sqlLineaTocaAlCargo)
+                   AND ${sqlLineaTocaAlCargo('m', 'd', '@Cli')}
                    FOR JSON PATH
                 ) AS DetallesJSON
         FROM dbo.MovimientosCuenta m WITH(NOLOCK)
@@ -3652,18 +3753,36 @@ exports.emitirFacturaAnticipo = async (req, res) => {
     for (const rawId of ordenesIds) {
       const ordId = parseInt(rawId, 10);
       try {
+        // Pedido partido en varias órdenes con cargo propio: a esta orden le toca el pedido
+        // MENOS lo de sus hermanas ya asentadas (DeOtras = 0 en el caso de siempre: un cargo
+        // por pedido). Sin esto cada cargo se pisaba con el pedido ENTERO.
         const pcRes = await pool.request()
           .input('OrdId', sql.Int, ordId)
+          .input('CueId', sql.Int, CueIdCuenta)
+          .input('Cli', sql.Int, CliIdCliente)
+          .input('Cot', sql.Decimal(18, 4), cotRate)
           .query(`
-            SELECT pc.MontoTotal, pc.Moneda
+            SELECT pc.MontoTotal, pc.Moneda, otr.Imp AS DeOtras
             FROM dbo.PedidosCobranza pc
             INNER JOIN dbo.Ordenes o ON LTRIM(RTRIM(CAST(o.NoDocERP AS VARCHAR))) = LTRIM(RTRIM(pc.NoDocERP))
+            OUTER APPLY (
+              SELECT TOP 1 mm.MovIdMovimiento, mm.OrdIdOrden FROM dbo.MovimientosCuenta mm
+              WHERE mm.OrdIdOrden = @OrdId AND mm.CueIdCuenta = @CueId
+                AND mm.MovTipo IN ('ORDEN', 'ORDEN_ANTICIPO') AND mm.DocIdDocumento IS NULL
+              ORDER BY mm.MovIdMovimiento
+            ) m
+            CROSS APPLY (SELECT CASE WHEN m.MovIdMovimiento IS NULL THEN 0 ELSE
+              ${sqlImporteDeOtrasOrdenes({ pedidoId: 'pc.ID', monedaPedido: 'pc.Moneda', cot: '@Cot', m: 'm', cli: '@Cli' })} END AS Imp) otr
             WHERE o.OrdenID = @OrdId
           `);
         if (pcRes.recordset.length > 0) {
-          const { MontoTotal, Moneda } = pcRes.recordset[0];
+          const { Moneda } = pcRes.recordset[0];
+          const deOtras = parseFloat(pcRes.recordset[0].DeOtras) || 0;
+          const MontoTotal = Math.round((parseFloat(pcRes.recordset[0].MontoTotal) - deOtras) * 100) / 100;
           let imp;
-          if (Moneda === accMon) {
+          if (deOtras > 0 && !(MontoTotal > 0.005)) {
+            // todo el pedido ya está asentado en sus hermanas: este cargo no se toca
+          } else if (Moneda === accMon) {
             imp = -Math.abs(parseFloat(MontoTotal));
           } else if (Moneda === 'UYU' && accMon === 'USD') {
             // PedidosCobranza en UYU, cuenta en USD → convertir a USD

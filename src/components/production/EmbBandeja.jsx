@@ -43,7 +43,40 @@ const AREA_META = {
  * Y el link va SIEMPRE al archivo real (UbicacionStorage), no a la miniatura:
  * antes se abría la misma imagen chica y no servía para mirar el detalle.
  */
-const MiniaturaRef = ({ archivo, codigoOrden }) => {
+// [VISOR] Archivo grande adentro de la bandeja: imagen si hay miniatura/previsualización, si no el
+// visor de Drive en un iframe. "Pendiente" = el archivo nunca terminó de subirse (no hay qué abrir).
+const driveIdDe = (u) => { const m = String(u || '').match(/\/d\/([A-Za-z0-9_-]{10,})|[?&]id=([A-Za-z0-9_-]{10,})/); return m ? (m[1] || m[2]) : null; };
+const VisorArchivo = ({ archivo, onClose }) => {
+    if (!archivo) return null;
+    const destino = archivo.UbicacionStorage || archivo.destino || '';
+    const pendiente = !destino || /^pendiente$/i.test(String(destino).trim());
+    const id = driveIdDe(destino);
+    const esImagen = /\.(png|jpe?g|webp|gif)$/i.test(String(archivo.NombreOriginal || archivo.nombre || ''));
+    const src = id ? (esImagen ? `https://drive.google.com/uc?export=view&id=${id}` : `https://drive.google.com/file/d/${id}/preview`) : destino;
+    const nombre = archivo.NombreOriginal || archivo.nombre || archivo.label || 'Archivo';
+    return (
+        <div className="fixed inset-0 bg-black/70 z-[6000] flex items-center justify-center p-3" onClick={onClose}>
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-5xl h-[92vh] flex flex-col" onClick={e => e.stopPropagation()}>
+                <div className="flex items-center justify-between gap-3 px-4 py-2.5 border-b border-zinc-200">
+                    <h3 className="text-sm font-black text-zinc-800 truncate">{archivo.label ? `${archivo.label} · ` : ''}{String(nombre).replace(/^REF-\d+-/, '')}</h3>
+                    <div className="flex items-center gap-2">
+                        {!pendiente && <a href={destino} target="_blank" rel="noopener noreferrer" className="text-xs font-bold text-brand-cyan border border-brand-cyan/30 rounded-lg px-3 py-1.5 hover:bg-brand-cyan/5">Abrir en pestaña nueva</a>}
+                        <button type="button" onClick={onClose} className="text-xs font-bold text-zinc-600 border border-zinc-300 rounded-lg px-3 py-1.5 hover:bg-zinc-100">Cerrar</button>
+                    </div>
+                </div>
+                {pendiente ? (
+                    <div className="flex-1 flex items-center justify-center text-sm text-zinc-500 p-6 text-center">Este archivo todavía no terminó de subirse al Drive (quedó "Pendiente" al crear el pedido). Volvé a subirlo desde la ficha de la orden.</div>
+                ) : esImagen && id ? (
+                    <div className="flex-1 overflow-auto flex items-center justify-center bg-zinc-100 rounded-b-2xl"><img src={src} alt={nombre} className="max-w-full max-h-full object-contain" onError={(e) => { e.currentTarget.style.display = 'none'; }} /></div>
+                ) : (
+                    <iframe title={nombre} src={src} className="flex-1 w-full rounded-b-2xl" allow="autoplay" />
+                )}
+            </div>
+        </div>
+    );
+};
+
+const MiniaturaRef = ({ archivo, codigoOrden, onOpen }) => {
     const localUrl = archivo.RefID && codigoOrden
         ? `/thumbnails/${encodeURIComponent(codigoOrden)}/${archivo.RefID}.jpg`
         : null;
@@ -55,12 +88,11 @@ const MiniaturaRef = ({ archivo, codigoOrden }) => {
     const nombre = archivo.NombreOriginal || archivo.label;
 
     return (
-        <a
-            href={destino}
-            target="_blank"
-            rel="noopener noreferrer"
+        <button
+            type="button"
+            onClick={() => (onOpen ? onOpen({ ...archivo, nombre, destino }) : window.open(destino, '_blank'))}
             className="shrink-0 text-center group"
-            title={`Abrir "${nombre}" en tamaño completo`}
+            title={`Ver "${nombre}" en grande`}
         >
             <div className="relative w-20 h-20 rounded-xl bg-white border border-zinc-200 flex items-center justify-center overflow-hidden group-hover:border-brand-cyan transition-colors">
                 {src ? (
@@ -83,7 +115,7 @@ const MiniaturaRef = ({ archivo, codigoOrden }) => {
                 </span>
             </div>
             <span className="text-[9px] font-bold text-zinc-400 uppercase mt-1 block">{archivo.label}</span>
-        </a>
+        </button>
     );
 };
 
@@ -387,6 +419,11 @@ export default function EmbBandeja({ area = 'EMB', fase = 'trabajo', onSelectOrd
     // Spec 39: modal de falla/faltante y refresco del panel "lo que falta de este pedido"
     const [fallaOpen, setFallaOpen] = useState(false);
     const [pendRefresh, setPendRefresh] = useState(0);
+    // [VISOR] archivo abierto en grande (boceto, planilla, tizada…)
+    const [visor, setVisor] = useState(null);
+    // [BANDEJA] contexto del pedido: lista de talles (planilla del cliente / TizadaPro), bocetos, ficha del producto
+    const [contexto, setContexto] = useState(null);
+    const [generandoFicha, setGenerandoFicha] = useState(false);   // [FICHA] generar la ficha técnica del pedido desde la bandeja
     // Spec 39: "aprobar por tandas" en Control solo está disponible en áreas con envío
     // parcial habilitado (mismo interruptor que el despacho — AREAS_DESPACHO_PARCIAL).
     const [permiteParcial, setPermiteParcial] = useState(false);
@@ -395,6 +432,15 @@ export default function EmbBandeja({ area = 'EMB', fase = 'trabajo', onSelectOrd
             .then(cfg => setPermiteParcial((cfg?.areasParcial || []).includes(String(area).toUpperCase())))
             .catch(() => setPermiteParcial(false));
     }, [area]);
+
+    useEffect(() => {
+        const oid = selectedId;   // selectedId y no selected: selected se declara más abajo (usarlo acá rompía la pantalla)
+        if (!oid) { setContexto(null); return; }
+        let cancel = false;
+        service.getContextoPedido(oid).then(d => { if (!cancel) setContexto(d); }).catch(() => { if (!cancel) setContexto(null); });
+        return () => { cancel = true; };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [selectedId, pendRefresh]);
 
     // Notas del panel de detalle
     const [notas, setNotas] = useState([]);
@@ -656,6 +702,12 @@ export default function EmbBandeja({ area = 'EMB', fase = 'trabajo', onSelectOrd
                             <p className="text-xs text-zinc-600 line-clamp-1 font-medium">{o.DescripcionTrabajo}</p>
                         )}
                         <p className="text-xs text-zinc-500 line-clamp-1 italic">{o.Material}</p>
+                        {/* [ESTAMPADO] qué estampa esta orden: DTF o TPU (las dos se llaman "Estampado (Servicio)") */}
+                        {String(area || '').toUpperCase() === 'EST' && (() => {
+                            const src = `${o.FuenteAreaID || ''} ${o.Variante || ''}`.toUpperCase();
+                            const tipo = /TPU/.test(src) ? 'TPU' : (/DF|DTF/.test(src) ? 'DTF' : null);
+                            return tipo ? <span className="inline-block mt-1 px-1.5 py-0.5 rounded text-[10px] font-black uppercase border bg-violet-50 text-violet-700 border-violet-200" title={o.FuenteCodigo ? `Depende de ${o.FuenteCodigo}` : ''}>Estampa {tipo}</span> : null;
+                        })()}
                         {area === 'EMB' && fase === 'trabajo' && (() => {
                             const et = etapaDisenoBordado(o, bloqueada);
                             return et ? <span className={`inline-block mt-1 px-1.5 py-0.5 rounded text-[10px] font-bold border ${et.cls}`}>{et.txt}</span> : null;
@@ -810,7 +862,8 @@ export default function EmbBandeja({ area = 'EMB', fase = 'trabajo', onSelectOrd
                                 // Va rotulado aparte para que nadie lo confunda con el arte
                                 // original ni con la matriz.
                                 const prediseno = refs.find(f => f.esPrediseno);
-                                const otras = refs.filter(f => f !== boceto && f !== logo && f !== prediseno);
+                                // planilla y tizada tienen su propio bloque ("Lista de talles") más abajo: acá no se repiten
+                                const otras = refs.filter(f => f !== boceto && f !== logo && f !== prediseno && !f.esPlanilla && !f.esTizada);
                                 const items = [
                                     boceto && { ...boceto, label: 'Boceto' },
                                     logo && { ...logo, label: 'Logo' },
@@ -825,12 +878,47 @@ export default function EmbBandeja({ area = 'EMB', fase = 'trabajo', onSelectOrd
                                     );
                                 }
                                 return items.map((f, i) => (
-                                    <MiniaturaRef key={i} archivo={f} codigoOrden={selected.CodigoOrden} />
+                                    <MiniaturaRef key={i} archivo={f} codigoOrden={selected.CodigoOrden} onOpen={setVisor} />
                                 ));
                             })()}
+                            {/* [FICHA] Acceso a la ficha técnica del pedido (PDF: producto, costuras y avíos, órdenes, archivos),
+                                al lado de los bocetos. Si todavía no existe, se genera desde acá y se abre. */}
+                            {contexto?.fichaPedido ? (
+                                <MiniaturaRef archivo={{ ...contexto.fichaPedido, label: 'Ficha técnica' }} codigoOrden={contexto.fichaPedido.CodigoOrden} onOpen={setVisor} />
+                            ) : contexto?.madreOrdenId ? (
+                                <button
+                                    type="button"
+                                    disabled={generandoFicha}
+                                    title="Generar la ficha técnica del pedido (PDF) y abrirla"
+                                    onClick={async () => {
+                                        setGenerandoFicha(true);
+                                        try {
+                                            await ordersService.generarFichaPedido(contexto.madreOrdenId);
+                                            const d = await service.getContextoPedido(selected.OrdenID);
+                                            setContexto(d);
+                                            if (d?.fichaPedido) setVisor({ ...d.fichaPedido, label: 'Ficha técnica' });
+                                            else toast.error('La ficha se generó pero no quedó adjunta. Reintentá.');
+                                        } catch (e) {
+                                            toast.error('No se pudo generar la ficha técnica: ' + (e.response?.data?.error || e.message));
+                                        } finally { setGenerandoFicha(false); }
+                                    }}
+                                    className="shrink-0 text-center group disabled:opacity-50"
+                                >
+                                    <div className="w-20 h-20 rounded-xl bg-white border border-dashed border-zinc-300 flex items-center justify-center group-hover:border-brand-cyan transition-colors">
+                                        <span className="text-[9px] font-black uppercase text-zinc-500 leading-tight px-1">{generandoFicha ? 'Generando…' : 'Generar ficha'}</span>
+                                    </div>
+                                    <span className="text-[9px] font-bold text-zinc-400 uppercase mt-1 block">Ficha técnica</span>
+                                </button>
+                            ) : null}
                             <div className="min-w-0 flex-1">
                                 <div className="flex items-center gap-2">
                                     <h2 className="font-mono font-black text-xl text-zinc-800">{selected.CodigoOrden}</h2>
+                                    {/* [ESTAMPADO] qué se estampa: DTF o TPU (por la orden de la que depende, o por la variante) */}
+                                    {String(area || '').toUpperCase() === 'EST' && (() => {
+                                        const src = `${selected.FuenteAreaID || ''} ${selected.Variante || ''}`.toUpperCase();
+                                        const tipo = /TPU/.test(src) ? 'TPU' : (/DF|DTF/.test(src) ? 'DTF' : null);
+                                        return tipo ? <span className="text-[10px] font-black uppercase bg-violet-100 text-violet-700 px-2 py-0.5 rounded-full" title={selected.FuenteCodigo ? `Depende de ${selected.FuenteCodigo}` : ''}>Estampa {tipo}{selected.FuenteCodigo ? ` · ${selected.FuenteCodigo}` : ''}</span> : null;
+                                    })()}
                                     {selected.Prioridad && selected.Prioridad.toLowerCase() !== 'normal' && (
                                         <span className="text-[10px] font-black uppercase bg-pink-100 text-pink-600 px-2 py-0.5 rounded-full">{selected.Prioridad}</span>
                                     )}
@@ -864,6 +952,111 @@ export default function EmbBandeja({ area = 'EMB', fase = 'trabajo', onSelectOrd
                         )}
 
                         {/* Spec 39: lo que falta de este pedido (libro de entregas de las áreas anteriores) */}
+                        {/* [BANDEJA] Lista de talles: lo que subió el cliente (planilla) y, si es producto terminado, lo que
+                            llegó de TizadaPro. Se ve acá, sin entrar a la ficha. Los archivos se abren en grande al pinchar. */}
+                        {contexto && ['TWC', 'TWT', 'EMB', 'EST'].includes(String(area || '').toUpperCase()) && (() => {
+                            const planillas = contexto.planillas || [];
+                            const tizadas = contexto.tizadas || [];
+                            const tp = contexto.tizadaPro;
+                            const n = contexto.notas || {};
+                            const nada = !planillas.length && !tizadas.length && !tp && !n.notaTalles && !n.medidas && !(n.talles || []).length;
+                            return (
+                                <div className="bg-white border border-zinc-200 rounded-2xl p-4 mb-5">
+                                    <div className="text-[10px] font-black uppercase text-zinc-400 tracking-wide mb-2">Lista de talles{contexto.producto ? ` · ${contexto.producto.nombre}` : ''}{n.unidades ? ` · ${n.unidades} unidades` : ''}</div>
+                                    {nada && <p className="text-xs text-zinc-400">Este pedido no trae lista de talles ni tizada.</p>}
+                                    {planillas.length > 0 && (
+                                        <div className="mb-3">
+                                            <div className="text-[10px] font-bold text-zinc-500 uppercase mb-1.5">Lo que subió el cliente</div>
+                                            <div className="flex flex-wrap gap-3">
+                                                {planillas.map(f => <MiniaturaRef key={f.RefID} archivo={{ ...f, label: 'Planilla' }} codigoOrden={f.CodigoOrden} onOpen={setVisor} />)}
+                                            </div>
+                                        </div>
+                                    )}
+                                    {(n.notaTalles || n.medidas) && (
+                                        <div className="mb-3 text-xs text-zinc-700 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2 whitespace-pre-line">
+                                            {n.medidas ? <><b>Medidas:</b> {n.medidas}{n.notaTalles ? '\n' : ''}</> : null}{n.notaTalles ? <><b>Talles:</b> {n.notaTalles}</> : null}
+                                        </div>
+                                    )}
+                                    {(n.talles || []).length > 0 && (
+                                        <div className="mb-3 border border-zinc-100 rounded-lg overflow-hidden">
+                                            {n.talles.map((t, i) => (
+                                                <div key={i} className="grid grid-cols-[1fr_auto] gap-2 px-3 py-1 text-xs border-t border-zinc-100 first:border-t-0">
+                                                    <span className="text-zinc-700">{t.talle || t.Talle || t.nombre || JSON.stringify(t)}</span>
+                                                    <span className="font-mono font-bold text-zinc-700">{t.cantidad ?? t.Cantidad ?? ''}</span>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                    {tp && (
+                                        <div className="mb-3">
+                                            <div className="text-[10px] font-bold text-zinc-500 uppercase mb-1.5">Lo que llegó de TizadaPro</div>
+                                            <div className="text-xs text-zinc-700"><b>Molde:</b> {tp.molde || '—'}{tp.piezas != null ? <> · <b>{tp.piezas}</b> piezas</> : null}{tp.fecha ? <> · {fmtFechaCorta(tp.fecha)}</> : null}</div>
+                                            {(tp.hojas || []).length > 0 && (
+                                                <div className="mt-1.5 border border-zinc-100 rounded-lg overflow-hidden">
+                                                    {tp.hojas.map((h, i) => (
+                                                        <div key={i} className="grid grid-cols-[1fr_auto] gap-2 px-3 py-1 text-xs border-t border-zinc-100 first:border-t-0">
+                                                            <span className="text-zinc-700 truncate" title={h.archivo}>{h.archivo}{h.tela ? <span className="text-zinc-400"> · {h.tela}</span> : null}</span>
+                                                            <span className="font-mono text-zinc-600 whitespace-nowrap">{h.anchoCm ? `${(h.anchoCm / 100).toFixed(2)} m` : ''}{h.consumoCm ? ` × ${(h.consumoCm / 100).toFixed(2)} m` : ''}{h.paginas > 1 ? ` · ${h.paginas} pág.` : ''}</span>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
+                                    {tizadas.length > 0 && (
+                                        <div>
+                                            <div className="text-[10px] font-bold text-zinc-500 uppercase mb-1.5">Archivos de la tizada</div>
+                                            <div className="flex flex-wrap gap-3">
+                                                {tizadas.map(f => <MiniaturaRef key={f.RefID} archivo={{ ...f, label: /FICHA/i.test(f.NombreOriginal || '') ? 'Ficha tizada' : 'Tizada' }} codigoOrden={f.CodigoOrden} onOpen={setVisor} />)}
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+                            );
+                        })()}
+
+                        {/* [BANDEJA] Costura: costuras y avíos del producto del catálogo (ficha de diseño del configurador) */}
+                        {contexto?.ficha && String(area || '').toUpperCase() === 'TWT' && (() => {
+                            const f = contexto.ficha;
+                            if (!(f.costuras || []).length && !(f.avios || []).length) return null;
+                            return (
+                                <div className="bg-white border border-zinc-200 rounded-2xl p-4 mb-5">
+                                    <div className="text-[10px] font-black uppercase text-zinc-400 tracking-wide mb-2">Costuras y avíos{contexto.producto ? ` · ${contexto.producto.nombre}` : ''}</div>
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                        <div>
+                                            <div className="text-[10px] font-bold text-zinc-500 uppercase mb-1.5">Costuras (ISO 4915)</div>
+                                            {(f.costuras || []).length ? (
+                                                <div className="border border-zinc-100 rounded-lg overflow-hidden">
+                                                    {f.costuras.map((c, i) => (
+                                                        <div key={i} className="grid grid-cols-[1fr_auto] gap-2 px-3 py-1 text-xs border-t border-zinc-100 first:border-t-0">
+                                                            <span className="text-zinc-700">{c.union}{c.nombre ? <span className="text-zinc-400"> · {c.nombre}</span> : null}</span>
+                                                            <span className="font-mono font-bold text-zinc-700">{c.codigoISO}</span>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            ) : <p className="text-xs text-zinc-400">Sin costuras cargadas.</p>}
+                                        </div>
+                                        <div>
+                                            <div className="text-[10px] font-bold text-zinc-500 uppercase mb-1.5">Avíos</div>
+                                            {(f.avios || []).length ? (
+                                                <div className="border border-zinc-100 rounded-lg overflow-hidden">
+                                                    {f.avios.map((a, i) => (
+                                                        <div key={i} className="grid grid-cols-[1fr_auto] gap-2 px-3 py-1 text-xs border-t border-zinc-100 first:border-t-0">
+                                                            <span className="text-zinc-700">{a.nombre}{a.medida ? <span className="text-zinc-400"> · {a.medida}</span> : null}{a.nota ? <span className="text-zinc-400"> · {a.nota}</span> : null}</span>
+                                                            <span className="font-mono font-bold text-zinc-700">{a.cantidad} {a.unidad}</span>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            ) : <p className="text-xs text-zinc-400">Sin avíos cargados.</p>}
+                                        </div>
+                                    </div>
+                                    {f.marcacion && <p className="text-xs text-zinc-600 mt-2"><b>Marcación:</b> {f.marcacion}</p>}
+                                </div>
+                            );
+                        })()}
+
+                        {visor && <VisorArchivo archivo={visor} onClose={() => setVisor(null)} />}
+
                         <PendientesPedidoPanel ordenId={selected.OrdenID} service={service} area={area} refreshKey={pendRefresh} />
 
                         {/* Nota general del pedido (Ordenes.Nota — la del ingreso, distinta de las

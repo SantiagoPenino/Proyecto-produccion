@@ -35,3 +35,27 @@
 
 /* Títulos del encabezado en claro */
 .area-pro-oscura header h1:not(.fixed *), .area-pro-oscura header h2:not(.fixed *) { color: var(--pro-ink) !important; }
+
+/* Tintes de estado (30-sep): los chips y avisos "claros" (teal/amber/red/emerald/sky…-50/-100) quedaban
+   con fondo pastel y texto claro heredado → ilegibles ("Recibido en destino", "En tránsito", "Lo que
+   falta de este pedido"). En oscuro: fondo translúcido del mismo color + texto claro del mismo color.
+   Selectores exactos (no [class*=]) para no pisar los -500 sólidos (bg-teal-500 del paso terminado). */
+.area-pro-oscura :is(.bg-teal-50, .bg-teal-100, .bg-emerald-50, .bg-emerald-100, .bg-green-50, .bg-green-100):not(.fixed *) { background-color: rgba(16, 185, 129, .16) !important; color: #6EE7B7 !important; }
+.area-pro-oscura :is(.bg-amber-50, .bg-amber-100, .bg-yellow-50, .bg-yellow-100, .bg-orange-50, .bg-orange-100, .bg-amber-50\/60, .bg-amber-50\/50):not(.fixed *) { background-color: rgba(245, 194, 49, .14) !important; color: #FCD34D !important; }
+.area-pro-oscura :is(.bg-red-50, .bg-red-100, .bg-rose-50, .bg-rose-100):not(.fixed *) { background-color: rgba(244, 63, 94, .16) !important; color: #FDA4AF !important; }
+.area-pro-oscura :is(.bg-sky-50, .bg-sky-100, .bg-blue-50, .bg-blue-100, .bg-cyan-50, .bg-cyan-100):not(.fixed *) { background-color: rgba(56, 189, 248, .16) !important; color: #7DD3FC !important; }
+.area-pro-oscura :is(.bg-indigo-50, .bg-indigo-100, .bg-violet-50, .bg-violet-100, .bg-purple-50, .bg-purple-100):not(.fixed *) { background-color: rgba(129, 140, 248, .16) !important; color: #C7D2FE !important; }
+
+/* Textos de color sobre esos tintes (y sueltos): la versión clara de cada color */
+.area-pro-oscura :is(.text-teal-600, .text-teal-700, .text-teal-800, .text-emerald-600, .text-emerald-700, .text-emerald-800, .text-green-600, .text-green-700, .text-green-800):not(.fixed *) { color: #6EE7B7 !important; }
+.area-pro-oscura :is(.text-amber-600, .text-amber-700, .text-amber-800, .text-amber-900, .text-yellow-700, .text-yellow-800, .text-orange-700, .text-orange-800):not(.fixed *) { color: #FCD34D !important; }
+.area-pro-oscura :is(.text-red-600, .text-red-700, .text-red-800, .text-rose-600, .text-rose-700, .text-rose-800):not(.fixed *) { color: #FDA4AF !important; }
+.area-pro-oscura :is(.text-sky-600, .text-sky-700, .text-sky-800, .text-blue-600, .text-blue-700, .text-blue-800, .text-cyan-700, .text-cyan-800):not(.fixed *) { color: #7DD3FC !important; }
+.area-pro-oscura :is(.text-indigo-600, .text-indigo-700, .text-violet-700, .text-purple-700):not(.fixed *) { color: #C7D2FE !important; }
+
+/* Bordes de esos tintes */
+.area-pro-oscura :is(.border-teal-100, .border-teal-200, .border-emerald-100, .border-emerald-200, .border-green-200):not(.fixed *) { border-color: rgba(16, 185, 129, .35) !important; }
+.area-pro-oscura :is(.border-amber-100, .border-amber-200, .border-amber-300, .border-yellow-200, .border-orange-200):not(.fixed *) { border-color: rgba(245, 194, 49, .35) !important; }
+.area-pro-oscura :is(.border-red-100, .border-red-200, .border-rose-200):not(.fixed *) { border-color: rgba(244, 63, 94, .35) !important; }
+.area-pro-oscura :is(.border-sky-100, .border-sky-200, .border-blue-100, .border-blue-200, .border-cyan-200):not(.fixed *) { border-color: rgba(56, 189, 248, .35) !important; }
+.area-pro-oscura .border-black\/5:not(.fixed *) { border-color: rgba(255, 255, 255, .12) !important; }

@@ -222,6 +222,11 @@ export const ordersService = {
         });
         return response.data;
     },
+    // [FICHA DEL PEDIDO] regenera la ficha PDF del pedido y la pega a la PRO como FICHA_PEDIDO
+    generarFichaPedido: async (ordenId) => {
+        const response = await api.post(`/orders/${ordenId}/ficha-pedido`);
+        return response.data;
+    },
     deleteReferenceFile: async (refId) => {
         const response = await api.delete(`/orders/reference/${refId}`);
         return response.data;

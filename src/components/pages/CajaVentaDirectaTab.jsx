@@ -168,13 +168,9 @@ export default function CajaVentaDirectaTab({
     return map;
   }, [productosBase]);
 
-  // ECOUV como rollo por adelantado: se vende SOLO el material impreso
-  // (TipoStock='MATERIAL' en StockArt: lonas, canvas, vinilos, papel/PET).
-  // Cuadros, roll ups, pasacalles y terminaciones quedan afuera. DTF/Sublimación no cambian.
-  const productosVendiblesDeGrupo = (grupo) => {
-    const lista = productosAgrupados[grupo] || [];
-    return /ecouv/i.test(grupo || '') ? lista.filter(p => p.TipoStock === 'MATERIAL') : lista;
-  };
+  // Todos los productos del grupo, incluidos los productos terminados del área
+  // (ej. ECOUV: materiales, cuadros canvas, roll ups, terminaciones).
+  const productosVendiblesDeGrupo = (grupo) => productosAgrupados[grupo] || [];
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -470,10 +466,7 @@ export default function CajaVentaDirectaTab({
                                 {Object.keys(productosAgrupados).filter(g => {
                                    if (it.tipo === 'VENTA_INSUMOS') return g === 'Insumos';
                                    if (it.tipo === 'VENTA_PRODUCTOS') return g === 'Productos en el local';
-                                   // ECOUV solo se ofrece si tiene material impreso para vender
-                                   // (sin la migración StockArt.TipoStock el grupo queda oculto)
-                                   if (/ecouv/i.test(g)) return productosVendiblesDeGrupo(g).length > 0;
-                                   return /dtf|sublimaci/i.test(g);
+                                   return /dtf|sublimaci|ecouv|directa/i.test(g);
                                 }).map(g => (
                                   <Listbox.Option key={g} className={({ active }) => `relative cursor-pointer select-none py-2 pl-8 pr-4 transition-colors text-sm ${active ? 'bg-zinc-100 text-zinc-900' : 'text-zinc-700'}`} value={g}>
                                     {({ selected }) => (

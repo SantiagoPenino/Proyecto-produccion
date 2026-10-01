@@ -27,6 +27,9 @@ const GRUPO_ECOUV = '1.3';
 // Decoración (EMB/TPU/DF): personalización que el cliente elige agregar o no.
 const AREAS_CONSTRUCCION = [
     { id: 'SB', label: 'Sublimación', desc: 'Estampado full print de la tela · área SB', grad: 'from-amber-500 to-orange-600', chip: 'bg-amber-100 text-amber-700', icon: 'fa-fill-drip' },
+    // F1 (29-sep): otras producciones principales. Solo se muestra la que el producto tiene en "Producción principal".
+    { id: 'DIRECTA', label: 'Impresión directa', desc: 'Impresión directa sobre tela de bandera / blackout · área DIRECTA', grad: 'from-cyan-500 to-blue-600', chip: 'bg-cyan-100 text-cyan-700', icon: 'fa-flag' },
+    { id: 'ECOUV', label: 'Gran formato', desc: 'Lona, canvas, vinilo · área ECOUV', grad: 'from-lime-500 to-green-600', chip: 'bg-lime-100 text-lime-700', icon: 'fa-image' },
     { id: 'TWC', label: 'Corte', desc: 'Corte láser y tizada · área TWC', grad: 'from-slate-500 to-slate-700', chip: 'bg-slate-100 text-slate-700', icon: 'fa-scissors' },
     { id: 'TWT', label: 'Costura', desc: 'Confección de la prenda · área TWT', grad: 'from-teal-500 to-emerald-600', chip: 'bg-teal-100 text-teal-700', icon: 'fa-shirt' },
 ];
@@ -40,9 +43,16 @@ const AREAS = [...AREAS_CONSTRUCCION, ...AREAS_DECORACION];
 // EMB/TPU/else→'DTF' que etiquetaba "DTF" a Sublimación, Corte y Costura — en el armado
 // del combo se veían 4 chips "DTF" que en realidad eran áreas distintas.
 const servicioCorto = (areaId) => ({
-    SB: 'Sublimación', TWC: 'Corte', TWT: 'Costura',
+    SB: 'Sublimación', TWC: 'Corte', TWT: 'Costura', DIRECTA: 'Imp. directa', ECOUV: 'Gran formato',
     EMB: 'Bordado', TPU: 'TPU', DF: 'DTF',
 }[areaId] || areaId);
+// Producción principal: las áreas de impresión que pueden ser la principal (no Corte/Costura)
+const AREAS_PRINCIPAL = ['SB', 'DIRECTA', 'ECOUV'];
+const MOLDE_OPCIONES = [
+    ['OBLIGATORIO', 'Obligatorio', 'Prendas: no se publica sin molde de TizadaPro; en la solicitud se eligen modelo y tela por pieza.'],
+    ['OPCIONAL', 'Opcional', 'Windflags, fundas, banderas con forma: si hay molde se usa; si no, el cliente manda el archivo pronto a la medida fija.'],
+    ['NO', 'No lleva', 'Cuadros, roll ups, productos de stock: archivo a la medida fija, sin piezas ni planilla de talles.'],
+];
 const AREA_APLIQUE_EXTRA = { id: 'ETIQUETA', label: 'Etiqueta (grifa)', chip: 'bg-slate-100 text-slate-600' };
 const areaMeta = (id) => AREAS.find(a => a.id === id) || AREA_APLIQUE_EXTRA;
 
@@ -88,14 +98,20 @@ const Toggle = ({ on, onChange, disabled }) => (
     </button>
 );
 
-// Miniatura de producto: foto del catálogo si hay; si no, placeholder con ícono
-const Thumb = ({ src, size = 40, icon = 'fa-shirt', rounded = 'rounded-lg' }) => (
-    <div className={`${rounded} bg-gradient-to-br from-slate-100 to-slate-200 flex items-center justify-center overflow-hidden flex-shrink-0 relative`}
-        style={{ width: size, height: size }}>
-        <i className={`fa-solid ${icon} text-slate-400`} style={{ fontSize: Math.round(size * 0.4) }}></i>
-        {src && <img src={src} alt="" className="absolute inset-0 w-full h-full object-cover" onError={e => e.currentTarget.remove()} />}
-    </div>
-);
+// Miniatura de producto: foto del catálogo si hay; si no, placeholder con ícono.
+// Si la imagen no carga se oculta por estado (nunca tocando el DOM a mano: sacar el nodo con
+// e.currentTarget.remove() hacía que React fallara al desmontar — "removeChild… not a child").
+const Thumb = ({ src, size = 40, icon = 'fa-shirt', rounded = 'rounded-lg' }) => {
+    const [fallo, setFallo] = useState(null);   // src que no cargó
+    const mostrar = !!src && fallo !== src;
+    return (
+        <div className={`${rounded} bg-gradient-to-br from-slate-100 to-slate-200 flex items-center justify-center overflow-hidden flex-shrink-0 relative`}
+            style={{ width: size, height: size }}>
+            <i className={`fa-solid ${icon} text-slate-400`} style={{ fontSize: Math.round(size * 0.4) }}></i>
+            {mostrar && <img src={src} alt="" className="absolute inset-0 w-full h-full object-cover" onError={() => setFallo(src)} />}
+        </div>
+    );
+};
 
 // Rectángulo a escala para los tamaños de parche/estampa (4×4 vs 10×8 se VE)
 const SizeBox = ({ w, h }) => {
@@ -311,6 +327,16 @@ const fichaToForm = (d) => ({
     origenProIdProducto: d.config?.OrigenProIdProducto || null,
     origenNombre: d.origen?.Descripcion || null,
     tizadaProMoldeRef: d.config?.TizadaProMoldeRef || '',
+    // F1: producción principal, molde, medida fija, unidad y canales
+    tecnicaPrincipal: d.config?.TecnicaPrincipal || 'SB',
+    molde: d.config?.Molde || 'OBLIGATORIO',
+    um: d.config?.UM || 'u',
+    anchoM: d.config?.AnchoM ?? '',
+    altoM: d.config?.AltoM ?? '',
+    bordeCm: d.config?.BordeCm ?? '',
+    visiblePortal: !!d.config?.VisiblePortal,
+    visibleTienda: !!d.config?.VisibleTienda,
+    visibleInterno: d.config ? d.config.VisibleInterno !== false : true,
     validarStock: d.config ? !!d.config.ValidarStock : true,
     estado: d.config?.Estado || 'BORRADOR',
     esCombo: !!d.config?.EsCombo,
@@ -341,6 +367,13 @@ const fichaToForm = (d) => ({
             areaId: s.AreaID, tecnicaOpcionId: s.TecnicaOpcionID || '', incluido: !!s.Incluido
         }))
     })),
+    // [ACCESORIOS] artículos de stock que salen con el producto
+    accesorios: (d.accesorios || []).map(a => ({
+        itemProIdProducto: a.ItemProIdProducto, itemNombre: a.ItemDescripcion || '',
+        wmsVarianteId: a.WmsVarianteId || '', varianteNombre: a.VarianteNombre || '',
+        cantidad: a.Cantidad || 1, obligatorio: !(a.Obligatorio === false || a.Obligatorio === 0), cobro: a.Cobro || 'INCLUIDO',
+        wmsDepositoId: a.WmsDepositoId || '',   // '' = depósito de ventas
+    })),
     fichaDiseno: {
         ref: d.fichaDiseno?.Ref || '',
         marca: d.fichaDiseno?.Marca || 'USER',
@@ -359,6 +392,8 @@ const fichaToForm = (d) => ({
 
 const formToPayload = (f) => ({
     ...(f.esCombo ? {} : { tizadaProMoldeRef: f.tizadaProMoldeRef || null }),
+    ...(f.esCombo ? {} : { tecnicaPrincipal: f.tecnicaPrincipal || 'SB', molde: f.molde || 'OBLIGATORIO', um: f.um || 'u', anchoM: f.anchoM === '' ? null : Number(f.anchoM), altoM: f.altoM === '' ? null : Number(f.altoM), bordeCm: f.bordeCm === '' ? null : Number(f.bordeCm) }),
+    visiblePortal: !!f.visiblePortal, visibleTienda: !!f.visibleTienda, visibleInterno: f.visibleInterno !== false,
     origenTipo: f.origenTipo,
     origenProIdProducto: (f.origenTipo === 'LOCAL' || f.origenTipo === 'AMBOS') ? (f.origenProIdProducto || null) : null,
     cantidadMinima: f.politica === 'MINIMA' && f.cantidadMinima ? Number(f.cantidadMinima) : null,
@@ -394,6 +429,11 @@ const formToPayload = (f) => ({
         })),
     })),
     ...(f.esCombo ? {} : {
+        accesorios: (f.accesorios || []).filter(a => a.itemProIdProducto).map(a => ({
+            itemProIdProducto: Number(a.itemProIdProducto), wmsVarianteId: a.wmsVarianteId || null,
+            cantidad: Number(a.cantidad) || 1, obligatorio: a.obligatorio !== false, cobro: a.cobro === 'APARTE' ? 'APARTE' : 'INCLUIDO',
+            wmsDepositoId: Number(a.wmsDepositoId) > 0 ? Number(a.wmsDepositoId) : null,
+        })),
         fichaDiseno: {
             ref: f.fichaDiseno.ref?.trim() || null,
             marca: f.fichaDiseno.marca?.trim() || null,
@@ -419,10 +459,22 @@ export default function ConfigurarProductosPage() {
     const [productos, setProductos] = useState([]);
     const [tecnicasCat, setTecnicasCat] = useState([]);       // TecnicaOpciones (all)
     const [moldesTp, setMoldesTp] = useState([]);             // moldes de TizadaPro (solo lectura): modelos, piezas, talles, telas
+    const [areasPrincipales, setAreasPrincipales] = useState([]);   // F1: áreas que pueden producir un producto (ConfigMapeoERP)
+    const [materialesArea, setMaterialesArea] = useState({});       // F1: materiales de impresión por área (para productos sin molde)
+    const [filtroArea, setFiltroArea] = useState('');               // F1: filtro de la lista por producción principal
     const [moldesTpError, setMoldesTpError] = useState(null);  // TizadaPro no se puede leer (base o permiso)
     const [costurasIsoCat, setCosturasIsoCat] = useState([]); // CosturasISO (catálogo, ficha de diseño; incluye inactivas)
     const [aviosCat, setAviosCat] = useState([]);             // CatalogoAvios (incluye inactivos)
     const [locales, setLocales] = useState([]);               // productos del local
+    const [stockArts, setStockArts] = useState([]);           // [ACCESORIOS] cualquier artículo con variantes WMS (mástil, base…)
+    const [depositosWms, setDepositosWms] = useState([]);     // [ACCESORIOS] depósitos del WMS de donde puede salir un accesorio
+    const [stockPorDep, setStockPorDep] = useState({});       // [ACCESORIOS] { depId: { varianteId: stock } } — stock vivo de otros depósitos
+    const cargarStockDep = useCallback(async (dep) => {
+        const d = Number(dep); if (!d) return;
+        setStockPorDep(prev => (prev[d] ? prev : { ...prev, [d]: {} }));
+        try { const { data } = await api.get(`${API}/stock-wms/${d}`); setStockPorDep(prev => ({ ...prev, [d]: data?.data || {} })); }
+        catch { /* sin stock vivo: la fila lo muestra como "sin dato" */ }
+    }, []);
     const [stockDisponible, setStockDisponible] = useState(true);
     const [familiasCat, setFamiliasCat] = useState([]);        // variantes StockArt del grupo 2.1 (familias reales)
     const [loading, setLoading] = useState(false);
@@ -474,11 +526,13 @@ export default function ConfigurarProductosPage() {
 
     const loadCatalogos = useCallback(async () => {
         try {
-            const [t, iso, av] = await Promise.all([
+            const [t, iso, av, ar] = await Promise.all([
                 api.get(`${API}/tecnicas?all=1`),
                 api.get(`${API}/costuras-iso?all=1`),
                 api.get(`${API}/avios?all=1`),
+                api.get(`${API}/areas-principales`).catch(() => ({ data: { data: [] } })),
             ]);
+            setAreasPrincipales(ar.data?.data || []);
             setTecnicasCat(t.data?.data || []);
             setCosturasIsoCat(iso.data?.data || []);
             setAviosCat(av.data?.data || []);
@@ -491,6 +545,9 @@ export default function ConfigurarProductosPage() {
         try {
             const { data } = await api.get(`${API}/productos-local`);
             setLocales(data.data || []);
+            // [ACCESORIOS] los accesorios pueden ser de cualquier familia (mástiles, bases…): lista sin filtro
+            try { const r2 = await api.get(`${API}/productos-local`, { params: { todos: 1 } }); setStockArts(r2.data?.data || []); } catch { setStockArts([]); }
+            try { const r3 = await api.get(`${API}/depositos-wms`); setDepositosWms(r3.data?.data || []); } catch { setDepositosWms([]); }
             setStockDisponible(data.stockDisponible !== false);
         } catch (e) {
             toast.error('Error cargando productos del local: ' + (e.response?.data?.error || e.message));
@@ -578,6 +635,16 @@ export default function ConfigurarProductosPage() {
         } finally { setCreandoFamilia(false); }
     };
 
+    // F1: materiales de impresión de un área (una vez por área)
+    const loadMaterialesArea = useCallback(async (areaId) => {
+        if (!areaId || materialesArea[areaId]) return;
+        try {
+            const { data } = await api.get(`${API}/materiales-area/${areaId}`);
+            setMaterialesArea(prev => ({ ...prev, [areaId]: data.data || [] }));
+        } catch (e) { toast.error('Error leyendo los materiales del área: ' + (e.response?.data?.error || e.message)); }
+    }, [materialesArea]);
+    useEffect(() => { if (form?.tecnicaPrincipal && !form.esCombo) loadMaterialesArea(form.tecnicaPrincipal); }, [form?.tecnicaPrincipal, form?.esCombo, loadMaterialesArea]);
+
     const abrirProducto = async (proId) => {
         setFichaLoading(true);
         try {
@@ -604,7 +671,9 @@ export default function ConfigurarProductosPage() {
             // servidor responde "No se subió ninguna imagen" (400).
             const { data } = await api.post(`${API}/productos/${form.proId}/ficha-diseno/dibujo`, fd, { headers: { 'Content-Type': 'multipart/form-data' } });
             setF({ fichaDiseno: { ...form.fichaDiseno, dibujoUrl: data.dibujoUrl } });
-            toast.success('✅ Dibujo cargado');
+            // [FOTO ÚNICA] sin foto de catálogo, el dibujo pasa a ser la foto del producto (la publica el backend)
+            if (!form.imagen) { setForm(prev => ({ ...prev, imagen: data.dibujoUrl })); loadProductos(); }
+            toast.success(form.imagen ? '✅ Dibujo cargado' : '✅ Dibujo cargado. Como el producto no tenía foto, queda también como foto del producto.');
         } catch (e) {
             toast.error('Error subiendo el dibujo: ' + (e.response?.data?.error || e.message));
         } finally { setSubiendoDibujo(false); }
@@ -645,10 +714,11 @@ export default function ConfigurarProductosPage() {
             return toast.error('Poné la cantidad mínima (entero mayor a 0).');
         if (!form.esCombo && form.politica === 'PAQUETE' && (!form.cantidadFija || Number(form.cantidadFija) <= 0))
             return toast.error('Poné la cantidad fija del paquete (entero mayor a 0).');
-        if (!form.esCombo && form.apliques.some(ap => !ap.pieza))
+        if (!form.esCombo && form.tizadaProMoldeRef && form.apliques.some(ap => !ap.pieza))
             return toast.error('Cada aplique necesita una pieza del molde. Elegila en "Molde, telas y apliques".');
         if (!form.esCombo && form.estado === 'PUBLICADO' && form.origenTipo === 'CONFECCIONADO') {
-            if (!form.tizadaProMoldeRef) return toast.error('Para publicar, primero vinculá el molde de TizadaPro (paso "Molde, telas y apliques").');
+            if (form.molde === 'OBLIGATORIO' && !form.tizadaProMoldeRef) return toast.error('Para publicar, primero vinculá el molde de TizadaPro (paso "Molde, telas y apliques"), o marcá en "Producción principal" que el molde es opcional o que no lleva.');
+            if (form.molde !== 'OBLIGATORIO' && !form.tizadaProMoldeRef && !(Number(form.anchoM) > 0 && Number(form.altoM) > 0)) return toast.error('Sin molde, para publicar hace falta la medida fija (ancho × alto en metros) en "Producción principal".');
             const apagadas = form.apliques.filter(ap => ap.areaId !== 'ETIQUETA' && !form.tecnicas[ap.areaId]?.on).map(ap => areaMeta(ap.areaId).label);
             if (apagadas.length) return toast.error(`Para publicar, los apliques tienen que ser de técnicas activas. Activá ${[...new Set(apagadas)].join(', ')} en "Técnicas" o quitá esos apliques.`);
         }
@@ -695,10 +765,11 @@ export default function ConfigurarProductosPage() {
 
     const productosFiltrados = useMemo(() => productos.filter(p => {
         if (busca && !(`${p.Descripcion} ${p.CodArticulo} ${p.Etiqueta || ''}`.toLowerCase().includes(busca.toLowerCase()))) return false;
+        if (filtroArea && (p.TecnicaPrincipal || 'SB') !== filtroArea) return false;   // F1: por producción principal
         if (filtroEstado === 'PUBLICADO' || filtroEstado === 'BORRADOR') return p.Estado === filtroEstado;
         if (filtroEstado === 'SIN') return !p.Estado;
         return true;
-    }), [productos, busca, filtroEstado]);
+    }), [productos, busca, filtroEstado, filtroArea]);
 
     // Dos pestañas separadas: confeccionados (agrupados por familia) y combos (lista simple)
     const confeccionadosFiltrados = useMemo(() => productosFiltrados.filter(p => !esCombo(p)), [productosFiltrados]);
@@ -820,14 +891,18 @@ export default function ConfigurarProductosPage() {
             { id: 'precio', n: 2, label: 'Precio del paquete' },
             { id: 'resumen', n: 3, label: 'Revisar y publicar' },
         ];
+        const conf = form.origenTipo === 'CONFECCIONADO';
         return [
-            { id: 'origen', n: 1, label: 'Origen' },
-            { id: 'tecnicas', n: 2, label: 'Técnicas' },
-            { id: 'precio', n: 3, label: 'Precio y cantidades' },
-            ...(form.origenTipo === 'CONFECCIONADO' ? [{ id: 'molde', n: 4, label: 'Molde, telas y apliques' }] : []),
-            ...(form.origenTipo === 'CONFECCIONADO' ? [{ id: 'ficha', n: 5, label: 'Ficha de diseño' }] : []),
-            { id: 'resumen', n: form.origenTipo === 'CONFECCIONADO' ? 6 : 4, label: 'Revisar y publicar' },
-        ];
+            { id: 'origen', label: 'Origen' },
+            ...(conf ? [{ id: 'principal', label: 'Producción principal' }] : []),
+            { id: 'tecnicas', label: 'Técnicas' },
+            { id: 'precio', label: 'Precio y cantidades' },
+            { id: 'accesorios', label: 'Accesorios y estructura' },   // [ACCESORIOS] artículos de stock que salen con el producto
+            // Sin molde ("No lleva") no hay piezas ni telas del molde: el paso se salta (los materiales van en Producción principal)
+            ...(conf && form.molde !== 'NO' ? [{ id: 'molde', label: form.molde === 'OPCIONAL' ? 'Molde (opcional), telas y apliques' : 'Molde, telas y apliques' }] : []),
+            ...(conf ? [{ id: 'ficha', label: 'Ficha de diseño' }] : []),
+            { id: 'resumen', label: 'Revisar y publicar' },
+        ].map((p, i) => ({ ...p, n: i + 1 }));
     }, [form]);
 
     const setF = (patch) => setForm(prev => ({ ...prev, ...patch }));
@@ -837,15 +912,21 @@ export default function ConfigurarProductosPage() {
     // Material y Tallas de la ficha salen del molde de TizadaPro y de las telas ofrecidas.
     // Se rellenan solos cuando están vacíos; el usuario puede pisarlos o volver al automático.
     const autoFicha = useMemo(() => {
-        if (!moldeSel) return { material: '', tallas: '' };
+        // F1: el material sale de los materiales marcados, vengan del molde de TizadaPro o del área
+        // (producto sin molde). Las tallas solo existen si hay molde.
         const telas = [...(form?.telas || new Map()).values()];
+        if (!moldeSel) {
+            const primera = telas.find(t => t.esDefault) || telas[0];
+            const material = telas.length ? (telas.length === 1 ? primera.material : `${primera.material} (o ${telas.filter(t => t !== primera).map(t => t.material).join(', ')})`) : '';
+            return { material, tallas: '' };
+        }
         const primera = telas.find(t => t.esDefault) || telas[0];
         const material = telas.length ? (telas.length === 1 ? primera.material : `${primera.material} (o ${telas.filter(t => t !== primera).map(t => t.material).join(', ')})`) : '';
         const tallas = agruparTalles(moldeSel.talles).map(([g, l]) => `${g} ${l[0].replace(/fem$/i, '')}–${l[l.length - 1].replace(/fem$/i, '')}`).join(' · ');
         return { material, tallas };
     }, [moldeSel, form?.telas]);
     useEffect(() => {
-        if (!form || form.esCombo || !moldeSel) return;
+        if (!form || form.esCombo) return;
         const patch = {};
         if (!form.fichaDiseno.material && autoFicha.material) patch.material = autoFicha.material;
         if (!form.fichaDiseno.tallas && autoFicha.tallas) patch.tallas = autoFicha.tallas;
@@ -1008,6 +1089,13 @@ export default function ConfigurarProductosPage() {
                             <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
                                 <div className="p-3 border-b border-slate-100 space-y-2">
                                     <div className="flex gap-2">
+                                        {vista === 'confeccionados' && areasPrincipales.length > 0 && (
+                                            <select value={filtroArea} onChange={e => setFiltroArea(e.target.value)} title="Ver solo los productos que produce un área (producción principal)"
+                                                className="border border-slate-200 rounded-lg px-2 py-1.5 text-xs font-bold text-slate-600 mb-2 w-full">
+                                                <option value="">Todas las áreas</option>
+                                                {areasPrincipales.filter(a => AREAS_PRINCIPAL.includes(a.AreaID) || productos.some(p => p.TecnicaPrincipal === a.AreaID)).map(a => <option key={a.AreaID} value={a.AreaID}>Produce {a.Nombre} ({a.AreaID})</option>)}
+                                            </select>
+                                        )}
                                         <input value={busca} onChange={e => setBusca(e.target.value)}
                                             placeholder={vista === 'combos' ? '🔍 Buscar combo…' : '🔍 Buscar producto…'}
                                             className="flex-1 border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300" />
@@ -1372,6 +1460,98 @@ export default function ConfigurarProductosPage() {
                                                 );
                                             })()}
 
+                                            {/* ── PASO PRODUCCIÓN PRINCIPAL (F1) ── */}
+                                            {paso === 'principal' && (() => {
+                                                const areaSel = areasPrincipales.find(a => a.AreaID === form.tecnicaPrincipal);
+                                                const mats = materialesArea[form.tecnicaPrincipal] || [];
+                                                const sinMolde = form.molde === 'NO' || (form.molde === 'OPCIONAL' && !form.tizadaProMoldeRef);
+                                                const cambiarArea = (areaId) => {
+                                                    // La técnica principal va como técnica obligatoria e incluida; la anterior se apaga
+                                                    const tecnicas = { ...form.tecnicas };
+                                                    AREAS_PRINCIPAL.forEach(a => { if (tecnicas[a] && a !== areaId) tecnicas[a] = { ...tecnicas[a], on: false }; });
+                                                    tecnicas[areaId] = { ...(tecnicas[areaId] || { modo: 'LIBRE' }), on: true, obligatorio: true, cobro: 'INCLUIDA' };
+                                                    setF({ tecnicaPrincipal: areaId, tecnicas, molde: areaId === 'SB' ? 'OBLIGATORIO' : (form.molde === 'OBLIGATORIO' ? 'OPCIONAL' : form.molde), telas: new Map() });
+                                                };
+                                                return (
+                                                <div className="space-y-4">
+                                                    <div className="border border-slate-200 rounded-xl p-4">
+                                                        <p className="text-[11px] font-black uppercase tracking-wider text-slate-400 mb-1">¿Qué área produce este producto?</p>
+                                                        <p className="text-[11px] text-slate-400 mb-3">Es la producción principal: la que imprime la tela o el material. Corte, costura y decoración se suman en "Técnicas".</p>
+                                                        <div className="grid gap-2" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))' }}>
+                                                            {areasPrincipales.filter(a => AREAS_PRINCIPAL.includes(a.AreaID) || a.AreaID === form.tecnicaPrincipal).map(a => {
+                                                                const meta = areaMeta(a.AreaID);
+                                                                const sel = form.tecnicaPrincipal === a.AreaID;
+                                                                return (
+                                                                    <button key={a.AreaID} type="button" onClick={() => cambiarArea(a.AreaID)}
+                                                                        className={`flex items-center gap-3 rounded-xl border-2 p-3 text-left ${sel ? 'border-emerald-500 bg-emerald-50/40' : 'border-slate-200 hover:border-slate-300'}`}>
+                                                                        <div className={`w-9 h-9 rounded-lg bg-gradient-to-br ${meta.grad || 'from-slate-400 to-slate-600'} text-white flex items-center justify-center flex-shrink-0`}><i className={`fa-solid ${meta.icon || 'fa-industry'} text-sm`}></i></div>
+                                                                        <div className="min-w-0"><div className="font-black text-sm text-slate-800">{a.Nombre}</div><div className="text-[10px] text-slate-400">área {a.AreaID} · órdenes {a.CodOrden}-</div></div>
+                                                                    </button>
+                                                                );
+                                                            })}
+                                                        </div>
+                                                        {!areasPrincipales.length && <p className="text-xs text-amber-600 font-bold">No se pudieron leer las áreas (falta docs/migrations/configurador_f1_produccion_principal.sql en esta base o ConfigMapeoERP vacía).</p>}
+                                                    </div>
+
+                                                    <div className="border border-slate-200 rounded-xl p-4">
+                                                        <p className="text-[11px] font-black uppercase tracking-wider text-slate-400 mb-1">Molde de TizadaPro</p>
+                                                        <div className="grid gap-2 md:grid-cols-3">
+                                                            {MOLDE_OPCIONES.map(([v, t, desc]) => (
+                                                                <button key={v} type="button" onClick={() => setF({ molde: v })}
+                                                                    className={`rounded-xl border-2 p-3 text-left ${form.molde === v ? 'border-emerald-500 bg-emerald-50/40' : 'border-slate-200 hover:border-slate-300'}`}>
+                                                                    <div className="font-black text-sm text-slate-800">{t}</div>
+                                                                    <div className="text-[11px] text-slate-500 mt-0.5">{desc}</div>
+                                                                </button>
+                                                            ))}
+                                                        </div>
+                                                        {form.molde !== 'NO' && <p className="text-[11px] text-slate-400 mt-2">El molde se vincula en el paso "Molde, telas y apliques".</p>}
+                                                    </div>
+
+                                                    {form.molde !== 'OBLIGATORIO' && (
+                                                        <div className="border border-slate-200 rounded-xl p-4">
+                                                            <p className="text-[11px] font-black uppercase tracking-wider text-slate-400 mb-1">Medida fija del producto {form.molde === 'OPCIONAL' && form.tizadaProMoldeRef ? <span className="normal-case font-bold text-slate-400">(con molde vinculado, manda el molde)</span> : <span className="normal-case font-bold text-rose-500">(obligatoria para publicar sin molde)</span>}</p>
+                                                            <p className="text-[11px] text-slate-400 mb-3">El archivo que manda el cliente tiene que medir exactamente esto. Ej.: windflag pluma 2,8 m → 0,70 × 2,80.</p>
+                                                            <div className="flex flex-wrap items-end gap-3 text-sm">
+                                                                <label className="text-[11px] font-bold text-slate-500">Ancho (m)<input type="number" step="0.01" min="0" value={form.anchoM} onChange={e => setF({ anchoM: e.target.value })} className="block w-28 border border-slate-200 rounded-lg px-2.5 py-2 text-sm font-bold text-slate-800" /></label>
+                                                                <label className="text-[11px] font-bold text-slate-500">Alto (m)<input type="number" step="0.01" min="0" value={form.altoM} onChange={e => setF({ altoM: e.target.value })} className="block w-28 border border-slate-200 rounded-lg px-2.5 py-2 text-sm font-bold text-slate-800" /></label>
+                                                                <label className="text-[11px] font-bold text-slate-500">Borde / demasía (cm)<input type="number" step="0.5" min="0" value={form.bordeCm} onChange={e => setF({ bordeCm: e.target.value })} className="block w-28 border border-slate-200 rounded-lg px-2.5 py-2 text-sm font-bold text-slate-800" placeholder="0" /></label>
+                                                                <label className="text-[11px] font-bold text-slate-500">Se cuenta por
+                                                                    <select value={form.um} onChange={e => setF({ um: e.target.value })} className="block border border-slate-200 rounded-lg px-2.5 py-2 text-sm font-bold text-slate-800">
+                                                                        <option value="u">unidad</option><option value="m">metro lineal</option><option value="m2">metro cuadrado</option>
+                                                                    </select>
+                                                                </label>
+                                                            </div>
+                                                        </div>
+                                                    )}
+
+                                                    {sinMolde && (
+                                                        <div className="border border-slate-200 rounded-xl p-4">
+                                                            <p className="text-[11px] font-black uppercase tracking-wider text-slate-400 mb-1">Materiales que se ofrecen <span className="normal-case font-bold">(⭐ = se imprime en este por defecto)</span></p>
+                                                            <p className="text-[11px] text-slate-400 mb-3">Materiales de impresión del área {areaSel?.Nombre || form.tecnicaPrincipal}. Sin ninguno marcado, la solicitud ofrece todos. El precio es el de la lista de precios: acá no se cambia.</p>
+                                                            {mats.length === 0 ? <p className="text-xs text-amber-600 font-bold">El área no tiene materiales visibles en el nomenclador (StockArt del grupo del área, tipo MATERIAL).</p> : (
+                                                                <div className="space-y-1.5">
+                                                                    {mats.map(m => {
+                                                                        const id = m.ProIdProducto;
+                                                                        const sel = form.telas.has(id);
+                                                                        const v = sel ? form.telas.get(id) : null;
+                                                                        return (
+                                                                            <div key={id} className={`flex flex-wrap items-center gap-2 rounded-lg border px-3 py-1.5 ${sel ? 'border-emerald-300 bg-emerald-50/30' : 'border-slate-200'}`}>
+                                                                                <Toggle on={sel} onChange={on => { const next = new Map(form.telas); if (on) next.set(id, { codArticulo: m.CodArticulo, material: m.Material, esDefault: next.size === 0 }); else next.delete(id); setF({ telas: next }); }} />
+                                                                                <span className="text-sm font-bold flex-1 min-w-[160px] text-slate-700">{m.Material}<span className="block text-[10px] font-normal text-slate-400">{m.Variante}{m.Ancho ? ` · ancho ${Number(m.Ancho).toFixed(2)} m` : ''}{m.Largo ? ` · largo fijo ${Number(m.Largo).toFixed(2)} m` : ''}</span></span>
+                                                                                <span className="text-[11px] text-slate-500">{m.PrecioBase != null ? fmtPrecio(m.PrecioBase, m.Moneda) : 'sin precio en la lista'}</span>
+                                                                                {sel && <button type="button" onClick={() => { const next = new Map(form.telas); next.forEach((x, k) => next.set(k, { ...x, esDefault: k === id })); setF({ telas: next }); }}
+                                                                                    className={`text-[11px] font-bold px-2 py-1 rounded-full border ${v.esDefault ? 'bg-amber-100 border-amber-300 text-amber-700' : 'border-slate-200 text-slate-400 hover:border-slate-400'}`}>{v.esDefault ? '⭐ por defecto' : 'hacer por defecto'}</button>}
+                                                                            </div>
+                                                                        );
+                                                                    })}
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                                );
+                                            })()}
+
                                             {/* ── PASO TÉCNICAS ── */}
                                             {paso === 'tecnicas' && (() => {
                                                 const renderTecnicaCard = (a) => {
@@ -1447,7 +1627,6 @@ export default function ConfigurarProductosPage() {
                                                                                     })}
                                                                                 </div>
                                                                             </div>
-                                                                        )}
                                                                             {(a.id === 'EMB' || a.id === 'TPU') && <p className="text-[10.5px] text-slate-400 mt-2">La matriz se cobra solo la primera vez.</p>}
                                                                         </div>
                                                                     )}
@@ -1460,7 +1639,7 @@ export default function ConfigurarProductosPage() {
                                                     <div className="space-y-5">
                                                         <div>
                                                             <p className="text-[11px] font-black uppercase tracking-wider text-slate-400 mb-2">Construcción</p>
-                                                            <div className="space-y-3">{AREAS_CONSTRUCCION.map(renderTecnicaCard)}</div>
+                                                            <div className="space-y-3">{AREAS_CONSTRUCCION.filter(a => !AREAS_PRINCIPAL.includes(a.id) || a.id === (form.tecnicaPrincipal || 'SB')).map(renderTecnicaCard)}</div>
                                                         </div>
                                                         <div>
                                                             <p className="text-[11px] font-black uppercase tracking-wider text-slate-400 mb-2">Decoración</p>
@@ -1666,7 +1845,7 @@ export default function ConfigurarProductosPage() {
                                                     {/* Molde de TizadaPro (solo lectura): el molde, sus piezas, talles y modelos viven allá */}
                                                     <div className="border border-slate-200 rounded-xl p-4">
                                                         <p className="text-[11px] font-black uppercase tracking-wider text-slate-400 mb-1">Molde de TizadaPro</p>
-                                                        <p className="text-[11px] text-slate-400 mb-3">El molde, sus piezas, sus talles y sus modelos se cargan en TizadaPro. Acá solo se elige cuál es el de este producto.</p>
+                                                        <p className="text-[11px] text-slate-400 mb-3">El molde, sus piezas, sus talles y sus modelos se cargan en TizadaPro. Acá solo se elige cuál es el de este producto.{form.molde === 'OPCIONAL' ? ' Para este producto el molde es OPCIONAL: sin molde, el cliente manda el archivo pronto a la medida fija y los materiales son los del paso "Producción principal".' : ''}</p>
                                                         {moldesTpError && <div className="bg-rose-50 border border-rose-200 text-rose-700 rounded-lg px-3 py-2 text-xs font-bold mb-3">No se pudo leer TizadaPro: {moldesTpError}</div>}
                                                         <div className="flex flex-wrap items-center gap-2">
                                                             <select value={form.tizadaProMoldeRef || ''} disabled={!!moldesTpError}
@@ -1813,6 +1992,100 @@ export default function ConfigurarProductosPage() {
                                                 </div>
                                             )}
 
+                                            {/* ── PASO ACCESORIOS Y ESTRUCTURA (artículos de stock que salen con el producto) ── */}
+                                            {paso === 'accesorios' && (() => {
+                                                const lista = form.accesorios || [];
+                                                const setLista = (next) => setF({ accesorios: next });
+                                                return (
+                                                    <div className="space-y-3 max-w-3xl">
+                                                        <p className="text-[11px] font-black uppercase tracking-wider text-slate-400">Artículos de stock que salen con el producto (mástil, base, funda…)</p>
+                                                        <p className="text-xs text-slate-500 leading-relaxed">
+                                                            Al cargar un pedido, cada accesorio genera su línea de venta y se descuenta del WMS, del depósito que elijas acá
+                                                            (el de ventas, el Centro de stock general u otro). En producción, antes de pasar a depósito,
+                                                            se controla que la cantidad de accesorios coincida con las unidades del producto. Los artículos tienen que existir en
+                                                            Marketing › Productos y estar vinculados al WMS para aparecer acá.
+                                                        </p>
+                                                        {lista.length === 0 && (
+                                                            <div className="border-2 border-dashed border-slate-200 rounded-xl p-6 text-center text-sm text-slate-400">
+                                                                Este producto no lleva accesorios de stock.
+                                                            </div>
+                                                        )}
+                                                        {lista.map((it, i) => {
+                                                            const loc = stockArts.find(l => l.ProIdProducto === Number(it.itemProIdProducto));
+                                                            const setItem = (patch) => { const next = [...lista]; next[i] = { ...it, ...patch }; setLista(next); };
+                                                            // stock a mostrar: el del depósito elegido (cargado aparte) o el de ventas que ya trae la variante
+                                                            const depSel = Number(it.wmsDepositoId) || 0;
+                                                            const stockDe = (v) => (depSel ? (stockPorDep[depSel] ? stockPorDep[depSel][v.wmsVarianteId] ?? 0 : null) : v.stock);
+                                                            return (
+                                                                <div key={i} className="border border-slate-200 rounded-xl bg-white px-3 py-2.5 flex flex-wrap items-center gap-2">
+                                                                    <span className="w-5 h-5 rounded-full bg-slate-800 text-white text-[10px] font-black flex items-center justify-center flex-shrink-0">{i + 1}</span>
+                                                                    <Thumb src={loc?.Imagen} size={34} icon="fa-box" />
+                                                                    <select value={it.itemProIdProducto}
+                                                                        onChange={e => {
+                                                                            const l2 = stockArts.find(x => x.ProIdProducto === Number(e.target.value));
+                                                                            // una sola variante: queda elegida sola (no hay talle/color que decidir)
+                                                                            const unica = (l2?.variantes || []).length === 1 ? l2.variantes[0] : null;
+                                                                            setItem({ itemProIdProducto: Number(e.target.value), itemNombre: l2?.Descripcion || '', wmsVarianteId: unica ? unica.wmsVarianteId : '', varianteNombre: unica ? unica.nombre : '' });
+                                                                        }}
+                                                                        className="flex-1 min-w-[160px] border border-slate-200 rounded-lg px-2 py-1.5 text-sm font-bold">
+                                                                        <option value="">Elegí el artículo de stock…</option>
+                                                                        {!loc && it.itemProIdProducto ? <option value={it.itemProIdProducto}>{it.itemNombre || `#${it.itemProIdProducto}`}</option> : null}
+                                                                        {stockArts.map(l => <option key={l.ProIdProducto} value={l.ProIdProducto}>{l.Descripcion}</option>)}
+                                                                    </select>
+                                                                    <select value={it.wmsDepositoId || ''} title="De qué depósito del WMS se retira este accesorio"
+                                                                        onChange={e => { const d = e.target.value ? Number(e.target.value) : ''; setItem({ wmsDepositoId: d }); if (d) cargarStockDep(d); }}
+                                                                        className="border border-slate-200 rounded-lg px-2 py-1.5 text-xs max-w-[210px]">
+                                                                        <option value="">Sale de: depósito de ventas</option>
+                                                                        {depositosWms.filter(d => !d.PorDefecto).map(d => <option key={d.DepId} value={d.DepId}>Sale de: {d.Nombre}</option>)}
+                                                                    </select>
+                                                                    {(loc?.variantes || []).length > 1 && <select value={it.wmsVarianteId || ''}
+                                                                        onChange={e => {
+                                                                            const v2 = (loc?.variantes || []).find(v => v.wmsVarianteId === Number(e.target.value));
+                                                                            setItem({ wmsVarianteId: e.target.value ? Number(e.target.value) : '', varianteNombre: v2?.nombre || '' });
+                                                                        }}
+                                                                        className="border border-slate-200 rounded-lg px-2 py-1.5 text-xs max-w-[190px]" title="Variante del WMS">
+                                                                        <option value="">Se elige al cargar el pedido</option>
+                                                                        {(loc?.variantes || []).map(v => {
+                                                                            const st = stockDe(v);
+                                                                            return <option key={v.wmsVarianteId} value={v.wmsVarianteId}>{v.nombre}{st != null ? ` (${st} u)` : ''}</option>;
+                                                                        })}
+                                                                    </select>}
+                                                                    {(loc?.variantes || []).length === 1 && (() => { const st = stockDe(loc.variantes[0]); return st != null ? <span className="text-[11px] text-slate-400">stock: {st} u</span> : null; })()}
+                                                                    <span className="inline-flex items-center gap-1 text-xs text-slate-500">
+                                                                        <input type="number" min="1" value={it.cantidad} title="Cantidad del accesorio por cada unidad del producto"
+                                                                            onChange={e => setItem({ cantidad: e.target.value })}
+                                                                            className="w-14 border border-slate-200 rounded-lg px-2 py-1.5 text-sm text-center font-bold" />
+                                                                        por unidad
+                                                                    </span>
+                                                                    <button type="button" title="¿Va siempre o lo decide quien carga el pedido?"
+                                                                        onClick={() => setItem({ obligatorio: !it.obligatorio })}
+                                                                        className={`px-2.5 py-1 rounded-full text-[11px] font-black border ${it.obligatorio ? 'bg-slate-800 border-slate-800 text-white' : 'bg-white border-slate-300 text-slate-500'}`}>
+                                                                        {it.obligatorio ? 'Siempre va' : 'Opcional'}
+                                                                    </button>
+                                                                    <button type="button" title="¿Va dentro del precio del producto o se cobra a precio de lista?"
+                                                                        onClick={() => setItem({ cobro: it.cobro === 'APARTE' ? 'INCLUIDO' : 'APARTE' })}
+                                                                        className={`px-2.5 py-1 rounded-full text-[11px] font-black border ${it.cobro === 'APARTE' ? 'bg-white border-slate-300 text-slate-500' : 'bg-emerald-50 border-emerald-300 text-emerald-700'}`}>
+                                                                        {it.cobro === 'APARTE' ? 'se cobra aparte' : 'incluido en el precio'}
+                                                                    </button>
+                                                                    <button type="button" onClick={() => setLista(lista.filter((_, j) => j !== i))}
+                                                                        className="text-red-400 hover:text-red-600 font-black px-1.5" title="Quitar">×</button>
+                                                                </div>
+                                                            );
+                                                        })}
+                                                        <button type="button" disabled={!stockArts.length}
+                                                            onClick={() => setLista([...lista, { itemProIdProducto: '', itemNombre: '', wmsVarianteId: '', varianteNombre: '', cantidad: 1, obligatorio: true, cobro: 'INCLUIDO', wmsDepositoId: '' }])}
+                                                            className="border border-dashed border-slate-300 rounded-xl px-4 py-2.5 text-sm font-bold text-slate-500 hover:border-slate-400 w-full disabled:opacity-50">
+                                                            + Agregar accesorio de stock
+                                                        </button>
+                                                        {!stockArts.length && (
+                                                            <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                                                                No hay artículos vinculados al WMS para elegir. Creá el artículo (ej. mástil) en Marketing › Productos y vinculalo al WMS.
+                                                            </p>
+                                                        )}
+                                                    </div>
+                                                );
+                                            })()}
+
                                             {/* ── PASO FICHA DE DISEÑO ── */}
                                             {paso === 'ficha' && (
                                                 <div className="space-y-4 max-w-3xl">
@@ -1835,7 +2108,8 @@ export default function ConfigurarProductosPage() {
                                                     </div>
 
                                                     <div className="border border-slate-200 rounded-xl p-4">
-                                                        <p className="text-[11px] font-black uppercase tracking-wider text-slate-400 mb-3">Dibujo del producto</p>
+                                                        <p className="text-[11px] font-black uppercase tracking-wider text-slate-400 mb-1">Dibujo del producto</p>
+                                                        <p className="text-[11px] text-slate-400 mb-3">Es el dibujo de la ficha técnica. Si el producto no tiene <b>Foto del producto</b> (primera pestaña), este dibujo queda también como su foto en tienda, portal, solicitud y artículo.</p>
                                                         <div className="flex items-center gap-3 mb-3 flex-wrap">
                                                             <label className={`px-3 py-1.5 rounded-full text-xs font-bold border border-dashed border-slate-300 text-slate-500 hover:border-slate-400 cursor-pointer ${subiendoDibujo ? 'opacity-50 pointer-events-none' : ''}`}>
                                                                 {subiendoDibujo ? 'Subiendo…' : (form.fichaDiseno.dibujoUrl ? '🔄 Cambiar dibujo' : '📤 Subir dibujo/imagen')}
@@ -1888,7 +2162,7 @@ export default function ConfigurarProductosPage() {
 
                                                     <div className="border border-slate-200 rounded-xl p-4">
                                                         <p className="text-[11px] font-black uppercase tracking-wider text-slate-400 mb-1">Datos de la prenda</p>
-                                                        <p className="text-[11px] text-slate-400 mb-3">Material y tallas salen del molde de TizadaPro y de las telas que se ofrecen. Se pueden pisar; "↻ automático" vuelve a lo del molde.</p>
+                                                        <p className="text-[11px] text-slate-400 mb-3">Material y tallas salen del molde de TizadaPro y de los materiales que se ofrecen (sin molde, de los del área). Se pueden pisar; "↻ automático" vuelve a lo calculado.</p>
                                                         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                                                             {[['material', 'Material', autoFicha.material], ['tallas', 'Tallas', autoFicha.tallas], ['marcacion', 'Marcación', null]].map(([k, label, auto]) => (
                                                                 <div key={k}>
@@ -1900,7 +2174,7 @@ export default function ConfigurarProductosPage() {
                                                                     <input value={form.fichaDiseno[k]} placeholder={auto || (k === 'marcacion' ? 'Cómo se marca el talle (etiqueta, estampa…)' : '')}
                                                                         onChange={e => setF({ fichaDiseno: { ...form.fichaDiseno, [k]: e.target.value } })}
                                                                         className={`w-full border rounded-lg px-2.5 py-1.5 text-sm ${auto != null && form.fichaDiseno[k] && form.fichaDiseno[k] === auto ? 'border-slate-200 text-slate-600 bg-slate-50' : 'border-slate-200'}`} />
-                                                                    {auto != null && !form.fichaDiseno[k] && !auto && <p className="text-[10px] text-amber-600 mt-1">{k === 'material' ? 'Marcá las telas que se ofrecen en "Molde, telas y apliques".' : 'Vinculá el molde de TizadaPro para tomar los talles.'}</p>}
+                                                                    {auto != null && !form.fichaDiseno[k] && !auto && <p className="text-[10px] text-amber-600 mt-1">{k === 'material' ? (form.molde === 'OBLIGATORIO' || form.tizadaProMoldeRef ? 'Marcá las telas que se ofrecen en "Molde, telas y apliques".' : 'Marcá los materiales que se ofrecen en "Producción principal".') : (form.molde === 'NO' ? 'Sin molde no hay talles: el producto va por unidad a medida fija.' : 'Vinculá el molde de TizadaPro para tomar los talles.')}</p>}
                                                                 </div>
                                                             ))}
                                                         </div>
@@ -2144,14 +2418,31 @@ export default function ConfigurarProductosPage() {
                                                             : form.comboItems.length > 0 ? `paquete armado: ${form.comboItems.map(it => `${it.cantidad}× ${it.itemNombre || `#${it.itemProIdProducto}`}${it.wmsVarianteId ? ` (${it.varianteNombre})` : ''}`).join(' + ')}`
                                                             : `paquete fijo de ${form.cantidadFija || '—'} u${form.surtido.size ? ` · surtido: ${form.surtido.size} variantes` : ' · surtido: todas'}`}</span></div>
                                                         {form.origenTipo === 'CONFECCIONADO' && (
-                                                            <div className="flex justify-between px-4 py-2.5 gap-4"><span className="text-slate-400 font-bold">Molde (TizadaPro)</span><span className={`font-bold text-right ${form.tizadaProMoldeRef ? 'text-slate-700' : 'text-amber-600'}`}>{form.tizadaProMoldeRef ? `${moldeSel?.nombre || form.tizadaProMoldeRef} · ${form.modelos.size} modelos · ${form.telas.size} telas · ${form.apliques.length} apliques` : '⚠ sin molde vinculado'}</span></div>
+                                                            <div className="flex justify-between px-4 py-2.5 gap-4"><span className="text-slate-400 font-bold">Producción principal</span><span className="font-bold text-slate-700 text-right">{areasPrincipales.find(a => a.AreaID === form.tecnicaPrincipal)?.Nombre || form.tecnicaPrincipal}{form.molde !== 'OBLIGATORIO' && form.anchoM && form.altoM ? ` · medida fija ${Number(form.anchoM).toFixed(2)} × ${Number(form.altoM).toFixed(2)} m` : ''} · por {form.um === 'm2' ? 'm²' : form.um === 'm' ? 'metro' : 'unidad'}</span></div>
+                                                        )}
+                                                        {form.origenTipo === 'CONFECCIONADO' && (
+                                                            <div className="flex justify-between px-4 py-2.5 gap-4"><span className="text-slate-400 font-bold">Molde (TizadaPro)</span><span className={`font-bold text-right ${form.tizadaProMoldeRef || form.molde !== 'OBLIGATORIO' ? 'text-slate-700' : 'text-amber-600'}`}>{form.tizadaProMoldeRef ? `${moldeSel?.nombre || form.tizadaProMoldeRef} · ${form.modelos.size} modelos · ${form.telas.size} telas · ${form.apliques.length} apliques` : form.molde === 'NO' ? `no lleva · ${form.telas.size} materiales ofrecidos` : form.molde === 'OPCIONAL' ? `opcional, sin vincular · ${form.telas.size} materiales ofrecidos` : '⚠ sin molde vinculado'}</span></div>
                                                         )}
                                                         <div className="flex justify-between px-4 py-2.5"><span className="text-slate-400 font-bold">Validar stock</span><span className="font-bold text-slate-700">{form.validarStock ? 'Sí' : 'No (contingencia)'}</span></div>
+                                                        {!form.esCombo && (
+                                                            <div className="flex justify-between px-4 py-2.5 gap-4"><span className="text-slate-400 font-bold">Accesorios de stock</span><span className="font-bold text-slate-700 text-right">{(form.accesorios || []).filter(a => a.itemProIdProducto).length
+                                                                ? (form.accesorios || []).filter(a => a.itemProIdProducto).map(a => `${a.cantidad}× ${a.itemNombre || `#${a.itemProIdProducto}`}${a.varianteNombre && (stockArts.find(l => l.ProIdProducto === Number(a.itemProIdProducto))?.variantes || []).length > 1 ? ` (${a.varianteNombre})` : ''} · ${a.obligatorio ? 'siempre' : 'opcional'} · ${a.cobro === 'APARTE' ? 'aparte' : 'incluido'}${Number(a.wmsDepositoId) ? ` · sale de ${depositosWms.find(d => d.DepId === Number(a.wmsDepositoId))?.Nombre || `depósito ${a.wmsDepositoId}`}` : ''}`).join(' · ')
+                                                                : 'No lleva'}</span></div>
+                                                        )}
+                                                    </div>
+                                                    {/* F1: canales. Hoy se guardan; cada canal pasa a leerlos cuando le toque (interno → tienda → portal). */}
+                                                    <div className="border border-slate-200 rounded-xl p-4">
+                                                        <p className="text-[11px] font-black uppercase tracking-wider text-slate-400 mb-2">Dónde se ve (cuando está publicado)</p>
+                                                        <div className="flex flex-wrap gap-4">
+                                                            {[['visibleInterno', 'Interno', 'Fabricar a medida, combos, solicitudes de vendedor'], ['visibleTienda', 'Tienda', 'e-commerce del portal (hoy también prende "Publicado" en la tienda)'], ['visiblePortal', 'Portal', 'forms por servicio del cliente (todavía no lo lee: se prepara el terreno)']].map(([k, t, d]) => (
+                                                                <label key={k} className="flex items-start gap-2 min-w-[200px]"><Toggle on={!!form[k]} onChange={v => setF({ [k]: v })} /><span><span className="block font-bold text-sm text-slate-700">{t}</span><span className="block text-[11px] text-slate-400">{d}</span></span></label>
+                                                            ))}
+                                                        </div>
                                                     </div>
                                                     <div className={`flex items-center gap-3 border-2 rounded-xl p-4 ${form.estado === 'PUBLICADO' ? 'border-emerald-300 bg-emerald-50/50' : 'border-slate-200'}`}>
                                                         <Toggle on={form.estado === 'PUBLICADO'} onChange={v => setF({ estado: v ? 'PUBLICADO' : 'BORRADOR' })} />
                                                         <div>
-                                                            <div className="font-bold text-sm text-slate-700">{form.estado === 'PUBLICADO' ? 'Publicado — visible en el pedido web' : 'Borrador — NO se ve en el pedido web'}</div>
+                                                            <div className="font-bold text-sm text-slate-700">{form.estado === 'PUBLICADO' ? 'Publicado — visible en los canales marcados' : 'Borrador — NO se ve en ningún canal'}</div>
                                                             <div className="text-xs text-slate-400">El cambio rige al Guardar.</div>
                                                         </div>
                                                         <button onClick={guardar} disabled={saving}

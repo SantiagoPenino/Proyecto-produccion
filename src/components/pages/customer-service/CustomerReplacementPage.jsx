@@ -1,8 +1,7 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useCallback } from 'react';
 import { fileControlService } from '../../../services/modules/fileControlService';
 import { useAuth } from '../../../context/AuthContext';
 import Toast from '../../ui/Toast';
-import { socket } from '../../../services/socketService';
 
 const CustomerReplacementPage = () => {
     const { user } = useAuth();
@@ -48,17 +47,9 @@ const CustomerReplacementPage = () => {
         }
     }, [query]);
 
-    // --- Tiempo real: re-buscar cuando cambia el estado de alguna orden ---
-    useEffect(() => {
-        if (query.length < 3) return;
-        const handleUpdate = () => handleSearch();
-        socket.on('server:order_updated', handleUpdate);
-        socket.on('server:ordersUpdated', handleUpdate);
-        return () => {
-            socket.off('server:order_updated', handleUpdate);
-            socket.off('server:ordersUpdated', handleUpdate);
-        };
-    }, [query, handleSearch]);
+    // Sin tiempo real a propósito: la lista se actualiza solo cuando el operario busca.
+    // (Antes escuchaba los avisos de socket de cualquier orden de la planta y cada uno
+    // cerraba la orden abierta y borraba lo cargado.)
 
     // --- Select Order ---
     const handleSelectOrder = async (order) => {

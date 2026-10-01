@@ -69,6 +69,10 @@ router.get('/productos-terminados', verifyToken, async (req, res) => {
         // Familia › Etiqueta › Producto. Si la base todavía no tiene la etiqueta (falta
         // docs/migrations/configurador_etiquetas.sql), viene NULL y el árbol sale sin ese nivel.
         const conEtiqueta = (await pool.request().query(`SELECT COL_LENGTH('dbo.ProductoVentaConfig', 'EtiquetaID') AS c`)).recordset[0].c != null;
+        // F1: producción principal, molde y medida fija del producto (docs/migrations/configurador_f1_produccion_principal.sql)
+        const conF1 = (await pool.request().query(`SELECT COL_LENGTH('dbo.ProductoVentaConfig', 'TecnicaPrincipal') AS c`)).recordset[0].c != null;
+        const area = String(req.query.area || '').trim().toUpperCase();
+        if (area) request.input('Area', require('mssql').VarChar, area);
         const r = await request.query(`
             SELECT
                 a.ProIdProducto,
@@ -76,19 +80,25 @@ router.get('/productos-terminados', verifyToken, async (req, res) => {
                 LTRIM(RTRIM(a.Descripcion)) AS Descripcion,
                 LTRIM(RTRIM(a.CodStock))    AS CodStock,
                 LTRIM(RTRIM(sa.Articulo))   AS Categoria,
-                a.MonIdMoneda,
+                -- [FUENTE ÚNICA] la moneda del precio es la de PreciosBase (la del artículo queda para materiales)
+                ISNULL(pb.MonIdMoneda, CASE UPPER(LTRIM(RTRIM(pb.Moneda))) WHEN 'USD' THEN 2 WHEN 'UYU' THEN 1 ELSE a.MonIdMoneda END) AS MonIdMoneda,
                 pb.Precio,
                 ISNULL(vc.CantidadVariantes, 0) AS CantidadVariantes,
                 ISNULL(img.url_imagen, fd.DibujoUrl) AS Imagen,   -- foto del producto; si no hay, el dibujo de la ficha de diseño
                 vcfg.Estado, vcfg.CantidadMinima, vcfg.CantidadFija, LTRIM(RTRIM(pb.Moneda)) AS Moneda,
-                ${conEtiqueta ? 'vcfg.EtiquetaID, etq.Nombre AS Etiqueta' : 'CAST(NULL AS INT) AS EtiquetaID, CAST(NULL AS NVARCHAR(100)) AS Etiqueta'}
+                ${conEtiqueta ? 'vcfg.EtiquetaID, etq.Nombre AS Etiqueta' : 'CAST(NULL AS INT) AS EtiquetaID, CAST(NULL AS NVARCHAR(100)) AS Etiqueta'},
+                ${conF1 ? 'vcfg.TecnicaPrincipal, vcfg.Molde, vcfg.UM, vcfg.AnchoM, vcfg.AltoM, vcfg.BordeCm, vcfg.VisibleInterno, vcfg.VisibleTienda, vcfg.VisiblePortal' : "CAST(NULL AS VARCHAR(10)) AS TecnicaPrincipal, CAST(NULL AS VARCHAR(12)) AS Molde, CAST(NULL AS VARCHAR(3)) AS UM, CAST(NULL AS DECIMAL(10,3)) AS AnchoM, CAST(NULL AS DECIMAL(10,3)) AS AltoM, CAST(NULL AS DECIMAL(6,2)) AS BordeCm, CAST(1 AS BIT) AS VisibleInterno, CAST(NULL AS BIT) AS VisibleTienda, CAST(NULL AS BIT) AS VisiblePortal"}
             FROM dbo.Articulos a
             INNER JOIN dbo.StockArt sa
                 ON LTRIM(RTRIM(sa.CodStock)) = LTRIM(RTRIM(a.CodStock))
             LEFT JOIN dbo.PreciosBase pb ON pb.ProIdProducto = a.ProIdProducto
             LEFT JOIN dbo.ProductoVentaConfig vcfg ON vcfg.ProIdProducto = a.ProIdProducto
             ${conEtiqueta ? 'LEFT JOIN dbo.ProductoEtiqueta etq ON etq.EtiquetaID = vcfg.EtiquetaID' : ''}
-            OUTER APPLY (SELECT TOP 1 url_imagen FROM dbo.Articulos_Imagenes i WHERE i.Idproid = a.ProIdProducto ORDER BY i.orden) img
+            OUTER APPLY (SELECT TOP 1 url_imagen FROM (
+                             SELECT i.url_imagen, i.orden FROM dbo.Articulos_Imagenes i WHERE i.Idproid = a.ProIdProducto
+                             UNION ALL   -- [FOTO ÚNICA] sin foto de catálogo, el dibujo de la ficha técnica
+                             SELECT f.DibujoUrl, 9999 FROM dbo.ProductoFichaDiseno f WHERE f.ProIdProducto = a.ProIdProducto AND f.DibujoUrl IS NOT NULL
+                         ) x ORDER BY x.orden) img
             LEFT JOIN dbo.ProductoFichaDiseno fd ON fd.ProIdProducto = a.ProIdProducto
             LEFT JOIN (
                 SELECT Idproid, COUNT(*) AS CantidadVariantes
@@ -100,6 +110,7 @@ router.get('/productos-terminados', verifyToken, async (req, res) => {
               ${categoria ? 'AND LTRIM(RTRIM(sa.Articulo)) = @Cat' : ''}
               ${grupo ? 'AND LTRIM(RTRIM(sa.Grupo)) = @Grp' : ''}
               ${req.query.publicados === '1' ? "AND vcfg.Estado = 'PUBLICADO'" : ''}
+              ${conF1 && area ? 'AND vcfg.TecnicaPrincipal = @Area' : ''}
             ORDER BY Categoria, Descripcion
         `);
         res.json({ success: true, data: r.recordset });
@@ -129,6 +140,33 @@ router.get('/productos-terminados/:proIdProducto/servicios', verifyToken, async 
             .input('PID', sql.Int, proId)
             .query(`SELECT AreaID, Obligatorio, Modo, Cobro FROM dbo.ProductoTerminadoServicios WHERE ProIdProducto = @PID`);
 
+        // [F1] Producción principal del producto (área, molde, medida fija, unidad, cantidades) y los
+        // materiales que ofrece (ProductoTelas → artículos; si no marcó ninguno y la principal no es
+        // sublimación, todos los del área). Mismo formato que /nomenclators/materials para que el
+        // formulario los use tal cual. Sin el SQL de F1, config = null y todo sigue como antes.
+        let config = null, materiales = [];
+        try {
+            const conF1 = (await pool.request().query(`SELECT COL_LENGTH('dbo.ProductoVentaConfig', 'TecnicaPrincipal') AS c`)).recordset[0].c != null;
+            if (conF1) {
+                const c = (await pool.request().input('PID', sql.Int, proId).query(`
+                    SELECT TecnicaPrincipal, Molde, UM, AnchoM, AltoM, BordeCm, CantidadMinima, CantidadFija, Estado,
+                           CASE WHEN COL_LENGTH('dbo.ProductoVentaConfig', 'TizadaProMoldeRef') IS NULL THEN NULL ELSE TizadaProMoldeRef END AS TizadaProMoldeRef
+                    FROM dbo.ProductoVentaConfig WHERE ProIdProducto = @PID`)).recordset[0];
+                if (c) {
+                    config = { ...c, TecnicaPrincipal: c.TecnicaPrincipal || 'SB', Molde: c.Molde || 'OBLIGATORIO', UM: c.UM || 'u' };
+                    const t = await pool.request().input('PID', sql.Int, proId).query(`
+                        SELECT LTRIM(RTRIM(a.CodArticulo)) AS CodArticulo, LTRIM(RTRIM(a.CodStock)) AS CodStock, LTRIM(RTRIM(a.Descripcion)) AS Material,
+                               a.anchoimprimible AS Ancho, a.largoimprimible AS Largo, LTRIM(RTRIM(sa.Articulo)) AS Variante, a.ProIdProducto, t.EsDefault
+                        FROM dbo.ProductoTelas t
+                        INNER JOIN dbo.Articulos a ON a.ProIdProducto = t.TelaProIdProducto
+                        LEFT JOIN dbo.StockArt sa ON LTRIM(RTRIM(sa.CodStock)) = LTRIM(RTRIM(a.CodStock))
+                        WHERE t.ProIdProducto = @PID ORDER BY ISNULL(t.Orden, 999), t.ID`);
+                    materiales = t.recordset;
+                    if (!materiales.length && config.TecnicaPrincipal !== 'SB') materiales = await require('../services/pedidosExternos/catalogo').materialesDeArea(pool, config.TecnicaPrincipal);
+                }
+            }
+        } catch (e) { logger.warn(`[Prendas] productos-terminados/servicios config F1: ${e.message}`); }
+
         const comboItems = await pool.request()
             .input('PID', sql.Int, proId)
             .query(`
@@ -138,8 +176,36 @@ router.get('/productos-terminados/:proIdProducto/servicios', verifyToken, async 
                 LEFT JOIN dbo.Articulos a ON a.ProIdProducto = ci.ItemProIdProducto
                 WHERE ci.ProIdProducto = @PID ORDER BY ISNULL(ci.Orden, 999), ci.ID
             `);
+        // [ACCESORIOS] artículos de stock que salen con el producto (configurador › Accesorios y estructura).
+        // Si la tabla no existe todavía (prod sin migrar), lista vacía.
+        let accesorios = [];
+        try {
+            const acc = await pool.request().input('PID', sql.Int, proId).query(`
+                IF OBJECT_ID('dbo.ProductoAccesorios', 'U') IS NOT NULL
+                SELECT ac.ID, ac.ItemProIdProducto, ac.WmsVarianteId, ac.Cantidad, ac.Obligatorio, ac.Cobro, ac.WmsDepositoId,
+                       LTRIM(RTRIM(a.Descripcion)) AS ItemDescripcion, v.nombre_variante AS VarianteNombre, v.sku AS Sku
+                FROM dbo.ProductoAccesorios ac
+                LEFT JOIN dbo.Articulos a ON a.ProIdProducto = ac.ItemProIdProducto
+                LEFT JOIN dbo.Articulos_WMS_Variantes v ON v.wms_variante_id = ac.WmsVarianteId
+                WHERE ac.ProIdProducto = @PID ORDER BY ISNULL(ac.Orden, 999), ac.ID`);
+            accesorios = acc.recordset || [];
+            // Sin variante fija, quien carga el pedido elige talle/color: se mandan las variantes del artículo
+            // Un artículo con UNA sola variante (ej. "Auriculares" = el artículo mismo) no da nada a elegir:
+            // se resuelve sola y VarianteUnica avisa a los formularios que no la muestren.
+            const ids = [...new Set(accesorios.map(a => a.ItemProIdProducto))];
+            if (ids.length) {
+                const vs = await pool.request().query(`SELECT Idproid, wms_variante_id, nombre_variante, sku FROM dbo.Articulos_WMS_Variantes WHERE Idproid IN (${ids.join(',')}) ORDER BY nombre_variante`);
+                accesorios = accesorios.map(a => {
+                    const vars = vs.recordset.filter(v => v.Idproid === a.ItemProIdProducto);
+                    const unica = vars.length === 1;
+                    if (a.WmsVarianteId) return { ...a, VarianteUnica: unica };
+                    if (unica) return { ...a, WmsVarianteId: vars[0].wms_variante_id, VarianteNombre: vars[0].nombre_variante, VarianteUnica: true };
+                    return { ...a, variantes: vars, VarianteUnica: false };
+                });
+            }
+        } catch (e) { accesorios = []; }
         if (!comboItems.recordset.length) {
-            return res.json({ success: true, data: r.recordset });
+            return res.json({ success: true, data: r.recordset, config, materiales, accesorios });
         }
 
         const comboSrv = await pool.request()
@@ -167,7 +233,7 @@ router.get('/productos-terminados/:proIdProducto/servicios', verifyToken, async 
                 .map(s => ({ areaId: s.AreaID, tecnicaOpcionId: s.TecnicaOpcionID, tecnicaOpcionNombre: s.TecnicaOpcionNombre, tecnicaOpcionCodArticulo: s.TecnicaOpcionCodArticulo, incluido: !!s.Incluido }))
         }));
 
-        res.json({ success: true, data: r.recordset, esCombo: true, componentes });
+        res.json({ success: true, data: r.recordset, esCombo: true, componentes, config, materiales });
     } catch (e) {
         logger.warn(`[Prendas] productos-terminados/servicios: ${e.message}`);
         res.json({ success: true, data: [], warning: e.message });

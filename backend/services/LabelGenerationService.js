@@ -53,7 +53,7 @@ class LabelGenerationService {
             // comprada+personalizada: trabajo interno de una orden madre PRO (el precio
             // único viaja ahí). Mismo trato que TERMINAC arriba — necesitan poder imprimir
             // su propio bulto de "próximo destino" sin cotización propia.
-            const esHermanaPrendaLbl = ['EMB', 'DF', 'TPU', 'EST', 'TWC', 'TWT', 'SB'].includes((o.AreaID || '').trim().toUpperCase())
+            const esHermanaPrendaLbl = ['EMB', 'DF', 'TPU', 'EST', 'TWC', 'TWT', 'SB', 'DIRECTA', 'ECOUV'].includes((o.AreaID || '').trim().toUpperCase())
                 ? (await pool.request().input('Doc', sql.VarChar, String(o.NoDocERP || ''))
                     .query("SELECT TOP 1 1 AS X FROM Ordenes WHERE NoDocERP = @Doc AND AreaID = 'PRO'")).recordset.length > 0
                 : false;

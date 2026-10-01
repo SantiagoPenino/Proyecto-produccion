@@ -279,6 +279,40 @@ const printEtiquetas = async (req, res) => {
         // pero como son IDs internos int, validamos antes y construimos string seguro.
         const idsStr = ids.join(',');
 
+        // REIMPRESIÓN de UNA etiqueta puntual (?etiquetaId=X&reimprimir=1), pedida a mano
+        // desde el detalle de la orden y confirmada por el operador: el rótulo se rompió o se
+        // perdió. Saltea el filtro de remitos (el bulto ya viajó y otra área lo tiene, ej.
+        // 28167/B32101 recibido en DEPOSITO por REM-361159) y el de DESPACHADO/PROCESADO.
+        // Mantiene fuera CONSUMIDO/PERDIDO/CANCELADO: esos bultos no existen físicamente.
+        const etiquetaIdReimp = parseInt(req.query.etiquetaId);
+        const esReimpresion = req.query.reimprimir === '1' && !isNaN(etiquetaIdReimp);
+        if (esReimpresion) request.input('EtiquetaIdReimp', sql.Int, etiquetaIdReimp);
+        const filtroBultos = esReimpresion
+            ? `AND E.EtiquetaID = @EtiquetaIdReimp
+              AND ISNULL(LB.Estado, '') NOT IN ('CONSUMIDO', 'PERDIDO', 'CANCELADO')`
+            : `-- Un bulto CONSUMIDO ya no existe físicamente: su contenido se incorporó a
+              -- otro bulto (ej. el material que entró a terminaciones y salió empaquetado).
+              -- Reimprimir su etiqueta sacaría un rótulo de un paquete que no está.
+              -- CANCELADO: bulto de una orden cancelada (vuelve a EN_STOCK si se reactiva).
+              AND ISNULL(LB.Estado, '') NOT IN ('CONSUMIDO', 'PERDIDO', 'DESPACHADO', 'PROCESADO', 'CANCELADO')
+              -- Un bulto que YA se incluyó en un remito (aunque ese remito se haya recibido
+              -- y el bulto vuelva a EN_STOCK del otro lado) no se reimprime acá: confunde al
+              -- que arma el PRÓXIMO remito con etiquetas de bultos que ya viajaron.
+              --
+              -- EXCEPCIÓN: remito todavía en ESPERANDO_RETIRO = nadie lo levantó, el paquete
+              -- sigue físicamente en el área de origen y necesita su rótulo. Pasa siempre con
+              -- las ventas de retiro (VEN-) de combos y de "Comprar y personalizar": al
+              -- confirmar el retiro se arma SOLO el remito PRO→área, en el mismo instante, y
+              -- el bulto quedaba EN_TRANSITO antes de que alguien imprimiera la etiqueta — no
+              -- se podía imprimir nunca (caso VEN-2405).
+              AND (ISNULL(LB.Estado, '') <> 'EN_TRANSITO'
+                   OR EXISTS (SELECT 1 FROM Logistica_EnvioItems ei2
+                              JOIN Logistica_Envios en2 ON en2.EnvioID = ei2.EnvioID
+                              WHERE ei2.BultoID = LB.BultoID AND en2.Estado = 'ESPERANDO_RETIRO'))
+              AND NOT EXISTS (SELECT 1 FROM Logistica_EnvioItems ei
+                              JOIN Logistica_Envios en ON en.EnvioID = ei.EnvioID
+                              WHERE ei.BultoID = LB.BultoID AND en.Estado <> 'ESPERANDO_RETIRO')`;
+
         const result = await request.query(`
             SELECT 
                 E.*,
@@ -301,28 +335,7 @@ const printEtiquetas = async (req, res) => {
             LEFT JOIN Clientes C2 ON O.CliIdCliente = C2.CliIdCliente
             LEFT JOIN Logistica_Bultos LB ON E.CodigoEtiqueta = LB.CodigoEtiqueta
             WHERE E.OrdenID IN (${idsStr})
-              -- Un bulto CONSUMIDO ya no existe físicamente: su contenido se incorporó a
-              -- otro bulto (ej. el material que entró a terminaciones y salió empaquetado).
-              -- Reimprimir su etiqueta sacaría un rótulo de un paquete que no está.
-              -- CANCELADO: bulto de una orden cancelada (vuelve a EN_STOCK si se reactiva).
-              AND ISNULL(LB.Estado, '') NOT IN ('CONSUMIDO', 'PERDIDO', 'DESPACHADO', 'PROCESADO', 'CANCELADO')
-              -- Un bulto que YA se incluyó en un remito (aunque ese remito se haya recibido
-              -- y el bulto vuelva a EN_STOCK del otro lado) no se reimprime acá: confunde al
-              -- que arma el PRÓXIMO remito con etiquetas de bultos que ya viajaron.
-              --
-              -- EXCEPCIÓN: remito todavía en ESPERANDO_RETIRO = nadie lo levantó, el paquete
-              -- sigue físicamente en el área de origen y necesita su rótulo. Pasa siempre con
-              -- las ventas de retiro (VEN-) de combos y de "Comprar y personalizar": al
-              -- confirmar el retiro se arma SOLO el remito PRO→área, en el mismo instante, y
-              -- el bulto quedaba EN_TRANSITO antes de que alguien imprimiera la etiqueta — no
-              -- se podía imprimir nunca (caso VEN-2405).
-              AND (ISNULL(LB.Estado, '') <> 'EN_TRANSITO'
-                   OR EXISTS (SELECT 1 FROM Logistica_EnvioItems ei2
-                              JOIN Logistica_Envios en2 ON en2.EnvioID = ei2.EnvioID
-                              WHERE ei2.BultoID = LB.BultoID AND en2.Estado = 'ESPERANDO_RETIRO'))
-              AND NOT EXISTS (SELECT 1 FROM Logistica_EnvioItems ei
-                              JOIN Logistica_Envios en ON en.EnvioID = ei.EnvioID
-                              WHERE ei.BultoID = LB.BultoID AND en.Estado <> 'ESPERANDO_RETIRO')
+              ${filtroBultos}
             ORDER BY E.OrdenID, E.NumeroBulto ASC
         `);
 
@@ -367,7 +380,12 @@ const printEtiquetas = async (req, res) => {
             const area = (s.AreaDestino || '').trim().toUpperCase();
             const estadoArea = (s.EstadoenArea || '').toUpperCase().trim();
             const estadoGen = (s.Estado || '').toUpperCase().trim();
-            const completa = estadoArea === 'PRONTO' || estadoArea === 'EN TRANSITO' || estadoGen === 'FINALIZADO';
+            // Un paso está hecho cuando su orden ya terminó en el área: Pronto, En tránsito o, una vez que el
+            // bulto se recibió en el área siguiente, 'Recibido en Destino' (así cierra la orden de origen
+            // logisticsController.receiveDispatch). Sin ese estado, la etiqueta impresa desde Corte mostraba
+            // Impresión Directa / Sublimación sin tilde aunque la tela ya estuviera en Corte.
+            const completa = ['PRONTO', 'EN TRANSITO', 'EN TRÁNSITO', 'RECIBIDO EN DESTINO', 'ENTREGADO', 'INGRESADO', 'PRONTO PARA ENTREGAR'].includes(estadoArea)
+                || estadoGen === 'FINALIZADO' || estadoGen === 'ENTREGADO';
 
             const yaEsta = arr.find(x => (x.AreaDestino || '').trim().toUpperCase() === area);
             if (yaEsta) {
@@ -446,24 +464,30 @@ const printEtiquetas = async (req, res) => {
                         padding-bottom: 3px;
                     }
                     .service-list { list-style: none; padding: 0; margin: 0; }
-                    .service-item { display: flex; align-items: center; font-size: 11px; font-weight: bold; margin-bottom: 7px; }
+                    /* 30-sep: 2 puntos más chica y menos aire — con la ruta completa (SB, DTF, TPU, PRO, Corte,
+                       Costura, Estampado, Depósito) la lista se pisaba con el bloque DESTINO. */
+                    .service-item { display: flex; align-items: center; font-size: 9px; font-weight: bold; margin-bottom: 4px; }
                     .check-box {
-                        width: 13px; height: 13px;
+                        width: 11px; height: 11px;
                         border: 2px solid #000;
-                        margin-right: 6px;
+                        margin-right: 5px;
                         display: flex;
                         align-items: center;
                         justify-content: center;
-                        font-size: 10px;
+                        font-size: 8px;
                         flex-shrink: 0;
                     }
                     .destination-block {
                         margin-top: auto;
                         border-top: 2px solid #000;
-                        padding-top: 10px;
+                        padding-top: 6px;
                         font-weight: 900;
                         font-size: 14px;
                         text-align: center;
+                        white-space: nowrap;      /* etiqueta y valor en la misma línea */
+                        overflow: hidden;
+                        text-overflow: ellipsis;
+                        line-height: 1.2;
                     }
 
                     @media screen {
@@ -596,8 +620,8 @@ const printEtiquetas = async (req, res) => {
                             </ul>
 
                             <div class="destination-block">
-                                <div class="label-bold">DESTINO</div>
-                                <div style="font-size: 13px; font-weight: 700; color: #000;">${nextService}</div>
+                                <span class="label-bold">DESTINO:</span>
+                                <span style="font-size: 13px; font-weight: 900; color: #000;">${nextService}</span>
                             </div>
                         </div>
                     </div>

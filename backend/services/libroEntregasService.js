@@ -8,6 +8,7 @@
  * La cantidad se declara solo cuando se conoce (obligatoria donde se cuentan prendas o unidades).
  */
 const { getPool, sql } = require('../config/db');
+const { AREAS_BULTO_COMPARTIDO } = require('./pedidoCompletoService');
 
 const ESTADOS_REPO_ABIERTOS = "('ESPERANDO_INSUMO','BLOQUEADA','PENDIENTE','EN_PRODUCCION','ENVIADA')";
 
@@ -251,7 +252,31 @@ async function puedeCompletar(ordenId, conn, { incluirImplicitas = true } = {}) 
 // `area`. Extraída de getPendientesParaArea para que getPendientesParaOrden arme las filas
 // EXACTAMENTE igual.
 async function filaPendiente(h, areaFila, area, conn) {
-    const libro = await getLibroOrden(h.OrdenID, conn);
+    let libro = await getLibroOrden(h.OrdenID, conn);
+    // [BULTO COMPARTIDO 01/10] Orden terminada sin bulto propio (segundo Estampado de la misma prenda): no
+    // tiene envíos a su nombre porque viaja en el bulto de su hermana. Se le muestran los envíos de ESE
+    // bulto, para que acá no figure "todavía no llegó nada" cuando ya está en la caja que se recibió.
+    let viajaEnBultoDe = null;
+    if (!libro.envios.length && AREAS_BULTO_COMPARTIDO.includes(String(h.AreaID || '').trim().toUpperCase())) {
+        const poolP = conn || await getPool();
+        const port = (await new sql.Request(poolP).input('id', sql.Int, h.OrdenID).query(`
+            SELECT TOP 1 p.OrdenID, LTRIM(RTRIM(p.CodigoOrden)) AS CodigoOrden
+            FROM Ordenes o
+            JOIN Ordenes p ON p.NoDocERP = o.NoDocERP AND p.AreaID = o.AreaID AND p.OrdenID <> o.OrdenID
+            WHERE o.OrdenID = @id AND o.NoDocERP IS NOT NULL
+              AND UPPER(LTRIM(RTRIM(ISNULL(p.Estado, '')))) <> 'CANCELADO'
+              AND UPPER(LTRIM(RTRIM(ISNULL(o.EstadoenArea, '')))) IN ('PRONTO', 'EN TRANSITO', 'RECIBIDO EN DESTINO')
+              AND NOT EXISTS (SELECT 1 FROM Logistica_Bultos b WHERE b.OrdenID = o.OrdenID AND ISNULL(b.Estado, '') <> 'CANCELADO')
+              AND EXISTS (SELECT 1 FROM Logistica_Bultos b WHERE b.OrdenID = p.OrdenID AND ISNULL(b.Estado, '') <> 'CANCELADO')
+            ORDER BY p.OrdenID`)).recordset[0];
+        if (port) {
+            const libroPort = await getLibroOrden(port.OrdenID, conn);
+            if (libroPort) {
+                libro = { ...libro, envios: libroPort.envios, estadoEnvio: libroPort.estadoEnvio };
+                viajaEnBultoDe = port.CodigoOrden;
+            }
+        }
+    }
     const recibidos = libro.envios.filter(e => String(e.AreaDestinoID).trim().toUpperCase() === area && /RECIBIDO/i.test(e.EstadoRemito || ''));
     const enCamino = libro.envios.filter(e => String(e.AreaDestinoID).trim().toUpperCase() === area && !/RECIBIDO/i.test(e.EstadoRemito || ''));
     return {
@@ -260,6 +285,10 @@ async function filaPendiente(h, areaFila, area, conn) {
         ProximoServicio: String(h.ProximoServicio || '').trim().toUpperCase() || null,
         DescripcionTrabajo: h.DescripcionTrabajo, UM: h.UM, cantidadEsperada: libro.cantidadEsperada,
         estadoEnvio: libro.estadoEnvio, incompleta: libro.incompleta, motivos: libro.motivos,
+        viajaEnBultoDe,   // [BULTO COMPARTIDO] código de la hermana en cuyo bulto viaja esta orden (o null)
+        // [PENDIENTES] a qué áreas ya entregó (recibido allá): sirve para no decir "falta llegar" en Costura
+        // cuando la Sublimación ya entregó todo a Corte y viene dentro del corte.
+        entregadoA: [...new Set(libro.envios.filter(e => /RECIBIDO/i.test(e.EstadoRemito || '')).map(e => String(e.AreaDestinoID || '').trim().toUpperCase()).filter(Boolean))],
         recibido: { envios: recibidos.length, bultos: recibidos.reduce((s, e) => s + (e.Bultos || 0), 0), cantidad: recibidos.some(e => e.Cantidad != null) ? recibidos.reduce((s, e) => s + Number(e.Cantidad || 0), 0) : null, ultimo: recibidos.length ? recibidos[recibidos.length - 1].Fecha : null },
         enCamino: enCamino.map(e => ({ remito: e.CodigoRemito, bultos: e.Bultos, cantidad: e.Cantidad, fecha: e.FechaSalida })),
         reposicionesAbiertas: libro.reposicionesAbiertas.map(r => ({

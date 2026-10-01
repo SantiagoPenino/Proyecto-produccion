@@ -6,6 +6,9 @@ import { toast } from 'sonner';
 const OrderRequirementsList = ({ ordenId, areaId, readOnly = false }) => {
     const [requirements, setRequirements] = useState([]);
     const [loading, setLoading] = useState(false);
+    // Los requisitos que NO aplican a esta orden (ej. "TPU a Estampar" en el Estampado del DTF) se ocultan:
+    // son ruido. Quedan a un clic por si alguno se marcó "no aplica" por error y hay que corregirlo.
+    const [verNoAplican, setVerNoAplican] = useState(false);
 
     // Resource Selection State
     const [resourceModalOpen, setResourceModalOpen] = useState(false);
@@ -154,13 +157,19 @@ const OrderRequirementsList = ({ ordenId, areaId, readOnly = false }) => {
     if (loading && requirements.length === 0) return <div className="text-xs text-gray-500">Cargando requisitos...</div>;
     if (!loading && requirements.length === 0) return null;
 
+    // "No aplica" = lo marca el backend (NoAplica) o nació cumplido con la observación "No aplica — …"
+    const noAplica = (req) => !!req.NoAplica || (!!req.Cumplido && /^\s*no aplica/i.test(String(req.Observaciones || '')));
+    const ocultos = requirements.filter(noAplica);
+    const visibles = verNoAplican ? requirements : requirements.filter(r => !noAplica(r));
+    if (!loading && visibles.length === 0 && ocultos.length === 0) return null;
+
     return (
         <div className="mt-2 p-3 bg-gray-50 border border-gray-100 rounded-lg relative">
             <h4 className="text-xs font-semibold text-gray-400 mb-2 uppercase tracking-wide">
                 Requisitos de Producción ({areaId})
             </h4>
             <div className="space-y-2">
-                {requirements.map(req => (
+                {visibles.map(req => (
                     <div
                         key={req.RequisitoID}
                         onClick={() => handleToggleAttempt(req, !!req.Cumplido)}
@@ -187,7 +196,10 @@ const OrderRequirementsList = ({ ordenId, areaId, readOnly = false }) => {
                                         {req.CodigoRequisito}
                                     </span>
                                     {req.EsBloqueante && <span className="text-[9px] bg-rose-100 text-rose-600 px-1 rounded uppercase font-bold">Bloqueante</span>}
+                                    {req.NoAplica && <span className="text-[9px] bg-gray-100 text-gray-500 px-1 rounded uppercase font-bold">No aplica</span>}
                                 </div>
+                                {/* [ACCESORIOS] detalle calculado por el backend (qué falta recibir / qué llegó) */}
+                                {req.Detalle && <span className={`text-[11px] mt-0.5 ${req.Cumplido ? 'text-emerald-700' : 'text-amber-700'}`}>{req.Detalle}</span>}
                             </div>
                         </div>
 
@@ -211,7 +223,14 @@ const OrderRequirementsList = ({ ordenId, areaId, readOnly = false }) => {
                         )}
                     </div>
                 ))}
+                {visibles.length === 0 && <div className="text-xs text-gray-400">Esta orden no tiene requisitos que le correspondan.</div>}
             </div>
+            {ocultos.length > 0 && (
+                <button type="button" onClick={() => setVerNoAplican(v => !v)}
+                    className="mt-2 text-[10px] text-gray-400 hover:text-gray-600 underline">
+                    {verNoAplican ? 'Ocultar los que no aplican' : `Ver los que no aplican a esta orden (${ocultos.length})`}
+                </button>
+            )}
 
             {/* RESOURCE SELECTION MODAL */}
             {resourceModalOpen && (

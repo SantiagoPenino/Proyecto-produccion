@@ -298,6 +298,20 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
     const serviceId = propServiceId || (paramServiceId || '').toLowerCase();
     // svcId se mantiene por las pocas reglas de material que ya lo usan; ahora coincide con serviceId.
     const svcId = (serviceId || '').toLowerCase();
+    // [F1] Producción principal del producto del catálogo (ProductoVentaConfig): área que lo produce,
+    // materiales que ofrece, medida fija (sin molde), cantidades y precio de catálogo. null = producto
+    // sin config o sublimación clásica: el formulario se comporta como siempre.
+    const [principalProd, setPrincipalProd] = useState(null);
+    const [precioAuto, setPrecioAuto] = useState(true);   // el precio establecido se cargó solo (cantidad × catálogo) y se recalcula
+    // [ACCESORIOS] artículos de stock del producto del catálogo (mástil, base…): cuáles van y con qué variante
+    const [accesoriosSel, setAccesoriosSel] = useState([]);
+    // [DTF COMO PORTAL] por archivo de DTF: copias (cuántas veces se imprime ESE archivo) y medida en m.
+    // Como en /portal/order/dtf: el lote puede ser de 100 prendas y el archivo traer 50 escudos → 2 copias.
+    const [dtfMeta, setDtfMeta] = useState({});
+    const dtfKey = (f) => `${f.name}::${f.size}`;
+    // [F1] Árbol para elegir el producto del catálogo: Familia (StockArt) › Etiqueta (para qué es) › producto — mismo que la solicitud
+    const [familiaSel, setFamiliaSel] = useState('');
+    const [etiquetaSel, setEtiquetaSel] = useState('');   // '' = todas · '__sin__' = sin etiqueta
 
     // Modal de anuncio: se muestra una sola vez por sesión para DF
     const [showDFAnnouncement, setShowDFAnnouncement] = useState(() => {
@@ -324,16 +338,19 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
         // [PRENDAS] DTF complementario
         dtfArchivos, dtfBocetoFile, dtfMaterial, dtfVariant, dtfMaterials,
         // [PRENDAS] TPU complementario
-        tpuArchivos, tpuBocetoFile, tpuMaterial, tpuVariant, tpuVariants, tpuMaterials,
+        tpuArchivos, tpuBocetoFile, tpuMaterial, tpuVariant, tpuVariants, tpuMaterials, tpuAlto, tpuAncho,
         // Estampado
         estampadoFile, estampadoQuantity, estampadoPrints, estampadoOrigin,
         // TPU
         tpuForma,
         loading, showSuccessModal, createdOrderIds, uploading, uploadProgress, uploadError,
         errorModalOpen, errorModalMessage,
-        uniqueVariants, variantsInfo, dynamicMaterials, visibleConfig, prioritiesList, areasConUrgencia,
+        uniqueVariants, variantsInfo, dynamicMaterials: dynamicMaterialsHook, visibleConfig, prioritiesList, areasConUrgencia,
         activeSubOrders, embroideryVariants, embroideryMaterials
     } = state;
+    // [F1] Con producto del catálogo, los materiales de la producción principal son los del producto
+    // (sus telas o los del área que lo produce), no los de Sublimación de la URL.
+    const dynamicMaterials = (principalProd?.materiales?.length ? principalProd.materiales : dynamicMaterialsHook);
 
     // [COMBOS] Con un combo elegido, el "servicio principal" de la URL (Sublimación,
     // Bordado...) no aplica — el combo no imprime un archivo genérico ni necesita su
@@ -404,6 +421,17 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
     // por esCombo (ver botón "Qué desea" más abajo).
     const [soloCombos, setSoloCombos] = useState(false);
 
+    // [F1] Precio establecido por defecto para el producto del catálogo: unidades × precio de catálogo,
+    // en su moneda. Deja de recalcularse cuando el vendedor lo toca a mano.
+    const sugeridoCatalogo = principalProd?.precio != null && parseFloat(garmentQuantity) > 0 ? Math.round(principalProd.precio * parseFloat(garmentQuantity) * 100) / 100 : null;
+    useEffect(() => {
+        if (tipoFabricacion !== 'TERMINADO' || !principalProd || sugeridoCatalogo == null || !precioAuto) return;
+        setPrecioPersonalizado(String(sugeridoCatalogo));
+        setMonedaPersonalizada(principalProd.moneda);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [sugeridoCatalogo, principalProd?.moneda, tipoFabricacion, precioAuto]);
+
+
     useEffect(() => {
         if (queDesea !== 'FABRICAR_A_MEDIDA') return;
         // Prendas confeccionadas + Combos (ej. "Gorro y short") — los producto-terminado de
@@ -426,9 +454,38 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
     }, [queDesea]);
 
     useEffect(() => {
-        if (!productoTerminadoSel) { setServiciosObligatorios(new Set()); setServiciosPermitidos(null); actions.setComboServicios({}); return; }
+        if (!productoTerminadoSel) { setServiciosObligatorios(new Set()); setServiciosPermitidos(null); actions.setComboServicios({}); setPrincipalProd(null); setAccesoriosSel([]); return; }
         apiClient.get(`/prendas-orders/productos-terminados/${productoTerminadoSel}/servicios`).then(res => {
             const servicios = res.data || [];
+            // [F1] Producción principal según el configurador
+            const cfg = res.config || null;
+            const prodSel = productosTerminadosConf.find(p => String(p.ProIdProducto) === String(productoTerminadoSel));
+            if (cfg && !res.esCombo) {
+                const area = String(cfg.TecnicaPrincipal || 'SB').toUpperCase();
+                const sinMolde = !cfg.TizadaProMoldeRef;
+                setPrincipalProd({
+                    areaId: area,
+                    label: ({ SB: 'Sublimación', DIRECTA: 'Impresión directa', ECOUV: 'Gran formato', DF: 'DTF' })[area] || area,
+                    materiales: Array.isArray(res.materiales) ? res.materiales : [],
+                    medidaFija: sinMolde && Number(cfg.AnchoM) > 0 && Number(cfg.AltoM) > 0 ? { anchoM: Number(cfg.AnchoM), altoM: Number(cfg.AltoM) } : null,
+                    molde: cfg.Molde, um: cfg.UM,
+                    cantidadMinima: cfg.CantidadMinima || null, cantidadFija: cfg.CantidadFija || null,
+                    precio: prodSel?.Precio != null ? Number(prodSel.Precio) : null,
+                    moneda: prodSel?.MonIdMoneda === 2 ? 'USD' : 'UYU',
+                });
+                // El producto del catálogo se cobra a precio establecido por defecto (cantidad × catálogo)
+                setModoPrecioPers('ESTABLECIDO');
+                setPrecioAuto(true);
+                if (cfg.CantidadFija) actions.setGarmentQuantity(String(cfg.CantidadFija));
+                else if (cfg.CantidadMinima && !(parseFloat(garmentQuantity) >= cfg.CantidadMinima)) actions.setGarmentQuantity(String(cfg.CantidadMinima));
+                // [ACCESORIOS] los del producto: obligatorios marcados, opcionales a elegir; variante fija o a elegir
+                setAccesoriosSel((Array.isArray(res.accesorios) ? res.accesorios : []).map(a => ({
+                    id: a.ID, itemProIdProducto: a.ItemProIdProducto, nombre: a.ItemDescripcion || `Artículo ${a.ItemProIdProducto}`,
+                    wmsVarianteId: a.WmsVarianteId || '', varianteNombre: a.VarianteNombre || '', fijo: !!a.WmsVarianteId, unica: !!a.VarianteUnica,
+                    cantidadPorUnidad: a.Cantidad || 1, obligatorio: !!a.Obligatorio, cobro: a.Cobro === 'APARTE' ? 'APARTE' : 'INCLUIDO',
+                    incluir: !!a.Obligatorio, variantes: a.variantes || [], wmsDepositoId: a.WmsDepositoId || null,
+                })));
+            } else { setPrincipalProd(null); setAccesoriosSel([]); }
             const areaDe = (s) => String(s.AreaID || '').trim().toUpperCase();
             setServiciosObligatorios(new Set(servicios.filter(s => s.Obligatorio).map(areaDe)));
             // [CONFIGURADOR] La lista es cerrada: lo que el Configurador no marcó para este
@@ -971,6 +1028,32 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
     };
 
     // Generic handler for multiple file specialized upload
+    // [DTF COMO PORTAL] Los archivos de DTF se MIDEN al subirlos (misma medición que el portal y que la
+    // principal: fileService.uploadFile lee DPI/MediaBox). Sin medida no entran: el área cotiza y
+    // planifica por metros (alto × copias). Las copias arrancan en 1 y se editan por archivo.
+    const handleDtfFilesUpload = async (filesInput) => {
+        if (!filesInput) return;
+        const files = filesInput instanceof FileList ? Array.from(filesInput) : (Array.isArray(filesInput) ? filesInput : [filesInput]);
+        const valid = files.filter(f => (f instanceof Blob || f instanceof File));
+        if (!valid.length) return;
+        const ok = [];
+        for (const file of valid) {
+            const k = dtfKey(file);
+            try {
+                const r = await fileService.uploadFile(file);
+                if (r.hasDPI === false || !(r.width > 0) || !(r.height > 0) || r.measurementError) {
+                    addToast(`"${file.name}": no se pudo medir (sin DPI o formato no soportado). Guardalo como PDF o PNG con resolución.`, 'error');
+                    continue;
+                }
+                setDtfMeta(prev => ({ ...prev, [k]: { copias: prev[k]?.copias || 1, anchoM: r.width, altoM: r.height } }));
+                ok.push(file);
+            } catch (e) {
+                addToast(`"${file.name}": no se pudo medir: ${e.message}`, 'error');
+            }
+        }
+        if (ok.length) { actions.addDtfArchivos(ok); addToast(`${ok.length} archivo(s) de DTF medido(s)`); }
+    };
+
     const handleMultipleSpecializedFileUpload = (addFilesAction, filesInput) => {
         if (!filesInput) return;
 
@@ -1114,6 +1197,20 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                 const fileWidthRounded = Math.ceil(Number(((fileWidthM - TOLERANCIA_ANCHO_M) * 100).toFixed(6))) / 100;
                 const maxPrintableWidth = Math.round((maxWidth - 0.03) * 100) / 100;
 
+                // [F1] Producto del catálogo sin molde: el archivo tiene que medir la medida fija del producto
+                // (tolerancia 2 cm, se admite girado). Un archivo = una unidad → las copias arrancan en las unidades pedidas.
+                if (principalProd?.medidaFija) {
+                    const mf = principalProd.medidaFija;
+                    const fileHeightM = result.unit === 'meters' ? result.height : (result.height / 300) * 0.0254;
+                    const cm2 = (v) => Math.round(Number(v) * 100);
+                    const okd = (a, b) => Math.abs(cm2(a) - cm2(b)) <= 2;
+                    if (!((okd(fileWidthM, mf.anchoM) && okd(fileHeightM, mf.altoM)) || (okd(fileWidthM, mf.altoM) && okd(fileHeightM, mf.anchoM)))) {
+                        actions.setErrorModalMessage(`Este producto se imprime a MEDIDA FIJA: el archivo tiene que medir ${mf.anchoM.toFixed(2)} × ${mf.altoM.toFixed(2)} m (tolerancia 2 cm). Tu archivo mide ${fileWidthM.toFixed(2)} × ${fileHeightM.toFixed(2)} m. Ajustá el archivo a la medida exacta.`);
+                        actions.setErrorModalOpen(true);
+                        return false;
+                    }
+                    if (parseInt(garmentQuantity, 10) > 0 && (!currentItem?.copies || currentItem.copies === 1)) actions.updateItem(itemId, 'copies', parseInt(garmentQuantity, 10));
+                }
                 if (largoFijo > 0) {
                     // MEDIDA FIJA (banderas): ancho y largo del archivo deben coincidir EXACTO
                     // (al cm) con anchoimprimible x largoimprimible del artículo.
@@ -1234,6 +1331,14 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
         // sí o sí (es la Magnitud/cantidad a fabricar de PRO) y, si el cobro es a precio
         // establecido, el monto pactado.
         const esPersonalizadoConMadre = queDesea === 'FABRICAR_A_MEDIDA' && !soloCombos && tipoFabricacion === 'PERSONALIZADO';
+        // [F1] Producto del catálogo: cantidad mínima / paquete fijo y precio establecido
+        const esTerminadoConfig = queDesea === 'FABRICAR_A_MEDIDA' && !soloCombos && tipoFabricacion === 'TERMINADO' && !!principalProd;
+        if (esTerminadoConfig) {
+            const q = parseFloat(garmentQuantity) || 0;
+            if (principalProd.cantidadFija && (q % principalProd.cantidadFija !== 0)) return addToast(`Este producto se vende en paquetes de ${principalProd.cantidadFija}: la cantidad tiene que ser múltiplo de ${principalProd.cantidadFija}.`, 'error');
+            if (principalProd.cantidadMinima && q < principalProd.cantidadMinima) return addToast(`Este producto tiene una cantidad mínima de ${principalProd.cantidadMinima}.`, 'error');
+            if (modoPrecioPers === 'ESTABLECIDO' && (!precioPersonalizado || parseFloat(precioPersonalizado) <= 0)) return addToast('Ingresá el precio establecido del pedido (o elegí "Facturar por cada área").', 'error');
+        }
         if (esPersonalizadoConMadre) {
             if (!garmentQuantity || parseFloat(garmentQuantity) <= 0) {
                 return addToast('Ingresá la Cantidad de Prendas del pedido.', 'error');
@@ -1440,13 +1545,35 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
             }
         }
 
+        // [CORTE/COSTURA] No existe Costura sin Corte (pedido 26025: la tela salió de Sublimación directo a Costura).
+        if (queDesea === 'FABRICAR_A_MEDIDA' && enableCostura && !enableCorte) {
+            return addToast('No puede haber Costura sin Corte: activá el Servicio de Corte antes de confirmar.', 'error');
+        }
+        // [LISTA DE TALLES] Producto PERSONALIZADO del cliente con corte: no hay configuración del catálogo de
+        // donde sacar los talles, así que la lista de talles es obligatoria (la usan Corte, Costura, Bordado y Estampado).
+        if (queDesea === 'FABRICAR_A_MEDIDA' && tipoFabricacion === 'PERSONALIZADO' && enableCorte && !pedidoExcelFile) {
+            return addToast('Falta la lista de talles: subila en "EXCEL DETALLE", dentro del Servicio de Corte. En un producto personalizado es obligatoria.', 'error');
+        }
+
         // [PRENDAS] DTF/TPU son estampado fusionado: la impresión (archivo) Y el estampado
         // (estampados por prenda + origen) son obligatorios juntos, no uno sin el otro.
         if (selectedComplementary['DF']?.active && dtfArchivos.length === 0) {
             return addToast('Subí al menos un archivo a imprimir para DTF antes de confirmar.', 'error');
         }
         if (selectedComplementary['TPU']?.active && tpuArchivos.length === 0) {
-            return addToast('Subí al menos un archivo a imprimir para TPU antes de confirmar.', 'error');
+            return addToast('Subí el boceto del diseño de TPU antes de confirmar.', 'error');
+        }
+        // [TPU COMO PORTAL] si el tipo de TPU tiene tope de medida en el nombre, alto y ancho son obligatorios
+        if (selectedComplementary['TPU']?.active) {
+            const mt = String(tpuMaterial || '').match(/(\d+(?:[.,]\d+)?)\s*[x×]\s*(\d+(?:[.,]\d+)?)/i);
+            if (mt && !(tpuAlto && tpuAncho)) return addToast(`Indicá alto y ancho del TPU (máximo ${mt[1]} x ${mt[2]} cm).`, 'error');
+        }
+        // [DTF COMO PORTAL] cada archivo de DTF tiene que estar medido y con copias ≥ 1
+        if (selectedComplementary['DF']?.active && dtfArchivos.length > 0) {
+            const sinMedida = dtfArchivos.filter(f => !(dtfMeta[dtfKey(f)]?.anchoM > 0 && dtfMeta[dtfKey(f)]?.altoM > 0));
+            if (sinMedida.length) return addToast(`DTF: ${sinMedida.map(f => f.name).join(', ')} sin medida. Volvé a subirlo (PDF o PNG con DPI).`, 'error');
+            const sinCopias = dtfArchivos.filter(f => !(parseInt(dtfMeta[dtfKey(f)]?.copias) >= 1));
+            if (sinCopias.length) return addToast(`DTF: indicá las copias de ${sinCopias.map(f => f.name).join(', ')}.`, 'error');
         }
         // [PRENDAS] Bordado no tenía este chequeo (a diferencia de DTF/TPU) — se podía
         // confirmar el pedido con EMB activo sin logo ni boceto.
@@ -1551,7 +1678,7 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
             const mapMaterial = (matName, areaId = null, customList = null) => {
                 const searchList = customList || (areaId === 'EMB' ? embroideryMaterials : (areaId === 'DF' ? dtfMaterials : (areaId === 'TPU' ? tpuMaterials : dynamicMaterials)));
                 const found = (searchList || []).find(m => m.Material === matName);
-                if (found) return { name: found.Material, codArt: found.CodArticulo, codStock: found.CodStock };
+                if (found) return { name: found.Material, codArt: found.CodArticulo, codStock: found.CodStock, variante: found.Variante || null };
                 return { name: matName };
             };
 
@@ -1606,16 +1733,24 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
 
                         // [PRENDAS] DTF/TPU: archivo(s) a imprimir (PRODUCCION) + boceto de ubicación (REFERENCIA)
                         if (id === 'DF') {
+                            // [DTF COMO PORTAL] cada archivo viaja con SUS copias y su medida (m): el creador
+                            // de pedidos calcula los metros = alto × copias, igual que un DTF del portal.
                             if (dtfArchivos && dtfArchivos.length > 0) {
-                                dtfArchivos.forEach(f => archivosComp.push({ name: f.name, fileKey: keyOf(f), tipo: 'PRODUCCION' }));
+                                dtfArchivos.forEach(f => {
+                                    const m = dtfMeta[dtfKey(f)] || {};
+                                    archivosComp.push({ name: f.name, fileKey: keyOf(f), tipo: 'PRODUCCION', copias: parseInt(m.copias) || 1, anchoM: m.anchoM, altoM: m.altoM });
+                                });
                             }
                             if (dtfBocetoFile) {
                                 archivosComp.push({ name: dtfBocetoFile.name, tipo: 'REFERENCIA' });
                             }
                         }
                         if (id === 'TPU') {
+                            // [TPU COMO PORTAL] El TPU nace igual que "Trabajo nuevo" en /portal/order/tpu: lo que
+                            // sube el cliente es el BOCETO (referencia 'ARCHIVO DE BOCETO'), no un archivo de
+                            // impresión. El arte (capas) lo hace el área después; la orden queda "falta diseño".
                             if (tpuArchivos && tpuArchivos.length > 0) {
-                                tpuArchivos.forEach(f => archivosComp.push({ name: f.name, fileKey: keyOf(f), tipo: 'PRODUCCION' }));
+                                tpuArchivos.forEach(f => archivosComp.push({ name: f.name, tipo: 'ARCHIVO DE BOCETO' }));
                             }
                             if (tpuBocetoFile) {
                                 archivosComp.push({ name: tpuBocetoFile.name, tipo: 'REFERENCIA' });
@@ -1631,7 +1766,10 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                             // Capturar metadatos si están disponibles en variables globales (para Estampado/Bordado como secundario, idealmente deberían tener su input propio, pero usamos globales como fallback o props)
                             metadata: (id === 'EST' || id === 'estampado')
                                 ? { prendas: estampadoQuantity, estampadosPorPrenda: estampadoPrints, origen: estampadoOrigin }
-                                : (['EMB', 'BORDADO', 'DF', 'TPU'].includes(id) ? { prendas: garmentQuantity } : {})
+                                // [TPU COMO PORTAL] misma info que un TPU del portal: prendas, bajadas, origen y medida del parche
+                                : id === 'TPU'
+                                    ? { prendas: garmentQuantity, estampadosPorPrenda: estampadoPrints, origen: estampadoOrigin, tipoTpu: tpuMaterial || null, medidaTpu: (tpuAlto && tpuAncho) ? `${tpuAlto} x ${tpuAncho} cm` : null }
+                                    : (['EMB', 'BORDADO', 'DF'].includes(id) ? { prendas: garmentQuantity } : {})
                         };
                     }
                 });
@@ -1642,7 +1780,7 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                 if (enableCorte) {
                     enrichedComplementary['TWC'] = {
                         activo: true,
-                        observacion: `Corte habilitado. Molde: ${moldType}. Tela: ${fabricOrigin}.`,
+                        observacion: '',   // [CORTE] la nota corta (qué tela llega y de dónde) la arma el creador de pedidos desde metadata
                         archivo: (tizadaFiles && tizadaFiles.length > 0) ? { name: tizadaFiles[0].name } : null,
                         cabecera: {
                             variante: 'Corte Laser',
@@ -1671,13 +1809,15 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
             const grupos = {};
             items.forEach((it, idx) => {
                 const matInfo = mapMaterial(it.material || globalMaterial);
-                const key = `${matInfo.name}| ${serviceSubType} `.toUpperCase();
+                // [F1] Con producto del catálogo fuera de sublimación, la variante es la física del material (StockArt)
+                const varianteGrupo = (principalProd && principalProd.areaId !== 'SB' && matInfo.variante) ? matInfo.variante : serviceSubType;
+                const key = `${matInfo.name}| ${varianteGrupo} `.toUpperCase();
 
                 if (!grupos[key]) {
                     grupos[key] = {
                         cabecera: {
                             material: matInfo.name,
-                            variante: serviceSubType,
+                            variante: varianteGrupo,
                             codArticulo: matInfo.codArt,
                             codStock: matInfo.codStock
                         },
@@ -1792,6 +1932,21 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
             // propia venta VEN- (invisible a producción, visible en Logística). Ver más abajo,
             // donde se puebla, y el armado del payload final.
             const combosRetiro = [];
+            // [ACCESORIOS] artículos de stock que salen con el producto del catálogo: cada uno es un
+            // retiro VEN- que Producción recibe (destino PRO); la cantidad = unidades × cantidad por unidad.
+            if (tipoFabricacion === 'TERMINADO' && principalProd && accesoriosSel.length) {
+                const van = accesoriosSel.filter(a => a.incluir !== false);
+                const sinVariante = van.filter(a => !a.wmsVarianteId);
+                if (sinVariante.length) return addToast(`Elegí talle/color de: ${sinVariante.map(a => a.nombre).join(', ')}.`, 'error');
+                const unidadesAcc = parseFloat(garmentQuantity) || 0;
+                van.forEach(a => combosRetiro.push({
+                    comboItemId: a.wmsVarianteId, wmsVarianteId: a.wmsVarianteId, itemProIdProducto: a.itemProIdProducto,
+                    descripcion: `${a.nombre}${a.varianteNombre ? ` · ${a.varianteNombre}` : ''}`,
+                    cantidad: unidadesAcc * (Number(a.cantidadPorUnidad) || 1),
+                    etiqueta: 'RETIRO ACCESORIO', destinoSinServicios: 'PRO', esAccesorio: true, cobro: a.cobro,
+                    wmsDepositoId: a.wmsDepositoId || null,
+                }));
+            }
 
             // A) SERVICIO PRINCIPAL (Convertir grupos a objetos de servicio)
             Object.values(grupos).forEach((grp, idx) => {
@@ -1868,7 +2023,8 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                     // [PRENDAS] Con orden madre PRO (producto terminado O prenda personalizada),
                     // esta orden (Sublimación) pasa a ser hermana: PRO lleva precio/aviso.
                     esPrincipal: !(queDesea === 'FABRICAR_A_MEDIDA' && (productoTerminadoSel || esPersonalizadoConMadre)),
-                    areaId: serviceInfo?.areaId || serviceId, // FIX: Send DB-aligned ID (e.g. SB, ECOUV) forcorrect priority mapping
+                    // [F1] El área de la producción principal la dice el producto del catálogo (DIRECTA, ECOUV…); sin producto, la de la URL
+                    areaId: principalProd?.areaId || serviceInfo?.areaId || serviceId, // FIX: Send DB-aligned ID (e.g. SB, ECOUV) forcorrect priority mapping
                     cabecera: grp.cabecera,
                     archivos: archivosServicio, // Lista oficial de archivos
                     // Mantenemos items con ref al archivo para saber qué cantidad va con qué archivo
@@ -2056,7 +2212,9 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                         archivos: [],
                         items: [{ cantidad: parseFloat(garmentQuantity) || 1 }],
                         metadata: {},
-                        notas: '[PRODUCTO FABRICADO A MEDIDA]',
+                        // [F1] Cómo se cobra (mismos marcadores que la prenda personalizada; los lee el motor de precios):
+                        // sin marcador el motor cobraría el precio base MÁS cada hermana (tela, corte, costura).
+                        notas: `[PRODUCTO FABRICADO A MEDIDA]${principalProd ? (modoPrecioPers === 'ESTABLECIDO' && parseFloat(precioPersonalizado) > 0 ? ` [PRECIO ESTABLECIDO: ${parseFloat(precioPersonalizado)} ${monedaPersonalizada}]` : ' [FACTURA POR AREA]') : ''}`,
                     });
                 }
             }
@@ -2144,7 +2302,9 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
 
                         // Si es Bordado (EMB/bordado), adjuntar archivos y metadata
                         if (key === 'EMB' || key === 'bordado') {
-                            if (bordadoBocetoFile) {
+                            // El boceto ya puede venir en comp.archivos (se arma arriba, en enrichedComplementary):
+                            // sin este chequeo salía DOS veces en Archivos de Referencia (BOR-26025).
+                            if (bordadoBocetoFile && !archivosExtra.some(x => x.name === bordadoBocetoFile.name && x.tipo === 'BOCETO_BORDADO')) {
                                 archivosExtra.push({ name: bordadoBocetoFile.name, tipo: 'BOCETO_BORDADO' });
                             }
                             if (ponchadoFiles && ponchadoFiles.length > 0) {
@@ -2196,7 +2356,8 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                                 listaServicios.push({
                                     esPrincipal: false,
                                     areaId: key,
-                                    cabecera: comp.cabecera,
+                                    // [ESTAMPADO] la variante dice QUÉ se estampa (DTF o TPU): se ve en la bandeja y en el listado
+                                    cabecera: { ...comp.cabecera, variante: chainedAfterAreaId === 'TPU' ? 'Estampado TPU' : (chainedAfterAreaId === 'DF' ? 'Estampado DTF' : (comp.cabecera?.variante || 'Estampado')) },
                                     archivos: archivosExtra,
                                     items: [],
                                     notas: comp.observacion,
@@ -2212,10 +2373,13 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                         // (ArchivosOrden) a partir de `items`, nunca de `archivos` directamente. Sin
                         // esto, el archivo quedaba etiquetado PRODUCCION pero no aparecía ni como
                         // Impresión ni como Referencia: se perdía.
-                        const itemsProduccion = (key === 'DF' || key === 'TPU')
+                        // [TPU COMO PORTAL] TPU ya no manda archivo de impresión (va como boceto de referencia):
+                        // su cantidad la pone el backend desde los metadatos (prendas × bajadas).
+                        const itemsProduccion = (key === 'DF')
                             ? archivosExtra
                                 .filter(f => f.tipo === 'PRODUCCION')
-                                .map(f => ({ fileName: f.name, fileKey: keyOf(f), cantidad: garmentQuantity || 1 }))
+                                // [DTF COMO PORTAL] copias del archivo (no las prendas) + medida para los metros
+                                .map(f => ({ fileName: f.name, fileKey: keyOf(f), cantidad: f.copias || 1, width: f.anchoM, height: f.altoM }))
                             : [];
 
                         listaServicios.push({
@@ -2447,9 +2611,9 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                 </div>
                 <div>
                     <h2 className="text-xl md:text-2xl font-black text-zinc-100 flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-2 uppercase tracking-widest leading-tight">
-                        <span>Nuevo Pedido:</span> <span className="text-cyan-400">{serviceInfo?.label}</span>
+                        <span>Nuevo Pedido</span>
                     </h2>
-                    <p className="text-xs md:text-sm text-zinc-500 font-bold tracking-tight mt-1">{serviceInfo?.desc}</p>
+                    <p className="text-xs md:text-sm text-zinc-500 font-bold tracking-tight mt-1">Comprar, fabricar a medida, combos o personalizar una prenda del cliente. La producción principal la define el producto elegido.</p>
                 </div>
             </div>
 
@@ -2721,7 +2885,7 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                         personalizar) no imprime nada, la prenda sale del catálogo WMS. */}
                     {queDesea === 'FABRICAR_A_MEDIDA' && (
                     <ServiceAccordion
-                        title={comboActivo ? 'Producto a Fabricar' : `Producción Principal: ${serviceInfo?.label || 'Servicio'}`}
+                        title={comboActivo ? 'Producto a Fabricar' : `Producción Principal: ${principalProd?.label || serviceInfo?.label || 'Servicio'}`}
                         isActive={true} // Always active
                         onToggle={() => { }} // No toggle for main
                         icon={Layers}
@@ -2777,8 +2941,8 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                                                         />
                                                     </div>
 
-                                                    {/* 2. CÓMO SE COBRA (solo personalizado) */}
-                                                    {tipoFabricacion === 'PERSONALIZADO' && (
+                                                    {/* 2. CÓMO SE COBRA (personalizado o producto del catálogo con config) */}
+                                                    {(tipoFabricacion === 'PERSONALIZADO' || (tipoFabricacion === 'TERMINADO' && principalProd)) && (
                                                         <div className={cardCls}>
                                                             <p className="text-xs font-bold uppercase text-zinc-400 mb-3">Cómo se cobra *</p>
                                                             <OpcionCheck
@@ -2796,18 +2960,47 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                                                         </div>
                                                     )}
 
-                                                    {/* 3. CANTIDAD Y PRECIO (solo personalizado) */}
-                                                    {tipoFabricacion === 'PERSONALIZADO' && (
+                                                    {/* 3. CANTIDAD Y PRECIO (personalizado o producto del catálogo con config) */}
+                                                    {(tipoFabricacion === 'PERSONALIZADO' || (tipoFabricacion === 'TERMINADO' && principalProd)) && (
                                                         <div className={cardCls}>
                                                             <p className="text-xs font-bold uppercase text-zinc-400 mb-3">Cantidad y Precio *</p>
-                                                            <label className="block text-[10px] font-bold uppercase text-zinc-500 mb-1">Cantidad de prendas</label>
+                                                            <label className="block text-[10px] font-bold uppercase text-zinc-500 mb-1">Cantidad de {principalProd?.um === 'm' ? 'metros' : principalProd?.um === 'm2' ? 'm²' : 'unidades'}{principalProd?.cantidadFija ? ` (paquetes de ${principalProd.cantidadFija})` : principalProd?.cantidadMinima ? ` (mínimo ${principalProd.cantidadMinima})` : ''}</label>
                                                             <input
-                                                                type="number" min="1" step="1"
+                                                                type="number" min={principalProd?.cantidadMinima || principalProd?.cantidadFija || 1} step={principalProd?.cantidadFija || 1}
                                                                 value={garmentQuantity}
                                                                 onChange={(e) => actions.setGarmentQuantity(e.target.value)}
                                                                 placeholder="¿Cuántas prendas?"
                                                                 className="w-full bg-custom-dark border border-zinc-700 rounded-lg px-3 py-2 text-white placeholder-zinc-500 focus:outline-none focus:border-brand-cyan"
                                                             />
+                                                            {/* [ACCESORIOS] artículos de stock que salen con el producto (configurador › Accesorios y estructura) */}
+                                                            {tipoFabricacion === 'TERMINADO' && accesoriosSel.length > 0 && (
+                                                                <div className="mt-3 border border-zinc-700 rounded-lg p-3 space-y-2">
+                                                                    <p className="text-[10px] font-bold uppercase text-zinc-500">Accesorios de stock que salen con el producto</p>
+                                                                    {accesoriosSel.map((a, ai) => {
+                                                                        const setA = (patch) => setAccesoriosSel(prev => prev.map((x, j) => j === ai ? { ...x, ...patch } : x));
+                                                                        const total = (Number(a.cantidadPorUnidad) || 1) * (parseFloat(garmentQuantity) || 0);
+                                                                        const va = a.incluir !== false;
+                                                                        return (
+                                                                            <div key={ai} className="flex flex-wrap items-center gap-2 text-xs">
+                                                                                {a.obligatorio
+                                                                                    ? <span className="font-bold text-zinc-200">{a.nombre} <span className="text-[10px] text-zinc-500 font-normal">siempre va</span></span>
+                                                                                    : <label className="inline-flex items-center gap-1.5 text-zinc-200 font-bold cursor-pointer"><input type="checkbox" checked={va} onChange={e => setA({ incluir: e.target.checked })} /> {a.nombre}</label>}
+                                                                                <span className="text-zinc-500">{a.cantidadPorUnidad} por unidad → <b className="text-zinc-300">{total}</b> · {a.cobro === 'APARTE' ? 'se cobra aparte' : 'incluido en el precio'}</span>
+                                                                                {va && (a.fijo
+                                                                                    ? (a.unica ? null : <span className="text-zinc-400">· {a.varianteNombre}</span>)
+                                                                                    : (a.variantes || []).length
+                                                                                        ? <select value={a.wmsVarianteId || ''} onChange={e => { const v = (a.variantes || []).find(x => x.wms_variante_id === Number(e.target.value)); setA({ wmsVarianteId: e.target.value ? Number(e.target.value) : '', varianteNombre: v?.nombre_variante || '' }); }}
+                                                                                            className="bg-custom-dark border border-zinc-700 rounded px-2 py-1 text-white text-xs">
+                                                                                            <option value="">Elegí talle/color…</option>
+                                                                                            {a.variantes.map(v => <option key={v.wms_variante_id} value={v.wms_variante_id}>{v.nombre_variante}</option>)}
+                                                                                        </select>
+                                                                                        : <span className="text-amber-400">Sin variantes de WMS: vinculá el artículo al WMS.</span>)}
+                                                                            </div>
+                                                                        );
+                                                                    })}
+                                                                    <p className="text-[10px] text-zinc-500">Se retiran del WMS y Producción los recibe antes de que el pedido pase a Depósito.</p>
+                                                                </div>
+                                                            )}
                                                             {modoPrecioPers === 'ESTABLECIDO' ? (
                                                                 <>
                                                                     <label className="block text-[10px] font-bold uppercase text-zinc-500 mt-3 mb-1">Precio total del pedido (todo incluido)</label>
@@ -2823,12 +3016,15 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                                                                         <input
                                                                             type="number" min="0.01" step="0.01"
                                                                             value={precioPersonalizado}
-                                                                            onChange={e => setPrecioPersonalizado(e.target.value)}
+                                                                            onChange={e => { setPrecioPersonalizado(e.target.value); setPrecioAuto(false); }}
                                                                             placeholder="Precio final"
                                                                             className="flex-1 min-w-0 bg-custom-dark border border-zinc-700 rounded-lg px-3 py-2 text-white placeholder-zinc-500 focus:outline-none focus:border-brand-cyan"
                                                                         />
                                                                     </div>
                                                                     <p className="mt-1.5 text-[10px] text-zinc-500">Es el precio FINAL del pedido en esa moneda — no se convierte ni se le suma nada.</p>
+                                                                    {principalProd && sugeridoCatalogo != null && (
+                                                                        <p className="mt-1 text-[10px] text-brand-cyan">Referencia de catálogo: {garmentQuantity} × {principalProd.moneda === 'USD' ? 'US$' : '$'} {principalProd.precio} = <b>{principalProd.moneda === 'USD' ? 'US$' : '$'} {sugeridoCatalogo.toLocaleString('es-UY', { maximumFractionDigits: 2 })}</b>{precioAuto ? ' (cargado por defecto)' : <> · <button type="button" className="underline" onClick={() => { setPrecioAuto(true); setPrecioPersonalizado(String(sugeridoCatalogo)); setMonedaPersonalizada(principalProd.moneda); }}>volver al de catálogo</button></>}</p>
+                                                                    )}
                                                                 </>
                                                             ) : (
                                                                 <p className="mt-3 text-[10px] text-zinc-500">El precio lo cotiza cada área con su tarifa al crear el pedido.</p>
@@ -2841,26 +3037,63 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
 
                                         {(soloCombos || tipoFabricacion === 'TERMINADO') && (
                                             <>
-                                        <p className="block text-xs font-bold uppercase text-zinc-400 mb-2">
-                                            {soloCombos ? 'Combo a Pedir *' : 'Producto Terminado a Fabricar *'}
-                                        </p>
-                                        <CustomSelect
-                                            name="productoTerminadoConf"
-                                            aria-label={soloCombos ? 'Combo a Pedir' : 'Producto Terminado a Fabricar'}
-                                            value={productoTerminadoSel}
-                                            onChange={(val) => setProductoTerminadoSel(val)}
-                                            options={[
-                                                // Sin opción vacía: "sin producto de catálogo" ahora es el botón
-                                                // "Producto personalizado (cliente)" de arriba (y un combo ES su
-                                                // composición — tampoco tiene vacío).
-                                                ...productosTerminadosConf.filter(p => !!p.esCombo === soloCombos).map(p => ({
-                                                    value: String(p.ProIdProducto),
-                                                    label: `${p.Descripcion}${p.Precio != null ? ` · ${p.MonIdMoneda === 2 ? 'US$' : '$'} ${p.Precio}` : ''}`,
-                                                })),
-                                            ]}
-                                            placeholder={soloCombos ? 'Elegí el combo…' : 'Elegí el producto…'}
-                                            variant="black"
-                                        />
+                                        {(() => {
+                                            // [F1] Solo productos PUBLICADOS en el configurador y visibles en el canal interno.
+                                            // Árbol Familia (StockArt) › Etiqueta (para qué es) › producto, igual que la solicitud.
+                                            const SIN_ETQ = '__sin__';
+                                            const publicados = productosTerminadosConf.filter(p => !!p.esCombo === soloCombos && p.Estado === 'PUBLICADO' && p.VisibleInterno !== false);
+                                            const familias = [...new Set(publicados.map(p => p.Categoria || 'Sin familia'))].sort((a, b) => a.localeCompare(b));
+                                            const deFamilia = familiaSel ? publicados.filter(p => (p.Categoria || 'Sin familia') === familiaSel) : publicados;
+                                            const etiquetas = [...new Set(deFamilia.map(p => p.Etiqueta).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+                                            const conSin = deFamilia.some(p => !p.Etiqueta);
+                                            const visibles = deFamilia.filter(p => !etiquetaSel || (etiquetaSel === SIN_ETQ ? !p.Etiqueta : p.Etiqueta === etiquetaSel));
+                                            const areaTxt = (p) => (p.TecnicaPrincipal && p.TecnicaPrincipal !== 'SB' ? ` · ${({ DIRECTA: 'Imp. directa', ECOUV: 'Gran formato' })[p.TecnicaPrincipal] || p.TecnicaPrincipal}` : '');
+                                            const Chip = ({ on, onClick, children }) => (
+                                                <button type="button" onClick={onClick} className={`px-3 py-1.5 rounded-full text-xs font-bold border transition-colors ${on ? 'bg-cyan-400 text-slate-900 border-cyan-400' : 'bg-transparent text-zinc-300 border-zinc-600 hover:border-zinc-400'}`}>{children}</button>
+                                            );
+                                            return (
+                                                <>
+                                                    {!soloCombos && (
+                                                        <>
+                                                            <p className="block text-xs font-bold uppercase text-zinc-400 mb-2">Familia *</p>
+                                                            <div className="flex flex-wrap gap-1.5 mb-3">
+                                                                {familias.map(fa => <Chip key={fa} on={familiaSel === fa} onClick={() => { setFamiliaSel(fa); setEtiquetaSel(''); setProductoTerminadoSel(''); }}>{fa}</Chip>)}
+                                                                {!familias.length && <span className="text-xs text-zinc-500">No hay productos publicados para el pedido interno.</span>}
+                                                            </div>
+                                                            {familiaSel && (etiquetas.length > 0) && (
+                                                                <>
+                                                                    <p className="block text-xs font-bold uppercase text-zinc-400 mb-2">Para qué es</p>
+                                                                    <div className="flex flex-wrap gap-1.5 mb-3">
+                                                                        <Chip on={!etiquetaSel} onClick={() => { setEtiquetaSel(''); setProductoTerminadoSel(''); }}>Todas</Chip>
+                                                                        {etiquetas.map(et => <Chip key={et} on={etiquetaSel === et} onClick={() => { setEtiquetaSel(et); setProductoTerminadoSel(''); }}>{et}</Chip>)}
+                                                                        {conSin && <Chip on={etiquetaSel === SIN_ETQ} onClick={() => { setEtiquetaSel(SIN_ETQ); setProductoTerminadoSel(''); }}>Sin etiqueta</Chip>}
+                                                                    </div>
+                                                                </>
+                                                            )}
+                                                        </>
+                                                    )}
+                                                    {(soloCombos || familiaSel) && (
+                                                        <>
+                                                            <p className="block text-xs font-bold uppercase text-zinc-400 mb-2">
+                                                                {soloCombos ? 'Combo a Pedir *' : 'Producto Terminado a Fabricar *'}
+                                                            </p>
+                                                            <CustomSelect
+                                                                name="productoTerminadoConf"
+                                                                aria-label={soloCombos ? 'Combo a Pedir' : 'Producto Terminado a Fabricar'}
+                                                                value={productoTerminadoSel}
+                                                                onChange={(val) => setProductoTerminadoSel(val)}
+                                                                options={visibles.map(p => ({
+                                                                    value: String(p.ProIdProducto),
+                                                                    label: `${p.Descripcion}${p.Etiqueta && !etiquetaSel ? ` · ${p.Etiqueta}` : ''}${areaTxt(p)}${p.Precio != null ? ` · ${p.MonIdMoneda === 2 ? 'US$' : '$'} ${p.Precio}` : ''}`,
+                                                                }))}
+                                                                placeholder={soloCombos ? 'Elegí el combo…' : (visibles.length ? `Elegí el producto (${visibles.length})…` : 'No hay productos con ese filtro')}
+                                                                variant="black"
+                                                            />
+                                                        </>
+                                                    )}
+                                                </>
+                                            );
+                                        })()}
                                         {serviciosObligatorios.size > 0 && (
                                             <p className="mt-1.5 text-[11px] text-brand-cyan">
                                                 Este producto incluye: {[...serviciosObligatorios].map(a => ({ EMB: 'Bordado', DF: 'Estampados DTF', TPU: 'Estampados TPU', TWC: 'Corte', TWT: 'Costura' }[a] || a)).join(', ')} — se activan solos y no se pueden apagar.
@@ -2893,7 +3126,7 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                                     completa a ellos, y viceversa. */}
                                 {/* [PRENDAS] En personalizado la cantidad vive en la tarjeta
                                     "Cantidad y Precio" de arriba — acá solo terminado/combos. */}
-                                {queDesea === 'FABRICAR_A_MEDIDA' && productoTerminadoSel && (
+                                {queDesea === 'FABRICAR_A_MEDIDA' && productoTerminadoSel && !(tipoFabricacion === 'TERMINADO' && principalProd && !comboActivo) && (
                                     <div className="md:col-span-2">
                                         <p className="block text-xs font-bold uppercase text-zinc-400 mb-2">{comboActivo ? 'Cantidad de Combos *' : 'Cantidad de Prendas *'}</p>
                                         <input
@@ -3432,6 +3665,15 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                                     addToast('Este servicio viene incluido en el producto elegido — no se puede desactivar.', { error: true });
                                     return;
                                 }
+                                // [CORTE/COSTURA] No existe Costura sin Corte: sacar el Corte saca también la Costura
+                                if (enableCorte && enableCostura) {
+                                    if (serviciosObligatorios.has('TWT')) {
+                                        addToast('El producto elegido incluye Costura: no se puede sacar el Corte.', { error: true });
+                                        return;
+                                    }
+                                    actions.setEnableCostura(false);
+                                    addToast('También se desactivó Costura: no hay Costura sin Corte.');
+                                }
                                 actions.setEnableCorte(!enableCorte);
                             }}
                             icon={Zap}
@@ -3476,6 +3718,11 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                                 if (serviciosObligatorios.has('TWT') && enableCostura) {
                                     addToast('Este servicio viene incluido en el producto elegido — no se puede desactivar.', { error: true });
                                     return;
+                                }
+                                // [CORTE/COSTURA] No existe Costura sin Corte: prender Costura prende también el Corte
+                                if (!enableCostura && !enableCorte) {
+                                    actions.setEnableCorte(true);
+                                    addToast('Se activó también el Servicio de Corte: no hay Costura sin Corte. Completá sus datos.');
                                 }
                                 actions.setEnableCostura(!enableCostura);
                             }}
@@ -3652,8 +3899,9 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                                         dtfArchivos={dtfArchivos} removeDtfArchivo={actions.removeDtfArchivo}
                                         dtfBocetoFile={dtfBocetoFile} setDtfBocetoFile={actions.setDtfBocetoFile}
                                         dtfMaterial={dtfMaterial} dtfMaterials={dtfMaterials} setDtfMaterial={actions.setDtfMaterial}
+                                        dtfMeta={dtfMeta} dtfKey={dtfKey} setDtfMeta={(k, patch) => setDtfMeta(prev => ({ ...prev, [k]: { ...(prev[k] || {}), ...patch } }))}
                                         handleSpecializedFileUpload={(f) => handleSpecializedFileUpload(actions.setDtfBocetoFile, f)}
-                                        handleMultipleSpecializedFileUpload={(fs) => handleMultipleSpecializedFileUpload(actions.addDtfArchivos, fs)}
+                                        handleMultipleSpecializedFileUpload={(fs) => handleDtfFilesUpload(fs)}
                                         printsPerGarment={estampadoPrints} setPrintsPerGarment={actions.setEstampadoPrints}
                                         compact={true}
                                     />
@@ -3665,6 +3913,7 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                                         garmentQuantity={garmentQuantity} setGarmentQuantity={actions.setGarmentQuantity}
                                         tpuArchivos={tpuArchivos} removeTpuArchivo={actions.removeTpuArchivo}
                                         tpuBocetoFile={tpuBocetoFile} setTpuBocetoFile={actions.setTpuBocetoFile}
+                                        tpuAlto={tpuAlto} tpuAncho={tpuAncho} setTpuAlto={actions.setTpuAlto} setTpuAncho={actions.setTpuAncho}
                                         tpuVariant={tpuVariant} tpuVariants={tpuVariants} handleTpuVariantChange={actions.handleTpuVariantChange}
                                         tpuMaterial={tpuMaterial} tpuMaterials={tpuMaterials} setTpuMaterial={actions.setTpuMaterial}
                                         handleSpecializedFileUpload={(f) => handleSpecializedFileUpload(actions.setTpuBocetoFile, f)}
@@ -3843,7 +4092,7 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                 <div className="mt-8">
                     <div className="bg-custom-dark text-white p-8 md:rounded-3xl rounded-none shadow-2xl shadow-black/30 flex flex-col md:flex-row items-center justify-between gap-8 border-y border-x-0 md:border-x border-zinc-700/50 -mx-4 md:mx-0">
                         <div className="flex gap-10 flex-wrap">
-                            <div><p className="text-[11px] uppercase font-bold text-zinc-500">Servicio</p><p className="text-xl font-bold text-zinc-100">{serviceInfo?.label}</p></div>
+                            <div><p className="text-[11px] uppercase font-bold text-zinc-500">Pedido</p><p className="text-xl font-bold text-zinc-100">{queDesea === 'COMPRAR' ? (personalizar ? 'Comprar y personalizar' : 'Comprar prendas') : queDesea === 'PRENDA_CLIENTE' ? 'Prenda del cliente' : comboActivo ? 'Combo' : (principalProd ? `Fabricar a medida · ${principalProd.label}` : 'Fabricar a medida')}</p></div>
                             {/* Con el selector oculto el pedido va siempre Normal: el resumen
                                 muestra lo que realmente se envía, no el estado interno. */}
                             {(() => { const prio = MOSTRAR_PRIORIDAD ? urgency : 'Normal'; return (

@@ -689,6 +689,18 @@ async function subirArchivo(pool, user, solicitudId, b, file) {
     // vinculada (no de medir el PDF, que puede tener varias páginas). null = archivo común.
     const hojaTizada = rol === 'DISENO_PRONTO' ? await require('./solicitudesVendedorTizadas').datosDeHoja(pool, pa, b) : null;
     if (hojaTizada) b = { ...b, AnchoM: hojaTizada.AnchoM, AltoM: hojaTizada.AltoM, CodArticulo: hojaTizada.CodArticulo, Material: hojaTizada.Material };
+    // F1: producto del catálogo sin molde → el archivo de impresión tiene que medir la medida fija del producto
+    if (rol === 'DISENO_PRONTO' && pa && pa.Tipo === 'PRINCIPAL' && !hojaTizada) {
+      const conv = require('./solicitudesVendedorConversion');
+      const mf = await conv.medidaFijaDeProducto(pool, pa.ProductoSolID);
+      if (mf) {
+        if (!(Number(b.AnchoM) > 0 && Number(b.AltoM) > 0)) throw fallo(400, `Este producto se imprime a medida fija (${mf.anchoM.toFixed(2)} × ${mf.altoM.toFixed(2)} m) y "${nombre}" no trae medida: exportalo con DPI y volvé a subirlo.`);
+        const e = conv.errorMedidaFija(nombre, b.AnchoM, b.AltoM, mf);
+        if (e) throw fallo(400, e);
+        // A medida fija, un archivo = una unidad: las copias arrancan en las unidades pedidas (el diseñador puede cambiarlas)
+        if (!reemplazaA && (b.Copias === undefined || b.Copias === null || b.Copias === '') && mf.cantidad > 0) b = { ...b, Copias: mf.cantidad };
+      }
+    }
 
     let viejo = null;
     let produccion = null;   // tela + copias: solo diseño pronto de la producción principal
@@ -700,7 +712,10 @@ async function subirArchivo(pool, user, solicitudId, b, file) {
       if (viejo.Rol !== rol || (viejo.ParteID || null) !== (parteId || null)) throw fallo(400, 'El archivo nuevo debe sustituir a uno del mismo tipo y del mismo servicio.');
     }
     // El archivo corregido hereda la tela y las copias del que sustituye, salvo que lleguen otras.
-    if (rol === 'DISENO_PRONTO' && pa.Tipo === 'PRINCIPAL') produccion = await require('./solicitudesVendedorConversion').resolverProduccion(pool, b, viejo);
+    if (rol === 'DISENO_PRONTO' && pa.Tipo === 'PRINCIPAL') {
+      const conv = require('./solicitudesVendedorConversion');
+      produccion = await conv.resolverProduccion(pool, b, viejo, await conv.areaPrincipalDeProducto(pool, pa.ProductoSolID));
+    }
     if (rol === 'DISENO_PRONTO' && pa.Tipo === 'DTF') {
       await require('./solicitudesVendedorConversion').exigirMedidaDtf(pool, pa, b, nombre);
       produccion = { Material: null, CodArticulo: null, CodStock: null, Copias: parseInt(b.Copias, 10) >= 1 ? parseInt(b.Copias, 10) : (viejo?.Copias || 1) };   // DTF: solo copias
@@ -940,6 +955,24 @@ async function obtener(pool, user, solicitudId) {
   }));
   sol.Archivos = archivos;
   sol.Eventos = eventos;
+  // F1: producción principal, molde y medida fija del producto del catálogo (ProductoVentaConfig)
+  const idsCat = sol.Productos.filter(p => p.TipoFabricacion === 'PRODUCTO_TERMINADO' && p.ProIdProducto).map(p => Number(p.ProIdProducto));
+  const cfgPorId = new Map();
+  if (idsCat.length) {
+    try {
+      const c = await pool.request().query(`
+        SELECT ProIdProducto, TecnicaPrincipal, Molde, UM, AnchoM, AltoM, BordeCm,
+               CASE WHEN COL_LENGTH('dbo.ProductoVentaConfig', 'TizadaProMoldeRef') IS NULL THEN NULL ELSE TizadaProMoldeRef END AS TizadaProMoldeRef
+        FROM dbo.ProductoVentaConfig WHERE COL_LENGTH('dbo.ProductoVentaConfig', 'TecnicaPrincipal') IS NOT NULL AND ProIdProducto IN (${idsCat.join(',')})`);
+      c.recordset.forEach(x => cfgPorId.set(x.ProIdProducto, x));
+    } catch (e) { logger.warn(`[SOLICITUDES] config F1 de productos: ${e.message}`); }
+  }
+  for (const p of sol.Productos) {
+    const c = p.ProIdProducto ? cfgPorId.get(Number(p.ProIdProducto)) : null;
+    p.Config = c ? { TecnicaPrincipal: c.TecnicaPrincipal || 'SB', Molde: c.Molde || 'OBLIGATORIO', UM: c.UM || 'u', AnchoM: c.AnchoM, AltoM: c.AltoM, BordeCm: c.BordeCm, TizadaProMoldeRef: c.TizadaProMoldeRef || null } : null;
+    const nombreArea = { DIRECTA: 'impresión directa', ECOUV: 'gran formato', DF: 'DTF' }[p.Config?.TecnicaPrincipal];
+    if (nombreArea) p.Partes.forEach(pa => { if (pa.Tipo === 'PRINCIPAL') pa.Nombre = `Producción principal (${nombreArea})`; });
+  }
   // Ficha técnica del producto del catálogo (avíos, costuras, material, tallas, notas, dibujo): informativa para Diseño y para el PDF
   for (const p of sol.Productos) {
     p.FichaProducto = null;
@@ -987,7 +1020,8 @@ async function sellarLista(pool, filas) {
   if (!abiertas.length) return filas;
   const ids = abiertas.map(s => s.SolicitudID).join(',');
   const [prods, partes, archs] = await Promise.all([
-    pool.request().query(`SELECT * FROM dbo.SolicitudesVendedorProductos WHERE Activo = 1 AND SolicitudID IN (${ids})`),
+    // F1: Molde del producto del catálogo, para que el checklist de la lista no pida talles a los que van por unidad
+    pool.request().query(`SELECT p.*, CASE WHEN COL_LENGTH('dbo.ProductoVentaConfig', 'Molde') IS NULL THEN NULL ELSE (SELECT vc.Molde FROM dbo.ProductoVentaConfig vc WHERE vc.ProIdProducto = p.ProIdProducto) END AS Molde FROM dbo.SolicitudesVendedorProductos p WHERE p.Activo = 1 AND p.SolicitudID IN (${ids})`),
     pool.request().query(`SELECT ParteID, SolicitudID, ProductoSolID, Tipo, Estado, DatosJson, CantidadTotal, PorPrenda, Modificada, DisenadorID FROM dbo.SolicitudesVendedorPartes WHERE Activo = 1 AND SolicitudID IN (${ids})`),
     pool.request().query(`SELECT ArchivoID, SolicitudID, ProductoSolID, ParteID, EventoID, Rol, Vigente, Material, NombreOriginal FROM dbo.SolicitudesVendedorArchivos WHERE Vigente = 1 AND UrlDrive <> 'Pendiente' AND SolicitudID IN (${ids})`),
   ]);
@@ -1129,7 +1163,7 @@ async function miPerfil(pool, user) {
 // Conversión a pedido de producción (spec §9) — services/solicitudesVendedorConversion.js
 // ---------------------------------------------------------------------
 const baseConversion = () => ({ cabecera, exigirAbierta, exigirVendedor, esAdmin, esVendedor, esDisenador, registrarEvento, recalcularEstado, obtener });
-const materialesPrincipal = (pool) => require('./solicitudesVendedorConversion').materialesPrincipal(pool);
+const materialesPrincipal = (pool, areaId) => require('./solicitudesVendedorConversion').materialesPrincipal(pool, areaId);
 const definirProduccionArchivo = (pool, user, solicitudId, archivoId, b) => require('./solicitudesVendedorConversion').definirProduccionArchivo(pool, user, baseConversion(), solicitudId, archivoId, b);
 // Tizadas de TizadaPro (services/solicitudesVendedorTizadas.js)
 const baseTizadas = () => ({ ...baseConversion(), parteConContexto, marcarModificada });

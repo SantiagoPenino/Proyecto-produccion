@@ -1,4 +1,6 @@
-export const printLabelsHelper = (labels, orderInfo) => {
+// opts.reimprimirEtiquetaId: reimprime SOLO esa etiqueta aunque el bulto ya haya viajado
+// en un remito (rótulo roto/perdido). El backend saltea el filtro de remitos para ella.
+export const printLabelsHelper = (labels, orderInfo, opts = {}) => {
   if (!orderInfo || (!orderInfo.id && !orderInfo.OrdenID)) {
     // Fallback: Try to get OrderID from first label
     if (labels && labels.length > 0 && labels[0].OrdenID) {
@@ -11,7 +13,8 @@ export const printLabelsHelper = (labels, orderInfo) => {
 
   const orderId = orderInfo.id || orderInfo.OrdenID;
   const apiUrl = import.meta.env.VITE_API_URL || '/api';
-  const printUrl = `${apiUrl}/production-file-control/orden/${orderId}/etiquetas/print`;
+  const printUrl = `${apiUrl}/production-file-control/orden/${orderId}/etiquetas/print`
+    + (opts.reimprimirEtiquetaId ? `?etiquetaId=${opts.reimprimirEtiquetaId}&reimprimir=1` : '');
 
   // Impresión silenciosa: iframe oculto en lugar de ventana nueva.
   // El diálogo de impresión del sistema sigue apareciendo (requerimiento del browser),

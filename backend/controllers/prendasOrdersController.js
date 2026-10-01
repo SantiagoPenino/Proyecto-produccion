@@ -263,6 +263,10 @@ const ESTADOS_RETIRO_WMS = ['ESPERANDO_RETIRO_WMS', 'EN_PREPARACION_WMS'];
 // Devuelve { [ProIdProducto]: ['EMB', 'DF', ...] }; un artículo sin nada queda con [].
 // Estampado (EST) no se lista: no se elige suelto, lo arrastra DTF o TPU.
 const AREAS_DECORACION = ['EMB', 'DF', 'TPU'];
+// F1 (29-sep): áreas que pueden ser la producción PRINCIPAL de un producto fabricado a medida
+// (sublimación, impresión directa, gran formato). En la cadena Principal → Corte → Costura → …
+// se comportan igual que SB; cuál es la del producto lo dice ProductoVentaConfig.TecnicaPrincipal.
+const AREAS_PRINCIPAL_IMPRESION = ['SB', 'DIRECTA', 'ECOUV'];
 
 // Regla PROVISORIA (16-09-2026, pedida por el usuario) mientras los artículos del local no
 // estén cargados en el Configurador: se personaliza la ropa y los productos del local, no
@@ -526,6 +530,11 @@ exports.createWebOrder = async (req, res) => {
     // `idServicioBase` es la clave que manda el portal (PrendaOrderForm); sin ella `serviceId`
     // quedaba undefined y las ramas que dependen de él no corrían. Espeja webOrdersController.
     const serviceId = idServicio || req.body.idServicioBase || req.body.serviceId;
+        // [CORTE/COSTURA] prendas del pedido = las de la orden madre (producto fabricado / comprado); si no hay madre, las de los servicios
+        const prendasPedido = (req.body.servicios || [])
+            .filter(x => x && (x.esProductoFabricado || x.esProductoComprado))
+            .reduce((sum, x) => sum + (x.items || []).reduce((a, it) => a + (parseInt(it.cantidad) || 0), 0), 0)
+            || parseInt((req.body.servicios || []).find(x => x?.metadata?.prendas)?.metadata?.prendas) || 0;
     const jobName = nombreTrabajo || req.body.jobName;
     const urgency = prioridad || req.body.urgency || 'Normal';
     const generalNote = notasGenerales || req.body.generalNote;
@@ -567,9 +576,24 @@ exports.createWebOrder = async (req, res) => {
     const combosSinWms = combosRetiroBody.filter(c => !c.wmsVarianteId);
     if (combosSinWms.length > 0) {
         const nombres = combosSinWms.map(c => c.descripcion || `componente ${c.comboItemId}`).join(', ');
+        // [ACCESORIOS] un accesorio de stock sin variante: falta elegir talle/color (o vincular el artículo al WMS)
+        if (combosSinWms.every(c => c.esAccesorio)) {
+            return res.status(400).json({ error: `No se puede confirmar: el accesorio de stock "${nombres}" no tiene variante de WMS elegida. Elegí talle/color del accesorio (o vinculá el artículo al WMS en Marketing › Productos).` });
+        }
         return res.status(400).json({
             error: `No se puede confirmar: "${nombres}" no tiene una variante de WMS vinculada en el Configurador — avisá antes de reintentar, si se crea igual el servicio de decoración de ese componente queda esperando un retiro que nunca va a llegar.`
         });
+    }
+
+    // [CORTE/COSTURA] Defensa de fondo: en un pedido que fabrica la prenda (principal de impresión en tela)
+    // no existe Costura sin Corte. Sin esta regla la tela iba de Sublimación directo a Costura (pedido 26025).
+    {
+        const srvPedido = Array.isArray(req.body.servicios) ? req.body.servicios : [];
+        const areasPedido = srvPedido.map(x => String(x?.areaId || '').trim().toUpperCase());
+        const fabricaTela = areasPedido.some(a => AREAS_PRINCIPAL_IMPRESION.includes(a));
+        if (fabricaTela && areasPedido.includes('TWT') && !areasPedido.includes('TWC')) {
+            return res.status(400).json({ error: 'No se puede confirmar: el pedido lleva Costura pero no Corte. No existe Costura sin Corte: agregá el Servicio de Corte.' });
+        }
     }
 
     const pool = await getPool();
@@ -621,7 +645,8 @@ exports.createWebOrder = async (req, res) => {
         // Producto terminado simple: la PRO esProductoFabricado con artículo y SIN servicios
         // agrupados (un combo agrupa por componente y tiene sus propias reglas).
         const proTerminado = srvBody.find(s => s.esProductoFabricado && s.cabecera?.proIdProducto);
-        const esCombo = srvBody.some(s => s.comboItemId) || combosRetiroBody.length > 0;
+        // [ACCESORIOS] los retiros de accesorios de stock no hacen combo al pedido
+        const esCombo = srvBody.some(s => s.comboItemId) || combosRetiroBody.some(c => !c.esAccesorio);
         if (proTerminado && !esCombo) {
             const permRes = await pool.request()
                 .input('PID', sql.Int, parseInt(proTerminado.cabecera.proIdProducto, 10))
@@ -875,13 +900,30 @@ exports.createWebOrder = async (req, res) => {
                 let serviceNote = srv.notas || '';
                 let techInfo = '';
 
-                if (srv.metadata) {
+                if (areaID === 'TWC') {
+                    // [CORTE] Una sola línea y en cristiano: qué tela llega y de dónde. Antes la orden salía con
+                    // "Corte habilitado. Molde: SUBLIMACION. Tela: TELA SUBLIMADA EN USER." y además
+                    // "[DATOS TÉCNICOS] Molde: SUBLIMACION, Tela: TELA SUBLIMADA EN USER": lo mismo dos veces.
+                    const fo = String(srv.metadata?.fabricOrigin || '').toUpperCase();
+                    const mt = String(srv.metadata?.moldType || '').toUpperCase();
+                    const principalArea = String((req.body.servicios || []).find(x => x.esPrincipal)?.areaId || serviceId || '').toUpperCase();
+                    let tela = /CLIENTE/.test(fo)
+                        ? `Tela del cliente${srv.metadata?.clientFabricName ? ': ' + srv.metadata.clientFabricName : ''}`
+                        : (principalArea === 'DIRECTA' || principalArea === 'DIRECTA_320') ? 'Tela impresa en USER (Impresión directa)'
+                        : principalArea === 'ECOUV' ? 'Material impreso en USER (Gran formato)'
+                        : 'Tela sublimada en USER';
+                    if (/MOLDES CLIENTES/.test(mt)) tela += ' · Moldes del cliente';
+                    const propia = String(srv.notas || '').replace(/^Corte habilitado\.?[^\n]*/i, '').trim();
+                    serviceNote = [tela, propia].filter(Boolean).join('\n');
+                    techInfo = tela;
+                } else if (srv.metadata) {
                     const metaParts = [];
                     if (srv.metadata.prendas) metaParts.push(`Prendas: ${srv.metadata.prendas}`);
                     if (srv.metadata.estampadosPorPrenda) metaParts.push(`Bajadas: ${srv.metadata.estampadosPorPrenda}`); // User asked for 'bajadas'
                     if (srv.metadata.origen) metaParts.push(`Origen: ${srv.metadata.origen}`);
                     if (srv.metadata.moldType) metaParts.push(`Molde: ${srv.metadata.moldType}`);
                     if (srv.metadata.fabricOrigin) metaParts.push(`Tela: ${srv.metadata.fabricOrigin}`);
+                    if (srv.metadata.medidaTpu) metaParts.push(`Medida: ${srv.metadata.medidaTpu}`);   // [TPU COMO PORTAL]
 
                     if (metaParts.length > 0) {
                         techInfo = metaParts.join(', '); // Format: "Prendas: 45, Bajadas: 3, Origen: Cliente"
@@ -908,9 +950,13 @@ exports.createWebOrder = async (req, res) => {
                     // unidad del WMS externo en vez de la cantidad real comprada).
                     magnitudInicial: ((serviceId === 'tpu' && srv.esPrincipal) || srv.esProductoComprado || srv.esProductoFabricado)
                         ? (srv.items || []).reduce((s, it) => s + (parseInt(it.cantidad) || 0), 0)
-                        : 0,
+                        // [CORTE/COSTURA] Hermanas de un producto fabricado: nacían con Magnitud 0 y el listado
+                        // mostraba "0 prend". Llevan las prendas del pedido (las de la orden madre PRO), igual
+                        // que hace el procesador de solicitudes (ponerCantidades).
+                        : (['TWC', 'TWT'].includes(areaID) ? prendasPedido : 0),
                     notaAdicional: serviceNote, // Nota completa para la Orden
                     techInfo: techInfo, // Info técnica limpia para ServiciosExtraOrden
+                    metadata: srv.metadata || {},   // [TPU COMO PORTAL] prendas × bajadas para la cantidad del TPU sin archivo
                     // [PRENDAS] Estampado fusionado con DTF/TPU: si esta Orden depende de que
                     // OTRA termine primero (ej. Estampado espera a su DTF/TPU), acá viaja el
                     // AreaID de esa Orden — se resuelve a OrdenID real más abajo, en el loop.
@@ -1138,11 +1184,12 @@ exports.createWebOrder = async (req, res) => {
                 ? pendingOrderExecutions.filter(e => e.comboItemId === exec.comboItemId)
                 : pendingOrderExecutions;
             const activas = new Set(lote.map(e => (e.areaID || '').toUpperCase()));
-            if (areaId === 'TWC' && activas.has('SB')) {
-                exec.chainedAfterAreaId = 'SB';
+            const principal = AREAS_PRINCIPAL_IMPRESION.find(a => activas.has(a));   // SB, DIRECTA o ECOUV (F1)
+            if (areaId === 'TWC' && principal) {
+                exec.chainedAfterAreaId = principal;
             } else if (areaId === 'TWT') {
                 if (activas.has('TWC')) exec.chainedAfterAreaId = 'TWC';
-                else if (activas.has('SB')) exec.chainedAfterAreaId = 'SB';
+                else if (principal) exec.chainedAfterAreaId = principal;
             }
         });
 
@@ -1403,6 +1450,8 @@ exports.createWebOrder = async (req, res) => {
                         // prenda — a futuro se podrá elegir antes/después.
                         switch (exec.areaID) {
                             case 'SB':
+                            case 'DIRECTA':   // F1: misma cadena que sublimación cuando es la producción principal
+                            case 'ECOUV':
                                 proximoServicio = areasActivas.has('TWC') ? 'TWC'
                                     : (areasActivas.has('TWT') ? 'TWT'
                                         : (areasActivas.has('EMB') ? 'EMB' : (hayEstampado ? 'EST' : 'DEPOSITO')));
@@ -1767,7 +1816,10 @@ exports.createWebOrder = async (req, res) => {
 
                 // TPU trabajo nuevo: cobrar la matriz (artículo 156 = US$15) como línea de facturación.
                 // El reuso de matriz va por /reuse-matriz y NO pasa por acá, así que ahí no se cobra.
-                if (serviceId === 'tpu' && !exec.isExtra && String(exec.areaID || '').toUpperCase() === 'TPU') {
+                // [TPU COMO PORTAL] También cuando el TPU es servicio de una prenda (pedido interno o
+                // solicitud): es un trabajo nuevo con matriz nueva, igual que en el portal. "Hago mi
+                // matriz" (matrizPropia) y el reuso (/reuse-matriz) siguen sin cargo.
+                if (String(exec.areaID || '').toUpperCase() === 'TPU' && !exec.matrizPropia) {
                     await new sql.Request(transaction)
                         .input('OID', sql.Int, newOID)
                         .query(`INSERT INTO ServiciosExtraOrden (OrdenID, CodArt, CodStock, Descripcion, Cantidad, PrecioUnitario, TotalLinea, Observacion, FechaRegistro)
@@ -2152,11 +2204,19 @@ exports.createWebOrder = async (req, res) => {
                 if (fileCount > 0) {
                     await new sql.Request(transaction).input('OID', sql.Int, newOID).input('C', sql.Int, fileCount).input('Mag', sql.Decimal(10, 2), totalMagnitud)
                         .query("UPDATE Ordenes SET ArchivosCount = @C, Magnitud = CAST(@Mag AS VARCHAR) WHERE OrdenID = @OID");
-                } else if (serviceId === 'tpu' && String(exec.areaID || '').toUpperCase() === 'TPU') {
+                } else if (['TWC', 'TWT'].includes(String(exec.areaID || '').toUpperCase()) && parseInt(exec.magnitudInicial) > 0) {
+                    // [CORTE/COSTURA] sin archivo de impresión: la cantidad es la de prendas del pedido (ver magnitudInicial)
+                    await new sql.Request(transaction).input('OID', sql.Int, newOID).input('Mag', sql.VarChar(50), String(parseInt(exec.magnitudInicial)))
+                        .query("UPDATE Ordenes SET Magnitud = @Mag WHERE OrdenID = @OID AND ISNULL(TRY_CAST(Magnitud AS FLOAT), 0) = 0");
+                } else if (String(exec.areaID || '').toUpperCase() === 'TPU') {
                     // TPU (boceto): el cliente sube un boceto, no arte, así que no hay ArchivosOrden que
                     // lleven la cantidad. La Magnitud (unidades de TPU a producir) sale de la suma de
-                    // copies de los items — si no, la orden queda en Magnitud 0 y no se cotiza la producción.
-                    const cantTpu = (exec.items || []).reduce((s, it) => s + (parseInt(it.copies) || 0), 0);
+                    // copies de los items; [TPU COMO PORTAL] si el TPU es servicio de una prenda (sin
+                    // items), de los metadatos: prendas × bajadas — mismo cálculo que el procesador de
+                    // solicitudes. Si no, la orden queda en Magnitud 0 y no se cotiza la producción.
+                    const cantTpu = (exec.items || []).reduce((s, it) => s + (parseInt(it.copies) || 0), 0)
+                        || ((parseInt(exec.metadata?.prendas) || 0) * (parseInt(exec.metadata?.estampadosPorPrenda) || 1))
+                        || parseInt(exec.magnitudInicial) || 0;
                     if (cantTpu > 0) {
                         // Entero y como texto: TPU se mide en UNIDADES (espeja webOrdersController).
                         await new sql.Request(transaction).input('OID', sql.Int, newOID).input('Mag', sql.VarChar(50), String(Math.round(cantTpu)))
@@ -2182,7 +2242,14 @@ exports.createWebOrder = async (req, res) => {
 
                 // 0. REFERENCIAS VINCULADAS AL SERVICIO (Nueva Lógica)
                 if (exec.referencias && exec.referencias.length > 0) {
+                    // Mismo archivo con el mismo tipo dos veces en la misma orden = UNA sola referencia.
+                    // (BOR-26025: el boceto de bordado llegaba repetido desde el formulario y quedaban dos filas
+                    // idénticas.) Un prediseño no cae acá: tiene otro nombre ("… PREDISENO.png") y otro tipo.
+                    const refsVistas = new Set();
                     for (const ref of exec.referencias) {
+                        const claveRef = `${String(ref.tipo || 'REFERENCIA').toUpperCase()}|${ref.name}`;
+                        if (refsVistas.has(claveRef)) continue;
+                        refsVistas.add(claveRef);
                         // Si la referencia trae "etiqueta" (ej: boceto Twinface "Boceto Archivo 1 de 3"),
                         // el nombre guardado usa la etiqueta + la extensión real, para identificar a qué
                         // archivo pertenece. El originalName (match de subida) sigue siendo ref.name.
@@ -2223,9 +2290,15 @@ exports.createWebOrder = async (req, res) => {
                 // impresión). SB entra acá porque "Fabricar a Medida" con Producto Terminado la
                 // puede demotear a exec.isExtra=true (deja de ser la principal, pasa a ser
                 // hermana de PRO) sin dejar de tener su archivo real.
-                if ((exec.isExtra && !['DF', 'DTF', 'SB'].includes(exec.areaID)) || ['EST', 'EMB', 'TWT', 'TWC'].includes(exec.areaID)) {
+                // [F1] Impresión Directa y Gran formato son producción principal como SB: también cotizan por el
+                // archivo real y también quedan demoteadas a isExtra bajo la PRO del producto terminado. Sin esta
+                // exclusión nacía una línea 'Impresión Directa 3.20 - Tela…' que en Control aparecía como un
+                // segundo ítem a controlar (2/2, copias contadas dos veces) y en la cotización duplicaba el cobro.
+                if ((exec.isExtra && !['DF', 'DTF', ...AREAS_PRINCIPAL_IMPRESION].includes(exec.areaID)) || ['EST', 'EMB', 'TWT', 'TWC'].includes(exec.areaID)) {
                     // Calcular cantidad total (suma de copias o magnitud inicial)
                     let qtyFact = exec.magnitudInicial || 0;
+                    // [TPU COMO PORTAL] TPU como servicio de una prenda: sin archivo ni items, la cantidad es prendas × bajadas
+                    if (!qtyFact && String(exec.areaID || '').toUpperCase() === 'TPU') qtyFact = (parseInt(exec.metadata?.prendas) || 0) * (parseInt(exec.metadata?.estampadosPorPrenda) || 1);
                     if (qtyFact === 0 && exec.items && exec.items.length > 0) {
                         qtyFact = exec.items.reduce((sum, it) => sum + (parseInt(it.copies) || 1), 0);
                     }
@@ -2420,14 +2493,33 @@ exports.createWebOrder = async (req, res) => {
             // esta venta. Misma transacción que el resto del pedido: todo o nada.
             const combosRetiro = Array.isArray(req.body.combosRetiro) ? req.body.combosRetiro : [];
             const ventasCombo = []; // {codigoVenta, pedidoVentaId} — para notificar después del commit
+            // [ACCESORIOS] ¿la línea de venta puede guardar de qué depósito del WMS sale? (docs/migrations/configurador_accesorios.sql)
+            const conDepLinea = combosRetiro.length
+                ? !!(await new sql.Request(transaction).query(`SELECT COL_LENGTH('dbo.PedidosCobranzaDetalle', 'WmsDepositoId') AS c`)).recordset[0].c
+                : false;
             for (const item of combosRetiro) {
                 if (!item.wmsVarianteId) {
                     logger.warn(`[Prendas] Combo: componente "${item.descripcion}" sin wmsVarianteId — no se genera venta de retiro.`);
                     continue;
                 }
-                const areasComponente = new Set(
+                // [ACCESORIOS] un accesorio de stock (mástil, base…) no tiene servicios: su retiro va a PRO
+                // (destinoSinServicios), donde Producción lo recibe y sale junto con el producto fabricado.
+                const esAccesorio = !!item.esAccesorio;
+                const areasComponente = esAccesorio ? new Set() : new Set(
                     pendingOrderExecutions.filter(e => String(e.comboItemId) === String(item.comboItemId)).map(e => e.areaID)
                 );
+                // [ACCESORIOS] "se cobra aparte": la VEN- lleva el precio de lista del artículo (PreciosBase);
+                // "incluido en el precio": $0, como el retiro de un componente (el cobro está en la PRO).
+                let precioAcc = 0, monedaAcc = 'UYU';
+                if (esAccesorio && String(item.cobro || '').toUpperCase() === 'APARTE' && item.itemProIdProducto) {
+                    const pbAcc = await new sql.Request(transaction).input('P', sql.Int, parseInt(item.itemProIdProducto))
+                        .query(`SELECT TOP 1 Precio, Moneda FROM dbo.PreciosBase WHERE ProIdProducto = @P ORDER BY UltimaActualizacion DESC`);
+                    if (pbAcc.recordset[0]?.Precio != null) {
+                        precioAcc = parseFloat(pbAcc.recordset[0].Precio) || 0;
+                        monedaAcc = String(pbAcc.recordset[0].Moneda || 'UYU').trim().toUpperCase() === 'USD' ? 'USD' : 'UYU';
+                    } else logger.warn(`[Prendas] Accesorio "${item.descripcion}" se cobra aparte pero no tiene precio en PreciosBase — la venta sale en $0.`);
+                }
+                const cantAcc = parseFloat(item.cantidad) || 1;
                 // Mismo criterio que el switch de ProximoServicio de arriba: Bordado trabaja
                 // sobre la prenda (va primero); si no hay Bordado pero sí DTF/TPU, la prenda va
                 // directo a Estampado (ahí se prensa el transfer, no antes).
@@ -2442,10 +2534,12 @@ exports.createWebOrder = async (req, res) => {
                 const insertPC = await new sql.Request(transaction)
                     .input('NoDocERP', sql.NVarChar, codigoVenta)
                     .input('ClienteID', sql.Int, cliIdCliente || null)
+                    .input('Monto', sql.Decimal(18, 2), Math.round(precioAcc * cantAcc * 100) / 100)
+                    .input('Mon', sql.NVarChar, monedaAcc)
                     .query(`
                         INSERT INTO PedidosCobranza (NoDocERP, ClienteID, MontoTotal, Moneda, FechaGeneracion, EstadoCobro)
                         OUTPUT INSERTED.ID
-                        VALUES (@NoDocERP, @ClienteID, 0, 'UYU', GETDATE(), 'PENDIENTE')
+                        VALUES (@NoDocERP, @ClienteID, @Monto, @Mon, GETDATE(), 'PENDIENTE')
                     `);
                 const pedidoVentaId = insertPC.recordset[0].ID;
 
@@ -2491,11 +2585,16 @@ exports.createWebOrder = async (req, res) => {
                     // JOIN a Articulos por ProIdProducto) no resuelve el nombre del artículo y
                     // muestra "null - <variante>" en la tarjeta.
                     .input('ProId', sql.Int, item.itemProIdProducto ? parseInt(item.itemProIdProducto) : null)
-                    .input('Cant', sql.Decimal(18, 2), parseFloat(item.cantidad) || 1)
+                    .input('Cant', sql.Decimal(18, 2), cantAcc)
+                    .input('PU', sql.Decimal(18, 2), precioAcc)
+                    .input('Sub', sql.Decimal(18, 2), Math.round(precioAcc * cantAcc * 100) / 100)
+                    .input('MonD', sql.NVarChar, monedaAcc)
+                    // [ACCESORIOS] depósito del WMS de donde se retira (NULL = el de ventas)
+                    .input('Dep', sql.Int, esAccesorio && parseInt(item.wmsDepositoId) > 0 ? parseInt(item.wmsDepositoId) : null)
                     .query(`
                         INSERT INTO PedidosCobranzaDetalle
-                        (PedidoCobranzaID, OrdenID, CodArticulo, ProIdProducto, Cantidad, PrecioUnitario, Subtotal, Moneda, DatoTecnico)
-                        VALUES (@PID, @OID, @CodArt, @ProId, @Cant, 0, 0, 'UYU', 0)
+                        (PedidoCobranzaID, OrdenID, CodArticulo, ProIdProducto, Cantidad, PrecioUnitario, Subtotal, Moneda, DatoTecnico${conDepLinea ? ', WmsDepositoId' : ''})
+                        VALUES (@PID, @OID, @CodArt, @ProId, @Cant, @PU, @Sub, @MonD, 0${conDepLinea ? ', @Dep' : ''})
                     `);
 
                 ventasCombo.push({ codigoVenta, pedidoVentaId });
@@ -2548,6 +2647,11 @@ exports.createWebOrder = async (req, res) => {
                 } catch (syncErr) {
                     logger.warn(`[WebOrder] ⚠️ Auto-cotización falló para ${erpDocNumber} (no crítico): ${syncErr.message}`);
                 }
+                // [FICHA DEL PEDIDO] Con orden madre PRO, la ficha PDF (pedido + configuración del producto +
+                // órdenes + archivos) se pega a la PRO como referencia. Después de cotizar, así sale con precio.
+                // Si el pedido viene de una solicitud, esa ya adjunta la suya y esta no duplica.
+                try { await require('../services/fichaPedidoPdf').adjuntarAlPedido(erpDocNumber, req.user, req.app); }
+                catch (fichaErr) { logger.warn(`[FICHA-PEDIDO] ${erpDocNumber}: ${fichaErr.message}`); }
             });
 
         } catch (dbErr) {
@@ -2880,6 +2984,9 @@ exports.getClientOrders = async (req, res) => {
                         m.Nombre        AS NombreMaquina,
                         o.Magnitud      AS Magnitud,
                         o.UM            AS UM,
+                        o.Variante      AS Variante,
+                        LTRIM(RTRIM(o.AreaID)) AS AreaCodigo,
+                        (SELECT TOP 1 LTRIM(RTRIM(f.AreaID)) FROM Ordenes f WITH(NOLOCK) WHERE f.OrdenID = o.LiberaCuandoOrdenID) AS FuenteAreaCodigo,
                         -- TPU: boceto de producción primero; fallback cmyk (órdenes viejas). Espejo de webOrders.
                         (SELECT TOP 1 ArchivoID FROM ArchivosOrden WITH(NOLOCK)
                          WHERE OrdenID = o.OrdenID AND RutaAlmacenamiento IS NOT NULL
@@ -2917,6 +3024,9 @@ exports.getClientOrders = async (req, res) => {
                         NULL                AS NombreMaquina,
                         NULL                AS Magnitud,
                         NULL                AS UM,
+                        NULL                AS Variante,
+                        NULL                AS AreaCodigo,
+                        NULL                AS FuenteAreaCodigo,
                         NULL                AS PrimerArchivoID,
                         NULL                AS DriveFileId,
                         0                   AS AprobacionPendiente,

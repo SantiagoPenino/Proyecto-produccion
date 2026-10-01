@@ -673,6 +673,9 @@ export const FactoryView = () => {
                         const telaSubs = project.subOrders.filter(so =>
                             so.Origen === 'WEB' && !(so.CodigoOrden || '').toUpperCase().includes('-F'));
                         const isMultitela = telaSubs.length >= 2;
+                        // Pedido de prenda (trae Corte, Costura, Bordado, Estampado u orden madre): las filas no son
+                        // todas telas, así que el rótulo dice "órdenes" en vez de "telas".
+                        const soloTelas = !telaSubs.some(so => ['EST', 'EMB', 'TWC', 'TWT', 'PRO'].includes(String(so.AreaCodigo || '').toUpperCase()));
                         // F4: pedido de diseñador retenido — está en 'Cargando...' pero completo, esperando el OK del cliente
                         const esperandoAprobacion = project.pendientesAprobacion.length > 0;
                         // Consultas sin responder de este pedido. Se cruzan acá y no en el agrupado
@@ -710,7 +713,7 @@ export const FactoryView = () => {
                                         {isMultitela ? (
                                             <div className="flex items-center gap-1 flex-1 min-w-0">
                                                 <span className="inline-flex items-center gap-1 text-[10px] text-cyan-300 bg-cyan-400/10 border border-cyan-500/30 px-2 py-0.5 rounded font-bold uppercase tracking-wide">
-                                                    <Layers size={11} /> {telaSubs.length} telas
+                                                    <Layers size={11} /> {telaSubs.length} {soloTelas ? 'telas' : 'órdenes'}
                                                 </span>
                                             </div>
                                         ) : materialList.length > 0 ? (
@@ -856,7 +859,16 @@ export const FactoryView = () => {
                                                             )}
                                                         </div>
                                                         <div className="flex-1 min-w-0">
-                                                            <div className="text-xs font-bold text-zinc-200 truncate">{so.Material || 'Sin material'}</div>
+                                                            <div className="text-xs font-bold text-zinc-200 truncate">{(() => {
+                                                                // [ESTAMPADO] las dos órdenes de Estampado se llaman "Estampado (Servicio)":
+                                                                // al cliente se le dice cuál es la del DTF y cuál la del TPU.
+                                                                if (String(so.AreaCodigo || '').toUpperCase() === 'EST') {
+                                                                    const src = `${so.FuenteAreaCodigo || ''} ${so.Variante || ''}`.toUpperCase();
+                                                                    if (/TPU/.test(src)) return 'Estampado TPU';
+                                                                    if (/DF|DTF/.test(src)) return 'Estampado DTF';
+                                                                }
+                                                                return so.Material || 'Sin material';
+                                                            })()}</div>
                                                             {so.Magnitud != null && (
                                                                 <div className="text-[10px] text-zinc-500 font-medium">
                                                                     {Number(so.Magnitud).toLocaleString('es-UY', { maximumFractionDigits: 2 })} {so.UM || 'm'}

@@ -2665,6 +2665,9 @@ exports.getClientOrders = async (req, res) => {
                         m.Nombre        AS NombreMaquina,
                         o.Magnitud      AS Magnitud,
                         o.UM            AS UM,
+                        o.Variante      AS Variante,
+                        LTRIM(RTRIM(o.AreaID)) AS AreaCodigo,
+                        (SELECT TOP 1 LTRIM(RTRIM(f.AreaID)) FROM Ordenes f WITH(NOLOCK) WHERE f.OrdenID = o.LiberaCuandoOrdenID) AS FuenteAreaCodigo,
                         -- TPU: el cliente ve el BOCETO DE PRODUCCIÓN (arte con 'boceto' en el nombre);
                         -- fallback al 'cmyk' para órdenes anteriores al cambio (5 capas sin boceto).
                         (SELECT TOP 1 ArchivoID FROM ArchivosOrden WITH(NOLOCK)
@@ -2726,6 +2729,9 @@ exports.getClientOrders = async (req, res) => {
                         NULL                AS NombreMaquina,
                         NULL                AS Magnitud,
                         NULL                AS UM,
+                        NULL                AS Variante,
+                        NULL                AS AreaCodigo,
+                        NULL                AS FuenteAreaCodigo,
                         NULL                AS PrimerArchivoID,
                         NULL                AS DriveFileId,
                         0                   AS AprobacionPendiente,

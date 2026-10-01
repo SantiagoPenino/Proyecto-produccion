@@ -99,7 +99,7 @@ class ERPSyncService {
         // se facturan aparte, así que NO deciden la moneda — manda el artículo de PRO
         // (prendas en pesos → pedido en pesos aunque la sublimación cotice en dólares).
         // Misma regla que la cotización al guardar (solo líneas facturables).
-        const AREAS_HERMANAS = ['EMB', 'DF', 'TPU', 'EST', 'TWC', 'TWT', 'SB'];
+        const AREAS_HERMANAS = ['EMB', 'DF', 'TPU', 'EST', 'TWC', 'TWT', 'SB', 'DIRECTA', 'ECOUV'];
         const decidenMoneda = (proSibMadre && !esFacturaPorArea)
             ? siblings.filter(s => !AREAS_HERMANAS.includes((s.AreaID || '').toString().trim().toUpperCase()))
             : siblings;
@@ -631,7 +631,7 @@ class ERPSyncService {
                 // servicio se cobra DOS VECES. La fila de ServiciosExtraOrden sigue
                 // existiendo igual — la necesita el control de producción (completarOrden,
                 // Control) — solo se deja de usar para cotizar.
-                const esHermanaPrendaParaPrecio = hayOrdenMadrePro && ['EMB', 'DF', 'TPU', 'EST', 'TWC', 'TWT', 'SB'].includes((sib.AreaID || '').toString().trim().toUpperCase());
+                const esHermanaPrendaParaPrecio = hayOrdenMadrePro && ['EMB', 'DF', 'TPU', 'EST', 'TWC', 'TWT', 'SB', 'DIRECTA', 'ECOUV'].includes((sib.AreaID || '').toString().trim().toUpperCase());
                 const srvRes = esHermanaPrendaParaPrecio
                     ? { recordset: [] }
                     : await pool.request()
@@ -712,7 +712,7 @@ class ERPSyncService {
                 areaByOrdenId[s.OrdenID] = (s.AreaID || '').toString().trim().toUpperCase();
                 comboItemByOrdenId[s.OrdenID] = s.ComboItemID || null;
             });
-            const esHermana = (ordenId) => ['EMB', 'DF', 'TPU', 'EST', 'TWC', 'TWT', 'SB'].includes(areaByOrdenId[ordenId]);
+            const esHermana = (ordenId) => ['EMB', 'DF', 'TPU', 'EST', 'TWC', 'TWT', 'SB', 'DIRECTA', 'ECOUV'].includes(areaByOrdenId[ordenId]);
             // [COMBOS] La orden PRO "de precio" es la ÚNICA sin ComboItemID — las PRO de
             // retiro de stock por componente (WmsVarianteId propio, ComboItemID seteado) NO
             // son candidatas: ya cotizan en 0 (ver esRetiroCombo) y no deben absorber la suma

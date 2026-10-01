@@ -35,11 +35,17 @@ function evaluarProducto(sol, p, archivos, extra = []) {
   c(t(d.tipoTrabajo) || (p.TipoFabricacion === 'PRODUCTO_TERMINADO' && !!p.ProIdProducto), 'Tipo de trabajo definido');
   c(arch(['BOCETO', 'ARTE_CLIENTE', 'REFERENCIA', 'DISENO_PRONTO']) || !!d.muestraFisica, 'Boceto, ficha técnica o muestra de referencia');
   c(Number(p.Cantidad) > 0, 'Cantidad total de unidades');
+  // [ACCESORIOS] si el producto lleva accesorios de stock, los que van necesitan su variante (talle/color)
+  const accs = Array.isArray(d.accesorios) ? d.accesorios.filter(a => a && a.incluir !== false) : [];
+  if (accs.length) c(accs.every(a => !!a.wmsVarianteId), 'Accesorios de stock con variante elegida');
 
+  // F1: un producto del catálogo sin molde (Molde = NO: windflag, funda, cuadro) se pide por unidad
+  // a medida fija — no tiene talles ni planilla.
+  const porUnidad = (p.Config?.Molde ?? p.Molde ?? p._molde) === 'NO';
   if (d.comoSeDefine === 'MEDIDA') {
     c(t(d.medidas), 'Medidas exactas en cm y cantidad por medida');
     c(t(d.terminacion), 'Tipo de terminación o costura');
-  } else {
+  } else if (!porUnidad) {
     c(arch(['PLANILLA']) || t(d.notaTalles), 'Lista de talles');
     if (!(t(d.medidasPrenda) || d.tablaEstandar)) luego.push('Medidas de la prenda');
     if (d.personalizacion) c(!!d.listaCerrada, 'Lista de nombres y números completa y cerrada');
@@ -52,7 +58,8 @@ function evaluarProducto(sol, p, archivos, extra = []) {
     c(t(e.tela) && t(e.provee), 'Tela e insumos definidos, y quién los provee');
   }
   const dis = d.diseno || {};
-  if (dis.origen === 'CLIENTE') c(!!dis.verificado, 'Archivo de diseño entregado y verificado');
+  // El archivo que Diseño subió como diseño pronto ES la verificación: no hace falta la tilde a mano.
+  if (dis.origen === 'CLIENTE') c(!!dis.verificado || arch(['DISENO_PRONTO']), 'Archivo de diseño entregado y verificado');
   if (dis.origen === 'TALLER') c(!!dis.aprobado, 'Diseño aprobado por escrito por el cliente');
 
   // 25-sep: la muestra se marca POR PRODUCTO ("Requiere confección de muestra"; producto nuevo o

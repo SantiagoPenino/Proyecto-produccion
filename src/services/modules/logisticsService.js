@@ -5,25 +5,37 @@ import Swal from 'sweetalert2';
 // frena con 409 ORDENES_ENTREGADAS. Se pregunta y, si confirman, se reintenta con confirmarEntregadas.
 // Va acá para que lo tengan todas las pantallas que despachan (Despacho, Entrega de pedidos, carrito,
 // modal de despacho y generación de etiquetas). Si cancelan, el caller recibe el 409 con su mensaje.
+// [01/10] Segundo aviso por el mismo camino: 409 PEDIDO_PARCIAL = del mismo pedido quedan órdenes de esta
+// área fuera del remito (prontas o en producción). Se muestra el detalle y se reintenta con
+// confirmarPedidoParcial. Los dos avisos pueden salir uno detrás del otro, por eso es un ciclo.
+const AVISOS_REMITO = {
+    ORDENES_ENTREGADAS: { flag: 'confirmarEntregadas', titulo: 'Orden ya entregada', confirmar: 'Despachar igual', color: '#dc2626' },
+    PEDIDO_PARCIAL: { flag: 'confirmarPedidoParcial', titulo: 'El pedido no sale completo', confirmar: 'Enviar igual, en partes', color: '#d97706' },
+};
 async function postRemitoConAviso(url, data) {
-    try {
-        return (await api.post(url, data)).data;
-    } catch (err) {
-        const d = err.response?.data;
-        if (err.response?.status !== 409 || d?.codigo !== 'ORDENES_ENTREGADAS') throw err;
-        const { isConfirmed } = await Swal.fire({
-            icon: 'warning',
-            title: 'Orden ya entregada',
-            text: d.error,
-            showCancelButton: true,
-            confirmButtonText: 'Despachar igual',
-            cancelButtonText: 'Cancelar',
-            confirmButtonColor: '#dc2626',
-            cancelButtonColor: '#64748b',
-        });
-        if (!isConfirmed) throw err;
-        return (await api.post(url, { ...data, confirmarEntregadas: true })).data;
+    let cuerpo = { ...data };
+    for (let intento = 0; intento < 4; intento++) {
+        try {
+            return (await api.post(url, cuerpo)).data;
+        } catch (err) {
+            const d = err.response?.data;
+            const aviso = err.response?.status === 409 ? AVISOS_REMITO[d?.codigo] : null;
+            if (!aviso || cuerpo[aviso.flag]) throw err;
+            const { isConfirmed } = await Swal.fire({
+                icon: 'warning',
+                title: aviso.titulo,
+                html: `<div style="text-align:left;white-space:pre-line;font-size:14px">${String(d.error || '').replace(/&/g, '&amp;').replace(/</g, '&lt;')}</div>`,
+                showCancelButton: true,
+                confirmButtonText: aviso.confirmar,
+                cancelButtonText: 'Cancelar y revisar',
+                confirmButtonColor: aviso.color,
+                cancelButtonColor: '#64748b',
+            });
+            if (!isConfirmed) throw err;
+            cuerpo = { ...cuerpo, [aviso.flag]: true };
+        }
     }
+    return (await api.post(url, cuerpo)).data;
 }
 
 const logisticsService = {

@@ -1,5 +1,6 @@
 const { sql, getPool } = require('../config/db');
 const logger = require('../utils/logger');
+const { sqlImporteDeOtrasOrdenes } = require('../utils/montoTotalPedido');
 
 // Separador del QR
 const SEP = '$*';

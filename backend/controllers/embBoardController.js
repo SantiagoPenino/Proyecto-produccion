@@ -28,6 +28,9 @@ const getDriveId = (url) => {
 // TODOS los archivos de referencia recientes (boceto + logo, no solo el último) y resumen
 // de notas — todo con subconsultas correlacionadas en la MISMA query, sin N+1 por tarjeta.
 const CAMPOS_ENRIQUECIDOS = `
+    -- [ESTAMPADO] de qué orden depende (DF o TPU): la bandeja muestra qué se estampa
+    (SELECT TOP 1 LTRIM(RTRIM(f.AreaID)) FROM Ordenes f WHERE f.OrdenID = o.LiberaCuandoOrdenID) AS FuenteAreaID,
+    (SELECT TOP 1 f.CodigoOrden FROM Ordenes f WHERE f.OrdenID = o.LiberaCuandoOrdenID) AS FuenteCodigo,
     m.Nombre AS MaquinaNombre,
     u.Nombre AS OperarioNombre,
     (
@@ -115,10 +118,22 @@ const JOINS_ENRIQUECIDOS = `
 // dependa de una), este chequeo es automático por orden: ¿ya hay un bulto de la orden
 // LiberaCuandoOrdenID físicamente en stock en esta área? "Prendas a Estampar" (el gate
 // PRENDA vía Requisitos) sigue siendo el checklist con nombre — es común a las dos.
+// [MULTITELA 01/10] La orden solo puede encadenarse a UNA orden de origen (LiberaCuandoOrdenID), pero un
+// pedido puede traer varias del mismo origen (SUB-26025 (1/2) y (2/2): dos telas). Con recibir una de
+// las dos ya hay con qué trabajar ("podés empezar con lo recibido"), así que también libera el bulto de
+// una HERMANA de la orden de origen: mismo pedido y misma área que ella. No cruza áreas: un Estampado
+// encadenado a su DTF no se libera porque llegue el TPU del otro Estampado.
 const SQL_TRANSFER_LLEGO = `
     (o.LiberaCuandoOrdenID IS NULL OR EXISTS (
         SELECT 1 FROM Logistica_Bultos lb
         WHERE lb.OrdenID = o.LiberaCuandoOrdenID AND lb.UbicacionActual = @Area AND lb.Estado = 'EN_STOCK'
+    ) OR EXISTS (
+        SELECT 1
+        FROM Ordenes fu
+        JOIN Ordenes he ON he.NoDocERP = fu.NoDocERP AND he.AreaID = fu.AreaID AND he.OrdenID <> fu.OrdenID
+                       AND ISNULL(he.Estado, '') NOT IN ('Cancelado', 'CANCELADO')
+        JOIN Logistica_Bultos lb2 ON lb2.OrdenID = he.OrdenID AND lb2.UbicacionActual = @Area AND lb2.Estado = 'EN_STOCK'
+        WHERE fu.OrdenID = o.LiberaCuandoOrdenID AND fu.NoDocERP IS NOT NULL AND LTRIM(RTRIM(fu.NoDocERP)) <> ''
     ))
 `;
 
@@ -174,7 +189,11 @@ function enriquecerPreview(row) {
         const esPrediseno = tipo.includes('PREDISENO');
         const esBoceto = !esPrediseno && tipo.includes('BOCETO');
         const esLogo = !esPrediseno && (tipo.includes('LOGO') || tipo.includes('MATRIZ'));
-        return { ...f, previewUrl, esBoceto, esLogo, esPrediseno };
+        // Planilla de talles y archivos de tizada: se muestran en el bloque "Lista de talles", no como
+        // "Referencia" suelta arriba (COR-26025 mostraba ahí la planilla y la tizada sin decir qué eran).
+        const esPlanilla = /PLANILLA|INFO_CORTE|TALLE|LISTA/.test(tipo);
+        const esTizada = !esPlanilla && /ARCHIVO_CORTE|TIZADA/.test(tipo);
+        return { ...f, previewUrl, esBoceto, esLogo, esPrediseno, esPlanilla, esTizada };
     });
     // Compat con lo que ya pintaba la tarjeta chica de la bandeja (primer archivo, cualquiera).
     row.PreviewUrl = row.Referencias[0]?.previewUrl || null;
@@ -259,7 +278,12 @@ async function getRecibidoDeAreaAnterior(pool, ordenId) {
         const pendientes = await libro.getPendientesParaOrden(ordenId, row.NoDoc, row.AreaID, pool);
         const anteriores = pendientes.anteriores || [];
         if (!anteriores.length) return null;
-        const inmediata = anteriores[anteriores.length - 1];
+        // [ESTAMPADO] El área "inmediatamente anterior" tiene que ser la que manda las PRENDAS: DTF y TPU son
+        // transfers (van aparte, en otra unidad) y quedaban como "anterior" de Estampado, con cantidad
+        // null → sin tope → se podían marcar 100 con 50 llegadas de Costura.
+        const fisicas = anteriores.filter(a => !['DF', 'DTF', 'TPU'].includes(String(a || '').toUpperCase()));
+        const inmediata = fisicas[fisicas.length - 1];
+        if (!inmediata) return null;
         const deInmediata = (pendientes.ordenes || []).filter(p => p.AreaID === inmediata);
         if (!deInmediata.length) return null;
         // Si todavía no llegó NADA (0 envíos), es 0 de verdad — se valida contra 0. Si llegó
@@ -462,6 +486,92 @@ exports.getEmbOrders = async (req, res) => {
 // está trabado, falta X" en vez de solo lo que ya está listo. Cada orden cae en UN solo
 // motivo (mutuamente excluyentes: si el transfer no llegó, esa es la razón que se muestra,
 // aunque además le falte algún requisito con nombre).
+// [BANDEJA] GET /:area/orders/:ordenId/contexto-pedido — lo que el operario necesita ver del PEDIDO entero
+// sin abrir la ficha: la lista de talles que subió el cliente (planilla), lo que llegó de TizadaPro
+// (molde, piezas, hojas, ficha técnica de la tizada) cuando es producto terminado, los bocetos, y la
+// ficha del producto del catálogo (costuras y avíos) para Costura. Todo se busca por NoDocERP.
+exports.getContextoPedido = async (req, res) => {
+    try {
+        const pool = await getPool();
+        const ordenId = parseInt(req.params.ordenId, 10);
+        const o = (await pool.request().input('OID', sql.Int, ordenId)
+            .query(`SELECT OrdenID, LTRIM(RTRIM(NoDocERP)) AS Doc, AreaID FROM Ordenes WHERE OrdenID = @OID`)).recordset[0];
+        if (!o) return res.status(404).json({ error: 'Orden no encontrada' });
+        if (!o.Doc) return res.json({ noDocERP: null, planillas: [], tizadas: [], bocetos: [], tizadaPro: null, producto: null, ficha: null, notas: null });
+        const doc = o.Doc;
+        const refs = (await pool.request().input('Doc', sql.VarChar(50), doc).query(`
+            SELECT r.RefID, r.NombreOriginal, r.TipoArchivo, r.UbicacionStorage, r.FechaSubida, o.CodigoOrden, o.AreaID
+            FROM ArchivosReferencia r JOIN Ordenes o ON o.OrdenID = r.OrdenID
+            WHERE LTRIM(RTRIM(o.NoDocERP)) = @Doc AND ISNULL(o.Estado, '') <> 'Cancelado'
+            ORDER BY r.FechaSubida ASC`)).recordset.map(r => {
+                const driveId = getDriveId(r.UbicacionStorage);
+                return {
+                    ...r, TipoArchivo: String(r.TipoArchivo || '').trim(),
+                    previewUrl: driveId ? `https://drive.google.com/thumbnail?id=${driveId}&sz=w300`
+                        : (r.RefID && r.CodigoOrden ? `/thumbnails/${encodeURIComponent(String(r.CodigoOrden).trim())}/${r.RefID}.jpg` : null),
+                };
+            });
+        const tipo = (r) => r.TipoArchivo.toUpperCase();
+        const nombre = (r) => String(r.NombreOriginal || '').toUpperCase();
+        const esPlanilla = (r) => /PLANILLA|INFO_CORTE|TALLE|LISTA/.test(tipo(r)) || /PLANILLA|TALLES?\b/.test(nombre(r));
+        const esTizada = (r) => !esPlanilla(r) && (/ARCHIVO_CORTE|TIZADA/.test(tipo(r)) || /^REF-\d+-(HOJA_|FICHA_TECNICA)/.test(nombre(r)) || /FICHA_TECNICA|TIZADA/.test(nombre(r)));
+        const esBoceto = (r) => /BOCETO|PREDISENO/.test(tipo(r));
+        const planillas = refs.filter(esPlanilla);
+        const tizadas = refs.filter(esTizada);
+        // Las hojas de tizada medidas viven como archivos de IMPRESIÓN de la orden de Corte (ArchivosOrden con
+        // Piezas), no como referencias: se suman acá para que Costura/Bordado/Estampado también las vean.
+        try {
+            const hojas = (await pool.request().input('Doc', sql.VarChar(50), doc).query(`
+                SELECT ao.ArchivoID, ao.NombreArchivo, ao.RutaAlmacenamiento, ao.Piezas, ao.Copias, o.CodigoOrden
+                FROM ArchivosOrden ao JOIN Ordenes o ON o.OrdenID = ao.OrdenID
+                WHERE LTRIM(RTRIM(o.NoDocERP)) = @Doc AND o.AreaID = 'TWC' AND ISNULL(ao.EstadoArchivo, '') NOT IN ('CANCELADO', 'Cancelado')
+                ORDER BY ao.ArchivoID`)).recordset;
+            hojas.forEach(h => tizadas.push({ RefID: null, ArchivoID: h.ArchivoID, NombreOriginal: h.NombreArchivo, TipoArchivo: 'TIZADA', UbicacionStorage: h.RutaAlmacenamiento, CodigoOrden: h.CodigoOrden, AreaID: 'TWC', Piezas: h.Piezas, Copias: h.Copias,
+                previewUrl: getDriveId(h.RutaAlmacenamiento) ? `https://drive.google.com/thumbnail?id=${getDriveId(h.RutaAlmacenamiento)}&sz=w300` : null }));
+        } catch (e) { logger.warn('[Bandeja] contexto-pedido hojas de corte: ' + e.message); }
+        const bocetos = refs.filter(r => esBoceto(r) && !esPlanilla(r));
+        // Ficha técnica del pedido: el PDF que se pega a la orden madre PRO (pedido + producto + costuras/avíos +
+        // órdenes + archivos). Se toma la última generada; si no hay, la bandeja ofrece generarla.
+        const fichas = refs.filter(r => /FICHA_PEDIDO/.test(tipo(r)));
+        const fichaPedido = fichas.length ? fichas[fichas.length - 1] : null;
+
+        // Producto del catálogo (orden madre PRO) → costuras y avíos de su ficha de diseño
+        const madre = (await pool.request().input('Doc', sql.VarChar(50), doc).query(`
+            SELECT TOP 1 OrdenID, ProIdProducto, LTRIM(RTRIM(Material)) AS Material, LTRIM(RTRIM(Variante)) AS Variante, Magnitud
+            FROM Ordenes WHERE LTRIM(RTRIM(NoDocERP)) = @Doc AND AreaID = 'PRO' AND ISNULL(EstadoDependencia, '') <> 'VENTA_DIRECTA'`)).recordset[0] || null;
+        let ficha = null;
+        if (madre?.ProIdProducto) {
+            try { ficha = await require('../services/solicitudesVendedorFichaProducto').fichaProducto(pool, madre.ProIdProducto); } catch (e) { ficha = null; }
+        }
+
+        // Lo que llegó de TizadaPro (si el pedido nació de una solicitud con tizada vinculada) + notas de talles
+        let tizadaPro = null, notas = null;
+        try {
+            const sol = (await pool.request().input('Doc', sql.VarChar(50), doc).query(`
+                SELECT TOP 1 sp.ProductoSolID, sp.DatosJson, sp.Cantidad
+                FROM SolicitudesVendedorProductos sp WHERE LTRIM(RTRIM(sp.PedidoNoDocERP)) = @Doc ORDER BY sp.ProductoSolID DESC`)).recordset[0];
+            if (sol) {
+                let d = {}; try { d = sol.DatosJson ? JSON.parse(sol.DatosJson) : {}; } catch (_) { d = {}; }
+                notas = { notaTalles: String(d.notaTalles || '').trim() || null, medidas: String(d.medidas || '').trim() || null, comoSeDefine: d.comoSeDefine || null,
+                          talles: Array.isArray(d.talles) && d.talles.length ? d.talles : null, unidades: sol.Cantidad };
+                const tz = (await pool.request().input('P', sql.Int, sol.ProductoSolID).query(`
+                    IF OBJECT_ID('dbo.SolicitudesVendedorTizadas', 'U') IS NOT NULL
+                    SELECT TOP 1 MoldeNombre, MoldeRef, Piezas, FechaTizada, ResultadoJson FROM dbo.SolicitudesVendedorTizadas WHERE ProductoSolID = @P AND Vigente = 1 ORDER BY TizadaID DESC`)).recordset?.[0];
+                if (tz) {
+                    let rj = {}; try { rj = tz.ResultadoJson ? JSON.parse(tz.ResultadoJson) : {}; } catch (_) { rj = {}; }
+                    tizadaPro = { molde: tz.MoldeNombre || rj.molde || null, piezas: tz.Piezas ?? rj.piezas ?? null, fecha: tz.FechaTizada || rj.fecha || null,
+                                  ficha: rj.ficha || null,
+                                  hojas: (rj.hojas || []).map(h => ({ archivo: h.archivo, tela: h.tela || h.material || null, paginas: h.paginas || 1, anchoCm: h.anchoCm ?? null, consumoCm: h.consumoCm ?? null, aprovechamiento: h.aprovechamiento ?? null })) };
+                }
+            }
+        } catch (e) { logger.warn('[Bandeja] contexto-pedido tizada: ' + e.message); }
+
+        res.json({ noDocERP: doc, planillas, tizadas, bocetos, tizadaPro, notas, fichaPedido, madreOrdenId: madre?.OrdenID || null,
+                   producto: madre ? { proIdProducto: madre.ProIdProducto, nombre: madre.Material, variante: madre.Variante, unidades: madre.Magnitud } : null,
+                   ficha: ficha ? { avios: ficha.avios || [], costuras: ficha.costuras || [], material: ficha.material || null, tallas: ficha.tallas || null, marcacion: ficha.marcacion || null, notas: ficha.notas || [] } : null });
+    } catch (err) { logger.error('[Bandeja] getContextoPedido:', err); res.status(500).json({ error: err.message }); }
+};
+
 exports.getEmbOrdersBloqueadas = async (req, res) => {
     const area = getArea(req);
     try {
@@ -469,8 +579,11 @@ exports.getEmbOrdersBloqueadas = async (req, res) => {
         const r = await pool.request().input('Area', sql.VarChar(20), area).query(`
             SELECT o.OrdenID, o.CodigoOrden, o.Cliente, o.DescripcionTrabajo, o.Material,
                    o.FechaIngreso, o.NoDocERP,
+                   -- [ESTAMPADO] qué estampa cada orden (DTF o TPU): variante + orden de la que depende
+                   o.Variante, LTRIM(RTRIM(fuente.AreaID)) AS FuenteAreaID, fuente.CodigoOrden AS FuenteCodigo,
                    STRING_AGG(req.Descripcion, ', ') AS FaltantePendiente
             FROM Ordenes o
+            LEFT JOIN Ordenes fuente ON fuente.OrdenID = o.LiberaCuandoOrdenID
             JOIN ConfigRequisitosProduccion req ON req.AreaID = @Area AND req.EsBloqueante = 1
             LEFT JOIN OrdenCumplimientoRequisitos cum
                 ON cum.OrdenID = o.OrdenID AND cum.RequisitoID = req.RequisitoID AND cum.Estado = 'CUMPLIDO'
@@ -480,7 +593,8 @@ exports.getEmbOrdersBloqueadas = async (req, res) => {
               AND (o.EstadoDependencia IS NULL OR o.EstadoDependencia = 'OK')
               AND ${SQL_TRANSFER_LLEGO}
               AND cum.OrdenID IS NULL
-            GROUP BY o.OrdenID, o.CodigoOrden, o.Cliente, o.DescripcionTrabajo, o.Material, o.FechaIngreso, o.NoDocERP
+            GROUP BY o.OrdenID, o.CodigoOrden, o.Cliente, o.DescripcionTrabajo, o.Material, o.FechaIngreso, o.NoDocERP,
+                     o.Variante, fuente.AreaID, fuente.CodigoOrden
 
             UNION ALL
 
@@ -489,8 +603,17 @@ exports.getEmbOrdersBloqueadas = async (req, res) => {
             -- requisito con nombre falte, lo que hay que mostrar es "está en camino".
             SELECT o.OrdenID, o.CodigoOrden, o.Cliente, o.DescripcionTrabajo, o.Material,
                    o.FechaIngreso, o.NoDocERP,
-                   'Esperando que llegue el material (transfer DTF/TPU)' AS FaltantePendiente
+                   o.Variante, LTRIM(RTRIM(fuente.AreaID)) AS FuenteAreaID, fuente.CodigoOrden AS FuenteCodigo,
+                   CONCAT('Esperando que llegue ',
+                          CASE WHEN UPPER(LTRIM(RTRIM(fuente.AreaID))) IN ('DF', 'DTF') THEN 'el transfer DTF'
+                               WHEN UPPER(LTRIM(RTRIM(fuente.AreaID))) = 'TPU' THEN 'el transfer TPU'
+                               WHEN UPPER(LTRIM(RTRIM(fuente.AreaID))) IN ('SB', 'DIRECTA', 'ECOUV') THEN 'la tela'
+                               WHEN UPPER(LTRIM(RTRIM(fuente.AreaID))) = 'TWC' THEN 'el corte'
+                               WHEN UPPER(LTRIM(RTRIM(fuente.AreaID))) = 'TWT' THEN 'las prendas de Costura'
+                               ELSE 'el material' END,
+                          ' (', ISNULL(LTRIM(RTRIM(fuente.CodigoOrden)), 'orden de origen'), ')') AS FaltantePendiente
             FROM Ordenes o
+            LEFT JOIN Ordenes fuente ON fuente.OrdenID = o.LiberaCuandoOrdenID
             WHERE o.AreaID = @Area
               AND o.Estado NOT IN ('Cancelado', 'Finalizado', 'Entregado', 'Pronto')
               AND ISNULL(o.EstadoenArea, '') NOT IN ('Pronto', 'Recibido en Destino', 'En transito')
@@ -507,9 +630,14 @@ exports.getEmbOrdersBloqueadas = async (req, res) => {
             -- desde que se crea el pedido, con el motivo real.
             SELECT o.OrdenID, o.CodigoOrden, o.Cliente, o.DescripcionTrabajo, o.Material,
                    o.FechaIngreso, o.NoDocERP,
+                   o.Variante, LTRIM(RTRIM(fuente.AreaID)) AS FuenteAreaID, fuente.CodigoOrden AS FuenteCodigo,
                    CASE o.EstadoDependencia
                        WHEN 'ESPERANDO_IMPRESION' THEN CONCAT('Esperando que termine ',
-                           ISNULL(NULLIF(LTRIM(RTRIM(fuente.AreaID)), ''), 'su origen'), ' (', ISNULL(fuente.CodigoOrden, '—'), ')')
+                           CASE UPPER(LTRIM(RTRIM(fuente.AreaID)))
+                                WHEN 'DF' THEN 'la impresión del DTF' WHEN 'DTF' THEN 'la impresión del DTF'
+                                WHEN 'TPU' THEN 'la impresión del TPU'
+                                ELSE ISNULL(NULLIF(LTRIM(RTRIM(fuente.AreaID)), ''), 'su origen') END,
+                           ' (', ISNULL(fuente.CodigoOrden, '—'), ')')
                        WHEN 'ESPERANDO_RETIRO_WMS' THEN 'Esperando que se confirme el retiro del depósito (WMS)'
                        -- Spec 39: eslabón de una cadena de reposición: se libera cuando llega la reposición del área anterior
                        WHEN 'ESPERANDO_REPOSICION' THEN CONCAT('Esperando la reposición del área anterior ',
@@ -693,10 +821,17 @@ exports.finalizarTrabajo = async (req, res) => {
         // orden saltaría a Control sin registro de trabajo, máquina ni operario.
         const est = await pool.request()
             .input('OID', sql.Int, ordenId)
-            .query('SELECT EstadoTrabajoEmb FROM Ordenes WHERE OrdenID = @OID');
+            .query('SELECT EstadoTrabajoEmb, CantidadTerminada FROM Ordenes WHERE OrdenID = @OID');
         if (!est.recordset.length) return res.status(404).json({ error: 'Orden no encontrada.' });
         if (!['EN_PROCESO', 'PAUSADO'].includes(est.recordset[0].EstadoTrabajoEmb)) {
             return res.status(400).json({ error: 'Primero iniciá el trabajo: no se puede finalizar una orden que nunca se empezó.' });
+        }
+        // [ESTAMPADO] Tampoco se termina con más hecho que lo que llegó físicamente del área anterior
+        // (mismo tope que al cargar el avance): si Costura mandó 50, no se cierran 100.
+        const hecho = parseFloat(est.recordset[0].CantidadTerminada) || 0;
+        const recibidoFin = await getRecibidoDeAreaAnterior(pool, ordenId);
+        if (recibidoFin != null && hecho > recibidoFin) {
+            return res.status(400).json({ error: `No se puede finalizar: marcaste ${hecho} pero del área anterior llegaron ${recibidoFin}. Corregí la cantidad hecha o reportá un faltante.` });
         }
 
         await changeOrderState(pool, {

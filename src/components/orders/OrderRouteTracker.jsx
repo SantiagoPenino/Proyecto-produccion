@@ -24,8 +24,9 @@ import React, { useEffect, useMemo, useRef, useState, useLayoutEffect, useCallba
 // Estampado en OrderDetailModal.jsx — nunca mostrar el código ahí tampoco.
 export const AREA_NAMES = {
     SB: 'Sublimación',
-    DF: 'Estampados DTF',
-    TPU: 'Estampados TPU',
+    // DF y TPU IMPRIMEN el transfer; estamparlo en la prenda es otra área (EST = 'Estampado')
+    DF: 'Impresión DTF',
+    TPU: 'Impresión TPU',
     EMB: 'Bordado',
     TWC: 'Corte',
     TWT: 'Costura',

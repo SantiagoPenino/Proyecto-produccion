@@ -205,8 +205,10 @@ export default function CierreCicloPreviewModal({
       if (m.DetallesJSON) {
         try {
           detalles = JSON.parse(m.DetallesJSON);
-          if (!primeraMoneda && detalles.length > 0 && detalles[0].Moneda) {
-            primeraMoneda = detalles[0].Moneda;
+          // La moneda del comprobante la sugiere la CABECERA del pedido (MonedaPedido); la de
+          // cada línea (Moneda) puede diferir: ojales en pesos dentro de un pedido en dólares.
+          if (!primeraMoneda && detalles.length > 0 && (detalles[0].MonedaPedido || detalles[0].Moneda)) {
+            primeraMoneda = detalles[0].MonedaPedido || detalles[0].Moneda;
           }
         } catch(e) {}
       }

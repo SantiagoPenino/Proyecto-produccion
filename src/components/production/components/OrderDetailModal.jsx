@@ -90,6 +90,7 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
     const [consultaModal, setConsultaModal] = useState(null);
 
     const [files, setFiles] = useState([]);
+    const [generandoFicha, setGenerandoFicha] = useState(false);   // [FICHA DEL PEDIDO]
     const [uploadingTPU, setUploadingTPU] = useState(false);
     // Progreso de la subida TPU: % global ponderado por bytes + archivo en curso (para la barra).
     const [progresoTPU, setProgresoTPU] = useState(null); // { pct, actual, total } | null
@@ -891,6 +892,21 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
 
     const handlePrintLabels = () => {
         printLabelsHelper(labels, currentOrder);
+    };
+
+    // "Imprimir" no saca las etiquetas de bultos que ya viajaron en un remito (para no
+    // mezclarlas con el próximo). Si el rótulo se rompió, se reimprime ESA etiqueta a mano.
+    const handleReimprimirLabel = async (l) => {
+        const r = await Swal.fire({
+            title: `¿Reimprimir la etiqueta ${l.CodigoEtiqueta || ''}?`,
+            html: `Se imprime <b>solo el Bulto ${l.NumeroBulto}/${l.TotalBultos}</b>, aunque ya se haya enviado a otra área en un remito.<br/><br/>Usalo cuando el rótulo se rompió o se perdió. El bulto no cambia de lugar ni de estado.`,
+            icon: 'question',
+            showCancelButton: true,
+            confirmButtonText: 'Sí, reimprimir esta etiqueta',
+            cancelButtonText: 'Cancelar',
+        });
+        if (!r.isConfirmed) return;
+        printLabelsHelper(labels, currentOrder, { reimprimirEtiquetaId: l.EtiquetaID });
     };
 
     const handleRecalcular = async () => {
@@ -2537,6 +2553,24 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                                             <p className="text-[10px] text-zinc-400 mb-2">
                                                 Las referencias son guías: subirlas o borrarlas <b>no</b> cambia la cantidad a fabricar ni la cotización.
                                             </p>
+                                            {/* [FICHA DEL PEDIDO] PDF con el pedido, la configuración del producto, las órdenes y los archivos */}
+                                            <button
+                                                type="button"
+                                                disabled={generandoFicha}
+                                                onClick={async () => {
+                                                    setGenerandoFicha(true);
+                                                    try {
+                                                        await ordersService.generarFichaPedido(currentOrder.id);
+                                                        toast.success('Ficha del pedido generada y adjuntada a la orden (Archivos de Referencia).');
+                                                        reloadFiles();
+                                                    } catch (e) { toast.error('No se pudo generar la ficha: ' + (e.response?.data?.error || e.message)); }
+                                                    finally { setGenerandoFicha(false); }
+                                                }}
+                                                className="w-full flex items-center justify-center gap-2 py-2.5 mb-2 rounded-xl border border-zinc-700 text-zinc-200 text-xs font-bold uppercase tracking-wide hover:bg-zinc-800 disabled:opacity-50 transition-colors"
+                                                title="Arma el PDF con todo el pedido (producto y su configuración, órdenes, archivos, cobro) y lo deja como referencia FICHA_PEDIDO. Si ya había una, la agrega actualizada."
+                                            >
+                                                <i className={`fa-solid ${generandoFicha ? 'fa-spinner fa-spin' : 'fa-file-pdf'}`}></i> {generandoFicha ? 'Generando la ficha…' : 'Generar / actualizar la ficha del pedido (PDF)'}
+                                            </button>
                                         </>
                                     )}
                                     {/* Fallas marcadas (recuadro dibujado en Control) — solo SB */}
@@ -2661,9 +2695,12 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                                                         <div className="w-10 h-10 bg-zinc-100 rounded flex items-center justify-center text-zinc-500 font-bold text-lg border border-zinc-200">{l.NumeroBulto}</div>
                                                         <div><div className="font-bold text-zinc-700 text-sm">Bulto {l.NumeroBulto}/{l.TotalBultos}</div><div className="text-[10px] text-zinc-400 font-mono tracking-widest">{l.CodigoEtiqueta || '---'}</div></div>
                                                     </div>
+                                                    <div className="flex gap-1">
+                                                    <button onClick={() => handleReimprimirLabel(l)} title="Reimprimir solo esta etiqueta (rótulo roto o perdido)" className="w-7 h-7 rounded bg-white text-zinc-300 hover:text-brand-cyan hover:bg-brand-cyan/10 border border-transparent hover:border-brand-cyan/20 transition"><i className="fa-solid fa-print text-xs"></i></button>
                                                     {!readOnly && (
                                                     <button onClick={() => handleDeleteLabel(l.EtiquetaID)} className="w-7 h-7 rounded bg-white text-zinc-300 hover:text-brand-magenta hover:bg-brand-magenta/10 border border-transparent hover:border-brand-magenta/20 transition"><i className="fa-solid fa-trash-can text-xs"></i></button>
                                                     )}
+                                                    </div>
                                                 </div>
                                             ))}
                                         </div>

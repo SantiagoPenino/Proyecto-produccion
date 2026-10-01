@@ -66,6 +66,8 @@ export const createBandejaService = (basePath) => ({
     fallaProponer: async (ordenId, payload) => (await api.post(`${basePath}/orders/${ordenId}/falla/proponer`, payload)).data,
     reportarFalla: async (ordenId, payload) => (await api.post(`${basePath}/orders/${ordenId}/falla`, payload)).data,
     getReposicionesOrden: async (ordenId) => (await api.get(`${basePath}/orders/${ordenId}/reposiciones`)).data,
+    // [BANDEJA] lista de talles, tizadas, bocetos y ficha del producto del pedido
+    getContextoPedido: async (ordenId) => (await api.get(`${basePath}/orders/${ordenId}/contexto-pedido`)).data,
 });
 
 export const embBoardService = createBandejaService('/emb');
