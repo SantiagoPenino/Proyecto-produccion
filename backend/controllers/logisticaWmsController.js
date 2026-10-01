@@ -217,7 +217,7 @@ exports.startPreparation = async (req, res) => {
                 SET EstadoCobro = 'EN_PREPARACION'
                 WHERE ID = @PedidoID AND NoDocERP LIKE 'VEN-%'
             `);
-        await logEvento(pool, pedidoId, { estado: 'EN_PREPARACION', usuario: req.user?.usuario });
+        await logEvento(pool, pedidoId, { estado: 'EN_PREPARACION', usuario: (req.user?.usuario || req.user?.username || req.user?.name) });
         res.json({ success: true, message: 'Preparación iniciada' });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -267,7 +267,7 @@ async function enviarVenReposicionAlArea(pool, pedidoId, noDocErpVen, req) {
     if (errores.length) logger.warn(`[WMS] Reposición ${noDocErpVen}: remito PRO→área con errores:`, errores);
     await pool.request().input('PedidoID', sql.Int, pedidoId)
         .query(`UPDATE PedidosCobranza SET EstadoCobro = 'ENVIADO_PRODUCCION' WHERE ID = @PedidoID AND NoDocERP LIKE 'VEN-%'`);
-    await logEvento(pool, pedidoId, { estado: 'ENVIADO_PRODUCCION', usuario: req.user?.usuario });
+    await logEvento(pool, pedidoId, { estado: 'ENVIADO_PRODUCCION', usuario: (req.user?.usuario || req.user?.username || req.user?.name) });
     return { areas, remitos, errores };
 }
 
@@ -277,9 +277,11 @@ exports.confirmPreparation = async (req, res) => {
         const pool = await getPool();
 
         // 1. Get items to discount (ProIdProducto viaja para poder explotar combos)
+        // [ACCESORIOS] la línea puede decir de qué depósito del WMS sale (WmsDepositoId); sin dato = el de ventas
+        const conDepLinea = !!(await pool.request().query(`SELECT COL_LENGTH('dbo.PedidosCobranzaDetalle', 'WmsDepositoId') AS c`)).recordset[0].c;
         const itemsRes = await pool.request()
             .input('PedidoID', sql.Int, pedidoId)
-            .query(`SELECT ProIdProducto, CodArticulo as wms_variante_id, Cantidad FROM PedidosCobranzaDetalle WHERE PedidoCobranzaID = @PedidoID`);
+            .query(`SELECT ProIdProducto, CodArticulo as wms_variante_id, Cantidad${conDepLinea ? ', WmsDepositoId AS deposito_id' : ''} FROM PedidosCobranzaDetalle WHERE PedidoCobranzaID = @PedidoID`);
 
         const items = itemsRes.recordset;
         if (items.length === 0) throw new Error('El pedido no tiene items');
@@ -322,7 +324,7 @@ exports.confirmPreparation = async (req, res) => {
                 SET EstadoCobro = 'PREPARADO'
                 WHERE ID = @PedidoID AND NoDocERP LIKE 'VEN-%'
             `);
-        await logEvento(pool, pedidoId, { estado: 'PREPARADO', usuario: req.user?.usuario });
+        await logEvento(pool, pedidoId, { estado: 'PREPARADO', usuario: (req.user?.usuario || req.user?.username || req.user?.name) });
 
         // [WMS] Bulto/etiqueta de cada orden acompañante de este pedido (una por ítem,
         // área PRO, creadas en wmsController.createOrder) — mismo mecanismo que la
@@ -337,9 +339,13 @@ exports.confirmPreparation = async (req, res) => {
                 const LabelGenerationService = require('../services/LabelGenerationService');
                 const compRes = await pool.request()
                     .input('Doc', sql.VarChar, noDocErpVen)
-                    .query("SELECT OrdenID FROM Ordenes O WHERE NoDocERP = @Doc AND AreaID = 'PRO' AND EstadoDependencia = 'VENTA_DIRECTA' AND NOT EXISTS (SELECT 1 FROM Etiquetas E WHERE E.OrdenID = O.OrdenID)");
+                    .query("SELECT OrdenID, DescripcionTrabajo FROM Ordenes O WHERE NoDocERP = @Doc AND AreaID = 'PRO' AND EstadoDependencia = 'VENTA_DIRECTA' AND NOT EXISTS (SELECT 1 FROM Etiquetas E WHERE E.OrdenID = O.OrdenID)");
                 for (const c of compRes.recordset) {
-                    const lr = await LabelGenerationService.addOneBulto(c.OrdenID, req.user?.id || 1, req.user?.usuario || 'Sistema', {});
+                    // [ACCESORIOS] El accesorio de stock de un producto fabricado (mástil, base…) NO nace en PRO:
+                    // nace en DEPOSITO y viaja a PRO con un remito que Producción tiene que RECIBIR (abajo se
+                    // arma el remito). Antes el bulto aparecía directamente "en PRO" sin que nadie lo recibiera.
+                    const esAccesorio = /^RETIRO ACCESORIO/i.test(String(c.DescripcionTrabajo || ''));
+                    const lr = await LabelGenerationService.addOneBulto(c.OrdenID, req.user?.id || 1, (req.user?.usuario || req.user?.username || req.user?.name) || 'Sistema', esAccesorio ? { ubicacion: 'DEPOSITO' } : {});
                     if (lr.success) bultoOrdenIds.push(c.OrdenID);
                 }
             }
@@ -362,7 +368,7 @@ exports.confirmPreparation = async (req, res) => {
                 const anclasCombo = await pool.request()
                     .input('Doc', sql.VarChar, noDocErpVen)
                     .query(`
-                        SELECT OrdenID, ComboPedidoNoDocERP, ComboItemID, ProximoServicio FROM Ordenes
+                        SELECT OrdenID, ComboPedidoNoDocERP, ComboItemID, ProximoServicio, DescripcionTrabajo FROM Ordenes
                         WHERE NoDocERP = @Doc AND AreaID = 'PRO' AND EstadoDependencia = 'VENTA_DIRECTA'
                           AND ComboPedidoNoDocERP IS NOT NULL AND ComboItemID IS NOT NULL
                     `);
@@ -466,7 +472,39 @@ exports.confirmPreparation = async (req, res) => {
                         await pool.request()
                             .input('PedidoID', sql.Int, pedidoId)
                             .query(`UPDATE PedidosCobranza SET EstadoCobro = 'ENVIADO_PRODUCCION' WHERE ID = @PedidoID AND NoDocERP LIKE 'VEN-%'`);
-                        await logEvento(pool, pedidoId, { estado: 'ENVIADO_PRODUCCION', usuario: req.user?.usuario });
+                        await logEvento(pool, pedidoId, { estado: 'ENVIADO_PRODUCCION', usuario: (req.user?.usuario || req.user?.username || req.user?.name) });
+
+                        // [ACCESORIOS] Remito automático DEPOSITO→PRO con el bulto del accesorio (nació en DEPOSITO,
+                        // ver addOneBulto arriba). La RECEPCIÓN en PRO es manual a propósito: es la prueba de que
+                        // el mástil/base llegó a Producción, y recién con el bulto EN_STOCK en PRO el pedido puede
+                        // entrar a Depósito (validarAccesoriosRecibidos). Si el remito falla, la venta ya quedó
+                        // confirmada: se arma a mano desde Despacho de Depósito.
+                        const anclasAccesorio = anclasCombo.recordset.filter(a => /^RETIRO ACCESORIO/i.test(String(a.DescripcionTrabajo || '')));
+                        if (anclasAccesorio.length) {
+                            try {
+                                const logisticsController = require('./logisticsController');
+                                let remitoAcc = null;
+                                const fakeResAcc = {
+                                    json: (data) => { remitoAcc = data; },
+                                    status: (code) => ({ json: (data) => { remitoAcc = { ...data, _statusCode: code }; } }),
+                                };
+                                await logisticsController.createRemitoFromOrders({
+                                    body: {
+                                        areaOrigen: 'DEPOSITO',
+                                        areaDestino: 'PRO',
+                                        usuarioId: req.user?.id || 1,
+                                        orderIds: anclasAccesorio.map(a => a.OrdenID),
+                                        observations: `Remito automático — accesorio de stock retirado (${noDocErpVen}): recibir en Producción`,
+                                    },
+                                    user: req.user || 'Sistema',
+                                    app: req.app,
+                                }, fakeResAcc);
+                                if (remitoAcc?.success) logger.info(`[WMS] Accesorio: remito ${remitoAcc.dispatchCode} creado DEPOSITO→PRO (${noDocErpVen}).`);
+                                else logger.warn(`[WMS] Accesorio: no se pudo crear el remito DEPOSITO→PRO (${noDocErpVen}):`, remitoAcc);
+                            } catch (eRemAcc) {
+                                logger.warn(`[WMS] Accesorio: fallo creando remito DEPOSITO→PRO (${noDocErpVen}):`, eRemAcc.message);
+                            }
+                        }
                     }
                 }
             }
@@ -506,7 +544,7 @@ exports.markDelivered = async (req, res) => {
                 SET EstadoCobro = 'ENTREGADO'
                 WHERE ID = @PedidoID AND NoDocERP LIKE 'VEN-%'
             `);
-        await logEvento(pool, pedidoId, { estado: 'ENTREGADO', usuario: req.user?.usuario });
+        await logEvento(pool, pedidoId, { estado: 'ENTREGADO', usuario: (req.user?.usuario || req.user?.username || req.user?.name) });
         res.json({ success: true, message: 'Pedido ENTREGADO' });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -874,7 +912,7 @@ exports.receivePreparedOrder = async (req, res) => {
         const insertedOrdId = insertRes.recordset[0]?.OrdIdOrden;
 
         await pool.request().input('PedidoID', sql.Int, pedidoId).query(`UPDATE PedidosCobranza SET EstadoCobro = 'RECIBIDO_DEPOSITO' WHERE ID = @PedidoID`);
-        await logEvento(pool, pedidoId, { estado: 'RECIBIDO_DEPOSITO', usuario: req.user?.usuario });
+        await logEvento(pool, pedidoId, { estado: 'RECIBIDO_DEPOSITO', usuario: (req.user?.usuario || req.user?.username || req.user?.name) });
 
         // [WMS] La etiqueta acompaña a la mercadería: si el pedido ingresó a Depósito, el
         // bulto pasa a estar en Depósito. Hasta acá el bulto nacía en PRO — que es donde
@@ -1016,7 +1054,7 @@ exports.cancelOrder = async (req, res) => {
         const { pedidoId } = req.params;
         const pool = await getPool();
         const upd = await pool.request().input('PedidoID', sql.Int, pedidoId).query(`UPDATE PedidosCobranza SET EstadoCobro = 'CANCELADO' WHERE ID = @PedidoID AND NoDocERP LIKE 'VEN-%'`);
-        await logEvento(pool, pedidoId, { estado: 'CANCELADO', usuario: req.user?.usuario });
+        await logEvento(pool, pedidoId, { estado: 'CANCELADO', usuario: (req.user?.usuario || req.user?.username || req.user?.name) });
         // [TIENDA 23/09] Compra pagada con la billetera: lo reservado vuelve a la billetera.
         let extra = '';
         if (upd.rowsAffected?.[0]) {
@@ -1194,7 +1232,7 @@ exports.addBultoPedido = async (req, res) => {
             return res.status(404).json({ error: 'No es un pedido de venta WMS (VEN) o no tiene líneas.' });
         }
         const LabelGenerationService = require('../services/LabelGenerationService');
-        const lr = await LabelGenerationService.addOneBulto(anclas[0].OrdenID, req.user?.id || 1, req.user?.usuario || 'Sistema', {});
+        const lr = await LabelGenerationService.addOneBulto(anclas[0].OrdenID, req.user?.id || 1, (req.user?.usuario || req.user?.username || req.user?.name) || 'Sistema', {});
         if (!lr.success) return res.status(400).json({ error: lr.error });
         res.json({
             success: true,
@@ -1257,7 +1295,7 @@ exports.addNota = async (req, res) => {
         await pool.request()
             .input('PID', sql.Int, pedidoId)
             .input('Nota', sql.NVarChar(1000), nota.substring(0, 1000))
-            .input('Usuario', sql.NVarChar(100), req.user?.usuario || 'Sistema')
+            .input('Usuario', sql.NVarChar(100), (req.user?.usuario || req.user?.username || req.user?.name) || 'Sistema')
             .query(`
                 INSERT INTO PedidosCobranzaEventos (PedidoCobranzaID, Tipo, Estado, Nota, Usuario)
                 VALUES (@PID, 'NOTA', NULL, @Nota, @Usuario)

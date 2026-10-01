@@ -92,6 +92,9 @@ router.post('/:ordenId/boceto-aprobado', verifyToken, uploadProdFile.single('fil
 // [PRO] Archivos de referencia: subir (multipart {file, tipo, nota}) y eliminar.
 router.post('/:ordenId/reference-file', verifyToken, uploadProdFile.single('file'), ordersController.uploadReferenceFile);
 router.delete('/reference/:refId', verifyToken, ordersController.deleteReferenceFile);
+// [FICHA DEL PEDIDO] generar/actualizar (se pega a la PRO como FICHA_PEDIDO) y ver el PDF
+router.post('/:ordenId/ficha-pedido', verifyToken, ordersController.generarFichaPedido);
+router.get('/:ordenId/ficha-pedido', verifyToken, ordersController.descargarFichaPedido);
 
 // [PRO] Cantidad a fabricar (Magnitud): edición manual + recotización del pedido.
 router.put('/:ordenId/magnitud', verifyToken, ordersController.updateOrderMagnitud);

@@ -9,7 +9,10 @@
 // Además de validar, RESUELVE cada material contra el catálogo (código, stock, ancho): el
 // traductor usa esos datos, no los que mandó el origen.
 const { sql } = require('../../config/db');
-const { materialesDe, buscarMaterial, anchoDeMaterial, bobinasDe } = require('./catalogo');
+const { materialesDe, materialesDeArea, buscarMaterial, anchoDeMaterial, bobinasDe } = require('./catalogo');
+// F1 (29-sep): producciones principales habilitadas por sistema. Cada una es un área de producción
+// (ConfigMapeoERP) y su catálogo de materiales. Sublimación conserva su variante fija de siempre.
+const PRINCIPALES = { sublimacion: 'SB', directa_320: 'DIRECTA', ecouv: 'ECOUV' };
 
 const VARIANTE_SUBLIMACION = 'Sublimacion Tela';   // fija en /ventas/pedido-prenda (prendaServices.js)
 const VARIANTE_DTF = 'DTF Textil';                 // fija en /ventas/pedido-prenda
@@ -46,7 +49,7 @@ async function validar(pool, pedido) {
 
   // ── Cabecera ────────────────────────────────────────────────────────────────
   if (pedido.modo !== 'FABRICAR') err('MODO_NO_HABILITADO', 'modo', `El modo "${pedido.modo}" todavía no se puede ingresar por sistema. Hoy solo "Fabricar prendas a la medida".`);
-  if (pedido.servicioPrincipal !== 'sublimacion') err('SERVICIO_NO_HABILITADO', 'servicioPrincipal', `La producción principal "${pedido.servicioPrincipal}" todavía no se puede ingresar por sistema. Hoy solo Sublimación.`);
+  if (!PRINCIPALES[pedido.servicioPrincipal]) err('SERVICIO_NO_HABILITADO', 'servicioPrincipal', `La producción principal "${pedido.servicioPrincipal}" todavía no se puede ingresar por sistema (habilitadas: ${Object.keys(PRINCIPALES).join(', ')}).`);
   if (!String(pedido.nombreTrabajo || '').trim()) err('FALTA_NOMBRE_TRABAJO', 'nombreTrabajo', 'Falta el nombre del proyecto / trabajo.');
 
   const codCliente = parseInt(pedido.cliente?.codCliente, 10);
@@ -71,6 +74,11 @@ async function validar(pool, pedido) {
       const r = await pool.request().input('P', sql.Int, proId).query('SELECT TOP 1 ProIdProducto, LTRIM(RTRIM(Descripcion)) AS Descripcion FROM dbo.articulos WHERE ProIdProducto = @P');
       if (!r.recordset.length) err('PRODUCTO_INEXISTENTE', 'producto.proIdProducto', `El producto terminado ${proId} no existe en el catálogo.`);
       else prod.nombre = r.recordset[0].Descripcion;   // el nombre que viaja al pedido es el del catálogo
+    }
+    // [ACCESORIOS] cada accesorio de stock que va con el producto necesita su variante de WMS (talle/color)
+    for (const a of (Array.isArray(prod.accesorios) ? prod.accesorios : [])) {
+      if (!(parseInt(a.wmsVarianteId, 10) > 0)) err('ACCESORIO_SIN_VARIANTE', 'producto.accesorios', `Accesorio de stock "${a.nombre || a.itemProIdProducto}": falta elegir la variante (talle/color) del WMS.`);
+      if (!(Number(a.cantidad) > 0)) err('ACCESORIO_SIN_CANTIDAD', 'producto.accesorios', `Accesorio de stock "${a.nombre || a.itemProIdProducto}": la cantidad tiene que ser mayor a 0.`);
     }
   } else if (prod.tipoFabricacion === 'PERSONALIZADO') {
     const precio = prod.precio || {};
@@ -100,10 +108,12 @@ async function validar(pool, pedido) {
 
   // ── Producción principal (sublimación): un archivo = un ítem ─────────────────
   const imp = pedido.impresion || {};
-  imp.variante = VARIANTE_SUBLIMACION;
+  const areaPrincipal = PRINCIPALES[pedido.servicioPrincipal] || 'SB';
+  imp.areaId = areaPrincipal;
+  imp.variante = areaPrincipal === 'SB' ? VARIANTE_SUBLIMACION : null;   // fuera de SB, la variante es la física del material (StockArt.Articulo)
   const items = Array.isArray(imp.items) ? imp.items : [];
   if (!items.length) err('FALTA_ARTE', 'impresion.items', 'Producción principal: no hay ningún archivo de diseño pronto.');
-  const telas = items.length ? await materialesDe(pool, 'SB', VARIANTE_SUBLIMACION) : [];
+  const telas = items.length ? (areaPrincipal === 'SB' ? await materialesDe(pool, 'SB', VARIANTE_SUBLIMACION) : await materialesDeArea(pool, areaPrincipal)) : [];
   items.forEach((it, i) => {
     const campo = `impresion.items[${i}]`;
     const nom = it.archivo?.nombre || `archivo ${i + 1}`;
@@ -114,8 +124,8 @@ async function validar(pool, pedido) {
     const ancho = num(it.archivo.anchoM), alto = num(it.archivo.altoM);
     if (!(ancho > 0) || !(alto > 0)) { err('ARCHIVO_SIN_MEDIDA', `${campo}.archivo`, `"${nom}": no tiene medida (ancho y alto en metros). Volvé a subirlo para que se mida.`); return; }
     const mat = buscarMaterial(telas, it.material);
-    if (!mat) { err('MATERIAL_INVALIDO', `${campo}.material`, `"${nom}": ${it.material?.nombre ? `el material "${it.material.nombre}" no está en el catálogo de Sublimación` : 'falta elegir el material (la tela)'}.`); return; }
-    it.material = { nombre: String(mat.Material).trim(), codArticulo: String(mat.CodArticulo ?? '').trim(), codStock: String(mat.CodStock ?? '').trim() };
+    if (!mat) { err('MATERIAL_INVALIDO', `${campo}.material`, `"${nom}": ${it.material?.nombre ? `el material "${it.material.nombre}" no está en el catálogo de ${areaPrincipal === 'SB' ? 'Sublimación' : areaPrincipal}` : 'falta elegir el material (la tela)'}.`); return; }
+    it.material = { nombre: String(mat.Material).trim(), codArticulo: String(mat.CodArticulo ?? '').trim(), codStock: String(mat.CodStock ?? '').trim(), variante: imp.variante || String(mat.Variante || '').trim() };
 
     // Mismas reglas de ancho que PrendaOrderForm.jsx:1107-1135
     const anchoBobina = bobina ? parseFloat(bobina.AnchoReal ?? bobina.Ancho) : NaN;
@@ -123,6 +133,14 @@ async function validar(pool, pedido) {
     const maxWidth = usaBobina ? anchoBobina : anchoDeMaterial(mat);
     const largoFijo = usaBobina ? 0 : (parseFloat(mat.Largo) || 0);
     const etiquetaAncho = usaBobina ? `la bobina "${String(bobina.DescripcionTela || bobina.CodigoEtiqueta || '').trim()}"` : `"${it.material.nombre}"`;
+    // F1: medida fija del PRODUCTO (windflag, funda, cuadro sin molde): tolerancia 2 cm, se admite girado
+    const mfp = pedido.producto?.medidaFija;
+    if (mfp) {
+      const cm2 = (v) => Math.round(Number(v) * 100);
+      const okd = (a, b) => Math.abs(cm2(a) - cm2(b)) <= 2;
+      if (!((okd(ancho, mfp.anchoM) && okd(alto, mfp.altoM)) || (okd(ancho, mfp.altoM) && okd(alto, mfp.anchoM))))
+        err('MEDIDA_FIJA_PRODUCTO', `${campo}.archivo`, `"${nom}" mide ${ancho.toFixed(2)} × ${alto.toFixed(2)} m y el producto se imprime a MEDIDA FIJA ${mfp.anchoM.toFixed(2)} × ${mfp.altoM.toFixed(2)} m (tolerancia 2 cm). Sustituí el archivo por uno a esa medida.`);
+    }
     if (largoFijo > 0) {
       const cm = (v) => Math.round(Number((v * 100).toFixed(6)));
       if (cm(ancho) !== cm(maxWidth) || cm(alto) !== cm(largoFijo)) {

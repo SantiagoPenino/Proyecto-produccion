@@ -28,6 +28,8 @@ function createBandejaRoutes(area) {
     // Spec 39: reportar falla o faltante desde la bandeja (3 pasos) + lo que falta del pedido
     const fallaBandeja = require('../controllers/fallaBandejaController');
     router.get('/orders/:ordenId/falla/pendientes', verifyToken, fallaBandeja.getPendientes);
+    // [BANDEJA] talles / tizadas / bocetos / ficha del producto del pedido, para verlos sin abrir la ficha
+    router.get('/orders/:ordenId/contexto-pedido', verifyToken, embBoardController.getContextoPedido);
     router.post('/orders/:ordenId/falla/es-lo-pendiente', verifyToken, fallaBandeja.esLoPendiente);
     router.post('/orders/:ordenId/falla/proponer', verifyToken, fallaBandeja.proponer);
     router.post('/orders/:ordenId/falla', verifyToken, fallaBandeja.reportar);

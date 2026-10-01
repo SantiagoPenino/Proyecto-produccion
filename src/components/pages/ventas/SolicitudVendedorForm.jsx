@@ -160,6 +160,14 @@ export default function SolicitudVendedorForm() {
             const obligatorios = ADICIONALES.filter(t => filas.some(s => area(s) === AREA_DE[t] && s.Obligatorio));
             // Cómo se cobra cada técnica según el configurador: incluida en el precio del producto o como servicio aparte
             const cobros = Object.fromEntries(filas.map(s => [area(s), s.Cobro === 'INCLUIDA' ? 'INCLUIDA' : 'APARTE']));
+            // [ACCESORIOS] artículos de stock del producto (configurador): al elegir el producto se arman
+            // con los obligatorios marcados; al editar se respeta lo guardado y solo se refrescan las variantes.
+            const accCfg = (r.data?.accesorios || []).map(a => ({
+                id: a.ID, itemProIdProducto: a.ItemProIdProducto, nombre: a.ItemDescripcion || `Artículo ${a.ItemProIdProducto}`,
+                wmsVarianteId: a.WmsVarianteId || '', varianteNombre: a.VarianteNombre || '', fijo: !!a.WmsVarianteId, unica: !!a.VarianteUnica,
+                cantidadPorUnidad: a.Cantidad || 1, obligatorio: !!a.Obligatorio, cobro: a.Cobro === 'APARTE' ? 'APARTE' : 'INCLUIDO',
+                incluir: !!a.Obligatorio, variantes: a.variantes || [], wmsDepositoId: a.WmsDepositoId || null,
+            }));
             setProductos(ps => ps.map(p => {
                 if (p._k !== k) return p;
                 const partes = { ...p.Partes };
@@ -167,7 +175,11 @@ export default function SolicitudVendedorForm() {
                     ADICIONALES.forEach(t => { if (!permitidos.includes(t) && partes[t]?.Estado === 'INGRESADO') delete partes[t]; });
                     obligatorios.forEach(t => { partes[t] = { ...(partes[t] || parteVacia()), IncluidoEnProducto: true }; });
                 }
-                return { ...p, permitidos, obligatorios, cobros, Partes: partes };
+                const guardados = Array.isArray(p.Datos?.accesorios) ? p.Datos.accesorios : [];
+                const accesorios = (alElegir || !guardados.length)
+                    ? accCfg
+                    : guardados.map(g => { const c = accCfg.find(x => x.id === g.id || x.itemProIdProducto === g.itemProIdProducto); return c ? { ...c, ...g, variantes: c.variantes } : g; });
+                return { ...p, permitidos, obligatorios, cobros, Partes: partes, Datos: { ...p.Datos, accesorios } };
             }));
         } catch (e) { toast.error(`No se pudieron leer los servicios del producto: ${errorDe(e)}`); }
     }, []);
@@ -258,7 +270,7 @@ export default function SolicitudVendedorForm() {
         const fija = Number(art?.CantidadFija) || 0, min = Number(art?.CantidadMinima) || 0;
         const cant = Number(p.Cantidad) || 0;
         const cantidad = fija ? (cant && cant % fija === 0 ? cant : fija) : (min && cant < min ? min : (cant || ''));
-        cambiarProducto(p._k, { ProIdProducto: proId, ProductoNombre: art?.Descripcion || '', Cantidad: cantidad, _min: min, _fija: fija, _precio: art?.Precio ?? null, _moneda: art?.Moneda || '' });
+        cambiarProducto(p._k, { ProIdProducto: proId, ProductoNombre: art?.Descripcion || '', Cantidad: cantidad, _min: min, _fija: fija, _precio: art?.Precio ?? null, _moneda: art?.Moneda || '', _molde: art?.Molde || null });
         cargarServiciosProducto(p._k, proId, true);
     };
     const agregarProducto = () => { setProductos(ps => [...ps, productoVacio(modalidadDe(ps).modalidad)]); setSel(productos.length); };
@@ -419,6 +431,33 @@ export default function SolicitudVendedorForm() {
     const catalogoConPrecio = productos.length > 0 && productos.every(x => x.TipoFabricacion === 'PRODUCTO_TERMINADO' && x._precio != null && Number(x.Cantidad) > 0);
     const sugeridoCatalogo = catalogoConPrecio ? Math.round(productos.reduce((t, x) => t + Number(x._precio) * Number(x.Cantidad), 0) * 100) / 100 : null;
     const monedaCatalogo = productos[0]?._moneda || '';
+    // Al editar (o si el catálogo llega después de elegir), los productos del catálogo recuperan su
+    // precio, moneda y cantidades mínima/fija desde el catálogo: sin esto no hay referencia ni default.
+    useEffect(() => {
+        if (!catalogo.length) return;
+        setProductos(ps => {
+            let cambio = false;
+            const next = ps.map(x => {
+                if (x.TipoFabricacion !== 'PRODUCTO_TERMINADO' || !x.ProIdProducto || x._precio !== undefined) return x;
+                const art = catalogo.find(a => String(a.ProIdProducto) === String(x.ProIdProducto));
+                if (!art) return x;
+                cambio = true;
+                return { ...x, _precio: art.Precio ?? null, _moneda: art.Moneda || '', _molde: art.Molde || null, _min: x._min ?? (art.CantidadMinima || null), _fija: x._fija ?? (art.CantidadFija || null) };
+            });
+            return cambio ? next : ps;
+        });
+    }, [catalogo]);   // eslint-disable-line react-hooks/exhaustive-deps
+    // Precio por defecto: con productos del catálogo, "Precio establecido" arranca con unidades × precio
+    // de catálogo (y su moneda). Se vuelve a calcular mientras el total no se haya tocado a mano.
+    useEffect(() => {
+        if (sugeridoCatalogo == null) return;
+        setPago(x => {
+            const modo = x.ModoCobro || (esEdicion ? '' : 'PRECIO_ESTABLECIDO');
+            const auto = x.PrecioPactado === '' || x._auto;
+            if (modo !== 'PRECIO_ESTABLECIDO' || !auto) return x.ModoCobro === modo ? x : { ...x, ModoCobro: modo };
+            return { ...x, ModoCobro: modo, PrecioPactado: String(sugeridoCatalogo), MonIdMoneda: (monedaCatalogo || '').toUpperCase() === 'USD' ? 2 : 1, _auto: true };
+        });
+    }, [sugeridoCatalogo, monedaCatalogo]);   // eslint-disable-line react-hooks/exhaustive-deps
     const famDe = (x) => x._familia || catalogo.find(a => String(a.ProIdProducto) === String(x.ProIdProducto))?.Categoria || '';
     // Segundo nivel del árbol: la etiqueta del configurador (Básquet, Fútbol…). '' = todas.
     const SIN_ETQ = '__sin__';
@@ -507,9 +546,12 @@ export default function SolicitudVendedorForm() {
                                     <div className="fp-fields two">
                                         <Campo label="Moneda"><select value={pago.MonIdMoneda} onChange={e => setP({ MonIdMoneda: Number(e.target.value) })}>{Object.entries(MONEDA).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></Campo>
                                         <Campo label="Total pactado *">
-                                            <input type="number" min="0" step="0.01" value={pago.PrecioPactado} onChange={e => setP({ PrecioPactado: e.target.value })} placeholder="0" />
+                                            <input type="number" min="0" step="0.01" value={pago.PrecioPactado} onChange={e => setP({ PrecioPactado: e.target.value, _auto: false })} placeholder="0" />
+                                            {catalogoConPrecio && (
+                                                <p className="fp-hint">Referencia de catálogo: {productos.map(x => `${x.Cantidad} × ${fmtMoneda(x._precio, x._moneda)}`).join(' + ')} = <b>{fmtMoneda(sugeridoCatalogo, monedaCatalogo)}</b>{pago._auto ? ' (cargado por defecto; si lo cambiás, queda el tuyo)' : ''}</p>
+                                            )}
                                             {sugeridoCatalogo != null && Number(pago.PrecioPactado || 0) !== sugeridoCatalogo && (
-                                                <button type="button" className="fp-link" onClick={() => setP({ PrecioPactado: String(sugeridoCatalogo) })}>Usar el precio de catálogo: {fmtMoneda(sugeridoCatalogo, monedaCatalogo)} (unidades × precio de cada producto)</button>
+                                                <button type="button" className="fp-link" onClick={() => setP({ PrecioPactado: String(sugeridoCatalogo), MonIdMoneda: (monedaCatalogo || '').toUpperCase() === 'USD' ? 2 : 1, _auto: true })}>Volver al precio de catálogo: {fmtMoneda(sugeridoCatalogo, monedaCatalogo)}</button>
                                             )}
                                         </Campo>
                                     </div>
@@ -617,6 +659,7 @@ export default function SolicitudVendedorForm() {
                                                             <button type="button" key={x.ProIdProducto} className="fp-prod" aria-pressed={String(p.ProIdProducto) === String(x.ProIdProducto)} onClick={() => elegirProducto(p, x.ProIdProducto)}>
                                                                 {imgSrc(x) ? <img className="fp-prod-img" src={imgSrc(x)} alt="" loading="lazy" onError={e => { e.currentTarget.style.display = 'none'; }} /> : <div className="fp-prod-noimg" aria-hidden="true">👕</div>}
                                                                 {x.Etiqueta && <span className="fp-prod-tag">{x.Etiqueta}</span>}
+                                                                {x.TecnicaPrincipal && x.TecnicaPrincipal !== 'SB' && <span className="fp-prod-tag" title="Área que produce este producto">{({ DIRECTA: 'Imp. directa', ECOUV: 'Gran formato' })[x.TecnicaPrincipal] || x.TecnicaPrincipal}</span>}
                                                                 <b>{x.Descripcion}</b><small>{x.CodArticulo}{x.Estado === 'PUBLICADO' ? ' · publicado' : ''}</small>
                                                             </button>
                                                         ))}
@@ -646,6 +689,32 @@ export default function SolicitudVendedorForm() {
                                             {!p._fija && p._min > 0 && <small className="fp-hint">Mínimo {p._min} unidades.</small>}
                                         </Campo>
                                     </div>
+                                    {/* [ACCESORIOS] artículos de stock que salen con el producto (configurador › Accesorios y estructura) */}
+                                    {p.TipoFabricacion === 'PRODUCTO_TERMINADO' && (d.accesorios || []).length > 0 && (
+                                        <Campo div label="Accesorios de stock que salen con el producto" ayuda="Se retiran del WMS y Producción los recibe antes de que el pedido pase a Depósito. La cantidad sale de las unidades del producto.">
+                                            {d.accesorios.map((a, ai) => {
+                                                const setA = (patch) => cambiarDato(p._k, { accesorios: d.accesorios.map((x, j) => j === ai ? { ...x, ...patch } : x) });
+                                                const total = (Number(a.cantidadPorUnidad) || 1) * (Number(p.Cantidad) || 0);
+                                                const va = a.incluir !== false;
+                                                return (
+                                                    <div key={ai} className="fp-checkrow" style={{ alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                                                        {a.obligatorio
+                                                            ? <span><b>{a.nombre}</b> <small className="fp-hint">siempre va</small></span>
+                                                            : <Tilde checked={va} onChange={v => setA({ incluir: v })}>{a.nombre}</Tilde>}
+                                                        <small className="fp-hint">{a.cantidadPorUnidad} por unidad → <b>{total}</b> en total · {a.cobro === 'APARTE' ? 'se cobra aparte' : 'incluido en el precio'}</small>
+                                                        {va && (a.fijo
+                                                            ? (a.unica ? null : <small className="fp-hint">· {a.varianteNombre}</small>)
+                                                            : (a.variantes || []).length
+                                                                ? <select value={a.wmsVarianteId || ''} onChange={e => { const v = (a.variantes || []).find(x => x.wms_variante_id === Number(e.target.value)); setA({ wmsVarianteId: e.target.value ? Number(e.target.value) : '', varianteNombre: v?.nombre_variante || '' }); }}>
+                                                                    <option value="">Elegí talle/color…</option>
+                                                                    {a.variantes.map(v => <option key={v.wms_variante_id} value={v.wms_variante_id}>{v.nombre_variante}</option>)}
+                                                                </select>
+                                                                : <small className="fp-hint" style={{ color: '#b45309' }}>Sin variantes de WMS: vinculá el artículo al WMS en Marketing › Productos.</small>)}
+                                                    </div>
+                                                );
+                                            })}
+                                        </Campo>
+                                    )}
                                     <Campo div label="Se produce a partir de">
                                         <Seg valor={d.muestraFisica ? 'MUESTRA' : 'BOCETO'} onChange={v => cambiarDato(p._k, { muestraFisica: v === 'MUESTRA' })} opciones={[['BOCETO', 'Boceto digital'], ['MUESTRA', 'Muestra física']]} />
                                     </Campo>

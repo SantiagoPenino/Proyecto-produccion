@@ -76,8 +76,12 @@ const FORM_VACIO = {
     grupo: '', supFlia: '', mostrar: true,
     anchoImprimible: '', largoImprimible: '', llevaPapel: false, monIdMoneda: '',
     uniIdUnidad: '',
+    // [FUENTE ÚNICA] producto del configurador: medida fija / UM / moneda se leen y guardan en el producto
+    esProductoConfigurado: false, um: '', molde: '',
     producto_maestro_id: ''
 };
+// UM del producto del configurador (ProductoVentaConfig.UM)
+const UM_PRODUCTO = [{ v: 'u', l: 'Unidades (u)' }, { v: 'm', l: 'Metros (m)' }, { v: 'm2', l: 'Metros cuadrados (m²)' }];
 
 const MONEDA_OPCIONES = [{ v: '1', l: 'UYU' }, { v: '2', l: 'USD' }, { v: '', l: 'Sin definir' }];
 
@@ -205,7 +209,15 @@ const EditModal = ({ article, allArticles, onClose, onSaved }) => {
 
     useEffect(() => {
         if (article) {
+            // [FUENTE ÚNICA] si es producto del configurador, medidas/UM/moneda salen del producto y del precio, no de Articulos
+            const cfg = !!article.EsProductoConfigurado;
+            const dec3 = (v) => (v != null && Number.isFinite(Number(v)) ? String(parseFloat(Number(v).toFixed(3))) : '');
+            const monDePrecio = article.PrecioMonId != null ? String(article.PrecioMonId)
+                : (article.PrecioMoneda ? (String(article.PrecioMoneda).trim().toUpperCase() === 'USD' ? '2' : '1') : '');
             const f = {
+                esProductoConfigurado: cfg,
+                um: cfg ? (article.CfgUM || 'u') : '',
+                molde: cfg ? (article.CfgMolde || '') : '',
                 proIdProducto:   article.ProIdProducto ?? null,
                 codArticulo:     article.CodArticulo?.trim()     || '',
                 idProdReact:     article.IDProdReact != null ? String(article.IDProdReact) : '',
@@ -215,10 +227,10 @@ const EditModal = ({ article, allArticles, onClose, onSaved }) => {
                 supFlia:         article.SupFlia?.trim()          || '',
                 mostrar:         article.Mostrar == null ? true : !!article.Mostrar,
                 // Ancho 0 se muestra vacío: al guardar, vacío vuelve a ser 0.
-                anchoImprimible: Number(article.anchoimprimible) ? String(parseFloat(Number(article.anchoimprimible).toFixed(4))) : '',
-                largoImprimible: article.largoimprimible != null ? String(parseFloat(Number(article.largoimprimible).toFixed(4))) : '',
+                anchoImprimible: cfg ? dec3(article.CfgAnchoM) : (Number(article.anchoimprimible) ? String(parseFloat(Number(article.anchoimprimible).toFixed(4))) : ''),
+                largoImprimible: cfg ? dec3(article.CfgAltoM) : (article.largoimprimible != null ? String(parseFloat(Number(article.largoimprimible).toFixed(4))) : ''),
                 llevaPapel:      !!article.LLEVAPAPEL,
-                monIdMoneda:     article.MonIdMoneda != null ? String(article.MonIdMoneda) : '',
+                monIdMoneda:     cfg ? monDePrecio : (article.MonIdMoneda != null ? String(article.MonIdMoneda) : ''),
                 uniIdUnidad:     article.UniIdUnidad != null ? String(article.UniIdUnidad) : '',
                 producto_maestro_id: article.producto_maestro_id != null ? String(article.producto_maestro_id) : '',
                 precioBase:      article.PrecioBase != null ? parseFloat(article.PrecioBase) : null
@@ -393,6 +405,7 @@ const EditModal = ({ article, allArticles, onClose, onSaved }) => {
                 largoImprimible: form.largoImprimible !== '' ? parseFloat(form.largoImprimible) : null,
                 uniIdUnidad:     form.uniIdUnidad !== '' ? parseInt(form.uniIdUnidad) : null,
                 monIdMoneda:     form.monIdMoneda !== '' ? parseInt(form.monIdMoneda) : null,
+                um:              form.esProductoConfigurado ? (form.um || 'u') : null,   // [FUENTE ÚNICA]
             };
 
             let proId = form.proIdProducto;
@@ -604,9 +617,22 @@ const EditModal = ({ article, allArticles, onClose, onSaved }) => {
                                         </div>
                                     </div>
                                 </div>
+                                {form.esProductoConfigurado && (
+                                    /* [FUENTE ÚNICA] producto del configurador: estos datos viven en el producto, acá se leen y se guardan allí */
+                                    <p className="text-xs text-slate-600 bg-cyan-50 border border-cyan-100 rounded-lg px-3 py-2">
+                                        Producto del <a href="/configurar-productos" target="_blank" rel="noreferrer" className="font-semibold text-brand-cyan hover:underline">Configurador de productos</a>:
+                                        la unidad, la medida fija y la moneda son las del producto. Lo que cambies acá se guarda en el producto.
+                                        {form.molde === 'OBLIGATORIO' && ' Lleva molde: la medida la da la tizada, por eso no tiene medida fija.'}
+                                    </p>
+                                )}
                                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                                     <div>
                                         <label htmlFor="art-unidad" className={labelCls}>Unidad</label>
+                                        {form.esProductoConfigurado ? (
+                                            <select id="art-unidad" name="um" value={form.um} onChange={handleChange} className={selectCls} aria-describedby="art-unidad-ayuda">
+                                                {UM_PRODUCTO.map(u => <option key={u.v} value={u.v}>{u.l}</option>)}
+                                            </select>
+                                        ) : (
                                         <select id="art-unidad" name="uniIdUnidad" value={form.uniIdUnidad} onChange={handleChange} className={selectCls}
                                             aria-describedby="art-unidad-ayuda">
                                             <option value="">Sin definir</option>
@@ -614,18 +640,21 @@ const EditModal = ({ article, allArticles, onClose, onSaved }) => {
                                                 <option key={u.UniIdUnidad} value={u.UniIdUnidad}>{u.Descripcion}{u.Notacion ? ` (${u.Notacion})` : ''}</option>
                                             ))}
                                         </select>
-                                        <p id="art-unidad-ayuda" className={helpCls}>Cómo se cuenta en producción: por piezas o por metros.</p>
+                                        )}
+                                        <p id="art-unidad-ayuda" className={helpCls}>{form.esProductoConfigurado ? 'Cómo se vende y se cuenta el producto.' : 'Cómo se cuenta en producción: por piezas o por metros.'}</p>
                                     </div>
                                     <div>
-                                        <label htmlFor="art-ancho" className={labelCls}>Ancho imprimible (m)</label>
+                                        <label htmlFor="art-ancho" className={labelCls}>{form.esProductoConfigurado ? 'Ancho (m)' : 'Ancho imprimible (m)'}</label>
                                         <input id="art-ancho" type="number" step="0.01" min="0" name="anchoImprimible" value={form.anchoImprimible} onChange={handleChange}
-                                            className={inputCls} placeholder="1.60" />
+                                            className={inputCls} placeholder={form.esProductoConfigurado ? (form.molde === 'OBLIGATORIO' ? 'Con molde' : '1.00') : '1.60'} disabled={form.molde === 'OBLIGATORIO'} />
                                     </div>
                                     <div>
-                                        <label htmlFor="art-largo" className={labelCls}>Largo fijo (m)</label>
+                                        <label htmlFor="art-largo" className={labelCls}>{form.esProductoConfigurado ? 'Alto (m)' : 'Largo fijo (m)'}</label>
                                         <input id="art-largo" type="number" step="0.01" min="0" name="largoImprimible" value={form.largoImprimible} onChange={handleChange}
-                                            className={inputCls} placeholder="Opcional" aria-describedby="art-largo-ayuda" />
-                                        <p id="art-largo-ayuda" className={helpCls}>Si se carga, el portal exige esa medida exacta (ej: banderas).</p>
+                                            className={inputCls} placeholder={form.esProductoConfigurado ? (form.molde === 'OBLIGATORIO' ? 'Con molde' : '2.80') : 'Opcional'} aria-describedby="art-largo-ayuda" disabled={form.molde === 'OBLIGATORIO'} />
+                                        <p id="art-largo-ayuda" className={helpCls}>{form.esProductoConfigurado
+                                            ? 'Medida fija del producto: el archivo tiene que medir exactamente ancho × alto (±2 cm). Vacío = sin medida fija.'
+                                            : 'Si se carga, el portal exige esa medida exacta (ej: banderas).'}</p>
                                     </div>
                                 </div>
                                 <div className="flex items-center gap-3 pt-1">

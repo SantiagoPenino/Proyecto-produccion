@@ -15,7 +15,7 @@
 const { sql } = require('../config/db');
 const logger = require('../utils/logger');
 const { rollbackSeguro } = require('../utils/rollbackSeguro');
-const { materialesDe, buscarMaterial, bobinasDe } = require('./pedidosExternos/catalogo');
+const { materialesDe, materialesDeArea, buscarMaterial, bobinasDe } = require('./pedidosExternos/catalogo');
 const { VARIANTE_SUBLIMACION, VARIANTE_DTF, errorMedidaDtf } = require('./pedidosExternos/validador');
 const procesador = require('./pedidosExternos/procesador');
 
@@ -26,17 +26,56 @@ const MONEDA = { 1: 'UYU', 2: 'USD' };
 
 // Telas de sublimación que puede elegir el diseñador: el mismo catálogo de /ventas/pedido-prenda.
 // (CodArticulo / Descripcion son columnas de ancho fijo: llegan con espacios al final, se limpian acá.)
-const materialesPrincipal = async (pool) => (await materialesDe(pool, 'SB', VARIANTE_SUBLIMACION))
-  .map(m => ({ ...m, CodArticulo: String(m.CodArticulo ?? '').trim(), CodStock: String(m.CodStock ?? '').trim(), Material: String(m.Material ?? '').trim() }));
+const materialesPrincipal = async (pool, areaId) => {
+  // F1: la producción principal puede ser otra área (Impresión Directa, gran formato…): sus materiales
+  // son todos los del área, sin variante fija. Sublimación sigue con su catálogo de siempre.
+  const area = String(areaId || 'SB').trim().toUpperCase();
+  const lista = area === 'SB' ? await materialesDe(pool, 'SB', VARIANTE_SUBLIMACION) : await materialesDeArea(pool, area);
+  return lista.map(m => ({ ...m, CodArticulo: String(m.CodArticulo ?? '').trim(), CodStock: String(m.CodStock ?? '').trim(), Material: String(m.Material ?? '').trim() }));
+};
+// Servicio principal (id de services.js / SERVICE_TO_AREA_MAP) por área de producción
+const SERVICIO_DE_AREA = { SB: 'sublimacion', DIRECTA: 'directa_320', ECOUV: 'ecouv', DF: 'dtf' };
+// Área de la producción principal de un producto de la solicitud (ProductoVentaConfig.TecnicaPrincipal; SB si no hay)
+async function areaPrincipalDeProducto(pool, productoSolId) {
+  const r = await pool.request().input('P', sql.Int, productoSolId).query(`
+    SELECT CASE WHEN COL_LENGTH('dbo.ProductoVentaConfig', 'TecnicaPrincipal') IS NULL THEN NULL
+                ELSE (SELECT vc.TecnicaPrincipal FROM dbo.ProductoVentaConfig vc WHERE vc.ProIdProducto = p.ProIdProducto) END AS Area
+    FROM dbo.SolicitudesVendedorProductos p WHERE p.ProductoSolID = @P`);
+  return String(r.recordset[0]?.Area || 'SB').trim().toUpperCase();
+}
+// Medida fija del producto del catálogo (AnchoM × AltoM) cuando NO tiene molde de TizadaPro; null si no aplica
+async function medidaFijaDeProducto(pool, productoSolId) {
+  const r = await pool.request().input('P', sql.Int, productoSolId).query(`
+    SELECT CASE WHEN COL_LENGTH('dbo.ProductoVentaConfig', 'AnchoM') IS NULL THEN NULL ELSE (SELECT vc.AnchoM FROM dbo.ProductoVentaConfig vc WHERE vc.ProIdProducto = p.ProIdProducto) END AS AnchoM,
+           CASE WHEN COL_LENGTH('dbo.ProductoVentaConfig', 'AltoM') IS NULL THEN NULL ELSE (SELECT vc.AltoM FROM dbo.ProductoVentaConfig vc WHERE vc.ProIdProducto = p.ProIdProducto) END AS AltoM,
+           CASE WHEN COL_LENGTH('dbo.ProductoVentaConfig', 'TizadaProMoldeRef') IS NULL THEN NULL ELSE (SELECT vc.TizadaProMoldeRef FROM dbo.ProductoVentaConfig vc WHERE vc.ProIdProducto = p.ProIdProducto) END AS MoldeRef
+           , p.Cantidad
+    FROM dbo.SolicitudesVendedorProductos p WHERE p.ProductoSolID = @P AND p.TipoFabricacion = 'PRODUCTO_TERMINADO'`);
+  const x = r.recordset[0];
+  if (!x || x.MoldeRef || !(Number(x.AnchoM) > 0 && Number(x.AltoM) > 0)) return null;
+  return { anchoM: Number(x.AnchoM), altoM: Number(x.AltoM), cantidad: parseInt(x.Cantidad, 10) || 0 };
+}
+// ¿El archivo mide lo que el producto exige? Tolerancia 2 cm, se admite girado. Devuelve el mensaje de error o null.
+function errorMedidaFija(nombre, anchoM, altoM, mf) {
+  if (!mf) return null;
+  const cm = (v) => Math.round(Number(v) * 100);
+  const ok = (a, b) => Math.abs(cm(a) - cm(b)) <= 2;
+  if ((ok(anchoM, mf.anchoM) && ok(altoM, mf.altoM)) || (ok(anchoM, mf.altoM) && ok(altoM, mf.anchoM))) return null;
+  return `"${nombre}" mide ${Number(anchoM).toFixed(2)} × ${Number(altoM).toFixed(2)} m y este producto se imprime a MEDIDA FIJA: el archivo tiene que medir ${mf.anchoM.toFixed(2)} × ${mf.altoM.toFixed(2)} m (tolerancia 2 cm).`;
+}
+async function areaPrincipalDeParte(pool, parteId) {
+  const r = await pool.request().input('P', sql.Int, parteId).query('SELECT ProductoSolID FROM dbo.SolicitudesVendedorPartes WHERE ParteID = @P');
+  return r.recordset[0] ? areaPrincipalDeProducto(pool, r.recordset[0].ProductoSolID) : 'SB';
+}
 
 // Resuelve material + copias que llegan con un archivo (o al corregirlo). Copias: 1 por defecto.
-async function resolverProduccion(pool, b, heredar) {
+async function resolverProduccion(pool, b, heredar, areaId) {
   const copias = b.Copias === undefined || b.Copias === null || b.Copias === '' ? (heredar?.Copias || 1) : parseInt(b.Copias, 10);
   if (!(copias >= 1)) throw fallo(400, 'Las copias deben ser 1 o más.');
   let mat = null;
   if (b.CodArticulo || b.Material) {
-    mat = buscarMaterial(await materialesPrincipal(pool), { codArticulo: b.CodArticulo, nombre: b.Material });
-    if (!mat) throw fallo(400, `La tela "${b.Material || b.CodArticulo}" no está en el catálogo de Sublimación.`);
+    mat = buscarMaterial(await materialesPrincipal(pool, areaId), { codArticulo: b.CodArticulo, nombre: b.Material });
+    if (!mat) throw fallo(400, `La tela "${b.Material || b.CodArticulo}" no está en el catálogo de ${areaId && areaId !== 'SB' ? areaId : 'Sublimación'}.`);
   }
   return {
     Material: mat ? String(mat.Material).trim() : (heredar?.Material || null),
@@ -80,7 +119,7 @@ async function definirProduccionArchivo(pool, user, base, solicitudId, archivoId
   const vendedorDirecto = a.Tipo === 'DTF' && !a.DisenadorID && base.esVendedor(user);
   if (!base.esAdmin(user) && a.DisenadorID !== user.id && !vendedorDirecto) throw fallo(403, 'La tela y las copias las carga el diseñador que tiene el trabajo.');
 
-  const p = await resolverProduccion(pool, b, a);
+  const p = await resolverProduccion(pool, b, a, await areaPrincipalDeProducto(pool, a.ProductoSolID));
   const transaction = new sql.Transaction(pool);
   await transaction.begin();
   try {
@@ -103,6 +142,8 @@ async function definirProduccionArchivo(pool, user, base, solicitudId, archivoId
 // Solicitud + producto → pedido en términos de negocio (el contrato del plan §2.3)
 // ---------------------------------------------------------------------
 function armarPedido(sol, p, bobinaId) {
+  // F1: producción principal según el producto del catálogo (SB si no dice otra cosa)
+  const areaPrincipal = String(p.Config?.TecnicaPrincipal || 'SB').trim().toUpperCase();
   const vigentes = sol.Archivos.filter(a => a.Vigente);
   const arch = (a) => ({ copias: a.Copias || 1, id: `SOLARCH-${a.ArchivoID}`, url: a.UrlDrive, nombre: a.NombreOriginal, anchoM: a.AnchoM != null ? Number(a.AnchoM) : null, altoM: a.AltoM != null ? Number(a.AltoM) : null });
   const deParte = (pa, rol) => vigentes.filter(a => a.ParteID === pa.ParteID && a.Rol === rol).map(arch);
@@ -130,9 +171,27 @@ function armarPedido(sol, p, bobinaId) {
     nombreTrabajo: sol.NombreTrabajo,
     notas: [sol.Observaciones, p.Observaciones].filter(Boolean).join('\n'),
     modo: 'FABRICAR',
-    servicioPrincipal: 'sublimacion',
+    servicioPrincipal: SERVICIO_DE_AREA[areaPrincipal] || 'sublimacion',
+    areaPrincipal,
     producto: p.TipoFabricacion === 'PRODUCTO_TERMINADO'
-      ? { tipoFabricacion: 'TERMINADO', proIdProducto: p.ProIdProducto, nombre: p.ProductoNombre, cantidad: p.Cantidad }
+      ? { tipoFabricacion: 'TERMINADO', proIdProducto: p.ProIdProducto, nombre: p.ProductoNombre, cantidad: p.Cantidad,
+          // Lo pactado en "Pago y seña" manda también para el producto del catálogo: precio establecido
+          // (un total, todo incluido) o facturar por cada área.
+          precio: sol.ModoCobro === 'PRECIO_ESTABLECIDO'
+            ? { modo: 'ESTABLECIDO', monto: Number(sol.PrecioPactado), moneda: MONEDA[sol.MonIdMoneda] || 'UYU' }
+            : { modo: 'POR_AREA' },
+          // F1: sin molde, el producto se imprime a medida fija (el validador la controla archivo por archivo)
+          medidaFija: p.Config && !p.Config.TizadaProMoldeRef && Number(p.Config.AnchoM) > 0 && Number(p.Config.AltoM) > 0 ? { anchoM: Number(p.Config.AnchoM), altoM: Number(p.Config.AltoM) } : null,
+          // [ACCESORIOS] artículos de stock que salen con el producto (configurador › Accesorios y estructura),
+          // con lo que el vendedor eligió en la solicitud: cuáles van (los opcionales) y qué variante.
+          accesorios: (Array.isArray(p.Datos?.accesorios) ? p.Datos.accesorios : []).filter(a => a && a.incluir !== false && a.itemProIdProducto).map(a => ({
+            id: a.id || null, itemProIdProducto: Number(a.itemProIdProducto), nombre: a.nombre || `Artículo ${a.itemProIdProducto}`,
+            wmsVarianteId: a.wmsVarianteId ? Number(a.wmsVarianteId) : null, varianteNombre: a.varianteNombre || '',
+            cantidadPorUnidad: Number(a.cantidadPorUnidad) || 1,
+            cantidad: (Number(a.cantidadPorUnidad) || 1) * (Number(p.Cantidad) || 0),
+            cobro: a.cobro === 'APARTE' ? 'APARTE' : 'INCLUIDO', obligatorio: !!a.obligatorio,
+            wmsDepositoId: parseInt(a.wmsDepositoId, 10) > 0 ? parseInt(a.wmsDepositoId, 10) : null,
+          })) }
       : {
         tipoFabricacion: 'PERSONALIZADO', cantidad: p.Cantidad,
         precio: sol.ModoCobro === 'PRECIO_ESTABLECIDO'
@@ -140,6 +199,7 @@ function armarPedido(sol, p, bobinaId) {
           : { modo: 'POR_AREA' },
       },
     impresion: {
+      areaId: areaPrincipal,
       items: vigentes.filter(a => principal && a.ParteID === principal.ParteID && a.Rol === 'DISENO_PRONTO').map(a => ({
         archivo: arch(a),
         material: a.Material ? { nombre: a.Material, codArticulo: a.CodArticulo } : null,
@@ -293,4 +353,4 @@ const reintentarArchivos = async (pool, user, base, solicitudId, productoSolId, 
   return procesador.reintentarArchivos(pool, { origen: ORIGEN, idExterno: idExternoDe(solicitudId, productoSolId), usuarioInterno: user, app });
 };
 
-module.exports = { disenoProduccionDePedido, ETAPA_APPLY_PARA_LISTA: () => ETAPA_APPLY, SQL_ORDEN_VIVA, disenosEnProduccion, exigirMedidaDtf, bobinasDelCliente, materialesPrincipal, resolverProduccion, guardarProduccion, definirProduccionArchivo, armarPedido, estadosConversion, convertir, reintentarArchivos };
+module.exports = { areaPrincipalDeProducto, areaPrincipalDeParte, medidaFijaDeProducto, errorMedidaFija, SERVICIO_DE_AREA, disenoProduccionDePedido, ETAPA_APPLY_PARA_LISTA: () => ETAPA_APPLY, SQL_ORDEN_VIVA, disenosEnProduccion, exigirMedidaDtf, bobinasDelCliente, materialesPrincipal, resolverProduccion, guardarProduccion, definirProduccionArchivo, armarPedido, estadosConversion, convertir, reintentarArchivos };

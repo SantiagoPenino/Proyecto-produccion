@@ -33,7 +33,7 @@ export const solicitudesVendedorService = {
     quitarArchivo: (id, archivoId) => dato(api.delete(`${BASE}/${id}/archivos/${archivoId}`)),
 
     /** Telas de sublimación que elige el diseñador para cada archivo de la producción principal. */
-    materialesPrincipal: () => dato(api.get(`${BASE}/materiales-principal`)),
+    materialesPrincipal: (area) => dato(api.get(`${BASE}/materiales-principal`, { params: { area: area && area !== 'SB' ? area : undefined } })),
     /** payload: { CodArticulo?, Material?, Copias? } — tela y copias de un diseño pronto ya subido */
     definirProduccionArchivo: (id, archivoId, payload) => dato(api.put(`${BASE}/${id}/archivos/${archivoId}/produccion`, payload)),
 

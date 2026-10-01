@@ -3,6 +3,19 @@ import { Box, Trash2, Lock } from 'lucide-react';
 import { FileUploadZone } from './FileUploadZone';
 import { CustomSelect } from '../../../pautas/CustomSelect';
 
+// [TPU COMO PORTAL] El tope de medida viene en el NOMBRE del tipo de TPU ("Parche (De hasta 10x8)",
+// "Hasta 4x4"): primer número = alto, segundo = ancho. Sin medida en el nombre no se piden. Mismo
+// criterio que /portal/order/tpu (OrderForm.jsx).
+export const medidaMaximaTPU = (nombreMaterial) => {
+    const m = String(nombreMaterial || '').match(/(\d+(?:[.,]\d+)?)\s*[x×]\s*(\d+(?:[.,]\d+)?)/i);
+    if (!m) return null;
+    const alto = parseFloat(m[1].replace(',', '.'));
+    const ancho = parseFloat(m[2].replace(',', '.'));
+    if (!(alto > 0) || !(ancho > 0)) return null;
+    return { alto, ancho };
+};
+const opcionesCm = (max) => Array.from({ length: Math.floor(max) }, (_, i) => ({ value: String(i + 1), label: `${i + 1} cm` }));
+
 // [PRENDAS] TPU como servicio complementario — mismo criterio que DTF (DtfTechnicalUI.jsx):
 // un solo toggle con dos archivos, el arte a imprimir y el boceto de dónde va.
 export const TpuTechnicalUI = ({
@@ -11,6 +24,8 @@ export const TpuTechnicalUI = ({
     tpuBocetoFile, setTpuBocetoFile,
     tpuVariant, tpuVariants, handleTpuVariantChange,
     tpuMaterial, tpuMaterials, setTpuMaterial,
+    // [TPU COMO PORTAL] medida del parche (solo si el tipo de TPU trae tope en el nombre)
+    tpuAlto = '', tpuAncho = '', setTpuAlto, setTpuAncho,
     handleSpecializedFileUpload,
     handleMultipleSpecializedFileUpload,
     // [PRENDAS] Estampado fusionado: TPU ES una forma de estampar, así que sus campos
@@ -77,6 +92,23 @@ export const TpuTechnicalUI = ({
                                     className="h-[55px]"
                                 />
                             </div>
+                            {/* [TPU COMO PORTAL] Alto y ancho del parche, acotados por el tipo elegido */}
+                            {(() => {
+                                const max = medidaMaximaTPU(tpuMaterial);
+                                if (!max || !setTpuAlto || !setTpuAncho) return null;
+                                return (
+                                    <>
+                                        <div>
+                                            <label className="block text-[10px] uppercase font-black text-zinc-500 mb-2 tracking-widest">Alto * <span className="normal-case font-bold text-zinc-600">(máx. {max.alto} cm)</span></label>
+                                            <CustomSelect value={tpuAlto} onChange={(v) => setTpuAlto(v)} options={opcionesCm(max.alto)} placeholder="Alto..." variant="black" className="h-[55px]" />
+                                        </div>
+                                        <div>
+                                            <label className="block text-[10px] uppercase font-black text-zinc-500 mb-2 tracking-widest">Ancho * <span className="normal-case font-bold text-zinc-600">(máx. {max.ancho} cm)</span></label>
+                                            <CustomSelect value={tpuAncho} onChange={(v) => setTpuAncho(v)} options={opcionesCm(max.ancho)} placeholder="Ancho..." variant="black" className="h-[55px]" />
+                                        </div>
+                                    </>
+                                );
+                            })()}
                             </>
                             )}
 
@@ -129,10 +161,14 @@ export const TpuTechnicalUI = ({
 
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                             <div>
-                                <label className="block text-[10px] uppercase font-black text-zinc-500 mb-2 tracking-widest text-center">Archivo a Imprimir (Uno o más)</label>
+                                {/* [TPU COMO PORTAL] Lo que sube el cliente es un BOCETO: el área diseña el arte y arma la
+                                    matriz a partir de él (igual que "Trabajo nuevo" en /portal/order/tpu). Va como referencia,
+                                    nunca como archivo de impresión: si fuera impresión contaría como capa y la orden pasaría
+                                    a "Diseñado" antes de tiempo. */}
+                                <label className="block text-[10px] uppercase font-black text-zinc-500 mb-2 tracking-widest text-center">Boceto de tu diseño (uno o más)</label>
                                 <FileUploadZone
                                     id="tpu-archivo"
-                                    label="SUBIR ARTE"
+                                    label="SUBIR BOCETO"
                                     onFileSelected={(f) => handleMultipleSpecializedFileUpload(f)}
                                     selectedFile={tpuArchivos.length > 0}
                                     color="emerald"

@@ -219,35 +219,25 @@ async function procesarVentaDirecta(payload) {
             }
 
             // ── RECARGA vs PLAN NUEVO ──────────────────────────────────────────────────
-            // Buscar plan activo existente para esta cuenta con el MISMO conjunto de artículos permitidos.
-            // Si existe → recargar (UPDATE PlaCantidadTotal). Si no → crear plan nuevo (INSERT).
+            // Se recarga el plan activo de la cuenta con el MISMO material principal
+            // (PlanesMetros.ProIdProducto), aunque sus materiales permitidos se hayan
+            // editado desde el 360 ("Materiales del rollo"). Si no hay → plan nuevo.
             let planExistenteId = null;
             {
                 const rPlanesActivos = await new sql.Request(transaction)
                     .input('Cue', sql.Int, cueMemoId)
                     .input('Cli', sql.Int, header.clienteId)
+                    .input('Pro', sql.Int, proId)
                     .query(`
-                        SELECT pm.PlaIdPlan,
-                               (SELECT STRING_AGG(CAST(pap.ProIdProducto AS VARCHAR), ',') 
-                                WITHIN GROUP (ORDER BY pap.ProIdProducto)
-                                FROM dbo.PlanesMetrosArticulosPermitidos pap
-                                WHERE pap.PlaIdPlan = pm.PlaIdPlan) AS ArtsPermitidos
+                        SELECT TOP 1 pm.PlaIdPlan
                         FROM dbo.PlanesMetros pm WITH(UPDLOCK, ROWLOCK)
-                        WHERE pm.CueIdCuenta  = @Cue
-                          AND pm.CliIdCliente = @Cli
-                          AND pm.PlaActivo    = 1
+                        WHERE pm.CueIdCuenta   = @Cue
+                          AND pm.CliIdCliente  = @Cli
+                          AND pm.ProIdProducto = @Pro
+                          AND pm.PlaActivo     = 1
+                        ORDER BY pm.PlaIdPlan
                     `);
-
-                // Firma esperada: IDs ordenados separados por coma (ej: "247,255")
-                const firmaCompra = artsPermitidos.join(',');
-
-                for (const row of rPlanesActivos.recordset) {
-                    const firmaExistente = (row.ArtsPermitidos || '').split(',').map(Number).sort((a,b)=>a-b).join(',');
-                    if (firmaExistente === firmaCompra) {
-                        planExistenteId = row.PlaIdPlan;
-                        break;
-                    }
-                }
+                planExistenteId = rPlanesActivos.recordset[0]?.PlaIdPlan ?? null;
             }
 
             if (planExistenteId) {
@@ -257,6 +247,14 @@ async function procesarVentaDirecta(payload) {
                     .input('PlaId', sql.Int, planExistenteId)
                     .input('Cant',  sql.Decimal(18,4), item.cantidad)
                     .query(`UPDATE dbo.PlanesMetros SET PlaCantidadTotal = PlaCantidadTotal + @Cant WHERE PlaIdPlan = @PlaId`);
+                // Si la compra trae materiales que el plan todavía no tenía (ej. mixto DTF), se suman.
+                for (const artPermId of artsPermitidos) {
+                    await new sql.Request(transaction)
+                        .input('PlaId', sql.Int, planExistenteId)
+                        .input('ProId', sql.Int, artPermId)
+                        .query(`IF NOT EXISTS (SELECT 1 FROM dbo.PlanesMetrosArticulosPermitidos WHERE PlaIdPlan = @PlaId AND ProIdProducto = @ProId)
+                                INSERT INTO dbo.PlanesMetrosArticulosPermitidos (PlaIdPlan, ProIdProducto) VALUES (@PlaId, @ProId)`);
+                }
                 referenciaId = planExistenteId;
                 item.codigo = `PLAN_MTS_${proId}`;
             } else {

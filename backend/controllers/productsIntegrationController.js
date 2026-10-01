@@ -207,10 +207,22 @@ const crearProductoWms = async (req, res) => {
     }
 };
 
+// [FUENTE ÚNICA] Un producto del configurador (fila en ProductoVentaConfig) tiene su medida fija,
+// su UM y la moneda del precio en UN solo lugar: ProductoVentaConfig (AnchoM/AltoM/UM) y
+// PreciosBase (Moneda). El editor de artículo los lee de ahí y los guarda ahí; las columnas
+// anchoimprimible/largoimprimible/UniIdUnidad/MonIdMoneda de Articulos quedan para materiales
+// y artículos que no pasan por el configurador. Sin la migración F1 todo sigue como antes.
+const tieneConfigF1 = async (pool) =>
+    !!(await pool.request().query(`SELECT COL_LENGTH('dbo.ProductoVentaConfig', 'AnchoM') AS c`)).recordset[0].c;
+const productoConfigurado = async (pool, proId) =>
+    (await tieneConfigF1(pool)) && !!(await pool.request().input('P', sql.Int, proId)
+        .query(`SELECT 1 FROM dbo.ProductoVentaConfig WHERE ProIdProducto = @P`)).recordset.length;
+
 // 1. Obtener Articulos Locales
 const getLocalArticles = async (req, res) => {
     try {
         const pool = await getPool();
+        const conF1 = await tieneConfigF1(pool);
         const result = await pool.request().query(`
             SELECT TOP 5000 
                 a.ProIdProducto, a.SupFlia, a.Grupo, 
@@ -223,8 +235,16 @@ const getLocalArticles = async (req, res) => {
                 pb.Precio AS PrecioBase,
                 wm.producto_maestro_id,
                 wm.nombre_wms,
-                ISNULL(vc.CantidadVariantes, 0) AS CantidadVariantes
+                ISNULL(vc.CantidadVariantes, 0) AS CantidadVariantes,
+                -- [FUENTE ÚNICA] datos del producto del configurador (si lo es)
+                ${conF1
+                    ? `CASE WHEN cfg.ProIdProducto IS NULL THEN 0 ELSE 1 END AS EsProductoConfigurado,
+                       cfg.AnchoM AS CfgAnchoM, cfg.AltoM AS CfgAltoM, cfg.UM AS CfgUM, cfg.Molde AS CfgMolde,
+                       pb.MonIdMoneda AS PrecioMonId, pb.Moneda AS PrecioMoneda`
+                    : `CAST(0 AS BIT) AS EsProductoConfigurado, CAST(NULL AS DECIMAL(10,3)) AS CfgAnchoM, CAST(NULL AS DECIMAL(10,3)) AS CfgAltoM,
+                       CAST(NULL AS VARCHAR(3)) AS CfgUM, CAST(NULL AS VARCHAR(12)) AS CfgMolde, pb.MonIdMoneda AS PrecioMonId, pb.Moneda AS PrecioMoneda`}
             FROM Articulos a
+            ${conF1 ? 'LEFT JOIN dbo.ProductoVentaConfig cfg ON cfg.ProIdProducto = a.ProIdProducto' : ''}
             LEFT JOIN ConfigMapeoERP map ON LTRIM(RTRIM(map.CodigoERP)) = LTRIM(RTRIM(a.Grupo)) COLLATE Database_Default
             LEFT JOIN StockArt sa ON LTRIM(RTRIM(sa.CodStock)) = LTRIM(RTRIM(a.CodStock))
             LEFT JOIN PreciosBase pb WITH(NOLOCK) ON pb.ProIdProducto = a.ProIdProducto
@@ -303,10 +323,37 @@ const unlinkProduct = async (req, res) => {
 
 // 5. Actualizar Producto Local
 const updateLocalProduct = async (req, res) => {
-    const { proIdProducto, codArticulo, idProdReact, descripcion, codStock, grupo, supFlia, mostrar, anchoImprimible, largoImprimible, llevaPapel, monIdMoneda, uniIdUnidad } = req.body;
+    const { proIdProducto, codArticulo, idProdReact, descripcion, codStock, grupo, supFlia, mostrar, anchoImprimible, largoImprimible, llevaPapel, monIdMoneda, uniIdUnidad, um } = req.body;
     if (!proIdProducto && !codArticulo) return res.status(400).json({ error: "Falta ProIdProducto o CodArticulo" });
     try {
         const pool = await getPool();
+        // [FUENTE ÚNICA] producto del configurador: medida fija y UM van al producto, la moneda al precio
+        const configurado = proIdProducto ? await productoConfigurado(pool, parseInt(proIdProducto)) : false;
+        if (configurado) {
+            const ancho = parseFloat(anchoImprimible) || 0, alto = parseFloat(largoImprimible) || 0;
+            const conMedida = ancho > 0 && alto > 0;
+            const umVal = ['u', 'm', 'm2'].includes(String(um || '').toLowerCase()) ? String(um).toLowerCase()
+                : (parseInt(uniIdUnidad) === 2 ? 'm' : 'u');
+            await pool.request()
+                .input('P', sql.Int, parseInt(proIdProducto))
+                .input('A', sql.Decimal(10, 3), conMedida ? ancho : null)
+                .input('H', sql.Decimal(10, 3), conMedida ? alto : null)
+                .input('UM', sql.VarChar(3), umVal)
+                .query(`UPDATE dbo.ProductoVentaConfig SET AnchoM = @A, AltoM = @H, UM = @UM, FechaModif = GETDATE() WHERE ProIdProducto = @P`);
+            const monId = monIdMoneda != null && monIdMoneda !== '' ? parseInt(monIdMoneda) : null;
+            if (monId === 1 || monId === 2) {
+                await pool.request()
+                    .input('P', sql.Int, parseInt(proIdProducto))
+                    .input('M', sql.NVarChar, monId === 2 ? 'USD' : 'UYU')
+                    .input('MI', sql.Int, monId)
+                    .query(`UPDATE dbo.PreciosBase SET Moneda = @M, MonIdMoneda = @MI, UltimaActualizacion = GETDATE() WHERE ProIdProducto = @P`);
+            }
+        }
+        // Materiales y artículos comunes: las medidas/UM/moneda viven en Articulos, como siempre
+        const medidasSet = configurado ? '' : `anchoimprimible = @Ancho,
+                    largoimprimible = @Largo,
+                    UniIdUnidad     = @Uni,
+                    MonIdMoneda     = @MonId,`;
         const req2 = pool.request()
             .input('NewCod',   sql.VarChar(50),     codArticulo    || '')
             .input('ReactId',  sql.Int,              idProdReact != null && idProdReact !== '' ? parseInt(idProdReact) : null)
@@ -334,11 +381,8 @@ const updateLocalProduct = async (req, res) => {
                     Grupo           = @Grp,
                     SupFlia         = @Sup,
                     Mostrar         = @Mos,
-                    anchoimprimible = @Ancho,
-                    largoimprimible = @Largo,
-                    UniIdUnidad     = @Uni,
-                    LLEVAPAPEL      = @Papel,
-                    MonIdMoneda     = @MonId
+                    ${medidasSet}
+                    LLEVAPAPEL      = @Papel
                 WHERE ProIdProducto = @ProId
             `);
         } else {
@@ -351,11 +395,8 @@ const updateLocalProduct = async (req, res) => {
                     Grupo           = @Grp,
                     SupFlia         = @Sup,
                     Mostrar         = @Mos,
-                    anchoimprimible = @Ancho,
-                    largoimprimible = @Largo,
-                    UniIdUnidad     = @Uni,
-                    LLEVAPAPEL      = @Papel,
-                    MonIdMoneda     = @MonId
+                    ${medidasSet}
+                    LLEVAPAPEL      = @Papel
                 WHERE CodArticulo   = @Cod
             `);
         }

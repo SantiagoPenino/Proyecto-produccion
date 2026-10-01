@@ -380,6 +380,35 @@ exports.getTiposArchivoReferencia = async (req, res) => {
 };
 
 // POST /orders/:ordenId/reference-file — multipart {file, tipo, nota}
+// [FICHA DEL PEDIDO] PDF armado desde el pedido creado (services/fichaPedidoPdf.js), pegado a la
+// orden madre PRO como referencia FICHA_PEDIDO. POST regenera (forzar) y devuelve la referencia;
+// GET devuelve el PDF para verlo sin adjuntar.
+exports.generarFichaPedido = async (req, res) => {
+  try {
+    const { getPool: gp } = require('../config/db');
+    const pool = await gp();
+    const o = (await pool.request().input('O', require('mssql').Int, parseInt(req.params.ordenId, 10)).query('SELECT LTRIM(RTRIM(NoDocERP)) AS NoDocERP FROM dbo.Ordenes WHERE OrdenID = @O')).recordset[0];
+    if (!o || !o.NoDocERP) return res.status(404).json({ success: false, error: 'La orden no existe o no pertenece a un pedido.' });
+    const r = await require('../services/fichaPedidoPdf').adjuntarAlPedido(o.NoDocERP, req.user, req.app, { forzar: true });
+    if (!r) return res.status(400).json({ success: false, error: 'No se pudo generar la ficha (el pedido no tiene orden madre PRO o falló la generación; ver el log).' });
+    res.json({ success: true, data: r });
+  } catch (e) { res.status(e.status || 500).json({ success: false, error: e.message }); }
+};
+exports.descargarFichaPedido = async (req, res) => {
+  try {
+    const { getPool: gp } = require('../config/db');
+    const pool = await gp();
+    const o = (await pool.request().input('O', require('mssql').Int, parseInt(req.params.ordenId, 10)).query('SELECT LTRIM(RTRIM(NoDocERP)) AS NoDocERP FROM dbo.Ordenes WHERE OrdenID = @O')).recordset[0];
+    if (!o || !o.NoDocERP) return res.status(404).json({ success: false, error: 'La orden no existe o no pertenece a un pedido.' });
+    const ficha = require('../services/fichaPedidoPdf');
+    const { pdf } = await ficha.generarPdfPedido(pool, o.NoDocERP);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${ficha.nombreArchivo(o.NoDocERP)}"`);
+    res.setHeader('Content-Length', pdf.length);
+    res.end(pdf);
+  } catch (e) { res.status(e.status || 500).json({ success: false, error: e.message }); }
+};
+
 exports.uploadReferenceFile = async (req, res) => {
     const { ordenId } = req.params;
     const file = req.file;
@@ -3320,7 +3349,9 @@ exports.getOrderReferences = async (req, res) => {
             // 2a. Traer referencias de todo el pedido
             result = await pool.request().input('NoDoc', sql.VarChar, noDocERP).query(`
                 SELECT r.RefID as id, r.NombreOriginal as nombre, r.UbicacionStorage as link, 
-                       ISNULL(r.TipoArchivo, 'Referencia') as tipo, r.NotasAdicionales as notas, r.OrdenID
+                       ISNULL(r.TipoArchivo, 'Referencia') as tipo, r.NotasAdicionales as notas, r.OrdenID,
+                       -- de qué orden del pedido es cada archivo (la lista junta las de todo el pedido)
+                       LTRIM(RTRIM(o.CodigoOrden)) AS OrdenCodigoOrden, LTRIM(RTRIM(o.AreaID)) AS OrdenAreaID
                 FROM dbo.ArchivosReferencia r
                 INNER JOIN dbo.Ordenes o ON r.OrdenID = o.OrdenID
                 WHERE o.NoDocERP = @NoDoc

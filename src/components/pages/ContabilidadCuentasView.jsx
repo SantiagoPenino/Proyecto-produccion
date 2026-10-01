@@ -3610,6 +3610,37 @@ export const PlanesPanel = ({ cuenta, CliIdCliente, cliente, desde, hasta, onClo
   const [nuevaWorking, setNuevaWorking] = useState(false);
   const [mostrarCerrados, setMostrarCerrados] = useState(false);
 
+  // Materiales del rollo: qué productos (de la misma área) puede consumir el plan
+  const [modalMateriales, setModalMateriales] = useState(null); // { planId, plan, materiales, sel:Set }
+  const [matCargando,     setMatCargando]     = useState(false);
+  const [matGuardando,    setMatGuardando]    = useState(false);
+
+  const abrirMateriales = async (planId) => {
+    setMatCargando(true);
+    setModalMateriales({ planId, plan: null, materiales: [], sel: new Set() });
+    try {
+      const r = await fetchAPI(`/api/contabilidad/planes/${planId}/materiales`);
+      const { plan, materiales } = r.data || {};
+      setModalMateriales({ planId, plan, materiales: materiales || [], sel: new Set((materiales || []).filter(m => m.Permitido).map(m => m.ProIdProducto)) });
+    } catch (e) { toast.error(e.message); setModalMateriales(null); }
+    finally { setMatCargando(false); }
+  };
+
+  const guardarMateriales = async () => {
+    if (!modalMateriales) return;
+    setMatGuardando(true);
+    try {
+      await fetchAPI(`/api/contabilidad/planes/${modalMateriales.planId}/materiales`, {
+        method: 'PUT',
+        body: JSON.stringify({ proIds: [...modalMateriales.sel] }),
+      });
+      toast.success(`Materiales del plan #${modalMateriales.planId} guardados`);
+      setModalMateriales(null);
+      cargar();
+    } catch (e) { toast.error(e.message); }
+    finally { setMatGuardando(false); }
+  };
+
   const unidadLabel = cuenta.UnidadLabel || cuenta.CueTipo || '';
 
   const cargar = useCallback(async () => {
@@ -3690,6 +3721,17 @@ export const PlanesPanel = ({ cuenta, CliIdCliente, cliente, desde, hasta, onClo
             )}
           </div>
           <div className="flex items-center gap-1.5">
+
+            {/* Materiales del rollo (productos de la misma área que puede consumir el plan) */}
+            {planActivo && (
+              <button
+                title="Elegir qué materiales de la misma área descuentan de este plan"
+                onClick={() => abrirMateriales(planActivo.PlaIdPlan)}
+                className="flex items-center gap-1 px-2 py-1 text-[11px] font-semibold bg-white/20 hover:bg-white/30 text-white rounded-lg transition-colors"
+              >
+                <Layers size={11} /> Materiales del rollo
+              </button>
+            )}
 
             {/* Insertar orden manual */}
             <button
@@ -4121,6 +4163,88 @@ export const PlanesPanel = ({ cuenta, CliIdCliente, cliente, desde, hasta, onClo
               className="px-4 py-2 text-xs font-bold text-amber-900 bg-amber-400 hover:bg-amber-300 rounded-lg transition-colors disabled:opacity-50"
             >
               {editWorking ? 'Guardando...' : 'Guardar cambios'}
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {/* ── Modal: Materiales del rollo ───────────────────────────────── */}
+    {modalMateriales && (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
+        <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 overflow-hidden">
+          <div className="flex items-center justify-between px-5 py-4 bg-violet-600">
+            <div className="flex items-center gap-2">
+              <Layers size={16} className="text-white" />
+              <span className="font-bold text-white text-sm">Materiales del rollo — Plan #{modalMateriales.planId}</span>
+            </div>
+            <button onClick={() => setModalMateriales(null)} className="p-1 hover:bg-violet-500 rounded-lg transition-colors">
+              <X size={14} className="text-white" />
+            </button>
+          </div>
+          <div className="px-5 py-4 space-y-3">
+            {planes.filter(p => p.PlaActivo).length > 1 && (
+              <select
+                value={modalMateriales.planId}
+                onChange={e => abrirMateriales(parseInt(e.target.value))}
+                className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400"
+              >
+                {planes.filter(p => p.PlaActivo).map(p => (
+                  <option key={p.PlaIdPlan} value={p.PlaIdPlan}>Plan #{p.PlaIdPlan} — {p.NombreArticulo || p.PlaUnidad}</option>
+                ))}
+              </select>
+            )}
+            {matCargando ? (
+              <div className="flex justify-center py-6"><div className="animate-spin h-5 w-5 border-2 border-violet-400 border-t-transparent rounded-full" /></div>
+            ) : (
+              <>
+                <p className="text-xs text-slate-500">
+                  Los pedidos del cliente en los materiales marcados descuentan de este plan, 1 a 1 por cantidad.
+                  Solo se ofrecen productos del área <b>{modalMateriales.plan?.Area || modalMateriales.plan?.Grupo || '—'}</b>.
+                </p>
+                <div className="max-h-72 overflow-y-auto divide-y divide-slate-100 border border-slate-200 rounded-lg">
+                  {modalMateriales.materiales.map(m => {
+                    const esPrincipal = m.ProIdProducto === modalMateriales.plan?.ProIdProducto;
+                    const marcado = esPrincipal || modalMateriales.sel.has(m.ProIdProducto);
+                    const bloqueado = esPrincipal || (!m.MismaArea && !marcado);
+                    return (
+                      <label key={m.ProIdProducto} className={`flex items-center gap-3 px-3 py-2 text-sm ${bloqueado ? 'cursor-not-allowed' : 'cursor-pointer hover:bg-slate-50'}`}>
+                        <input
+                          type="checkbox"
+                          className="w-4 h-4 accent-violet-600"
+                          checked={marcado}
+                          disabled={bloqueado}
+                          onChange={() => setModalMateriales(s => {
+                            const sel = new Set(s.sel);
+                            sel.has(m.ProIdProducto) ? sel.delete(m.ProIdProducto) : sel.add(m.ProIdProducto);
+                            return { ...s, sel };
+                          })}
+                        />
+                        <span className="flex-1 min-w-0 truncate text-slate-700">[{m.CodArticulo}] {m.Descripcion}</span>
+                        {esPrincipal && <Badge color="indigo">Principal</Badge>}
+                        {!m.Mostrar && !esPrincipal && <span className="text-[10px] text-slate-400">oculto</span>}
+                        {!m.MismaArea && <span className="text-[10px] text-rose-500">otra área</span>}
+                      </label>
+                    );
+                  })}
+                </div>
+                {modalMateriales.materiales.some(m => !m.MismaArea && modalMateriales.sel.has(m.ProIdProducto)) && (
+                  <p className="text-[11px] text-rose-600">Hay materiales de otra área cargados de antes: desmarcalos para poder guardar.</p>
+                )}
+              </>
+            )}
+          </div>
+          <div className="px-5 pb-5 flex gap-2 justify-end">
+            <button
+              onClick={() => setModalMateriales(null)}
+              className="px-4 py-2 text-xs font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors"
+            >Cancelar</button>
+            <button
+              disabled={matCargando || matGuardando || !modalMateriales.plan}
+              onClick={guardarMateriales}
+              className="px-4 py-2 text-xs font-bold text-white bg-violet-600 hover:bg-violet-700 rounded-lg transition-colors disabled:opacity-50"
+            >
+              {matGuardando ? 'Guardando...' : 'Guardar materiales'}
             </button>
           </div>
         </div>

@@ -31,7 +31,12 @@ const ORIGENES = ['LOCAL', 'CLIENTE', 'CONFECCIONADO', 'AMBOS'];
 const ESTADOS = ['BORRADOR', 'PUBLICADO'];
 // EMB/DF/TPU = decoración (el cliente elige agregar); SB/TWC/TWT = construcción
 // (sublimación/corte/costura — casi siempre obligatoria, 12-ago).
-const AREAS_TECNICA = ['EMB', 'DF', 'TPU', 'SB', 'TWC', 'TWT'];
+const AREAS_TECNICA = ['EMB', 'DF', 'TPU', 'SB', 'TWC', 'TWT', 'DIRECTA', 'ECOUV'];
+// F1 (29-sep): la producción principal del producto es un área de ConfigMapeoERP (SB, DIRECTA,
+// ECOUV…) y se guarda en ProductoVentaConfig.TecnicaPrincipal; DIRECTA/ECOUV también pueden ser
+// filas de ProductoTerminadoServicios (la principal va como técnica obligatoria e incluida).
+const MOLDES = ['OBLIGATORIO', 'OPCIONAL', 'NO'];   // ProductoVentaConfig.Molde
+const UMS = ['u', 'm', 'm2'];                        // ProductoVentaConfig.UM
 const AREAS_APLIQUE = ['EMB', 'DF', 'TPU', 'ETIQUETA'];
 // La familia/categoría del producto vive en StockArt (Grupo 2.1) desde el
 // 12-ago — se administra con GET /stockart?grupo=2.1, POST /stockart y
@@ -44,11 +49,11 @@ const AREAS_APLIQUE = ['EMB', 'DF', 'TPU', 'ETIQUETA'];
 // no se cae si se cae el sistema de stock — ver ProductoVentaConfig.ValidarStock).
 // Mismo origen de datos que wmsController.getCatalog.
 // ─────────────────────────────────────────────────────────────────────────
-async function fetchStockLocalWms() {
+async function fetchStockLocalWms(depIdPedido = null) {
     // [CUTOVER WMS PROPIO] WMS_INTERNO=true → stock desde las tablas Wms_* (JOIN local).
     if (String(process.env.WMS_INTERNO || '').toLowerCase() === 'true') {
         try {
-            return await require('../services/wmsInternoService').getStockPorVariante();
+            return await require('../services/wmsInternoService').getStockPorVariante(null, depIdPedido || null);
         } catch (e) {
             logger.warn(`[Configurador] stock interno no disponible: ${e.message}`);
             return null;
@@ -56,7 +61,7 @@ async function fetchStockLocalWms() {
     }
     try {
         const wmsUrl = process.env.WMS_SQL_URL || 'http://3.85.26.173:5005';
-        const depositoId = process.env.WMS_DEPOSITO_LOCAL_ID || 5; // depósito de Ventas
+        const depositoId = depIdPedido || process.env.WMS_DEPOSITO_LOCAL_ID || 5; // depósito de Ventas, salvo que se pida otro
         const wmsQuery = `
             USE Ventas_Dev;
             SELECT variante_id, ISNULL(SUM(cantidad_actual), 0) AS total_stock
@@ -106,12 +111,99 @@ async function tieneTizadaPro(pool) {
     return _tieneTizadaPro;
 }
 
+// ¿Ya se corrió docs/migrations/configurador_f1_produccion_principal.sql? (TecnicaPrincipal, Molde, UM, medida fija, canales)
+let _tieneF1 = false;
+async function tieneF1(pool) {
+    if (_tieneF1) return true;
+    const r = await pool.request().query(`SELECT COL_LENGTH('dbo.ProductoVentaConfig', 'TecnicaPrincipal') AS c`);
+    _tieneF1 = r.recordset[0].c != null;
+    return _tieneF1;
+}
+const F1_COLS = 'TecnicaPrincipal, AnchoM, AltoM, BordeCm, UM, Molde, VisiblePortal, VisibleTienda, VisibleInterno';
+
+// [ACCESORIOS] ¿Ya se corrió docs/migrations/configurador_accesorios.sql? (ProductoAccesorios: artículos de
+// stock que salen con un producto fabricado — mástil, base… — con Obligatorio y Cobro). Tabla propia, NO
+// ProductoComboItems, para que un producto con accesorios no se trate como combo.
+let _tieneAccesorios = false;
+async function tieneAccesorios(pool) {
+    if (_tieneAccesorios) return true;
+    const r = await pool.request().query(`SELECT OBJECT_ID('dbo.ProductoAccesorios', 'U') AS t`);
+    _tieneAccesorios = r.recordset[0].t != null;
+    return _tieneAccesorios;
+}
+const COBROS_ACCESORIO = ['INCLUIDO', 'APARTE'];
+
+// Áreas que pueden ser producción principal de un producto: las áreas de producción de ConfigMapeoERP
+// (sin PRO, que es la orden madre, ni las que no producen nada).
+async function areasPrincipales(pool) {
+    const r = await pool.request().query(`
+        SELECT LTRIM(RTRIM(AreaID_Interno)) AS AreaID, MIN(LTRIM(RTRIM(NombreReferencia))) AS Nombre, MIN(LTRIM(RTRIM(CodOrden))) AS CodOrden, MIN(Numero) AS Numero
+        FROM dbo.ConfigMapeoERP
+        WHERE AreaID_Interno IS NOT NULL AND LTRIM(RTRIM(AreaID_Interno)) NOT IN ('PRO', 'TERMINAC')
+        GROUP BY LTRIM(RTRIM(AreaID_Interno)) ORDER BY MIN(Numero), AreaID`);
+    return r.recordset;
+}
+async function areaPrincipalValida(pool, areaId) {
+    if (areaId == null || areaId === '') return true;
+    return (await areasPrincipales(pool)).some(a => a.AreaID === String(areaId).trim().toUpperCase());
+}
+
+// GET /api/configurador/areas-principales — para el selector "Producción principal"
+exports.getAreasPrincipales = async (req, res) => {
+    try { res.json({ success: true, data: await areasPrincipales(await getPool()) }); }
+    catch (e) { logger.error('[Configurador] getAreasPrincipales:', e); res.status(500).json({ error: e.message }); }
+};
+
+// GET /api/configurador/materiales-area/:areaId — materiales de impresión del área (StockArt del
+// Grupo del área, TipoStock MATERIAL, visibles), con precio base. Es lo que ofrece un producto
+// cuya producción principal no pasa por un molde de TizadaPro (windflag, funda, cuadro).
+exports.getMaterialesArea = async (req, res) => {
+    const areaId = String(req.params.areaId || '').trim().toUpperCase();
+    if (!areaId) return res.status(400).json({ error: 'AreaID requerido.' });
+    try {
+        const pool = await getPool();
+        const r = await pool.request().input('Area', sql.VarChar(20), areaId).query(`
+            SELECT a.ProIdProducto, LTRIM(RTRIM(a.CodArticulo)) AS CodArticulo, LTRIM(RTRIM(a.Descripcion)) AS Material,
+                   LTRIM(RTRIM(sa.Articulo)) AS Variante, LTRIM(RTRIM(a.CodStock)) AS CodStock,
+                   a.anchoimprimible AS Ancho, a.largoimprimible AS Largo, a.UniIdUnidad,
+                   pb.Precio AS PrecioBase, LTRIM(RTRIM(pb.Moneda)) AS Moneda
+            FROM dbo.StockArt sa
+            INNER JOIN dbo.Articulos a ON LTRIM(RTRIM(a.CodStock)) = LTRIM(RTRIM(sa.CodStock))
+            INNER JOIN dbo.ConfigMapeoERP m ON LTRIM(RTRIM(m.CodigoERP)) = LTRIM(RTRIM(sa.Grupo))
+            OUTER APPLY (SELECT TOP 1 Precio, Moneda FROM dbo.PreciosBase p WHERE p.ProIdProducto = a.ProIdProducto ORDER BY p.UltimaActualizacion DESC) pb
+            WHERE LTRIM(RTRIM(m.AreaID_Interno)) = @Area
+              AND ISNULL(sa.TipoStock, 'MATERIAL') = 'MATERIAL'
+              AND ISNULL(sa.Mostrar, 1) = 1 AND ISNULL(a.Mostrar, 1) = 1 AND ISNULL(a.borrar, 0) = 0
+            ORDER BY Variante, Material`);
+        res.json({ success: true, data: r.recordset });
+    } catch (e) { logger.error('[Configurador] getMaterialesArea:', e); res.status(500).json({ error: e.message }); }
+};
+
+// Puente de visibilidad (F1): la casilla "Tienda" del configurador mantiene TiendaProductos.Publicado
+// hasta que la tienda lea VisibleTienda directamente. Sin la tabla, no hace nada.
+async function puenteTienda(pool, proId, visible) {
+    const ex = (await pool.request().query(`SELECT OBJECT_ID('dbo.TiendaProductos', 'U') AS t`)).recordset[0].t;
+    if (!ex) return;
+    await pool.request().input('PID', sql.Int, proId).input('V', sql.Bit, visible ? 1 : 0).query(`
+        IF EXISTS (SELECT 1 FROM dbo.TiendaProductos WHERE ProIdProducto = @PID)
+            UPDATE dbo.TiendaProductos SET Publicado = @V WHERE ProIdProducto = @PID
+        ELSE IF @V = 1
+            INSERT INTO dbo.TiendaProductos (ProIdProducto, Publicado, TipoVitrina, TituloVenta)
+            SELECT vc.ProIdProducto, 1,
+                   CASE WHEN ISNULL(vc.EsCombo, 0) = 1 OR vc.OrigenTipo = 'LOCAL' THEN 'TERMINADO' ELSE 'CONFECCIONADO' END,
+                   LTRIM(RTRIM(a.Descripcion))
+            FROM dbo.ProductoVentaConfig vc JOIN dbo.Articulos a ON a.ProIdProducto = vc.ProIdProducto
+            WHERE vc.ProIdProducto = @PID`);
+}
+
 // GET /api/configurador/productos — lista con config + técnicas + precio
 exports.getProductos = async (req, res) => {
     try {
         const pool = await getPool();
         const conEtiqueta = await tieneEtiquetas(pool);
-        const r = await pool.request().query(`
+        const conF1 = await tieneF1(pool);
+        const area = String(req.query.area || '').trim().toUpperCase();   // solo los productos que produce ese área
+        const r = await pool.request().input('Area', sql.VarChar(20), area || null).query(`
             SELECT
                 a.ProIdProducto,
                 LTRIM(RTRIM(a.CodArticulo)) AS CodArticulo,
@@ -124,6 +216,7 @@ exports.getProductos = async (req, res) => {
                 vc.OrigenTipo, vc.OrigenProIdProducto, vc.CantidadMinima, vc.CantidadFija,
                 vc.ValidarStock, vc.Estado, vc.EsCombo,
                 ${conEtiqueta ? 'vc.EtiquetaID, etq.Nombre AS Etiqueta,' : ''}
+                ${conF1 ? 'vc.TecnicaPrincipal, vc.Molde, vc.UM, vc.VisiblePortal, vc.VisibleTienda, vc.VisibleInterno,' : ''}
                 tecnicas.Lista AS Tecnicas,
                 ISNULL(wv.CantidadVariantes, 0) AS CantidadVariantes,
                 ISNULL(ci.Items, 0) AS ComboItems
@@ -134,8 +227,12 @@ exports.getProductos = async (req, res) => {
             OUTER APPLY (SELECT TOP 1 Precio, Moneda FROM dbo.PreciosBase p
                          WHERE p.ProIdProducto = a.ProIdProducto
                          ORDER BY p.UltimaActualizacion DESC) pb
-            OUTER APPLY (SELECT TOP 1 url_imagen FROM dbo.Articulos_Imagenes i
-                         WHERE i.Idproid = a.ProIdProducto ORDER BY i.orden) img
+            OUTER APPLY (SELECT TOP 1 url_imagen FROM (
+                             SELECT i.url_imagen, i.orden FROM dbo.Articulos_Imagenes i WHERE i.Idproid = a.ProIdProducto
+                             UNION ALL
+                             -- [FOTO ÚNICA] sin foto de catálogo, vale el dibujo de la ficha técnica
+                             SELECT f.DibujoUrl, 9999 FROM dbo.ProductoFichaDiseno f WHERE f.ProIdProducto = a.ProIdProducto AND f.DibujoUrl IS NOT NULL
+                         ) x ORDER BY x.orden) img
             OUTER APPLY (SELECT STRING_AGG(s.AreaID, ',') AS Lista
                          FROM dbo.ProductoTerminadoServicios s
                          WHERE s.ProIdProducto = a.ProIdProducto) tecnicas
@@ -151,6 +248,7 @@ exports.getProductos = async (req, res) => {
                      AND (LTRIM(RTRIM(sa.SupFlia)) = '2' OR LTRIM(RTRIM(sa.CodStock)) = '1.1.4.10'))
                     OR vc.ProIdProducto IS NOT NULL
                   )
+              ${conF1 && area ? 'AND vc.TecnicaPrincipal = @Area' : ''}
             ORDER BY Categoria, Descripcion
         `);
         res.json({ success: true, data: r.recordset });
@@ -167,6 +265,8 @@ exports.getProductoFicha = async (req, res) => {
     try {
         const pool = await getPool();
         const conTizada = await tieneTizadaPro(pool);
+        const conAcc = await tieneAccesorios(pool);   // [ACCESORIOS]
+        const conF1 = await tieneF1(pool);
         const rq = () => pool.request().input('PID', sql.Int, proId);
 
         const datos = await rq().query(`
@@ -179,15 +279,20 @@ exports.getProductoFicha = async (req, res) => {
             OUTER APPLY (SELECT TOP 1 Precio, Moneda FROM dbo.PreciosBase p
                          WHERE p.ProIdProducto = a.ProIdProducto
                          ORDER BY p.UltimaActualizacion DESC) pb
-            OUTER APPLY (SELECT TOP 1 url_imagen FROM dbo.Articulos_Imagenes i
-                         WHERE i.Idproid = a.ProIdProducto ORDER BY i.orden) img
+            OUTER APPLY (SELECT TOP 1 url_imagen FROM (
+                             SELECT i.url_imagen, i.orden FROM dbo.Articulos_Imagenes i WHERE i.Idproid = a.ProIdProducto
+                             UNION ALL
+                             -- [FOTO ÚNICA] sin foto de catálogo, vale el dibujo de la ficha técnica
+                             SELECT f.DibujoUrl, 9999 FROM dbo.ProductoFichaDiseno f WHERE f.ProIdProducto = a.ProIdProducto AND f.DibujoUrl IS NOT NULL
+                         ) x ORDER BY x.orden) img
             WHERE a.ProIdProducto = @PID AND ISNULL(a.borrar, 0) = 0`);
         if (!datos.recordset.length) return res.status(404).json({ error: 'Producto no encontrado.' });
 
-        const [config, tecnicas, opciones, surtido, modelos, telas, avios, apliques, comboItems, comboSrv, fichaDiseno, fdAnot, fdExtra, fdCost] = await Promise.all([
+        const [config, tecnicas, opciones, surtido, modelos, telas, avios, apliques, comboItems, comboSrv, fichaDiseno, fdAnot, fdExtra, fdCost, accesorios] = await Promise.all([
             rq().query(`SELECT OrigenTipo, OrigenProIdProducto, CantidadMinima, CantidadFija,
                                ValidarStock, Estado, EsCombo, FechaRegistro, FechaModif,
                                ${conTizada ? 'TizadaProMoldeRef' : 'CAST(NULL AS NVARCHAR(128)) AS TizadaProMoldeRef'}
+                               ${conF1 ? ', ' + F1_COLS : ''}
                         FROM dbo.ProductoVentaConfig WHERE ProIdProducto = @PID`),
             rq().query(`SELECT AreaID, Obligatorio, Modo, Cobro
                         FROM dbo.ProductoTerminadoServicios WHERE ProIdProducto = @PID`),
@@ -227,12 +332,19 @@ exports.getProductoFicha = async (req, res) => {
                         WHERE ci.ProIdProducto = @PID`),
             rq().query(`SELECT Ref, Marca, Material, Tallas, Marcacion, Colores, Proveedor, DibujoUrl
                         FROM dbo.ProductoFichaDiseno WHERE ProIdProducto = @PID`),
+            // [ACCESORIOS] al final de la lista para no mover los índices anteriores
             rq().query(`SELECT AnotacionID, PosX, PosY, Texto FROM dbo.ProductoFichaDisenoAnotaciones
                         WHERE ProIdProducto = @PID ORDER BY ISNULL(Orden, 999), AnotacionID`),
             rq().query(`SELECT ExtraID, Etiqueta, Valor FROM dbo.ProductoFichaDisenoExtra
                         WHERE ProIdProducto = @PID ORDER BY ISNULL(Orden, 999), ExtraID`),
             rq().query(`SELECT ID, UnionNombre, CodigoISO FROM dbo.ProductoFichaDisenoCosturas
-                        WHERE ProIdProducto = @PID ORDER BY ISNULL(Orden, 999), ID`)
+                        WHERE ProIdProducto = @PID ORDER BY ISNULL(Orden, 999), ID`),
+            conAcc ? rq().query(`SELECT ac.ID, ac.ItemProIdProducto, ac.WmsVarianteId, ac.Cantidad, ac.Obligatorio, ac.Cobro, ac.Orden, ac.WmsDepositoId,
+                                        LTRIM(RTRIM(a.Descripcion)) AS ItemDescripcion, v.nombre_variante AS VarianteNombre
+                                 FROM dbo.ProductoAccesorios ac
+                                 LEFT JOIN dbo.Articulos a ON a.ProIdProducto = ac.ItemProIdProducto
+                                 LEFT JOIN dbo.Articulos_WMS_Variantes v ON v.wms_variante_id = ac.WmsVarianteId
+                                 WHERE ac.ProIdProducto = @PID ORDER BY ISNULL(ac.Orden, 999), ac.ID`) : { recordset: [] }
         ]);
 
         // Nombre del producto de origen (si hay)
@@ -258,6 +370,7 @@ exports.getProductoFicha = async (req, res) => {
                 telas: telas.recordset,
                 avios: avios.recordset,
                 apliques: apliques.recordset,
+                accesorios: accesorios.recordset,   // [ACCESORIOS]
                 comboItems: comboItems.recordset.map(ci => ({
                     ...ci,
                     servicios: comboSrv.recordset.filter(s => s.ComboItemID === ci.ID)
@@ -288,6 +401,14 @@ function validarVenta(body) {
     }
     if (body.cantidadMinima != null && body.cantidadFija != null)
         errores.push('CantidadMinima y CantidadFija son excluyentes: el paquete fijo ya bloquea la cantidad.');
+    if (body.molde !== undefined && body.molde !== null && !MOLDES.includes(body.molde))
+        errores.push(`Molde inválido (${MOLDES.join(' | ')}).`);
+    if (body.um !== undefined && body.um !== null && !UMS.includes(body.um))
+        errores.push(`UM inválida (${UMS.join(' | ')}).`);
+    for (const k of ['anchoM', 'altoM', 'bordeCm']) {
+        const v = body[k];
+        if (v !== undefined && v !== null && v !== '' && !(Number(v) >= 0)) errores.push(`${k} debe ser un número mayor o igual a 0 (o vacío).`);
+    }
     for (const t of (Array.isArray(body.tecnicas) ? body.tecnicas : [])) {
         if (!AREAS_TECNICA.includes(t.areaId)) errores.push(`Técnica con AreaID inválido: '${t.areaId}' (${AREAS_TECNICA.join(' | ')}).`);
         if (t.modo !== undefined && !MODOS.includes(t.modo)) errores.push(`Modo inválido en ${t.areaId} (${MODOS.join(' | ')}).`);
@@ -309,7 +430,7 @@ function validarVenta(body) {
 }
 
 // Reemplaza los sets hijos (solo los que vienen en el body; undefined = no tocar)
-async function aplicarSetsHijos(transaction, proId, body, conTizada = false) {
+async function aplicarSetsHijos(transaction, proId, body, conTizada = false, conAcc = false) {
     const del = (tabla) => new sql.Request(transaction)
         .input('PID', sql.Int, proId)
         .query(`DELETE FROM dbo.${tabla} WHERE ProIdProducto = @PID`);
@@ -436,6 +557,27 @@ async function aplicarSetsHijos(transaction, proId, body, conTizada = false) {
             ordenCI++;
         }
     }
+    // [ACCESORIOS] artículos de stock que salen con el producto (se pisan enteros, como el resto de las listas)
+    if (conAcc && body.accesorios !== undefined) {
+        await new sql.Request(transaction).input('PID', sql.Int, proId).query(`DELETE FROM dbo.ProductoAccesorios WHERE ProIdProducto = @PID`);
+        let ordenAc = 1;
+        for (const ac of (body.accesorios || [])) {
+            const itemId = Number(ac.itemProIdProducto);
+            if (!Number.isInteger(itemId) || itemId <= 0) continue;
+            await new sql.Request(transaction)
+                .input('PID', sql.Int, proId)
+                .input('Item', sql.Int, itemId)
+                .input('Var', sql.Int, Number.isInteger(Number(ac.wmsVarianteId)) && Number(ac.wmsVarianteId) > 0 ? Number(ac.wmsVarianteId) : null)
+                .input('Cnt', sql.Int, Number.isInteger(Number(ac.cantidad)) && Number(ac.cantidad) > 0 ? Number(ac.cantidad) : 1)
+                .input('Obl', sql.Bit, ac.obligatorio === false ? 0 : 1)
+                .input('Cob', sql.VarChar(10), COBROS_ACCESORIO.includes(ac.cobro) ? ac.cobro : 'INCLUIDO')
+                .input('Ord', sql.Int, ordenAc++)
+                // depósito del WMS de donde sale (NULL = el de ventas)
+                .input('Dep', sql.Int, Number.isInteger(Number(ac.wmsDepositoId)) && Number(ac.wmsDepositoId) > 0 ? Number(ac.wmsDepositoId) : null)
+                .query(`INSERT INTO dbo.ProductoAccesorios (ProIdProducto, ItemProIdProducto, WmsVarianteId, Cantidad, Obligatorio, Cobro, Orden, WmsDepositoId)
+                        VALUES (@PID, @Item, @Var, @Cnt, @Obl, @Cob, @Ord, @Dep)`);
+        }
+    }
     if (body.apliques !== undefined) {
         await del('ProductoApliques');
         let orden = 1;
@@ -521,6 +663,11 @@ exports.guardarProductoConfig = async (req, res) => {
         }
 
         const conTizada = await tieneTizadaPro(pool);
+        const conAcc = await tieneAccesorios(pool);   // [ACCESORIOS]
+        const conF1 = await tieneF1(pool);
+        if (conF1 && body.tecnicaPrincipal !== undefined && !(await areaPrincipalValida(pool, body.tecnicaPrincipal)))
+            return res.status(400).json({ error: `La producción principal '${body.tecnicaPrincipal}' no es un área de producción (ConfigMapeoERP).` });
+        const dec = (v) => (v === undefined || v === null || v === '' ? null : Number(v));
         const transaction = new sql.Transaction(pool);
         await transaction.begin();
         try {
@@ -538,6 +685,18 @@ exports.guardarProductoConfig = async (req, res) => {
                 .input('Est', sql.VarChar(12), body.estado !== undefined ? body.estado : null)
                 .input('MRef', sql.NVarChar(128), body.tizadaProMoldeRef !== undefined ? (body.tizadaProMoldeRef ? String(body.tizadaProMoldeRef).trim().slice(0, 128) : null) : null)
                 .input('MRefSet', sql.Bit, body.tizadaProMoldeRef !== undefined && conTizada ? 1 : 0)
+                // F1: producción principal, molde, UM, medida fija y canales (cada grupo se pisa solo si viene)
+                .input('TP', sql.VarChar(10), body.tecnicaPrincipal ? String(body.tecnicaPrincipal).trim().toUpperCase() : null)
+                .input('TPSet', sql.Bit, body.tecnicaPrincipal !== undefined && conF1 ? 1 : 0)
+                .input('Mol', sql.VarChar(12), body.molde || null)
+                .input('MolSet', sql.Bit, body.molde !== undefined && conF1 ? 1 : 0)
+                .input('UMv', sql.VarChar(3), body.um || null)
+                .input('UMSet', sql.Bit, body.um !== undefined && conF1 ? 1 : 0)
+                .input('AnchoM', sql.Decimal(10, 3), dec(body.anchoM)).input('AltoM', sql.Decimal(10, 3), dec(body.altoM)).input('BordeCm', sql.Decimal(6, 2), dec(body.bordeCm))
+                .input('MedSet', sql.Bit, (body.anchoM !== undefined || body.altoM !== undefined) && conF1 ? 1 : 0)
+                .input('VP', sql.Bit, body.visiblePortal !== undefined ? (body.visiblePortal ? 1 : 0) : null)
+                .input('VT', sql.Bit, body.visibleTienda !== undefined ? (body.visibleTienda ? 1 : 0) : null)
+                .input('VI', sql.Bit, body.visibleInterno !== undefined ? (body.visibleInterno ? 1 : 0) : null)
                 .query(`
                     IF EXISTS (SELECT 1 FROM dbo.ProductoVentaConfig WHERE ProIdProducto = @PID)
                         UPDATE dbo.ProductoVentaConfig SET
@@ -548,12 +707,21 @@ exports.guardarProductoConfig = async (req, res) => {
                             ValidarStock        = ISNULL(@VStock, ValidarStock),
                             Estado              = ISNULL(@Est, Estado),
                             ${conTizada ? 'TizadaProMoldeRef = CASE WHEN @MRefSet = 1 THEN @MRef ELSE TizadaProMoldeRef END,' : ''}
+                            ${conF1 ? `TecnicaPrincipal = CASE WHEN @TPSet = 1 THEN @TP ELSE TecnicaPrincipal END,
+                            Molde  = CASE WHEN @MolSet = 1 THEN ISNULL(@Mol, Molde) ELSE Molde END,
+                            UM     = CASE WHEN @UMSet = 1 THEN ISNULL(@UMv, UM) ELSE UM END,
+                            AnchoM = CASE WHEN @MedSet = 1 THEN @AnchoM ELSE AnchoM END,
+                            AltoM  = CASE WHEN @MedSet = 1 THEN @AltoM ELSE AltoM END,
+                            BordeCm = CASE WHEN @MedSet = 1 THEN @BordeCm ELSE BordeCm END,
+                            VisiblePortal  = ISNULL(@VP, VisiblePortal),
+                            VisibleTienda  = ISNULL(@VT, VisibleTienda),
+                            VisibleInterno = ISNULL(@VI, VisibleInterno),` : ''}
                             FechaModif          = GETDATE()
                         WHERE ProIdProducto = @PID
                     ELSE
                         INSERT INTO dbo.ProductoVentaConfig
-                            (ProIdProducto, OrigenTipo, OrigenProIdProducto, CantidadMinima, CantidadFija, ValidarStock, Estado${conTizada ? ', TizadaProMoldeRef' : ''})
-                        VALUES (@PID, ISNULL(@Ori,'CONFECCIONADO'), @OriPID, @Min, @Fija, ISNULL(@VStock,1), ISNULL(@Est,'BORRADOR')${conTizada ? ', @MRef' : ''})
+                            (ProIdProducto, OrigenTipo, OrigenProIdProducto, CantidadMinima, CantidadFija, ValidarStock, Estado${conTizada ? ', TizadaProMoldeRef' : ''}${conF1 ? ', ' + F1_COLS : ''})
+                        VALUES (@PID, ISNULL(@Ori,'CONFECCIONADO'), @OriPID, @Min, @Fija, ISNULL(@VStock,1), ISNULL(@Est,'BORRADOR')${conTizada ? ', @MRef' : ''}${conF1 ? ", ISNULL(@TP,'SB'), @AnchoM, @AltoM, @BordeCm, ISNULL(@UMv,'u'), ISNULL(@Mol,'OBLIGATORIO'), ISNULL(@VP,0), ISNULL(@VT,0), ISNULL(@VI,1)" : ''})
                 `);
 
             // Upsert de ProductoFichaDiseno (encabezado + campos del pie) — todo o nada,
@@ -583,16 +751,21 @@ exports.guardarProductoConfig = async (req, res) => {
                     `);
             }
 
-            await aplicarSetsHijos(transaction, proId, body, conTizada);
+            await aplicarSetsHijos(transaction, proId, body, conTizada, conAcc);
 
             // Para PUBLICAR un confeccionado: molde de TizadaPro definido y cada aplique sobre una
             // técnica que el producto tiene activa (se valida contra lo que quedó guardado).
             const estadoFinal = await new sql.Request(transaction).input('PID', sql.Int, proId)
-                .query(`SELECT Estado, OrigenTipo, ISNULL(EsCombo, 0) AS EsCombo${conTizada ? ', TizadaProMoldeRef' : ''} FROM dbo.ProductoVentaConfig WHERE ProIdProducto = @PID`);
+                .query(`SELECT Estado, OrigenTipo, ISNULL(EsCombo, 0) AS EsCombo${conTizada ? ', TizadaProMoldeRef' : ''}${conF1 ? ', Molde, AnchoM, AltoM, TecnicaPrincipal' : ''} FROM dbo.ProductoVentaConfig WHERE ProIdProducto = @PID`);
             const ef = estadoFinal.recordset[0];
             if (ef && ef.Estado === 'PUBLICADO' && !ef.EsCombo && ef.OrigenTipo === 'CONFECCIONADO') {
                 const faltas = [];
-                if (conTizada && !ef.TizadaProMoldeRef) faltas.push('Falta vincular el molde de TizadaPro (paso "Molde, telas y apliques").');
+                // F1: el molde es obligatorio solo si el producto lo dice (Molde = OBLIGATORIO, el caso de las
+                // prendas). Con molde OPCIONAL o NO y sin molde vinculado, hace falta la medida fija.
+                const molde = conF1 ? (ef.Molde || 'OBLIGATORIO') : 'OBLIGATORIO';
+                if (conTizada && molde === 'OBLIGATORIO' && !ef.TizadaProMoldeRef) faltas.push('Falta vincular el molde de TizadaPro (paso "Molde, telas y apliques"), o marcá en "Producción principal" que el molde es opcional o que no lleva.');
+                if (conF1 && molde !== 'OBLIGATORIO' && !ef.TizadaProMoldeRef && !(Number(ef.AnchoM) > 0 && Number(ef.AltoM) > 0)) faltas.push('Sin molde, el producto necesita su medida fija (ancho × alto en metros) en "Producción principal".');
+                if (conF1 && !ef.TecnicaPrincipal) faltas.push('Falta la producción principal (qué área lo produce) en "Producción principal".');
                 const chk = await new sql.Request(transaction).input('PID', sql.Int, proId).query(`
                     SELECT DISTINCT ap.AreaID FROM dbo.ProductoApliques ap
                     WHERE ap.ProIdProducto = @PID AND ap.AreaID <> 'ETIQUETA'
@@ -605,6 +778,9 @@ exports.guardarProductoConfig = async (req, res) => {
             await transaction.rollback();
             throw txErr;
         }
+
+        // F1: puente de visibilidad hacia la tienda (hasta que la tienda lea VisibleTienda)
+        if (conF1 && body.visibleTienda !== undefined) await puenteTienda(pool, proId, !!body.visibleTienda);
 
         // Precio (base o de paquete) → PreciosBase, con el CodArticulo del artículo
         if (body.precio !== undefined && body.precio !== null && body.precio !== '') {
@@ -632,6 +808,11 @@ exports.crearProducto = async (req, res) => {
     if (errores.length) return res.status(400).json({ error: errores.join(' ') });
     try {
         const pool = await getPool();
+        const conF1 = await tieneF1(pool);
+        // F1: producción principal del producto nuevo (SB si no viene). Su molde: obligatorio con SB, "no lleva" en el resto.
+        const principal = !esCombo && conF1 ? String(req.body.tecnicaPrincipal || 'SB').trim().toUpperCase() : (esCombo ? null : 'SB');
+        if (conF1 && principal && !(await areaPrincipalValida(pool, principal))) return res.status(400).json({ error: `La producción principal '${principal}' no es un área de producción (ConfigMapeoERP).` });
+        const moldeInicial = MOLDES.includes(req.body.molde) ? req.body.molde : (principal === 'SB' ? 'OBLIGATORIO' : 'NO');
         // Los combos nacen en su propia categoría de artículos (StockArt 2.2.1.4 'Combos')
         const stock = String(codStock || (esCombo ? '2.2.1.4' : '2.2.1.3')).trim();
 
@@ -675,16 +856,17 @@ exports.crearProducto = async (req, res) => {
                 .input('VStock', sql.Bit, req.body.validarStock === false ? 0 : 1)
                 .input('Est', sql.VarChar(12), ESTADOS.includes(req.body.estado) ? req.body.estado : 'BORRADOR')
                 .input('Combo', sql.Bit, esCombo ? 1 : 0)
+                .input('TP', sql.VarChar(10), principal).input('Mol', sql.VarChar(12), moldeInicial).input('UMv', sql.VarChar(3), UMS.includes(req.body.um) ? req.body.um : 'u')
                 .query(`INSERT INTO dbo.ProductoVentaConfig
-                            (ProIdProducto, OrigenTipo, OrigenProIdProducto, CantidadMinima, CantidadFija, ValidarStock, Estado, EsCombo)
-                        VALUES (@PID, @Ori, @OriPID, @Min, @Fija, @VStock, @Est, @Combo)`);
+                            (ProIdProducto, OrigenTipo, OrigenProIdProducto, CantidadMinima, CantidadFija, ValidarStock, Estado, EsCombo${conF1 ? ', TecnicaPrincipal, Molde, UM' : ''})
+                        VALUES (@PID, @Ori, @OriPID, @Min, @Fija, @VStock, @Est, @Combo${conF1 ? ', @TP, @Mol, @UMv' : ''})`);
 
             await aplicarSetsHijos(transaction, proId, req.body);
             // Un confeccionado nuevo nace con las técnicas de CONSTRUCCIÓN (sublimación, corte y
             // costura) obligatorias e incluidas en el precio (decisión del usuario, 28-sep). Solo si
             // el alta no trajo técnicas propias.
             if (!esCombo && req.body.tecnicas === undefined) {
-                for (const area of ['SB', 'TWC', 'TWT']) {
+                for (const area of [principal || 'SB', 'TWC', 'TWT']) {
                     await new sql.Request(transaction).input('PID', sql.Int, proId).input('Area', sql.VarChar(10), area)
                         .query(`INSERT INTO dbo.ProductoTerminadoServicios (ProIdProducto, AreaID, Obligatorio, Modo, Cobro)
                                 VALUES (@PID, @Area, 1, 'LIBRE', 'INCLUIDA')`);
@@ -808,6 +990,35 @@ exports.updateTecnicaOpcion = async (req, res) => {
 //  PRODUCTOS DEL LOCAL (selector del paso Origen)
 // ═════════════════════════════════════════════════════════════════════════
 
+// [ACCESORIOS] GET /api/configurador/depositos-wms — depósitos del WMS de donde puede salir un accesorio.
+// Del WMS propio (Wms_Depositos) si está cargado; si no, los tres conocidos del WMS externo.
+const DEPOSITOS_WMS_FALLBACK = [
+    { DepId: 5, Nombre: 'Ventas (local)', Tipo: 'ventas' },
+    { DepId: 1, Nombre: 'Centro de stock general', Tipo: 'central' },
+    { DepId: 3, Nombre: 'ECOUV', Tipo: 'sector' },
+];
+exports.getDepositosWms = async (req, res) => {
+    try {
+        const pool = await getPool();
+        let lista = [];
+        try {
+            const r = await pool.request().query(`IF OBJECT_ID('dbo.Wms_Depositos', 'U') IS NOT NULL SELECT DepId, Nombre, Tipo FROM dbo.Wms_Depositos WHERE ISNULL(Activo, 1) = 1 ORDER BY DepId`);
+            lista = r.recordset || [];
+        } catch (_) { lista = []; }
+        const porDefecto = parseInt(process.env.WMS_DEPOSITO_LOCAL_ID, 10) || 5;
+        res.json({ success: true, data: (lista.length ? lista : DEPOSITOS_WMS_FALLBACK).map(d => ({ ...d, PorDefecto: d.DepId === porDefecto })), porDefecto });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+};
+// [ACCESORIOS] GET /api/configurador/stock-wms/:depositoId — stock vivo por variante en ESE depósito
+exports.getStockWms = async (req, res) => {
+    try {
+        const dep = parseInt(req.params.depositoId, 10);
+        if (!dep) return res.status(400).json({ error: 'Depósito inválido.' });
+        const map = await fetchStockLocalWms(dep);
+        res.json({ success: true, data: map || {}, stockDisponible: map !== null });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+};
+
 // GET /api/configurador/productos-local (?q= busca por nombre)
 // Artículos del local (SupFlia 2) que tienen variantes WMS, con stock vivo
 // del depósito del local si el WMS contesta (si no, stockDisponible=false y
@@ -816,6 +1027,7 @@ exports.getProductosLocal = async (req, res) => {
     try {
         const pool = await getPool();
         const q = (req.query.q || '').trim();
+        const todos = String(req.query.todos || '') === '1';   // [ACCESORIOS] sin filtro de familia
         const request = pool.request();
         if (q) request.input('Q', sql.NVarChar, `%${q}%`);
         const r = await request.query(`
@@ -830,9 +1042,13 @@ exports.getProductosLocal = async (req, res) => {
             OUTER APPLY (SELECT TOP 1 Precio, Moneda FROM dbo.PreciosBase p
                          WHERE p.ProIdProducto = a.ProIdProducto
                          ORDER BY p.UltimaActualizacion DESC) pb
-            OUTER APPLY (SELECT TOP 1 url_imagen FROM dbo.Articulos_Imagenes i
-                         WHERE i.Idproid = a.ProIdProducto ORDER BY i.orden) img
-            WHERE LTRIM(RTRIM(a.SupFlia)) = '2' AND ISNULL(a.borrar, 0) = 0
+            OUTER APPLY (SELECT TOP 1 url_imagen FROM (
+                             SELECT i.url_imagen, i.orden FROM dbo.Articulos_Imagenes i WHERE i.Idproid = a.ProIdProducto
+                             UNION ALL
+                             -- [FOTO ÚNICA] sin foto de catálogo, vale el dibujo de la ficha técnica
+                             SELECT f.DibujoUrl, 9999 FROM dbo.ProductoFichaDiseno f WHERE f.ProIdProducto = a.ProIdProducto AND f.DibujoUrl IS NOT NULL
+                         ) x ORDER BY x.orden) img
+            WHERE ${todos ? '1 = 1' : "LTRIM(RTRIM(a.SupFlia)) = '2'"} AND ISNULL(a.borrar, 0) = 0
               ${q ? 'AND a.Descripcion LIKE @Q' : ''}
             ORDER BY a.Descripcion, v.nombre_variante
         `);
@@ -897,10 +1113,19 @@ exports.subirDibujoFicha = async (req, res) => {
             .input('PID', sql.Int, proId)
             .input('Url', sql.VarChar(500), dibujoUrl)
             .query(`
+                -- [FOTO ÚNICA] el dibujo anterior, para saber si la foto de catálogo era este mismo dibujo
+                DECLARE @Ant VARCHAR(500) = (SELECT DibujoUrl FROM dbo.ProductoFichaDiseno WHERE ProIdProducto = @PID);
                 IF EXISTS (SELECT 1 FROM dbo.ProductoFichaDiseno WHERE ProIdProducto = @PID)
                     UPDATE dbo.ProductoFichaDiseno SET DibujoUrl = @Url, FechaModif = GETDATE() WHERE ProIdProducto = @PID
                 ELSE
-                    INSERT INTO dbo.ProductoFichaDiseno (ProIdProducto, DibujoUrl) VALUES (@PID, @Url)
+                    INSERT INTO dbo.ProductoFichaDiseno (ProIdProducto, DibujoUrl) VALUES (@PID, @Url);
+                -- [FOTO ÚNICA] si el artículo no tiene foto de catálogo (o su foto era el dibujo anterior), este dibujo
+                -- pasa a ser la foto principal en Articulos_Imagenes: así la ven el editor de artículo, la tienda,
+                -- el portal y la solicitud. Una foto subida a propósito nunca se pisa.
+                IF NOT EXISTS (SELECT 1 FROM dbo.Articulos_Imagenes WHERE Idproid = @PID AND color IS NULL)
+                    INSERT INTO dbo.Articulos_Imagenes (Idproid, url_imagen, es_generica, orden, color) VALUES (@PID, @Url, 0, 1, NULL);
+                ELSE IF @Ant IS NOT NULL
+                    UPDATE dbo.Articulos_Imagenes SET url_imagen = @Url WHERE Idproid = @PID AND color IS NULL AND url_imagen = @Ant;
             `);
         logger.info(`[Configurador] Dibujo de ficha subido para ProIdProducto ${proId} por ${req.user?.username || 'N/A'}`);
         res.json({ success: true, dibujoUrl });

@@ -117,7 +117,7 @@ async function registrar(pool, { origen, idExterno, pedido, usuarioInterno }) {
     // RECHAZADO o ERROR: nunca llegó a crearse nada → se puede volver a intentar con el pedido corregido.
     // El UPDATE condicionado evita que dos reintentos simultáneos creen dos pedidos.
     const r = await pool.request().input('Id', sql.Int, fila.IntegracionID).input('P', sql.NVarChar(sql.MAX), json(pedido)).input('U', sql.Int, usuarioInterno?.id || null)
-      .query(`UPDATE dbo.IntegracionPedidos SET Estado = 'PROCESANDO', PedidoJson = @P, ErroresJson = NULL, UsuarioID = @U, FechaFin = NULL
+      .query(`UPDATE dbo.IntegracionPedidos SET Estado = 'PROCESANDO', PedidoJson = @P, ErroresJson = NULL, UsuarioID = @U, FechaFin = NULL, FechaRecibido = GETDATE()
               WHERE IntegracionID = @Id AND Estado IN ('RECHAZADO', 'ERROR')`);
     if (!r.rowsAffected[0]) { const err = new Error('Este pedido ya se está creando. Esperá unos segundos y actualizá.'); err.status = 409; throw err; }
   }
@@ -208,7 +208,7 @@ async function ponerCantidades(pool, noDoc, pedido, usuarioInterno, cliente) {
     setImmediate(async () => {
       try {
         const ERPSyncService = require('../erpSyncService');
-        await ERPSyncService.syncFinalOrderIntegration(noDoc, usuarioInterno?.id || 1, usuarioInterno?.name || cliente?.Nombre, null, { skipDeposito: true });
+        await ERPSyncService.syncFinalOrderIntegration(String(noDoc), usuarioInterno?.id || 1, usuarioInterno?.name || cliente?.Nombre, null, { skipDeposito: true });
       } catch (e) { logger.warn(`[PEDIDOS-SISTEMA] pedido ${noDoc}: no se pudo recotizar con la cantidad de prendas: ${e.message}`); }
     });
   } catch (e) {

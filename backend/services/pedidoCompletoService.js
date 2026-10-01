@@ -30,6 +30,40 @@ const sqlOrdenNoCancelada = (alias) =>
 // db puede ser un pool o una transacción activa
 const makeRequest = (db) => new sql.Request(db);
 
+// [BULTO COMPARTIDO 01/10] Áreas donde varias órdenes del MISMO pedido trabajan la misma prenda física y
+// salen en UN solo bulto: Estampado con DTF y TPU (EST-26025 (1/2) y (2/2)). El bulto lo genera la última en
+// aprobarse (embBoardController.aprobarControl); la otra queda Pronta SIN bulto propio y "viaja" en el de su
+// hermana. Todo lo que sigue al bulto (En transito, Recibido en Destino, "¿llegó a PRO?") tiene que
+// arrastrarla, si no queda Pronta en Estampado para siempre y PRO la sigue esperando.
+const AREAS_BULTO_COMPARTIDO = ['EST'];
+const sqlAreasBultoCompartido = AREAS_BULTO_COMPARTIDO.map(a => `'${a}'`).join(', ');
+
+/**
+ * Hermanas SIN bulto propio de la orden `ordenId` (la que lleva el bulto): mismo pedido y misma área,
+ * no canceladas, sin ningún bulto vivo, en alguno de `estadosEnArea`. Con `estadoPortadora` solo
+ * devuelve algo si la portadora está en ese estado (así un envío parcial no arrastra a nadie).
+ */
+async function hermanasSinBultoPropio(db, ordenId, estadosEnArea, estadoPortadora = null) {
+    const lista = (estadosEnArea || []).map(e => `'${String(e).toUpperCase().replace(/'/g, "''")}'`).join(',');
+    if (!lista) return [];
+    const req = makeRequest(db).input('OID', sql.Int, ordenId);
+    if (estadoPortadora) req.input('EP', sql.VarChar(50), String(estadoPortadora).toUpperCase());
+    const r = await req.query(`
+        SELECT h.OrdenID, LTRIM(RTRIM(h.CodigoOrden)) AS CodigoOrden, LTRIM(RTRIM(o.CodigoOrden)) AS CodigoPortadora
+        FROM Ordenes o
+        JOIN Ordenes h ON h.NoDocERP = o.NoDocERP AND h.AreaID = o.AreaID AND h.OrdenID <> o.OrdenID
+        WHERE o.OrdenID = @OID
+          AND UPPER(LTRIM(RTRIM(ISNULL(o.AreaID, '')))) IN (${sqlAreasBultoCompartido})
+          AND o.NoDocERP IS NOT NULL AND LTRIM(RTRIM(CAST(o.NoDocERP AS VARCHAR(50)))) <> ''
+          ${estadoPortadora ? "AND UPPER(LTRIM(RTRIM(ISNULL(o.EstadoenArea, '')))) = @EP" : ''}
+          AND ${sqlOrdenNoCancelada('h')}
+          AND UPPER(LTRIM(RTRIM(ISNULL(h.EstadoenArea, '')))) IN (${lista})
+          AND (h.CodigoOrden IS NULL OR h.CodigoOrden NOT LIKE '%-F%')
+          AND NOT EXISTS (SELECT 1 FROM Logistica_Bultos b WHERE b.OrdenID = h.OrdenID AND ISNULL(b.Estado, '') <> 'CANCELADO')
+    `);
+    return r.recordset;
+}
+
 /**
  * Todos los archivos y servicios extra (no cancelados) de la orden están en OK/FINALIZADO
  * y ninguno en FALLA. Misma regla que usa completarOrden.
@@ -186,6 +220,18 @@ async function isPedidoCompletoFisicamenteEnArea(db, noDocERP, areaId) {
                     AND B.Estado = 'EN_STOCK'
                     AND ISNULL(B.Tipocontenido, '') <> 'ENCOMIENDA'
               )
+              -- [BULTO COMPARTIDO] Orden terminada SIN bulto propio cuyo trabajo llegó en el bulto de su hermana
+              -- (mismo pedido y área): ya está acá. Sin esto PRO esperaba para siempre al segundo Estampado.
+              AND NOT (
+                  UPPER(LTRIM(RTRIM(ISNULL(O.AreaID, '')))) IN (${sqlAreasBultoCompartido})
+                  AND ${sqlOrdenPronta('O')}
+                  AND NOT EXISTS (SELECT 1 FROM Logistica_Bultos BP WHERE BP.OrdenID = O.OrdenID AND ISNULL(BP.Estado, '') <> 'CANCELADO')
+                  AND EXISTS (
+                      SELECT 1 FROM Ordenes H JOIN Logistica_Bultos BH ON BH.OrdenID = H.OrdenID
+                      WHERE H.NoDocERP = O.NoDocERP AND H.AreaID = O.AreaID AND H.OrdenID <> O.OrdenID
+                        AND BH.UbicacionActual = @Area AND BH.Estado = 'EN_STOCK'
+                        AND ISNULL(BH.Tipocontenido, '') <> 'ENCOMIENDA')
+              )
             ORDER BY O.OrdenID
         `);
     return { completo: r.recordset.length === 0, faltantes: r.recordset, totalOrdenes };
@@ -213,6 +259,8 @@ module.exports = {
     isPedidoCompletoEnArea,
     isPedidoCompletoGlobal,
     isPedidoCompletoFisicamenteEnArea,
+    hermanasSinBultoPropio,
+    AREAS_BULTO_COMPARTIDO,
     sqlExistsHermanaNoPronta,
     sqlOrdenPronta,
     sqlOrdenNoCancelada,

@@ -20,7 +20,7 @@
 const { getPool, sql } = require('../config/db');
 const logger           = require('../utils/logger');
 const { aplicarRecargoUrgenciaRollo } = require('./urgenciaDescuentoRolloService');
-const { SQL_RECALC_MONTO_TOTAL } = require('../utils/montoTotalPedido');
+const { SQL_RECALC_MONTO_TOTAL, sqlMonedaLinea } = require('../utils/montoTotalPedido');
 
 // ============================================================
 // SECCIÓN 1: GESTIÓN DE CUENTAS
@@ -3061,7 +3061,11 @@ async function getCicloMovimientos(CicIdCiclo) {
              s.Articulo AS ProSubFamilia,
              s.CodStock AS ProCodStock,
               (
-                 SELECT d.ID AS DetalleID, a.CodArticulo, d.Cantidad, d.PrecioUnitario, d.Subtotal, d.LogPrecioAplicado, a.Descripcion, pc.Moneda, a.CodStock, sa.Articulo AS ArticuloNombre,
+                 SELECT d.ID AS DetalleID, a.CodArticulo, d.Cantidad, d.PrecioUnitario, d.Subtotal, d.LogPrecioAplicado, a.Descripcion,
+                        -- Moneda del Subtotal de ESTA línea (no la de la cabecera): ver sqlMonedaLinea
+                        ${sqlMonedaLinea('pc', 'd')} AS Moneda,
+                        pc.Moneda AS MonedaPedido,
+                        a.CodStock, sa.Articulo AS ArticuloNombre,
                 d.PrecioLista, d.DescuentoTipo, d.DescuentoPct, d.DescuentoImporte, d.DescuentoOrigen, d.RecargoPct, d.RecargoImporte, d.RecargoOrigen
                  FROM dbo.PedidosCobranza pc WITH(NOLOCK)
                  JOIN dbo.PedidosCobranzaDetalle d WITH(NOLOCK) ON pc.ID = d.PedidoCobranzaID

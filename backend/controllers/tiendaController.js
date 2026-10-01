@@ -156,9 +156,11 @@ exports.getVitrinaAdmin = async (req, res) => {
             LEFT JOIN dbo.TiendaProductos tp ON tp.ProIdProducto = a.ProIdProducto
             LEFT JOIN dbo.PreciosBase pb WITH(NOLOCK) ON pb.ProIdProducto = a.ProIdProducto
             LEFT JOIN dbo.Articulos_Wms wm ON wm.Idproid = a.ProIdProducto
-            OUTER APPLY (SELECT TOP 1 i.url_imagen FROM dbo.Articulos_Imagenes i
-                         WHERE i.Idproid = a.ProIdProducto AND i.color IS NULL
-                         ORDER BY i.orden) img
+            OUTER APPLY (SELECT TOP 1 url_imagen FROM (
+                             SELECT i.url_imagen, i.orden FROM dbo.Articulos_Imagenes i WHERE i.Idproid = a.ProIdProducto AND i.color IS NULL
+                             UNION ALL   -- [FOTO ÚNICA] sin foto de catálogo, el dibujo de la ficha técnica
+                             SELECT f.DibujoUrl, 9999 FROM dbo.ProductoFichaDiseno f WHERE f.ProIdProducto = a.ProIdProducto AND f.DibujoUrl IS NOT NULL
+                         ) x ORDER BY x.orden) img
             LEFT JOIN (SELECT Idproid, COUNT(*) AS CantidadVariantes
                        FROM dbo.Articulos_WMS_Variantes GROUP BY Idproid) vc ON vc.Idproid = a.ProIdProducto
             WHERE ISNULL(a.borrar, 0) = 0
@@ -328,10 +330,19 @@ exports.getTiendaCatalogo = async (req, res) => {
             // orden>1 es la galería que carga el admin de la tienda (F4), y las de color
             // (color NOT NULL, orden>=101) van aparte en fotosColor.
             pool.request().query(`
-                SELECT img.Idproid, img.url_imagen, img.orden, img.color
-                FROM dbo.Articulos_Imagenes img
-                INNER JOIN dbo.TiendaProductos tp ON tp.ProIdProducto = img.Idproid AND tp.Publicado = 1
-                ORDER BY img.Idproid, img.orden
+                SELECT x.Idproid, x.url_imagen, x.orden, x.color FROM (
+                    SELECT img.Idproid, img.url_imagen, img.orden, img.color
+                    FROM dbo.Articulos_Imagenes img
+                    INNER JOIN dbo.TiendaProductos tp ON tp.ProIdProducto = img.Idproid AND tp.Publicado = 1
+                    UNION ALL
+                    -- [FOTO ÚNICA] producto publicado sin foto de catálogo: se muestra el dibujo de la ficha técnica
+                    SELECT f.ProIdProducto, f.DibujoUrl, 1, NULL
+                    FROM dbo.ProductoFichaDiseno f
+                    INNER JOIN dbo.TiendaProductos tp ON tp.ProIdProducto = f.ProIdProducto AND tp.Publicado = 1
+                    WHERE f.DibujoUrl IS NOT NULL
+                      AND NOT EXISTS (SELECT 1 FROM dbo.Articulos_Imagenes i WHERE i.Idproid = f.ProIdProducto AND i.color IS NULL)
+                ) x
+                ORDER BY x.Idproid, x.orden
             `),
             fetchStockWms(),
             pool.request().query('SELECT TOP 1 CotDolar AS Valor FROM dbo.Cotizaciones ORDER BY CotFecha DESC'),

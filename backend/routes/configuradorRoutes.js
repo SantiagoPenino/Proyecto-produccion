@@ -31,6 +31,13 @@ router.put('/tecnicas/:id', configuradorController.updateTecnicaOpcion);
 
 // Productos del local (selector del paso Origen: stock vivo del WMS)
 router.get('/productos-local', configuradorController.getProductosLocal);
+// [ACCESORIOS] depósitos del WMS y stock vivo por depósito
+router.get('/depositos-wms', configuradorController.getDepositosWms);
+router.get('/stock-wms/:depositoId', configuradorController.getStockWms);
+
+// F1: producción principal — áreas que pueden producir un producto y materiales de impresión de cada área
+router.get('/areas-principales', configuradorController.getAreasPrincipales);
+router.get('/materiales-area/:areaId', configuradorController.getMaterialesArea);
 
 // Moldes de TizadaPro (solo lectura): modelos, piezas, talles y telas permitidas
 router.get('/tizadapro/moldes', configuradorController.getTizadaProMoldes);

@@ -97,6 +97,8 @@ router.get('/planes/:CliIdCliente', ctrl.getPlanesCliente);
 router.post('/planes', ctrl.crearPlan);
 router.post('/planes/:PlaIdPlan/recargar', ctrl.recargarPlan);
 router.patch('/planes/:PlaIdPlan/desactivar', ctrl.desactivarPlan);
+router.get('/planes/:PlaIdPlan/materiales', ctrl.getMaterialesPlan);
+router.put('/planes/:PlaIdPlan/materiales', ctrl.setMaterialesPlan);
 router.get('/reportes/antiguedad-deuda', ctrl.getAntiguedadDeuda);
 router.get('/reportes/estado-cuenta/:CliIdCliente', ctrl.getEstadoCuentaCliente);
 router.get('/reportes/deuda-consolidada', ctrl.getDeudaConsolidada);

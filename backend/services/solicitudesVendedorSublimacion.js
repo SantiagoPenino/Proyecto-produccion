@@ -22,7 +22,15 @@ async function productoSol(pool, solicitudId, productoSolId) {
   const r = await pool.request().input('Sol', sql.Int, solicitudId).input('P', sql.Int, productoSolId).query(`
     SELECT p.ProductoSolID, p.ProIdProducto, p.TipoFabricacion, p.DatosJson, p.PedidoNoDocERP,
            CASE WHEN COL_LENGTH('dbo.ProductoVentaConfig', 'TizadaProMoldeRef') IS NULL THEN NULL
-                ELSE (SELECT vc.TizadaProMoldeRef FROM dbo.ProductoVentaConfig vc WHERE vc.ProIdProducto = p.ProIdProducto) END AS MoldeRef
+                ELSE (SELECT vc.TizadaProMoldeRef FROM dbo.ProductoVentaConfig vc WHERE vc.ProIdProducto = p.ProIdProducto) END AS MoldeRef,
+           CASE WHEN COL_LENGTH('dbo.ProductoVentaConfig', 'Molde') IS NULL THEN 'OBLIGATORIO'
+                ELSE (SELECT vc.Molde FROM dbo.ProductoVentaConfig vc WHERE vc.ProIdProducto = p.ProIdProducto) END AS Molde,
+           CASE WHEN COL_LENGTH('dbo.ProductoVentaConfig', 'TecnicaPrincipal') IS NULL THEN 'SB'
+                ELSE (SELECT vc.TecnicaPrincipal FROM dbo.ProductoVentaConfig vc WHERE vc.ProIdProducto = p.ProIdProducto) END AS TecnicaPrincipal,
+           CASE WHEN COL_LENGTH('dbo.ProductoVentaConfig', 'AnchoM') IS NULL THEN NULL
+                ELSE (SELECT vc.AnchoM FROM dbo.ProductoVentaConfig vc WHERE vc.ProIdProducto = p.ProIdProducto) END AS AnchoM,
+           CASE WHEN COL_LENGTH('dbo.ProductoVentaConfig', 'AltoM') IS NULL THEN NULL
+                ELSE (SELECT vc.AltoM FROM dbo.ProductoVentaConfig vc WHERE vc.ProIdProducto = p.ProIdProducto) END AS AltoM
     FROM dbo.SolicitudesVendedorProductos p WHERE p.SolicitudID = @Sol AND p.ProductoSolID = @P AND p.Activo = 1`);
   const p = r.recordset[0];
   if (!p) throw fallo(404, 'El producto no pertenece a esta solicitud.');
@@ -37,7 +45,18 @@ async function moldeDelProducto(pool, user, base, solicitudId, productoSolId) {
   const p = await productoSol(pool, solicitudId, productoSolId);
   const elegido = jsonObj(p.DatosJson).sublimacion || null;
   if (p.TipoFabricacion !== 'PRODUCTO_TERMINADO' || !p.ProIdProducto) return { aplica: false, motivo: 'Es un producto del cliente: no tiene molde en el catálogo.', elegido };
-  if (!p.MoldeRef) return { aplica: false, motivo: 'El producto del catálogo no tiene molde de TizadaPro vinculado (se vincula en Configurar productos).', elegido };
+  if (!p.MoldeRef) {
+    // F1: sin molde. Si el producto lo exige (prendas) es un faltante del configurador; si el molde es
+    // opcional o no lleva (windflag, funda, cuadro), la producción principal va con archivo a medida fija.
+    const medidaFija = Number(p.AnchoM) > 0 && Number(p.AltoM) > 0 ? { anchoM: Number(p.AnchoM), altoM: Number(p.AltoM) } : null;
+    const molde = p.Molde || 'OBLIGATORIO';
+    return {
+      aplica: false, elegido, molde, tecnicaPrincipal: p.TecnicaPrincipal || 'SB', medidaFija,
+      motivo: molde === 'OBLIGATORIO'
+        ? 'El producto del catálogo no tiene molde de TizadaPro vinculado (se vincula en Configurar productos).'
+        : `Este producto no lleva molde: la producción principal va con el archivo pronto${medidaFija ? ` a medida fija ${medidaFija.anchoM.toFixed(2)} × ${medidaFija.altoM.toFixed(2)} m` : ''}.`,
+    };
+  }
 
   const [molde] = await tizadaPro.moldes(pool, { ref: p.MoldeRef, soloActivos: false });
   if (!molde) return { aplica: false, motivo: 'El molde vinculado ya no está en TizadaPro.', elegido };
@@ -69,7 +88,7 @@ async function moldeDelProducto(pool, user, base, solicitudId, productoSolId) {
       piezas: det.map(d => ({ pieza: d.nombre, generico: d.generico, anchoCm: d.anchoCm, altoCm: d.altoCm, svgPath: d.svgPath || null, telaFija: telaFijaDe(d) })),
     };
   });
-  return { aplica: true, moldeRef: molde.ref, moldeNombre: molde.nombre, modelos: lista, telas, telasDelMolde, elegido };
+  return { aplica: true, moldeRef: molde.ref, moldeNombre: molde.nombre, modelos: lista, telas, telasDelMolde, elegido, molde: p.Molde || 'OBLIGATORIO', tecnicaPrincipal: p.TecnicaPrincipal || 'SB' };
 }
 
 // ---------------------------------------------------------------------
@@ -127,17 +146,24 @@ async function faltaSublimacion(cx, productoSolId) {
     SELECT p.TipoFabricacion, p.DatosJson,
            CASE WHEN COL_LENGTH('dbo.ProductoVentaConfig', 'TizadaProMoldeRef') IS NULL THEN NULL
                 ELSE (SELECT vc.TizadaProMoldeRef FROM dbo.ProductoVentaConfig vc WHERE vc.ProIdProducto = p.ProIdProducto) END AS MoldeRef,
+           CASE WHEN COL_LENGTH('dbo.ProductoVentaConfig', 'Molde') IS NULL THEN NULL
+                ELSE (SELECT vc.Molde FROM dbo.ProductoVentaConfig vc WHERE vc.ProIdProducto = p.ProIdProducto) END AS Molde,
            (SELECT COUNT(*) FROM dbo.SolicitudesVendedorArchivos a WHERE a.ProductoSolID = p.ProductoSolID AND a.ParteID IS NULL AND a.Rol = 'PLANILLA' AND a.Vigente = 1) AS Planillas
     FROM dbo.SolicitudesVendedorProductos p WHERE p.ProductoSolID = @P`);
   const p = r.recordset[0];
   if (!p) return null;
   const datos = jsonObj(p.DatosJson);
-  if (p.TipoFabricacion === 'PRODUCTO_TERMINADO' && p.MoldeRef) {
+  const esCatalogo = p.TipoFabricacion === 'PRODUCTO_TERMINADO';
+  const molde = esCatalogo ? (p.Molde || 'OBLIGATORIO') : null;
+  if (esCatalogo && molde === 'OBLIGATORIO' && !p.MoldeRef) return 'El producto del catálogo exige molde de TizadaPro y no tiene ninguno vinculado: vinculalo en Configurar productos (o marcá el molde como opcional).';
+  if (esCatalogo && p.MoldeRef) {
     const s = datos.sublimacion;
     if (!s || !s.modeloClave) return 'Antes de enviar a Diseño, elegí el modelo y la tela de cada pieza en "Piezas y telas".';
     if (!s.completo) return 'Faltan telas en "Piezas y telas": completalas antes de enviar a Diseño.';
   }
-  if (!p.Planillas && !String(datos.notaTalles || '').trim() && datos.comoSeDefine !== 'MEDIDA') return 'Antes de enviar a Diseño, adjuntá la planilla de talles y nombres (o escribí la nota de talles).';
+  // Planilla de talles: no aplica a productos por medidas ni a los que no llevan molde (se piden por unidad)
+  const sinTalles = datos.comoSeDefine === 'MEDIDA' || (esCatalogo && molde === 'NO');
+  if (!sinTalles && !p.Planillas && !String(datos.notaTalles || '').trim()) return 'Antes de enviar a Diseño, adjuntá la planilla de talles y nombres (o escribí la nota de talles).';
   return null;
 }
 

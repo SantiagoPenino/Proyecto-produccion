@@ -29,6 +29,171 @@ const conversion = (alias) => `
     END`;
 
 /**
+ * Moneda REAL del Subtotal de una línea del pedido (expresión SQL, para SELECTs de lectura).
+ *
+ * La pre-factura mostraba todas las líneas con la moneda de la CABECERA: en EUV-19358
+ * (pedido en USD) los ojales — 32 × $U 30 = $U 960 — salían como US$ 960 en vez de US$ 23,51.
+ *
+ * No alcanza con leer la etiqueta de la línea: hay datos viejos donde la etiqueta está mal y
+ * el Subtotal ya está en la moneda del pedido (julio/2026: líneas 'USD' con importe en pesos;
+ * artículo 21: líneas 'UYU' con importe en dólares). Decide el TOTAL del pedido: si MontoTotal
+ * es la suma en crudo de las líneas facturables, están todas en la moneda de la cabecera; si
+ * no (el total se armó convirtiendo), manda la etiqueta de la línea.
+ *
+ * @param pc alias de PedidosCobranza   @param d alias de PedidosCobranzaDetalle
+ */
+const sqlMonedaLinea = (pc, d) => `
+    CASE
+        WHEN ${pc}.Moneda IS NULL OR NULLIF(LTRIM(RTRIM(${d}.Moneda)), '') IS NULL
+             OR UPPER(LTRIM(RTRIM(${d}.Moneda))) = UPPER(LTRIM(RTRIM(${pc}.Moneda))) THEN ${pc}.Moneda
+        WHEN UPPER(LTRIM(RTRIM(${d}.Moneda))) IN ('USD', 'UYU')
+             AND ABS(ISNULL(${pc}.MontoTotal, 0) - ISNULL((
+                    SELECT SUM(mlx.Subtotal) FROM dbo.PedidosCobranzaDetalle mlx WITH(NOLOCK)
+                    WHERE mlx.PedidoCobranzaID = ${pc}.ID
+                      AND ISNULL(mlx.EsHermanaConsolidada, 0) = 0
+                      AND ISNULL(mlx.EsFacturable, 1) = 1), 0)) > 0.02
+             THEN UPPER(LTRIM(RTRIM(${d}.Moneda)))
+        ELSE ${pc}.Moneda
+    END`;
+
+// ── Pedido PARTIDO en varias órdenes (multitela: SUB-23364 (1/2), (2/2)…) ───────────────
+// Cada orden entra a Depósito con SU importe y tiene SU cargo en la cuenta. Pero la
+// pre-factura, la cotización y el guardado de precios nacieron con "un cargo = el pedido
+// entero". Regla única para que las dos épocas convivan:
+//
+//   a un cargo le toca TODO el pedido, MENOS las líneas de las órdenes hermanas que ya
+//   tienen su asiento propio.
+//
+// Pedido de una sola orden, o pedido viejo donde solo una orden recibió cargo (las hermanas
+// quedaron sin asiento): le toca el pedido entero, igual que siempre. Pedido nuevo con un
+// cargo por orden: a cada uno le tocan solo sus líneas.
+
+/**
+ * Condición SQL: la orden `ordenId` ya tiene asiento propio (cargo en dinero, metros de plan
+ * o consumo de billetera) en las cuentas del cliente `cli`. El OrdIdOrden de los movimientos
+ * apunta a DOS tablas (Ordenes u OrdenesDeposito): se miran los dos ids, siempre dentro del
+ * mismo cliente. `movExcluir` (opcional): un movimiento que no cuenta (el propio).
+ */
+// (Dos EXISTS con igualdades simples, uno por cada id: así cada uno entra por el índice de
+// MovimientosCuenta.OrdIdOrden. Con un solo IN que mezclaba los dos ids la pre-factura de un
+// cliente con 284 cargos pendientes no terminaba — medido.)
+const sqlOrdenTieneAsiento = (ordenId, cli, movExcluir = null) => {
+    const filtro = (mh) => `
+              AND ${mh}.MovTipo IN ('ORDEN', 'ORDEN_ANTICIPO', 'ENTREGA', 'CONSUMO_CUENTA')
+              ${movExcluir ? `AND ${mh}.MovIdMovimiento <> ${movExcluir}` : ''}
+              AND EXISTS (SELECT 1 FROM dbo.CuentasCliente cch WITH(NOLOCK)
+                          WHERE cch.CueIdCuenta = ${mh}.CueIdCuenta AND cch.CliIdCliente = ${cli})`;
+    return `(
+        EXISTS (
+            SELECT 1 FROM dbo.MovimientosCuenta mh1 WITH(NOLOCK)
+            WHERE mh1.OrdIdOrden = ${ordenId}${filtro('mh1')}
+        )
+        OR EXISTS (
+            SELECT 1 FROM dbo.Ordenes oh WITH(NOLOCK)
+            JOIN dbo.OrdenesDeposito odh WITH(NOLOCK) ON odh.OrdCodigoOrden = oh.CodigoOrden
+            JOIN dbo.MovimientosCuenta mh2 WITH(NOLOCK) ON mh2.OrdIdOrden = odh.OrdIdOrden
+            WHERE oh.OrdenID = ${ordenId}${filtro('mh2')}
+        )
+    )`;
+};
+
+/**
+ * Condición SQL: la línea `d` del pedido le toca al cargo `m` (ver regla de arriba).
+ * `m` = alias de MovimientosCuenta, `d` = alias de PedidosCobranzaDetalle, `cli` = cliente.
+ *
+ * Va en un CASE a propósito: se evalúa en orden, así que en el caso de siempre (la línea es de
+ * la orden del cargo) corta en la primera rama y no consulta nada más.
+ */
+const sqlLineaTocaAlCargo = (m, d, cli) => `(1 = CASE
+        WHEN ${d}.OrdenID IS NULL OR ${d}.OrdenID = ${m}.OrdIdOrden THEN 1
+        -- el cargo puede estar anotado con el id de OrdenesDeposito de esa misma orden
+        WHEN EXISTS (SELECT 1 FROM dbo.Ordenes op WITH(NOLOCK)
+                     JOIN dbo.OrdenesDeposito odp WITH(NOLOCK) ON odp.OrdCodigoOrden = op.CodigoOrden
+                     WHERE op.OrdenID = ${d}.OrdenID AND odp.OrdIdOrden = ${m}.OrdIdOrden) THEN 1
+        -- hermana con asiento propio: sus líneas van con SU cargo
+        WHEN ${sqlOrdenTieneAsiento(`${d}.OrdenID`, cli, `${m}.MovIdMovimiento`)} THEN 0
+        ELSE 1 END)`;
+
+/**
+ * Subconsulta SQL (escalar): importe de las líneas del pedido `pedidoId` que NO le tocan al
+ * cargo `m` — las de órdenes hermanas con asiento propio —, en la moneda de la cabecera
+ * (`monedaPedido`), convirtiendo con `cot`. El cargo vale MontoTotal menos esto.
+ */
+const sqlImporteDeOtrasOrdenes = ({ pedidoId, monedaPedido, cot, m, cli }) => `
+    ISNULL((
+        -- Se suma por moneda y se convierte AFUERA: SQL Server no admite mezclar columnas
+        -- de la consulta de afuera (la moneda del pedido) dentro de un SUM.
+        SELECT CASE
+                 WHEN ${monedaPedido} = 'USD' THEN sx.Usd + sx.Otr + sx.Uyu / ${cot}
+                 WHEN ${monedaPedido} = 'UYU' THEN sx.Uyu + sx.Otr + sx.Usd * ${cot}
+                 ELSE sx.Usd + sx.Uyu + sx.Otr END
+        FROM (
+            SELECT ISNULL(SUM(CASE WHEN dx.Moneda = 'USD' THEN dx.Subtotal ELSE 0 END), 0) AS Usd,
+                   ISNULL(SUM(CASE WHEN dx.Moneda = 'UYU' THEN dx.Subtotal ELSE 0 END), 0) AS Uyu,
+                   ISNULL(SUM(CASE WHEN dx.Moneda IN ('USD', 'UYU') THEN 0 ELSE dx.Subtotal END), 0) AS Otr
+            FROM dbo.PedidosCobranzaDetalle dx WITH(NOLOCK)
+            WHERE dx.PedidoCobranzaID = ${pedidoId}
+              AND ISNULL(dx.EsHermanaConsolidada, 0) = 0
+              AND ISNULL(dx.EsFacturable, 1) = 1
+              AND NOT ${sqlLineaTocaAlCargo(m, 'dx', cli)}
+        ) sx
+    ), 0)`;
+
+/**
+ * ¿Esta orden de un pedido partido quedó SIN su cargo al entrar a Depósito?
+ *
+ * La marca PedidosCobranza.MontoContabilizado es del PEDIDO y la deja la primera orden que
+ * pasa; como cada orden asienta solo SUS líneas, las hermanas encontraban el pedido ya
+ * marcado y no asentaban nada (SUB-23364 (1/2): US$ 80,50 entregados sin cargo). Devuelve
+ * true cuando la orden tiene líneas propias para asentar y todavía ningún asiento, salvo
+ * que los cargos de sus hermanas ya cubran el pedido entero (pedidos de la época "un cargo
+ * por pedido", o cargos ya sincronizados al total): ahí asentarla sería cobrarla dos veces.
+ */
+const ordenHermanaSinCargo = async (pool, pedidoId, ordenId) => {
+    const r = await pool.request()
+        .input('PID', sql.Int, pedidoId)
+        .input('OID', sql.Int, ordenId)
+        .query(`
+            ${T_SQL_COTIZ}
+            DECLARE @MFinal VARCHAR(10) = ISNULL((SELECT Moneda FROM dbo.PedidosCobranza WITH(NOLOCK) WHERE ID = @PID), 'UYU');
+            DECLARE @Cli INT = (
+                SELECT TOP 1 COALESCE(NULLIF(o.CliIdCliente, 0),
+                       (SELECT TOP 1 c.CliIdCliente FROM dbo.Clientes c WITH(NOLOCK) WHERE c.CodCliente = TRY_CAST(o.CodCliente AS INT)))
+                FROM dbo.Ordenes o WITH(NOLOCK) WHERE o.OrdenID = @OID);
+
+            SELECT
+                (SELECT COUNT(DISTINCT d.OrdenID) FROM dbo.PedidosCobranzaDetalle d WITH(NOLOCK)
+                  WHERE d.PedidoCobranzaID = @PID AND d.OrdenID IS NOT NULL) AS Ordenes,
+                (SELECT COUNT(*) FROM dbo.PedidosCobranzaDetalle d WITH(NOLOCK)
+                  WHERE d.PedidoCobranzaID = @PID AND d.OrdenID = @OID AND ISNULL(d.EsHermanaConsolidada, 0) = 0
+                    AND (ISNULL(d.Subtotal, 0) > 0 OR ISNULL(d.Cantidad, 0) > 0)) AS LineasPropias,
+                (SELECT ISNULL(SUM(${conversion('d.')}), 0) FROM dbo.PedidosCobranzaDetalle d WITH(NOLOCK)
+                  WHERE d.PedidoCobranzaID = @PID AND d.OrdenID = @OID AND ISNULL(d.EsHermanaConsolidada, 0) = 0) AS ImportePropio,
+                (SELECT MontoTotal FROM dbo.PedidosCobranza WITH(NOLOCK) WHERE ID = @PID) AS MontoTotal,
+                CASE WHEN @Cli IS NOT NULL AND ${sqlOrdenTieneAsiento('@OID', '@Cli')} THEN 1 ELSE 0 END AS TieneAsiento,
+                @Cli AS CliIdCliente,
+                -- Cargos en dinero de las hermanas, llevados a la moneda del pedido
+                (SELECT ISNULL(SUM(CASE
+                            WHEN @MFinal = 'USD' AND ISNULL(cc.MonIdMoneda, 1) = 1 THEN ABS(mv.MovImporte) / @Cotiz
+                            WHEN @MFinal = 'UYU' AND cc.MonIdMoneda = 2            THEN ABS(mv.MovImporte) * @Cotiz
+                            ELSE ABS(mv.MovImporte) END), 0)
+                   FROM dbo.MovimientosCuenta mv WITH(NOLOCK)
+                   JOIN dbo.CuentasCliente cc WITH(NOLOCK) ON cc.CueIdCuenta = mv.CueIdCuenta
+                  WHERE cc.CliIdCliente = @Cli
+                    AND mv.MovTipo IN ('ORDEN', 'ORDEN_ANTICIPO')
+                    AND (mv.MovAnulado IS NULL OR mv.MovAnulado = 0)
+                    AND mv.OrdIdOrden IN (SELECT d.OrdenID FROM dbo.PedidosCobranzaDetalle d WITH(NOLOCK)
+                                           WHERE d.PedidoCobranzaID = @PID AND d.OrdenID IS NOT NULL AND d.OrdenID <> @OID)) AS CargosHermanas;
+        `);
+    const x = r.recordset[0] || {};
+    if (!(Number(x.Ordenes) > 1) || !(Number(x.LineasPropias) > 0)) return false;   // pedido de una orden, o sin líneas propias
+    if (!x.CliIdCliente || Number(x.TieneAsiento) === 1) return false;              // ya asentada (o cliente inexistente)
+    const total = parseFloat(x.MontoTotal) || 0;
+    const yaCargado = (parseFloat(x.CargosHermanas) || 0) + (parseFloat(x.ImportePropio) || 0);
+    return yaCargado <= total * 1.01 + 0.05;
+};
+
+/**
  * Recalcula PedidosCobranza.MontoTotal. Espera un parámetro @PID (int) con el ID del pedido.
  *
  * "Comprar y personalizar": las líneas hermanas (EMB/DF/TPU/EST) siguen excluidas — ya están
@@ -177,4 +342,4 @@ const importeOrdenParaDeposito = async (pool, ordenId, monedaDestino = null) => 
     }
 };
 
-module.exports = { SQL_RECALC_MONTO_TOTAL, totalesCobranzaDeOrden, totalDelPedido, importeOrdenParaDeposito };
+module.exports = { SQL_RECALC_MONTO_TOTAL, sqlMonedaLinea, sqlOrdenTieneAsiento, sqlLineaTocaAlCargo, sqlImporteDeOtrasOrdenes, ordenHermanaSinCargo, totalesCobranzaDeOrden, totalDelPedido, importeOrdenParaDeposito };

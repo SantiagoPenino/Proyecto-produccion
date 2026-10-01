@@ -9,6 +9,8 @@ import { CustomSelect } from '../../../pautas/CustomSelect';
 export const DtfTechnicalUI = ({
     garmentQuantity, setGarmentQuantity,
     dtfArchivos, removeDtfArchivo,
+    // [DTF COMO PORTAL] copias y medida por archivo (las carga PrendaOrderForm al medir)
+    dtfMeta = {}, setDtfMeta, dtfKey = (f) => `${f.name}::${f.size}`,
     dtfBocetoFile, setDtfBocetoFile,
     dtfMaterial, dtfMaterials, setDtfMaterial,
     handleSpecializedFileUpload,
@@ -102,10 +104,11 @@ export const DtfTechnicalUI = ({
 
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                             <div>
-                                <label className="block text-[10px] uppercase font-black text-zinc-500 mb-2 tracking-widest text-center">Archivo a Imprimir (Uno o más)</label>
+                                <label className="block text-[10px] uppercase font-black text-zinc-500 mb-2 tracking-widest text-center">Archivo pronto para imprimir (uno o más)</label>
+                                <p className="text-[10px] text-zinc-500 text-center mb-2">Igual que en el portal: el archivo va tal cual a la impresora y decís cuántas <b>copias</b> de ese archivo se imprimen (ej: 100 prendas, un archivo con 50 escudos → 2 copias). Se mide al subirlo.</p>
                                 <FileUploadZone
                                     id="dtf-archivo"
-                                    label="SUBIR ARTE"
+                                    label="SUBIR ARCHIVO"
                                     onFileSelected={(f) => handleMultipleSpecializedFileUpload(f)}
                                     selectedFile={dtfArchivos.length > 0}
                                     color="emerald"
@@ -113,9 +116,19 @@ export const DtfTechnicalUI = ({
                                 />
                                 {dtfArchivos.length > 0 && (
                                     <div className="mt-3 flex flex-wrap gap-2 justify-center">
-                                        {dtfArchivos.map((f, idx) => (
+                                        {dtfArchivos.map((f, idx) => {
+                                            const m = dtfMeta[dtfKey(f)] || {};
+                                            return (
                                             <div key={idx} className="flex items-center gap-2 bg-zinc-800/50 border border-emerald-500/30 px-4 py-2 rounded-xl">
-                                                <span className="text-[10px] font-bold text-zinc-300 max-w-[100px] truncate">{f.name}</span>
+                                                <span className="text-[10px] font-bold text-zinc-300 max-w-[140px] truncate" title={f.name}>{f.name}</span>
+                                                {/* [DTF COMO PORTAL] medida del archivo y copias de ESE archivo */}
+                                                <span className="text-[10px] text-zinc-500 whitespace-nowrap">{m.anchoM > 0 && m.altoM > 0 ? `${Number(m.anchoM).toFixed(2)} × ${Number(m.altoM).toFixed(2)} m` : 'sin medida'}</span>
+                                                {setDtfMeta && (
+                                                    <label className="flex items-center gap-1 text-[10px] text-zinc-400 whitespace-nowrap">copias
+                                                        <input type="number" min="1" value={m.copias ?? 1} onChange={(e) => setDtfMeta(dtfKey(f), { copias: e.target.value })}
+                                                            className="w-14 h-7 px-2 bg-zinc-900 border border-zinc-700 rounded-lg text-zinc-100 text-xs font-bold text-center" />
+                                                    </label>
+                                                )}
                                                 <button
                                                     type="button"
                                                     onClick={() => removeDtfArchivo(idx)}
@@ -124,7 +137,8 @@ export const DtfTechnicalUI = ({
                                                     <Trash2 size={12} />
                                                 </button>
                                             </div>
-                                        ))}
+                                            );
+                                        })}
                                     </div>
                                 )}
                             </div>

@@ -137,6 +137,16 @@
   (distinto de la foto de catálogo) con **anotaciones posicionadas en porcentaje**, campos
   libres etiqueta/valor, y **costuras** clasificadas con un catálogo chico de tipos ISO,
   con sugerencia automática por despiece.
+- **RN-CFG.08** **Producción principal del producto** (29-sep). Cada producto vendible dice qué
+  área lo produce (`TecnicaPrincipal`: Sublimación, Impresión Directa, Gran formato…); esa
+  técnica va como obligatoria e incluida y Corte/Costura se encadenan a ella. El molde de
+  TizadaPro es **OBLIGATORIO** (prendas: no se publica sin molde), **OPCIONAL** (windflags,
+  fundas: con molde se usa; sin molde el archivo va a la **medida fija** del producto) o **NO**
+  (cuadros, stock: medida fija obligatoria para publicar, sin piezas ni planilla de talles).
+  Sin molde, los materiales ofrecidos son los del área (`ProductoTelas` con artículos del Grupo
+  del área). La visibilidad se define por **Estado** (Borrador/Publicado) + canales
+  (Interno / Tienda / Portal); hasta que cada canal la lea, la casilla Tienda mantiene
+  `TiendaProductos.Publicado`. ECOUV conserva su modelo propio hasta migrar (F2).
 - **RN-CFG.07** **Árbol de productos**: el catálogo del configurador se ordena en tres
   niveles, **Familia** (categoría de stock) → **Etiqueta** → **Producto**. La etiqueta dice
   **para qué es** el producto (ej. Básquet, Fútbol, Vóley); lo que trae el nombre (FP, +B,

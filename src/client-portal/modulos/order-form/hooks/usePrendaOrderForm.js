@@ -78,6 +78,9 @@ const initialState = {
     tpuVariant: '',
     tpuVariants: [],
     tpuMaterials: [],
+    // [TPU COMO PORTAL] medida del parche (cm), acotada por el nombre del tipo de TPU ("Parche (De hasta 10x8)")
+    tpuAlto: '',
+    tpuAncho: '',
 
     // Estampado Data
     estampadoFile: null,
@@ -361,8 +364,11 @@ export const usePrendaOrderForm = (serviceId, overrides = {}) => {
     const setDtfVariant = (v) => setField('dtfVariant', v);
 
     const setTpuBocetoFile = (v) => setField('tpuBocetoFile', v);
-    const setTpuMaterial = (v) => setField('tpuMaterial', v);
+    // [TPU COMO PORTAL] al cambiar el tipo de TPU cambia el tope: la medida elegida se limpia
+    const setTpuMaterial = (v) => { setField('tpuMaterial', v); setField('tpuAlto', ''); setField('tpuAncho', ''); };
     const setTpuVariant = (v) => setField('tpuVariant', v);
+    const setTpuAlto = (v) => setField('tpuAlto', v);
+    const setTpuAncho = (v) => setField('tpuAncho', v);
 
     const setEstampadoFile = (v) => setField('estampadoFile', v);
     const setEstampadoQuantity = (v) => setField('estampadoQuantity', v);
@@ -1035,6 +1041,8 @@ export const usePrendaOrderForm = (serviceId, overrides = {}) => {
             setTpuBocetoFile,
             setTpuMaterial,
             setTpuVariant,
+            setTpuAlto,
+            setTpuAncho,
             handleTpuVariantChange,
             addTpuArchivos,
             removeTpuArchivo,

@@ -351,8 +351,18 @@ async function crearMaestroConVariantes({ maestro, variantes, transaction }) {
  * Es el punto al que salta el flag WMS_INTERNO=true en el cutover (F2).
  */
 async function egresarVentaCompat(items, ref = {}) {
-    const mapeados = (items || []).map(i => ({ varId: i.wms_variante_id, cantidad: i.Cantidad }));
-    const { errores } = await egresarVenta({ items: mapeados, refTipo: ref.refTipo || null, refId: ref.refId || null });
+    // [ACCESORIOS] cada ítem puede traer su depósito (deposito_id): se egresa por grupo de depósito;
+    // sin dato, el de ventas (DEP_LOCAL), como siempre.
+    const grupos = {};
+    (items || []).forEach(i => {
+        const d = parseInt(i.deposito_id, 10) || 0;
+        (grupos[d] = grupos[d] || []).push({ varId: i.wms_variante_id, cantidad: i.Cantidad });
+    });
+    const errores = [];
+    for (const [d, mapeados] of Object.entries(grupos)) {
+        const r = await egresarVenta({ items: mapeados, refTipo: ref.refTipo || null, refId: ref.refId || null, depId: Number(d) || null });
+        errores.push(...(r.errores || []));
+    }
     return { wmsDisponible: true, wmsErrors: errores };
 }
 

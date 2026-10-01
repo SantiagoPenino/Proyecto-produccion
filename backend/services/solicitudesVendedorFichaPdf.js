@@ -134,6 +134,51 @@ function fichaTecnica(p) {
     ${f.notas.length ? `<ul class="lista">${f.notas.map(n => `<li>${n.etiqueta ? '<b>' + esc(n.etiqueta) + ':</b> ' : ''}${esc(n.valor)}</li>`).join('')}</ul>` : ''}`;
 }
 
+// Estilos de la ficha (los comparte la ficha del pedido creado desde cualquier vía: services/fichaPedidoPdf.js)
+const CSS = `
+  @page { size: A4; margin: 14mm 12mm; }
+  * { box-sizing: border-box; }
+  html, body { background: #fff; }
+  body { font-family: "Segoe UI", Arial, sans-serif; font-size: 10.5px; color: #16233F; margin: 0; }
+  .top { display: flex; justify-content: space-between; gap: 12px; border-bottom: 3px solid #16233F; padding-bottom: 8px; margin-bottom: 6px; }
+  .top .kicker { font-size: 9px; letter-spacing: .08em; text-transform: uppercase; color: #5B6780; }
+  .top h1 { font-size: 22px; margin: 2px 0; }
+  .top .der { text-align: right; }
+  .top .ped { font-size: 15px; font-weight: 800; }
+  .banda { background: #16233F; color: #F5C231; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; font-size: 11px; padding: 5px 8px; margin: 14px 0 6px; border-radius: 3px; }
+  h2 { font-size: 14px; margin: 12px 0 4px; border-bottom: 1px solid #CDD4DF; padding-bottom: 2px; }
+  h3 { font-size: 11.5px; margin: 10px 0 4px; }
+  h2 small, h3 small { font-weight: 400; color: #5B6780; font-size: 10px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 18px; }
+  .f { display: flex; gap: 4px; line-height: 1.35; }
+  .f span { color: #5B6780; white-space: nowrap; }
+  .f span::after { content: ":"; }
+  .f b { font-weight: 600; white-space: pre-line; }
+  .caja { border: 1px solid #CDD4DF; border-radius: 4px; padding: 6px 8px; margin: 6px 0; }
+  .caja.rojo { border-color: #C0262D; }
+  .caja .cap { font-size: 9.5px; font-weight: 800; text-transform: uppercase; color: #5B6780; margin-bottom: 3px; }
+  .caja.rojo .cap { color: #C0262D; }
+  table { width: 100%; border-collapse: collapse; margin: 2px 0 4px; }
+  th, td { border: 1px solid #CDD4DF; padding: 3px 5px; text-align: left; vertical-align: top; }
+  th { background: #EDF0F4; font-size: 9.5px; }
+  small { color: #5B6780; }
+  .minis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin: 4px 0; }
+  figure { margin: 0; border: 1px solid #CDD4DF; border-radius: 4px; padding: 3px; break-inside: avoid; }
+  figure .img { height: 105px; display: flex; align-items: center; justify-content: center; background: #F6F8FB; overflow: hidden; }
+  figure img { max-width: 100%; max-height: 105px; object-fit: contain; }
+  .ext { font-size: 16px; font-weight: 800; color: #9AA6BE; }
+  figcaption { font-size: 8px; line-height: 1.25; margin-top: 2px; word-break: break-all; }
+  .parte { border-left: 3px solid #38BDF8; padding: 2px 0 2px 8px; margin: 6px 0; break-inside: avoid-page; }
+  .parte-tit { font-weight: 800; font-size: 11px; margin-bottom: 2px; }
+  .pill { display: inline-block; border: 1px solid #9AA6BE; border-radius: 9px; padding: 0 6px; font-size: 8.5px; font-weight: 700; color: #5B6780; }
+  .pill.rojo { border-color: #C0262D; color: #C0262D; }
+  b.rojo { color: #C0262D; }
+  .nota { color: #5B6780; margin: 2px 0; }
+  .salto { break-before: page; }
+  ul { margin: 2px 0 0 16px; padding: 0; }
+  .pie { margin-top: 14px; border-top: 1px solid #CDD4DF; padding-top: 3px; font-size: 8.5px; color: #9AA6BE; }
+`;
+
 function htmlFicha(s) {
   const f = s.Ficha || {};
   const vig = (s.Archivos || []).filter(a => a.Vigente);
@@ -185,49 +230,7 @@ function htmlFicha(s) {
   }).join('');
 
   return `<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Ficha del pedido — Solicitud #${s.SolicitudID}</title>
-<style>
-  @page { size: A4; margin: 14mm 12mm; }
-  * { box-sizing: border-box; }
-  html, body { background: #fff; }
-  body { font-family: "Segoe UI", Arial, sans-serif; font-size: 10.5px; color: #16233F; margin: 0; }
-  .top { display: flex; justify-content: space-between; gap: 12px; border-bottom: 3px solid #16233F; padding-bottom: 8px; margin-bottom: 6px; }
-  .top .kicker { font-size: 9px; letter-spacing: .08em; text-transform: uppercase; color: #5B6780; }
-  .top h1 { font-size: 22px; margin: 2px 0; }
-  .top .der { text-align: right; }
-  .top .ped { font-size: 15px; font-weight: 800; }
-  .banda { background: #16233F; color: #F5C231; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; font-size: 11px; padding: 5px 8px; margin: 14px 0 6px; border-radius: 3px; }
-  h2 { font-size: 14px; margin: 12px 0 4px; border-bottom: 1px solid #CDD4DF; padding-bottom: 2px; }
-  h3 { font-size: 11.5px; margin: 10px 0 4px; }
-  h2 small, h3 small { font-weight: 400; color: #5B6780; font-size: 10px; }
-  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 18px; }
-  .f { display: flex; gap: 4px; line-height: 1.35; }
-  .f span { color: #5B6780; white-space: nowrap; }
-  .f span::after { content: ":"; }
-  .f b { font-weight: 600; white-space: pre-line; }
-  .caja { border: 1px solid #CDD4DF; border-radius: 4px; padding: 6px 8px; margin: 6px 0; }
-  .caja.rojo { border-color: #C0262D; }
-  .caja .cap { font-size: 9.5px; font-weight: 800; text-transform: uppercase; color: #5B6780; margin-bottom: 3px; }
-  .caja.rojo .cap { color: #C0262D; }
-  table { width: 100%; border-collapse: collapse; margin: 2px 0 4px; }
-  th, td { border: 1px solid #CDD4DF; padding: 3px 5px; text-align: left; vertical-align: top; }
-  th { background: #EDF0F4; font-size: 9.5px; }
-  small { color: #5B6780; }
-  .minis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin: 4px 0; }
-  figure { margin: 0; border: 1px solid #CDD4DF; border-radius: 4px; padding: 3px; break-inside: avoid; }
-  figure .img { height: 105px; display: flex; align-items: center; justify-content: center; background: #F6F8FB; overflow: hidden; }
-  figure img { max-width: 100%; max-height: 105px; object-fit: contain; }
-  .ext { font-size: 16px; font-weight: 800; color: #9AA6BE; }
-  figcaption { font-size: 8px; line-height: 1.25; margin-top: 2px; word-break: break-all; }
-  .parte { border-left: 3px solid #38BDF8; padding: 2px 0 2px 8px; margin: 6px 0; break-inside: avoid-page; }
-  .parte-tit { font-weight: 800; font-size: 11px; margin-bottom: 2px; }
-  .pill { display: inline-block; border: 1px solid #9AA6BE; border-radius: 9px; padding: 0 6px; font-size: 8.5px; font-weight: 700; color: #5B6780; }
-  .pill.rojo { border-color: #C0262D; color: #C0262D; }
-  b.rojo { color: #C0262D; }
-  .nota { color: #5B6780; margin: 2px 0; }
-  .salto { break-before: page; }
-  ul { margin: 2px 0 0 16px; padding: 0; }
-  .pie { margin-top: 14px; border-top: 1px solid #CDD4DF; padding-top: 3px; font-size: 8.5px; color: #9AA6BE; }
-</style></head><body>
+<style>${CSS}</style></head><body>
   <div class="top">
     <div>
       <div class="kicker">Ficha del pedido · Solicitud #${s.SolicitudID} · ${esc(ESTADO_SOLICITUD[s.Estado] || s.Estado)} · ingresada el ${fechaHora(s.FechaSolicitud)}</div>
@@ -279,19 +282,21 @@ function htmlFicha(s) {
 }
 
 /** Arma el PDF de la solicitud (Buffer). `sol` = lo que devuelve obtener(). */
-async function generarPdf(sol) {
+async function pdfDesdeHtml(html) {
   const puppeteer = require('puppeteer');
   const browser = await puppeteer.launch({ headless: 'new', args: ['--no-sandbox', '--disable-setuid-sandbox'] });
   try {
     const page = await browser.newPage();
     // networkidle0: espera las miniaturas de Drive. Tope 45 s: si Drive tarda, sale igual (con la extensión).
-    await page.setContent(htmlFicha(sol), { waitUntil: 'networkidle0', timeout: 45000 }).catch(e => logger.warn(`[FICHA-PDF] miniaturas: ${e.message}`));
+    await page.setContent(html, { waitUntil: 'networkidle0', timeout: 45000 }).catch(e => logger.warn(`[FICHA-PDF] miniaturas: ${e.message}`));
     // puppeteer ≥ 22 devuelve Uint8Array: a Express hay que darle un Buffer (si no, res.send lo serializa como JSON y el PDF no abre)
     return Buffer.from(await page.pdf({ format: 'A4', printBackground: true, margin: { top: '14mm', right: '12mm', bottom: '14mm', left: '12mm' } }));
   } finally {
     await browser.close().catch(() => { });
   }
 }
+
+const generarPdf = (sol) => pdfDesdeHtml(htmlFicha(sol));
 
 const nombreArchivo = (sol) => `Ficha pedido SOL-${sol.SolicitudID}.pdf`;
 
@@ -341,4 +346,4 @@ async function adjuntarAlPedido(pool, obtenerSol, solicitudId, noDocERP, user, a
   }
 }
 
-module.exports = { htmlFicha, generarPdf, nombreArchivo, adjuntarAlPedido };
+module.exports = { htmlFicha, generarPdf, nombreArchivo, adjuntarAlPedido, pdfDesdeHtml, invocar, CSS, esc, F, H2, H3, fecha, fechaHora, plata, driveIdDe, ahoraLocal, miniaturas, fichaTecnica, MONEDA };

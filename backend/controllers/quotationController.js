@@ -1,5 +1,6 @@
 const { sql, getPool } = require('../config/db');
 const logger = require('../utils/logger');
+const { sqlImporteDeOtrasOrdenes } = require('../utils/montoTotalPedido');
 
 // Separador del QR
 const SEP = '$*';
@@ -1001,13 +1002,20 @@ exports.saveQuotation = async (req, res) => {
                 .input('NoDoc', sql.NVarChar, realNoDocERP)
                 .input('NewTotal', sql.Decimal(18, 2), nuevoTotal)
                 .input('MFinal', sql.VarChar(10), monedaFinal)
+                .input('PIDSync', sql.Int, pedidoId)
+                .input('CotSync', sql.Decimal(18, 4), parseFloat(cotizacion) || 40)
                 .query(`
                     UPDATE mc
-                    SET mc.MovImporte = -@NewTotal
+                    SET mc.MovImporte = -ROUND(@NewTotal - otr.Imp, 2)
                     FROM dbo.MovimientosCuenta mc
                     INNER JOIN dbo.Ordenes o ON mc.OrdIdOrden = o.OrdenID
                     INNER JOIN dbo.CuentasCliente cc ON mc.CueIdCuenta = cc.CueIdCuenta
+                    -- Pedido partido en varias órdenes con cargo propio: a cada cargo le toca el
+                    -- pedido MENOS lo de sus hermanas ya asentadas (0 en el caso de siempre: un
+                    -- cargo por pedido). Sin esto cada cargo se pisaba con el pedido ENTERO.
+                    CROSS APPLY (SELECT ${sqlImporteDeOtrasOrdenes({ pedidoId: '@PIDSync', monedaPedido: '@MFinal', cot: '@CotSync', m: 'mc', cli: 'cc.CliIdCliente' })} AS Imp) otr
                     WHERE LTRIM(RTRIM(CAST(o.NoDocERP AS VARCHAR))) = LTRIM(RTRIM(@NoDoc))
+                      AND (otr.Imp = 0 OR @NewTotal - otr.Imp > 0.005)
                       AND mc.MovTipo IN ('ORDEN', 'ORDEN_ANTICIPO')
                       AND mc.DocIdDocumento IS NULL
                       AND (
