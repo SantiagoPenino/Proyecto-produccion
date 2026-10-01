@@ -67,6 +67,15 @@ const costoParaDeposito = async (pool, codigoOrden, importeQR, monIdMoneda) => {
             }
         }
 
+        // Línea propia en $0 A PROPÓSITO (cubierta por el plan de metros / prepago, o reposición
+        // sin cargo): la orden entra en 0. Caer al QR le ponía el total del pedido a cada parte en
+        // $0 de un pedido dividido "(n/m)" — sus etiquetas llevaban el importe del pedido — y la
+        // caja lo cobraba una vez por parte (CAPA: 12 pedidos entre julio y agosto de 2026).
+        if (!(delPedido > 0) && lin?.Imp === 0 && lin?.CeroIntencional) {
+            if (qr > 0.01) logger.info(`[INGRESO] ${codigoOrden}: su línea vale 0 (cubierta por el plan) — se ingresa en 0, no con el ${qr.toFixed(2)} del QR.`);
+            return 0;
+        }
+
         if (!(delPedido > 0)) return qr;
 
         if (Math.abs(delPedido - qr) > 0.01) {
@@ -1438,4 +1447,4 @@ const omitirWsp = async (req, res) => {
   }
 };
 
-module.exports = { getOrdenesByFilter, createOrden, getOrdenByCodigo, getOrdenesClienteByOrden, getOrdenesEstado, updateOrdenEstado, getEstadosOrdenes, updateExportacion, eliminarOrdenes, getModosOrdenes, parseQROrden, updatePhoneAndResendWsp, getPendingWspOrders, omitirWsp };
+module.exports = { getOrdenesByFilter, createOrden, getOrdenByCodigo, getOrdenesClienteByOrden, getOrdenesEstado, updateOrdenEstado, getEstadosOrdenes, updateExportacion, eliminarOrdenes, getModosOrdenes, parseQROrden, updatePhoneAndResendWsp, getPendingWspOrders, omitirWsp, costoParaDeposito };

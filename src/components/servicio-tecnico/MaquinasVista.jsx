@@ -5,7 +5,8 @@ import { servicioTecnicoService } from '../../services/api';
 import { socket } from '../../services/socketService';
 import useRecargaConFreno from '../../hooks/useRecargaConFreno';
 import { estadoEquipo, fmtDia, fmtDuracion, haceCuanto, mensajeError } from './constantes';
-import { chip } from './ui';
+import { chip, campoFiltro } from './ui';
+import Selector from '../ui/Selector';
 
 // Máquinas de producción (ConfigEquipos) con su resumen de Servicio Técnico. Tocar una abre su ficha.
 const MaquinasVista = ({ onAbrirMaquina }) => {
@@ -55,12 +56,12 @@ const MaquinasVista = ({ onAbrirMaquina }) => {
                 <div className="relative flex-1 min-w-[180px]">
                     <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-300" />
                     <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar máquina…"
-                        className="w-full pl-9 pr-3 py-2 border border-zinc-200 rounded-xl text-sm outline-none focus:border-brand-cyan" />
+                        className={`${campoFiltro} w-full pl-9`} />
                 </div>
-                <select className="px-3 py-2 border border-zinc-200 rounded-xl text-sm text-zinc-700 bg-white outline-none focus:border-brand-cyan" value={area} onChange={(e) => setArea(e.target.value)}>
+                <Selector filtro value={area} onChange={(e) => setArea(e.target.value)}>
                     <option value="">Todas las áreas</option>
                     {areas.map(([id, nombre]) => <option key={id} value={id}>{nombre}</option>)}
-                </select>
+                </Selector>
                 <label className="inline-flex items-center gap-2 px-2 text-sm font-bold text-zinc-600">
                     <input type="checkbox" checked={soloProblemas} onChange={(e) => setSoloProblemas(e.target.checked)} className="w-4 h-4 accent-brand-cyan" />
                     Con solicitudes o en mantenimiento
@@ -72,7 +73,7 @@ const MaquinasVista = ({ onAbrirMaquina }) => {
             ) : grupos.map(([nombreArea, lista]) => (
                 <div key={nombreArea} className="mb-5">
                     <h3 className="text-xs font-black text-zinc-400 uppercase tracking-wide mb-2">{nombreArea}</h3>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4 gap-2">
                         {lista.map(e => {
                             const est = estadoEquipo(e.Estado);
                             const enMant = String(e.Estado || '').trim().toUpperCase() === 'MANTENIMIENTO';

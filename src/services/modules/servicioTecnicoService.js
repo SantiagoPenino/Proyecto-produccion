@@ -50,8 +50,13 @@ export const servicioTecnicoService = {
     // Mantenimientos (etapa 3)
     procedimientos: async (todos = false) => (await api.get('/servicio-tecnico/procedimientos', { params: todos ? { todos: 1 } : {} })).data.data,
     procedimiento: async (id) => (await api.get(`/servicio-tecnico/procedimientos/${id}`)).data.data,
-    guardarProcedimiento: async (id, datos) =>
-        (id ? await api.put(`/servicio-tecnico/procedimientos/${id}`, datos) : await api.post('/servicio-tecnico/procedimientos', datos)).data.data,
+    // Con fotos de insumos va multipart: los datos como JSON en "datos" y las fotos en "adjuntos"
+    guardarProcedimiento: async (id, datos, fotos = []) => {
+        const cuerpo = fotos.length ? armarForm({ datos: JSON.stringify(datos) }, fotos) : datos;
+        const cfg = fotos.length ? multipart : undefined;
+        return (id ? await api.put(`/servicio-tecnico/procedimientos/${id}`, cuerpo, cfg)
+            : await api.post('/servicio-tecnico/procedimientos', cuerpo, cfg)).data.data;
+    },
     activarProcedimiento: async (id, activo) => (await api.put(`/servicio-tecnico/procedimientos/${id}/activo`, { activo })).data,
     planes: async (todos = false) => (await api.get('/servicio-tecnico/planes', { params: todos ? { todos: 1 } : {} })).data.data,
     crearPlan: async (datos) => (await api.post('/servicio-tecnico/planes', datos)).data.data,

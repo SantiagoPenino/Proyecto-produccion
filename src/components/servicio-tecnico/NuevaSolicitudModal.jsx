@@ -1,12 +1,13 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { toast } from 'sonner';
 import { Wrench, X, Paperclip, Loader2, Send, Trash2, History } from 'lucide-react';
 import { servicioTecnicoService } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
 import { comprimirImagen } from '../../utils/comprimirImagen';
 import { CATEGORIAS, PRIORIDADES, estado as estadoInfo, estadoEquipo, fmtFecha, mensajeError } from './constantes';
+import Selector from '../ui/Selector';
 
 // Formulario para pedir Servicio Técnico. Lo usan la pantalla /servicio-tecnico y el botón
 // "Reportar falla" de cada área (con el área y "máquina" ya elegidos, y la pestaña de historial
@@ -14,6 +15,7 @@ import { CATEGORIAS, PRIORIDADES, estado as estadoInfo, estadoEquipo, fmtFecha, 
 const VACIO = {
     categoria: null, equipoId: '', maquinaNoTrabaja: null, equipoTexto: '', areaId: '',
     titulo: '', descripcion: '', prioridad: 'MEDIA', reporta: 'yo', reportaTexto: '',
+    localId: '', localOtro: '',
 };
 
 const label = 'block mb-1.5 text-[11px] font-black text-zinc-500 uppercase tracking-wide';
@@ -22,6 +24,7 @@ const input = 'w-full px-3 py-2.5 border border-zinc-200 rounded-xl text-sm text
 const NuevaSolicitudModal = ({ abierta, onCerrar, onCreada, areaInicial = '', categoriaInicial = null, conHistorialArea = false }) => {
     const { user } = useAuth();
     const navigate = useNavigate();
+    const location = useLocation();
     const [meta, setMeta] = useState(null);
     const [usuarios, setUsuarios] = useState([]);
     const [f, setF] = useState(VACIO);
@@ -43,7 +46,12 @@ const NuevaSolicitudModal = ({ abierta, onCerrar, onCreada, areaInicial = '', ca
         setArchivos([]);
         setTab('nueva');
         setHistorial(null);
-        servicioTecnicoService.meta().then(setMeta).catch((e) => toast.error(mensajeError(e, 'No se pudo cargar Servicio Técnico')));
+        servicioTecnicoService.meta().then((m) => {
+            setMeta(m);
+            // Sin área del botón (navbar): la del usuario según la base, que es la de hoy (la de la
+            // sesión es la del login). Define qué máquinas se listan.
+            if (!areaInicial) setF((prev) => (prev.equipoId ? prev : { ...prev, areaId: String(m?.usuario?.area || '').trim().toUpperCase() }));
+        }).catch((e) => toast.error(mensajeError(e, 'No se pudo cargar Servicio Técnico')));
         servicioTecnicoService.usuarios().then(setUsuarios).catch(() => setUsuarios([]));
     }, [abierta, areaInicial, categoriaInicial, user?.areaKey]);
 
@@ -70,13 +78,31 @@ const NuevaSolicitudModal = ({ abierta, onCerrar, onCreada, areaInicial = '', ca
             .then(setHistorial).catch((e) => { toast.error(mensajeError(e)); setHistorial([]); });
     }, [abierta, tab, historial, areaInicial]);
 
-    // Máquinas: primero las del área elegida.
+    // Máquinas: solo las del área elegida (la del botón del área o la del usuario). Si esa área no tiene
+    // máquinas (Servicio Técnico, administración…), todas, agrupadas por área. Para una máquina de otra
+    // área se cambia el Área del formulario.
+    const nombreArea = (id) => (meta?.areas || []).find(a => String(a.AreaID).toUpperCase() === id)?.Nombre || id || 'Sin área';
     const maquinas = useMemo(() => {
         const todas = meta?.equipos || [];
         const area = String(f.areaId || '').toUpperCase();
-        return { delArea: todas.filter(m => String(m.AreaID).toUpperCase() === area), otras: todas.filter(m => String(m.AreaID).toUpperCase() !== area) };
-    }, [meta, f.areaId]);
+        const delArea = todas.filter(m => String(m.AreaID).toUpperCase() === area);
+        if (delArea.length) return { delArea, porArea: [] };
+        const grupos = new Map();
+        todas.forEach((m) => {
+            const k = String(m.AreaID || '').toUpperCase();
+            if (!grupos.has(k)) grupos.set(k, []);
+            grupos.get(k).push(m);
+        });
+        return { delArea: [], porArea: [...grupos.entries()].map(([id, lista]) => ({ id, nombre: nombreArea(id), lista })).sort((a, b) => a.nombre.localeCompare(b.nombre)) };
+    }, [meta, f.areaId]); // eslint-disable-line react-hooks/exhaustive-deps
     const maquinaElegida = (meta?.equipos || []).find(m => String(m.EquipoID) === String(f.equipoId));
+    // Cambiar el área borra la máquina elegida si no es de esa área (la lista ya no la muestra).
+    const cambiarArea = (v) => set({ areaId: v, ...(maquinaElegida && String(maquinaElegida.AreaID).toUpperCase() !== String(v).toUpperCase() ? { equipoId: '' } : {}) });
+
+    // Local (30/09): la lista llega en meta solo con docs/servicio-tecnico/st-locales.sql corrido; sin
+    // eso el campo no aparece. "otro" pide escribir cuál.
+    const locales = meta?.locales || [];
+    const esLocalOtro = String(locales.find(l => String(l.Id) === String(f.localId))?.Nombre || '').trim().toLowerCase() === 'otro';
 
     // Quién reporta: el logueado primero, después los de su área y el resto.
     const opcionesReporta = useMemo(() => {
@@ -91,11 +117,23 @@ const NuevaSolicitudModal = ({ abierta, onCerrar, onCreada, areaInicial = '', ca
         if (inputArchivos.current) inputArchivos.current.value = '';
     };
 
+    // Prioridad según la máquina (el backend valida lo mismo): parada → Alta o Crítica; sigue trabajando →
+    // no puede ser Crítica. Mientras no se contestó la pregunta, todas. Al contestar se corrige sola.
+    const prioridadPermitida = (p) => f.categoria !== 'MAQUINA' || f.maquinaNoTrabaja === null
+        || (f.maquinaNoTrabaja ? p === 'ALTA' || p === 'CRITICA' : p !== 'CRITICA');
+    // Cambiar el tipo de problema borra la máquina elegida y la respuesta de si puede seguir trabajando.
+    const elegirCategoria = (v) => set({ categoria: v || null, equipoId: '', maquinaNoTrabaja: null });
+    const contestarParada = (parada) => set({
+        maquinaNoTrabaja: parada,
+        prioridad: parada ? (['BAJA', 'MEDIA'].includes(f.prioridad) ? 'ALTA' : f.prioridad) : (f.prioridad === 'CRITICA' ? 'ALTA' : f.prioridad),
+    });
+
     const faltante = !f.categoria ? 'Elegí qué tipo de problema es.'
         : f.categoria === 'MAQUINA' && !f.equipoId ? 'Elegí la máquina.'
         : f.categoria === 'MAQUINA' && f.maquinaNoTrabaja === null ? 'Indicá si la máquina puede seguir trabajando.'
         : !f.titulo.trim() ? 'Escribí qué pasa.'
         : f.reporta === 'otro' && !f.reportaTexto.trim() ? 'Escribí quién reporta.'
+        : esLocalOtro && !f.localOtro.trim() ? 'Especificá el local.'
         : null;
 
     const enviar = async () => {
@@ -113,10 +151,15 @@ const NuevaSolicitudModal = ({ abierta, onCerrar, onCreada, areaInicial = '', ca
                 prioridad: f.prioridad,
                 solicitanteId: f.reporta !== 'yo' && f.reporta !== 'otro' ? f.reporta : undefined,
                 solicitanteNombre: f.reporta === 'otro' ? f.reportaTexto.trim() : undefined,
+                localId: f.localId || undefined,
+                localOtro: esLocalOtro ? f.localOtro.trim() : undefined,
             };
             const sol = await servicioTecnicoService.crear(campos, archivos);
             toast.success(`Solicitud ${sol.Codigo} enviada a Servicio Técnico`, {
                 description: f.maquinaNoTrabaja ? 'La máquina quedó en mantenimiento: no recibe lotes hasta que la liberen.' : undefined,
+                // Desde otra pantalla (navbar, botón del área): un link para verla.
+                action: location.pathname.startsWith('/servicio-tecnico') ? undefined
+                    : { label: 'Ver', onClick: () => navigate(`/servicio-tecnico?sol=${sol.SolId}`) },
             });
             onCreada?.(sol);
             onCerrar();
@@ -131,13 +174,15 @@ const NuevaSolicitudModal = ({ abierta, onCerrar, onCreada, areaInicial = '', ca
 
     return createPortal(
         // Sin cerrar al tocar afuera: es un formulario y se perdería lo escrito.
-        <div className="fixed inset-0 z-[1150] flex items-start sm:items-center justify-center bg-zinc-900/60 p-2 sm:p-4 overflow-y-auto">
-            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl my-2 sm:my-8 flex flex-col max-h-[calc(100vh-1rem)] sm:max-h-[92vh] overflow-hidden">
+        // En celular ocupa toda la pantalla; desde sm es una ventana centrada.
+        <div className="fixed inset-0 z-[6050] flex items-start sm:items-center justify-center bg-zinc-900/60 p-0 sm:p-4 overflow-y-auto">
+            <div className="bg-white sm:rounded-2xl shadow-2xl w-full max-w-2xl h-[100dvh] sm:h-auto sm:my-8 flex flex-col sm:max-h-[92vh] overflow-hidden">
                 {/* Encabezado */}
                 <div className="px-5 pt-4 bg-zinc-900 text-white shrink-0">
                     <div className="flex items-center justify-between gap-3 pb-3">
-                        <div className="flex items-center gap-3 min-w-0">
-                            <div className="w-10 h-10 rounded-xl bg-white/10 flex items-center justify-center shrink-0"><Wrench size={20} /></div>
+                        {/* La llave queda a la misma distancia del borde que del título: 16 px (px-5 con -ml-1, y gap-4) */}
+                        <div className="flex items-center gap-4 min-w-0">
+                            <Wrench size={28} className="shrink-0 -ml-1 text-brand-cyan" />
                             <div className="min-w-0">
                                 <h2 className="text-lg font-black leading-tight">Pedir Servicio Técnico</h2>
                                 <p className="text-xs text-zinc-400 truncate">Máquinas, PC, internet, software o instalaciones</p>
@@ -183,12 +228,20 @@ const NuevaSolicitudModal = ({ abierta, onCerrar, onCreada, areaInicial = '', ca
                 ) : (
                     <>
                         <div className="flex-1 overflow-y-auto p-5 flex flex-col gap-5">
-                            {/* 1. Tipo */}
+                            {/* 1. Tipo: en celular un desplegable; desde sm, botones */}
                             <div>
                                 <span className={label}>¿Qué tipo de problema es?</span>
-                                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                                <div className="sm:hidden">
+                                    <Selector value={f.categoria || ''} onChange={(e) => elegirCategoria(e.target.value)}>
+                                        <option value="">Elegir el tipo…</option>
+                                        {CATEGORIAS.map(({ value, corto, Icono }) => (
+                                            <option key={value} value={value}><span className="inline-flex items-center gap-2 align-middle"><Icono size={16} className="shrink-0" />{corto}</span></option>
+                                        ))}
+                                    </Selector>
+                                </div>
+                                <div className="hidden sm:grid grid-cols-3 gap-2">
                                     {CATEGORIAS.map(({ value, corto, Icono }) => (
-                                        <button key={value} type="button" onClick={() => set({ categoria: value, equipoId: '', maquinaNoTrabaja: null })}
+                                        <button key={value} type="button" onClick={() => elegirCategoria(value)}
                                             className={`flex items-center gap-2 px-3 py-2.5 rounded-xl border text-sm font-bold transition-colors ${f.categoria === value ? 'border-brand-cyan bg-brand-cyan/10 text-brand-cyan' : 'border-zinc-200 text-zinc-600 hover:border-zinc-300'}`}>
                                             <Icono size={18} className="shrink-0" /> {corto}
                                         </button>
@@ -200,21 +253,22 @@ const NuevaSolicitudModal = ({ abierta, onCerrar, onCreada, areaInicial = '', ca
                             {f.categoria === 'MAQUINA' ? (
                                 <div className="flex flex-col gap-3">
                                     <div>
-                                        <span className={label}>Máquina</span>
-                                        <select className={input} value={f.equipoId} onChange={(e) => {
+                                        <span className={label}>
+                                            Máquina{maquinas.delArea.length > 0 && <span className="normal-case font-bold text-zinc-400"> · {nombreArea(String(f.areaId).toUpperCase())}</span>}
+                                        </span>
+                                        <Selector value={f.equipoId} onChange={(e) => {
                                             const m = (meta?.equipos || []).find(x => String(x.EquipoID) === e.target.value);
                                             set({ equipoId: e.target.value, areaId: m?.AreaID || f.areaId });
                                         }}>
-                                            <option value="">— Elegir máquina —</option>
-                                            {maquinas.delArea.length > 0 && (
-                                                <optgroup label="De esta área">
-                                                    {maquinas.delArea.map(m => <option key={m.EquipoID} value={m.EquipoID}>{m.Nombre}</option>)}
-                                                </optgroup>
-                                            )}
-                                            <optgroup label={maquinas.delArea.length ? 'Otras áreas' : 'Máquinas'}>
-                                                {maquinas.otras.map(m => <option key={m.EquipoID} value={m.EquipoID}>{m.Nombre} ({m.AreaID})</option>)}
-                                            </optgroup>
-                                        </select>
+                                            <option value="">Elegir máquina…</option>
+                                            {maquinas.delArea.length > 0
+                                                ? maquinas.delArea.map(m => <option key={m.EquipoID} value={m.EquipoID}>{m.Nombre}</option>)
+                                                : maquinas.porArea.map(g => (
+                                                    <optgroup key={g.id} label={g.nombre}>
+                                                        {g.lista.map(m => <option key={m.EquipoID} value={m.EquipoID}>{m.Nombre}</option>)}
+                                                    </optgroup>
+                                                ))}
+                                        </Selector>
                                         {maquinaElegida && (
                                             <p className="mt-1.5 text-xs text-zinc-500">Estado actual:{' '}
                                                 <span className={`px-2 py-0.5 rounded-full border text-[11px] font-bold ${estadoEquipo(maquinaElegida.Estado).chip}`}>{estadoEquipo(maquinaElegida.Estado).label}</span>
@@ -224,11 +278,11 @@ const NuevaSolicitudModal = ({ abierta, onCerrar, onCreada, areaInicial = '', ca
                                     <div>
                                         <span className={label}>¿La máquina puede seguir trabajando?</span>
                                         <div className="grid grid-cols-2 gap-2">
-                                            <button type="button" onClick={() => set({ maquinaNoTrabaja: false })}
+                                            <button type="button" onClick={() => contestarParada(false)}
                                                 className={`px-3 py-2.5 rounded-xl border text-sm font-bold transition-colors ${f.maquinaNoTrabaja === false ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : 'border-zinc-200 text-zinc-600 hover:border-zinc-300'}`}>
                                                 Sí, sigue trabajando
                                             </button>
-                                            <button type="button" onClick={() => set({ maquinaNoTrabaja: true })}
+                                            <button type="button" onClick={() => contestarParada(true)}
                                                 className={`px-3 py-2.5 rounded-xl border text-sm font-bold transition-colors ${f.maquinaNoTrabaja === true ? 'border-amber-500 bg-amber-50 text-amber-700' : 'border-zinc-200 text-zinc-600 hover:border-zinc-300'}`}>
                                                 No, está parada
                                             </button>
@@ -255,8 +309,7 @@ const NuevaSolicitudModal = ({ abierta, onCerrar, onCreada, areaInicial = '', ca
                                 <input className={`${input} font-semibold`} value={f.titulo} maxLength={200} autoComplete="off"
                                     onChange={(e) => { set({ titulo: e.target.value }); setVerSugerencias(true); }}
                                     onFocus={() => setVerSugerencias(true)}
-                                    placeholder={f.categoria ? 'Ej: cabezal tapado, no enciende, sin internet…' : 'Primero elegí el tipo de problema'}
-                                    disabled={!f.categoria} />
+                                    placeholder="Ej: cabezal tapado, no enciende, sin internet…" />
                                 {verSugerencias && sugerencias.length > 0 && (
                                     <ul className="absolute z-20 top-full mt-1 w-full bg-white border border-zinc-200 rounded-xl shadow-xl max-h-52 overflow-y-auto divide-y divide-zinc-50">
                                         {sugerencias.filter(s => s.Titulo !== f.titulo).map(s => (
@@ -280,27 +333,49 @@ const NuevaSolicitudModal = ({ abierta, onCerrar, onCreada, areaInicial = '', ca
                             <div>
                                 <span className={label}>Prioridad</span>
                                 <div className="grid grid-cols-4 gap-1 bg-zinc-100 p-1 rounded-xl">
-                                    {PRIORIDADES.map(p => (
-                                        <button key={p.value} type="button" onClick={() => set({ prioridad: p.value })}
-                                            className={`py-2 rounded-lg text-xs font-black uppercase tracking-wide transition-colors ${f.prioridad === p.value ? `${p.boton} shadow` : 'text-zinc-400 hover:bg-white/60'}`}>
-                                            {p.label}
-                                        </button>
-                                    ))}
+                                    {PRIORIDADES.map(p => {
+                                        const permitida = prioridadPermitida(p.value);
+                                        return (
+                                            <button key={p.value} type="button" onClick={() => set({ prioridad: p.value })} disabled={!permitida}
+                                                title={permitida ? undefined : f.maquinaNoTrabaja ? 'Con la máquina parada: Alta o Crítica' : 'Si sigue trabajando no puede ser Crítica'}
+                                                className={`py-2 rounded-lg text-xs font-black uppercase tracking-wide transition-colors ${f.prioridad === p.value ? `${p.boton} shadow` : permitida ? 'text-zinc-400 hover:bg-white/60' : 'text-zinc-300 cursor-not-allowed'}`}>
+                                                {p.label}
+                                            </button>
+                                        );
+                                    })}
                                 </div>
+                                {f.categoria === 'MAQUINA' && f.maquinaNoTrabaja !== null && (
+                                    <p className="mt-1.5 text-xs text-zinc-500">
+                                        {f.maquinaNoTrabaja ? 'Con la máquina parada, la prioridad es Alta o Crítica.' : 'Si la máquina sigue trabajando, la prioridad no puede ser Crítica.'}
+                                    </p>
+                                )}
                             </div>
 
-                            {/* 5. Área y quién reporta */}
-                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            {/* 5. Local, área y quién reporta */}
+                            <div className={`grid grid-cols-1 ${locales.length > 0 ? 'sm:grid-cols-3' : 'sm:grid-cols-2'} gap-3`}>
+                                {locales.length > 0 && (
+                                    <div>
+                                        <span className={label}>Local <span className="normal-case font-bold text-zinc-300">(opcional)</span></span>
+                                        <Selector value={f.localId} onChange={(e) => set({ localId: e.target.value, localOtro: '' })}>
+                                            <option value="">Elegir local…</option>
+                                            {locales.map(l => <option key={l.Id} value={l.Id}><span className="capitalize">{l.Nombre}</span></option>)}
+                                        </Selector>
+                                        {esLocalOtro && (
+                                            <input className={`${input} mt-2`} value={f.localOtro} maxLength={150} autoFocus
+                                                onChange={(e) => set({ localOtro: e.target.value })} placeholder="Especifique" />
+                                        )}
+                                    </div>
+                                )}
                                 <div>
                                     <span className={label}>Área</span>
-                                    <select className={input} value={f.areaId} onChange={(e) => set({ areaId: e.target.value })}>
-                                        <option value="">— Sin área —</option>
+                                    <Selector value={f.areaId} onChange={(e) => cambiarArea(e.target.value)}>
+                                        <option value="">Sin área</option>
                                         {(meta?.areas || []).map(a => <option key={a.AreaID} value={a.AreaID}>{a.Nombre}</option>)}
-                                    </select>
+                                    </Selector>
                                 </div>
                                 <div>
                                     <span className={label}>¿Quién reporta?</span>
-                                    <select className={input} value={f.reporta} onChange={(e) => set({ reporta: e.target.value })}>
+                                    <Selector value={f.reporta} onChange={(e) => set({ reporta: e.target.value })}>
                                         <option value="yo">{meta?.usuario?.nombre || user?.nombre || 'Yo'} (yo)</option>
                                         {opcionesReporta.delArea.length > 0 && (
                                             <optgroup label="De esta área">
@@ -311,7 +386,7 @@ const NuevaSolicitudModal = ({ abierta, onCerrar, onCreada, areaInicial = '', ca
                                             {opcionesReporta.resto.map(u => <option key={u.id} value={u.id}>{u.nombre}</option>)}
                                         </optgroup>
                                         <option value="otro">Otra persona (sin usuario)…</option>
-                                    </select>
+                                    </Selector>
                                     {f.reporta === 'otro' && (
                                         <input className={`${input} mt-2`} value={f.reportaTexto} maxLength={150} autoFocus
                                             onChange={(e) => set({ reportaTexto: e.target.value })} placeholder="Nombre de quien reporta" />

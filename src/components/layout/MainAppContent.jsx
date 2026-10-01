@@ -41,7 +41,6 @@ const UsersPage = lazyWithRetry(() => import('../pages/UsersPage'));
 const AuditPage = lazyWithRetry(() => import('../pages/AuditPage'));
 const InventoryPage = lazyWithRetry(() => import('../pages/InventoryPage'));
 const InsumosCatalogPage = lazyWithRetry(() => import('../pages/InsumosCatalogPage'));
-const StockRequestsPage = lazyWithRetry(() => import('../pages/StockRequestsPage'));
 const ReceptionPage = lazyWithRetry(() => import('../pages/customer-service/ReceptionPage'));
 const VentaRolloAdelantoPage = lazyWithRetry(() => import('../pages/customer-service/VentaRolloAdelantoPage'));
 const LogisticsPage = lazyWithRetry(() => import('../pages/customer-service/LogisticsPage'));
@@ -1070,7 +1069,9 @@ const DynamicRouter = ({ menuItems }) => {
     if (menuItem.Ruta === '/ops/inventory') return <LogisticsDashboard />;
     if (menuItem.Ruta === '/inventario') return <InventoryPage />;
     if (menuItem.Ruta === '/insumos') return <InsumosCatalogPage />;
-    if (menuItem.Ruta === '/solicitudes') return <StockRequestsPage />;
+    // /solicitudes (29/09): la cola real de pedidos de insumos, la misma "Órdenes solicitadas" de Stock.
+    // Antes era StockRequestsPage, que leía dbo.Solicitudes, una tabla que no existe.
+    if (menuItem.Ruta === '/solicitudes') return <StockGestionPage key="solicitudes" seccion="solicitudes" rutasPermitidas={menuItems.map(m => m.Ruta)} />;
     if (menuItem.Ruta === '/atencion-cliente/recepcion') return <ReceptionPage />;
     if (menuItem.Ruta === '/atencion-cliente/venta-rollo') return <VentaRolloAdelantoPage />;
     if (menuItem.Ruta === '/atencion-cliente/control') return <LogisticsPage />;

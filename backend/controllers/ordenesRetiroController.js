@@ -125,38 +125,45 @@ const getOrdenesRetiroQueryBase = `
     (SELECT TOP 1 b.ComprobantePath FROM Logistica_Bultos b WITH(NOLOCK) WHERE b.OrdenID = r.OReIdOrdenRetiro AND b.ComprobantePath IS NOT NULL ORDER BY b.BultoID DESC) AS comprobanteEntrega,
     art.Descripcion AS articuloDescripcion,
     o.OrdNombreTrabajo AS orderNombreTrabajo,
-    -- BILLETERA: cubierta ENTERA (consumo CUBIERTO_CUENTA_, no parcial) ⇒ no hay nada que cobrar
+    -- BILLETERA. El movimiento apunta a la orden de depósito (o.OrdIdOrden) o a alguna orden de
+    -- producción con el mismo código. Los dos ids van en una lista (idsX) que se cruza con
+    -- MovimientosCuenta por OrdIdOrden, que tiene índice. Antes era "OrdIdOrden = ... OR OrdIdOrden IN (...)":
+    -- con el OR no se podía usar el índice y se recorrían TODOS los movimientos del cliente, 3 veces por
+    -- orden (29/09: /caja llegaba a 800 mil lecturas y 1,5 s de CPU por llamada). Mismo resultado.
+    -- Cubierta ENTERA (consumo CUBIERTO_CUENTA_, no parcial) ⇒ no hay nada que cobrar
     CASE WHEN EXISTS (
-        SELECT 1 FROM MovimientosCuenta cx WITH(NOLOCK)
+        SELECT 1
+        FROM (SELECT o.OrdIdOrden AS Id
+              UNION ALL SELECT erpB.OrdenID FROM Ordenes erpB WITH(NOLOCK) WHERE erpB.CodigoOrden = o.OrdCodigoOrden) idsB
+        JOIN MovimientosCuenta cx WITH(NOLOCK) ON cx.OrdIdOrden = idsB.Id
         JOIN CuentasCliente ccx WITH(NOLOCK) ON ccx.CueIdCuenta = cx.CueIdCuenta
         WHERE ccx.CliIdCliente = o.CliIdCliente
           AND cx.MovTipo = 'CONSUMO_CUENTA'
           AND (cx.MovAnulado IS NULL OR cx.MovAnulado = 0)
           AND cx.MovObservaciones LIKE 'CUBIERTO[_]CUENTA[_]%'
-          AND (cx.OrdIdOrden = o.OrdIdOrden
-               OR cx.OrdIdOrden IN (SELECT erpB.OrdenID FROM Ordenes erpB WITH(NOLOCK) WHERE erpB.CodigoOrden = o.OrdCodigoOrden))
     ) THEN 1 ELSE 0 END AS CubiertaBilletera,
-    -- BILLETERA: cubierta PARCIAL ⇒ a cobrar queda solo el resto de cuenta corriente
+    -- Cubierta PARCIAL ⇒ a cobrar queda solo el resto de cuenta corriente
     CASE WHEN EXISTS (
-        SELECT 1 FROM MovimientosCuenta cp WITH(NOLOCK)
+        SELECT 1
+        FROM (SELECT o.OrdIdOrden AS Id
+              UNION ALL SELECT erpC.OrdenID FROM Ordenes erpC WITH(NOLOCK) WHERE erpC.CodigoOrden = o.OrdCodigoOrden) idsC
+        JOIN MovimientosCuenta cp WITH(NOLOCK) ON cp.OrdIdOrden = idsC.Id
         JOIN CuentasCliente ccp WITH(NOLOCK) ON ccp.CueIdCuenta = cp.CueIdCuenta
         WHERE ccp.CliIdCliente = o.CliIdCliente
           AND cp.MovTipo = 'CONSUMO_CUENTA'
           AND (cp.MovAnulado IS NULL OR cp.MovAnulado = 0)
           AND cp.MovObservaciones LIKE 'CUBIERTO[_]PARCIAL[_]CUENTA%'
-          AND (cp.OrdIdOrden = o.OrdIdOrden
-               OR cp.OrdIdOrden IN (SELECT erpC.OrdenID FROM Ordenes erpC WITH(NOLOCK) WHERE erpC.CodigoOrden = o.OrdCodigoOrden))
     ) THEN 1 ELSE 0 END AS ParcialBilletera,
     (SELECT TOP 1 ABS(mr.MovImporte)
-     FROM MovimientosCuenta mr WITH(NOLOCK)
+     FROM (SELECT o.OrdIdOrden AS Id
+           UNION ALL SELECT erpD.OrdenID FROM Ordenes erpD WITH(NOLOCK) WHERE erpD.CodigoOrden = o.OrdCodigoOrden) idsD
+     JOIN MovimientosCuenta mr WITH(NOLOCK) ON mr.OrdIdOrden = idsD.Id
      JOIN CuentasCliente ccr WITH(NOLOCK) ON ccr.CueIdCuenta = mr.CueIdCuenta
      WHERE ccr.CliIdCliente = o.CliIdCliente
        AND mr.MovTipo IN ('ORDEN','ORDEN_ANTICIPO')
        AND (mr.MovAnulado IS NULL OR mr.MovAnulado = 0)
        AND mr.DocIdDocumento IS NULL
        AND (mr.MovObservaciones IS NULL OR mr.MovObservaciones NOT LIKE 'CUBIERTO%')
-       AND (mr.OrdIdOrden = o.OrdIdOrden
-            OR mr.OrdIdOrden IN (SELECT erpD.OrdenID FROM Ordenes erpD WITH(NOLOCK) WHERE erpD.CodigoOrden = o.OrdCodigoOrden))
      ORDER BY mr.MovIdMovimiento DESC) AS RestoCtaCte
   FROM OrdenesRetiro r WITH(NOLOCK)
   LEFT JOIN FormasEnvio fe WITH(NOLOCK) ON fe.ID = r.LReIdLugarRetiro
@@ -421,14 +428,16 @@ const ordenesRetiroCaja = async (req, res) => {
         WHERE od2.OReIdOrdenRetiro = r.OReIdOrdenRetiro
         AND od2.PagIdPago IS NULL
         AND NOT EXISTS (
-          SELECT 1 FROM MovimientosCuenta cb WITH(NOLOCK)
+          -- Misma lista de ids que en la base (sin OR, para que use el índice de OrdIdOrden).
+          SELECT 1
+          FROM (SELECT od2.OrdIdOrden AS Id
+                UNION ALL SELECT erpX.OrdenID FROM Ordenes erpX WITH(NOLOCK) WHERE erpX.CodigoOrden = od2.OrdCodigoOrden) idsX
+          JOIN MovimientosCuenta cb WITH(NOLOCK) ON cb.OrdIdOrden = idsX.Id
           JOIN CuentasCliente ccb WITH(NOLOCK) ON ccb.CueIdCuenta = cb.CueIdCuenta
           WHERE ccb.CliIdCliente = od2.CliIdCliente
             AND cb.MovTipo = 'CONSUMO_CUENTA'
             AND (cb.MovAnulado IS NULL OR cb.MovAnulado = 0)
             AND cb.MovObservaciones LIKE 'CUBIERTO[_]CUENTA[_]%'
-            AND (cb.OrdIdOrden = od2.OrdIdOrden
-                 OR cb.OrdIdOrden IN (SELECT erpX.OrdenID FROM Ordenes erpX WITH(NOLOCK) WHERE erpX.CodigoOrden = od2.OrdCodigoOrden))
         )
       )
       ${filtroTipo}
@@ -1258,14 +1267,15 @@ const editarCostoOrden = async (req, res) => {
       await transaction.request()
         .input('OrdId', sql.Int,          orderId)
         .input('Delta', sql.Decimal(18,4), delta)
+        // Resto de menos de un centavo = cobrada (ver reducirDeuda en contabilidadService).
         .query(`
           UPDATE dbo.DeudaDocumento
           SET DDeImportePendiente = CASE
-                WHEN DDeImportePendiente + @Delta <= 0 THEN 0
+                WHEN DDeImportePendiente + @Delta < 0.01 THEN 0
                 ELSE DDeImportePendiente + @Delta
               END,
               DDeEstado = CASE
-                WHEN DDeImportePendiente + @Delta <= 0 THEN 'COBRADO'
+                WHEN DDeImportePendiente + @Delta < 0.01 THEN 'COBRADO'
                 ELSE DDeEstado
               END
           WHERE OrdIdOrden = @OrdId

@@ -142,17 +142,20 @@ function DonutChart({ data = [], size = 120, stroke = 20, centerLabel }) {
     const cx = size / 2, cy = size / 2;
     const C  = 2 * Math.PI * r;
     const total = data.reduce((s, d) => s + (Number(d.value) || 0), 0);
+    // Un sector puede quedar en negativo (solo notas de crédito en el rango): no tiene arco,
+    // pero el centro sigue mostrando el total real.
+    const totalArcos = data.reduce((s, d) => s + Math.max(0, Number(d.value) || 0), 0);
     let cum = 0;
     const segs = data.map(d => {
-        const v   = Number(d.value) || 0;
-        const len = total > 0 ? (v / total) * C : 0;
+        const v   = Math.max(0, Number(d.value) || 0);
+        const len = totalArcos > 0 ? (v / totalArcos) * C : 0;
         const seg = { ...d, len, offset: cum };
         cum += len;
         return seg;
     });
     return (
         <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="shrink-0">
-            {total === 0
+            {totalArcos === 0
                 ? <circle cx={cx} cy={cy} r={r} fill="none" stroke="#e2e8f0" strokeWidth={stroke} />
                 : segs.map((seg, i) => (
                     <circle key={i} cx={cx} cy={cy} r={r} fill="none"
@@ -182,7 +185,8 @@ function DonutChart({ data = [], size = 120, stroke = 20, centerLabel }) {
 function DgiBar({ enviado, noEnviado, sym }) {
     const total = enviado + noEnviado;
     if (total === 0) return <div className="h-2 rounded-full bg-slate-100 w-full" />;
-    const pctEnv = (enviado / total) * 100;
+    // Acotado: con las notas restando, una de las dos partes puede quedar en negativo.
+    const pctEnv = Math.min(100, Math.max(0, (enviado / total) * 100));
     return (
         <div className="flex h-2.5 rounded-full overflow-hidden w-full bg-slate-50">
             {enviado > 0 && <div style={{ width: `${pctEnv}%` }} className="bg-emerald-500" title={`Enviado a DGI: ${sym} ${fmtMoney(enviado)}`} />}
@@ -1037,7 +1041,7 @@ function TopProductosSection({ opciones }) {
             </div>
             <p className="text-[11px] text-slate-400">
                 Cada línea facturada suma a su artículo la parte del total del documento que le corresponde (mismo reparto que Ventas por Área, así los dos reportes cuadran).
-                Las notas de crédito no se incluyen. Unidades en la unidad de medida de cada artículo (metros, unidades, etc.).
+                Las notas de crédito restan, en importe y en unidades. Unidades en la unidad de medida de cada artículo (metros, unidades, etc.).
                 {sinArticulo && Number(sinArticulo.Monto) > 0.005 && (
                     <> <b className="text-amber-600">Fuera del ranking: {sym} {fmtMoney(sinArticulo.Monto)}</b> facturados en {fmtInt(sinArticulo.Lineas)} línea(s) de {fmtInt(sinArticulo.Documentos)} documento(s) que no tienen artículo asociado (ej. "Venta productos", "ProductosVarios").</>
                 )}
@@ -2401,7 +2405,11 @@ export default function ContabilidadReportesPage() {
     const docPorMoneda = {};
     for (const row of docData) {
         const key = row.MonIdMoneda;
-        if (!docPorMoneda[key]) docPorMoneda[key] = { sym: row.MonSimbolo || '', nombre: row.MonNombre || '', enviado: 0, noEnviado: 0, cantEnviado: 0, cantNoEnviado: 0, credito: 0, cantCredito: 0, pendiente: 0, pendienteCredito: 0, pendienteCaja: 0, cantPendCredito: 0, cantPendCaja: 0 };
+        if (!docPorMoneda[key]) docPorMoneda[key] = { sym: row.MonSimbolo || '', nombre: row.MonNombre || '', enviado: 0, noEnviado: 0, cantEnviado: 0, cantNoEnviado: 0, credito: 0, cantCredito: 0, pendiente: 0, pendienteCredito: 0, pendienteCaja: 0, cantPendCredito: 0, cantPendCaja: 0, notas: 0, cantNotas: 0 };
+        // Notas de crédito del rango: ya están restadas dentro de ImporteTotal; se guardan
+        // aparte solo para decirlo en pantalla (las cantidades cuentan documentos de venta).
+        docPorMoneda[key].notas += Number(row.ImporteNotas || 0);
+        docPorMoneda[key].cantNotas += Number(row.CantidadNotas || 0);
         if (row.EstadoDgi === 'ENVIADO_DGI') {
             docPorMoneda[key].enviado += Number(row.ImporteTotal || 0);
             docPorMoneda[key].cantEnviado += Number(row.CantidadDocumentos || 0);
@@ -2679,7 +2687,7 @@ export default function ContabilidadReportesPage() {
                                         <div className="flex items-center justify-between flex-wrap gap-2">
                                             <div>
                                                 <span className="font-bold text-slate-700 text-sm">Resumen unificado en dólares</span>
-                                                <p className="text-[11px] text-slate-400 mt-0.5">Todo convertido a USD — las ventas en $ de cada {verPor === 'sector' ? 'sector' : 'área'} divididas por el tipo de cambio, más sus ventas en US$</p>
+                                                <p className="text-[11px] text-slate-400 mt-0.5">Todo convertido a USD — las ventas en $ de cada {verPor === 'sector' ? 'sector' : 'área'} divididas por el tipo de cambio, más sus ventas en US$. Las notas de crédito restan.</p>
                                             </div>
                                             <div className="flex items-center gap-2 text-[11px] text-slate-500">
                                                 <span>Dólar del día · 1 USD =</span>
@@ -2753,6 +2761,11 @@ export default function ContabilidadReportesPage() {
                                                     <span className="text-slate-400 font-normal ml-1">{fmtInt(b.cantNoEnviado)} · {b.sym} {fmtMoney(b.noEnviado)}</span>
                                                 </div>
                                             </div>
+                                            {b.cantNotas > 0 && (
+                                                <p className="text-[11px] text-slate-400">
+                                                    Incluye {fmtInt(b.cantNotas)} nota{b.cantNotas !== 1 ? 's' : ''} de crédito o débito por {b.sym} {fmtMoney(b.notas)}
+                                                </p>
+                                            )}
                                         </div>
                                     ))}
                                 </div>
@@ -2815,8 +2828,8 @@ export default function ContabilidadReportesPage() {
                                             </div>
                                         </div>
                                         <p className="text-[11px] text-slate-400">
-                                            <b>Total facturado</b> = enviadas a DGI + no enviadas (todos los documentos del filtro). <b>Pendiente de cobro</b> es la parte
-                                            de ese facturado que todavía no se cobró (solo documentos a crédito); el % es sobre el total facturado.
+                                            <b>Total facturado</b> = enviadas a DGI + no enviadas (todos los documentos del filtro), con las notas de crédito restadas.
+                                            {' '}<b>Pendiente de cobro</b> es la parte de ese facturado que todavía no se cobró (solo documentos a crédito); el % es sobre el total facturado.
                                         </p>
                                     </div>
                                 );

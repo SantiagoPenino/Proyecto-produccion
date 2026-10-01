@@ -145,20 +145,36 @@ exports.getClientesDeVendedor = async (req, res) => {
 };
 
 /**
- * GET /api/vendedor-360/ventas-mensuales?anio=2026&mes=9
+ * GET /api/vendedor-360/ventas-mensuales?anio=2026&mes=9&dgi=DGI|SIN_DGI
  *
- * Ventas del mes por vendedor. Definiciones acordadas con el usuario (02/09/2026):
- *   - VENTA        = orden en OrdenesDeposito de un cliente de su cartera
- *                    (Clientes.VendedorID = cédula del trabajador).
- *   - VENDEDOR     = Trabajadores con Área = 'VENTAS' (incluye al encargado).
- *   - COBRADA      = OrdenesDeposito.PagIdPago NO nulo. El 0 ("cubierto sin pago":
- *                    cuenta corriente o plan prepago) cuenta como cobrada.
- *   - MES          = por OrdFechaIngresoOrden, la fecha en que entró al depósito
- *                    (no la de entrega: esa se mueve y parte el mes).
- *   - Se excluyen reposiciones (-R) y fallas (-F): son re-trabajo sin cargo, no ventas.
- *   - Se excluyen canceladas (10) y perdidas (11).
- *   - Los importes NO se convierten: cada moneda va por separado.
+ * Plata vendida, cobrada y sin cobrar del mes por vendedor, sobre DOCUMENTOS (01/10/2026).
+ * Antes contaba órdenes del depósito; el usuario pidió verlo como Contabilidad → Reportes →
+ * "Ventas por Documento (DGI)": solo plata, en pesos y en dólares.
+ *   - UNIVERSO   = el de ese reporte (reglasVentas.condEsVenta: e-tickets, e-facturas y
+ *                  Pedidos Caja, sin anulados), con su mismo filtro de DGI. Las notas RESTAN
+ *                  (nota de crédito −, nota de débito +), igual que en los reportes de ventas
+ *                  de Contabilidad desde el 1-oct-2026: si no, una factura anulada con nota
+ *                  de crédito quedaría como vendida y cobrada.
+ *                  Recibos y anticipos quedan afuera, igual que en Contabilidad: no son ventas.
+ *                  Los rollos (planes de metros) y la billetera prepaga SÍ entran, porque se
+ *                  venden con un documento normal.
+ *   - MES        = por fecha de emisión del documento, con el mismo corte de día que esos
+ *                  reportes (día calendario como texto).
+ *   - VENDIDO    = DocTotal con el signo de la nota, en la moneda del documento. No se convierte.
+ *   - SIN COBRAR = deuda viva del documento (PENDIENTE/VENCIDO/PARCIAL), solo en documentos a
+ *                  crédito y Pedidos Caja: la regla del "pendiente de cobro" de Contabilidad.
+ *   - COBRADO    = vendido − sin cobrar.
+ *   - VENDEDOR   = el de la cartera del cliente del documento (Clientes.VendedorID = cédula de
+ *                  un Trabajador del Área VENTAS). DocumentosContables.DocVendedorId no se usa:
+ *                  no se llena nunca. Si el documento salió con una ficha genérica (mostrador /
+ *                  USER CF) se busca el cliente real como en Top Clientes: el dueño de la orden
+ *                  y, si no, el RUC del receptor.
+ *   - Lo que no se puede atribuir va en filas aparte (MOSTRADOR / SIN_VENDEDOR) para que el
+ *     total cierre: total vendido = "Ventas por Documento" del mismo mes y filtro.
  */
+// Reglas de qué documento es una venta, compartidas con los reportes de Contabilidad.
+const { reglasVentas } = require('./contabilidadReportesController');
+
 exports.getVentasMensuales = async (req, res) => {
   try {
     const hoy = new Date();
@@ -167,9 +183,20 @@ exports.getVentasMensuales = async (req, res) => {
     if (mes < 1 || mes > 12) {
       return res.status(400).json({ success: false, error: 'Mes inválido' });
     }
-    // Rango semiabierto [desde, hasta): evita perder las órdenes del último día por la hora.
-    const desde = new Date(anio, mes - 1, 1);
-    const hasta = new Date(anio, mes, 1);
+    const dgiPedido = String(req.query.dgi || '').toUpperCase();
+    const dgi = ['DGI', 'SIN_DGI'].includes(dgiPedido) ? dgiPedido : 'TODO';
+    if (!reglasVentas) {
+      throw new Error('Falta la versión nueva de contabilidadReportesController.js (reglasVentas): van juntos.');
+    }
+    const { condEsVenta, condVentaONota, signoExpr, condDgi, primerToken, CLIENTES_GENERICOS } = reglasVentas;
+
+    // Día calendario como texto, igual que los reportes de Contabilidad: no depende del reloj
+    // ni de la zona horaria del proceso.
+    const mm = String(mes).padStart(2, '0');
+    const ultimoDia = String(new Date(anio, mes, 0).getDate()).padStart(2, '0');
+    const genericos = CLIENTES_GENERICOS.join(', ');
+    const sinFicha = (alias) => `(${alias}.CliIdCliente IS NULL OR ${alias}.CliIdCliente IN (${genericos}))`;
+    const filtroDgi = condDgi('doc', dgi);
 
     const pool = await getPool();
 
@@ -183,28 +210,84 @@ exports.getVentasMensuales = async (req, res) => {
       ORDER BY Nombre
     `);
 
-    // 2. Totales del mes por vendedor y moneda
+    // 2. Plata del mes por vendedor y moneda
     const totRes = await pool.request()
-      .input('Desde', sql.DateTime, desde)
-      .input('Hasta', sql.DateTime, hasta)
+      .input('desde', sql.VarChar(30), `${anio}-${mm}-01T00:00:00`)
+      .input('hasta', sql.VarChar(30), `${anio}-${mm}-${ultimoDia}T23:59:59.997`)
       .query(`
-        SELECT
-          LTRIM(RTRIM(c.VendedorID))                    AS Cedula,
-          ISNULL(od.MonIdMoneda, 1)                     AS MonIdMoneda,
-          COUNT(*)                                      AS Cant,
-          SUM(ISNULL(od.OrdCostoFinal, 0))              AS Monto,
-          SUM(CASE WHEN od.PagIdPago IS NOT NULL THEN 1 ELSE 0 END)                         AS CantCobrada,
-          SUM(CASE WHEN od.PagIdPago IS NOT NULL THEN ISNULL(od.OrdCostoFinal, 0) ELSE 0 END) AS MontoCobrado
-        FROM dbo.OrdenesDeposito od WITH(NOLOCK)
-        JOIN dbo.Clientes c WITH(NOLOCK) ON c.CliIdCliente = od.CliIdCliente
-        WHERE od.OrdFechaIngresoOrden >= @Desde
-          AND od.OrdFechaIngresoOrden <  @Hasta
-          AND LTRIM(RTRIM(ISNULL(c.VendedorID, ''))) <> ''
-          -- Re-trabajo sin cargo: no son ventas
-          AND od.OrdCodigoOrden NOT LIKE '%-R%'
-          AND od.OrdCodigoOrden NOT LIKE '%-F%'
-          AND (od.OrdEstadoActual IS NULL OR od.OrdEstadoActual NOT IN (10, 11))
-        GROUP BY LTRIM(RTRIM(c.VendedorID)), ISNULL(od.MonIdMoneda, 1)
+        ;WITH Docs AS (
+          SELECT doc.DocIdDocumento, doc.CliIdCliente, doc.DocCliDocumento,
+                 ISNULL(doc.MonIdMoneda, 1) AS MonIdMoneda,
+                 CASE WHEN ${condEsVenta('doc')} THEN 0 ELSE 1 END AS EsNota,
+                 doc.DocTotal * ${signoExpr('doc')} AS Vendido,
+                 CASE WHEN ${condEsVenta('doc')}
+                           AND (doc.DocTipo LIKE '%Credito%' OR doc.DocTipo LIKE '%CREDITO%' OR RTRIM(doc.DocTipo) = 'Pedidos Caja')
+                      THEN ISNULL(dd.Pendiente, 0) ELSE 0 END AS SinCobrar
+          FROM dbo.DocumentosContables doc WITH(NOLOCK)
+          -- Una fila por documento: puede haber más de una deuda para el mismo documento.
+          LEFT JOIN (
+            SELECT DocIdDocumento, SUM(DDeImportePendiente) AS Pendiente
+            FROM dbo.DeudaDocumento WITH(NOLOCK)
+            WHERE DDeEstado IN ('PENDIENTE', 'VENCIDO', 'PARCIAL')
+            GROUP BY DocIdDocumento
+          ) dd ON dd.DocIdDocumento = doc.DocIdDocumento
+          WHERE ${condVentaONota('doc')}
+            AND doc.DocEstado <> 'ANULADO'
+            AND doc.DocFechaEmision >= @desde
+            AND doc.DocFechaEmision <= @hasta
+            ${filtroDgi ? `AND ${filtroDgi}` : ''}
+        ),
+        -- Documentos con ficha genérica: el dueño de la orden que se facturó...
+        Duenos AS (
+          SELECT x.DocIdDocumento, MIN(o.CliIdCliente) AS CliOrden
+          FROM (
+            SELECT DISTINCT dcd.DocIdDocumento, ${primerToken('dcd.OrdCodigoOrden')} AS Tok
+            FROM Docs d
+            JOIN dbo.DocumentosContablesDetalle dcd WITH(NOLOCK) ON dcd.DocIdDocumento = d.DocIdDocumento
+            WHERE ${sinFicha('d')}
+              AND dcd.OrdCodigoOrden IS NOT NULL AND LTRIM(dcd.OrdCodigoOrden) <> ''
+          ) x
+          JOIN dbo.Ordenes o WITH(NOLOCK) ON o.CodigoOrden = x.Tok
+          WHERE o.CliIdCliente IS NOT NULL AND o.CliIdCliente NOT IN (${genericos})
+          GROUP BY x.DocIdDocumento
+        ),
+        -- ...o la ficha que tiene el mismo RUC que el receptor del documento.
+        PorRuc AS (
+          SELECT d.DocIdDocumento, MIN(c.CliIdCliente) AS CliRuc
+          FROM Docs d
+          JOIN dbo.Clientes c WITH(NOLOCK)
+            ON REPLACE(REPLACE(RTRIM(c.CioRuc), '-', ''), '.', '') =
+               REPLACE(REPLACE(RTRIM(d.DocCliDocumento), '-', ''), '.', '')
+          WHERE ${sinFicha('d')}
+            AND RTRIM(ISNULL(d.DocCliDocumento, '')) <> ''
+            AND RTRIM(ISNULL(c.CioRuc, '')) <> ''
+            AND c.CliIdCliente NOT IN (${genericos})
+          GROUP BY d.DocIdDocumento
+        ),
+        Resueltos AS (
+          SELECT d.MonIdMoneda, d.EsNota, d.Vendido, d.SinCobrar,
+                 CASE WHEN ${sinFicha('d')} THEN COALESCE(du.CliOrden, pr.CliRuc) ELSE d.CliIdCliente END AS CliResuelto
+          FROM Docs d
+          LEFT JOIN Duenos du ON du.DocIdDocumento = d.DocIdDocumento
+          LEFT JOIN PorRuc pr ON pr.DocIdDocumento = d.DocIdDocumento
+        )
+        SELECT x.Tipo, x.Cedula, x.MonIdMoneda,
+               SUM(x.Vendido)   AS Vendido,
+               SUM(x.SinCobrar) AS SinCobrar,
+               SUM(CASE WHEN x.EsNota = 1 THEN x.Vendido ELSE 0 END) AS Notas
+        FROM (
+          SELECT r.MonIdMoneda, r.EsNota, r.Vendido, r.SinCobrar,
+                 CASE WHEN r.CliResuelto IS NULL THEN 'MOSTRADOR'
+                      WHEN t.Cedula IS NULL      THEN 'SIN_VENDEDOR'
+                      ELSE 'VENDEDOR' END AS Tipo,
+                 CAST(t.Cedula AS NVARCHAR(50)) AS Cedula
+          FROM Resueltos r
+          LEFT JOIN dbo.Clientes c WITH(NOLOCK) ON c.CliIdCliente = r.CliResuelto
+          LEFT JOIN dbo.Trabajadores t WITH(NOLOCK)
+            ON CAST(t.Cedula AS NVARCHAR(50)) = LTRIM(RTRIM(c.VendedorID))
+           AND LTRIM(RTRIM(UPPER(ISNULL(t.[Área], '')))) = 'VENTAS'
+        ) x
+        GROUP BY x.Tipo, x.Cedula, x.MonIdMoneda
       `);
 
     // 3. ¿Cuál de los vendedores es el usuario logueado? Primero por la cédula
@@ -225,61 +308,63 @@ exports.getVentasMensuales = async (req, res) => {
     } catch (e) {
       logger.warn('[VENDEDOR-360] No se pudo leer Usuarios.Cedula: ' + e.message);
     }
-
     const yo = normalizarNombre(req.user?.name);
-    const porCedula = {};
-    totRes.recordset.forEach(r => {
-      const ced = String(r.Cedula || '').trim();
-      if (!porCedula[ced]) porCedula[ced] = [];
-      porCedula[ced].push(r);
-    });
 
+    // 4. Armado: una fila por vendedor del área, más las filas de lo que no se puede atribuir
+    const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
     const monedaKey = (monId) => (parseInt(monId, 10) === 2 ? 'USD' : 'UYU');
-    const vacio = () => ({ cant: 0, monto: 0, cantCobrada: 0, montoCobrado: 0 });
+    const armarMonedas = (filas) => {
+      const monedas = { UYU: { vendido: 0, sinCobrar: 0 }, USD: { vendido: 0, sinCobrar: 0 } };
+      filas.forEach(f => {
+        const m = monedas[monedaKey(f.MonIdMoneda)];
+        m.vendido += Number(f.Vendido) || 0;
+        m.sinCobrar += Number(f.SinCobrar) || 0;
+      });
+      for (const k of ['UYU', 'USD']) {
+        const m = monedas[k];
+        m.vendido = r2(m.vendido);
+        m.sinCobrar = r2(m.sinCobrar);
+        m.cobrado = r2(m.vendido - m.sinCobrar);
+      }
+      return monedas;
+    };
+    const filasDe = (tipo, cedula = null) => totRes.recordset.filter(f =>
+      f.Tipo === tipo && (cedula === null || String(f.Cedula || '').trim() === cedula));
+    const tienePlata = (monedas) => ['UYU', 'USD'].some(k =>
+      Math.abs(monedas[k].vendido) >= 0.005 || Math.abs(monedas[k].sinCobrar) >= 0.005);
 
     const data = vendRes.recordset.map(v => {
       const ced = String(v.Cedula || '').trim();
-      const filas = porCedula[ced] || [];
-      const monedas = { UYU: vacio(), USD: vacio() };
-      filas.forEach(f => {
-        const k = monedaKey(f.MonIdMoneda);
-        monedas[k].cant += f.Cant || 0;
-        monedas[k].monto += parseFloat(f.Monto) || 0;
-        monedas[k].cantCobrada += f.CantCobrada || 0;
-        monedas[k].montoCobrado += parseFloat(f.MontoCobrado) || 0;
-      });
-      const cantTotal = monedas.UYU.cant + monedas.USD.cant;
-      const cobradasTotal = monedas.UYU.cantCobrada + monedas.USD.cantCobrada;
       return {
+        tipo: 'VENDEDOR',
         cedula: ced,
         nombre: v.Nombre,
         puesto: v.Puesto,
         esMio: (!!miCedula && miCedula.trim() === ced) || (!miCedula && !!yo && normalizarNombre(v.Nombre) === yo),
-        cantTotal,
-        cobradasTotal,
-        sinCobrarTotal: cantTotal - cobradasTotal,
-        monedas,
+        monedas: armarMonedas(filasDe('VENDEDOR', ced)),
       };
     });
+    // Sin estas filas el total no cerraría con Contabilidad. Solo aparecen si tienen plata.
+    for (const [tipo, nombre] of [
+      ['SIN_VENDEDOR', 'Clientes sin vendedor del área'],
+      ['MOSTRADOR', 'Mostrador / sin identificar'],
+    ]) {
+      const monedas = armarMonedas(filasDe(tipo));
+      if (tienePlata(monedas)) data.push({ tipo, cedula: null, nombre, puesto: '', esMio: false, monedas });
+    }
 
-    // Las ventas de carteras que ya no corresponden a un vendedor del área (alguien que
-    // se fue y cuyos clientes todavía no se reasignaron) no se pierden: van aparte.
-    const cedulasArea = new Set(vendRes.recordset.map(v => String(v.Cedula || '').trim()));
-    const huerfanas = Object.keys(porCedula)
-      .filter(ced => !cedulasArea.has(ced))
-      .reduce((acc, ced) => {
-        porCedula[ced].forEach(f => {
-          acc.cant += f.Cant || 0;
-          acc.cobradas += f.CantCobrada || 0;
-        });
-        return acc;
-      }, { cant: 0, cobradas: 0 });
+    // Notas del mes ya restadas del vendido (con su signo): la pantalla lo dice al pie.
+    const notas = { UYU: 0, USD: 0 };
+    totRes.recordset.forEach(f => { notas[monedaKey(f.MonIdMoneda)] += Number(f.Notas) || 0; });
+    notas.UYU = r2(notas.UYU);
+    notas.USD = r2(notas.USD);
 
     res.json({
       success: true,
       periodo: { anio, mes },
+      dgi,
       data,
-      sinVendedorDelArea: huerfanas,
+      notas,
     });
   } catch (err) {
     logger.error('[VENDEDOR-360] getVentasMensuales:', err.message);

@@ -22,7 +22,7 @@ const {
 } = require('../services/servicioTecnicoComun');
 const {
     UNIDADES, TIPOS_TRABAJO, SELECT_TRABAJO, sumarIntervalo, cadaTexto, crearTrabajo, asegurarTrabajoDePlan,
-    asegurarTodosLosPlanes, avanzarPlan, leerTrabajo,
+    asegurarTodosLosPlanes, avanzarPlan, leerTrabajo, leerDias, proximoDiaMarcado,
 } = require('../services/stMantenimientoService');
 
 const urlTrabajo = (id) => `/servicio-tecnico?trab=${id}`;
@@ -84,6 +84,48 @@ async function guardarPasos(tx, procId, pasos) {
     }
 }
 
+// ── Insumos necesarios (30/09, docs/servicio-tecnico/st-procedimiento-insumos.sql) ──────────────
+// Cada uno es un artículo del /stock (varId) o algo que no está en el stock, escrito a mano (nombre):
+// por ejemplo algo que se compra en la ferretería para un arreglo puntual. Cantidad y unidad son
+// opcionales. La foto también: adjId (una ya guardada de este procedimiento) o foto (el índice del
+// archivo nuevo que viene en la misma subida, campo "adjuntos").
+const cantidadInsumo = (v) => {
+    if (v === '' || v === null || v === undefined) return null;
+    const n = Number(String(v).replace(',', '.'));
+    return Number.isFinite(n) && n > 0 && n < 1e9 ? n : NaN;
+};
+function leerInsumos(lista, cantArchivos) {
+    if (lista === undefined) return { insumos: null };          // no vinieron: no se tocan
+    if (!Array.isArray(lista)) return { error: 'Insumos inválidos.' };
+    if (lista.length > 50) return { error: 'Máximo 50 insumos.' };
+    const insumos = [];
+    for (const i of lista) {
+        const varId = idNum(i?.varId);
+        const nombre = texto(i?.nombre, 300);
+        if (!varId && !nombre) continue;
+        const cantidad = cantidadInsumo(i?.cantidad);
+        if (Number.isNaN(cantidad)) return { error: `Cantidad inválida en "${nombre || 'un insumo del stock'}".` };
+        const foto = i?.foto === undefined || i?.foto === null || i?.foto === '' ? null : Number(i.foto);
+        if (foto !== null && !(Number.isInteger(foto) && foto >= 0 && foto < cantArchivos)) return { error: 'No llegó la foto de un insumo.' };
+        insumos.push({ varId, nombre, unidad: texto(i?.unidad, 30), cantidad, adjId: foto === null ? idNum(i?.adjId) : null, foto });
+    }
+    return { insumos };
+}
+
+async function guardarInsumos(tx, procId, insumos) {
+    // Sin la tabla (script sin correr) solo se llega sin insumos: no hay nada que guardar ni borrar
+    const hay = await tx.request().query("SELECT OBJECT_ID('dbo.ST_ProcedimientoInsumos') AS t");
+    if (!hay.recordset[0].t) return;
+    await tx.request().input('P', sql.Int, procId).query('DELETE FROM dbo.ST_ProcedimientoInsumos WHERE ProcId = @P');
+    let orden = 1;
+    for (const i of insumos) {
+        await tx.request().input('P', sql.Int, procId).input('O', sql.Int, orden++)
+            .input('V', sql.Int, i.varId).input('N', sql.NVarChar(300), i.nombre).input('U', sql.NVarChar(30), i.unidad)
+            .input('C', sql.Decimal(18, 4), i.cantidad).input('A', sql.Int, i.adjId)
+            .query('INSERT INTO dbo.ST_ProcedimientoInsumos (ProcId, Orden, VarId, Nombre, Unidad, Cantidad, AdjId) VALUES (@P, @O, @V, @N, @U, @C, @A)');
+    }
+}
+
 // GET /procedimientos?todos=1
 exports.listarProcedimientos = async (req, res) => {
     try {
@@ -114,23 +156,65 @@ exports.detalleProcedimiento = async (req, res) => {
             FROM dbo.ST_Procedimientos WHERE ProcId = @P;
             SELECT PasoId, Orden, Texto, Detalle, MinutosEstimados FROM dbo.ST_ProcedimientoPasos WHERE ProcId = @P ORDER BY Orden, PasoId;`);
         if (!r.recordsets[0].length) return res.status(404).json({ success: false, error: 'No existe el procedimiento.' });
-        res.json({ success: true, data: { ...r.recordsets[0][0], pasos: r.recordsets[1] } });
+        // Insumos necesarios: consulta aparte, vacía si falta st-procedimiento-insumos.sql
+        const insumos = await pool.request().input('P', sql.Int, id).query(`
+            SELECT i.PinId, i.VarId, i.Nombre, i.Unidad, i.Cantidad, i.AdjId, a.Mime AS AdjMime, a.NombreOriginal AS AdjNombre
+            FROM dbo.ST_ProcedimientoInsumos i LEFT JOIN dbo.ST_Adjuntos a ON a.AdjId = i.AdjId
+            WHERE i.ProcId = @P ORDER BY i.Orden, i.PinId`).then(x => x.recordset).catch(() => []);
+        res.json({ success: true, data: { ...r.recordsets[0][0], pasos: r.recordsets[1], insumos } });
     } catch (err) { responderError(res, err, 'procedimientos.detalle'); }
 };
 
-// POST /procedimientos  |  PUT /procedimientos/:id   { titulo, descripcion, areaId, equipoId, pasos: [{ texto, detalle, minutos }] }
+// POST /procedimientos  |  PUT /procedimientos/:id
+//   { titulo, descripcion, areaId, equipoId, pasos: [{ texto, detalle, minutos }],
+//     insumos: [{ varId | nombre, unidad, cantidad, adjId | foto }] }
+// Con fotos de insumos llega multipart: los datos como JSON en "datos" y las fotos en "adjuntos".
 exports.guardarProcedimiento = async (req, res) => {
-    if (!exigirTecnico(req, res, 'crear o editar procedimientos')) return;
+    const files = req.files || [];
+    const fallar = (status, error) => { limpiarTemporales(files); return res.status(status).json({ success: false, error }); };
+    if (!exigirTecnico(req, res, 'crear o editar procedimientos')) { limpiarTemporales(files); return; }
     const id = req.params.id ? idNum(req.params.id) : null;
-    if (req.params.id && !id) return res.status(400).json({ success: false, error: 'Procedimiento inválido.' });
-    const b = req.body || {};
+    if (req.params.id && !id) return fallar(400, 'Procedimiento inválido.');
+    let b = req.body || {};
+    if (typeof b.datos === 'string') {
+        try { b = JSON.parse(b.datos) || {}; } catch (_) { return fallar(400, 'Datos inválidos.'); }
+    }
     const titulo = texto(b.titulo, 200);
-    if (!titulo) return res.status(400).json({ success: false, error: 'Poné un título.' });
+    if (!titulo) return fallar(400, 'Poné un título.');
     const { pasos, error } = leerPasos(b.pasos);
-    if (error) return res.status(400).json({ success: false, error });
+    if (error) return fallar(400, error);
+    const { insumos, error: errorInsumos } = leerInsumos(b.insumos, files.length);
+    if (errorInsumos) return fallar(400, errorInsumos);
     let tx = null;
     try {
         const pool = await getPool();
+        if (insumos?.length) {
+            const hay = await pool.request().query("SELECT OBJECT_ID('dbo.ST_ProcedimientoInsumos') AS t");
+            if (!hay.recordset[0].t) return fallar(400, 'Para cargar insumos falta correr docs/servicio-tecnico/st-procedimiento-insumos.sql.');
+            // Los del stock llevan el nombre y la unidad del artículo (ids ya validados como enteros)
+            const ids = [...new Set(insumos.filter(i => i.varId).map(i => i.varId))];
+            if (ids.length) {
+                const r = await pool.request().query(`
+                    SELECT v.VarId, LTRIM(RTRIM(pm.Nombre)) AS Producto, v.NombreVariante, pm.UnidadBase
+                    FROM dbo.Wms_Variantes v JOIN dbo.Wms_ProductosMaestros pm ON pm.PmaId = v.PmaId
+                    WHERE v.VarId IN (${ids.join(',')})`);
+                const porId = new Map(r.recordset.map(x => [x.VarId, x]));
+                for (const i of insumos.filter(x => x.varId)) {
+                    const v = porId.get(i.varId);
+                    if (!v) return fallar(400, `El artículo #${i.varId} ya no está en el stock.`);
+                    i.nombre = `${v.Producto}${v.NombreVariante && v.NombreVariante !== v.Producto ? ` · ${v.NombreVariante}` : ''}`.slice(0, 300);
+                    i.unidad = v.UnidadBase || i.unidad;
+                }
+            }
+            // Una foto ya guardada tiene que ser de este mismo procedimiento
+            const adjs = insumos.filter(i => i.adjId).map(i => i.adjId);
+            if (adjs.length) {
+                const r = id ? await pool.request().input('P', sql.Int, id).query(`
+                    SELECT AdjId FROM dbo.ST_Adjuntos WHERE Entidad = 'PROCEDIMIENTO' AND EntidadId = @P AND AdjId IN (${adjs.join(',')})`) : { recordset: [] };
+                const validas = new Set(r.recordset.map(x => x.AdjId));
+                insumos.forEach(i => { if (i.adjId && !validas.has(i.adjId)) i.adjId = null; });
+            }
+        }
         const usuario = await usuarioActual(pool, req);
         tx = new sql.Transaction(pool);
         await tx.begin();
@@ -151,16 +235,30 @@ exports.guardarProcedimiento = async (req, res) => {
             procId = ins.recordset[0].ProcId;
         }
         await guardarPasos(tx, procId, pasos);
+        if (insumos) await guardarInsumos(tx, procId, insumos);
         await historial(tx, {
             entidad: 'PROCEDIMIENTO', entidadId: procId, usuario, accion: id ? 'EDITADO' : 'CREADO',
-            detalle: `${pasos.length} pasos · ${pasos.reduce((s, p) => s + p.minutos, 0)} min`,
+            detalle: `${pasos.length} pasos · ${pasos.reduce((s, p) => s + p.minutos, 0)} min${insumos?.length ? ` · ${insumos.length} insumos` : ''}`,
         });
         await tx.commit();
         tx = null;
+        // Fotos nuevas de los insumos, de a una para saber de cuál es cada una (Orden = posición + 1)
+        const usadas = new Set();
+        for (const [k, i] of (insumos || []).entries()) {
+            if (i.foto === null) continue;
+            usadas.add(i.foto);
+            const [g] = await guardarAdjuntos(pool, { entidad: 'PROCEDIMIENTO', entidadId: procId, files: [files[i.foto]], usuario });
+            if (g) {
+                await pool.request().input('P', sql.Int, procId).input('O', sql.Int, k + 1).input('A', sql.Int, g.AdjId)
+                    .query('UPDATE dbo.ST_ProcedimientoInsumos SET AdjId = @A WHERE ProcId = @P AND Orden = @O');
+            }
+        }
+        limpiarTemporales(files.filter((_, k) => !usadas.has(k)));
         emitirST(req, { procId });
         res.json({ success: true, data: { ProcId: procId } });
     } catch (err) {
         await rollbackSeguro(tx, 'ST procedimiento');
+        limpiarTemporales(files);
         responderError(res, err, 'procedimientos.guardar');
     }
 };
@@ -192,6 +290,7 @@ exports.listarPlanes = async (req, res) => {
             SELECT p.PlanId, p.Titulo, p.Descripcion, p.EquipoId, e.Nombre AS EquipoNombre, LTRIM(RTRIM(e.AreaID)) AS EquipoArea,
                    p.EquipoTexto, p.ProcId, pr.Titulo AS ProcTitulo, p.CadaValor, p.CadaUnidad, p.TecnicoId, p.TecnicoNombre,
                    CONVERT(VARCHAR(10), p.ProximaFecha, 23) AS ProximaFecha, p.ParaMaquina, p.Activo, p.CreadoPorNombre, p.FechaCreacion,
+                   p.DiasSemana, p.HoraDesde, p.HoraHasta, p.MinutosEstimados,
                    t.TrabId AS TrabAbiertoId, CONVERT(VARCHAR(10), t.FechaProgramada, 23) AS TrabAbiertoFecha, t.Estado AS TrabAbiertoEstado,
                    t.VecesPospuesto AS TrabAbiertoPospuesto,
                    CASE WHEN t.FechaProgramada < CAST(@Hoy AS DATE) THEN 1 ELSE 0 END AS TrabAbiertoVencido,
@@ -202,11 +301,14 @@ exports.listarPlanes = async (req, res) => {
             OUTER APPLY (SELECT TOP 1 * FROM dbo.ST_Trabajos x WHERE x.PlanId = p.PlanId AND x.Estado IN ('PENDIENTE', 'EN_CURSO') ORDER BY x.FechaProgramada) t
             WHERE p.Activo = 1 OR @Todos = 1
             ORDER BY p.Activo DESC, t.FechaProgramada, p.Titulo`);
-        res.json({ success: true, data: r.recordset.map(p => ({ ...p, CadaTexto: cadaTexto(p.CadaValor, p.CadaUnidad) })) });
+        res.json({ success: true, data: r.recordset.map(p => ({ ...p, CadaTexto: cadaTexto(p.CadaValor, p.CadaUnidad, p.DiasSemana) })) });
     } catch (err) { responderError(res, err, 'planes.listar'); }
 };
 
 // Valida los datos de un plan. Devuelve { datos } o { error }.
+// Por días de la semana (30/09, el "Mantenimiento" de Programar trabajo): `diasSemana` [1..7] en vez de
+// cadaValor/cadaUnidad, y la primera vez es el primer día marcado desde `desde` (o hoy). La franja, el
+// tiempo estimado y los días se tocan solo si vienen: editar desde una pantalla que no los manda no los borra.
 async function leerDatosPlan(pool, b) {
     const d = {};
     d.procId = idNum(b.procId);
@@ -219,10 +321,30 @@ async function leerDatosPlan(pool, b) {
     d.titulo = texto(b.titulo, 200) || proc?.Titulo;
     if (!d.titulo) return { error: 'Poné un título o elegí un procedimiento.' };
     d.descripcion = texto(b.descripcion, 8000);
-    d.cadaValor = parseInt(b.cadaValor, 10);
-    if (!(d.cadaValor >= 1 && d.cadaValor <= 365)) return { error: 'La frecuencia tiene que ser entre 1 y 365.' };
-    d.cadaUnidad = String(b.cadaUnidad || '').toUpperCase();
-    if (!UNIDADES.includes(d.cadaUnidad)) return { error: 'Elegí cada cuánto (días, semanas o meses).' };
+    d.cambiaDias = 'diasSemana' in b;
+    const dias = leerDias(b.diasSemana);
+    if (d.cambiaDias && Array.isArray(b.diasSemana) && b.diasSemana.length && !dias.length) return { error: 'Días inválidos.' };
+    d.diasSemana = dias.length ? dias.join(',') : null;
+    if (d.diasSemana) {
+        d.cadaValor = 1;
+        d.cadaUnidad = 'SEMANA';
+    } else {
+        d.cadaValor = parseInt(b.cadaValor, 10);
+        if (!(d.cadaValor >= 1 && d.cadaValor <= 365)) return { error: 'La frecuencia tiene que ser entre 1 y 365.' };
+        d.cadaUnidad = String(b.cadaUnidad || '').toUpperCase();
+        if (!UNIDADES.includes(d.cadaUnidad)) return { error: 'Elegí cada cuánto (días, semanas o meses).' };
+    }
+    if ('horaDesde' in b || 'horaHasta' in b) {
+        const h = leerHorario(b.horaDesde, b.horaHasta);
+        if (h.error) return { error: h.error };
+        d.horario = h;
+    }
+    if ('minutosEstimados' in b) {
+        const vacio = b.minutosEstimados === '' || b.minutosEstimados == null;
+        const m = vacio ? null : minutosValidos(b.minutosEstimados, 7 * 24 * 60);
+        if (!vacio && m === null) return { error: 'Tiempo estimado inválido.' };
+        d.minutos = { valor: m };
+    }
     d.equipoId = idNum(b.equipoId);
     if (d.equipoId) {
         const r = await pool.request().input('E', sql.Int, d.equipoId).query('SELECT EquipoID FROM dbo.ConfigEquipos WHERE EquipoID = @E');
@@ -235,6 +357,10 @@ async function leerDatosPlan(pool, b) {
     const hoy = hoyUY();
     d.proximaFecha = fechaISO(b.proximaFecha) || hoy;
     if (d.proximaFecha < hoy) d.proximaFecha = hoy;
+    if (d.diasSemana) {
+        const desde = fechaISO(b.desde) || d.proximaFecha;
+        d.proximaFecha = proximoDiaMarcado(desde < hoy ? hoy : desde, dias);
+    }
     return { datos: d };
 }
 
@@ -246,9 +372,27 @@ exports.crearPlan = async (req, res) => {
         const pool = await getPool();
         const { datos: d, error } = await leerDatosPlan(pool, req.body || {});
         if (error) return res.status(400).json({ success: false, error });
+        // Tareas propias sin procedimiento (Programar trabajo → Mantenimiento): se guardan como un procedimiento
+        // con el título del mantenimiento, así cada trabajo que genera el plan las copia (y se editan ahí).
+        let tareas = null;
+        if (!d.procId && Array.isArray(req.body?.tareas) && req.body.tareas.length) {
+            const lp = leerPasos(req.body.tareas);
+            if (lp.error) return res.status(400).json({ success: false, error: lp.error });
+            tareas = lp.pasos;
+        }
         const usuario = await usuarioActual(pool, req);
         tx = new sql.Transaction(pool);
         await tx.begin();
+        if (tareas) {
+            const pr = await tx.request()
+                .input('T', sql.NVarChar(200), d.titulo).input('D', sql.NVarChar(sql.MAX), `Tareas del mantenimiento "${d.titulo}".`)
+                .input('E', sql.Int, d.equipoId).input('U', sql.Int, usuario.id).input('UN', sql.NVarChar(150), usuario.nombre)
+                .query(`INSERT INTO dbo.ST_Procedimientos (Titulo, Descripcion, EquipoId, CreadoPorId, CreadoPorNombre, ActualizadoPorNombre)
+                        OUTPUT INSERTED.ProcId VALUES (@T, @D, @E, @U, @UN, @UN)`);
+            d.procId = pr.recordset[0].ProcId;
+            await guardarPasos(tx, d.procId, tareas);
+            await historial(tx, { entidad: 'PROCEDIMIENTO', entidadId: d.procId, usuario, accion: 'CREADO', detalle: `${tareas.length} pasos · del mantenimiento "${d.titulo}"` });
+        }
         const ins = await tx.request()
             .input('T', sql.NVarChar(200), d.titulo).input('D', sql.NVarChar(sql.MAX), d.descripcion)
             .input('E', sql.Int, d.equipoId).input('ET', sql.NVarChar(150), d.equipoTexto).input('P', sql.Int, d.procId)
@@ -256,18 +400,22 @@ exports.crearPlan = async (req, res) => {
             .input('Tec', sql.Int, d.tecnico?.id || null).input('TecN', sql.NVarChar(150), d.tecnico?.nombre || null)
             .input('F', sql.VarChar(10), d.proximaFecha).input('Para', sql.Bit, d.paraMaquina)
             .input('U', sql.Int, usuario.id).input('UN', sql.NVarChar(150), usuario.nombre)
+            .input('Dias', sql.VarChar(20), d.diasSemana)
+            .input('HD', sql.VarChar(5), d.horario?.desde ?? null).input('HH', sql.VarChar(5), d.horario?.hasta ?? null)
+            .input('Min', sql.Int, d.minutos?.valor ?? null)
             .query(`INSERT INTO dbo.ST_Planes (Titulo, Descripcion, EquipoId, EquipoTexto, ProcId, CadaValor, CadaUnidad, TecnicoId, TecnicoNombre,
-                        ProximaFecha, ParaMaquina, CreadoPorId, CreadoPorNombre)
+                        ProximaFecha, ParaMaquina, CreadoPorId, CreadoPorNombre, DiasSemana, HoraDesde, HoraHasta, MinutosEstimados)
                     OUTPUT INSERTED.PlanId
-                    VALUES (@T, @D, @E, @ET, @P, @CV, @CU, @Tec, @TecN, CAST(@F AS DATE), @Para, @U, @UN)`);
+                    VALUES (@T, @D, @E, @ET, @P, @CV, @CU, @Tec, @TecN, CAST(@F AS DATE), @Para, @U, @UN, @Dias, @HD, @HH, @Min)`);
         const planId = ins.recordset[0].PlanId;
-        await historial(tx, { entidad: 'PLAN', entidadId: planId, usuario, accion: 'CREADO', detalle: `${cadaTexto(d.cadaValor, d.cadaUnidad)} · primera vez ${fmtDia(d.proximaFecha)}` });
+        const frecuencia = cadaTexto(d.cadaValor, d.cadaUnidad, d.diasSemana);
+        await historial(tx, { entidad: 'PLAN', entidadId: planId, usuario, accion: 'CREADO', detalle: `${frecuencia}${franjaTexto(d.horario?.desde, d.horario?.hasta)} · primera vez ${fmtDia(d.proximaFecha)}` });
         const trabId = await asegurarTrabajoDePlan(tx, planId, usuario);
         await tx.commit();
         tx = null;
-        if (trabId) avisarAsignado(req, d.tecnico, usuario, `Mantenimiento asignado: ${d.titulo}`, `${cadaTexto(d.cadaValor, d.cadaUnidad)} · el próximo es el ${fmtDia(d.proximaFecha)}`, trabId);
+        if (trabId) avisarAsignado(req, d.tecnico, usuario, `Mantenimiento asignado: ${d.titulo}`, `${frecuencia} · el próximo es el ${fmtDia(d.proximaFecha)}`, trabId);
         emitirST(req, { planId, trabId });
-        res.json({ success: true, data: { PlanId: planId, TrabId: trabId } });
+        res.json({ success: true, data: { PlanId: planId, TrabId: trabId, ProximaFecha: d.proximaFecha, CadaTexto: frecuencia, ProcId: d.procId } });
     } catch (err) {
         await rollbackSeguro(tx, 'ST crear plan');
         responderError(res, err, 'planes.crear');
@@ -289,6 +437,12 @@ exports.editarPlan = async (req, res) => {
         const usuario = await usuarioActual(pool, req);
         tx = new sql.Transaction(pool);
         await tx.begin();
+        // Días, franja y tiempo estimado: solo si vinieron
+        const extra = [
+            d.cambiaDias ? ', DiasSemana = @Dias' : '',
+            d.horario ? ', HoraDesde = @HD, HoraHasta = @HH' : '',
+            d.minutos ? ', MinutosEstimados = @Min' : '',
+        ].join('');
         await tx.request()
             .input('Id', sql.Int, planId)
             .input('T', sql.NVarChar(200), d.titulo).input('D', sql.NVarChar(sql.MAX), d.descripcion)
@@ -296,9 +450,12 @@ exports.editarPlan = async (req, res) => {
             .input('CV', sql.Int, d.cadaValor).input('CU', sql.VarChar(10), d.cadaUnidad)
             .input('Tec', sql.Int, d.tecnico?.id || null).input('TecN', sql.NVarChar(150), d.tecnico?.nombre || null)
             .input('F', sql.VarChar(10), d.proximaFecha).input('Para', sql.Bit, d.paraMaquina)
+            .input('Dias', sql.VarChar(20), d.diasSemana)
+            .input('HD', sql.VarChar(5), d.horario?.desde ?? null).input('HH', sql.VarChar(5), d.horario?.hasta ?? null)
+            .input('Min', sql.Int, d.minutos?.valor ?? null)
             .query(`UPDATE dbo.ST_Planes SET Titulo = @T, Descripcion = @D, EquipoId = @E, EquipoTexto = @ET, ProcId = @P,
                         CadaValor = @CV, CadaUnidad = @CU, TecnicoId = @Tec, TecnicoNombre = @TecN,
-                        ProximaFecha = CAST(@F AS DATE), ParaMaquina = @Para
+                        ProximaFecha = CAST(@F AS DATE), ParaMaquina = @Para${extra}
                     WHERE PlanId = @Id`);
         // El trabajo pendiente (sin empezar) sigue al plan. Si no se pospuso, también la fecha.
         const pend = await tx.request().input('P', sql.Int, planId).query(`
@@ -310,18 +467,22 @@ exports.editarPlan = async (req, res) => {
                 .input('E', sql.Int, d.equipoId).input('ET', sql.NVarChar(150), d.equipoTexto)
                 .input('Tec', sql.Int, d.tecnico?.id || null).input('TecN', sql.NVarChar(150), d.tecnico?.nombre || null)
                 .input('Para', sql.Bit, d.paraMaquina).input('F', sql.VarChar(10), d.proximaFecha).input('MoverFecha', sql.Bit, t.VecesPospuesto === 0)
+                .input('HD', sql.VarChar(5), d.horario?.desde ?? null).input('HH', sql.VarChar(5), d.horario?.hasta ?? null)
+                .input('Min', sql.Int, d.minutos?.valor ?? null)
                 .query(`UPDATE dbo.ST_Trabajos SET Titulo = @T, Descripcion = @D, EquipoId = @E, EquipoTexto = @ET,
                             TecnicoId = @Tec, TecnicoNombre = @TecN, ParaMaquina = @Para,
+                            ${d.horario ? 'HoraDesde = @HD, HoraHasta = @HH,' : ''}
+                            ${d.minutos?.valor != null ? 'MinutosEstimados = @Min,' : ''}
                             FechaProgramada = CASE WHEN @MoverFecha = 1 THEN CAST(@F AS DATE) ELSE FechaProgramada END,
                             FechaOriginal = CASE WHEN @MoverFecha = 1 THEN CAST(@F AS DATE) ELSE FechaOriginal END,
                             FechaActualizacion = GETDATE()
                         WHERE TrabId = @Id`);
         }
-        await historial(tx, { entidad: 'PLAN', entidadId: planId, usuario, accion: 'EDITADO', detalle: `${d.titulo} · ${cadaTexto(d.cadaValor, d.cadaUnidad)}` });
+        await historial(tx, { entidad: 'PLAN', entidadId: planId, usuario, accion: 'EDITADO', detalle: `${d.titulo} · ${cadaTexto(d.cadaValor, d.cadaUnidad, d.diasSemana)}` });
         await tx.commit();
         tx = null;
         if (t && d.tecnico?.id && d.tecnico.id !== t.TecnicoId) {
-            avisarAsignado(req, d.tecnico, usuario, `Mantenimiento asignado: ${d.titulo}`, `${cadaTexto(d.cadaValor, d.cadaUnidad)}`, t.TrabId);
+            avisarAsignado(req, d.tecnico, usuario, `Mantenimiento asignado: ${d.titulo}`, `${cadaTexto(d.cadaValor, d.cadaUnidad, d.diasSemana)}`, t.TrabId);
         }
         emitirST(req, { planId });
         res.json({ success: true });
@@ -483,8 +644,22 @@ exports.detalleTrabajo = async (req, res) => {
     } catch (err) { responderError(res, err, 'trabajos.detalle'); }
 };
 
+// Franja horaria (30/09): de 06:00 a 22:00, en horas enteras, de al menos 1 hora. Las dos vacías = sin horario.
+function leerHorario(desde, hasta) {
+    const d = String(desde ?? '').trim();
+    const h = String(hasta ?? '').trim();
+    if (!d && !h) return { desde: null, hasta: null };
+    const hora = (x) => /^(0[6-9]|1\d|2[0-2]):00$/.test(x);
+    if (!hora(d) || !hora(h)) return { error: 'La franja horaria va de 06:00 a 22:00, en horas enteras.' };
+    if (h <= d) return { error: 'La franja horaria tiene que durar al menos 1 hora.' };
+    return { desde: d, hasta: h };
+}
+const franjaTexto = (desde, hasta) => (desde && hasta ? ` de ${desde} a ${hasta}` : '');
+
 // POST /trabajos → mantenimiento suelto o tarea puntual
-//   { tipo, titulo, descripcion, fecha, tecnicoId, minutosEstimados, procId, equipoId | equipoTexto, paraMaquina, tareas: [{ texto, minutos }] }
+//   { tipo, titulo, descripcion, fecha, tecnicoId, minutosEstimados, procId, equipoId | equipoTexto, paraMaquina, tareas: [{ texto, minutos }],
+//     horaDesde, horaHasta }
+// El "Mantenimiento" de Programar trabajo no pasa por acá: es un plan por días de la semana (POST /planes).
 exports.crearTrabajo = async (req, res) => {
     if (!exigirTecnico(req, res, 'programar trabajos')) return;
     const b = req.body || {};
@@ -492,6 +667,9 @@ exports.crearTrabajo = async (req, res) => {
     if (!TIPOS_TRABAJO.includes(tipo)) return res.status(400).json({ success: false, error: 'Tipo inválido.' });
     const fecha = fechaISO(b.fecha);
     if (!fecha) return res.status(400).json({ success: false, error: 'Elegí la fecha.' });
+    if (fecha < hoyUY()) return res.status(400).json({ success: false, error: 'No se puede programar en una fecha que ya pasó.' });
+    const horario = leerHorario(b.horaDesde, b.horaHasta);
+    if (horario.error) return res.status(400).json({ success: false, error: horario.error });
     let tx = null;
     try {
         const pool = await getPool();
@@ -522,11 +700,16 @@ exports.crearTrabajo = async (req, res) => {
         const trabId = await crearTrabajo(tx, {
             tipo, procId, equipoId, equipoTexto: texto(b.equipoTexto, 150), titulo, descripcion: texto(b.descripcion, 8000),
             fecha, tecnico, minutosEstimados: minutos, paraMaquina: bool(b.paraMaquina), tareas, creadoPor: usuario,
+            horaDesde: horario.desde, horaHasta: horario.hasta,
         });
-        await historial(tx, { entidad: 'TRABAJO', entidadId: trabId, usuario, accion: 'CREADO', detalle: `Programado para el ${fmtDia(fecha)}${tecnico ? ` · ${tecnico.nombre}` : ''}` });
+        await historial(tx, {
+            entidad: 'TRABAJO', entidadId: trabId, usuario, accion: 'CREADO',
+            detalle: `Programado para el ${fmtDia(fecha)}${franjaTexto(horario.desde, horario.hasta)}${tecnico ? ` · ${tecnico.nombre}` : ''}`,
+        });
         await tx.commit();
         tx = null;
-        avisarAsignado(req, tecnico, usuario, `${tipo === 'TAREA' ? 'Tarea' : 'Mantenimiento'} asignado: ${titulo}`, `Para el ${fmtDia(fecha)}`, trabId);
+        avisarAsignado(req, tecnico, usuario, `${tipo === 'TAREA' ? 'Tarea' : 'Mantenimiento'} asignado: ${titulo}`,
+            `Para el ${fmtDia(fecha)}${franjaTexto(horario.desde, horario.hasta)}`, trabId);
         emitirST(req, { trabId });
         res.json({ success: true, data: await leerTrabajo(pool, trabId) });
     } catch (err) {
@@ -548,7 +731,7 @@ async function trabajoParaAccion(req, res, pool, { abierto = true } = {}) {
     return t;
 }
 
-// PUT /trabajos/:id { titulo, descripcion, tecnicoId, minutosEstimados, equipoTexto }
+// PUT /trabajos/:id { titulo, descripcion, tecnicoId, minutosEstimados, equipoTexto, horaDesde, horaHasta }
 exports.editarTrabajo = async (req, res) => {
     try {
         const pool = await getPool();
@@ -576,6 +759,16 @@ exports.editarTrabajo = async (req, res) => {
             const v = minutosValidos(b.minutosEstimados, 7 * 24 * 60);
             if (v === null) return res.status(400).json({ success: false, error: 'Tiempo estimado inválido.' });
             if (v !== t.MinutosEstimados) { sets.push('MinutosEstimados = @Min'); r.input('Min', sql.Int, v); cambios.push(`Tiempo estimado: ${t.MinutosEstimados} → ${v} min`); }
+        }
+        if ('horaDesde' in b || 'horaHasta' in b) {
+            const h = leerHorario(b.horaDesde, b.horaHasta);
+            if (h.error) return res.status(400).json({ success: false, error: h.error });
+            if ((h.desde || null) !== (t.HoraDesde || null) || (h.hasta || null) !== (t.HoraHasta || null)) {
+                sets.push('HoraDesde = @HD, HoraHasta = @HH');
+                r.input('HD', sql.VarChar(5), h.desde).input('HH', sql.VarChar(5), h.hasta);
+                const ver = (d, x) => (d && x ? `${d} a ${x}` : 'sin horario');
+                cambios.push(`Horario: ${ver(t.HoraDesde, t.HoraHasta)} → ${ver(h.desde, h.hasta)}`);
+            }
         }
         let nuevoTec = null;
         if ('tecnicoId' in b) {

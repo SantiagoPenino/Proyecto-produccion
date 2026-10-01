@@ -6,8 +6,10 @@ import { socket } from '../../services/socketService';
 import useRecargaConFreno from '../../hooks/useRecargaConFreno';
 import { comprimirImagen } from '../../utils/comprimirImagen';
 import { ESTADOS_PROYECTO, PRIORIDADES, prioridad as prioridadInfo, ACCIONES, fmtFecha, fmtDia, haceCuanto, mensajeError } from './constantes';
-import { chip, label, input, btn, btnSec, btnPri, btnCancelar, MiniModal, Adjunto, Dato, PanelLateral } from './ui';
+import { chip, label, input, btn, btnSec, btnPri, btnCancelar, MiniModal, Adjunto, Dato, PanelLateral, campoFiltro } from './ui';
 import { InsumosUsados } from './Insumos';
+import SelectorFecha from '../ui/SelectorFecha';
+import Selector from '../ui/Selector';
 
 // Proyectos de Servicio Técnico con historial de avances (etapa 4).
 
@@ -56,19 +58,19 @@ const ModalProyecto = ({ proyecto = null, meta, onGuardado, onCerrar }) => {
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                 <div><span className={label}>Responsable</span>
-                    <select className={input} value={d.responsableId} onChange={(e) => set({ responsableId: e.target.value })}>
-                        <option value="">— Sin asignar —</option>
+                    <Selector value={d.responsableId} onChange={(e) => set({ responsableId: e.target.value })}>
+                        <option value="">Sin asignar</option>
                         {(meta?.tecnicos || []).map(t => <option key={t.id} value={t.id}>{t.nombre}</option>)}
-                    </select></div>
-                <div><span className={label}>Inicio</span><input type="date" className={input} value={d.fechaInicio} onChange={(e) => set({ fechaInicio: e.target.value })} /></div>
-                <div><span className={label}>Fin estimado</span><input type="date" className={input} value={d.fechaEstimadaFin} min={d.fechaInicio || undefined} onChange={(e) => set({ fechaEstimadaFin: e.target.value })} /></div>
+                    </Selector></div>
+                <div><span className={label}>Inicio</span><SelectorFecha vaciable placeholder="Sin fecha" value={d.fechaInicio} max={d.fechaEstimadaFin || undefined} onChange={(e) => set({ fechaInicio: e.target.value })} /></div>
+                <div><span className={label}>Fin estimado</span><SelectorFecha vaciable placeholder="Sin fecha" value={d.fechaEstimadaFin} min={d.fechaInicio || undefined} onChange={(e) => set({ fechaEstimadaFin: e.target.value })} /></div>
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 <div><span className={label}>Máquina <span className="normal-case font-bold text-zinc-300">(opcional)</span></span>
-                    <select className={input} value={d.equipoId} onChange={(e) => set({ equipoId: e.target.value })}>
-                        <option value="">— Otra cosa / ninguna —</option>
+                    <Selector value={d.equipoId} onChange={(e) => set({ equipoId: e.target.value })}>
+                        <option value="">Otra cosa / ninguna</option>
                         {(meta?.equipos || []).map(m => <option key={m.EquipoID} value={m.EquipoID}>{m.Nombre} ({m.AreaID})</option>)}
-                    </select></div>
+                    </Selector></div>
                 {!d.equipoId && <div><span className={label}>Equipo o lugar</span><input className={input} value={d.equipoTexto} maxLength={150} onChange={(e) => set({ equipoTexto: e.target.value })} /></div>}
             </div>
         </MiniModal>
@@ -285,25 +287,27 @@ const ProyectosVista = ({ meta, onAbrir }) => {
         socket.on('st:updated', avisar);
         return () => socket.off('st:updated', avisar);
     }, [avisar]);
-    const sel = 'px-3 py-2 border border-zinc-200 rounded-xl text-sm text-zinc-700 bg-white outline-none focus:border-brand-cyan';
     return (
         <div>
-            <div className="bg-white border border-zinc-200 rounded-2xl p-3 mb-4 flex flex-wrap gap-2 items-center">
-                <div className="relative flex-1 min-w-[200px]">
+            {/* En celular, todo en una fila como en el calendario: buscador, estado y "+" solo. */}
+            <div className="bg-white border border-zinc-200 rounded-2xl p-3 mb-4 flex sm:flex-wrap gap-2 items-center">
+                <div className="relative flex-1 min-w-0 sm:min-w-[200px]">
                     <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-300" />
-                    <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar proyecto, responsable, máquina…" className="w-full pl-9 pr-3 py-2 border border-zinc-200 rounded-xl text-sm outline-none focus:border-brand-cyan" />
+                    <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar proyecto, responsable, máquina…" className={`${campoFiltro} w-full pl-9`} />
                 </div>
-                <select className={sel} value={estado} onChange={(e) => setEstado(e.target.value)}>
+                <Selector filtro value={estado} onChange={(e) => setEstado(e.target.value)}>
                     <option value="ABIERTOS">Abiertos</option>
                     {Object.entries(ESTADOS_PROYECTO).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
                     <option value="TODOS">Todos</option>
-                </select>
-                <button onClick={() => setNuevo(true)} className={`${btnPri} ml-auto`}><Plus size={16} /> Nuevo proyecto</button>
+                </Selector>
+                <button onClick={() => setNuevo(true)} className={`hidden sm:inline-flex ${btnPri} ml-auto`}><Plus size={16} /> Nuevo proyecto</button>
+                <button onClick={() => setNuevo(true)} title="Nuevo proyecto" aria-label="Nuevo proyecto"
+                    className="sm:hidden w-9 h-9 rounded-xl flex items-center justify-center bg-brand-cyan text-white hover:bg-brand-cyan/90 shrink-0"><Plus size={18} /></button>
             </div>
             {!lista ? <div className="py-16 text-center text-zinc-400"><Loader2 className="inline animate-spin" size={22} /></div>
                 : lista.length === 0 ? <div className="py-16 text-center text-sm text-zinc-400">No hay proyectos{estado === 'ABIERTOS' ? ' abiertos' : ''}.</div>
                 : (
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                    <div className="grid grid-cols-1 md:grid-cols-2 2xl:grid-cols-3 gap-2">
                         {lista.map(p => (
                             <button key={p.ProyId} onClick={() => onAbrir(p.ProyId)} className="text-left rounded-2xl border border-zinc-200 bg-white px-4 py-3 hover:border-brand-cyan/40 hover:shadow-sm">
                                 <div className="flex flex-wrap items-center gap-1.5 text-[11px]">

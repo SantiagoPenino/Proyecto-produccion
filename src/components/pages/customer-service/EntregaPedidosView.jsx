@@ -4,6 +4,7 @@ import { useAuth } from '../../../context/AuthContext';
 import api from '../../../services/api';
 import { logisticsService } from '../../../services/modules/logisticsService';
 import { socket } from '../../../services/socketService';
+import useRecargaConFreno from '../../../hooks/useRecargaConFreno';
 import { Package, Truck, Search, QrCode, FileText, CheckCircle, RefreshCcw, DollarSign, ChevronDown, ChevronRight, Printer, ClipboardList, Tag, History, ChevronUp, FileImage } from 'lucide-react';
 import { toast } from 'sonner';
 import Swal from 'sweetalert2';
@@ -194,6 +195,9 @@ const EntregaPedidosView = () => {
     // Refs para que el socket handler siempre acceda a la versión más reciente de las funciones
     const loadDespachoRef = useRef(null);
     const loadSinRetiroRef = useRef(null);
+    // Recargas por aviso del socket, con freno (la lista de despachos usa la consulta cara de retiros).
+    const avisarDespachos = useRecargaConFreno(() => loadDespachoRef.current?.());
+    const avisarSinRetiro = useRecargaConFreno(() => loadSinRetiroRef.current?.());
 
     useEffect(() => {
         loadLugaresRetiro();
@@ -217,10 +221,10 @@ const EntregaPedidosView = () => {
                 setEncomiendas(prev => prev.filter(enc => !entregados.has(String(enc.ordenDeRetiro || '').toUpperCase())));
             } else if (tipo === 'nuevo_retiro') {
                 // Alguien creó un retiro → refrescar sinRetiro
-                if (loadSinRetiroRef.current) loadSinRetiroRef.current();
+                avisarSinRetiro();
             } else if (tipo === 'pago_web' || tipo === 'estado' || tipo === '') {
-                // Refrescar encomiendas si estamos en ese tab
-                if (loadDespachoRef.current) loadDespachoRef.current();
+                // Refrescar encomiendas
+                avisarDespachos();
             }
         };
         socket.on('retiros:update', handleRetiroUpdate);

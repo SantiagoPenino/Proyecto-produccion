@@ -5,6 +5,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import api from '../../services/apiClient';
 import logoMini from '../../assets/images/logo/logo-mini.svg';
 import CampanaNotificaciones from './CampanaNotificaciones';
+import BotonNuevaSolicitud from './BotonNuevaSolicitud';
 
 const Navbar = ({ onSwitchTab, currentView, onToggleMobileMenu, isMobileMenuOpen }) => {
   const { user } = useAuth();
@@ -50,38 +51,28 @@ const Navbar = ({ onSwitchTab, currentView, onToggleMobileMenu, isMobileMenuOpen
     return path.map(p => mapNames[p.toLowerCase()] || p.toUpperCase()).join(' > ');
   };
 
+  const nombreUsuario = user?.nombre || user?.usuario;
+  const rolUsuario = user?.rol || user?.role || user?.userType || 'Usuario';
+  const puntoServidor = `w-2 h-2 rounded-full shrink-0 ${serverStatus === 'ok' ? 'bg-emerald-500 animate-pulse' : serverStatus === 'slow' ? 'bg-yellow-500 animate-pulse' : 'bg-red-500 animate-pulse'}`;
+
+  // Celular (< md): a la izquierda el logo y el usuario; a la derecha Servicio Técnico, la campanita y,
+  // al final, el menú. Escritorio: logo + título, búsqueda al centro, y a la derecha los botones y el usuario.
   return (
     <nav className="h-14 px-4 sm:px-6 bg-zinc-900 border-b border-zinc-700 flex items-center justify-between sticky top-0 z-[5010] shadow-md gap-4">
-      {/* Móvil: Logo Centrado Flotante */}
-      <div 
-        className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 cursor-pointer group md:hidden flex items-center justify-center z-0"
-        onClick={() => navigate('/')}
-      >
-        <img src={logoMini} alt="Logo" className="h-9 w-auto object-contain opacity-90 active:opacity-100 transition-opacity drop-shadow-md" />
-      </div>
-
-      {/* IZQUIERDA: Menú Móvil, Titulo y Logo */}
+      {/* IZQUIERDA */}
       <div className="flex items-center flex-1 min-w-0 relative z-10">
-        {onToggleMobileMenu && (
-          <button
-            onClick={onToggleMobileMenu}
-            className="p-2 -ml-1 text-slate-300 hover:text-white active:bg-zinc-800 transition-colors md:hidden shrink-0 bg-transparent border-none cursor-pointer flex flex-col gap-[5px] rounded-lg relative z-10"
-            title="Abrir Menú"
-          >
-            {[0, 1, 2].map(i => (
-              <span key={i} className="block w-[22px] h-[2px] bg-current rounded-sm transition-all duration-300 origin-center"
-                style={{
-                  transform: isMobileMenuOpen
-                    ? i === 0 ? 'translateY(7px) rotate(45deg)'
-                      : i === 2 ? 'translateY(-7px) rotate(-45deg)'
-                        : 'scaleX(0)'
-                    : 'none',
-                }}
-              />
-            ))}
-          </button>
-        )}
-        
+        {/* Móvil: logo y usuario */}
+        <button type="button" onClick={() => navigate('/')} title="Inicio" className="md:hidden shrink-0">
+          <img src={logoMini} alt="Logo" className="h-8 w-auto object-contain opacity-90 active:opacity-100 transition-opacity drop-shadow-md" />
+        </button>
+        <div className="md:hidden ml-3 min-w-0 leading-none">
+          <div className="truncate text-sm font-bold text-white">{nombreUsuario}</div>
+          <div className="mt-1 flex items-center gap-1">
+            <span className={puntoServidor}></span>
+            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-100 truncate">{rolUsuario}</span>
+          </div>
+        </div>
+
         {/* Escritorio: Título y Logo Lineal */}
         <div
           className="hidden md:flex items-center cursor-pointer group min-w-0"
@@ -134,24 +125,47 @@ const Navbar = ({ onSwitchTab, currentView, onToggleMobileMenu, isMobileMenuOpen
         </button>
       </div>
 
-      {/* DERECHA: Notificaciones y Usuario */}
-      <div className="flex items-center gap-6">
-        {/* Notificaciones: avisos por usuario (servicio técnico, …) */}
-        <CampanaNotificaciones />
+      {/* DERECHA: Servicio Técnico, Notificaciones, Usuario (escritorio) y Menú (celular, al final) */}
+      <div className="flex items-center gap-2 md:gap-6 shrink-0">
+        <div className="flex items-center gap-2">
+          {/* Pedir Servicio Técnico desde cualquier pantalla */}
+          <BotonNuevaSolicitud />
+          {/* Notificaciones: avisos por usuario (servicio técnico, …) */}
+          <CampanaNotificaciones />
+        </div>
 
-        {/* Usuario */}
-        <div className="flex items-center gap-4 scale-[0.80] sm:scale-100 origin-right">
+        {/* Usuario (escritorio; en celular está a la izquierda) */}
+        <div className="hidden md:flex items-center gap-4">
           <div className="text-right px-2">
-            <div className="flex text-base font-bold leading-none align-center justify-center text-white">{user?.nombre || user?.usuario}</div>
+            <div className="flex text-base font-bold leading-none justify-center text-white">{nombreUsuario}</div>
             <div className="w-full h-px bg-zinc-800 my-1"></div>
             <div className="flex items-center justify-center gap-1">
-              <span className={`w-2 h-2 rounded-full ${serverStatus === 'ok' ? 'bg-emerald-500 animate-pulse' : serverStatus === 'slow' ? 'bg-yellow-500 animate-pulse' : 'bg-red-500 animate-pulse'}`}></span>
-              <span className={`text-[11px] font-bold uppercase tracking-wider leading-none text-slate-100`}>
-                {user?.rol || user?.role || user?.userType || 'Usuario'}
-              </span>
+              <span className={puntoServidor}></span>
+              <span className="text-[11px] font-bold uppercase tracking-wider leading-none text-slate-100">{rolUsuario}</span>
             </div>
           </div>
         </div>
+
+        {/* Móvil: el menú, al final */}
+        {onToggleMobileMenu && (
+          <button
+            onClick={onToggleMobileMenu}
+            className="p-2 -mr-1 text-slate-300 hover:text-white active:bg-zinc-800 transition-colors md:hidden shrink-0 bg-transparent border-none cursor-pointer flex flex-col gap-[5px] rounded-lg relative z-10"
+            title="Abrir Menú"
+          >
+            {[0, 1, 2].map(i => (
+              <span key={i} className="block w-[22px] h-[2px] bg-current rounded-sm transition-all duration-300 origin-center"
+                style={{
+                  transform: isMobileMenuOpen
+                    ? i === 0 ? 'translateY(7px) rotate(45deg)'
+                      : i === 2 ? 'translateY(-7px) rotate(-45deg)'
+                        : 'scaleX(0)'
+                    : 'none',
+                }}
+              />
+            ))}
+          </button>
+        )}
       </div>
     </nav >
   );

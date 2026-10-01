@@ -8,6 +8,7 @@
 // (tiempo de inactividad) se muestra con "—" y la leyenda "sin fuente todavía".
 // =============================================================================
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { RefreshCw } from 'lucide-react';
 import api from '../../services/apiClient';
 import ConfigDeliveryTimesModal from '../modals/config/ConfigDeliveryTimesModal';
@@ -102,7 +103,7 @@ const CSS = `
 .viz-root .bar-hit:hover{opacity:.82;cursor:default;}
 .viz-root .foot-note{margin-top:18px;font-size:11px;color:var(--muted);text-align:center;}
 .viz-root .empty{font-size:12px;color:var(--muted);padding:24px 0;text-align:center;}
-.viz-modal{position:fixed;inset:0;background:rgba(20,24,40,.45);display:flex;align-items:center;justify-content:center;z-index:200;padding:24px;backdrop-filter:blur(2px);}
+.viz-modal{position:fixed;inset:0;background:rgba(20,24,40,.45);display:flex;align-items:center;justify-content:center;z-index:200;padding:24px;}
 .viz-modal .modal-card{background:#fff;border:1px solid rgba(20,24,40,0.09);border-radius:14px;width:min(1100px,100%);max-height:82vh;display:flex;flex-direction:column;box-shadow:0 30px 80px rgba(20,24,40,.28);font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:#1e2430;}
 .viz-modal .modal-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:18px 20px 10px;}
 .viz-modal .modal-head h3{font-size:16px;font-weight:800;margin:0;}
@@ -118,10 +119,12 @@ const CSS = `
 .viz-modal table.ord tr:hover td{background:#f7f8fb;}
 .viz-modal .estado-tag{font-size:11px;font-weight:600;color:#5b6472;background:#f2f4f8;border:1px solid rgba(20,24,40,0.09);padding:2px 8px;border-radius:20px;white-space:nowrap;}
 .viz-modal .cli{font-size:11px;color:#98a0ad;}
-/* Drawer de configuración (misma maqueta) */
-.viz-drawer{position:fixed;inset:0;z-index:220;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:#1e2430;}
+/* Drawer de configuración (misma maqueta). Va en portal a <body> y en 6000 para tapar la navbar (5010)
+   y la barra lateral (5000); lo que se abre desde él (.viz-sobre-drawer) va más arriba. */
+.viz-sobre-drawer{position:relative;z-index:6050;}
+.viz-drawer{position:fixed;inset:0;z-index:6000;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:#1e2430;}
 .viz-drawer *{box-sizing:border-box;}
-.viz-drawer .drawer-ov{position:absolute;inset:0;background:rgba(20,24,40,.45);backdrop-filter:blur(2px);animation:vizfade .18s ease;}
+.viz-drawer .drawer-ov{position:absolute;inset:0;background:rgba(20,24,40,.45);animation:vizfade .18s ease;}
 @keyframes vizfade{from{opacity:0}to{opacity:1}}
 @keyframes vizslidein{from{transform:translateX(100%)}to{transform:translateX(0)}}
 .viz-drawer .drawer-panel{position:absolute;top:0;right:0;height:100%;width:min(520px,100%);background:#fff;box-shadow:-18px 0 60px rgba(20,24,40,.28);display:flex;flex-direction:column;animation:vizslidein .22s ease;}
@@ -1007,7 +1010,7 @@ export default function ProduccionPanelSection() {
 
             <div ref={refs.tip} className="viz-tip"></div>
 
-            {cfgOpen && (
+            {cfgOpen && createPortal(
                 <div className="viz-drawer">
                     <div className="drawer-ov" onClick={() => setCfgOpen(false)}></div>
                     <aside className="drawer-panel">
@@ -1091,9 +1094,15 @@ export default function ProduccionPanelSection() {
                             <button className="btn-primary" onClick={aplicarConfig} disabled={!cfg || guardando}>{guardando ? 'Guardando…' : 'Aplicar cambios'}</button>
                         </div>
                     </aside>
-                </div>
+                </div>,
+                document.body
             )}
-            {timesOpen && <ConfigDeliveryTimesModal isOpen={true} onClose={() => { setTimesOpen(false); cargarConfig(); fetchPanel(); }} />}
+            {timesOpen && createPortal(
+                <div className="viz-sobre-drawer">
+                    <ConfigDeliveryTimesModal isOpen={true} onClose={() => { setTimesOpen(false); cargarConfig(); fetchPanel(); }} />
+                </div>,
+                document.body
+            )}
 
             {modal && (
                 <div className="viz-modal" onClick={e => { if (e.target === e.currentTarget) setModal(null); }}>

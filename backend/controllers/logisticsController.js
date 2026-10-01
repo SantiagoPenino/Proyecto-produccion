@@ -92,6 +92,63 @@ const resolverCliPK = async (pool, cliIdDirecto, codCliente) => {
     return r.recordset[0]?.CliIdCliente ?? null;
 };
 
+// Qué hay asentado de una orden y de su pedido. El ingreso a Depósito lo usa para decidir si
+// asienta la orden. Desde el 23/07/2026 cada orden asienta SOLO SUS líneas del pedido, así que
+// "ya asentada" también tiene que ser por orden: con la marca del pedido (MontoContabilizado),
+// la primera parte de un pedido dividido "(n/m)" lo dejaba marcado y las demás partes entraban
+// sin cargo en la cuenta ni descuento del plan (209 pedidos entre el 23/07 y el 30/09).
+// MovimientosCuenta.OrdIdOrden puede ser Ordenes.OrdenID o OrdenesDeposito.OrdIdOrden según
+// quién creó el movimiento: se buscan los dos, siempre acotado al MISMO cliente.
+//   propios       → movimientos vivos de asiento (ORDEN, ORDEN_ANTICIPO, ENTREGA, CONSUMO_CUENTA) de ESTA orden.
+//   lineasPropias → líneas de ESTA orden en el pedido (sin las "Incluido en PRO").
+//   cargadoPedido → plata cargada (ORDEN/ORDEN_ANTICIPO vivas, sin los espejos CUBIERTO de la
+//                   billetera) a TODAS las órdenes del pedido, en la moneda del pedido.
+const estadoAsientoOrden = async (pool, { ordenId, codigoOrden, cliId, pedidoId, noDocERP, monId }) => {
+    const r = await pool.request()
+        .input('OID', sql.Int, ordenId)
+        .input('Cod', sql.VarChar(100), String(codigoOrden || '').trim())
+        .input('Cli', sql.Int, cliId)
+        .input('PID', sql.Int, pedidoId)
+        .input('Doc', sql.VarChar(50), String(noDocERP || '').trim())
+        .input('Mon', sql.Int, monId)
+        .query(`
+            SELECT
+              (SELECT COUNT(*) FROM dbo.PedidosCobranzaDetalle d WITH(NOLOCK)
+                WHERE d.OrdenID = @OID AND d.PedidoCobranzaID = @PID AND ISNULL(d.EsHermanaConsolidada, 0) = 0
+              ) AS LineasPropias,
+              (SELECT COUNT(*) FROM dbo.PedidosCobranzaDetalle d WITH(NOLOCK)
+                WHERE d.PedidoCobranzaID = @PID AND d.OrdenID IS NOT NULL
+              ) AS LineasConOrden,
+              (SELECT COUNT(*) FROM dbo.MovimientosCuenta m WITH(NOLOCK)
+                 JOIN dbo.CuentasCliente cc WITH(NOLOCK) ON cc.CueIdCuenta = m.CueIdCuenta AND cc.CliIdCliente = @Cli
+                WHERE m.MovTipo IN ('ORDEN', 'ORDEN_ANTICIPO', 'ENTREGA', 'CONSUMO_CUENTA')
+                  AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)
+                  AND (m.OrdIdOrden = @OID
+                       OR m.OrdIdOrden IN (SELECT od.OrdIdOrden FROM dbo.OrdenesDeposito od WITH(NOLOCK) WHERE od.OrdCodigoOrden = @Cod))
+              ) AS Propios,
+              (SELECT ISNULL(SUM(ABS(m.MovImporte)), 0) FROM dbo.MovimientosCuenta m WITH(NOLOCK)
+                 JOIN dbo.CuentasCliente cc WITH(NOLOCK) ON cc.CueIdCuenta = m.CueIdCuenta AND cc.CliIdCliente = @Cli
+                  -- Hay cuentas de dinero con MonIdMoneda en NULL: la moneda sale del tipo de cuenta
+                  AND COALESCE(cc.MonIdMoneda, CASE cc.CueTipo WHEN 'DINERO_USD' THEN 2 WHEN 'DINERO_UYU' THEN 1 END) = @Mon
+                WHERE m.MovTipo IN ('ORDEN', 'ORDEN_ANTICIPO')
+                  AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)
+                  AND ISNULL(m.MovObservaciones, '') NOT LIKE 'CUBIERTO%'
+                  AND m.OrdIdOrden IN (
+                        SELECT o.OrdenID FROM dbo.Ordenes o WITH(NOLOCK) WHERE o.NoDocERP = @Doc
+                        UNION
+                        SELECT od.OrdIdOrden FROM dbo.OrdenesDeposito od WITH(NOLOCK)
+                          JOIN dbo.Ordenes o WITH(NOLOCK) ON o.CodigoOrden = od.OrdCodigoOrden
+                         WHERE o.NoDocERP = @Doc)
+              ) AS CargadoPedido`);
+    const row = r.recordset[0] || {};
+    return {
+        propios: Number(row.Propios) || 0,
+        lineasPropias: Number(row.LineasPropias) || 0,
+        lineasConOrden: Number(row.LineasConOrden) || 0,
+        cargadoPedido: Number(row.CargadoPedido) || 0,
+    };
+};
+
 /**
  * Valida la regla de pedido completo para un conjunto de órdenes a despachar/recibir:
  *  - destino DEPOSITO  → el pedido debe estar completo GLOBALMENTE (todas las áreas).
@@ -1797,9 +1854,8 @@ exports.receiveDispatch = async (req, res) => {
                     const ordenesAContab = [...new Set(ordenesProcesar.map(Number))].filter(n => !isNaN(n));
 
                     // Las madres antes que sus reposiciones (-R) y fallas (-F). Cada orden cobra solo SUS
-                    // líneas del pedido, y la primera que pasa deja el pedido marcado como contabilizado.
-                    // Una -R no tiene líneas propias: si iba primero (la que dispara un forzado o completa
-                    // el pedido al llegar), marcaba el pedido sin cobrar nada y la madre ya no cobraba.
+                    // líneas del pedido. Una -R no tiene líneas propias, así que no asienta nada; se deja
+                    // para el final igual, para que los logs del ingreso sigan el orden madre → reposición.
                     if (ordenesAContab.length > 1) {
                         const codsRes = await poolLocal.request().query(
                             `SELECT OrdenID, CodigoOrden FROM Ordenes WITH(NOLOCK) WHERE OrdenID IN (${ordenesAContab.join(',')})`);
@@ -1807,6 +1863,11 @@ exports.receiveDispatch = async (req, res) => {
                             [Number(r.OrdenID), /-[RF]\d+$/i.test(String(r.CodigoOrden || '').trim())]));
                         ordenesAContab.sort((a, b) => (esRepoOFalla.get(a) ? 1 : 0) - (esRepoOFalla.get(b) ? 1 : 0));
                     }
+
+                    // Pedidos que se asentaron en ESTA pasada: sus hermanas (las otras partes del mismo
+                    // pedido, que entran juntas cuando el pedido se completa) se asientan cada una con
+                    // sus líneas, aunque el pedido ya haya quedado marcado por la primera.
+                    const pedidosAsentadosEnEstaPasada = new Set();
 
                     for (const L_OrdenID of ordenesAContab) {
                         // --- GATE ESPERAR BULTOS: si la orden aún no tiene todos sus bultos, no contabilizar ---
@@ -1853,31 +1914,54 @@ if (pcReq.recordset.length > 0) {
                                 .query("SELECT SUM(CASE WHEN Cantidad IS NULL THEN 0 ELSE Cantidad END) as Metros FROM PedidosCobranzaDetalle WITH(NOLOCK) WHERE PedidoCobranzaID = @PID");
                             const totalMetros = detReq.recordset.length > 0 ? (parseFloat(detReq.recordset[0].Metros) || 0) : 0;
 
-                            let triggerReversal = false;
-                            let triggerForward = false;
+                            const finalMonId = (pc.Moneda === 'USD') ? 2 : 1;
 
-                            if (mContado === 0) {
-                                // Nuevo
-                                if (currentMonto > 0 || totalMetros > 0) triggerForward = true;
-                            } else {
-                                if (mContado !== currentMonto || metContado !== totalMetros) {
-                                    triggerReversal = true;
-                                    triggerForward = true;
+                            // Cliente REAL, una sola vez para cargo/planes de esta orden.
+                            // null = el cliente no existe: los asientos se OMITEN (con error en log).
+                            const cliPKReal = await resolverCliPK(poolLocal, oRow.CliIdCliente, oRow.CodCliente);
+                            if (!cliPKReal) {
+                                logger.error(`[DEPOSITO] ${oRow.CodigoOrden}: el cliente no existe (CodCliente ${String(oRow.CodCliente || '').trim()}) — se omiten los asientos contables. ¿Cliente eliminado?`);
+                            }
+
+                            // ¿Se asienta ESTA orden? El control es por orden (ver estadoAsientoOrden):
+                            // - Si ya tiene movimientos propios, ya está asentada y no se toca. Un cambio de
+                            //   precio posterior lo lleva la cotización, orden por orden
+                            //   (propagarCotizacionADeposito). Acá había una "reversa" que mandaba el importe
+                            //   en negativo, pero el motor registra |Importe| con el signo del evento: la
+                            //   reversa era OTRO débito (13 entre julio y setiembre, casi todos en -R).
+                            // - Si el pedido se asentó en una pasada ANTERIOR y esta orden no tiene
+                            //   movimientos, puede ser una hermana que quedó sin asentar, o un pedido cobrado
+                            //   entero en otra orden (así se asentaba hasta el 22/07, y la cotización llevaba
+                            //   el cargo al total del pedido). Se asienta solo si lo ya cargado al pedido no
+                            //   llega a su total.
+                            // Reposiciones (-R) y fallas (-F) son re-trabajo sin cargo: no se asientan nunca.
+                            const esRepoOFallaIngreso = /-[RF]\d+$/i.test(String(oRow.CodigoOrden || '').trim());
+                            let asentar = !esRepoOFallaIngreso && (currentMonto !== 0 || totalMetros > 0);
+                            if (asentar && cliPKReal) {
+                                const est = await estadoAsientoOrden(poolLocal, {
+                                    ordenId: L_OrdenID, codigoOrden: oRow.CodigoOrden, cliId: cliPKReal,
+                                    pedidoId: pc.ID, noDocERP: pc.NoDocERP, monId: finalMonId,
+                                });
+                                const pedidoDeOtraPasada = (mContado !== 0 || metContado !== 0) && !pedidosAsentadosEnEstaPasada.has(pc.ID);
+                                if (est.propios > 0) {
+                                    asentar = false;
+                                    console.log(`${logPrefix} -> Ya asentada (${est.propios} movimiento/s propio/s): no se vuelve a asentar`);
+                                } else if (est.lineasConOrden === 0 && (mContado !== 0 || metContado !== 0 || pedidosAsentadosEnEstaPasada.has(pc.ID))) {
+                                    // Pedido viejo sin OrdenID en sus líneas: la primera orden asienta el pedido
+                                    // entero (lineasContab = todo el pedido), así que las demás no asientan nada.
+                                    asentar = false;
+                                    console.log(`${logPrefix} -> Pedido sin desglose por orden, ya asentado por otra orden`);
+                                } else if (pedidoDeOtraPasada && currentMonto > 0 && est.cargadoPedido >= currentMonto - 0.05) {
+                                    asentar = false;
+                                    const msg = `[DEPOSITO] ${oRow.CodigoOrden}: el pedido ${pc.NoDocERP} ya tiene cargados ${est.cargadoPedido.toFixed(2)} de ${currentMonto.toFixed(2)} en otras órdenes — esta no se asienta.`;
+                                    // Sin líneas propias no había nada que asentar: no hace falta avisar.
+                                    if (est.lineasPropias > 0) logger.warn(`${msg} Si le faltan metros del plan, revisar a mano.`);
+                                    else console.log(msg);
                                 }
                             }
 
-                            console.log(`${logPrefix} -> Reversa=${triggerReversal}, Adelante=${triggerForward}, totalMetros=${totalMetros}, currentMonto=${currentMonto}, mContado=${mContado}, metContado=${metContado}`);
-if (triggerReversal || triggerForward) {
-                                // oData is fetched above
-                                    const finalMonId = (pc.Moneda === 'USD') ? 2 : 1;
-
-                                    // Cliente REAL, una sola vez para reversa/cargo/planes de esta orden.
-                                    // null = el cliente no existe: los asientos se OMITEN (con error en log).
-                                    const cliPKReal = await resolverCliPK(poolLocal, oRow.CliIdCliente, oRow.CodCliente);
-                                    if (!cliPKReal) {
-                                        logger.error(`[DEPOSITO] ${oRow.CodigoOrden}: el cliente no existe (CodCliente ${String(oRow.CodCliente || '').trim()}) — se omiten los asientos contables. ¿Cliente eliminado?`);
-                                    }
-
+                            console.log(`${logPrefix} -> Asentar=${asentar}, totalMetros=${totalMetros}, currentMonto=${currentMonto}, mContado=${mContado}, metContado=${metContado}`);
+if (asentar) {
                                     // ¿Cliente "Rollo por adelantado"? Su plan activo cubre SIEMPRE al ingresar,
                                     // aunque el saldo esté en 0 o negativo (el hook deja el plan en rojo y la
                                     // próxima recarga lo absorbe). Se resuelve UNA vez por orden.
@@ -1894,28 +1978,7 @@ if (triggerReversal || triggerForward) {
                                         } catch (eTc) { /* ante la duda, comportamiento histórico */ }
                                     }
 
-                                    // Para la REVERSA vamos a simular el mismo cargo pero NEGATIVO
-                                    if (triggerReversal && mContado !== 0 && cliPKReal) {
-                                        console.log(`${logPrefix} -> Reversando orden por diferencia`); // por diferencia en Checking.`);
-                                        const cliPKRev = cliPKReal;
-                                          let revEvento = 'ORDEN';
-                                          const prevPl = await poolLocal.request().input('Cli', require('mssql').Int, cliPKRev).query("SELECT TOP 1 PlaIdPlan FROM PlanesMetros WITH(NOLOCK) WHERE CliIdCliente = @Cli");
-                                          if(prevPl.recordset.length > 0) revEvento = 'ENTREGA';
-
-                                          await contabilidadService.procesarEventoContable(revEvento, {
-                                              OrdIdOrden: L_OrdenID,
-                                              CliIdCliente: cliPKRev,
-                                              Cantidad: -metContado,
-                                              Importe: -mContado,
-                                              CodigoOrden: oRow.CodigoOrden,
-                                              NombreTrabajo: `[REVERSA AUT.] ${oRow.DescripcionTrabajo}`,
-                                              UsuarioAlta: usuarioId || 1,
-                                              MonIdMoneda: finalMonId
-                                          });
-                                    }
-
-                                    // Adicion Nueva
-                                     if (triggerForward && (currentMonto !== 0 || totalMetros > 0)) {
+                                    // Asiento de las líneas de esta orden
                                          console.log(`${logPrefix} -> Generando nuevo cargo`); // por ${currentMonto}`);
                                          const cRes = await poolLocal.request().query("SELECT TOP 1 CotDolar FROM dbo.Cotizaciones WITH(NOLOCK) ORDER BY CotFecha DESC");
                                          const cotizacionVal = cRes.recordset[0]?.CotDolar || 40;
@@ -2040,8 +2103,11 @@ if (triggerReversal || triggerForward) {
                                            // (y sumaba el importe del pedido entero en cada orden).
                                            // Fallback al comportamiento previo SOLO si ninguna línea trae OrdenID
                                            // (pedidos legacy sin desglose): ahí el pedido es de una sola orden.
+                                           // Las líneas "Incluido en PRO" (EsHermanaConsolidada) no se cobran aparte: ya
+                                           // están dentro del subtotal de la línea de la madre PRO. Antes no hacía falta
+                                           // filtrarlas porque la madre marcaba el pedido y las hermanas no se asentaban.
                                            const lineasPedido = details.recordset;
-                                           const lineasOrden  = lineasPedido.filter(d => Number(d.OrdenID) === Number(L_OrdenID));
+                                           const lineasOrden  = lineasPedido.filter(d => Number(d.OrdenID) === Number(L_OrdenID) && !Number(d.EsHermanaConsolidada));
                                            const lineasContab = esMadrePorArea
                                                ? lineasPedido.filter(d => !Number(d.EsHermanaConsolidada))   // [POR ÁREA] todo el pedido
                                                : lineasOrden.length > 0
@@ -2221,14 +2287,15 @@ if (triggerReversal || triggerForward) {
                                             }
                                         }
 
-                                        // Update PedidosCobranza Marca
+                                        // Marca del pedido: "ya pasó por el ingreso". Las hermanas de esta misma
+                                        // pasada se asientan igual (pedidosAsentadosEnEstaPasada).
                                         await poolLocal.request()
                                             .input('M', require('mssql').Decimal(18,2), currentMonto)
                                             .input('Met', require('mssql').Decimal(18,2), totalMetros)
                                             .input('PID', require('mssql').Int, pc.ID)
                                             .query("UPDATE PedidosCobranza SET MontoContabilizado = @M, MetrosContabilizados = @Met WHERE ID = @PID");
-                                    }
-                                     }  // fin if (triggerReversal || triggerForward)
+                                        pedidosAsentadosEnEstaPasada.add(pc.ID);
+                                     }  // fin if (asentar)
                                  }  // fin if (pcReq)
 
                                  // Fallback: órdenes de reposición (-R1, -R2...) u órdenes sin PedidosCobranza

@@ -4,6 +4,7 @@ import { io } from 'socket.io-client';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import api, { SOCKET_URL } from '../../services/apiClient';
+import useRecargaConFreno from '../../hooks/useRecargaConFreno';
 import { toast } from 'sonner';
 import Swal from 'sweetalert2';
 import { useNavigate, useLocation } from 'react-router-dom';
@@ -866,8 +867,10 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
 
   useEffect(() => {
     const socket = io(SOCKET_URL, { transports: ['websocket', 'polling'] });
-    socket.on('retiros:update', fetchRetiros);
-    socket.on('actualizado', fetchRetiros);
+    // Con freno: el server manda los dos avisos juntos y en ráfagas, y /caja es de las consultas más caras.
+    // Lo que hace la caja misma (cobrar, vender, autorizar) sigue recargando en el momento.
+    socket.on('retiros:update', avisarRetiros);
+    socket.on('actualizado', avisarRetiros);
     verificarSesion();
     cargarDatosBasicos();
     return () => socket.disconnect();
@@ -916,6 +919,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
       setRetiros(Array.isArray(res.data) ? res.data : []);
     } catch { }
   }, []);
+  const avisarRetiros = useRecargaConFreno(fetchRetiros);
 
   const buscarCotizBCU = async () => {
     setLoadingCot(true);

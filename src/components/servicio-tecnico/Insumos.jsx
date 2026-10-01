@@ -1,11 +1,13 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { toast } from 'sonner';
-import { Loader2, Search, PackageMinus, Package, AlertTriangle, Pencil, Check, X } from 'lucide-react';
+import { Loader2, Search, PackageMinus, Package, AlertTriangle, Warehouse } from 'lucide-react';
 import { servicioTecnicoService } from '../../services/api';
 import { socket } from '../../services/socketService';
 import useRecargaConFreno from '../../hooks/useRecargaConFreno';
 import { fmtFecha, fmtPlata, fmtCantidad, mensajeError } from './constantes';
-import { label, input, btn, btnPri, btnCancelar, MiniModal } from './ui';
+import { label, input, btn, btnPri, btnCancelar, MiniModal, campoFiltro, clasePastillaBoton, ContenidoPastilla, PastillaFija } from './ui';
+import Selector from '../ui/Selector';
+import SelectorFecha from '../ui/SelectorFecha';
 
 // Insumos y repuestos del stock propio (/stock) — etapa 4 de Servicio Técnico. Cada uso se descuenta
 // del depósito elegido como consumo (en /stock suma en el gasto por sector) y queda acá con fecha,
@@ -78,10 +80,10 @@ export const ModalUsoInsumo = ({ contexto = {}, onGuardado, onCerrar }) => {
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                         <div>
                             <span className={label}>Sale del depósito</span>
-                            <select className={input} value={dep} onChange={(e) => { setDep(e.target.value); setElegido(null); setFalta(null); }}>
-                                <option value="">— Elegir —</option>
+                            <Selector value={dep} onChange={(e) => { setDep(e.target.value); setElegido(null); setFalta(null); }}>
+                                <option value="">Elegir…</option>
                                 {config.depositos.map(d => <option key={d.DepId} value={d.DepId}>{d.Nombre}{config.deposito?.id === d.DepId ? ' (Servicio Técnico)' : ''}</option>)}
-                            </select>
+                            </Selector>
                         </div>
                         <div>
                             <span className={label}>Buscar</span>
@@ -164,26 +166,25 @@ export const InsumosUsados = ({ filtro, version = 0, puedeUsar = false, contexto
 };
 
 // ── Sección Insumos: stock del depósito de Servicio Técnico + historial de usos ──
+// El stock que se ve es el del depósito de Servicio Técnico (la pastilla de arriba). No hay otro
+// selector de depósito para mirar: era redundante con la pastilla. El stock de otros depósitos se ve
+// en "Usar insumo" (se elige de dónde sale) o en /stock.
 const InsumosVista = ({ meta }) => {
     const [tab, setTab] = useState('stock');
     const [config, setConfig] = useState(null);
-    const [dep, setDep] = useState('');
     const [q, setQ] = useState('');
     const [stock, setStock] = useState(null);
     const [usos, setUsos] = useState(null);
     const [filtroUsos, setFiltroUsos] = useState({ desde: '', hasta: '', q: '' });
     const [usar, setUsar] = useState(null);
-    const [eligiendo, setEligiendo] = useState(false);
-    const [depElegido, setDepElegido] = useState('');
 
     const cargarConfig = useCallback(async () => {
         try {
-            const c = await servicioTecnicoService.insumosConfig();
-            setConfig(c);
-            setDep((d) => d || (c.deposito?.id ? String(c.deposito.id) : ''));
+            setConfig(await servicioTecnicoService.insumosConfig());
         } catch (e) { toast.error(mensajeError(e)); }
     }, []);
     useEffect(() => { cargarConfig(); }, [cargarConfig]);
+    const dep = config?.deposito?.id ? String(config.deposito.id) : '';
 
     const cargarStock = useCallback(async () => {
         if (!dep) { setStock(null); return; }
@@ -203,69 +204,64 @@ const InsumosVista = ({ meta }) => {
         return () => socket.off('st:updated', avisar);
     }, [avisar]);
 
-    const guardarDeposito = async () => {
+    // Lo elige un Admin; se guarda al elegirlo en la lista.
+    const guardarDeposito = async (v) => {
         try {
-            await servicioTecnicoService.setDepositoInsumos(depElegido || null);
-            toast.success('Depósito de Servicio Técnico guardado');
-            setEligiendo(false);
-            setDep(depElegido);
+            await servicioTecnicoService.setDepositoInsumos(v || null);
+            toast.success(v ? 'Depósito de Servicio Técnico guardado' : 'Sin depósito elegido');
             cargarConfig();
         } catch (e) { toast.error(mensajeError(e)); }
     };
 
     const totalesUsos = (usos || []).reduce((t, u) => { if (u.CostoTotal != null) t[u.Moneda || 'UYU'] = (t[u.Moneda || 'UYU'] || 0) + Number(u.CostoTotal); return t; }, {});
-    const sel = 'px-3 py-2 border border-zinc-200 rounded-xl text-sm text-zinc-700 bg-white outline-none focus:border-brand-cyan';
+    const contenidoDeposito = config && (
+        <ContenidoPastilla etiqueta={config.deposito && config.deposito.origen !== 'pantalla' ? `Depósito de insumos · ${config.deposito.origen}` : 'Depósito de insumos'}
+            valor={config.deposito?.nombre || 'Sin elegir'} apagado={!config.deposito} icono={<Warehouse size={15} />} />
+    );
 
     return (
         <div>
-            {/* Depósito de Servicio Técnico */}
-            {config && (
-                <div className="mb-4 flex flex-wrap items-center gap-2 text-sm text-zinc-500">
-                    <span className="font-bold text-zinc-400 uppercase text-[11px] tracking-wide">Depósito de Servicio Técnico:</span>
-                    {eligiendo ? (
-                        <>
-                            <select className={sel} value={depElegido} onChange={(e) => setDepElegido(e.target.value)}>
-                                <option value="">— Ninguno —</option>
-                                {config.depositos.map(d => <option key={d.DepId} value={d.DepId}>{d.Nombre}</option>)}
-                            </select>
-                            <button onClick={guardarDeposito} className="w-8 h-8 rounded-lg flex items-center justify-center bg-brand-cyan text-white"><Check size={16} /></button>
-                            <button onClick={() => setEligiendo(false)} className="w-8 h-8 rounded-lg flex items-center justify-center text-zinc-400 hover:bg-zinc-100"><X size={16} /></button>
-                        </>
-                    ) : (
-                        <>
-                            <span className="font-bold text-zinc-700">{config.deposito?.nombre || 'Sin elegir'}</span>
-                            {config.deposito && config.deposito.origen !== 'pantalla' && <span className="text-xs text-zinc-400">({config.deposito.origen})</span>}
-                            {config.puedeElegir && (
-                                <button onClick={() => { setDepElegido(config.deposito?.origen === 'pantalla' ? String(config.deposito.id) : ''); setEligiendo(true); }}
-                                    className="w-7 h-7 rounded-lg flex items-center justify-center text-zinc-400 hover:bg-zinc-100 hover:text-brand-cyan" title="Elegir depósito"><Pencil size={14} /></button>
-                            )}
-                            {!config.deposito && <span className="text-xs text-zinc-400">Crealo en /stock → Gestión → Almacenes y sectores (tipo Sector) y elegilo acá.</span>}
-                        </>
-                    )}
-                </div>
-            )}
-
+            {/* En celular, Stock / Usos se reparten todo el ancho (como las vistas de Solicitudes) y abajo
+                quedan el depósito (se achica y corta el texto) y "Usar insumo" como ícono solo, como el "+". */}
             <div className="flex flex-wrap items-center gap-2 mb-3">
-                {[['stock', 'Stock'], ['usos', 'Usos']].map(([k, t]) => (
-                    <button key={k} onClick={() => setTab(k)}
-                        className={`px-3 py-1.5 rounded-lg text-xs font-black uppercase tracking-wide transition-colors ${tab === k ? 'bg-zinc-800 text-white' : 'text-zinc-400 hover:bg-zinc-100'}`}>{t}</button>
-                ))}
-                <button onClick={() => setUsar({})} className={`${btnPri} ml-auto`}><PackageMinus size={16} /> Usar insumo</button>
+                <div className="w-full sm:w-auto flex gap-1">
+                    {[['stock', 'Stock'], ['usos', 'Usos']].map(([k, t]) => (
+                        <button key={k} onClick={() => setTab(k)}
+                            className={`flex-1 sm:flex-none text-center px-3 py-1.5 rounded-lg text-xs font-black uppercase tracking-wide transition-colors ${tab === k ? 'bg-zinc-800 text-white' : 'text-zinc-400 hover:bg-zinc-100'}`}>{t}</button>
+                    ))}
+                </div>
+                <div className="w-full sm:w-auto sm:ml-auto flex items-center justify-between sm:justify-end gap-2 min-w-0">
+                    {/* Depósito de Servicio Técnico: de ahí salen los insumos por defecto */}
+                    {config && (config.puedeElegir ? (
+                        <Selector value={config.deposito?.origen === 'pantalla' ? String(config.deposito.id) : ''} onChange={(e) => guardarDeposito(e.target.value)}
+                            anchoLista={280} claseBoton={clasePastillaBoton} renderValor={() => contenidoDeposito} className="min-w-0 flex-1 sm:flex-none"
+                            title="Depósito del que salen los insumos de Servicio Técnico">
+                            <option value="" descripcion="Se usa la variable de entorno o el sector de quien carga el uso">Ninguno</option>
+                            {config.depositos.map(d => <option key={d.DepId} value={d.DepId}>{d.Nombre}</option>)}
+                        </Selector>
+                    ) : <PastillaFija className="min-w-0 flex-1 sm:flex-none" titulo="Depósito del que salen los insumos. Lo elige un administrador.">{contenidoDeposito}</PastillaFija>)}
+                    <button onClick={() => setUsar({})} className={`hidden sm:inline-flex ${btnPri} shrink-0`}><PackageMinus size={16} /> Usar insumo</button>
+                    <button onClick={() => setUsar({})} title="Usar insumo" aria-label="Usar insumo"
+                        className="sm:hidden w-9 h-9 rounded-xl flex items-center justify-center bg-brand-cyan text-white hover:bg-brand-cyan/90 shrink-0"><PackageMinus size={18} /></button>
+                </div>
             </div>
+            {config && !config.deposito && (
+                <p className="mb-3 text-xs text-zinc-400 text-right">Crealo en /stock → Gestión → Almacenes y sectores (tipo Sector) y elegilo acá.</p>
+            )}
 
             {tab === 'stock' ? (
                 <>
-                    <div className="bg-white border border-zinc-200 rounded-2xl p-3 mb-3 flex flex-wrap gap-2 items-center">
-                        <select className={sel} value={dep} onChange={(e) => setDep(e.target.value)}>
-                            <option value="">— Depósito —</option>
-                            {(config?.depositos || []).map(d => <option key={d.DepId} value={d.DepId}>{d.Nombre}</option>)}
-                        </select>
-                        <div className="relative flex-1 min-w-[180px]">
+                    <div className="bg-white border border-zinc-200 rounded-2xl p-3 mb-3">
+                        <div className="relative">
                             <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-300" />
-                            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar insumo…" className="w-full pl-9 pr-3 py-2 border border-zinc-200 rounded-xl text-sm outline-none focus:border-brand-cyan" />
+                            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar insumo…" className={`${campoFiltro} w-full pl-9`} disabled={!dep} />
                         </div>
                     </div>
-                    {!dep ? <div className="py-12 text-center text-sm text-zinc-400">Elegí un depósito.</div>
+                    {!dep ? (
+                        <div className="py-12 text-center text-sm text-zinc-400">
+                            Todavía no hay depósito de Servicio Técnico.{config?.puedeElegir ? ' Elegilo arriba.' : ' Lo elige un administrador.'}
+                        </div>
+                    )
                         : !stock ? <div className="py-12 text-center text-zinc-400"><Loader2 className="inline animate-spin" size={20} /></div>
                         : stock.length === 0 ? <div className="py-12 text-center text-sm text-zinc-400">No hay stock{q ? ' con esa búsqueda' : ''} en este depósito.</div>
                         : (
@@ -290,10 +286,10 @@ const InsumosVista = ({ meta }) => {
                         <div className="relative flex-1 min-w-[180px]">
                             <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-300" />
                             <input value={filtroUsos.q} onChange={(e) => setFiltroUsos(f => ({ ...f, q: e.target.value }))} placeholder="Buscar insumo, nota o persona…"
-                                className="w-full pl-9 pr-3 py-2 border border-zinc-200 rounded-xl text-sm outline-none focus:border-brand-cyan" />
+                                className={`${campoFiltro} w-full pl-9`} />
                         </div>
-                        <input type="date" className={sel} value={filtroUsos.desde} onChange={(e) => setFiltroUsos(f => ({ ...f, desde: e.target.value }))} title="Desde" />
-                        <input type="date" className={sel} value={filtroUsos.hasta} onChange={(e) => setFiltroUsos(f => ({ ...f, hasta: e.target.value }))} title="Hasta" />
+                        <SelectorFecha filtro vaciable placeholder="Desde" value={filtroUsos.desde} max={filtroUsos.hasta || undefined} onChange={(e) => setFiltroUsos(f => ({ ...f, desde: e.target.value }))} />
+                        <SelectorFecha filtro vaciable placeholder="Hasta" value={filtroUsos.hasta} min={filtroUsos.desde || undefined} onChange={(e) => setFiltroUsos(f => ({ ...f, hasta: e.target.value }))} />
                         {Object.keys(totalesUsos).length > 0 && <span className="text-xs text-zinc-500">Total: <b>{Object.entries(totalesUsos).map(([m, n]) => fmtPlata(n, m)).join(' + ')}</b></span>}
                     </div>
                     {!usos ? <div className="py-12 text-center text-zinc-400"><Loader2 className="inline animate-spin" size={20} /></div>

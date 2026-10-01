@@ -179,26 +179,34 @@ const crearProductoWms = async (req, res) => {
         }
 
         const creado = await wmsSvc.crearMaestroConVariantes({ maestro, variantes, transaction: tran });
-        const proId = await crearArticuloVinculado(tran, {
-            pmaId: creado.pmaId,
-            nombre: maestro.nombre,
-            variantes: creado.variantes.map(x => ({
-                id: x.varId, codigo_variante: x.codigo, nombre_variante: x.nombre, talle: x.talle, color: x.color,
-            })),
-        });
-        // Mapeo ERP en la variante (decisión e: Wms_Variantes es LA variante del sistema).
-        await new sql.Request(tran).input('Pro', sql.Int, proId).input('P', sql.Int, creado.pmaId)
-            .query(`UPDATE dbo.Wms_Variantes SET ProIdProducto = @Pro WHERE PmaId = @P`);
+        // conCatalogo: false = insumo interno (se da de alta desde Stock → Gestión de Sistema, 30/09): no se
+        // crea el artículo del catálogo, que nace visible. Sin el dato, como siempre: se crea.
+        const conCatalogo = req.body?.conCatalogo !== false;
+        let proId = null;
+        if (conCatalogo) {
+            proId = await crearArticuloVinculado(tran, {
+                pmaId: creado.pmaId,
+                nombre: maestro.nombre,
+                variantes: creado.variantes.map(x => ({
+                    id: x.varId, codigo_variante: x.codigo, nombre_variante: x.nombre, talle: x.talle, color: x.color,
+                })),
+            });
+            // Mapeo ERP en la variante (decisión e: Wms_Variantes es LA variante del sistema).
+            await new sql.Request(tran).input('Pro', sql.Int, proId).input('P', sql.Int, creado.pmaId)
+                .query(`UPDATE dbo.Wms_Variantes SET ProIdProducto = @Pro WHERE PmaId = @P`);
+        }
         await tran.commit();
 
         // Talle y color que hayan quedado vacíos se derivan del nombre, igual que al importar.
-        try {
-            const { completarEjesFaltantes } = require('../utils/variantesEjes');
-            await completarEjesFaltantes(pool, [proId]);
-        } catch (eEjes) {
-            logger.warn('[alta WMS] ejes de variantes: ' + eEjes.message);
+        if (proId) {
+            try {
+                const { completarEjesFaltantes } = require('../utils/variantesEjes');
+                await completarEjesFaltantes(pool, [proId]);
+            } catch (eEjes) {
+                logger.warn('[alta WMS] ejes de variantes: ' + eEjes.message);
+            }
         }
-        logger.info(`[alta WMS] ${req.user?.username || '?'} creó "${maestro.nombre}" (maestro ${creado.pmaId}, ${creado.variantes.length} variantes, artículo ${proId})`);
+        logger.info(`[alta WMS] ${req.user?.username || '?'} creó "${maestro.nombre}" (maestro ${creado.pmaId}, ${creado.variantes.length} variantes, ${proId ? `artículo ${proId}` : 'sin artículo del catálogo'})`);
         res.json({ success: true, proId, pmaId: creado.pmaId, sku: creado.sku, variantes: creado.variantes });
     } catch (e) {
         try { await tran.rollback(); } catch (_) { /* ya revertida */ }

@@ -7,10 +7,13 @@ import {
 import { servicioTecnicoService } from '../../services/api';
 import { comprimirImagen } from '../../utils/comprimirImagen';
 import {
-    estadoTrabajo, estadoEquipo, TIPOS_TRABAJO, ACCIONES, fmtFecha, fmtDia, fmtDuracion, hoyISO, sumarDias, mensajeError,
+    estadoTrabajo, estadoEquipo, TIPOS_TRABAJO, ACCIONES, fmtFecha, fmtDia, fmtDuracion, hoyISO, sumarDias, mensajeError, franjaTexto,
 } from './constantes';
 import { chip, label, input, btn, btnSec, btnPri, btnCancelar, MiniModal, ModalMotivo, Adjunto, Dato, PanelLateral } from './ui';
 import { InsumosUsados } from './Insumos';
+import { SelectorFranja } from './FormulariosMantenimiento';
+import SelectorFecha from '../ui/SelectorFecha';
+import Selector from '../ui/Selector';
 
 // Detalle de un trabajo del calendario (mantenimiento o tarea) — etapa 3 de Servicio Técnico.
 
@@ -33,7 +36,7 @@ const ModalPosponer = ({ t, onConfirmar, onCerrar }) => {
                         className="px-2.5 py-1 rounded-full bg-zinc-100 text-xs font-bold text-zinc-600 hover:bg-brand-cyan/10 hover:text-brand-cyan">{txt}</button>
                 ))}
             </div>
-            <div><span className={label}>Nueva fecha</span><input type="date" className={input} value={fecha} min={hoyISO()} onChange={(e) => setFecha(e.target.value)} /></div>
+            <div><span className={label}>Nueva fecha</span><SelectorFecha value={fecha} min={hoyISO()} onChange={(e) => setFecha(e.target.value)} /></div>
             <div>
                 <span className={label}>Motivo (obligatorio)</span>
                 <div className="flex flex-wrap gap-1.5 mb-2">
@@ -89,10 +92,10 @@ const ModalTerminar = ({ t, estadosEquipo, onConfirmar, onCerrar }) => {
             {t.EquipoId && (
                 <div>
                     <span className={label}>Cómo queda la máquina ({t.EquipoNombre})</span>
-                    <select className={input} value={d.estadoEquipo} onChange={(e) => set({ estadoEquipo: e.target.value })}>
+                    <Selector value={d.estadoEquipo} onChange={(e) => set({ estadoEquipo: e.target.value })}>
                         <option value="">No cambiar (ahora: {estadoEquipo(t.EquipoEstado).label})</option>
                         {estadosEquipo.map(e => <option key={e} value={e}>{estadoEquipo(e).label}</option>)}
-                    </select>
+                    </Selector>
                 </div>
             )}
             {t.PlanId && <p className="text-xs text-zinc-500 inline-flex items-center gap-1"><Repeat size={12} /> Es de un plan: al terminar se programa el próximo.</p>}
@@ -104,6 +107,7 @@ const ModalEditarTrabajo = ({ t, tecnicos, onConfirmar, onCerrar }) => {
     const [d, setD] = useState({
         titulo: t.Titulo, descripcion: t.Descripcion || '', tecnicoId: t.TecnicoId ? String(t.TecnicoId) : '',
         minutosEstimados: String(t.MinutosEstimados ?? ''), equipoTexto: t.EquipoTexto || '',
+        horaDesde: t.HoraDesde || '', horaHasta: t.HoraHasta || '',
     });
     const [guardando, setGuardando] = useState(false);
     const set = (c) => setD(p => ({ ...p, ...c }));
@@ -117,14 +121,16 @@ const ModalEditarTrabajo = ({ t, tecnicos, onConfirmar, onCerrar }) => {
             <div><span className={label}>Detalle</span><textarea className={`${input} min-h-[70px]`} value={d.descripcion} onChange={(e) => set({ descripcion: e.target.value })} /></div>
             <div className="grid grid-cols-2 gap-2">
                 <div><span className={label}>Técnico</span>
-                    <select className={input} value={d.tecnicoId} onChange={(e) => set({ tecnicoId: e.target.value })}>
+                    <Selector value={d.tecnicoId} onChange={(e) => set({ tecnicoId: e.target.value })}>
                         <option value="">Sin asignar</option>
                         {tecnicos.map(x => <option key={x.id} value={x.id}>{x.nombre}</option>)}
-                    </select></div>
+                    </Selector></div>
                 <div><span className={label}>Tiempo estimado (min)</span>
                     <input className={input} inputMode="numeric" value={d.minutosEstimados} onChange={(e) => set({ minutosEstimados: e.target.value.replace(/\D/g, '') })} /></div>
             </div>
             {!t.EquipoId && <div><span className={label}>Equipo o lugar</span><input className={input} value={d.equipoTexto} maxLength={150} onChange={(e) => set({ equipoTexto: e.target.value })} /></div>}
+            <div><span className={label}>Franja horaria <span className="normal-case font-bold text-zinc-300">(opcional)</span></span>
+                <SelectorFranja desde={d.horaDesde} hasta={d.horaHasta} onChange={set} /></div>
             <p className="text-xs text-zinc-400">La fecha se cambia con "Cambiar fecha" (queda el motivo).</p>
         </MiniModal>
     );
@@ -209,7 +215,7 @@ const TrabajoDetalle = ({ trabId, meta, version = 0, onCerrar, onCambio, onAbrir
                                 </div>
                                 <h2 className="mt-1.5 text-lg font-black text-zinc-900 leading-snug break-words">{t.Titulo}</h2>
                                 <p className="text-xs text-zinc-500 mt-0.5">
-                                    {fmtDia(t.FechaProgramada)}{t.FechaOriginal !== t.FechaProgramada && <> (era el {fmtDia(t.FechaOriginal)})</>}
+                                    {fmtDia(t.FechaProgramada)}{franjaTexto(t) && <> · {franjaTexto(t)}</>}{t.FechaOriginal !== t.FechaProgramada && <> (era el {fmtDia(t.FechaOriginal)})</>}
                                     {' · '}{t.TecnicoNombre || 'sin asignar'}{' · '}estimado {fmtDuracion(t.MinutosEstimados) || '—'}
                                 </p>
                             </div>
@@ -281,10 +287,12 @@ const TrabajoDetalle = ({ trabId, meta, version = 0, onCerrar, onCambio, onAbrir
                             )}
                             {tec && abierto && (
                                 <div className="mt-2 flex gap-2">
-                                    <input className={`${input} py-2`} value={nuevaTarea.texto} maxLength={500} placeholder="Agregar tarea…"
+                                    <input className={`${input} py-2 flex-1 min-w-0`} value={nuevaTarea.texto} maxLength={500} placeholder="Agregar tarea…"
                                         onChange={(e) => setNuevaTarea(p => ({ ...p, texto: e.target.value }))} onKeyDown={(e) => { if (e.key === 'Enter') agregarTarea(); }} />
-                                    <input className={`${input} py-2 w-20`} value={nuevaTarea.minutos} inputMode="numeric" placeholder="min"
-                                        onChange={(e) => setNuevaTarea(p => ({ ...p, minutos: e.target.value.replace(/\D/g, '') }))} />
+                                    <div className="w-16 sm:w-20 shrink-0">
+                                        <input className={`${input} py-2 px-2 text-center`} value={nuevaTarea.minutos} inputMode="numeric" placeholder="min" title="Minutos estimados"
+                                            onChange={(e) => setNuevaTarea(p => ({ ...p, minutos: e.target.value.replace(/\D/g, '') }))} />
+                                    </div>
                                     <button onClick={agregarTarea} disabled={!nuevaTarea.texto.trim()} className={`${btnSec} shrink-0`}><Plus size={15} /></button>
                                 </div>
                             )}

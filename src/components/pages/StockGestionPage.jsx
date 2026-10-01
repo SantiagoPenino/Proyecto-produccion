@@ -4,6 +4,9 @@ import { Listbox } from '@headlessui/react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import api from '../../services/api';
 import { SECCIONES_STOCK } from './stockSecciones';
+import BuscadorVariante from '../stock/BuscadorVariante';
+import PedirInsumos from '../stock/PedirInsumos';
+import AltaProductoStock from '../stock/AltaProductoStock';
 import { useAuth } from '../../context/AuthContext';
 import { toast } from 'sonner';
 import QRCode from 'qrcode';
@@ -594,8 +597,8 @@ function ModalRemito({ remId, onCerrar }) {
                                         <span className="text-center text-sm font-bold text-slate-400 tabular-nums font-gsanscode">
                                             {Number(i.CantidadRecibida) > 0 ? fmtCant(i.CantidadRecibida) : '—'}
                                         </span>
-                                        <span className="text-sm font-bold text-slate-700 truncate">{i.Producto}</span>
-                                        <span className="text-right text-[10px] font-bold uppercase text-emerald-600 truncate">
+                                        <span className="min-w-0 text-sm font-bold text-slate-700 break-words">{i.Producto}</span>
+                                        <span className="min-w-0 text-right text-[10px] font-bold uppercase text-emerald-600 break-words">
                                             {[i.NombreVariante, i.Talle, i.Color].filter(Boolean).join(' · ')}
                                         </span>
                                     </div>
@@ -614,63 +617,7 @@ function ModalRemito({ remId, onCerrar }) {
     );
 }
 
-// Autocomplete de variantes (lo usan Ingreso y Remitos)
-function BuscadorVariante({ onElegir, placeholder = 'Buscar producto o variante...', autoFocus = false, grande = false }) {
-    const [q, setQ] = useState('');
-    const [res, setRes] = useState([]);
-    const [abierto, setAbierto] = useState(false);
-    const [buscando, setBuscando] = useState(false);
-    const [buscado, setBuscado] = useState(false);   // ya volvió una búsqueda para esta q
-    const timer = useRef(null);
-    useEffect(() => {
-        if (q.trim().length < 2) { setRes([]); setBuscado(false); setBuscando(false); return; }
-        setBuscando(true); setBuscado(false);
-        clearTimeout(timer.current);
-        timer.current = setTimeout(async () => {
-            try {
-                const r = await api.get(`/wms-interno/variantes?q=${encodeURIComponent(q.trim())}`);
-                setRes(r.data?.data || []);
-                setAbierto(true);
-            } catch (e) { setRes([]); }
-            finally { setBuscando(false); setBuscado(true); }
-        }, 300);
-        return () => clearTimeout(timer.current);
-    }, [q]);
-    return (
-        <div className="relative">
-            <Search size={grande ? 18 : 15} className={`absolute top-1/2 -translate-y-1/2 text-slate-400 ${grande ? 'left-4' : 'left-3'}`} />
-            <input value={q} onChange={e => setQ(e.target.value)} onFocus={() => q.trim().length >= 2 && setAbierto(true)}
-                placeholder={placeholder} autoFocus={autoFocus}
-                className={`w-full pr-3 rounded-xl border bg-white focus:outline-none focus:ring-2 focus:ring-sky-200 ${grande
-                    ? 'pl-11 py-3.5 text-base border-sky-300'
-                    : 'pl-9 py-2.5 text-sm border-slate-200'}`} />
-            {buscando && <Loader2 size={15} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-300 animate-spin" />}
-            {/* Sin esto el campo queda mudo cuando no hay match y parece que no funciona */}
-            {abierto && buscado && res.length === 0 && (
-                <div className="absolute z-30 mt-1 w-full bg-white border border-slate-200 rounded-xl shadow-lg px-3 py-3">
-                    <p className="text-xs font-bold text-slate-500">Ningún artículo coincide con “{q.trim()}”.</p>
-                    <p className="text-[11px] text-slate-400 mt-0.5">Probá con el nombre del producto, la variante o el código.</p>
-                </div>
-            )}
-            {abierto && res.length > 0 && (
-                <div className="absolute z-30 mt-1 w-full bg-white border border-slate-200 rounded-xl shadow-lg max-h-72 overflow-y-auto">
-                    {res.map(v => (
-                        <button key={v.VarId} type="button"
-                            onClick={() => { onElegir(v); setQ(''); setRes([]); setAbierto(false); }}
-                            className="w-full text-left px-3 py-2.5 hover:bg-sky-50 border-b border-slate-50 last:border-b-0">
-                            <p className="text-sm font-bold text-slate-700">{v.Producto}</p>
-                            <p className="text-xs text-slate-500">
-                                {v.NombreVariante}
-                                {(v.Talle || v.Color) && <span className="ml-1 text-slate-400">({[v.Talle, v.Color].filter(Boolean).join(' · ')})</span>}
-                                {v.CodigoVariante && <span className="ml-1 font-mono text-[10px] text-slate-400">{v.CodigoVariante}</span>}
-                            </p>
-                        </button>
-                    ))}
-                </div>
-            )}
-        </div>
-    );
-}
+// BuscadorVariante: src/components/stock/BuscadorVariante.jsx (29/09, lo usa también el pedido de insumos de cada área)
 
 // `seccion` (28/09): cada sección es su propia página del menú (ver stockSecciones.js) y se
 // muestra sola, sin pestañas. Sin `seccion` (menú viejo, con Stock apuntando a /stock) quedan
@@ -717,7 +664,11 @@ const StockGestionPage = ({ seccion = null, rutasPermitidas = null }) => {
     const actual = seccion || tab;
     // El selector de depósito solo cambia algo en Inventario Global y Compras
     const muestraDeposito = !unaSola || actual === 'global' || actual === 'compras';
-    const tituloSeccion = unaSola ? SECCIONES_STOCK.find(s => s.id === seccion)?.label : null;
+    // 'solicitudes' (29/09): la entrada de menú /solicitudes muestra sola la cola de Órdenes solicitadas
+    // (antes era otra pantalla, que leía dbo.Solicitudes, una tabla que no existe)
+    const tituloSeccion = !unaSola ? null
+        : seccion === 'solicitudes' ? 'Órdenes solicitadas'
+        : SECCIONES_STOCK.find(s => s.id === seccion)?.label;
 
     // Misma navegación que el sistema anterior, para que nadie tenga que reaprender:
     // Panel de Control · Inventario Global · Mi Sector · Compras
@@ -783,6 +734,7 @@ const StockGestionPage = ({ seccion = null, rutasPermitidas = null }) => {
             {actual === 'sector' && <TabMiSector depositos={depositos} />}
             {actual === 'compras' && <TabCompras depositos={depositos} depDefault={dep} />}
             {actual === 'gestion' && <TabGestion depositos={depositos} />}
+            {actual === 'solicitudes' && <TabSolicitudes depositos={depositos} />}
         </div>
     );
 };
@@ -1088,7 +1040,10 @@ function PanelGastoSectores({ onVerConsumos }) {
                                     return (
                                         <div key={d.VarId} className="py-2.5">
                                             <div className="flex items-start justify-between gap-3 text-sm font-bold text-slate-700">
-                                                <span className="min-w-0 truncate">{d.Producto} — {d.NombreVariante}</span>
+                                                <span className="min-w-0 break-words">
+                                                    {d.Producto}
+                                                    {d.NombreVariante && <span className="block text-xs font-normal text-slate-500 leading-snug">{d.NombreVariante}</span>}
+                                                </span>
                                                 <span className="tabular-nums font-gsanscode whitespace-nowrap">{plata(g)}</span>
                                             </div>
                                             <p className="text-[11px] text-slate-400">{fmtCant(u)} {d.UnidadBase} × {u > 0 ? plata(g / u, 2) : '—'}</p>
@@ -1243,7 +1198,10 @@ function TabPanel({ onVerConsumos }) {
                                             ● {c.Estado === 'CRITICO' ? 'CRÍTICO' : 'ALERTA'}
                                         </span>
                                         <span className="text-[10px] font-bold text-slate-400 uppercase truncate">{c.Familia || '—'}</span>
-                                        <span className="text-xs font-bold text-slate-700 truncate">{c.Producto} — {c.NombreVariante}</span>
+                                        <span className="min-w-0 text-xs font-bold text-slate-700 break-words">
+                                            {c.Producto}
+                                            {c.NombreVariante && <span className="block text-[11px] font-normal text-slate-500 leading-snug">{c.NombreVariante}</span>}
+                                        </span>
                                         <span className={`text-base text-right font-black tabular-nums font-gsanscode ${c.Estado === 'CRITICO' ? 'text-rose-600' : 'text-amber-600'}`}>{fmtCant(c.StockGlobal)}</span>
                                         <span className="text-[10px] text-right text-slate-400 font-bold">C: {c.CantidadCritica} / A: {c.CantidadAlerta}</span>
                                     </div>
@@ -1467,7 +1425,8 @@ function TabSolicitudes({ depositos }) {
                                             return (
                                                 <div key={it.SolItId} className="flex items-center gap-3 pl-11 pr-4 py-2.5">
                                                     <div className="flex-1 min-w-0">
-                                                        <p className="text-sm font-bold text-slate-700 truncate">{it.Producto} — {it.NombreVariante}</p>
+                                                        <p className="text-sm font-bold text-slate-700 break-words">{it.Producto}</p>
+                                                        {it.NombreVariante && <p className="text-xs text-slate-500 leading-snug break-words">{it.NombreVariante}</p>}
                                                         <p className="text-[11px] text-slate-400">{[it.Talle, it.Color].filter(Boolean).join(' · ')}</p>
                                                     </div>
                                                     <span className="text-sm font-black text-slate-800 tabular-nums font-gsanscode">
@@ -1561,8 +1520,8 @@ function TabRetirar({ dep, nombreDep }) {
                 {variante ? (
                     <div className="flex items-center justify-between gap-3 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5">
                         <div className="min-w-0">
-                            <p className="text-sm font-black text-slate-700 truncate">{variante.Producto}</p>
-                            <p className="text-xs text-slate-500 truncate">{variante.NombreVariante}</p>
+                            <p className="text-sm font-black text-slate-700 break-words">{variante.Producto}</p>
+                            <p className="text-xs text-slate-500 break-words">{variante.NombreVariante}</p>
                         </div>
                         <button onClick={() => { setVariante(null); setEtiquetas([]); }}
                             className="w-7 h-7 rounded-lg border border-slate-200 bg-white text-slate-400 flex items-center justify-center shrink-0"><X size={13} /></button>
@@ -1805,7 +1764,7 @@ function FichaAlerta({ c, critico }) {
                 <p className="text-[10px] font-bold text-slate-400 shrink-0 tabular-nums font-gsanscode">Mín: {fmtCant(min)}</p>
             </div>
             <div className="flex items-end justify-between gap-3 mt-0.5">
-                <p className="text-sm font-black text-slate-700 truncate">{c.NombreVariante || c.Producto}</p>
+                <p className="min-w-0 text-sm font-black text-slate-700 break-words">{c.NombreVariante || c.Producto}</p>
                 <p className={`text-lg font-black tabular-nums font-gsanscode leading-none shrink-0 ${critico ? 'text-rose-600' : 'text-amber-600'}`}>
                     {fmtCant(c.StockGlobal)}
                 </p>
@@ -2088,8 +2047,8 @@ function ModalConsumo({ variante, dep, nombreSector, onCerrar, onHecho }) {
                 <div className="flex items-start gap-3 px-6 py-4 border-b border-slate-100">
                     <div className="flex-1 min-w-0">
                         <p className="text-[10px] font-black uppercase tracking-wider text-rose-500">Consumir en {nombreSector}</p>
-                        <p className="text-base font-black text-slate-800 truncate">{variante.Producto}</p>
-                        <p className="text-sm text-slate-500 truncate">{variante.NombreVariante}</p>
+                        <p className="text-base font-black text-slate-800 break-words">{variante.Producto}</p>
+                        <p className="text-sm text-slate-500 break-words">{variante.NombreVariante}</p>
                     </div>
                     <button onClick={onCerrar} className="w-8 h-8 rounded-lg border border-slate-200 text-slate-400 hover:bg-slate-50 flex items-center justify-center shrink-0"><X size={15} /></button>
                 </div>
@@ -2157,7 +2116,6 @@ function TabMiSector({ depositos }) {
     const [pendientes, setPendientes] = useState([]);
     const [salientes, setSalientes] = useState([]);      // despachados por mi sector, en camino
     const [hojaRemito, setHojaRemito] = useState(null);   // RemId de la hoja abierta
-    const [modoPedido, setModoPedido] = useState('nueva'); // nueva | mias
     const [cancelando, setCancelando] = useState(null);  // RemId con la confirmación abierta
     const [motivoCancel, setMotivoCancel] = useState('');
     const [recibidos, setRecibidos] = useState([]);
@@ -2167,7 +2125,6 @@ function TabMiSector({ depositos }) {
     const [cargando, setCargando] = useState(false);
     const [cargadoDep, setCargadoDep] = useState(null); // sector de la última carga terminada
     const [q, setQ] = useState('');
-    const [pidiendo, setPidiendo] = useState([]);       // items del pedido nuevo
     const [famSel, setFamSel] = useState(null);        // familia abierta en 'Mi stock'
     const [consumiendo, setConsumiendo] = useState(null); // variante con la ventana de consumo abierta
     const timer = useRef(null);
@@ -2256,17 +2213,6 @@ function TabMiSector({ depositos }) {
             verRemito(remId); setAbierto(remId);
             cargar();
         } catch (e) { toast.error(e.response?.data?.error || 'No se pudo recibir'); }
-    };
-    const agregarAlPedido = (v) => setPidiendo(p => p.some(i => i.VarId === v.VarId) ? p : [...p, { ...v, cantidad: '' }]);
-    const enviarPedido = async () => {
-        const items = pidiendo.filter(i => parseFloat(i.cantidad) > 0).map(i => ({ varId: i.VarId, cantidad: parseFloat(i.cantidad) }));
-        if (!items.length) return toast.error('Agregá lo que necesitás');
-        try {
-            const r = await api.post('/wms-interno/solicitudes', { depSolicitanteId: dep, items });
-            toast.success(`Pedido ${r.data.numeracion} enviado a Logística`);
-            setPidiendo([]);
-            cargar();
-        } catch (e) { toast.error('No se pudo enviar el pedido'); }
     };
 
     if (sector === undefined) return <div className="flex items-center gap-2 text-slate-400 text-sm py-16 justify-center"><Loader2 size={18} className="animate-spin" /> Cargando...</div>;
@@ -2436,7 +2382,8 @@ function TabMiSector({ depositos }) {
                                     {g.items.map(v => (
                                         <div key={v.VarId} className="flex items-center gap-3 px-5 py-3">
                                             <div className="flex-1 min-w-0">
-                                                <p className="text-sm font-bold text-slate-700 truncate">{v.Producto} — {v.NombreVariante}</p>
+                                                <p className="text-sm font-bold text-slate-700 break-words">{v.Producto}</p>
+                                                {v.NombreVariante && <p className="text-xs text-slate-500 leading-snug break-words">{v.NombreVariante}</p>}
                                                 <p className="text-[11px] text-slate-400">
                                                     {[v.Talle, v.Color].filter(Boolean).join(' · ')}{(v.Talle || v.Color) ? ' · ' : ''}{v.Etiquetas} etiq.
                                                     {!famSel && v.Categoria && <span className="ml-2 uppercase font-bold text-slate-300">{v.Categoria}</span>}
@@ -2501,7 +2448,8 @@ function TabMiSector({ depositos }) {
                                     {(detRem[r.RemId] || []).map(it => (
                                         <div key={it.RemItId} className="flex items-center gap-3 pl-11 pr-4 py-2.5">
                                             <div className="flex-1 min-w-0">
-                                                <p className="text-sm font-bold text-slate-700 truncate">{it.Producto} — {it.NombreVariante}</p>
+                                                <p className="text-sm font-bold text-slate-700 break-words">{it.Producto}</p>
+                                                {it.NombreVariante && <p className="text-xs text-slate-500 leading-snug break-words">{it.NombreVariante}</p>}
                                                 <p className="text-[11px] text-slate-400">{[it.Talle, it.Color].filter(Boolean).join(' · ')}</p>
                                             </div>
                                             <span className="text-xs tabular-nums font-gsanscode text-slate-500">{fmtCant(it.CantidadEnviada)} {it.UnidadBase}</span>
@@ -2558,81 +2506,8 @@ function TabMiSector({ depositos }) {
                     )}
                 </div>
             ) : (
-                <div className="space-y-4">
-                    {/* Dos modos, como el sistema anterior: armar una solicitud o ver las enviadas */}
-                    <div className="grid sm:grid-cols-2 gap-4">
-                        <button onClick={() => setModoPedido('nueva')}
-                            className={`rounded-2xl border p-6 flex flex-col items-center gap-2 transition-all ${
-                                modoPedido === 'nueva' ? 'border-brand-cyan bg-brand-cyan text-white' : 'border-slate-200 bg-white hover:border-slate-300 text-slate-500'}`}>
-                            <Plus size={22} className={modoPedido === 'nueva' ? 'text-white' : 'text-slate-400'} />
-                            <span className="text-sm font-black uppercase tracking-wider">Nueva solicitud</span>
-                        </button>
-                        <button onClick={() => setModoPedido('mias')}
-                            className={`rounded-2xl border p-6 flex flex-col items-center gap-2 transition-all ${
-                                modoPedido === 'mias' ? 'border-brand-cyan bg-brand-cyan text-white' : 'border-slate-200 bg-white hover:border-slate-300 text-slate-500'}`}>
-                            <Inbox size={22} className={modoPedido === 'mias' ? 'text-white' : 'text-slate-400'} />
-                            <span className="text-sm font-black uppercase tracking-wider">Mis solicitudes</span>
-                            <span className={`text-[11px] font-black rounded-full px-2.5 py-0.5 ${
-                                modoPedido === 'mias' ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-500'}`}>
-                                {solicitudes.length} enviada{solicitudes.length !== 1 ? 's' : ''}
-                            </span>
-                        </button>
-                    </div>
-
-                    {modoPedido === 'nueva' ? (
-                        <div className="bg-white rounded-2xl border border-slate-200 p-5 space-y-4">
-                            <div>
-                                <p className="text-base font-black text-slate-800">Nueva solicitud de insumos</p>
-                                <p className="text-xs text-slate-500 mt-0.5">Elegí los artículos que necesitás y enviá la solicitud a Logística.</p>
-                            </div>
-
-                            {pidiendo.length === 0 ? (
-                                // [24/09] El buscador va ADENTRO del carrito vacío, grande y con el cursor puesto: chico
-                                // y arriba a la derecha no se veía, y no quedaba claro cómo se agregaba un artículo.
-                                <div className="rounded-2xl border-2 border-dashed border-sky-200 bg-sky-50/40 py-10 px-6 flex flex-col items-center text-center">
-                                    <p className="text-sm font-black text-slate-700">¿Qué necesitás?</p>
-                                    <p className="text-xs text-slate-500 mt-1 mb-4">Buscá el artículo por nombre, variante o código y tocalo para sumarlo al pedido.</p>
-                                    <div className="w-full max-w-xl text-left">
-                                        <BuscadorVariante grande autoFocus placeholder="Escribí el artículo que necesitás..." onElegir={agregarAlPedido} />
-                                    </div>
-                                </div>
-                            ) : (
-                                <>
-                                <div className="rounded-xl border border-slate-200 divide-y divide-slate-100">
-                                    {pidiendo.map((i, idx) => (
-                                        <div key={i.VarId} className="flex items-center gap-3 px-3 py-2">
-                                            <p className="text-sm font-bold text-slate-700 flex-1 truncate">{i.Producto} — {i.NombreVariante}</p>
-                                            <input type="number" min="0" step="1" placeholder="Cant." value={i.cantidad}
-                                                onChange={e => setPidiendo(p => p.map((x, xi) => xi === idx ? { ...x, cantidad: e.target.value } : x))}
-                                                className="w-24 px-2 py-1.5 rounded-lg border border-slate-200 text-sm text-right placeholder:text-left [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-200" />
-                                            <button onClick={() => setPidiendo(p => p.filter((_, xi) => xi !== idx))}
-                                                className="w-7 h-7 rounded-lg border border-slate-200 text-slate-400 hover:text-rose-500 flex items-center justify-center"><Trash2 size={13} /></button>
-                                        </div>
-                                    ))}
-                                </div>
-                                <div className="max-w-md"><BuscadorVariante placeholder="Agregar otro artículo..." onElegir={agregarAlPedido} /></div>
-                                </>
-                            )}
-
-                            <button onClick={enviarPedido} disabled={!pidiendo.length}
-                                className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-sm font-black disabled:opacity-40">
-                                <Send size={15} /> Enviar pedido
-                            </button>
-                        </div>
-                    ) : (
-                        <div className="bg-white rounded-2xl border border-slate-200 divide-y divide-slate-50">
-                            <p className="px-4 py-2 text-[10px] font-black uppercase tracking-wider text-slate-400">Mis solicitudes</p>
-                            {solicitudes.length === 0 ? <p className="px-4 py-8 text-center text-sm text-slate-400">Sin pedidos todavía.</p> :
-                                solicitudes.map(s => (
-                                    <div key={s.SolId} className="flex items-center gap-3 px-4 py-2.5">
-                                        <span className="text-sm font-black text-slate-700 w-28 font-gsanscode">{s.Numeracion}</span>
-                                        <span className="text-xs text-slate-400 flex-1">{fmtFecha(s.FechaCreacion)} · {s.Items} item{s.Items !== 1 ? 's' : ''}</span>
-                                        <span className={`text-[10px] font-black px-2 py-0.5 rounded-full ${s.Estado === 'PENDIENTE' ? 'bg-amber-100 text-amber-700' : ['ATENDIDA', 'APROBADA', 'ENTREGADA'].includes(s.Estado) ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>{s.Estado}</span>
-                                    </div>
-                                ))}
-                        </div>
-                    )}
-                </div>
+                // [29/09] Mismo componente que el botón de insumos de cada área
+                <PedirInsumos dep={dep} solicitudes={solicitudes} onEnviado={cargar} />
             )}
         </div>
     );
@@ -2841,7 +2716,7 @@ function TabInventario({ dep, depositos = [] }) {
                                     className="w-full grid grid-cols-[24px_1fr_130px_140px_140px] gap-3 items-center px-4 py-3.5 hover:bg-slate-50 text-left">
                                     {abierto ? <ChevronDown size={17} className="text-slate-400" /> : <ChevronRight size={17} className="text-slate-400" />}
                                     <div className="min-w-0">
-                                        <p className="text-sm font-black text-slate-700 truncate">{g.nombre}</p>
+                                        <p className="text-sm font-black text-slate-700 break-words">{g.nombre}</p>
                                         <p className="text-[10px] font-bold text-slate-400 uppercase">
                                             {g.items[0]?.Categoria || ''} · {g.items.length} variante{g.items.length !== 1 ? 's' : ''}
                                         </p>
@@ -2893,7 +2768,7 @@ function TabInventario({ dep, depositos = [] }) {
                                                 <button onClick={() => verEtiquetas(v.VarId)}
                                                     className="w-full flex items-center gap-3 pl-11 pr-4 py-2.5 hover:bg-slate-50/60 text-left">
                                                     <div className="flex-1 min-w-0">
-                                                        <p className="text-sm font-bold text-slate-700 truncate">{v.NombreVariante}</p>
+                                                        <p className="text-sm font-bold text-slate-700 break-words">{v.NombreVariante}</p>
                                                         <p className="text-[11px] text-slate-400 font-semibold">
                                                             {[v.Talle, v.Color].filter(Boolean).join(' · ')}
                                                             {v.CodigoVariante && <span className="ml-2 font-mono">{v.CodigoVariante}</span>}
@@ -2925,10 +2800,10 @@ function TabInventario({ dep, depositos = [] }) {
 /* ── INGRESO ─────────────────────────────────────────────────────────────── */
 // `arrancaEnCentral` (Ingresar Stock): el depósito se elige acá y arranca en el central. Sin eso
 // (Generar Etiqueta) sigue al selector "Depósito" de arriba, como antes.
-function TabIngreso({ dep, nombreDep, depositos = [], arrancaEnCentral = false }) {
+function TabIngreso({ dep, nombreDep, depositos = [], arrancaEnCentral = false, varianteInicial = null }) {
     const [depCentralSel, setDepCentralSel] = useDepositoCentral(depositos, dep);
     const depIng = arrancaEnCentral ? depCentralSel : dep;
-    const [variante, setVariante] = useState(null);
+    const [variante, setVariante] = useState(varianteInicial);   // stock inicial de un artículo nuevo: ya elegida
     const [cantidad, setCantidad] = useState('');
     const [medida, setMedida] = useState('');
     const [peso, setPeso] = useState('');
@@ -2973,8 +2848,8 @@ function TabIngreso({ dep, nombreDep, depositos = [], arrancaEnCentral = false }
                 {variante ? (
                     <div className="flex items-center justify-between gap-3 bg-sky-50 border border-sky-200 rounded-xl px-3 py-2.5">
                         <div className="min-w-0">
-                            <p className="text-sm font-black text-slate-700 truncate">{variante.Producto}</p>
-                            <p className="text-xs text-slate-500 truncate">{variante.NombreVariante} {[variante.Talle, variante.Color].filter(Boolean).join(' · ')}</p>
+                            <p className="text-sm font-black text-slate-700 break-words">{variante.Producto}</p>
+                            <p className="text-xs text-slate-500 break-words">{variante.NombreVariante} {[variante.Talle, variante.Color].filter(Boolean).join(' · ')}</p>
                         </div>
                         <button onClick={() => setVariante(null)} className="w-7 h-7 rounded-lg border border-slate-200 bg-white text-slate-400 flex items-center justify-center shrink-0"><X size={13} /></button>
                     </div>
@@ -3132,7 +3007,8 @@ function TabRemitos({ depositos, depDefault }) {
                             {itemsNuevo.map((i, idx) => (
                                 <div key={i.VarId} className="flex items-center gap-3 px-3 py-2">
                                     <div className="flex-1 min-w-0">
-                                        <p className="text-sm font-bold text-slate-700 truncate">{i.Producto} — {i.NombreVariante}</p>
+                                        <p className="text-sm font-bold text-slate-700 break-words">{i.Producto}</p>
+                                        {i.NombreVariante && <p className="text-xs text-slate-500 leading-snug break-words">{i.NombreVariante}</p>}
                                         <p className="text-[11px] text-slate-400">{[i.Talle, i.Color].filter(Boolean).join(' · ')}</p>
                                     </div>
                                     <input type="number" inputMode="decimal" min="0" step="1" placeholder="Cant."
@@ -3179,7 +3055,8 @@ function TabRemitos({ depositos, depDefault }) {
                                     {(detalle[r.RemId] || []).map(it => (
                                         <div key={it.RemItId} className="flex items-center gap-3 pl-11 pr-4 py-2.5">
                                             <div className="flex-1 min-w-0">
-                                                <p className="text-sm font-bold text-slate-700 truncate">{it.Producto} — {it.NombreVariante}</p>
+                                                <p className="text-sm font-bold text-slate-700 break-words">{it.Producto}</p>
+                                                {it.NombreVariante && <p className="text-xs text-slate-500 leading-snug break-words">{it.NombreVariante}</p>}
                                                 <p className="text-[11px] text-slate-400">{[it.Talle, it.Color].filter(Boolean).join(' · ')}</p>
                                             </div>
                                             <span className="text-xs tabular-nums font-gsanscode text-slate-500">env. <b className="text-slate-800">{fmtCant(it.CantidadEnviada)}</b></span>
@@ -3342,8 +3219,17 @@ function TabCompras({ depositos, depDefault }) {
     const refrescar = async (id) => { const r = await api.get(`/wms-interno/compras/${id}`); setDet(prev => ({ ...prev, [id]: r.data?.data })); cargar(); };
 
     const avanzar = async (c, clave) => {
-        try { await api.post(`/wms-interno/compras/${c.CompId}/progreso`, { clave }); toast.success('Progreso actualizado'); cargar(); }
-        catch (e) { toast.error('No se pudo cambiar el progreso'); }
+        try {
+            await api.post(`/wms-interno/compras/${c.CompId}/progreso`, { clave });
+            // El último paso de la plantilla es "recibida": la compra cambia de pestaña y deja de estar
+            // en esta lista, así que se cierra el detalle y se avisa adónde fue.
+            const pasos = det[c.CompId]?.pasos || [];
+            const recibida = pasos.length > 0 && String(pasos[pasos.length - 1].Clave) === String(clave);
+            const seVa = (filtro === 'activas' && recibida) || (filtro === 'historial' && !recibida);
+            if (seVa) cerrarModal();
+            toast.success(!seVa ? 'Progreso actualizado' : recibida ? 'Compra pasada a Recibidas' : 'Compra devuelta a Activas');
+            cargar();
+        } catch (e) { toast.error('No se pudo cambiar el progreso'); }
     };
     const autorizar = async (c) => {
         try {
@@ -3655,8 +3541,8 @@ function TabCompras({ depositos, depDefault }) {
                                     return (
                                         <div key={i.VarId} className="rounded-xl border border-slate-100 hover:border-slate-200 transition-colors px-3 py-2 flex flex-col md:grid md:grid-cols-[1fr_100px_110px_120px_120px_36px] gap-2 md:items-center">
                                             <div className="min-w-0">
-                                                <p className="text-sm font-bold text-slate-800 truncate">{i.Producto}</p>
-                                                <p className="text-[11px] text-slate-400 font-semibold truncate">{i.NombreVariante}</p>
+                                                <p className="text-sm font-bold text-slate-800 break-words">{i.Producto}</p>
+                                                <p className="text-[11px] text-slate-400 font-semibold break-words">{i.NombreVariante}</p>
                                             </div>
                                             <div className="flex flex-col items-center gap-0.5">
                                                 <input type="number" min="1" step="1" value={i.bultos || ''} onChange={e => set('bultos', e.target.value)} placeholder="1"
@@ -3711,7 +3597,7 @@ function TabCompras({ depositos, depDefault }) {
                 <div className="grid sm:grid-cols-2 xl:grid-cols-3 gap-4">
                     {compras.map(c => {
                         const pend = Number(c.TotalCompra) - Number(c.Pagado);
-                        const recibida = String(c.Progreso) === 'recibido';
+                        const recibida = !!c.Recibida;   // último paso de su plantilla (lo calcula el servidor)
                         return (
                             <button key={c.CompId} onClick={() => verDetalle(c.CompId)}
                                 className="bg-white rounded-2xl border border-slate-200 hover:border-sky-300 hover:shadow-md transition-all p-5 text-left flex flex-col gap-3">
@@ -3893,8 +3779,11 @@ function TabCompras({ depositos, depDefault }) {
                                                             const conExtras = local > Number(l.PrecioUnitario || 0) + 0.001;
                                                             return (
                                                                 <div key={l.CDetId} className="grid grid-cols-[1fr_90px_80px_90px_100px_110px_160px] gap-2 px-3 py-2 items-center">
+                                                                    {/* Nombre completo, sin cortar: el producto arriba y la variante abajo (en telas es
+                                                                        larga: ancho, gramaje, composición) */}
                                                                     <div className="min-w-0">
-                                                                        <p className="text-sm font-bold text-slate-700 truncate">{l.Producto} — {l.NombreVariante}</p>
+                                                                        <p className="text-sm font-bold text-slate-700 break-words">{l.Producto}</p>
+                                                                        {l.NombreVariante && <p className="text-xs text-slate-500 leading-snug break-words">{l.NombreVariante}</p>}
                                                                         <p className="text-[10px] text-slate-400">{[l.Talle, l.Color].filter(Boolean).join(' · ')}</p>
                                                                     </div>
                                                                     <span className="text-xs text-right tabular-nums font-gsanscode text-slate-500">{fmtCant(l.Cantidad)}</span>
@@ -4409,7 +4298,8 @@ function TabHistorial({ inicial = null, depositos = [] }) {
                                         <span className="text-[11px] text-slate-500 font-semibold tabular-nums font-gsanscode whitespace-nowrap">{fmtHora(f.Fecha)}</span>
                                         <span><span className={`text-[9px] font-black px-2 py-0.5 rounded-full border ${css}`}>{label}</span></span>
                                         <div className="min-w-0 col-span-2 md:col-span-1">
-                                            <p className="text-sm font-bold text-slate-700 truncate">{f.Producto || '—'}{f.NombreVariante ? ` — ${f.NombreVariante}` : ''}</p>
+                                            <p className="text-sm font-bold text-slate-700 break-words">{f.Producto || '—'}</p>
+                                            {f.NombreVariante && <p className="text-xs text-slate-500 leading-snug break-words">{f.NombreVariante}</p>}
                                             <p className="text-[10px] text-slate-400 font-semibold">
                                                 #{f.EtiId}{(f.Talle || f.Color) ? ` · ${[f.Talle, f.Color].filter(Boolean).join(' · ')}` : ''}
                                                 {f.Fuente === 'HISTORICO' && <span className="ml-2 text-slate-300">sistema anterior{f.UsuarioTexto ? ` · ${f.UsuarioTexto}` : ''}</span>}
@@ -4497,7 +4387,8 @@ function TabDiferencias({ onCambio }) {
                             <div className="flex items-center gap-3 flex-wrap">
                                 <AlertTriangle size={15} className="text-amber-500 shrink-0" />
                                 <div className="flex-1 min-w-0">
-                                    <p className="text-sm font-bold text-slate-700 truncate">{d.Producto} — {d.NombreVariante} {[d.Talle, d.Color].filter(Boolean).join(' · ')}</p>
+                                    <p className="text-sm font-bold text-slate-700 break-words">{d.Producto}</p>
+                                    <p className="text-xs text-slate-500 leading-snug break-words">{[d.NombreVariante, d.Talle, d.Color].filter(Boolean).join(' · ')}</p>
                                     <p className="text-[11px] text-slate-400">
                                         {d.Deposito || `Dep ${d.DepId}`} · {fmtFecha(d.Fecha)}
                                         {d.RefTipo && <span className="ml-2 font-mono">{d.RefTipo} {d.RefId}</span>}
@@ -4554,7 +4445,7 @@ function TabGestion({ depositos = [] }) {
                     <ChevronLeft size={14} /> Volver a Gestión de Sistema
                 </button>
                 <h3 className="text-xl font-black text-slate-800">{f.titulo}</h3>
-                {sub === 'articulos' && <GestionArticulos />}
+                {sub === 'articulos' && <GestionArticulos depositos={depositos} />}
                 {sub === 'limites' && <GestionLimites depositos={depositos} />}
                 {sub === 'proveedores' && <GestionProveedores />}
                 {sub === 'depositos' && <GestionDepositos />}
@@ -4584,7 +4475,48 @@ function TabGestion({ depositos = [] }) {
  * datos y misma edición que el resto del catálogo, una pantalla menos.
  * "Sin valorizar" = unidades activas cuyo lote entró sin costo Y la variante tampoco
  * tiene: hoy suman $0 al patrimonio. Al filtrar por sin costo se ordena por eso. */
-function GestionArticulos() {
+/* ── STOCK INICIAL DE UN ARTÍCULO NUEVO (30/09) ─────────────────────────── */
+// Sigue al alta desde Gestión de Sistema → Artículos: el mismo Ingreso de Inventario Global con la
+// variante ya elegida. Cada ingreso crea una etiqueta en el sector que se elige y la imprime. Opcional.
+function StockInicialModal({ producto, variantes = [], depositos = [], onCerrar }) {
+    const [sel, setSel] = useState(variantes[0] || null);
+    const nombreDep = (id) => depositos.find(d => d.DepId === id)?.Nombre || `Dep ${id}`;
+    return createPortal(
+        <div className="fixed inset-0 z-[6000] flex items-start sm:items-center justify-center sm:p-4 overflow-y-auto bg-slate-900/60" onClick={onCerrar}>
+            <div onClick={e => e.stopPropagation()} className="bg-white w-full min-h-full sm:min-h-0 sm:max-w-2xl sm:rounded-2xl shadow-2xl overflow-hidden">
+                <div className="flex items-start gap-3 px-6 py-4 border-b border-slate-100">
+                    <div className="flex-1 min-w-0">
+                        <p className="text-[10px] font-black uppercase tracking-wider text-emerald-600">Artículo creado · stock inicial</p>
+                        <p className="text-base font-black text-slate-800 break-words">{producto}</p>
+                        <p className="text-xs text-slate-500 mt-0.5">Es opcional. Elegí la variante, el sector donde entra y la cantidad: cada ingreso crea una etiqueta y la imprime.</p>
+                    </div>
+                    <button onClick={onCerrar} className="w-8 h-8 rounded-lg border border-slate-200 text-slate-400 hover:bg-slate-50 flex items-center justify-center shrink-0"><X size={15} /></button>
+                </div>
+                <div className="p-4 sm:p-6 space-y-4 bg-slate-50/60">
+                    {variantes.length > 1 && (
+                        <div className="flex flex-wrap gap-2">
+                            {variantes.map(v => (
+                                <button key={v.VarId} onClick={() => setSel(v)}
+                                    className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-colors ${sel?.VarId === v.VarId
+                                        ? 'bg-brand-cyan text-white border-brand-cyan' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}>
+                                    {v.NombreVariante}
+                                </button>
+                            ))}
+                        </div>
+                    )}
+                    {sel && <TabIngreso key={sel.VarId} dep={depositos[0]?.DepId} nombreDep={nombreDep} depositos={depositos}
+                        arrancaEnCentral varianteInicial={sel} />}
+                </div>
+                <div className="flex justify-end px-6 py-3 border-t border-slate-100">
+                    <button onClick={onCerrar} className="px-5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-sm font-black">Listo</button>
+                </div>
+            </div>
+        </div>,
+        document.body
+    );
+}
+
+function GestionArticulos({ depositos = [] }) {
     const [filas, setFilas] = useState([]);
     const [cargando, setCargando] = useState(true);
     const [q, setQ] = useState('');
@@ -4592,6 +4524,16 @@ function GestionArticulos() {
     const [edit, setEdit] = useState(null);          // VarId en edición
     const [vals, setVals] = useState({ costo: '', moneda: 'UYU', gramaje: '', ancho: '', color: '', composicion: '' });
     const [guardando, setGuardando] = useState(false);
+    // Alta de artículos nuevos (30/09): el mismo alta de Catálogo y WMS, sin tener que entrar ahí
+    const [alta, setAlta] = useState(null);                  // opciones del alta abierta (familias, unidades…)
+    const [stockInicial, setStockInicial] = useState(null);  // { producto, variantes } recién creado
+    const abrirAlta = async () => {
+        try {
+            const r = await api.get('/products-integration/wms/alta/opciones');
+            if (!r.data?.habilitado) return toast.error('El alta de artículos está apagada en este servidor: falta WMS_INTERNO=true.');
+            setAlta(r.data);
+        } catch (e) { toast.error('No se pudo abrir el alta de artículos'); }
+    };
 
     const cargar = useCallback(async () => {
         try { setFilas((await api.get('/wms-interno/gestion/articulos')).data?.data || []); }
@@ -4641,7 +4583,24 @@ function GestionArticulos() {
                         </button>
                     ))}
                 </div>
+                <button onClick={abrirAlta}
+                    className="ml-auto flex items-center gap-2 px-4 py-2 rounded-xl bg-brand-cyan hover:bg-brand-cyan/90 text-white text-xs font-black">
+                    <Plus size={14} /> Nuevo artículo
+                </button>
             </div>
+
+            {alta && createPortal(
+                <AltaProductoStock opciones={alta} preguntarVenta onClose={() => setAlta(null)}
+                    onCreado={(r) => {
+                        setAlta(null); cargar();
+                        if (r.variantesStock?.length) setStockInicial({ producto: r.variantesStock[0].Producto, variantes: r.variantesStock });
+                    }} />,
+                document.body
+            )}
+            {stockInicial && (
+                <StockInicialModal producto={stockInicial.producto} variantes={stockInicial.variantes} depositos={depositos}
+                    onCerrar={() => { setStockInicial(null); cargar(); }} />
+            )}
 
             {visibles.length === 0 ? (
                 <div className="bg-white rounded-2xl border border-slate-200 text-center py-16 text-slate-400 text-sm">
@@ -4664,8 +4623,8 @@ function GestionArticulos() {
                             return (
                                 <div key={f.VarId} className="grid grid-cols-[1fr_80px_100px_160px_200px_90px] gap-3 px-4 py-2.5 items-center">
                                     <div className="min-w-0">
-                                        <p className="text-sm font-bold text-slate-700 truncate">{f.Producto}</p>
-                                        <p className="text-[11px] text-slate-400 font-semibold truncate">
+                                        <p className="text-sm font-bold text-slate-700 break-words">{f.Producto}</p>
+                                        <p className="text-[11px] text-slate-400 font-semibold break-words">
                                             {f.NombreVariante}{[f.Talle, f.Color].filter(Boolean).length > 0 && ` · ${[f.Talle, f.Color].filter(Boolean).join(' · ')}`}
                                         </p>
                                     </div>
@@ -4875,8 +4834,8 @@ function ModalCatalogo({ elegidos, onToggle, onCerrar }) {
                                             {ya && <Check size={12} className="text-white" />}
                                         </div>
                                         <div className="flex-1 min-w-0">
-                                            <p className="text-sm font-bold text-slate-700 truncate">{v.Producto}</p>
-                                            <p className="text-[11px] text-slate-400 truncate">
+                                            <p className="text-sm font-bold text-slate-700 break-words">{v.Producto}</p>
+                                            <p className="text-[11px] text-slate-400 break-words">
                                                 {v.NombreVariante}
                                                 {[v.Talle, v.Color].filter(Boolean).length > 0 && ` · ${[v.Talle, v.Color].filter(Boolean).join(' · ')}`}
                                             </p>
@@ -5061,8 +5020,8 @@ function GestionLimites({ depositos = [] }) {
                                     {elegidos.map(v => (
                                         <div key={v.VarId} className="flex items-center gap-2 px-3 py-2">
                                             <div className="flex-1 min-w-0">
-                                                <p className="text-sm font-bold text-slate-700 truncate">{v.Producto}</p>
-                                                <p className="text-[11px] text-slate-400 truncate">{v.NombreVariante}</p>
+                                                <p className="text-sm font-bold text-slate-700 break-words">{v.Producto}</p>
+                                                <p className="text-[11px] text-slate-400 break-words">{v.NombreVariante}</p>
                                             </div>
                                             <button onClick={() => setElegidos(p => p.filter(x => x.VarId !== v.VarId))}
                                                 className="w-7 h-7 rounded-lg border border-slate-200 text-slate-400 hover:text-rose-500 flex items-center justify-center shrink-0"><X size={13} /></button>
@@ -5186,8 +5145,8 @@ function GestionLimites({ depositos = [] }) {
                                     return (
                                         <div key={v.VarId} className="grid grid-cols-[1fr_110px_110px_110px_110px_110px] gap-3 px-4 py-2.5 items-center">
                                             <div className="min-w-0">
-                                                <p className="text-sm font-bold text-slate-700 truncate">{v.Producto}</p>
-                                                <p className="text-[11px] text-slate-400 font-semibold truncate">
+                                                <p className="text-sm font-bold text-slate-700 break-words">{v.Producto}</p>
+                                                <p className="text-[11px] text-slate-400 font-semibold break-words">
                                                     {v.NombreVariante}{[v.Talle, v.Color].filter(Boolean).length > 0 && ` · ${[v.Talle, v.Color].filter(Boolean).join(' · ')}`}
                                                 </p>
                                             </div>

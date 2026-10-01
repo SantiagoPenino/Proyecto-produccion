@@ -27,7 +27,7 @@ const { notificar } = require('../services/notificacionesService');
 const { rutaAdjunto } = require('../middleware/multerServicioTecnico');
 const {
     MODULO, CATEGORIAS, PRIORIDADES, ESTADOS, RESULTADOS, ETIQUETA_RESULTADO, ETIQUETA_PRIORIDAD,
-    codigo, urlSolicitud, esTecnico, esAdmin, texto, bool, idNum, fechaISO, escaparLike,
+    codigo, urlSolicitud, esTecnico, esAdmin, texto, bool, idNum, fechaISO, escaparLike, hoyUY,
     responderError, emitirCambio, avisarTableros, nombreUsuario, usuarioActual, tecnicos, encargado,
     historial, cambiarEstadoEquipo, guardarAdjuntos, limpiarTemporales,
 } = require('../services/servicioTecnicoComun');
@@ -66,21 +66,31 @@ const esDeUsuario = (sol, usuarioId) => usuarioId && (sol.SolicitanteId === usua
 exports.getMeta = async (req, res) => {
     try {
         const pool = await getPool();
-        const [usuario, enc, tecs, areas, equipos] = await Promise.all([
+        const [usuario, enc, tecs, areas, equipos, areaUsuario] = await Promise.all([
             usuarioActual(pool, req),
             encargado(pool),
             tecnicos(pool),
             pool.request().query('SELECT LTRIM(RTRIM(AreaID)) AS AreaID, Nombre FROM dbo.Areas WITH (NOLOCK) ORDER BY Nombre'),
             pool.request().query(`SELECT EquipoID, LTRIM(RTRIM(Nombre)) AS Nombre, LTRIM(RTRIM(AreaID)) AS AreaID, Estado
                                   FROM dbo.ConfigEquipos WITH (NOLOCK) WHERE Activo = 1 ORDER BY AreaID, Nombre`),
+            // El área de hoy (la del token es la del login): el formulario muestra las máquinas de esa área.
+            pool.request().input('U', sql.Int, idNum(req.user?.id) || -1)
+                .query(`SELECT UPPER(LTRIM(RTRIM(ISNULL(AreaUsuario, '')))) AS Area FROM dbo.Usuarios WITH (NOLOCK) WHERE IdUsuario = @U`),
         ]);
+        // Locales para el formulario (30/09). Vacío si falta docs/servicio-tecnico/st-locales.sql (la
+        // tabla o la columna de la solicitud): el formulario no muestra el campo y todo sigue igual.
+        const locales = await pool.request()
+            .query(`SELECT Id, LTRIM(RTRIM(Nombre)) AS Nombre FROM dbo.Locales WITH (NOLOCK)
+                    WHERE COL_LENGTH('dbo.ST_Solicitudes', 'LocalId') IS NOT NULL ORDER BY Id`)
+            .then(r => r.recordset).catch(() => []);
         res.json({
             success: true,
             data: {
-                usuario, esTecnico: esTecnico(req), esAdmin: esAdmin(req),
+                usuario: { ...usuario, area: areaUsuario.recordset[0]?.Area || '' },
+                esTecnico: esTecnico(req), esAdmin: esAdmin(req),
                 encargado: enc, tecnicos: tecs,
                 areas: areas.recordset, equipos: equipos.recordset,
-                estadosEquipo: ESTADOS_EQUIPO,
+                estadosEquipo: ESTADOS_EQUIPO, locales,
             },
         });
     } catch (err) { responderError(res, err, 'getMeta'); }
@@ -101,8 +111,9 @@ exports.getUsuarios = async (req, res) => {
 };
 
 // =============================================================================
-// GET /solicitudes?q=&estado=&categoria=&prioridad=&tecnico=&area=&equipo=&desde=&hasta=&mias=1
+// GET /solicitudes?q=&estado=&resultado=&categoria=&prioridad=&tecnico=&area=&equipo=&desde=&hasta=&mias=1
 //   estado: ABIERTAS (todo lo no finalizado, default) | TODAS | uno de ESTADOS
+//   resultado: uno de RESULTADOS (solo tiene sentido con las finalizadas: el historial)
 // =============================================================================
 exports.listar = async (req, res) => {
     try {
@@ -112,6 +123,8 @@ exports.listar = async (req, res) => {
         const estado = String(req.query.estado || 'ABIERTAS').toUpperCase();
         if (estado === 'ABIERTAS') where.push(`s.Estado <> 'FINALIZADA'`);
         else if (ESTADOS.includes(estado)) { where.push('s.Estado = @Estado'); r.input('Estado', sql.VarChar(20), estado); }
+        const resultado = String(req.query.resultado || '').toUpperCase();
+        if (RESULTADOS.includes(resultado)) { where.push('s.Resultado = @Res'); r.input('Res', sql.VarChar(20), resultado); }
 
         const categoria = String(req.query.categoria || '').toUpperCase();
         if (CATEGORIAS.includes(categoria)) { where.push('s.Categoria = @Cat'); r.input('Cat', sql.VarChar(20), categoria); }
@@ -170,6 +183,13 @@ exports.detalle = async (req, res) => {
         const pool = await getPool();
         const sol = await leerSolicitud(pool, id);
         if (!sol) return res.status(404).json({ success: false, error: 'No existe la solicitud.' });
+        // Local (30/09): consulta aparte para que la base de todas las solicitudes no dependa de
+        // st-locales.sql. Sin el script, no viene.
+        const local = await pool.request().input('Id', sql.Int, id)
+            .query(`SELECT s.LocalId, s.LocalOtro, LTRIM(RTRIM(l.Nombre)) AS LocalNombre
+                    FROM dbo.ST_Solicitudes s LEFT JOIN dbo.Locales l ON l.Id = s.LocalId WHERE s.SolId = @Id`)
+            .then(r => r.recordset[0] || {}).catch(() => ({}));
+        Object.assign(sol, local);
         const [his, adj, otras] = await Promise.all([
             pool.request().input('Id', sql.Int, id).query(`
                 SELECT HisId, Fecha, UsuarioId, UsuarioNombre, Accion, Detalle, Motivo, AUsuarioId, AUsuarioNombre
@@ -205,12 +225,22 @@ exports.crear = async (req, res) => {
     const files = req.files || [];
     const categoria = String(b.categoria || '').toUpperCase();
     const titulo = texto(b.titulo, 200);
-    const prioridad = PRIORIDADES.includes(String(b.prioridad || '').toUpperCase()) ? String(b.prioridad).toUpperCase() : 'MEDIA';
     const equipoId = categoria === 'MAQUINA' ? idNum(b.equipoId) : null;
+    const parada = categoria === 'MAQUINA' && bool(b.maquinaNoTrabaja);
+    const prioridadPedida = String(b.prioridad || '').toUpperCase();
+    const prioridad = PRIORIDADES.includes(prioridadPedida) ? prioridadPedida : (parada ? 'ALTA' : 'MEDIA');
 
     if (!CATEGORIAS.includes(categoria)) { limpiarTemporales(files); return res.status(400).json({ success: false, error: 'Elegí el tipo de problema.' }); }
     if (!titulo) { limpiarTemporales(files); return res.status(400).json({ success: false, error: 'Escribí qué pasa (título).' }); }
     if (categoria === 'MAQUINA' && !equipoId) { limpiarTemporales(files); return res.status(400).json({ success: false, error: 'Elegí la máquina.' }); }
+    // Prioridad según la máquina (el formulario aplica la misma regla): parada → Alta o Crítica;
+    // sigue trabajando → no puede ser Crítica.
+    if (categoria === 'MAQUINA') {
+        const error = parada && ['BAJA', 'MEDIA'].includes(prioridad) ? 'Con la máquina parada, la prioridad tiene que ser Alta o Crítica.'
+            : !parada && prioridad === 'CRITICA' ? 'Si la máquina sigue trabajando, la prioridad no puede ser Crítica.'
+            : null;
+        if (error) { limpiarTemporales(files); return res.status(400).json({ success: false, error }); }
+    }
 
     let tx = null;
     try {
@@ -241,6 +271,21 @@ exports.crear = async (req, res) => {
             areaId = areaId || equipo.AreaID;
         }
 
+        // Local (30/09, docs/servicio-tecnico/st-locales.sql). Solo viene si el formulario lo muestra, o
+        // sea con el script corrido. "otro" exige lo escrito en "Especifique".
+        let local = null;
+        const localId = idNum(b.localId);
+        if (localId) {
+            const r = await pool.request().input('L', sql.Int, localId)
+                .query('SELECT Id, LTRIM(RTRIM(Nombre)) AS Nombre FROM dbo.Locales WHERE Id = @L');
+            const fila = r.recordset[0];
+            if (!fila) { limpiarTemporales(files); return res.status(400).json({ success: false, error: 'El local elegido no existe.' }); }
+            const esOtro = fila.Nombre.toLowerCase() === 'otro';
+            const otro = esOtro ? texto(b.localOtro, 150) : null;
+            if (esOtro && !otro) { limpiarTemporales(files); return res.status(400).json({ success: false, error: 'Especificá el local.' }); }
+            local = { id: fila.Id, nombre: fila.Nombre, otro };
+        }
+
         tx = new sql.Transaction(pool);
         await tx.begin();
         const ins = await tx.request()
@@ -256,14 +301,18 @@ exports.crear = async (req, res) => {
             .input('SolN', sql.NVarChar(150), solicitante.nombre)
             .input('CarId', sql.Int, usuario.id)
             .input('CarN', sql.NVarChar(150), usuario.nombre)
+            .input('Loc', sql.Int, local?.id ?? null)
+            .input('LocO', sql.NVarChar(150), local?.otro ?? null)
+            // Las columnas del local solo si vino uno: sin st-locales.sql el alta sigue funcionando
             .query(`INSERT INTO dbo.ST_Solicitudes (Categoria, EquipoId, EquipoTexto, AreaId, Titulo, Descripcion, Prioridad,
-                        MaquinaNoTrabaja, SolicitanteId, SolicitanteNombre, CargadoPorId, CargadoPorNombre)
+                        MaquinaNoTrabaja, SolicitanteId, SolicitanteNombre, CargadoPorId, CargadoPorNombre${local ? ', LocalId, LocalOtro' : ''})
                     OUTPUT INSERTED.SolId
-                    VALUES (@Cat, @Eq, @EqT, @Area, @Tit, @Desc, @Prio, @NoTrab, @SolId, @SolN, @CarId, @CarN)`);
+                    VALUES (@Cat, @Eq, @EqT, @Area, @Tit, @Desc, @Prio, @NoTrab, @SolId, @SolN, @CarId, @CarN${local ? ', @Loc, @LocO' : ''})`);
         const solId = ins.recordset[0].SolId;
 
         const detalle = [
             `Prioridad ${ETIQUETA_PRIORIDAD[prioridad]}`,
+            local ? `Local ${local.otro || local.nombre.replace(/(^|\s)\S/g, c => c.toUpperCase())}` : null,
             equipo ? `Máquina ${equipo.Nombre}${maquinaNoTrabaja ? ' (no puede trabajar)' : ''}` : null,
             solicitante.nombre && solicitante.nombre !== usuario.nombre ? `Reporta ${solicitante.nombre}` : null,
         ].filter(Boolean).join(' · ');
@@ -447,6 +496,7 @@ exports.finalizar = async (req, res) => {
     if (estadoEquipo && !ESTADOS_EQUIPO.includes(estadoEquipo)) return res.status(400).json({ success: false, error: 'Estado de máquina inválido.' });
     const requiereSeguimiento = bool(b.requiereSeguimiento);
     const fechaSeguimiento = requiereSeguimiento ? fechaISO(b.fechaSeguimiento) : null;
+    if (fechaSeguimiento && fechaSeguimiento < hoyUY()) return res.status(400).json({ success: false, error: 'La fecha de seguimiento no puede ser anterior a hoy.' });
 
     let tx = null;
     try {
@@ -566,6 +616,10 @@ exports.editar = async (req, res) => {
             const actual = typeof sol[col] === 'boolean' ? sol[col] : (sol[col] ?? null);
             if ((actual ?? null) === (nuevo ?? null) || (actual === null && nuevo === '')) continue;
             if (clave === 'titulo' && !nuevo) continue; // el título no se puede vaciar
+            // Una fecha ya pasada que no se toca queda como está; lo que no se puede es ponerla.
+            if (clave === 'fechaSeguimiento' && nuevo && nuevo < hoyUY()) {
+                return res.status(400).json({ success: false, error: 'La fecha de seguimiento no puede ser anterior a hoy.' });
+            }
             sets.push(col === 'FechaSeguimiento' ? `${col} = CAST(@${col} AS DATE)` : `${col} = @${col}`);
             r.input(col, tipo, nuevo);
             cambios.push(`${etiqueta}: ${mostrar(actual)} → ${mostrar(nuevo)}`);
@@ -708,13 +762,18 @@ exports.tiposFalla = async (req, res) => {
     } catch (err) { responderError(res, err, 'tiposFalla'); }
 };
 
-// PUT /config/encargado { usuarioId | null } → solo Admin
+// PUT /config/encargado { usuarioId | null } → Admin o el encargado de ahora (para pasarle el encargo a otro).
 exports.setEncargado = async (req, res) => {
-    if (!esAdmin(req)) return res.status(403).json({ success: false, error: 'Solo un administrador puede elegir el encargado.' });
     const usuarioId = req.body?.usuarioId == null || req.body.usuarioId === '' ? null : idNum(req.body.usuarioId);
     if (req.body?.usuarioId && !usuarioId) return res.status(400).json({ success: false, error: 'Usuario inválido.' });
     try {
         const pool = await getPool();
+        if (!esAdmin(req)) {
+            const actual = await encargado(pool);
+            if (!actual || actual.id !== idNum(req.user?.id)) {
+                return res.status(403).json({ success: false, error: 'Solo un administrador o el encargado actual pueden cambiar el encargado.' });
+            }
+        }
         if (usuarioId) {
             const u = await pool.request().input('U', sql.Int, usuarioId)
                 .query('SELECT IdUsuario FROM dbo.Usuarios WHERE IdUsuario = @U AND ISNULL(Activo, 1) = 1');

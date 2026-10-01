@@ -10,15 +10,66 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
 ## [2026-09-24] — Sin deployar
 
 ### Agregado
+- **Alta de artículos nuevos desde Stock** (Gestión de Sistema → Artículos → "Nuevo artículo"). Lo pidió Administración: en Stock no había forma de dar de alta un producto. El alta ya existía, pero en "Catálogo y WMS", que solo ve el rol Admin. Ahora el mismo formulario está en Stock: producto, familia, unidad y variantes con su costo, y la ficha de la tela cuando corresponde.
+  - Pregunta si el producto también se vende. Si se vende, crea además el artículo del catálogo ya vinculado, como hasta ahora. Si es un insumo interno, no lo crea: ese artículo nace visible y no tiene sentido para tintas o papel.
+  - Al terminar ofrece cargar el stock inicial: se elige la variante, el sector donde entra y la cantidad, y cada ingreso crea su etiqueta y la imprime. Es el mismo Ingreso de Inventario Global, con la variante ya elegida.
+  - Quién puede hacerlo se maneja con el permiso de Gestión de Sistema. En "Catálogo y WMS" el alta funciona igual que antes. El formulario se movió a `src/components/stock/AltaProductoStock.jsx` para que lo usen las dos pantallas; en las dos, los desplegables pasan a ser los propios y en el celular ocupa la pantalla completa.
+  - Probado en local sin grabar nada: el alta sin el dato nuevo crea el artículo del catálogo, igual que antes; con "se vende" también; como insumo interno crea el producto y sus variantes sin artículo. El build compila.
 - **Servicio Técnico: pantalla nueva para pedir y seguir reparaciones** (menú Servicio Técnico, `/servicio-tecnico`; es la etapa 1 del plan en `docs/servicio-tecnico-plan.md`). Cualquier usuario pide ayuda por una máquina de producción, una PC, internet, un software o las instalaciones. Carga qué pasa, la prioridad, quién reporta (el logueado ya elegido, otro usuario o alguien sin usuario, porque hay tablets compartidas) y fotos, capturas, PDF o videos cortos; las fotos se achican antes de subir.
+  - **Local** (30/09): el formulario pide el local: Inca, Arenal Grande, Vilardebo, Paullier u Otro, que pide especificar cuál. Es opcional, sale de la tabla `Locales` y se ve en el detalle de la solicitud. Probado en local sin grabar nada: sin el script el campo no aparece y la solicitud se crea igual; con el script, se guardan el local y lo especificado, y el detalle los muestra.
+  - **Franja horaria, y mantenimientos que se repiten por días de la semana** (30/09):
+    - **Franja horaria.** Al programar una tarea o un mantenimiento, y en los planes, se puede elegir una franja horaria: de 06:00 a 22:00, por hora y de al menos 1 hora. Es opcional. Se ve en el calendario (que ordena cada día por hora), en Mi semana, en el detalle del trabajo y en la lista de planes. En el trabajo se cambia desde Editar.
+    - **Tarea.** Sigue como estaba, con una sola fecha.
+    - **Mantenimiento.** En "Programar trabajo", el mantenimiento se repite todas las semanas en los días que se marcan, de lunes a domingo; las veces por semana son los días marcados. Es un plan: aparece también en Planes y se edita ahí con sus días.
+      - El primero es el primer día marcado desde el día elegido en el calendario.
+      - Al terminar o cancelar uno, se agenda el siguiente día marcado.
+      - La franja y el tiempo estimado pasan a cada trabajo.
+      - Las tareas que se cargan sin procedimiento se guardan como un procedimiento con el nombre del mantenimiento, así cada trabajo las copia; se editan en Procedimientos.
+    - **Sin script.** Las columnas nuevas (horario de los trabajos; días, horario y tiempo de los planes) las agrega el backend solo la primera vez que se usa. En la base local ya están.
+    - **Probado en local** con las funciones reales del servidor, sin técnico asignado para que no mande avisos. Todo lo creado se borró.
+      - Un mantenimiento miércoles y viernes con franja, 45 min y 2 tareas: el primero cae hoy miércoles con su franja, sus minutos y sus tareas. Al cerrarlo va al viernes, después al miércoles siguiente, y así. Si se cancela, igual pasa al próximo día marcado.
+      - Si se cambian los días a martes y jueves, el pendiente se mueve al jueves con la franja nueva, y la lista dice "los Mar y Jue".
+      - Un plan común "cada 2 semanas" sigue igual.
+      - Se rechazan días inválidos, una franja de menos de 1 hora, una fuera de 06:00 a 22:00 y una sin hora de fin.
+      - Editar la franja de un trabajo la cambia o la saca, y queda en el historial.
+    - El build compila.
+  - **Insumos necesarios en los procedimientos** (30/09): al crear o editar un procedimiento se cargan los insumos que hacen falta, todos los que se quiera.
+    - Cada uno puede ser un artículo del stock, elegido con el buscador, o algo que no está en el stock escrito a mano, como algo que se compra en la ferretería para un arreglo puntual.
+    - Cantidad, unidad y foto son opcionales. Las fotos se guardan con los demás adjuntos del módulo, y se suben hasta 8 nuevas por vez.
+    - Probado en local con las funciones reales del servidor; al final se borró lo creado y la base quedó como estaba:
+      - sin el script, guardar con insumos avisa que falta;
+      - con el script, se crea un procedimiento con un insumo del stock (toma su nombre y su unidad), uno escrito a mano con foto (la foto queda guardada y enganchada) y otro suelto;
+      - al editarlo, la foto se conserva;
+      - una foto que no es del procedimiento no se engancha;
+      - una cantidad inválida, un artículo que no existe o una foto que no llegó se rechazan.
+    - El build compila.
   - **Los técnicos** (área SERVICIO) y Admin tienen la bandeja. Pueden tomar una solicitud, ponerla en espera diciendo qué se espera, y derivarla a otro técnico o a un servicio externo, con motivo obligatorio.
   - **Al finalizar** se anota el resultado (resuelta, en parte, no resuelta, cancelada), lo realizado, si hacen falta repuestos, si requiere seguimiento y con qué fecha, y cómo queda la máquina. Se puede reabrir con motivo.
   - **Cada solicitud guarda** la fecha en que se pidió, en que un técnico la tomó y en que se finalizó, con los tiempos de respuesta, de resolución y de parada de la máquina. Todo cambio queda en su historial, con quién y cuándo.
   - **Buscador por palabra:** número, título, detalle, lo realizado, máquina, persona. También hay filtros por estado, tipo, prioridad, área, técnico y fechas.
+  - **Vistas de los técnicos:**
+    - **Abiertas** y **Tomadas por mí** nunca muestran las finalizadas.
+    - **Historial** muestra solo las finalizadas, con la última cerrada arriba. Ahí el filtro de estado se cambia por uno de resultado: resuelta, en parte, no resuelta o cancelada.
+    - Quien pide ve **Mis solicitudes** con todas las suyas.
   - **Quien la pidió** ve las suyas, puede comentar y adjuntar, y recibe un aviso cuando se finaliza.
+  - **Botón para pedir Servicio Técnico en la navbar,** al lado de la campanita: un triángulo de alerta dorado (`brand-gold`), con el mismo círculo y tamaño que la campanita. Se puede pedir desde cualquier pantalla.
+    - El formulario se carga recién al primer clic.
+    - En la pantalla de Servicio Técnico, al crearla se abre la solicitud. Desde otra pantalla, el aviso trae un botón "Ver".
+    - También en celular está al lado de la campanita (ver "La navbar en celular" en Cambiado). La pantalla de Servicio Técnico ya no tiene su propio botón.
+    - Probado en el navegador integrado sobre el Vite local, a 375 px:
+      - El formulario ocupa toda la pantalla.
+      - El desplegable de tipo tiene sus íconos, y al elegir "Máquina" aparece la máquina.
+    - En celular el formulario ocupa toda la pantalla, y el tipo de problema es un desplegable en vez de los seis botones.
   - **El botón "Reportar falla" de cada área** abre este mismo formulario, con el área y "máquina" ya elegidos y una pestaña con el historial del área.
+  - **La lista de máquinas muestra solo las del área:** la del botón del área o, desde la navbar, la del usuario. El área del usuario se lee de la base al abrir el formulario, así que un cambio de área vale sin volver a entrar.
+    - Si esa área no tiene máquinas (técnicos, administración), muestra todas, agrupadas por área.
+    - Para una máquina de otra área se cambia el Área del formulario. Si la máquina elegida no es de esa área, se borra.
   - **Los tickets del sistema viejo** (TicketsMantenimiento) se copian como solicitudes pendientes. En la base local eran 6.
-- **Si la máquina no puede trabajar, queda en MANTENIMIENTO.** Al pedir por una máquina se pregunta si puede seguir trabajando. Si está parada pasa a MANTENIMIENTO, el mismo estado de Configuración → Equipos: sale de la capacidad de planificación y no recibe lotes nuevos. Al finalizar, el técnico elige cómo queda (por defecto Disponible), y desde la solicitud puede cambiar el estado con motivo. Cada cambio queda en el historial de la máquina. Ya no se escribe el estado FALLA: nadie lo reconocía y Configuración lo pasaba a Disponible sin avisar al editar la máquina.
+- **Si la máquina no puede trabajar, queda en MANTENIMIENTO.** Al pedir por una máquina se pregunta si puede seguir trabajando. La respuesta limita la prioridad, en el formulario y en el backend:
+  - Máquina parada: solo Alta o Crítica.
+  - Si sigue trabajando: no puede ser Crítica.
+  - Al contestar, la prioridad se corrige sola a Alta si había quedado en una que no corresponde.
+  - Después, al editar la solicitud, el técnico la puede cambiar libremente. Si está parada pasa a MANTENIMIENTO, el mismo estado de Configuración → Equipos: sale de la capacidad de planificación y no recibe lotes nuevos. Al finalizar, el técnico elige cómo queda (por defecto Disponible), y desde la solicitud puede cambiar el estado con motivo. Cada cambio queda en el historial de la máquina. Ya no se escribe el estado FALLA: nadie lo reconocía y Configuración lo pasaba a Disponible sin avisar al editar la máquina.
 - **Servicio Técnico → Máquinas: ficha de cada máquina e historial de cambios** (etapa 2). Solo técnicos y Admin.
   - **La sección Máquinas** muestra las máquinas por área, con su estado, las solicitudes abiertas (marcando si alguna la tiene parada), las fallas de los últimos 90 días, el tiempo de parada y el último cambio. Se filtra por nombre, por área o por las que tienen problemas.
   - **La ficha tiene:**
@@ -32,7 +83,7 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
   - La parada se mide con las solicitudes que reportaron la máquina parada: desde que se pidió hasta que se finalizó, o hasta ahora si sigue abierta.
 - **Servicio Técnico: mantenimientos, calendario semanal y "Mi semana"** (etapa 3; secciones para técnicos y Admin).
   - **Procedimientos:** un creador de procedimientos, con pasos en orden, el tiempo estimado de cada uno y un detalle opcional (herramientas, cuidados). Muestra el total.
-  - **Planes:** un mantenimiento que se repite cada N días, semanas o meses, sobre una máquina u otro equipo o lugar, con su procedimiento y su técnico. Cada plan tiene siempre su próximo trabajo en el calendario. Al terminar uno se agenda el siguiente: desde el día en que se hizo si se hizo, desde el que tenía si no se hizo o se canceló.
+  - **Planes:** un mantenimiento que se repite cada N días, semanas o meses, sobre una máquina u otro equipo o lugar, con su procedimiento y su técnico. Cada plan tiene siempre su próximo trabajo en el calendario. Al terminar uno se agenda el siguiente: si se hizo, se cuenta desde el día en que se hizo; si se hizo antes de su fecha, desde la fecha que tenía; y si no se hizo o se canceló, también desde la fecha que tenía. Lo de hacerlo antes se arregló el 30/09: se contaba desde el día en que se hizo, así que un plan cada 3 días programado para el 03/10 y hecho el 30/09 volvía a caer el 03/10. Probado en local sin grabar nada, con los seis casos: antes de su fecha, tarde, el mismo día, cancelado, cancelado hace días y sin fecha.
   - **Trabajos:**
     - Mantenimientos de un plan o sueltos, y tareas puntuales, cada uno con su lista de tareas y tiempo estimado (las del procedimiento se copian).
     - Estados: Pendiente, Pospuesto, Vencido, En curso, Realizado, No realizado y Cancelado.
@@ -40,7 +91,8 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
     - **Terminar** pide el tiempo real, que por defecto es desde que se empezó; si no se hizo, pide el motivo.
     - Si el trabajo requiere parar la máquina, al empezarlo pasa a MANTENIMIENTO y al terminarlo se elige cómo queda.
     - Tildar la primera tarea empieza el trabajo.
-  - **Calendario semanal:** lunes a domingo, con semana anterior y siguiente, filtro por técnico y el tiempo pendiente de cada día y de la semana. Muestra aparte lo atrasado y los seguimientos de solicitudes que vencen. Se programa un trabajo desde cualquier día.
+  - **Calendario semanal:** lunes a domingo, con semana anterior y siguiente, filtro por técnico y el tiempo pendiente de cada día y de la semana. Muestra aparte lo atrasado y los seguimientos de solicitudes que vencen. Se programa un trabajo tocando la tarjeta de cualquier día desde hoy en adelante; tocar un trabajo o un seguimiento abre ese detalle.
+    - No se puede programar en una fecha que ya pasó. Los días pasados no se tocan, el "+" abre con hoy (o con el lunes, si es una semana que viene) y la fecha del formulario arranca en hoy. El backend también lo rechaza, igual que un seguimiento con fecha pasada. Una fecha pasada que ya estaba guardada se puede dejar como está al editar otra cosa.
   - **Mi semana**, para el técnico logueado, con botones grandes para tablet y celular: hoy, con cantidad y tiempo, lo atrasado, sus solicitudes, sus seguimientos (con "Hecho"), el resto de la semana y lo sin asignar (con "Tomar").
   - **Seguimiento de solicitudes:** ahora se marca como hecho, con cómo quedó, y deja de aparecer en el calendario.
   - **Avisos:** al técnico cuando se le asigna, reasigna o pospone un trabajo. Todos los días a las 07:30 corre un job:
@@ -61,7 +113,7 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
     - **Se descuenta del stock** con la misma función de /stock (FIFO entre lotes), como consumo del depósito, así que en /stock suma en el gasto por sector.
     - Queda guardado con fecha, costo del momento (el del lote o, si no tiene, el de la variante), moneda, a qué fue y quién.
     - Si en el depósito no alcanza, lo avisa. Con "Usar igual" se registra y lo que faltó queda como diferencia en /stock.
-    - La sección Insumos muestra el stock de cada depósito y el historial de usos, con buscador, fechas y total por moneda.
+    - La sección Insumos muestra el stock del depósito de Servicio Técnico (el de la pastilla de arriba) y el historial de usos, con buscador, fechas y total por moneda. No tiene otro selector de depósito para mirar, porque era redundante con la pastilla. El stock de otros depósitos se ve en "Usar insumo", donde se elige de dónde sale, o en /stock.
   - Todavía no se puede anular un uso: si se cargó mal, hay que corregir el stock en /stock.
 - **Servicio Técnico: reportes** (etapa 5; técnicos y Admin).
   - **Resumen por período:** últimos 30 días, este mes, mes anterior, 90 días, este año o fechas a mano.
@@ -77,10 +129,67 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
     - Técnicos (con las derivaciones), máquinas e insumos usados.
   - Los lunes a las 07:30 el job le avisa al encargado (o a los técnicos) que está el reporte de la semana anterior, con link directo.
 - **La campanita del menú de arriba avisa de verdad.** Era decorativa (un "3" fijo). Ahora muestra los avisos de cada usuario, con los no leídos, y llegan al momento como aviso emergente. Desde la misma campanita cada uno puede activar los avisos en su celular o PC (push). En iPhone, por las reglas de Apple, solo con el sistema instalado en la pantalla de inicio.
-  - **Quién recibe avisos de servicio técnico:** el encargado recibe las solicitudes nuevas; lo elige un Admin en la pantalla, y si no hay nadie elegido se usa la variable de entorno `ST_ENCARGADO_USUARIO`, y si tampoco, todos los técnicos. El técnico al que se le deriva también recibe aviso.
+  - **Quién recibe avisos de servicio técnico:** el encargado recibe las solicitudes nuevas. Lo elige un Admin en la pantalla, y el encargado de ahora se lo puede pasar a otro; antes se le pide confirmar, porque después ya no lo puede cambiar. Si no hay nadie elegido se usa la variable de entorno `ST_ENCARGADO_USUARIO`, y si tampoco, todos los técnicos. El técnico al que se le deriva también recibe aviso.
   - Los avisos van solo a esa persona: el socket se une a una sala por usuario validando su token.
+- **Servicio Técnico: listas desplegables propias y pantalla a todo el ancho.**
+  - Todos los desplegables del módulo usan un componente nuevo, `src/components/ui/Selector.jsx`, que se escribe igual que un `<select>`:
+    - Lista con estilo, grupos y la opción elegida marcada.
+    - Buscador cuando hay más de 8 opciones. Busca por palabras, sin importar tildes ni orden: "subli 1" encuentra "Máquina 10 (SUBLIMACIÓN)".
+    - Se maneja con teclado: flechas, Enter, Escape y tipear para saltar.
+    - Si abajo no hay lugar, la lista abre hacia arriba. Va por encima de paneles y ventanas sin que la corten.
+    - En las barras de filtros, el filtro que no está en su valor por defecto queda resaltado.
+  - El encargado y el depósito de insumos son una pastilla arriba a la derecha, y se cambian eligiendo en la lista (antes: lápiz, select y tilde). Quien no los puede cambiar los ve con un candado.
+  - **Selector de fecha propio,** `src/components/ui/SelectorFecha.jsx`, en los 15 campos de fecha del módulo. El calendario del navegador no se podía estilizar y salía en inglés, con la semana empezando el domingo.
+    - Se escribe como un `<input type="date">`: valor 'AAAA-MM-DD', min y max.
+    - Calendario en castellano, de lunes a domingo, con hoy marcado y la fecha elegida en celeste.
+    - Tocando el mes se elige mes y año. Tiene "Hoy" y, en los campos opcionales y filtros, "Borrar".
+    - Se maneja con teclado: flechas, Re Pág / Av Pág para cambiar de mes, Enter y Escape.
+    - En los filtros "Desde" no deja pasar de "Hasta" y al revés.
+  - **En celular, las ventanas del módulo ocupan toda la pantalla** (programar trabajo, derivar, finalizar, cambiar fecha, planes, proyectos, insumos…), con los botones abajo. La confirmación de "Pasar el encargo" sigue chica. Desde 640 px siguen siendo ventanas centradas.
+  - **Ficha de máquina en celular:** "Registrar cambio" y "Cambiar estado" ocupan todo el ancho, mitad y mitad. Las pestañas (Fallas, Cambios, Estados, Insumos, Ficha) entran sin scroll, con nombres cortos.
+  - La pantalla ocupa todo el ancho:
+    - Mi semana pasa a dos columnas en pantallas anchas.
+    - Máquinas, Proyectos y Procedimientos muestran más columnas.
+    - La fila de secciones ya no muestra una barra de scroll al final.
+  - Las 8 secciones (Solicitudes, Mi semana, Calendario…) según el ancho. Las pestañas piden unos 920 px y en celular y tablet no entraban: había que deslizar sin saber que seguían.
+    - Celular: la sección elegida, con su ícono, hace de título de la pantalla, y tocándola se cambia.
+    - Tablet (640 a 1023 px): un desplegable a todo el ancho.
+    - Desde 1024 px: pestañas.
+  - En celular la cabecera ocupa menos:
+    - El encargado es solo el círculo con la inicial. Tocándolo, un Admin o el encargado ven la lista para cambiarlo, y el resto un cartel con el nombre.
+    - No va el subtítulo.
+    - Los filtros de Solicitudes se abren con un botón al lado del buscador, que muestra cuántos hay activos, en un panel desde abajo con "Limpiar" y "Listo".
+    - Las vistas (Abiertas / Tomadas por mí / Historial) y los contadores se reparten todo el ancho de su fila.
+    - Planes, Proyectos e Insumos: los botones de crear o usar van solo con el ícono, como el "+" del calendario.
+      - Planes: una fila con las pestañas, un ojo para ver los desactivados (se prende en celeste) y "+".
+      - Proyectos: una fila con el buscador, el estado y "+".
+      - Insumos: Stock / Usos a lo ancho. Debajo, el depósito, que se achica y corta el texto (antes se desbordaba y tapaba "Usar insumo"), y el ícono de usar.
+      - Probado a 402 y 375 px: sin desborde horizontal.
+    - Reportes:
+      - Resumen / Semanal ocupan toda la fila.
+      - Resumen: sin panel blanco. Los períodos (30 días, este mes, mes anterior, 90 días, este año) van en un desplegable a todo el ancho, con "Personalizado" si se tocan las fechas, y abajo desde / hasta, mitad y mitad.
+      - Semanal: en una fila. El selector de semana, con borde, ocupa lo que sobra. "Esta semana" aparece solo si se salió de la actual, y la impresión va como ícono. Arranca en la semana actual; el aviso de los lunes sigue abriendo la anterior.
+      - La última tarjeta de totales, si queda sola, ocupa las dos columnas.
+    - En Mi semana, el resumen del día (Hoy, Trabajos, Tiempo, Solicitudes) entra en una fila, con el día corto ("Mar 29/09") y "Tiempo" en vez de "Tiempo estimado".
+    - Calendario (menos de 768 px):
+      - La semana entera entra en la pantalla y la llena hasta abajo. Cada día es una fila, con "Lun 28/09" a la izquierda y lo programado a la derecha. Las filas se reparten el alto que queda: un día con trabajos crece lo que necesita y los demás se reparten el resto. Si no entra todo, la página scrollea.
+      - La barra de la semana va sin el panel blanco y en una fila. El selector de semana es igual al de Reportes, con el pendiente debajo. Después van "Esta semana" (si se salió de la actual), el filtro de técnico con texto corto ("Todos", "Lo mío", "Sin asignar" o el nombre) y un "+" para programar.
+    - Tareas de un trabajo (al programarlo y al agregar una en el detalle): la casilla de minutos traía un ancho del 100% que le ganaba al angosto. Se quedaba con la fila y el texto de la tarea quedaba aplastado. Ahora el texto ocupa lo que sobra y los minutos, una casilla chica.
+      - Probado a 402×800, contando la navbar:
+        - Semana vacía: cada día mide 82 px y el domingo termina en 789.
+        - Con dos trabajos el martes: el martes mide 215 px, los demás 60 y el domingo termina en 788.
+    - La lista arranca a unos 150 px del tope; antes, cerca de la mitad de la pantalla.
+    - Probado en el navegador integrado a 402, 700 y 1280 px, con datos simulados.
 
 ### Cambiado
+- **La navbar en celular (menos de 768 px) se reordena:**
+  - A la izquierda, el logo y el usuario (nombre, estado del servidor y rol).
+  - A la derecha, el botón de Servicio Técnico, la campanita y, al final, el menú (☰).
+  - Antes el logo iba centrado, con el menú a la izquierda y el usuario a la derecha, y no quedaba lugar para el botón nuevo.
+  - El nombre del usuario se corta con "…" si no entra.
+  - El menú se sigue abriendo desde la izquierda.
+  - Probado a 375 px con "admin" y con "USUARIO GENERICO DTF": no se pisa nada.
+  - En PC no cambia.
 - **Stock se divide en cinco páginas del menú.** Panel de Control, Inventario Global, Mi Sector, Compras y Gestión de Sistema pasan a ser entradas propias dentro de Stock en la barra lateral, así que desde Roles se puede elegir qué rol ve cada una.
   - Cada página muestra solo su sección, sin las pestañas.
   - El selector de depósito aparece solo en Inventario Global y Compras, que son las que lo usan, y se mantiene al pasar de una página a otra.
@@ -92,7 +201,7 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
 - **Aviso al entregar una orden con bultos que nunca se recibieron en Depósito.** En Retiros web, si algún bulto de las órdenes a entregar figura en tránsito en un remito de Logística, antes de entregar aparece la lista con el remito y el área de origen, y dos opciones. **Ya están acá, entregar:** esos bultos quedan como entregados al cliente y su remito se cierra (RECIBIDO_TOTAL si ya se había recibido parte, ENTREGADO si nunca se recibió nada), con una observación (caso REM-459769). **Entregar sin esos bultos:** el retiro se entrega igual y esos bultos siguen pendientes en su remito, que se recibe normal cuando llegan; el remito anota que no salieron con el retiro. Si la mercadería está, conviene recibirla primero en Recepción. Incluye los bultos de las reposiciones y fallas de cada orden, que salen con la madre (caso REM-133680).
 - **El Panel de Control muestra cuánto gasta cada sector en insumos.** Bloque nuevo debajo de las tarjetas: el gasto del mes (consumo y merma × costo de cada insumo) sumado por sector, con barra, porcentaje del mes y variación contra el mes anterior, en USD o UYU con la cotización del día de cada consumo. Tocando un sector se ven sus insumos más caros del mes ("44 kg × US$ 89,00") y un link abre el Historial ya filtrado por ese sector y ese mes. El mes en curso se compara con el mismo tramo de días del mes anterior (1 al de hoy), para que no dé siempre "bajó" hasta fin de mes. Los consumos sin costo cargado no suman y el bloque lo avisa. Junta los movimientos nuevos con los importados del sistema anterior, como el resto del panel. El Centro de stock general (el almacén de tipo "Central") no entra: no es un sector, así que sus consumos no están ni en las filas ni en el total. Probado en local: septiembre del 1 al 24 da USD 26.602 en 7 sectores, agosto cerrado compara contra julio entero, y un mes sin datos queda vacío.
 - **El Historial filtra por depósito y por mes**, además del grupo, el texto y el día. Y tiene el grupo "Consumos" (consumo y merma), que es el que abre el link del bloque de gasto.
-- **Los pedidos de insumos se despachan con un botón.** En Stock → Órdenes solicitadas, cada pedido pendiente tiene **Despachar**: arma el remito hacia el sector que pidió, con los artículos del pedido ya cargados, y lo deja atendido en el mismo paso. Antes eran dos pasos a mano: armar el remito desde Trasladar y después marcarlo atendido. "Marcar atendido" solo cerraba el pedido, sin mover nada, y así un pedido podía quedar atendido sin que el sector recibiera nunca el remito. Se elige de qué depósito sale (por defecto el centro de stock) y se ve cuánto hay ahí de cada artículo; si hay menos de lo pedido, sale lo que hay. Si dos personas despachan el mismo pedido a la vez, el segundo recibe un aviso y no se arma un remito repetido. Probado en local con la base real y sin grabar nada: despacho completo y con faltante, sin artículos, origen igual al destino y pedido ya atendido. El sistema anterior no lo tenía: su pantalla para despachar pedidos decía "en construcción".
+- **Los pedidos de insumos se despachan con un botón.** En Stock → Órdenes solicitadas, cada pedido pendiente tiene **Despachar**: arma el remito hacia el sector que pidió, con los artículos del pedido ya cargados, y lo deja atendido en el mismo paso. Antes eran dos pasos a mano: armar el remito desde Trasladar y después marcarlo atendido. "Marcar atendido" solo cerraba el pedido, sin mover nada, y así un pedido podía quedar atendido sin que el sector recibiera nunca el remito. Se elige de qué depósito sale (por defecto el centro de stock) y se ve cuánto hay ahí de cada artículo; si hay menos de lo pedido, sale lo que hay. Si dos personas despachan el mismo pedido a la vez, el segundo recibe un aviso y no se arma un remito repetido. Probado en local con la base real y sin grabar nada: despacho completo y con faltante, sin artículos, origen igual al destino y pedido ya atendido. En el sistema anterior esto se hacía con "Evaluar y asignar stock" (Inventario Global → Órdenes solicitadas), que además dejaba sacar de varios almacenes en secuencia, si el primero no alcanzaba, y al terminar ofrecía imprimir el remito. Acá sale de un solo depósito.
 - **Mi Sector tiene botón Consumir, como el sistema anterior.** En "Mi stock físico", cada artículo tiene **Consumir**; en la ropa se toca el talle o color. Se abre una ventana con los lotes del sector, con el más viejo ya elegido, y se anota cuánto se usó. Queda registrado como consumo interno, igual que desde Retirar stock.
 - **En "Pedir insumos" se ve dónde buscar el artículo.** El buscador estaba chico, arriba a la derecha, y el carrito vacío solo decía "buscá un artículo arriba", así que no quedaba claro cómo se agregaba algo. Ahora el buscador está grande en el medio del carrito vacío, con el cursor ya puesto, y cuando hay artículos queda debajo de la lista para sumar más.
 - **En "Armá tu matriz" (TPU) la trama se puede achicar, cada textura hasta donde aguanta.** Antes el mínimo era 1×, el tamaño del catálogo, para todas. Ahora cada textura tiene su propio mínimo según el grosor de su trazo: las finas (Recurso 8, Recurso 10 y textura5) bajan hasta 0,5×, textura4 hasta 0,3× y las otras 36 hasta 0,2×; textura2 no se achica (a 0,5× el archivo pierde media trama). El slider va de a 0,1. Los mínimos salen de medir cada textura con el generador real: cuánto de la trama llega a la capa de relieve del archivo según la escala. A 0,2×, las gruesas conservan el 70-82 % de la trama; las finas, por debajo de 0,5×, se deforman (moiré, bandas). Quedan guardados en `texturas.json` y los recalcula `backend/python/medir_trazo_texturas.py`, que hay que volver a correr cuando se agrega una textura. El generador ya aceptaba cualquier escala, así que lo impreso sigue a lo que se ve. Ojo: por debajo de 1× no hay prueba impresa en máquina.
@@ -108,9 +217,73 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
 - **`/api/failures` no pedía login: ahora pide usuario interno.** Queda solo el catálogo de tipos de falla, que usa el panel de producción. Los tickets de mantenimiento que vivían ahí pasaron a Servicio Técnico. Se borraron la pantalla `ServicioTecnico.jsx`, que nadie abría, el modal viejo `ReportFailureModal.jsx` y `failuresService.js`.
 - **El Control de archivos no pide la lista de lotes con la pestaña oculta.** Usa el mismo mecanismo que el tablero del área desde el deploy de hoy: como mucho una recarga cada 8 segundos y, si la pestaña no se está mirando, una sola recarga al volver. La lista de órdenes del lote elegido sigue como estaba (cada 4 segundos como mucho), porque de ella depende el aviso de orden completada.
 - **Se sacó "Observaciones Generales" del formulario de pedidos del portal.** El campo de texto libre al final del pedido (Sublimación, DTF, ECOUV, Bordado, TPU, Directa y compra sin personalizar) ya no se muestra. El pedido sigue mandando el campo vacío al servidor; no se tocó el guardado.
+- **"Ventas por vendedor" muestra plata por documento, no órdenes** (`/vendedores/ventas`, 01/10). Contaba las órdenes que entraban a Depósito y cuántas estaban cobradas. Ahora muestra, por vendedor, tres columnas: lo vendido en pesos, lo vendido en dólares y el total unificado en dólares. Toma los documentos de venta igual que Contabilidad → Reportes → "Ventas por Documento (DGI)".
+  - **Qué cuenta.** Los e-tickets, e-facturas y Pedidos Caja emitidos en el mes, sin los anulados, estén o no aceptados por DGI. Las notas de crédito restan y las de débito suman.
+    - Los rollos (planes de metros) y la carga de billetera cuentan cuando se venden: salen en un documento normal.
+    - Los anticipos y los recibos no son ventas, igual que en Contabilidad. El anticipo cuenta cuando se factura lo consumido.
+  - **Sin cobrado ni sin cobrar, y sin filtro de DGI.** Estuvieron en la primera versión y se sacaron el mismo día. El servidor los sigue calculando, por si vuelven.
+  - **Foto de cada vendedor** al lado del nombre: la misma del registro del portal (`public/assets/images/asesores/<cédula>.webp`). Si un vendedor no tiene foto, va su inicial.
+  - **Vendedor:** el de la cartera del cliente del documento.
+    - Si el documento salió con la ficha de mostrador, se busca el cliente real: primero el dueño de la orden facturada y después el RUC del receptor.
+    - Lo que no se puede atribuir va en la fila "Mostrador / sin identificar", para que el total cierre con Contabilidad.
+  - **Las monedas son las del documento** y no se convierten.
+  - **Total unificado:** la última columna, que suma lo vendido en dólares y lo vendido en pesos pasado a dólares. Es la única que mezcla monedas.
+    - Da lo mismo que el "Total facturado" del resumen unificado de Contabilidad, que ahora también resta las notas de crédito (ver el punto siguiente). Setiembre: US$ 380.748,65.
+    - Usa la cotización del día, no la de cada documento. Es la misma de Caja.
+    - La cotización se ve arriba ("1 US$ = $ 40,89"), con un botón al lado para actualizarla. El botón pide la de hoy: si ya está cargada devuelve esa, y si no la busca en el BCU y la guarda, igual que el de Caja.
+    - Sin cotización, la columna queda en guiones y la pantalla lo avisa.
+  - **Qué cambia al leerla:**
+    - La venta cuenta cuando se factura, no cuando la orden entra a Depósito. Las semanas sin facturar no aparecen hasta que se facturan.
+    - La mayoría de los documentos sale en pesos aunque la orden esté en dólares. En setiembre, Matías Siri pasa de $ 108.226 y US$ 89.339 (órdenes) a $ 1.676.174 y US$ 57.069 (documentos).
+    - "Coordinacion user", de la cartera de Agustín Palmero, casi deja de pesar: en setiembre ingresó 457 órdenes y tiene 6 documentos. Agustín queda en $ 162.995 y US$ 7.369.
+  - Reemplaza el criterio de "cobrada" por orden, que estaba en esta lista sin deployar y nunca llegó a un commit.
+  - **Probado en local,** sobre la copia de producción del 30/09: 47 pruebas del servidor, sin fallas.
+    - Julio, agosto y setiembre: el vendido da el total de "Ventas por Documento" al centavo, y "Total unificado" da el total unificado de Ventas por Documento y de Ventas por Área.
+    - Setiembre: $ 6.861.556,80 y US$ 212.943,40 vendidos; total unificado a $ 40,89, US$ 380.748,65. Las notas del mes restan $ 56.385,10 y US$ 3.362,47.
+    - Responde en 166 ms.
+  - **La pantalla** se probó en el navegador integrado con los datos de setiembre simulados, a 1440 y 375 px. No se desborda; en celular la tabla necesita 517 px y se desliza de costado dentro de su recuadro. Con sesión iniciada contra el backend no se abrió.
+    - La cotización sí se pidió al backend local de verdad: trae $ 40,89 del 01/10, y el botón la vuelve a pedir y muestra el valor.
+    - "Total unificado" da lo mismo que la cuenta a mano en las 8 filas: US$ 380.748,65 en total y US$ 98.061,14 de Matías Siri.
+    - Con la cotización fallando, la columna queda en guiones, avisa y el botón sigue disponible.
+    - Las 6 fotos cargan (256×256), y un vendedor sin foto muestra la inicial.
+- **Los reportes de ventas de Contabilidad ahora restan las notas de crédito** (01/10). Hasta ahora solo las restaba Top Clientes. Ventas por Área, Ventas por Documento (con su resumen unificado en dólares), Resumen Mensual, Top Productos y el árbol de ventas las dejaban afuera, así que una factura anulada con nota de crédito seguía contando entera.
+  - **Cómo entra una nota.** Como una venta en negativo (la de débito, en positivo), el día en que se emite y con su propio estado de DGI. Se reparte entre las áreas y los artículos de sus propias líneas, que se copian de la factura.
+  - **En Ventas por Documento** va en la fila del tipo de pago de la factura a la que apunta: la nota de una factura a crédito resta del crédito.
+  - **Las cantidades de documentos no cambian:** siguen contando solo ventas. La tarjeta de cada moneda dice cuántas notas incluye y por cuánto.
+  - **No cambia:** los documentos en estado anulado ya quedaban afuera. Los cobros (Ingresos), Cobranzas, Antigüedad de deuda y el Libro Contador siguen igual.
+  - **Setiembre:**
+
+    | | Antes | Ahora |
+    |---|---|---|
+    | Pesos | 6.917.941,90 | 6.861.556,80 |
+    | Dólares | 216.305,87 | 212.943,40 |
+    | Unificado a $ 40,89 | US$ 385.490,07 | US$ 380.748,65 |
+
+    Son 19 notas, por $ 56.385,10 y US$ 3.362,47. De ellas, 12 anulaban enteras facturas del mismo mes.
+  - **Con filtro de artículo** la nota resta si sus líneas son de ese artículo. Una primera versión de ese filtro tardaba más de dos minutos; quedó en 30 ms, como antes.
+  - Si en un rango un sector queda en negativo (solo notas), el gráfico no le dibuja porción y el total del centro sigue siendo el real.
+  - **Probado en local,** sobre la copia de producción del 30/09: 36 pruebas, sin fallas.
+    - Julio, agosto y setiembre, con los tres filtros de DGI: Ventas por Área y Ventas por Documento dan las ventas más las notas, contra una cuenta hecha aparte. Las cantidades de documentos y lo pendiente de cobro quedan iguales.
+    - Los reportes siguen cerrando entre sí: Área, Documento, Resumen Mensual, Top Productos y el árbol dan el mismo total, también con filtro de sector y unificado en dólares.
+    - Tiempos: entre 110 y 150 ms Área, Documento y Resumen Mensual; 0,8 s Top Productos.
+  - **La pantalla** se probó en el navegador integrado con las respuestas reales de setiembre: Ventas por Área y Ventas por Documento muestran US$ 380.748,65 de total unificado y los 2.908 y 1.077 documentos de siempre. Con sesión iniciada no se abrió.
 
 ### Arreglado
+- **El panel "Configurar" del Panel de Producción (Reportes) quedaba debajo de la barra de arriba y desenfocaba el fondo** (01/10). La navbar le tapaba el título y el botón de cerrar. Ahora va por encima de la navbar y de la barra lateral, con el fondo oscurecido y sin desenfoque. La ventana "Editar tiempos de entrega…" que se abre desde ahí sigue apareciendo encima del panel. La ventana de "ver detalle" de la misma pantalla también pierde el desenfoque; sigue debajo de la navbar, como estaba. El build compila; no se vio en el navegador.
+- **El botón de insumos de cada área ahora pide de verdad.** Guardaba el pedido en `dbo.Solicitudes`, una tabla que no existe ni en producción ni en local, así que nunca funcionó. Ahora abre el mismo "Pedir insumos" de Mi Sector:
+  - se busca el artículo del stock y se carga la cantidad;
+  - el pedido llega a Logística en Órdenes solicitadas, donde se despacha con remito;
+  - la pestaña de pedidos enviados muestra los del sector.
+
+  Cada área pide con su sector del stock: DTF, ECOUV (también Terminaciones ECOUV), TPU, Impresión Directa (las dos), Ventas, y Sublimación con Impritex. Si un área no tiene sector, un admin lo asigna desde el mismo botón; a los demás el botón les avisa que falta. Mi Sector y el botón del área usan el mismo componente, así que piden igual. Probado en local: sin el script, el botón avisa que falta; un operario no puede asignar sectores; el script asigna las 8 áreas y, si se corre de nuevo, no pisa lo asignado; un sector inexistente no se guarda; el build compila.
+- **La pantalla "Solicitudes" (`/solicitudes`) muestra la cola real de pedidos de insumos**: la misma "Órdenes solicitadas" de Stock, con Despachar. Antes era otra pantalla que leía la misma tabla inexistente, así que siempre salía vacía. En el menú local no la tiene ningún rol; en producción no lo verifiqué.
 - **El Inventario Global de /stock sumaba pesos y dólares en el patrimonio de cada producto.** Cada variante vale en la moneda de su costo, y la fila del producto las sumaba todas juntas con el signo de la primera: Vinilo Brillo mostraba "US$ 15.549", que eran $ 9.017 + US$ 6.532. Ahora muestra un monto por moneda, como el sistema anterior (dólares arriba, pesos abajo). Probado en local: Vinilo Mate da US$ 2.201 y $ 2.769, igual que el viejo.
+- **En Stock, los nombres de los artículos salían cortados.** En las telas la variante es larga (ancho, gramaje y composición) y en casi todas las pantallas se veía solo el principio; en el detalle de una compra, por ejemplo, "ADIS DEPORTIVO — AD...". Ahora se ven enteros, en las líneas que haga falta. Donde iban en una sola línea, el producto va arriba y la variante abajo, en letra más chica. Cambia en todas las pantallas de Stock (compras, órdenes solicitadas, Mi Sector, Inventario Global, remitos, ingreso, retirar, consumir, historial, diferencias, alertas, el panel y Gestión de Sistema) y en "Pedir insumos". Queda igual el mosaico de Mi Sector (gorros, cuellos), que muestra dos líneas por casillero: ahí los nombres son cortos y el nombre entero aparece al pasar el mouse.
+- **Las compras que vinieron del sistema viejo figuraban sin recibir, y se podían recibir otra vez.** El sistema viejo no anotaba lo recibido en cada línea de la compra: creaba las etiquetas al hacer la compra y las activaba al recibir. La importación trajo las etiquetas, pero las líneas quedaron con 0 recibido, así que "Recibir e imprimir etiquetas" las volvía a cargar y duplicaba el stock. Caso: la compra de Dalian (#5 en producción), con sus 691 etiquetas activas y las 13 líneas en 0; pasa con 16 de las 20 compras importadas. `backend/scripts/sql/wms_compras_recibido_2026-09-30.sql` carga lo recibido de cada línea a partir de sus etiquetas, con tope en lo pedido, solo en compras migradas que no tienen nada recibido en el sistema nuevo. Al final muestra si alguna se recibió en los dos sistemas.
+- **La pestaña Recibidas de Compras buscaba un progreso que las plantillas no usan.** Tomaba como recibida la compra con progreso `recibido`, pero cada plantilla tiene sus propias claves: en Importaciones el paso "Recibido" es `9`. La de Dalian marcaba "Recibido" en la línea de tiempo y seguía en Activas como "Confirmada", igual que otras 6. Y al recibir una compra entera, el sistema le ponía `recibido`, que no es ningún paso, así que la línea de tiempo no marcaba nada. Ahora una compra está recibida cuando su progreso llega al último paso de su plantilla, y la recepción completa la deja en ese paso. El script de arriba pasa a ese paso las 5 compras que el sistema viejo dejó en `recibido`. Si se marca "Recibido" a mano, el detalle se cierra y avisa que la compra pasó a Recibidas.
+- **Las etiquetas que el sistema viejo creaba por adelantado ya no quedan colgadas.** Allá la etiqueta nacía al hacer la compra, en `pendiente_recepcion`; acá nace al recibir. Cuando una compra migrada se recibe en el sistema nuevo, sus etiquetas viejas pendientes quedan anuladas. No se borran, para que su número no se reuse. Son 18.097 etiquetas de 4 compras (en producción, #8, #11, #18 y #20). Si ya se imprimieron, no sirven: al recibir se imprimen las nuevas.
+
+  Probado en local sin grabar nada: el listado da 6 compras activas, 14 recibidas y 20 en total; el script completa 105 líneas de 16 compras y una segunda corrida no cambia nada; recibir entera la de Century Star A2 la deja en "Recibido", crea sus 8 etiquetas y anula las 8 viejas.
 - **El selector de órdenes al crear un reclamo en el portal salía vacío.** En Soporte, "Orden asociada" solo ofrecía "Otra...". La lista buscaba los pedidos con el número de la sesión del cliente, que es su CodCliente, como si fuera su CliIdCliente, que es otro número, y no encontraba ninguno. Ahora resuelve el cliente por su CodCliente y muestra sus órdenes entregadas en los últimos 30 días, como estaba pensado. Probado en local con la sesión de una clienta real: antes no traía nada; ahora trae su entrega del 02/09.
 - **Cancelar una orden ahora saca sus bultos del stock y de los remitos sin recibir.** Antes cancelar no tocaba los bultos: seguían "en stock" en el área, se podían despachar y el remito quedaba esperándolos para siempre. Caso DTF-21591: se canceló el 08/09 y su bulto igual salió ese día en REM-231455 y el 23/09 en REM-998757. No viajó ninguna de las dos veces y los dos remitos quedaron en recibido parcial. Además, cada despacho volvía a poner la orden "En transito", así que figuraba activa: el 23/09 la cancelaron de nuevo creyendo que solo se había cancelado la falla. Ahora:
   - Al cancelar una orden, por cualquier camino (orden, pedido, archivos, cambio de estado a mano, cascadas), los bultos de su producto quedan cancelados, con un movimiento que dice dónde estaban. Si estaban en un remito sin recibir, salen del remito y el remito se recalcula: si queda sin bultos se cancela, y si solo faltaba ese pasa a recibido total. La tela del cliente no se toca: hay que devolvérsela.
@@ -132,8 +305,94 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
 - **Un remito de Logística ya no queda "recibido parcial" para siempre cuando se regeneran las etiquetas de una de sus órdenes.** Regenerar las etiquetas de una orden borra sus bultos y, con ellos, las filas de esa orden en los remitos, sin recalcular el remito: si todo lo demás ya se había recibido, el remito quedaba en RECIBIDO_PARCIAL para siempre. Ahora, al regenerar, el sistema recalcula cada remito afectado: si no le queda nada pendiente pasa a RECIBIDO_TOTAL, y en todos anota en observaciones qué bulto se quitó y por qué (y si quedó sin bultos). Es preventivo: REM-231455, el remito trabado que lo motivó, quedó así por otro camino. El 23/09 un script manual sacó de ese remito el bulto de una orden cancelada que no había viajado, sin recalcularlo; se cerró a mano en producción el 25/09. Probado en local sobre un remito real, sin grabar: con pendientes no cambia el estado, sin pendientes cierra, sin ítems lo anota.
 - **Una orden TPU terminada ya no se puede volver a mandar a aprobación.** Las matrices que se pasaron desde la planilla vieja de TPU están Finalizadas, sin pedido y con un boceto. El botón "Enviar a cliente para aprobación" no se fijaba si la orden estaba terminada: la aceptaba y la devolvía a Pendiente. Pasó con TP-352 el 24/09: el cliente la aprobó, se fabricó sobre la matriz en vez de sobre su reuso TPU-27406, y como la matriz no tiene pedido no se le pudo hacer la etiqueta. Ahora el servidor rechaza las órdenes terminadas, canceladas o ya fabricadas, y avisa que para fabricar de nuevo una matriz se reusa desde "Mis matrices"; en el detalle de la orden el botón ya no aparece. Tampoco vuelve a producción una orden terminada si se le sube arte. Probado en local con 8 casos: terminada, entregada, cancelada y ya fabricada se rechazan; el envío normal a aprobación y el reuso a regenerar siguen igual. TP-352 se corrigió a mano en producción el 25/09: volvió a ser matriz y se le cancelaron los archivos subidos por error.
 - **La tienda del portal mostraba un stock inventado.** La ficha de cada producto decía "12 disponibles" para todos y el contador de cantidad se frenaba en 12: era un número fijo de cuando la tienda no tenía sistema de stock, aunque el catálogo ya trae el stock real de cada variante desde el WMS. Ahora muestra el disponible real de la variante elegida; si es 0 o se pide más de lo que hay, lo avisa en ámbar y deja pedir igual, porque la tienda vende también sin stock (regla del checkout). Si el WMS no contesta, no muestra ningún número. Ojo: el stock que ve la tienda sale de nuestras tablas solo con `WMS_INTERNO=true` en el `.env`; si no, sigue leyendo el WMS viejo.
+- **Deudas "vencidas" por fracciones de centavo.** Algunas deudas nacen con importes de 4 decimales, por el cruce de monedas, y se cobran con 2. Al cobrarlas en "Pago de deudas", la caja las daba por cobradas y marcaba pago el documento. Pero la función que actualiza la deuda solo la cerraba si el resto era exactamente 0, así que quedaban abiertas por 0,0001 a 0,0088 y la tarea de la noche las pasaba a VENCIDO. En producción había 26; el 30/09 se cerraron a mano con un SQL.
+  - Ahora un resto de menos de un centavo cierra la deuda: es la misma regla que ya usaba la caja. Aplica al cobrar (`reducirDeuda`) y en los tres lugares que ajustan la deuda cuando se edita el importe de una orden.
+  - La tarea nocturna ya no vence una deuda de menos de un centavo.
+  - Probado en local, dentro de una transacción que se revierte al final:
+    - cobrar 100,00 de 100,0025 la cierra;
+    - cobrar 100,00 de 100,05 la deja abierta por 0,05;
+    - la tarea no vence un resto de 0,004 pero sí una deuda de 5,00.
+- **La lista de Caja era la consulta más cara del sistema.** El 29/09, con el sistema lento, la lista de Caja (`/apiordenesRetiro/caja`) tardaba 1,5 a 2 segundos de CPU y hacía unas 800 mil lecturas por llamada, cerca de un tercio de toda la CPU de SQL.
+  - Causa en la consulta: los datos de billetera (cubierta, parcial, resto de cuenta corriente) buscaban los movimientos de cada orden con un `OR`. Con ese `OR` SQL no podía usar el índice por orden y recorría todos los movimientos del cliente, tres veces por orden. Ahora esas partes cruzan una lista de ids con el índice. Es la misma consulta base de las listas de despachos, historial, pasar por caja y la estación de impresión.
+  - Causa en las pantallas: Caja y Carga de pagos pedían la lista entera en cada aviso del servidor, dos veces, porque el servidor manda juntos `retiros:update` y `actualizado`. Ahora tienen el mismo freno que los tableros: como mucho una recarga cada 8 segundos, y ninguna con la pestaña oculta hasta que vuelve a verse. Lo mismo en la lista de despachos de Entrega de pedidos. Cobrar, vender o autorizar desde la caja sigue recargando en el momento. La estación de impresión no se tocó: imprime cada retiro nuevo con el dato del aviso.
+  - Probado en la base local (copia del 21/09, con casi el mismo volumen que producción). Las 6 variantes de la consulta devuelven exactamente las mismas filas que antes, incluidos los 147 movimientos de billetera:
+
+    | Consulta | Antes | Ahora |
+    |---|---|---|
+    | Caja | 542.704 lecturas, 406 ms de CPU | 57.722 lecturas, 94 ms |
+    | Todos los retiros juntos | 69 millones de lecturas, 27 s | 2 millones, 2,5 s |
+- **En los pedidos divididos "(1/2)", "(2/2)"… solo se asentaba la primera parte que entraba a Depósito.**
+  - **Causa.** Desde el 23/07 cada parte asienta sus propias líneas del pedido, pero la marca de "ya contabilizado" era del pedido entero. La primera parte lo marcaba y las demás entraban sin cargo en la cuenta y sin descontar sus metros del plan.
+  - **Alcance.** Entre el 23/07 y el 30/09 pasó en 209 de 282 pedidos divididos. Antes del 23/07, en ninguno.
+  - **Dónde quedó la plata.**
+    - 129 se cobraron en caja: la plata entró, porque la caja cobra todas las partes, pero falta el asiento de US$ 9.652.
+    - 9 son de semanales: US$ 328 que nunca se facturaron.
+    - El resto es casi todo de Coordinacion user.
+  - **Ahora.** El control es por orden: cada parte se asienta con sus líneas y una orden ya asentada no se vuelve a asentar.
+  - **Pedido que se asentó en otra pasada.** Si una parte sin asiento llega después y el pedido ya está cobrado entero en otra orden (así se asentaba hasta el 22/07), no se cobra de nuevo y queda un aviso en el log.
+  - **"Incluido en PRO".** Las líneas de hermanas consolidadas no se cobran aparte.
+- **La "reversa" automática del ingreso a Depósito cobraba de nuevo en vez de revertir.** Cuando el total del pedido cambiaba después del ingreso, mandaba el importe en negativo, pero el motor contable registra el importe sin signo. Así sumaba otro débito por el total anterior. Pasó 13 veces desde julio, casi todas en reposiciones -R1. Por ejemplo, la SUB-26273 de Palmero ya estaba facturada y cobrada (PC-4649), y el 24/09 le sumó dos débitos de 308,24 en la cuenta de pesos. Quedaron enlazados a la factura siguiente (PC-4957) sin entrar en su total, así que no se le cobraron. A De Zuasnabar sí: los dos débitos son líneas de FA-1286.
+  - Se sacó: los cambios de precio después del ingreso ya los lleva la cotización, orden por orden.
+  - Las reposiciones y fallas (-R/-F) ya no pasan por el asiento.
+- **Guardar una cotización pisaba el cargo de todas las órdenes del pedido con el total del pedido.**
+  - Ahora cada orden queda cargada por lo que valen sus líneas. En un pedido "por área", la madre PRO queda por el total del pedido.
+  - Si una orden con importe no tiene asiento propio (pedidos asentados enteros en la primera orden), su importe sigue en el cargo de la primera. Así no se pierde.
+  - Hay 426 cuentas de dinero con la moneda sin cargar. Ahí la moneda sale del tipo de cuenta; antes esas cuentas quedaban afuera.
+- **Una parte cubierta por el plan entraba a Depósito con el total del pedido.**
+  - **Causa.** La etiqueta de una parte con su línea en $0 llevaba el importe del pedido. Al escanearla en Depósito se copiaba al costo, y la caja cobraba el pedido una vez por parte.
+  - **Casos.** CAPA pagó así US$ 120,46 de más en 12 pedidos entre julio y agosto. En setiembre no pasó porque CAPA pasó a semanal, pero el código seguía igual.
+  - **Ahora.** Si la línea está en $0 a propósito (cubierta por el plan, prepago o reposición), la parte entra en 0 y la etiqueta dice 0,00.
+  - **Sin línea propia.** Una orden sin línea en el pedido sigue usando el importe del QR, como antes.
+- **Probado en una copia aparte de la base local, llamando al ingreso real: 38 pruebas, sin fallas.**
+  - Un pedido de dos partes con plata: cada parte queda cargada por lo suyo y entra a Depósito con su costo. Escanearlo de nuevo no agrega nada.
+  - Un pedido de CAPA con 3 partes del plan y 1 con plata:
+    - las del plan descuentan sus metros y entran en 0;
+    - la de plata va al ciclo por 14,82;
+    - el escaneo y la etiqueta dan 0 para las del plan.
+  - El caso viejo, con una parte con el total del pedido: la hermana no se cobra de nuevo.
+  - El caso del bug, con la hermana sin asiento: se asienta sola por lo suyo.
+  - Una -R1 que entra con la madre ya asentada: no carga nada.
+  - Una orden normal no dividida: igual que antes.
+  - Un pedido con el total cambiado después del ingreso: no agrega débitos.
+  - La cotización ajusta solo la parte que cambió.
 
 ### Notas de deploy
+- Panel "Configurar" del Panel de Producción: `src/components/pages/ProduccionPanelSection.jsx`, en el build. Sin backend ni SQL.
+- Restos de redondeo en deudas:
+  - Backend, necesita reiniciar: `backend/services/contabilidadService.js`, `backend/controllers/quotationController.js`, `backend/controllers/ordenesRetiroController.js` y `backend/jobs/estadosCuenta.job.js`.
+  - Sin build.
+  - Las 26 que ya existían se cerraron el 30/09 con el SQL de limpieza. Después del reinicio, volver a correr la consulta de control: tiene que dar 0 filas. Si aparecieron restos nuevos entre la limpieza y el deploy, se corre la limpieza una vez más.
+- Ventas por vendedor, por documento:
+  - Backend, necesita reiniciar: `backend/controllers/vendedorVistaController.js` y `backend/controllers/contabilidadReportesController.js`. Van juntos: el primero usa las reglas de venta que exporta el segundo. Si falta el segundo, la pantalla avisa con un error que lo dice.
+  - En el build: `src/components/pages/VendedorVentasMensuales.jsx`.
+  - Backend y build van en el mismo deploy: la pantalla nueva con el backend viejo muestra todo en guiones.
+  - La cotización usa `/api/apicotizaciones`, que ya existía (lo usa Caja): no lleva cambios de backend.
+  - Sin SQL.
+- Reportes de Contabilidad con las notas de crédito restando:
+  - Backend, necesita reiniciar: `backend/controllers/contabilidadReportesController.js`, el mismo archivo del punto anterior.
+  - En el build: `src/components/pages/ContabilidadReportesPage.jsx`.
+  - Van en el mismo deploy que Ventas por vendedor: su "Total unificado" da igual al de Contabilidad solo con las dos cosas arriba.
+  - Sin SQL. Avisarle a Administración que los totales de ventas de los reportes bajan por las notas: setiembre queda en $ 6.861.556,80 y US$ 212.943,40.
+- Pedidos divididos, reversa del ingreso, cotización y partes cubiertas por el plan:
+  - Backend, necesita reiniciar: `backend/controllers/logisticsController.js`, `backend/controllers/quotationController.js`, `backend/controllers/ordenesController.js`, `backend/services/LabelGenerationService.js` y `backend/utils/montoTotalPedido.js`.
+  - Sin build ni SQL.
+  - Lo que ya quedó mal antes del deploy no lo arregla el deploy. La lista de pedidos está en `docs/pedidos-divididos-cargo-incompleto.md`, con la query para producción, y la corrección de los datos está pendiente:
+    - facturar las 9 semanales;
+    - completar el asiento de los cobrados en caja;
+    - devolverle a CAPA los US$ 120,46;
+    - anular los débitos de la reversa.
+- Lista de Caja más liviana:
+  - Backend, necesita reiniciar: `backend/controllers/ordenesRetiroController.js`.
+  - En el build: `src/components/pages/CajaTransaccionView.jsx`, `src/components/pages/CargaPagosView.jsx` y `src/components/pages/customer-service/EntregaPedidosView.jsx`.
+  - Sin SQL.
+- Insumos desde el área:
+  - Backend, necesita reiniciar: `backend/controllers/wmsInternoController.js` y `backend/routes/wmsInternoRoutes.js`.
+  - En el build: `src/components/modals/StockRequestModal.jsx`, `src/components/stock/PedirInsumos.jsx` y `src/components/stock/BuscadorVariante.jsx` (los dos nuevos), `src/components/pages/StockGestionPage.jsx` y `src/components/layout/MainAppContent.jsx` (por `/solicitudes`). `src/components/pages/StockRequestsPage.jsx` se borró: la reemplaza la cola de Stock.
+  - SQL: `backend/scripts/sql/areas_sector_stock_2026-09-29.sql`. Agrega la columna `Areas.WmsDepId` y asigna los sectores. Se puede correr antes o después del deploy: sin él, el botón avisa que falta.
+- Alta de artículos desde Stock: backend, necesita reiniciar: `backend/controllers/productsIntegrationController.js`. En el build: `src/components/stock/AltaProductoStock.jsx` (nuevo), `src/components/pages/ProductsIntegration.jsx` y `src/components/pages/StockGestionPage.jsx`. Sin SQL. Funciona solo con `WMS_INTERNO=true`, que en producción está prendido (verificado el 30/09).
+- Compras del sistema viejo y pestaña Recibidas:
+  - SQL: `backend/scripts/sql/wms_compras_recibido_2026-09-30.sql`. **Ya corrido en producción el 30/09** (antes del deploy): completó las 16 compras recibidas en el sistema viejo y pasó al último paso las 5 que tenían `recibido`. Antes de correrlo, ninguna de las 16 tenía nada recibido en el sistema nuevo, así que no hubo stock duplicado. Hasta que suba el código, esas 5 aparecen en Activas.
+  - Backend, necesita reiniciar: `backend/controllers/wmsInternoController.js` y `backend/services/wmsInternoService.js`. En el build: `src/components/pages/StockGestionPage.jsx`.
 - Stock en cinco páginas: en el build, `src/components/pages/StockGestionPage.jsx`, `src/components/pages/stockSecciones.js` (nuevo) y `src/components/layout/MainAppContent.jsx`. DESPUÉS de subir el build, correr `backend/scripts/sql/menu_stock_secciones_2026-09-28.sql`: convierte Stock en un grupo con las cinco entradas, y quien hoy ve Stock pasa a ver las cinco. Después cada usuario recarga la página, y en Roles se ajusta quién ve cada una. Probado en local: el build compila; el SQL, en una transacción revertida, arma el grupo con las cinco entradas y frena si se corre dos veces.
 - Selector de órdenes de Soporte (portal): `backend/controllers/ticketsController.js`. Necesita reiniciar; sin build ni SQL.
 - Bultos al entregar: `backend/services/retiroService.js` (necesita reiniciar). DESPUÉS del reinicio, correr una vez en SSMS `backend/scripts/sql/cierre_bultos_entregados_2026-09-25.sql` (unos 30 segundos, por tandas; se puede cortar y volver a correr).
@@ -152,11 +411,13 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
      - `st-etapa2.sql`: cambios de máquinas.
      - `st-etapa3.sql`: procedimientos, planes, trabajos y seguimiento hecho.
      - `st-etapa4.sql`: proyectos y usos de insumos. Al final lista los depósitos del stock. Se puede repetir sin problema. Crea las tablas `ST_*`, `NotificacionesUsuario` y `PushSuscripcionesInternas`, copia los tickets viejos y agrega "Servicio Técnico" al menú de todos los roles. `docs/` no está en git: el archivo está en la máquina de desarrollo. Al final lista las máquinas que hoy están en FALLA: decidir a mano cuáles pasan a DISPONIBLE y cuáles a MANTENIMIENTO. Sin el script, la pantalla avisa que falta y la campanita queda vacía.
+     - `st-procedimiento-insumos.sql` (30/09): crea `ST_ProcedimientoInsumos`, los insumos necesarios de cada procedimiento. Va después de `st-etapa3.sql`. Si no se corre, los procedimientos funcionan igual, pero al guardar uno con insumos avisa que falta este script.
+     - `st-locales.sql` (30/09): crea la tabla `Locales` (inca, arenal grande, vilardebo, paullier, otro) y el local de cada solicitud. Va después de `st-etapa1.sql`. Si no se corre, el formulario funciona igual pero sin el campo Local.
   2. **Backend, necesita reiniciar.**
      - Nuevos: `backend/controllers/servicioTecnicoController.js`, `backend/controllers/stEquiposController.js`, `backend/controllers/stMantenimientoController.js`, `backend/controllers/stProyectosController.js`, `backend/controllers/stInsumosController.js`, `backend/controllers/stReportesController.js`, `backend/services/servicioTecnicoComun.js`, `backend/services/stMantenimientoService.js`, `backend/jobs/servicioTecnico.job.js` (lo arranca `server.js`), `backend/routes/servicioTecnicoRoutes.js`, `backend/middleware/multerServicioTecnico.js`, `backend/controllers/notificacionesController.js`, `backend/routes/notificacionesRoutes.js`, `backend/services/notificacionesService.js`, `backend/utils/salasUsuario.js` y `backend/utils/estadoEquipo.js`.
      - Cambiados: `backend/server.js`, `backend/services/pushNotificationService.js`, `backend/controllers/failuresController.js`, `backend/routes/failuresRoutes.js`, `backend/controllers/productionKanbanController.js`, `backend/controllers/productionController.js` y `backend/controllers/embBoardController.js`.
   3. **Build.**
-     - Nuevos: `src/components/pages/ServicioTecnicoPage.jsx`, `src/components/servicio-tecnico/*`, `src/components/layout/CampanaNotificaciones.jsx`, los dos servicios en `src/services/modules/`, `src/utils/pushInterno.js` y `src/utils/comprimirImagen.js`.
+     - Nuevos: `src/components/pages/ServicioTecnicoPage.jsx`, `src/components/servicio-tecnico/*`, `src/components/ui/Selector.jsx`, `src/components/ui/SelectorFecha.jsx`, `src/components/layout/CampanaNotificaciones.jsx`, `src/components/layout/BotonNuevaSolicitud.jsx`, los dos servicios en `src/services/modules/`, `src/utils/pushInterno.js` y `src/utils/comprimirImagen.js`.
      - Cambiados: `src/components/layout/Navbar.jsx`, `src/components/layout/MainAppContent.jsx`, `src/components/production/areas/AreaView.jsx`, `src/components/production/components/MachineControl.jsx`, `src/components/production/EmbBandeja.jsx`, `src/services/api.js` y `public/sw.js`.
      - El cambio del service worker hace aparecer el aviso de nueva versión.
      - El backend y el build van juntos: el backend viejo no tiene las rutas nuevas, y el build viejo llama a `/api/failures`, que ya no existe.
@@ -166,13 +427,25 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
      - `ST_DEPOSITO_ID`: opcional, el depósito del stock de donde salen los insumos mientras no se elija en la pantalla.
      - Los avisos push usan las mismas claves VAPID que el portal: si el portal ya manda push, no hace falta nada.
   5. **Después:**
-     - Un Admin elige el encargado en la pantalla.
+     - Un Admin elige el encargado en la pantalla. Después el encargado se lo puede pasar a otro.
      - Cada técnico activa los avisos en su celular desde la campanita, y le llega un push de prueba.
   6. **Verificado en local:**
      - 205 pruebas contra la base local: 74 de la etapa 1, 26 de la 2, 58 de la 3, 32 de la 4 y 15 de la 5. Se corrieron las cinco juntas al final. Las de la etapa 4 descontaron stock real de la copia y lo dejaron como estaba; cubren movimiento en /stock, costo, faltante como diferencia y proyectos de punta a punta. Todas llamando a la API sin levantar el servidor, sin fallas. Las de mantenimientos cubren fechas (fin de mes, bisiesto, cruce de año), procedimientos, plan con su trabajo, calendario, Mi semana, posponer y reprogramar, empezar con la máquina, tareas, terminar con el siguiente del plan, desactivar y reactivar, tarea puntual, seguimientos y el job diario. Las de máquinas cubren lista, ficha, registrar, corregir y borrar cambios con permisos, adjuntos en disco y el historial de la máquina y de la solicitud. Cubren alta con foto, validaciones, buscador y filtros, tomar, espera, derivar a técnico y a externo, comentar, editar, finalizar con la máquina, reabrir, encargado, avisos por sala, estado de máquina, 409 al asignar lote u orden a una máquina en mantenimiento y la campanita. Los datos de prueba se borraron.
+     - Encargado: 10 pruebas más contra la base local.
+       - Sin encargado, solo Admin lo elige.
+       - El encargado se lo pasa a otro, y después ya no lo puede cambiar.
+       - Un operario no lo puede cambiar.
+       - Funciona igual con el encargado de la variable de entorno.
      - El script SQL corrió dos veces en la base local.
      - El build compila.
-     - No lo probé en el navegador.
+     - El desplegable nuevo se probó en el navegador, montado solo sobre el Vite local:
+       - Elegir con mouse y con teclado.
+       - Buscar.
+       - Escape y tocar afuera.
+       - Deshabilitado.
+       - Abrir hacia arriba y seguir al botón con el scroll.
+       - Adentro del panel lateral y de una ventana, sin que se cierren.
+     - La pantalla completa no la vi en el navegador.
 
 
 ## [2026-09-24] — tercer deploy del día

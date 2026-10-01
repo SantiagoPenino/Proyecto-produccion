@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import api, { SOCKET_URL } from '../../services/apiClient';
 import { io } from 'socket.io-client';
+import useRecargaConFreno from '../../hooks/useRecargaConFreno';
 import {
     DollarSign, CreditCard, Search, X, CheckCircle, AlertTriangle,
     RefreshCw, Loader2, User, Phone, Package, FileText, Filter, ShieldCheck, PackageCheck
@@ -64,8 +65,9 @@ export const CargaGestionPagosView = () => {
     useEffect(() => {
         const socket = io(SOCKET_URL, { transports: ["websocket", "polling"] });
         socket.on("connect", () => console.log("Caja conectada a Sockets:", socket.id));
-        socket.on("retiros:update", () => { fetchOrders(); });
-        socket.on("actualizado", () => { fetchOrders(); });
+        // Con freno: el server manda los dos avisos juntos y en ráfagas, y /caja es de las consultas más caras.
+        socket.on("retiros:update", avisarOrders);
+        socket.on("actualizado", avisarOrders);
         setSocketInstance(socket);
         fetchData();
         return () => {
@@ -92,6 +94,7 @@ export const CargaGestionPagosView = () => {
             console.error("Error fetching orders:", e);
         }
     };
+    const avisarOrders = useRecargaConFreno(fetchOrders);
 
     // Refetch cuando cambian filtros
     useEffect(() => { fetchOrders(); }, [filtroTipoCliente, incluirSemanales]);

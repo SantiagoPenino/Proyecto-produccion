@@ -5,7 +5,7 @@ import { servicioTecnicoService } from '../../services/api';
 import { socket } from '../../services/socketService';
 import useRecargaConFreno from '../../hooks/useRecargaConFreno';
 import {
-    estadoTrabajo, prioridad as prioridadInfo, estado as estadoInfo, DIAS_SEMANA, fmtDuracion, fmtDia, haceCuanto, mensajeError,
+    estadoTrabajo, prioridad as prioridadInfo, estado as estadoInfo, DIAS_SEMANA, fmtDuracion, fmtDia, haceCuanto, mensajeError, franjaTexto,
 } from './constantes';
 import { chip, btn, btnPri, ModalMotivo } from './ui';
 
@@ -18,8 +18,11 @@ const diaDe = (iso) => {
     return DIAS_SEMANA[(new Date(Date.UTC(y, m - 1, d)).getUTCDay() + 6) % 7];
 };
 
+const etiquetaResumen = 'text-[10px] sm:text-[11px] uppercase tracking-wide text-zinc-400 font-bold whitespace-nowrap';
+const valorResumen = 'text-base sm:text-lg font-black whitespace-nowrap';
+
 const Seccion = ({ titulo, icono: Icono, cantidad, alerta = false, children }) => (
-    <section className="mb-5">
+    <section className="mb-5 break-inside-avoid">
         <h3 className={`mb-2 flex items-center gap-2 text-sm font-black uppercase tracking-wide ${alerta ? 'text-red-600' : 'text-zinc-500'}`}>
             <Icono size={16} /> {titulo}{cantidad != null && <span className="text-zinc-400">({cantidad})</span>}
         </h3>
@@ -70,7 +73,8 @@ const MiSemanaVista = ({ meta, onAbrirTrabajo, onAbrirSolicitud, version = 0 }) 
                 <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
                     <span className={`${chip} ${est.chip}`}>{est.label}</span>
                     {t.PlanId && <span className="inline-flex items-center gap-1 text-zinc-400"><Repeat size={11} />plan</span>}
-                    <span className="ml-auto font-bold text-zinc-500">{fmtDuracion(t.MinutosEstimados)}</span>
+                    {franjaTexto(t) && <span className="ml-auto font-black text-zinc-700">{franjaTexto(t)}</span>}
+                    <span className={`${franjaTexto(t) ? '' : 'ml-auto '}font-bold text-zinc-500`}>{fmtDuracion(t.MinutosEstimados)}</span>
                 </div>
                 <div className="mt-1.5 text-base font-black text-zinc-900 leading-snug">{t.Titulo}</div>
                 {(t.EquipoNombre || t.EquipoTexto) && <div className="text-sm text-zinc-500">{t.EquipoNombre || t.EquipoTexto}{t.ParaMaquina && <span className="text-amber-700 font-bold"> · parar la máquina</span>}</div>}
@@ -101,7 +105,7 @@ const MiSemanaVista = ({ meta, onAbrirTrabajo, onAbrirSolicitud, version = 0 }) 
             <div className={`flex items-center gap-3 rounded-xl border px-3 py-2.5 ${t.Vencido ? 'bg-red-50/60 border-red-200' : 'bg-white border-zinc-200'}`}>
                 <button onClick={() => onAbrirTrabajo(t.TrabId)} className="min-w-0 flex-1 text-left">
                     <div className="flex items-center gap-1.5 text-[11px]">
-                        <span className="font-black text-zinc-600">{diaDe(t.FechaProgramada)} {fmtDia(t.FechaProgramada).slice(0, 5)}</span>
+                        <span className="font-black text-zinc-600">{diaDe(t.FechaProgramada)} {fmtDia(t.FechaProgramada).slice(0, 5)}{franjaTexto(t) && ` · ${franjaTexto(t)}`}</span>
                         <span className={`${chip} ${est.chip}`}>{est.label}</span>
                         <span className="text-zinc-400">{fmtDuracion(t.MinutosEstimados)}</span>
                     </div>
@@ -114,82 +118,91 @@ const MiSemanaVista = ({ meta, onAbrirTrabajo, onAbrirSolicitud, version = 0 }) 
     };
 
     return (
-        <div className="max-w-3xl">
-            <div className="mb-4 rounded-2xl bg-zinc-900 text-white px-4 py-3 flex flex-wrap items-center gap-x-6 gap-y-1">
-                <div><div className="text-[11px] uppercase tracking-wide text-zinc-400 font-bold">Hoy</div><div className="text-lg font-black">{diaDe(d.hoy)} {fmtDia(d.hoy).slice(0, 5)}</div></div>
-                <div><div className="text-[11px] uppercase tracking-wide text-zinc-400 font-bold">Trabajos</div><div className="text-lg font-black">{deHoy.filter(t => ['PENDIENTE', 'EN_CURSO'].includes(t.Estado)).length}</div></div>
-                <div><div className="text-[11px] uppercase tracking-wide text-zinc-400 font-bold">Tiempo estimado</div><div className="text-lg font-black">{fmtDuracion(minutosHoy) || '0 min'}</div></div>
-                <div><div className="text-[11px] uppercase tracking-wide text-zinc-400 font-bold">Solicitudes</div><div className="text-lg font-black">{d.solicitudes.length}</div></div>
+        <div>
+            {/* Resumen del día. En celular las 4 columnas entran en una fila (día corto y "Tiempo" en vez de
+                "Tiempo estimado"); desde sm, con los textos largos. */}
+            <div className="mb-4 rounded-2xl bg-zinc-900 text-white px-4 py-3 flex items-center justify-between gap-2 sm:justify-start sm:gap-x-6">
+                <div className="min-w-0"><div className={etiquetaResumen}>Hoy</div>
+                    <div className={valorResumen}><span className="sm:hidden">{diaDe(d.hoy).slice(0, 3)}</span><span className="hidden sm:inline">{diaDe(d.hoy)}</span> {fmtDia(d.hoy).slice(0, 5)}</div></div>
+                <div className="min-w-0"><div className={etiquetaResumen}>Trabajos</div>
+                    <div className={valorResumen}>{deHoy.filter(t => ['PENDIENTE', 'EN_CURSO'].includes(t.Estado)).length}</div></div>
+                <div className="min-w-0"><div className={etiquetaResumen}><span className="sm:hidden">Tiempo</span><span className="hidden sm:inline">Tiempo estimado</span></div>
+                    <div className={valorResumen}>{fmtDuracion(minutosHoy) || '0 min'}</div></div>
+                <div className="min-w-0"><div className={etiquetaResumen}>Solicitudes</div>
+                    <div className={valorResumen}>{d.solicitudes.length}</div></div>
             </div>
 
             <Seccion titulo="Hoy" icono={CalendarDays} cantidad={deHoy.length}>
                 {deHoy.length === 0 ? <p className="text-sm text-zinc-400">Nada programado para hoy.</p>
-                    : <div className="grid grid-cols-1 md:grid-cols-2 gap-3">{deHoy.map(t => <Grande key={t.TrabId} t={t} />)}</div>}
+                    : <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-3">{deHoy.map(t => <Grande key={t.TrabId} t={t} />)}</div>}
             </Seccion>
 
-            {atrasados.length > 0 && (
-                <Seccion titulo="Atrasado" icono={AlertTriangle} cantidad={atrasados.length} alerta>
-                    <div className="flex flex-col gap-2">{atrasados.map(t => <Fila key={t.TrabId} t={t} />)}</div>
-                </Seccion>
-            )}
+            {/* Con pantalla ancha, el resto en dos columnas */}
+            <div className="xl:columns-2 xl:gap-6">
+                {atrasados.length > 0 && (
+                    <Seccion titulo="Atrasado" icono={AlertTriangle} cantidad={atrasados.length} alerta>
+                        <div className="flex flex-col gap-2">{atrasados.map(t => <Fila key={t.TrabId} t={t} />)}</div>
+                    </Seccion>
+                )}
 
-            {d.solicitudes.length > 0 && (
-                <Seccion titulo="Mis solicitudes" icono={Wrench} cantidad={d.solicitudes.length}>
-                    <div className="flex flex-col gap-2">
-                        {d.solicitudes.map(s => (
-                            <button key={s.SolId} onClick={() => onAbrirSolicitud(s.SolId)} className="w-full text-left rounded-xl border border-zinc-200 bg-white px-3 py-2.5 hover:border-brand-cyan/40">
-                                <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
-                                    <span className="font-mono font-bold text-zinc-400">{s.Codigo}</span>
-                                    <span className={`${chip} ${prioridadInfo(s.Prioridad).chip}`}>{prioridadInfo(s.Prioridad).label}</span>
-                                    <span className={`${chip} ${estadoInfo(s.Estado).chip}`}>{estadoInfo(s.Estado).label}</span>
-                                    {s.MaquinaNoTrabaja && <span className={`${chip} bg-amber-50 text-amber-700 border-amber-200`}>Máquina parada</span>}
-                                    <span className="ml-auto text-zinc-400">{haceCuanto(s.FechaSolicitud)}</span>
+                {d.solicitudes.length > 0 && (
+                    <Seccion titulo="Mis solicitudes" icono={Wrench} cantidad={d.solicitudes.length}>
+                        <div className="flex flex-col gap-2">
+                            {d.solicitudes.map(s => (
+                                <button key={s.SolId} onClick={() => onAbrirSolicitud(s.SolId)} className="w-full text-left rounded-xl border border-zinc-200 bg-white px-3 py-2.5 hover:border-brand-cyan/40">
+                                    <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+                                        <span className="font-mono font-bold text-zinc-400">{s.Codigo}</span>
+                                        <span className={`${chip} ${prioridadInfo(s.Prioridad).chip}`}>{prioridadInfo(s.Prioridad).label}</span>
+                                        <span className={`${chip} ${estadoInfo(s.Estado).chip}`}>{estadoInfo(s.Estado).label}</span>
+                                        {s.MaquinaNoTrabaja && <span className={`${chip} bg-amber-50 text-amber-700 border-amber-200`}>Máquina parada</span>}
+                                        <span className="ml-auto text-zinc-400">{haceCuanto(s.FechaSolicitud)}</span>
+                                    </div>
+                                    <div className="mt-0.5 text-sm font-bold text-zinc-800">{s.Titulo}</div>
+                                    {(s.EquipoNombre || s.EquipoTexto) && <div className="text-xs text-zinc-500">{s.EquipoNombre || s.EquipoTexto}{s.EsperaMotivo ? ` · esperando: ${s.EsperaMotivo}` : ''}</div>}
+                                </button>
+                            ))}
+                        </div>
+                    </Seccion>
+                )}
+
+                {d.seguimientos.length > 0 && (
+                    <Seccion titulo="Seguimientos" icono={CheckCircle2} cantidad={d.seguimientos.length}>
+                        <div className="flex flex-col gap-2">
+                            {d.seguimientos.map(s => (
+                                <div key={s.SolId} className={`flex items-center gap-3 rounded-xl border px-3 py-2.5 ${s.FechaSeguimiento < d.hoy ? 'bg-red-50/60 border-red-200' : 'bg-violet-50/50 border-violet-200'}`}>
+                                    <button onClick={() => onAbrirSolicitud(s.SolId)} className="min-w-0 flex-1 text-left">
+                                        <div className="text-[11px] font-bold text-zinc-500">{fmtDia(s.FechaSeguimiento)} · <span className="font-mono">{s.Codigo}</span></div>
+                                        <div className="text-sm font-bold text-zinc-800 truncate">{s.Titulo}</div>
+                                        {s.SeguimientoNota && <div className="text-xs text-zinc-500 truncate">{s.SeguimientoNota}</div>}
+                                    </button>
+                                    <button onClick={() => setSeguimiento(s)} className={`${btn} bg-violet-600 text-white hover:bg-violet-700 shrink-0`}><CheckCircle2 size={15} /> Hecho</button>
                                 </div>
-                                <div className="mt-0.5 text-sm font-bold text-zinc-800">{s.Titulo}</div>
-                                {(s.EquipoNombre || s.EquipoTexto) && <div className="text-xs text-zinc-500">{s.EquipoNombre || s.EquipoTexto}{s.EsperaMotivo ? ` · esperando: ${s.EsperaMotivo}` : ''}</div>}
-                            </button>
-                        ))}
-                    </div>
-                </Seccion>
-            )}
+                            ))}
+                        </div>
+                    </Seccion>
+                )}
 
-            {d.seguimientos.length > 0 && (
-                <Seccion titulo="Seguimientos" icono={CheckCircle2} cantidad={d.seguimientos.length}>
-                    <div className="flex flex-col gap-2">
-                        {d.seguimientos.map(s => (
-                            <div key={s.SolId} className={`flex items-center gap-3 rounded-xl border px-3 py-2.5 ${s.FechaSeguimiento < d.hoy ? 'bg-red-50/60 border-red-200' : 'bg-violet-50/50 border-violet-200'}`}>
-                                <button onClick={() => onAbrirSolicitud(s.SolId)} className="min-w-0 flex-1 text-left">
-                                    <div className="text-[11px] font-bold text-zinc-500">{fmtDia(s.FechaSeguimiento)} · <span className="font-mono">{s.Codigo}</span></div>
-                                    <div className="text-sm font-bold text-zinc-800 truncate">{s.Titulo}</div>
-                                    {s.SeguimientoNota && <div className="text-xs text-zinc-500 truncate">{s.SeguimientoNota}</div>}
-                                </button>
-                                <button onClick={() => setSeguimiento(s)} className={`${btn} bg-violet-600 text-white hover:bg-violet-700 shrink-0`}><CheckCircle2 size={15} /> Hecho</button>
-                            </div>
-                        ))}
-                    </div>
-                </Seccion>
-            )}
+                {resto.length > 0 && (
+                    <Seccion titulo="Resto de la semana" icono={CalendarDays} cantidad={resto.length}>
+                        <div className="flex flex-col gap-2">{resto.map(t => <Fila key={t.TrabId} t={t} />)}</div>
+                    </Seccion>
+                )}
 
-            {resto.length > 0 && (
-                <Seccion titulo="Resto de la semana" icono={CalendarDays} cantidad={resto.length}>
-                    <div className="flex flex-col gap-2">{resto.map(t => <Fila key={t.TrabId} t={t} />)}</div>
-                </Seccion>
-            )}
-
-            {d.sinAsignar.length > 0 && (
-                <Seccion titulo="Sin asignar" icono={Hand} cantidad={d.sinAsignar.length}>
-                    <div className="flex flex-col gap-2">
-                        {d.sinAsignar.map(t => (
-                            <Fila key={t.TrabId} t={t} accion={
-                                <button disabled={ocupado === t.TrabId} onClick={() => hacer(t.TrabId, () => servicioTecnicoService.editarTrabajo(t.TrabId, { tecnicoId: meta?.usuario?.id }), 'Es tuyo')}
-                                    className={`${btn} bg-brand-cyan text-white hover:bg-brand-cyan/90 shrink-0`}>
-                                    {ocupado === t.TrabId ? <Loader2 size={15} className="animate-spin" /> : <Hand size={15} />} Tomar
-                                </button>
-                            } />
-                        ))}
-                    </div>
-                </Seccion>
-            )}
+                {d.sinAsignar.length > 0 && (
+                    <Seccion titulo="Sin asignar" icono={Hand} cantidad={d.sinAsignar.length}>
+                        <div className="flex flex-col gap-2">
+                            {d.sinAsignar.map(t => (
+                                <Fila key={t.TrabId} t={t} accion={
+                                    <button disabled={ocupado === t.TrabId} onClick={() => hacer(t.TrabId, () => servicioTecnicoService.editarTrabajo(t.TrabId, { tecnicoId: meta?.usuario?.id }), 'Es tuyo')}
+                                        className={`${btn} bg-brand-cyan text-white hover:bg-brand-cyan/90 shrink-0`}>
+                                        {ocupado === t.TrabId ? <Loader2 size={15} className="animate-spin" /> : <Hand size={15} />} Tomar
+                                    </button>
+                                } />
+                            ))}
+                        </div>
+                    </Seccion>
+                )}
+            </div>
 
             {seguimiento && (
                 <ModalMotivo titulo={`Seguimiento de ${seguimiento.Codigo}`} textoLabel="¿Cómo quedó? (opcional)" confirmar="Marcar hecho" opcional

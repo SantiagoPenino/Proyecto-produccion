@@ -1,12 +1,14 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { toast } from 'sonner';
-import { Loader2, ChevronLeft, ChevronRight, Printer, ChevronDown, ChevronUp } from 'lucide-react';
+import { Loader2, ChevronLeft, ChevronRight, Printer, ChevronDown, ChevronUp, CalendarCheck } from 'lucide-react';
 import { servicioTecnicoService } from '../../services/api';
 import {
     categoria as categoriaInfo, prioridad as prioridadInfo, estado as estadoInfo, resultado as resultadoInfo, ESTADOS_PROYECTO,
     fmtFecha, fmtDia, fmtDuracion, fmtPlata, fmtCantidad, sumarDias, lunesDe, diaCorto, hoyISO, mensajeError,
 } from './constantes';
 import { chip } from './ui';
+import Selector from '../ui/Selector';
+import SelectorFecha from '../ui/SelectorFecha';
 
 // Reportes de Servicio Técnico (etapa 5): resumen por período y reporte semanal para imprimir.
 
@@ -37,8 +39,9 @@ const BarraH = ({ valor, max, color = 'bg-brand-cyan' }) => (
 const th = 'px-2 py-1.5 text-[10px] font-black text-zinc-400 uppercase tracking-wide text-left whitespace-nowrap';
 const td = 'px-2 py-1.5 text-sm text-zinc-700 whitespace-nowrap';
 
+// En celular (2 columnas) la última tarjeta, si queda sola, ocupa las dos.
 const Totales = ({ t }) => (
-    <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2 mb-5">
+    <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2 mb-5 [&>*:last-child:nth-child(odd)]:col-span-2 sm:[&>*:last-child:nth-child(odd)]:col-span-1">
         <Tarjeta titulo="Nuevas" valor={t.Nuevas} />
         <Tarjeta titulo="Finalizadas" valor={t.Finalizadas} nota={`${t.Resueltas} resueltas`} />
         <Tarjeta titulo="Abiertas ahora" valor={t.AbiertasAhora} />
@@ -189,17 +192,31 @@ const Resumen = ({ onAbrirMaquina }) => {
     }, [rango]);
     useEffect(() => { cargar(); }, [cargar]);
     const maxCat = d ? Math.max(1, ...d.categorias.map(c => c.N)) : 1;
-    const sel = 'px-3 py-2 border border-zinc-200 rounded-xl text-sm text-zinc-700 bg-white outline-none focus:border-brand-cyan';
+    const elegirPreset = (k) => {
+        const p = PRESETS.find(x => x[0] === k);
+        setPreset(k);
+        if (p) setRango(p[2](hoy));
+    };
     return (
         <div>
-            <div className="bg-white border border-zinc-200 rounded-2xl p-3 mb-4 flex flex-wrap gap-2 items-center">
-                {PRESETS.map(([k, t, f]) => (
-                    <button key={k} onClick={() => { setPreset(k); setRango(f(hoy)); }}
-                        className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${preset === k ? 'bg-zinc-800 text-white' : 'text-zinc-500 hover:bg-zinc-100'}`}>{t}</button>
-                ))}
-                <input type="date" className={sel} value={rango[0]} max={rango[1]} onChange={(e) => { setPreset(''); setRango([e.target.value, rango[1]]); }} />
-                <input type="date" className={sel} value={rango[1]} min={rango[0]} onChange={(e) => { setPreset(''); setRango([rango[0], e.target.value]); }} />
-                {cargando && <Loader2 size={16} className="animate-spin text-zinc-300" />}
+            {/* Período. Desde sm, en un panel blanco con un botón por período. En celular, sin panel: los
+                períodos en un desplegable a todo el ancho y abajo desde / hasta, mitad y mitad. */}
+            <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:bg-white sm:border sm:border-zinc-200 sm:rounded-2xl sm:p-3">
+                <Selector className="sm:hidden" value={preset} onChange={(e) => elegirPreset(e.target.value)} aria-label="Período">
+                    {PRESETS.map(([k, t]) => <option key={k} value={k}>{t}</option>)}
+                    <option value="">Personalizado</option>
+                </Selector>
+                <div className="hidden sm:contents">
+                    {PRESETS.map(([k, t]) => (
+                        <button key={k} onClick={() => elegirPreset(k)}
+                            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${preset === k ? 'bg-zinc-800 text-white' : 'text-zinc-500 hover:bg-zinc-100'}`}>{t}</button>
+                    ))}
+                </div>
+                <div className="flex gap-2 sm:contents">
+                    <SelectorFecha filtro resaltar={false} className="flex-1 sm:flex-none" aria-label="Desde" value={rango[0]} max={rango[1]} onChange={(e) => { setPreset(''); setRango([e.target.value, rango[1]]); }} />
+                    <SelectorFecha filtro resaltar={false} className="flex-1 sm:flex-none" aria-label="Hasta" value={rango[1]} min={rango[0]} onChange={(e) => { setPreset(''); setRango([rango[0], e.target.value]); }} />
+                </div>
+                {cargando && <Loader2 size={16} className="hidden sm:block animate-spin text-zinc-300" />}
             </div>
             {!d ? <div className="py-16 text-center text-zinc-400"><Loader2 className="inline animate-spin" size={22} /></div> : (
                 <>
@@ -231,9 +248,11 @@ const Resumen = ({ onAbrirMaquina }) => {
 };
 
 // ── Reporte semanal (para imprimir) ──────────────────────────────────────────
+// Arranca en la semana actual (como el calendario); el aviso de los lunes manda la semana anterior en el link.
 const Semanal = ({ semanaInicial, onAbrirMaquina }) => {
     const hoy = hoyISO();
-    const [lunes, setLunes] = useState(lunesDe(semanaInicial || sumarDias(hoy, -7)));
+    const lunesHoy = lunesDe(hoy);
+    const [lunes, setLunes] = useState(lunesDe(semanaInicial || hoy));
     const [d, setD] = useState(null);
     const cargar = useCallback(async () => {
         setD(null);
@@ -256,11 +275,24 @@ const Semanal = ({ semanaInicial, onAbrirMaquina }) => {
                 .st-imprimible { position: absolute; left: 0; top: 0; width: 100%; padding: 0 8mm; }
                 .print\\:hidden { display: none !important; }
             }`}</style>
-            <div className="bg-white border border-zinc-200 rounded-2xl p-3 mb-4 flex flex-wrap gap-2 items-center print:hidden">
-                <button onClick={() => setLunes(sumarDias(lunes, -7))} className="w-9 h-9 rounded-xl flex items-center justify-center text-zinc-500 hover:bg-zinc-100"><ChevronLeft size={18} /></button>
-                <span className="px-2 text-sm font-black text-zinc-700">{diaCorto(lunes)} – {diaCorto(sumarDias(lunes, 6))}</span>
-                <button onClick={() => setLunes(sumarDias(lunes, 7))} disabled={lunes >= lunesDe(hoy)} className="w-9 h-9 rounded-xl flex items-center justify-center text-zinc-500 hover:bg-zinc-100 disabled:opacity-30"><ChevronRight size={18} /></button>
-                <button onClick={() => window.print()} disabled={!d} className="ml-auto inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-sm font-bold bg-zinc-800 text-white hover:bg-zinc-700 disabled:opacity-40"><Printer size={16} /> Imprimir / PDF</button>
+            {/* Semana. Desde sm, en un panel blanco. En celular, sin panel y en una fila: el selector de
+                semana ocupa lo que sobra (con la semana al medio), "esta semana" si se salió de la actual e
+                imprimir solo con el ícono (como el "+" de las otras secciones). */}
+            <div className="mb-4 flex items-center gap-2 print:hidden sm:flex-wrap sm:bg-white sm:border sm:border-zinc-200 sm:rounded-2xl sm:p-3">
+                <div className="flex-1 sm:flex-none min-w-0 flex items-center justify-between gap-1 rounded-xl border border-zinc-200 bg-white sm:border-0 sm:bg-transparent">
+                    <button onClick={() => setLunes(sumarDias(lunes, -7))} title="Semana anterior" className="w-9 h-9 rounded-xl flex items-center justify-center text-zinc-500 hover:bg-zinc-100 shrink-0"><ChevronLeft size={18} /></button>
+                    <span className="px-1 sm:px-2 text-sm font-black text-zinc-700 whitespace-nowrap">{diaCorto(lunes)} – {diaCorto(sumarDias(lunes, 6))}</span>
+                    <button onClick={() => setLunes(sumarDias(lunes, 7))} disabled={lunes >= lunesHoy} title="Semana siguiente" className="w-9 h-9 rounded-xl flex items-center justify-center text-zinc-500 hover:bg-zinc-100 disabled:opacity-30 shrink-0"><ChevronRight size={18} /></button>
+                </div>
+                {lunes !== lunesHoy && (
+                    <button onClick={() => setLunes(lunesHoy)} title="Ir a esta semana" aria-label="Ir a esta semana"
+                        className="h-9 px-2.5 sm:px-3 inline-flex items-center justify-center gap-1.5 rounded-xl border border-zinc-200 bg-white text-sm font-bold text-zinc-700 hover:bg-zinc-100 shrink-0">
+                        <CalendarCheck size={16} /><span className="hidden sm:inline">Esta semana</span>
+                    </button>
+                )}
+                <button onClick={() => window.print()} disabled={!d} className="hidden sm:inline-flex ml-auto items-center gap-1.5 px-3 py-2 rounded-xl text-sm font-bold bg-zinc-800 text-white hover:bg-zinc-700 disabled:opacity-40"><Printer size={16} /> Imprimir / PDF</button>
+                <button onClick={() => window.print()} disabled={!d} title="Imprimir / PDF" aria-label="Imprimir / PDF"
+                    className="sm:hidden ml-auto w-9 h-9 rounded-xl flex items-center justify-center bg-zinc-800 text-white hover:bg-zinc-700 disabled:opacity-40 shrink-0"><Printer size={17} /></button>
             </div>
             {!d ? <div className="py-16 text-center text-zinc-400"><Loader2 className="inline animate-spin" size={22} /></div> : (
                 <div className="st-imprimible">
@@ -364,10 +396,11 @@ const ReportesVista = ({ semanaInicial, onAbrirMaquina }) => {
     const [tab, setTab] = useState(semanaInicial ? 'semanal' : 'resumen');
     return (
         <div>
+            {/* En celular, Resumen / Semanal se reparten todo el ancho (como en las otras secciones). */}
             <div className="flex gap-1 mb-3 print:hidden">
                 {[['resumen', 'Resumen'], ['semanal', 'Semanal']].map(([k, t]) => (
                     <button key={k} onClick={() => setTab(k)}
-                        className={`px-3 py-1.5 rounded-lg text-xs font-black uppercase tracking-wide transition-colors ${tab === k ? 'bg-zinc-800 text-white' : 'text-zinc-400 hover:bg-zinc-100'}`}>{t}</button>
+                        className={`flex-1 sm:flex-none text-center px-3 py-1.5 rounded-lg text-xs font-black uppercase tracking-wide transition-colors ${tab === k ? 'bg-zinc-800 text-white' : 'text-zinc-400 hover:bg-zinc-100'}`}>{t}</button>
                 ))}
             </div>
             {tab === 'resumen' ? <Resumen onAbrirMaquina={onAbrirMaquina} /> : <Semanal semanaInicial={semanaInicial} onAbrirMaquina={onAbrirMaquina} />}

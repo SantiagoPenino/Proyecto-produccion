@@ -35,6 +35,9 @@ router.get('/solicitudes/:id', verifyToken, ctrl.getSolicitudDetalle);
 router.post('/solicitudes', verifyToken, ctrl.crearSolicitud);
 router.post('/solicitudes/:id/despachar', verifyToken, ctrl.despacharSolicitud);
 router.post('/solicitudes/:id/estado', verifyToken, ctrl.setEstadoSolicitud);
+// Sector del stock de cada área, para el botón de insumos del área (29/09)
+router.get('/area-deposito', verifyToken, ctrl.getAreaDeposito);
+router.put('/area-deposito', verifyToken, ctrl.setAreaDeposito);
 router.get('/compras', verifyToken, ctrl.getCompras);
 // Gestión de sistema (maestros)
 router.get('/gestion/proveedores', verifyToken, ctrl.getProveedores);

@@ -557,10 +557,11 @@ async function propagarCotizacionADeposito(pool, { pedidoId, monedaFinal, cotiza
                     // también puede estar en cualquiera de los dos.
                     await new sql.Request(transaction)
                         .input('OrdId', sql.Int, orderId).input('OrdIdErp', sql.Int, ordenIdErp).input('Delta', sql.Decimal(18, 4), delta)
+                        // Resto de menos de un centavo = cobrada (ver reducirDeuda en contabilidadService).
                         .query(`
                             UPDATE dbo.DeudaDocumento
-                            SET DDeImportePendiente = CASE WHEN DDeImportePendiente+@Delta<=0 THEN 0 ELSE DDeImportePendiente+@Delta END,
-                                DDeEstado = CASE WHEN DDeImportePendiente+@Delta<=0 THEN 'COBRADO' ELSE DDeEstado END
+                            SET DDeImportePendiente = CASE WHEN DDeImportePendiente+@Delta<0.01 THEN 0 ELSE DDeImportePendiente+@Delta END,
+                                DDeEstado = CASE WHEN DDeImportePendiente+@Delta<0.01 THEN 'COBRADO' ELSE DDeEstado END
                             WHERE OrdIdOrden IN (@OrdId, @OrdIdErp) AND DDeEstado NOT IN ('CANCELADA','COBRADO')
                         `);
                     if (mov.CicIdCiclo) {
@@ -596,6 +597,116 @@ async function propagarCotizacionADeposito(pool, { pedidoId, monedaFinal, cotiza
     }
     return resumen;
 }
+
+// ─── Lleva el cargo ya asentado de cada orden del pedido (ORDEN/ORDEN_ANTICIPO sin factura,
+// en la moneda del pedido) a lo que valen SUS líneas en la cotización nueva. Antes se pisaban
+// TODOS los cargos del pedido con el total del pedido: en un pedido dividido "(n/m)", donde
+// cada parte asienta sus propias líneas al ingresar a Depósito, cada parte quedaba cargada por
+// el total.
+//   · Pedido "por área" (madre PRO con [FACTURA POR AREA]): la madre asienta el pedido entero
+//     al ingresar, así que su cargo va al total del pedido.
+//   · Órdenes con líneas pero sin ningún asiento propio (pedidos que se asentaron enteros en la
+//     primera orden, como hasta el 22/07): su importe sigue viajando en el cargo de la primera
+//     orden asentada — si no, se perdía al guardar.
+// Solo el primer cargo de cada orden; los espejos CUBIERTO de la billetera no se tocan (los
+// ajusta resincronizarConsumosBilletera). Devuelve cuántos movimientos cambió.
+async function sincronizarCargosDelPedido(pool, { pedidoId, noDocERP, monedaFinal, cotizacion, nuevoTotal }) {
+    const r = await pool.request()
+        .input('PID', sql.Int, pedidoId)
+        .input('Doc', sql.NVarChar(50), String(noDocERP || '').trim())
+        .input('MFinal', sql.VarChar(10), monedaFinal)
+        .input('Cotiz', sql.Decimal(18, 4), parseFloat(cotizacion) || 40)
+        .input('Mon', sql.Int, monedaFinal === 'USD' ? 2 : 1)
+        .query(`
+            -- Importe de cada orden según SUS líneas (misma regla que MontoTotal)
+            SELECT d.OrdenID,
+                   SUM(CASE WHEN ISNULL(d.EsFacturable, 1) = 0 THEN 0
+                            WHEN @MFinal = 'USD' AND d.Moneda = 'UYU' THEN d.Subtotal / @Cotiz
+                            WHEN @MFinal = 'UYU' AND d.Moneda = 'USD' THEN d.Subtotal * @Cotiz
+                            ELSE d.Subtotal END) AS Total
+            FROM dbo.PedidosCobranzaDetalle d
+            WHERE d.PedidoCobranzaID = @PID AND ISNULL(d.EsHermanaConsolidada, 0) = 0 AND d.OrdenID IS NOT NULL
+            GROUP BY d.OrdenID;
+
+            -- Cargos sin factura de las órdenes del pedido, en la moneda del pedido (hay cuentas
+            -- de dinero con MonIdMoneda en NULL: ahí la moneda sale del tipo de cuenta)
+            SELECT mc.MovIdMovimiento, mc.OrdIdOrden, ABS(mc.MovImporte) AS Importe
+            FROM dbo.MovimientosCuenta mc
+            JOIN dbo.Ordenes o ON o.OrdenID = mc.OrdIdOrden
+            JOIN dbo.CuentasCliente cc ON cc.CueIdCuenta = mc.CueIdCuenta
+             AND COALESCE(cc.MonIdMoneda, CASE cc.CueTipo WHEN 'DINERO_USD' THEN 2 WHEN 'DINERO_UYU' THEN 1 END) = @Mon
+            WHERE o.NoDocERP = @Doc
+              AND (o.CliIdCliente IS NULL OR cc.CliIdCliente = o.CliIdCliente)
+              AND mc.MovTipo IN ('ORDEN', 'ORDEN_ANTICIPO')
+              AND (mc.MovAnulado IS NULL OR mc.MovAnulado = 0)
+              AND mc.DocIdDocumento IS NULL
+              AND ISNULL(mc.MovObservaciones, '') NOT LIKE 'CUBIERTO%'
+            ORDER BY mc.MovIdMovimiento;
+
+            -- Órdenes del pedido con algún asiento propio vivo (plata, plan o billetera)
+            SELECT DISTINCT mc.OrdIdOrden
+            FROM dbo.MovimientosCuenta mc
+            JOIN dbo.Ordenes o ON o.OrdenID = mc.OrdIdOrden
+            WHERE o.NoDocERP = @Doc
+              AND mc.MovTipo IN ('ORDEN', 'ORDEN_ANTICIPO', 'ENTREGA', 'CONSUMO_CUENTA')
+              AND (mc.MovAnulado IS NULL OR mc.MovAnulado = 0);
+
+            -- Madre PRO de un pedido "por área"
+            SELECT TOP 1 o.OrdenID FROM dbo.Ordenes o
+            WHERE o.NoDocERP = @Doc AND o.AreaID = 'PRO' AND o.ComboItemID IS NULL
+              AND ISNULL(o.EstadoDependencia, '') <> 'VENTA_DIRECTA' AND o.Nota LIKE '%[[]FACTURA POR AREA]%';
+        `);
+    const [totRows, movRows, asentadasRows, madreRows] = r.recordsets;
+    if (!movRows.length) return 0;
+
+    const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+    const totalDe = new Map(totRows.map(x => [Number(x.OrdenID), r2(x.Total)]));
+    const madreId = madreRows[0]?.OrdenID ? Number(madreRows[0].OrdenID) : null;
+
+    // Primer cargo de cada orden → importe objetivo
+    const objetivo = new Map();   // MovIdMovimiento -> importe (positivo)
+    const vistas = new Set();
+    for (const m of movRows) {
+        const oid = Number(m.OrdIdOrden);
+        if (vistas.has(oid)) {
+            logger.warn(`[Quotation] ${noDocERP}: la orden ${oid} tiene más de un cargo sin factura — solo se ajusta el primero (MovId ${m.MovIdMovimiento} queda igual).`);
+            continue;
+        }
+        vistas.add(oid);
+        if (madreId) {
+            if (oid === madreId) objetivo.set(m.MovIdMovimiento, r2(nuevoTotal));
+        } else if (totalDe.has(oid)) {
+            objetivo.set(m.MovIdMovimiento, totalDe.get(oid));
+        }
+    }
+    if (!objetivo.size) return 0;
+
+    // Órdenes con importe y sin ningún asiento propio: viajan en el primer cargo ajustado
+    if (!madreId) {
+        const asentadas = new Set(asentadasRows.map(x => Number(x.OrdIdOrden)));
+        const sinAsiento = [...totalDe.entries()].filter(([oid, tot]) => tot > 0 && !asentadas.has(oid));
+        const resto = r2(sinAsiento.reduce((s, [, tot]) => s + tot, 0));
+        if (resto > 0) {
+            const [primerMov, imp] = objetivo.entries().next().value;
+            objetivo.set(primerMov, r2(imp + resto));
+            logger.info(`[Quotation] ${noDocERP}: ${sinAsiento.length} orden(es) sin asiento propio (${resto.toFixed(2)}) siguen en el cargo MovId ${primerMov}.`);
+        }
+    }
+
+    let cambiados = 0;
+    for (const m of movRows) {
+        if (!objetivo.has(m.MovIdMovimiento)) continue;
+        const nuevo = objetivo.get(m.MovIdMovimiento);
+        if (Math.abs(r2(m.Importe) - nuevo) < 0.005) continue;
+        await pool.request()
+            .input('MovId', sql.Int, m.MovIdMovimiento)
+            .input('Imp', sql.Decimal(18, 4), -nuevo)
+            .query('UPDATE dbo.MovimientosCuenta SET MovImporte = @Imp WHERE MovIdMovimiento = @MovId');
+        cambiados++;
+    }
+    return cambiados;
+}
+exports.sincronizarCargosDelPedido = sincronizarCargosDelPedido;
 
 /**
  * PUT /api/quotation/:noDocERP
@@ -995,26 +1106,9 @@ exports.saveQuotation = async (req, res) => {
 
         await transaction.commit();
 
-        // Sincronizar MovImporte con el nuevo total para órdenes ya contabilizadas
+        // Sincronizar los cargos ya asentados con la cotización nueva, orden por orden
         try {
-            await pool.request()
-                .input('NoDoc', sql.NVarChar, realNoDocERP)
-                .input('NewTotal', sql.Decimal(18, 2), nuevoTotal)
-                .input('MFinal', sql.VarChar(10), monedaFinal)
-                .query(`
-                    UPDATE mc
-                    SET mc.MovImporte = -@NewTotal
-                    FROM dbo.MovimientosCuenta mc
-                    INNER JOIN dbo.Ordenes o ON mc.OrdIdOrden = o.OrdenID
-                    INNER JOIN dbo.CuentasCliente cc ON mc.CueIdCuenta = cc.CueIdCuenta
-                    WHERE LTRIM(RTRIM(CAST(o.NoDocERP AS VARCHAR))) = LTRIM(RTRIM(@NoDoc))
-                      AND mc.MovTipo IN ('ORDEN', 'ORDEN_ANTICIPO')
-                      AND mc.DocIdDocumento IS NULL
-                      AND (
-                          (cc.MonIdMoneda = 1 AND @MFinal = 'UYU')
-                          OR (cc.MonIdMoneda = 2 AND @MFinal = 'USD')
-                      )
-                `);
+            await sincronizarCargosDelPedido(pool, { pedidoId, noDocERP: realNoDocERP, monedaFinal, cotizacion, nuevoTotal });
             await pool.request()
                 .input('NoDoc', sql.NVarChar, realNoDocERP)
                 .input('NewTotal', sql.Decimal(18, 2), nuevoTotal)

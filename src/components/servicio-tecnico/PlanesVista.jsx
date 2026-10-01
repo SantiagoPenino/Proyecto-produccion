@@ -1,10 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
 import { toast } from 'sonner';
-import { Loader2, Plus, Pencil, Power, Repeat, ListChecks, Cog } from 'lucide-react';
+import { Loader2, Plus, Pencil, Power, Repeat, ListChecks, Cog, Eye, EyeOff } from 'lucide-react';
 import { servicioTecnicoService } from '../../services/api';
 import { socket } from '../../services/socketService';
 import useRecargaConFreno from '../../hooks/useRecargaConFreno';
-import { fmtDia, fmtDuracion, estadoTrabajo, mensajeError } from './constantes';
+import { fmtDia, fmtDuracion, estadoTrabajo, mensajeError, franjaTexto } from './constantes';
 import { chip, btnPri } from './ui';
 import { ModalPlan, ModalProcedimiento } from './FormulariosMantenimiento';
 
@@ -36,24 +36,33 @@ const PlanesVista = ({ meta, onAbrirTrabajo }) => {
     };
 
     const procsActivos = (procs || []).filter(p => p.Activo);
+    const nuevo = () => setModal(tab === 'planes' ? { plan: null } : { proc: null });
+    const textoNuevo = tab === 'planes' ? 'Nuevo plan' : 'Nuevo procedimiento';
 
     return (
         <div>
-            <div className="flex flex-wrap items-center gap-2 mb-4">
-                <div className="flex gap-1">
+            {/* En celular, todo en una fila como en el calendario: las pestañas se reparten el ancho, "Ver
+                desactivados" es un ojo que se prende y "nuevo" es solo "+". Desde sm, con textos. */}
+            <div className="flex items-center gap-2 mb-4 sm:flex-wrap">
+                <div className="flex-1 sm:flex-none flex gap-1 min-w-0">
                     {[['planes', 'Planes', Repeat], ['procedimientos', 'Procedimientos', ListChecks]].map(([k, t, Icono]) => (
                         <button key={k} onClick={() => setTab(k)}
-                            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-black uppercase tracking-wide transition-colors ${tab === k ? 'bg-zinc-800 text-white' : 'text-zinc-400 hover:bg-zinc-100'}`}>
-                            <Icono size={14} /> {t}
+                            className={`flex-1 sm:flex-none justify-center inline-flex items-center gap-1.5 px-2 sm:px-3 py-1.5 rounded-lg text-xs font-black uppercase tracking-wide whitespace-nowrap transition-colors ${tab === k ? 'bg-zinc-800 text-white' : 'text-zinc-400 hover:bg-zinc-100'}`}>
+                            <Icono size={14} className="hidden sm:block" /> {t}
                         </button>
                     ))}
                 </div>
-                <label className="inline-flex items-center gap-2 text-sm font-bold text-zinc-500">
+                <label className="hidden sm:inline-flex items-center gap-2 text-sm font-bold text-zinc-500">
                     <input type="checkbox" checked={todos} onChange={(e) => setTodos(e.target.checked)} className="w-4 h-4 accent-brand-cyan" /> Ver desactivados
                 </label>
-                <button onClick={() => setModal(tab === 'planes' ? { plan: null } : { proc: null })} className={`${btnPri} ml-auto`}>
-                    <Plus size={16} /> {tab === 'planes' ? 'Nuevo plan' : 'Nuevo procedimiento'}
+                <button type="button" onClick={() => setTodos((v) => !v)} aria-pressed={todos}
+                    title={todos ? 'Ocultar desactivados' : 'Ver desactivados'} aria-label={todos ? 'Ocultar desactivados' : 'Ver desactivados'}
+                    className={`sm:hidden w-9 h-9 rounded-xl border flex items-center justify-center shrink-0 transition-colors ${todos ? 'border-brand-cyan/40 bg-brand-cyan/5 text-brand-cyan' : 'border-zinc-200 bg-white text-zinc-400'}`}>
+                    {todos ? <Eye size={16} /> : <EyeOff size={16} />}
                 </button>
+                <button onClick={nuevo} className={`hidden sm:inline-flex ${btnPri} ml-auto`}><Plus size={16} /> {textoNuevo}</button>
+                <button onClick={nuevo} title={textoNuevo} aria-label={textoNuevo}
+                    className="sm:hidden w-9 h-9 rounded-xl flex items-center justify-center bg-brand-cyan text-white hover:bg-brand-cyan/90 shrink-0"><Plus size={18} /></button>
             </div>
 
             {!planes || !procs ? <div className="py-16 text-center text-zinc-400"><Loader2 className="inline animate-spin" size={22} /></div>
@@ -68,7 +77,7 @@ const PlanesVista = ({ meta, onAbrirTrabajo }) => {
                                 <div key={p.PlanId} className={`rounded-2xl border px-4 py-3 flex flex-wrap items-center gap-3 ${p.Activo ? 'bg-white border-zinc-200' : 'bg-zinc-50 border-zinc-200 opacity-60'}`}>
                                     <div className="min-w-0 flex-1">
                                         <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
-                                            <span className={`${chip} bg-brand-cyan/10 text-brand-cyan border-brand-cyan/30`}>{p.CadaTexto}</span>
+                                            <span className={`${chip} bg-brand-cyan/10 text-brand-cyan border-brand-cyan/30`}>{p.CadaTexto}{franjaTexto(p) && ` · ${franjaTexto(p)}`}</span>
                                             {!p.Activo && <span className={`${chip} bg-zinc-100 text-zinc-500 border-zinc-200`}>Desactivado</span>}
                                             {p.ParaMaquina && <span className="inline-flex items-center gap-1 text-amber-700 font-bold"><Cog size={11} /> para la máquina</span>}
                                         </div>
@@ -104,7 +113,7 @@ const PlanesVista = ({ meta, onAbrirTrabajo }) => {
                             Todavía no hay procedimientos. Un procedimiento son los pasos de un trabajo, con el tiempo de cada uno.
                         </div>
                     ) : (
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                        <div className="grid grid-cols-1 md:grid-cols-2 2xl:grid-cols-3 gap-2">
                             {procs.map(p => (
                                 <div key={p.ProcId} className={`rounded-2xl border px-4 py-3 flex items-start gap-3 ${p.Activo ? 'bg-white border-zinc-200' : 'bg-zinc-50 border-zinc-200 opacity-60'}`}>
                                     <button onClick={() => setModal({ proc: p })} className="min-w-0 flex-1 text-left">

@@ -4627,15 +4627,18 @@ async function reducirDeuda(params, transaction = null) {
   if (!ddeId && !docId) throw new Error('[reducirDeuda] Se requiere ddeId o docId');
   const where = ddeId ? `DDeIdDocumento = ${ddeId}` : `DocIdDocumento = ${docId}`;
 
+  // Un resto de menos de un centavo cierra la deuda (misma regla que la caja al cobrar).
+  // Con "<= 0" las deudas con importe de 4 decimales (cruce de monedas) quedaban abiertas por
+  // 0,0001–0,0088 después de cobrarse: el documento figuraba pago y la deuda VENCIDA (30/09/2026).
   await mkReq()
     .input('Monto', sql.Decimal(18,4), monto)
     .query(`
       UPDATE dbo.DeudaDocumento
-      SET DDeImportePendiente = CASE WHEN DDeImportePendiente - @Monto < 0 THEN 0
+      SET DDeImportePendiente = CASE WHEN DDeImportePendiente - @Monto < 0.01 THEN 0
                                      ELSE DDeImportePendiente - @Monto END,
-          DDeEstado           = CASE WHEN DDeImportePendiente - @Monto <= 0 THEN 'COBRADO'
+          DDeEstado           = CASE WHEN DDeImportePendiente - @Monto < 0.01 THEN 'COBRADO'
                                      ELSE DDeEstado END,
-          DDeFechaCobro       = CASE WHEN DDeImportePendiente - @Monto <= 0 THEN GETDATE()
+          DDeFechaCobro       = CASE WHEN DDeImportePendiente - @Monto < 0.01 THEN GETDATE()
                                      ELSE DDeFechaCobro END
       WHERE ${where} AND DDeEstado NOT IN ('CANCELADA','COBRADO')
     `);
@@ -5366,10 +5369,11 @@ async function resincronizarConsumosBilletera({ OrdIdOrden, UsuarioAlta = 70, nu
         .input('Dep', sql.Int, od.OrdIdOrden);
       let filtro = 'dd.OrdIdOrden = @Dep';
       if (od.OrdenIdErp) { req.input('Erp', sql.Int, od.OrdenIdErp); filtro = 'dd.OrdIdOrden IN (@Dep, @Erp)'; }
+      // Resto de menos de un centavo = cobrada (ver reducirDeuda).
       await req.query(`
         UPDATE dd
-        SET dd.DDeImportePendiente = CASE WHEN dd.DDeImportePendiente + @DeltaD <= 0 THEN 0 ELSE dd.DDeImportePendiente + @DeltaD END,
-            dd.DDeEstado = CASE WHEN dd.DDeImportePendiente + @DeltaD <= 0 THEN 'COBRADO' ELSE dd.DDeEstado END
+        SET dd.DDeImportePendiente = CASE WHEN dd.DDeImportePendiente + @DeltaD < 0.01 THEN 0 ELSE dd.DDeImportePendiente + @DeltaD END,
+            dd.DDeEstado = CASE WHEN dd.DDeImportePendiente + @DeltaD < 0.01 THEN 'COBRADO' ELSE dd.DDeEstado END
         FROM dbo.DeudaDocumento dd
         JOIN dbo.CuentasCliente cc ON cc.CueIdCuenta = dd.CueIdCuenta
         WHERE ${filtro} AND cc.CliIdCliente = @CliD

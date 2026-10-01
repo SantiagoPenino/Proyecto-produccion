@@ -76,6 +76,9 @@ export const estadoTrabajo = (t) => {
     return ESTADOS_TRABAJO[t.Estado] || ESTADOS_TRABAJO.PENDIENTE;
 };
 export const TIPOS_TRABAJO = { MANTENIMIENTO: 'Mantenimiento', TAREA: 'Tarea' };
+// Franja horaria de un trabajo (30/09): de 06:00 a 22:00, por hora, de al menos 1 hora.
+export const HORAS_FRANJA = Array.from({ length: 17 }, (_, i) => `${String(6 + i).padStart(2, '0')}:00`);
+export const franjaTexto = (t) => (t?.HoraDesde && t?.HoraHasta ? `${t.HoraDesde}–${t.HoraHasta}` : '');
 export const UNIDADES = [
     { value: 'DIA', singular: 'día', plural: 'días' },
     { value: 'SEMANA', singular: 'semana', plural: 'semanas' },

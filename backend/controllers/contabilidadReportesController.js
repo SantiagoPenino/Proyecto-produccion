@@ -9,7 +9,9 @@
  * literal): 'E-Factura Contado', 'E-Factura Credito', 'E-Ticket Contado',
  * 'E-TICKET CREDITO', notas de crédito/débito, 'Pedidos Caja', 'Recibo',
  * 'RECIBO ANTICIPO', 'EGRESO_CAJA'. "Venta" acá = Factura/Ticket (sin Notas) +
- * 'Pedidos Caja' (venta de caja aún sin resolver a un CFE formal — la mayoría ya
+ * 'Pedidos Caja'; desde el 1-oct-2026 las notas de crédito entran además como una
+ * venta negativa (ver "Las notas de crédito RESTAN" más abajo). Pedidos Caja es la
+ * venta de caja aún sin resolver a un CFE formal (la mayoría ya
  * cobrada, decisión explícita del usuario: si no se cuenta, el reporte subestima
  * fuerte la venta real, sobre todo en USD donde Pedidos Caja BORRADOR es ~3x más
  * grande que todo lo facturado). Recibo/RECIBO ANTICIPO/EGRESO_CAJA y anuladas
@@ -91,7 +93,24 @@ const condEsVenta = (alias = 'doc') => `(
     )
     OR RTRIM(${alias}.DocTipo) = 'Pedidos Caja'
 )`;
-const COND_ES_VENTA = condEsVenta('doc');
+
+// ── Las notas de crédito RESTAN en todos los reportes de ventas (decisión del usuario,
+// 1-oct-2026: "las notas de crédito se deben de restar"). Antes solo las restaba Top
+// Clientes; Ventas por Área, Ventas por Documento, Resumen Mensual, Top Productos y el
+// Árbol las dejaban afuera, así que una factura anulada con nota de crédito seguía
+// contando entera (set-2026: 12 facturas, US$ 2.444 unificados).
+// La nota entra como una venta NEGATIVA (la de débito, positiva) en la fecha en que se
+// emite, con su propio estado de DGI, y se reparte entre las áreas y artículos de SUS
+// líneas, que se copian de la factura (verificado: 33 de 38 notas tienen las mismas
+// áreas que su factura). Las cantidades de documentos siguen contando solo ventas.
+// Recibos, anticipos y egresos siguen afuera. Cobros e ingresos no cambian.
+const condEsNota = (alias = 'doc') => `(${alias}.DocTipo LIKE '%Nota%' OR ${alias}.DocTipo LIKE '%NOTA%')`;
+const condVentaONota = (alias = 'doc') => `(${condEsVenta(alias)} OR ${condEsNota(alias)})`;
+const signoExpr = (alias = 'doc') => `CASE
+    WHEN ${alias}.CfeTipoCFE IN (103, 113) THEN 1
+    WHEN ${alias}.CfeTipoCFE IN (102, 112) THEN -1
+    WHEN ${condEsNota(alias)} THEN -1
+    ELSE 1 END`;
 
 // Área a partir del prefijo de un código de orden (ej. 'dcd.OrdCodigoOrden'). Si el
 // código es NULL (línea sin código todavía) o el prefijo no matchea, se intenta un
@@ -170,6 +189,22 @@ const condArticulo = (codigoExpr) => `EXISTS (
         LEFT(${codigoExpr}, CASE WHEN CHARINDEX(' ', ${codigoExpr}) > 0 THEN CHARINDEX(' ', ${codigoExpr}) - 1 ELSE LEN(${codigoExpr}) END)
       AND pcdA.ProIdProducto = @articulo
 )`;
+// Líneas de detalle que son del artículo filtrado (@articulo), contemplando las notas:
+// sus líneas casi nunca traen el código de orden (se copian de la factura sin él), pero
+// sí el artículo (DcdProIdProducto). Sin esto, con filtro de artículo las notas no restarían.
+// Va como CTE con UNION y NO como un OR en el WHERE: `EXISTS(...) OR (...)` le saca el
+// semi-join al optimizador y la consulta pasa de 30 ms a más de 120 s (medido 1-oct-2026).
+const cteLineasArticulo = () => `LineasArticulo AS (
+            SELECT dcd.DcdIdDetalle
+            FROM dbo.DocumentosContablesDetalle dcd WITH(NOLOCK)
+            WHERE ${condArticulo('dcd.OrdCodigoOrden')}
+            UNION
+            SELECT dcd.DcdIdDetalle
+            FROM dbo.DocumentosContablesDetalle dcd WITH(NOLOCK)
+            JOIN dbo.DocumentosContables ndoc WITH(NOLOCK) ON ndoc.DocIdDocumento = dcd.DocIdDocumento
+            WHERE ${condEsNota('ndoc')} AND dcd.DcdProIdProducto = @articulo
+        )`;
+const condLineaDelArticulo = (aliasDet) => `${aliasDet}.DcdIdDetalle IN (SELECT la.DcdIdDetalle FROM LineasArticulo la)`;
 
 // Filtro de área/artículo precalculado UNA sola vez como CTE: los DocIdDocumento que
 // matchean y el PESO del área dentro de cada documento (0..1), para que el reporte por
@@ -183,8 +218,9 @@ const condArticulo = (codigoExpr) => `EXISTS (
 // condAreas: condición ya armada por condAreasIn (área puntual o áreas de un sector).
 const filtroAreaArticulo = (condAreas, articulo, alias) => {
     if (!condAreas && !articulo) return { cte: '', join: '', peso: '1.0' };
-    const conds = [condEsVenta('fdoc'), `fdoc.DocEstado <> 'ANULADO'`];
-    if (articulo) conds.push(condArticulo('dcd.OrdCodigoOrden'));
+    // Ventas y notas: la nota pesa por el área de sus propias líneas, igual que la factura.
+    const conds = [condVentaONota('fdoc'), `fdoc.DocEstado <> 'ANULADO'`];
+    if (articulo) conds.push(condLineaDelArticulo('dcd'));
     let cte;
     if (condAreas) {
         const areaExpr = areaDesdeCodigo('dcd.OrdCodigoOrden');
@@ -213,6 +249,8 @@ const filtroAreaArticulo = (condAreas, articulo, alias) => {
             WHERE ${conds.join(' AND ')}
         )`;
     }
+    // Con filtro de artículo, la CTE de sus líneas va delante (FiltroAreaArticulo la usa).
+    if (articulo) cte = `${cteLineasArticulo()},\n        ${cte}`;
     return {
         cte,
         join: `JOIN FiltroAreaArticulo faa ON faa.DocIdDocumento = ${alias}.DocIdDocumento`,
@@ -374,7 +412,8 @@ exports.getFiltrosVentas = async (req, res) => {
 // ─── GET /api/contabilidad/reportes/ventas-por-area ───────────────────────────
 // Cada documento reparte su propio DocTotal (no DcdSubtotal) entre las áreas que
 // tocó, proporcional al peso de DcdSubtotal de cada área dentro de ese documento
-// (ver nota de cabecera "Por qué tienen que dar el mismo total"). Esto además
+// (ver nota de cabecera "Por qué tienen que dar el mismo total"). Las notas de
+// crédito entran con el DocTotal en negativo y se reparten igual. Esto además
 // corrige un bug real: esta query no aplicaba fechaDesde/fechaHasta (a diferencia
 // de ventas-por-documento, que sí) — "30 días" mostraba histórico completo acá,
 // lo que por sí solo ya explicaba buena parte del desfasaje entre los dos reportes.
@@ -393,28 +432,36 @@ exports.getVentasPorArea = async (req, res) => {
         bindFiltrosComunes(r, params);
         r.input('moneda', sql.NVarChar(10), moneda || null);
 
+        // DocTotal va con el signo de la nota (la de crédito resta): se reparte entre las
+        // áreas de las líneas de la propia nota. CantidadDocumentos cuenta solo ventas.
+        const pesoArea = `CASE
+                    WHEN ISNULL(t.SubtotalDocTotal, 0) = 0 THEN 1.0 / t.NAreas
+                    ELSE CAST(l.SubtotalArea AS FLOAT) / t.SubtotalDocTotal
+                END`;
         const result = await r.query(`
-            ;WITH DocsVenta AS (
-                SELECT fdoc.DocIdDocumento, fdoc.DocTotal, fdoc.MonIdMoneda
+            ;WITH ${params.articulo ? `${cteLineasArticulo()},` : ''}
+            DocsVenta AS (
+                SELECT fdoc.DocIdDocumento, fdoc.DocTotal * ${signoExpr('fdoc')} AS DocTotal, fdoc.MonIdMoneda,
+                       CASE WHEN ${condEsNota('fdoc')} THEN 1 ELSE 0 END AS EsNota
                 FROM dbo.DocumentosContables fdoc WITH(NOLOCK)
-                WHERE ${condEsVenta('fdoc')}
+                WHERE ${condVentaONota('fdoc')}
                   AND fdoc.DocEstado <> 'ANULADO'
                   ${filtroDgi ? `AND ${filtroDgi}` : ''}
                   AND (@fechaDesde IS NULL OR fdoc.DocFechaEmision >= @fechaDesde)
                   AND (@fechaHasta IS NULL OR fdoc.DocFechaEmision <= @fechaHasta)
-                  AND (@articulo IS NULL OR EXISTS (
+                  ${params.articulo ? `AND EXISTS (
                         SELECT 1 FROM dbo.DocumentosContablesDetalle dcdA WITH(NOLOCK)
                         WHERE dcdA.DocIdDocumento = fdoc.DocIdDocumento
-                          AND ${condArticulo('dcdA.OrdCodigoOrden')}
-                  ))
+                          AND ${condLineaDelArticulo('dcdA')}
+                  )` : ''}
             ),
             LineasPorDocArea AS (
-                SELECT dv.DocIdDocumento, dv.DocTotal, dv.MonIdMoneda,
+                SELECT dv.DocIdDocumento, dv.DocTotal, dv.MonIdMoneda, dv.EsNota,
                        ${areaExpr} AS Area,
                        SUM(dcd.DcdSubtotal) AS SubtotalArea
                 FROM DocsVenta dv
                 LEFT JOIN dbo.DocumentosContablesDetalle dcd WITH(NOLOCK) ON dcd.DocIdDocumento = dv.DocIdDocumento
-                GROUP BY dv.DocIdDocumento, dv.DocTotal, dv.MonIdMoneda, ${areaExpr}
+                GROUP BY dv.DocIdDocumento, dv.DocTotal, dv.MonIdMoneda, dv.EsNota, ${areaExpr}
             ),
             TotalPorDoc AS (
                 SELECT DocIdDocumento, SUM(SubtotalArea) AS SubtotalDocTotal, COUNT(*) AS NAreas
@@ -424,11 +471,9 @@ exports.getVentasPorArea = async (req, res) => {
             SELECT
                 l.Area,
                 ${monedaExpr} AS Moneda,
-                SUM(l.DocTotal * CASE
-                    WHEN ISNULL(t.SubtotalDocTotal, 0) = 0 THEN 1.0 / t.NAreas
-                    ELSE CAST(l.SubtotalArea AS FLOAT) / t.SubtotalDocTotal
-                END) AS Ventas,
-                COUNT(DISTINCT l.DocIdDocumento) AS CantidadDocumentos
+                SUM(l.DocTotal * ${pesoArea}) AS Ventas,
+                COUNT(DISTINCT CASE WHEN l.EsNota = 0 THEN l.DocIdDocumento END) AS CantidadDocumentos,
+                SUM(CASE WHEN l.EsNota = 1 THEN l.DocTotal * ${pesoArea} ELSE 0 END) AS Notas
             FROM LineasPorDocArea l
             JOIN TotalPorDoc t ON t.DocIdDocumento = l.DocIdDocumento
             WHERE (@area IS NULL OR l.Area = @area)
@@ -446,11 +491,13 @@ exports.getVentasPorArea = async (req, res) => {
             filas = filas.filter(r => areasSec.includes(r.Area));
         }
 
-        // Porcentaje por moneda calculado acá, no en el frontend
+        // Porcentaje por moneda calculado acá, no en el frontend. `notas` = lo que restaron
+        // las notas (con su signo), ya incluido en ventas: es solo para que la pantalla lo diga.
         const porMoneda = {};
         for (const row of filas) {
-            if (!porMoneda[row.Moneda]) porMoneda[row.Moneda] = { total: 0, items: [] };
+            if (!porMoneda[row.Moneda]) porMoneda[row.Moneda] = { total: 0, notas: 0, items: [] };
             porMoneda[row.Moneda].total += Number(row.Ventas || 0);
+            porMoneda[row.Moneda].notas += Number(row.Notas || 0);
             porMoneda[row.Moneda].items.push(row);
         }
         for (const mon of Object.keys(porMoneda)) {
@@ -458,6 +505,7 @@ exports.getVentasPorArea = async (req, res) => {
             bucket.items = bucket.items.map(it => ({
                 area: it.Area,
                 ventas: Number(it.Ventas || 0),
+                notas: Number(it.Notas || 0),
                 cantidadDocumentos: it.CantidadDocumentos,
                 porcentaje: bucket.total > 0 ? Number(((Number(it.Ventas || 0) / bucket.total) * 100).toFixed(2)) : 0,
             }));
@@ -467,15 +515,17 @@ exports.getVentasPorArea = async (req, res) => {
         const porSector = {};
         for (const row of filas) {
             const sec = sectorDeArea(row.Area, mapa);
-            const b = porSector[row.Moneda] = porSector[row.Moneda] || { total: 0, _acc: {} };
+            const b = porSector[row.Moneda] = porSector[row.Moneda] || { total: 0, notas: 0, _acc: {} };
             const it = b._acc[sec.id] = b._acc[sec.id] || {
                 sector: sec.id, nombre: sec.nombre, orden: sec.orden,
-                ventas: 0, cantidadDocumentos: 0, areas: [],
+                ventas: 0, notas: 0, cantidadDocumentos: 0, areas: [],
             };
             it.ventas += Number(row.Ventas || 0);
+            it.notas += Number(row.Notas || 0);
             it.cantidadDocumentos += Number(row.CantidadDocumentos || 0);
             if (!it.areas.includes(row.Area)) it.areas.push(row.Area);
             b.total += Number(row.Ventas || 0);
+            b.notas += Number(row.Notas || 0);
         }
         for (const mon of Object.keys(porSector)) {
             const b = porSector[mon];
@@ -493,10 +543,11 @@ exports.getVentasPorArea = async (req, res) => {
 };
 
 // ─── GET /api/contabilidad/reportes/ventas-por-documento ──────────────────────
-// Unidad de conteo = documento (CantidadDocumentos cuenta documentos). El importe es el
-// DocTotal, y con filtro de área/sector SOLO la porción del documento que es de esas
-// áreas (faa.Peso, mismo reparto que ventas-por-area) — así los dos reportes cuadran
-// también filtrados. Con filtro de artículo solo, el documento entero.
+// Unidad de conteo = documento (CantidadDocumentos cuenta documentos de venta). El importe
+// es el DocTotal, con las notas de crédito restando, y con filtro de área/sector SOLO la
+// porción del documento que es de esas áreas (faa.Peso, mismo reparto que ventas-por-area)
+// — así los dos reportes cuadran también filtrados. Con filtro de artículo solo, el
+// documento entero. CantidadNotas / ImporteNotas dicen cuánto restaron las notas de la fila.
 exports.getVentasPorDocumento = async (req, res) => {
     try {
         await tieneDcdArea(); // el área sale de DcdArea; si no existe, del parseo del prefijo
@@ -513,13 +564,25 @@ exports.getVentasPorDocumento = async (req, res) => {
         const filtroDgi = condDgi('doc', dgi);
 
         const conds = [
-            COND_ES_VENTA,
+            condVentaONota('doc'),
             `doc.DocEstado <> 'ANULADO'`,
         ];
         if (filtroDgi)   conds.push(filtroDgi);
         if (fechaDesde)  conds.push('doc.DocFechaEmision >= @fechaDesde');
         if (fechaHasta)  conds.push('doc.DocFechaEmision <= @fechaHasta');
         if (moneda)      conds.push('doc.MonIdMoneda = @moneda');
+
+        // Las notas restan (ver "Las notas de crédito RESTAN" arriba). Cada una va en la fila
+        // de su propio estado de DGI y del tipo de pago de la FACTURA a la que apunta: su
+        // DocTipo llega cortado ('E-Factura Nota De Cr') y no dice si era contado o crédito.
+        // Si apunta a otra nota (una de débito que revierte una de crédito) se sigue un paso
+        // más, para que las dos caigan en la misma fila y se compensen.
+        const esNota = condEsNota('doc');
+        const signo = signoExpr('doc');
+        const estadoDgi = `CASE WHEN doc.CfeEstado = 'ACEPTADO_DGI' THEN 'ENVIADO_DGI' ELSE 'NO_ENVIADO' END`;
+        const tipoPago = `CASE WHEN tp.Tipo LIKE '%Credito%' OR tp.Tipo LIKE '%CREDITO%'
+                               OR (RTRIM(tp.Tipo) = 'Pedidos Caja' AND tp.Ciclo IS NOT NULL) THEN 'CREDITO' ELSE 'CONTADO' END`;
+        const esVentaConDeuda = `(NOT ${esNota} AND (doc.DocTipo LIKE '%Credito%' OR doc.DocTipo LIKE '%CREDITO%' OR RTRIM(doc.DocTipo) = 'Pedidos Caja'))`;
 
         const result = await r.query(`
             ${filtro.cte ? `;WITH ${filtro.cte}` : ''}
@@ -529,23 +592,25 @@ exports.getVentasPorDocumento = async (req, res) => {
             -- caían en CONTADO por el nombre del tipo (verificado 23-sep-2026: 3.303 de
             -- caja vs 332 cierres de ciclo).
             SELECT
-                CASE WHEN doc.CfeEstado = 'ACEPTADO_DGI' THEN 'ENVIADO_DGI' ELSE 'NO_ENVIADO' END AS EstadoDgi,
-                CASE WHEN doc.DocTipo LIKE '%Credito%' OR doc.DocTipo LIKE '%CREDITO%'
-                          OR (RTRIM(doc.DocTipo) = 'Pedidos Caja' AND doc.CicIdCiclo IS NOT NULL) THEN 'CREDITO' ELSE 'CONTADO' END AS TipoPago,
+                ${estadoDgi} AS EstadoDgi,
+                ${tipoPago} AS TipoPago,
                 doc.MonIdMoneda,
                 ISNULL(mon.MonSimbolo, '')          AS MonSimbolo,
                 ISNULL(mon.MonDescripcionMoneda, '') AS MonNombre,
-                COUNT(*)          AS CantidadDocumentos,
-                SUM(doc.DocTotal * ${filtro.peso}) AS ImporteTotal,
+                -- Las cantidades cuentan solo documentos de venta; las notas van aparte.
+                SUM(CASE WHEN ${esNota} THEN 0 ELSE 1 END) AS CantidadDocumentos,
+                SUM(doc.DocTotal * ${signo} * ${filtro.peso}) AS ImporteTotal,
+                SUM(CASE WHEN ${esNota} THEN 1 ELSE 0 END) AS CantidadNotas,
+                SUM(CASE WHEN ${esNota} THEN doc.DocTotal * ${signo} * ${filtro.peso} ELSE 0 END) AS ImporteNotas,
                 -- Pendiente = deuda VIVA (DeudaDocumento PENDIENTE/VENCIDO/PARCIAL) de los
                 -- documentos a Crédito y de los Pedidos Caja (venta de caja que quedó sin
                 -- pagar — pedido del usuario 23-sep-2026: PC-3981 y PC-4290 debían US$ 368,69 y
                 -- el reporte decía 0). En tickets/facturas Contado sigue en 0: ahí DeudaDocumento
                 -- trae dato sucio (docs pagados con deuda) y no representa deuda real.
-                SUM(CASE WHEN doc.DocTipo LIKE '%Credito%' OR doc.DocTipo LIKE '%CREDITO%' OR RTRIM(doc.DocTipo) = 'Pedidos Caja'
+                SUM(CASE WHEN ${esVentaConDeuda}
                          THEN ISNULL(dd.Pendiente, 0) ELSE 0 END * ${filtro.peso}) AS ImportePendiente,
                 -- Cuántos documentos de la fila tienen algo pendiente (para mostrar "(n)" al lado)
-                SUM(CASE WHEN (doc.DocTipo LIKE '%Credito%' OR doc.DocTipo LIKE '%CREDITO%' OR RTRIM(doc.DocTipo) = 'Pedidos Caja')
+                SUM(CASE WHEN ${esVentaConDeuda}
                           AND ISNULL(dd.Pendiente, 0) > 0.005 THEN 1 ELSE 0 END) AS CantidadConPendiente
             FROM dbo.DocumentosContables doc WITH(NOLOCK)
             ${filtro.join}
@@ -558,10 +623,17 @@ exports.getVentasPorDocumento = async (req, res) => {
                 WHERE DDeEstado IN ('PENDIENTE', 'VENCIDO', 'PARCIAL')
                 GROUP BY DocIdDocumento
             ) dd ON dd.DocIdDocumento = doc.DocIdDocumento
+            -- Documento al que apunta la nota (y el de ese, si también es una nota)
+            LEFT JOIN dbo.DocumentosContables ref  WITH(NOLOCK) ON ref.DocIdDocumento  = doc.DocIdDocumentoRef AND ${esNota}
+            LEFT JOIN dbo.DocumentosContables ref2 WITH(NOLOCK) ON ref2.DocIdDocumento = ref.DocIdDocumentoRef AND ${condEsNota('ref')}
+            CROSS APPLY (
+                SELECT CASE WHEN ref2.DocIdDocumento IS NOT NULL THEN ref2.DocTipo
+                            WHEN ref.DocIdDocumento  IS NOT NULL THEN ref.DocTipo  ELSE doc.DocTipo END AS Tipo,
+                       CASE WHEN ref2.DocIdDocumento IS NOT NULL THEN ref2.CicIdCiclo
+                            WHEN ref.DocIdDocumento  IS NOT NULL THEN ref.CicIdCiclo ELSE doc.CicIdCiclo END AS Ciclo
+            ) tp
             WHERE ${conds.join(' AND ')}
-            GROUP BY CASE WHEN doc.CfeEstado = 'ACEPTADO_DGI' THEN 'ENVIADO_DGI' ELSE 'NO_ENVIADO' END,
-                     CASE WHEN doc.DocTipo LIKE '%Credito%' OR doc.DocTipo LIKE '%CREDITO%'
-                          OR (RTRIM(doc.DocTipo) = 'Pedidos Caja' AND doc.CicIdCiclo IS NOT NULL) THEN 'CREDITO' ELSE 'CONTADO' END,
+            GROUP BY ${estadoDgi}, ${tipoPago},
                      doc.MonIdMoneda, mon.MonSimbolo, mon.MonDescripcionMoneda
             ORDER BY doc.MonIdMoneda, EstadoDgi
         `);
@@ -778,18 +850,17 @@ const bindMonedaTop = async (r, params, q = {}) => {
 const factorMonedaTop = (alias = 'doc') =>
     `CASE WHEN @moneda IS NULL AND ${alias}.MonIdMoneda = 1 THEN 1.0 / @tc ELSE 1.0 END`;
 
-// Ventas + Notas (NC resta, ND suma). Recibos/anticipos/egresos siguen afuera.
-const condVentaONota = (alias = 'doc') =>
-    `(${condEsVenta(alias)} OR ${alias}.DocTipo LIKE '%Nota%' OR ${alias}.DocTipo LIKE '%NOTA%')`;
-const signoExpr = (alias = 'doc') => `CASE
-    WHEN ${alias}.CfeTipoCFE IN (103, 113) THEN 1
-    WHEN ${alias}.CfeTipoCFE IN (102, 112) THEN -1
-    WHEN ${alias}.DocTipo LIKE '%Nota%' OR ${alias}.DocTipo LIKE '%NOTA%' THEN -1
-    ELSE 1 END`;
+// Ventas + Notas (NC resta, ND suma): condVentaONota y signoExpr están arriba, junto a
+// condEsVenta, porque ahora los usan todos los reportes de ventas.
 
 // Primer token de un código de orden ('DF-102059 - LOBAS' → 'DF-102059').
 const primerToken = (expr) =>
     `LEFT(${expr}, CASE WHEN CHARINDEX(' ', ${expr}) > 0 THEN CHARINDEX(' ', ${expr}) - 1 ELSE LEN(${expr}) END)`;
+
+// Reglas que también usa "Ventas por vendedor" (vendedorVistaController.getVentasMensuales),
+// para que su total cierre con estos reportes: mismo universo de documentos, mismo signo de
+// las notas, mismo filtro de DGI y misma forma de encontrar al cliente real de un documento.
+exports.reglasVentas = { condEsVenta, condVentaONota, signoExpr, condDgi, primerToken, CLIENTES_GENERICOS };
 
 // Prefijo de batch compartido por Top Clientes y su drill-down. Materializa cada
 // paso en tablas temporales (UNA sola pasada por tabla) porque la versión con CTEs
@@ -1046,16 +1117,18 @@ exports.getTopClientesDetalle = async (req, res) => {
 // DcdSubtotal dentro del documento; si el documento no tiene subtotales, partes
 // iguales), así el ranking suma exactamente lo mismo que Ventas por Área con el
 // mismo filtro. La orden se usa solo para variante / nombre del trabajo / cliente
-// dueño de la orden. Las NC no entran (no son ventas). Las líneas sin artículo se
-// devuelven aparte (sinArticulo) para que la pantalla lo diga.
+// dueño de la orden. Las NC restan (1-oct-2026): sus líneas traen el artículo de la
+// factura, así que entran con importe y cantidad en negativo; antes quedaban afuera.
+// Las líneas sin artículo se devuelven aparte (sinArticulo) para que la pantalla lo diga.
 // El filtro de área va en la CTE "Lineas" (no en LineasVenta) para que el reparto
 // del DocTotal se calcule sobre TODAS las líneas del documento.
 const cteLineasVenta = (condArea = '') => `
     LineasVenta AS (
         SELECT doc.DocIdDocumento, doc.DocFechaEmision, doc.DocTipo, doc.DocSerie, doc.DocNumero, doc.MonIdMoneda,
                ${factorMonedaTop('doc')} AS Factor,
+               CASE WHEN ${condEsNota('doc')} THEN 1 ELSE 0 END AS EsNota,
                dcd.DcdIdDetalle, dcd.DcdProIdProducto AS ProIdProducto, dcd.DcdNomItem,
-               ISNULL(dcd.DcdCantidad, 0) AS Cantidad,
+               ISNULL(dcd.DcdCantidad, 0) * ${signoExpr('doc')} AS Cantidad,
                CASE WHEN dcd.OrdCodigoOrden IS NULL OR LTRIM(dcd.OrdCodigoOrden) = '' THEN NULL
                     ELSE ${primerToken('dcd.OrdCodigoOrden')} END AS CodigoOrden,
                ${areaDesdeCodigo('dcd.OrdCodigoOrden')} AS Area,
@@ -1063,7 +1136,7 @@ const cteLineasVenta = (condArea = '') => `
                o.OrdenID,
                NULLIF(LTRIM(RTRIM(CAST(o.Variante AS NVARCHAR(200)))), '') AS Variante,
                NULLIF(LTRIM(RTRIM(CAST(o.DescripcionTrabajo AS NVARCHAR(400)))), '') AS NombreTrabajo,
-               doc.DocTotal * ${factorMonedaTop('doc')} * CASE
+               doc.DocTotal * ${signoExpr('doc')} * ${factorMonedaTop('doc')} * CASE
                    WHEN SUM(ISNULL(dcd.DcdSubtotal, 0)) OVER (PARTITION BY doc.DocIdDocumento) = 0
                         THEN 1.0 / COUNT(*) OVER (PARTITION BY doc.DocIdDocumento)
                    ELSE CAST(ISNULL(dcd.DcdSubtotal, 0) AS FLOAT) / SUM(ISNULL(dcd.DcdSubtotal, 0)) OVER (PARTITION BY doc.DocIdDocumento)
@@ -1076,7 +1149,7 @@ const cteLineasVenta = (condArea = '') => `
             WHERE dcd.OrdCodigoOrden IS NOT NULL AND LTRIM(dcd.OrdCodigoOrden) <> ''
               AND o.CodigoOrden = ${primerToken('dcd.OrdCodigoOrden')}
         ) o
-        WHERE ${COND_ES_VENTA}
+        WHERE ${condVentaONota('doc')}
           AND doc.DocEstado <> 'ANULADO'
           AND (@fechaDesde IS NULL OR doc.DocFechaEmision >= @fechaDesde)
           AND (@fechaHasta IS NULL OR doc.DocFechaEmision <= @fechaHasta)
@@ -1118,7 +1191,7 @@ exports.getTopProductos = async (req, res) => {
                        RTRIM(ISNULL(CAST(a.Grupo AS VARCHAR(20)), '')) AS Grupo,
                        SUM(l.Cantidad) AS Unidades,
                        SUM(l.Monto) AS Monto,
-                       COUNT(DISTINCT l.DocIdDocumento) AS CantidadDocumentos
+                       COUNT(DISTINCT CASE WHEN l.EsNota = 0 THEN l.DocIdDocumento END) AS CantidadDocumentos
                 FROM Lineas l
                 LEFT JOIN dbo.Articulos a WITH(NOLOCK) ON a.ProIdProducto = l.ProIdProducto
                 WHERE l.ProIdProducto IS NOT NULL
@@ -1148,7 +1221,9 @@ exports.getTopProductos = async (req, res) => {
         // Lo facturado que NO puede entrar al ranking porque la línea no tiene artículo
         const sinArt = await r.query(`
             ;WITH ${cteLineasVenta(condArea)}
-            SELECT ISNULL(SUM(l.Monto), 0) AS Monto, COUNT(*) AS Lineas, COUNT(DISTINCT l.DocIdDocumento) AS Documentos
+            SELECT ISNULL(SUM(l.Monto), 0) AS Monto,
+                   SUM(CASE WHEN l.EsNota = 0 THEN 1 ELSE 0 END) AS Lineas,
+                   COUNT(DISTINCT CASE WHEN l.EsNota = 0 THEN l.DocIdDocumento END) AS Documentos
             FROM Lineas l
             WHERE l.ProIdProducto IS NULL AND (@cliente IS NULL OR l.ClienteId = @cliente)
         `);
@@ -1432,7 +1507,7 @@ exports.getArbolVentas = async (req, res) => {
                    RTRIM(ISNULL(a.CodArticulo, ''))              AS CodArticulo,
                    SUM(l.Cantidad)                               AS Unidades,
                    SUM(l.Monto)                                  AS Monto,
-                   COUNT(DISTINCT l.DocIdDocumento)              AS Documentos,
+                   COUNT(DISTINCT CASE WHEN l.EsNota = 0 THEN l.DocIdDocumento END) AS Documentos,
                    COUNT(DISTINCT l.OrdenID)                     AS Ordenes
             FROM Lineas l
             LEFT JOIN dbo.Articulos a WITH(NOLOCK) ON a.ProIdProducto = l.ProIdProducto
@@ -1610,11 +1685,13 @@ exports.getVentasMensuales = async (req, res) => {
 
         const ventas = await r.query(`
             ${filtro.cte ? `;WITH ${filtro.cte}` : ''}
+            -- Las notas de crédito restan en el mes en que se emiten; Docs cuenta solo ventas.
             SELECT MONTH(doc.DocFechaEmision) AS Mes, doc.MonIdMoneda,
-                   SUM(doc.DocTotal * ${filtro.peso}) AS Total, COUNT(*) AS Docs
+                   SUM(doc.DocTotal * ${signoExpr('doc')} * ${filtro.peso}) AS Total,
+                   SUM(CASE WHEN ${condEsNota('doc')} THEN 0 ELSE 1 END) AS Docs
             FROM dbo.DocumentosContables doc WITH(NOLOCK)
             ${filtro.join}
-            WHERE ${COND_ES_VENTA}
+            WHERE ${condVentaONota('doc')}
               AND doc.DocEstado <> 'ANULADO'
               ${filtroDgi ? `AND ${filtroDgi}` : ''}
               AND doc.DocFechaEmision >= @fechaDesde AND doc.DocFechaEmision <= @fechaHasta

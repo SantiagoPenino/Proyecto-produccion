@@ -14,6 +14,17 @@ const { subirAdjuntos } = require('../middleware/multerServicioTecnico');
 // el controller: Admin o área SERVICIO.
 router.use(verifyToken, soloInternoConRol());
 
+// Columnas del 30/09 (franja horaria de los trabajos; días, franja y tiempo de los planes): la primera vez
+// se agregan solas. Si falla, sigue igual y lo vuelve a intentar en el próximo pedido.
+const { getPool } = require('../config/db');
+const { asegurarEsquemaMantenimiento } = require('../services/stMantenimientoService');
+router.use((req, res, next) => {
+    getPool().then(asegurarEsquemaMantenimiento).then(() => next(), (err) => {
+        require('../utils/logger').warn(`[ServicioTecnico] columnas de mantenimiento: ${err.message}`);
+        next();
+    });
+});
+
 router.get('/meta', c.getMeta);
 router.get('/usuarios', c.getUsuarios);
 router.get('/tipos-falla', c.tiposFalla);                        // ?categoria=&q=
@@ -31,7 +42,7 @@ router.post('/solicitudes/:id/comentarios', c.comentar);         // { texto }
 router.post('/solicitudes/:id/adjuntos', subirAdjuntos, c.adjuntar);
 
 router.get('/adjuntos/:adjId', c.verAdjunto);
-router.put('/config/encargado', c.setEncargado);                 // { usuarioId | null } — solo Admin
+router.put('/config/encargado', c.setEncargado);                 // { usuarioId | null } — Admin o el encargado actual
 
 // Máquinas (etapa 2): ficha, estado e historial de cambios
 router.get('/equipos', eq.listar);                               // ?inactivas=1
@@ -45,8 +56,9 @@ router.post('/cambios/:camId/adjuntos', subirAdjuntos, eq.adjuntarCambio);
 // Mantenimientos (etapa 3): procedimientos, planes, trabajos del calendario, "Mi semana"
 router.get('/procedimientos', mt.listarProcedimientos);           // ?todos=1
 router.get('/procedimientos/:id', mt.detalleProcedimiento);
-router.post('/procedimientos', mt.guardarProcedimiento);          // { titulo, descripcion, areaId, equipoId, pasos: [{ texto, detalle, minutos }] }
-router.put('/procedimientos/:id', mt.guardarProcedimiento);
+// { titulo, descripcion, areaId, equipoId, pasos, insumos }; con fotos de insumos, multipart ("datos" JSON + "adjuntos")
+router.post('/procedimientos', subirAdjuntos, mt.guardarProcedimiento);
+router.put('/procedimientos/:id', subirAdjuntos, mt.guardarProcedimiento);
 router.put('/procedimientos/:id/activo', mt.activarProcedimiento);
 router.get('/planes', mt.listarPlanes);                           // ?todos=1
 router.post('/planes', mt.crearPlan);

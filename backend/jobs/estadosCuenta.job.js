@@ -156,6 +156,8 @@ async function marcarCiclosVencidos(pool) {
 /**
  * marcarDeudasVencidas
  * Actualiza a 'VENCIDO' las DeudaDocumento cuya DDeFechaVencimiento ya pasó.
+ * Un resto de menos de un centavo no es deuda: no se vence (30/09/2026, 26 deudas "vencidas"
+ * por 0,0001–0,0088 con el documento ya cobrado).
  */
 async function marcarDeudasVencidas(pool) {
   try {
@@ -163,6 +165,7 @@ async function marcarDeudasVencidas(pool) {
       UPDATE dbo.DeudaDocumento
       SET    DDeEstado = 'VENCIDO'
       WHERE  DDeEstado = 'PENDIENTE'
+        AND  DDeImportePendiente >= 0.01
         AND  DDeFechaVencimiento < CAST(GETDATE() AS DATE)
     `);
     if (result.rowsAffected[0] > 0) {

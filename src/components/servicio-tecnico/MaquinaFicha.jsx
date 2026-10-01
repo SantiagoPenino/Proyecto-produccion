@@ -9,6 +9,8 @@ import {
 } from './constantes';
 import { chip, label, input, btn, btnSec, btnPri, btnCancelar, MiniModal, ModalEstadoMaquina, Adjunto, Dato, PanelLateral } from './ui';
 import { InsumosUsados } from './Insumos';
+import SelectorFecha from '../ui/SelectorFecha';
+import Selector from '../ui/Selector';
 
 // Ficha de una máquina (etapa 2 de Servicio Técnico — docs/servicio-tecnico-plan.md): estado,
 // solicitudes (historial de fallas), historial de cambios (qué se cambió, cuándo y por qué) e
@@ -43,13 +45,13 @@ const ModalCambio = ({ equipo, tiposCambio, cambio, onGuardar, onCerrar }) => {
             </button>
         </>}>
             <div className="grid grid-cols-2 gap-2">
-                <div><span className={label}>Fecha</span><input type="date" className={input} value={d.fecha} max={hoyISO()} onChange={(e) => set({ fecha: e.target.value })} /></div>
+                <div><span className={label}>Fecha</span><SelectorFecha value={d.fecha} max={hoyISO()} onChange={(e) => set({ fecha: e.target.value })} /></div>
                 <div>
                     <span className={label}>Tipo de cambio</span>
-                    <select className={input} value={d.tipo} onChange={(e) => set({ tipo: e.target.value })}>
-                        <option value="">— Elegir —</option>
+                    <Selector value={d.tipo} onChange={(e) => set({ tipo: e.target.value })}>
+                        <option value="">Elegir…</option>
                         {tiposCambio.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
-                    </select>
+                    </Selector>
                 </div>
             </div>
             <div><span className={label}>Qué se cambió</span>
@@ -60,18 +62,18 @@ const ModalCambio = ({ equipo, tiposCambio, cambio, onGuardar, onCerrar }) => {
                     placeholder="Ej: canal tapado que no se recuperó con limpiezas" /></div>
             <div>
                 <span className={label}>Solicitud relacionada <span className="normal-case font-bold text-zinc-300">(opcional)</span></span>
-                <select className={input} value={d.solId} onChange={(e) => set({ solId: e.target.value })}>
-                    <option value="">— Ninguna —</option>
+                <Selector value={d.solId} onChange={(e) => set({ solId: e.target.value })}>
+                    <option value="">Ninguna</option>
                     {(equipo.solicitudes || []).map(s => <option key={s.SolId} value={s.SolId}>{s.Codigo} · {s.Titulo}</option>)}
-                </select>
+                </Selector>
             </div>
             <div className="grid grid-cols-[1fr_110px] gap-2">
                 <div><span className={label}>Costo <span className="normal-case font-bold text-zinc-300">(opcional)</span></span>
                     <input className={input} inputMode="decimal" value={d.costo} onChange={(e) => set({ costo: e.target.value })} placeholder="0" /></div>
                 <div><span className={label}>Moneda</span>
-                    <select className={input} value={d.moneda} onChange={(e) => set({ moneda: e.target.value })}>
+                    <Selector value={d.moneda} onChange={(e) => set({ moneda: e.target.value })}>
                         <option value="UYU">$ (UYU)</option><option value="USD">US$</option>
-                    </select></div>
+                    </Selector></div>
             </div>
             {!cambio && (
                 <div>
@@ -153,12 +155,13 @@ const MaquinaFicha = ({ equipoId, meta, version = 0, onCerrar, onAbrirSolicitud,
 
     const r = eq?.resumen;
     const costos = r ? Object.entries(r.costoCambios365 || {}) : [];
+    // [clave, texto, texto en celular]: en celular las 5 entran sin scroll, con nombres cortos.
     const pestanas = [
-        ['fallas', `Fallas (${eq?.solicitudes?.length || 0})`],
-        ['cambios', `Cambios (${eq?.cambios?.length || 0})`],
-        ['estados', 'Estados'],
-        ['insumos', 'Insumos'],
-        ['ficha', 'Ficha técnica'],
+        ['fallas', `Fallas (${eq?.solicitudes?.length || 0})`, 'Fallas'],
+        ['cambios', `Cambios (${eq?.cambios?.length || 0})`, 'Cambios'],
+        ['estados', 'Estados', 'Estados'],
+        ['insumos', 'Insumos', 'Insumos'],
+        ['ficha', 'Ficha técnica', 'Ficha'],
     ];
 
     return (
@@ -183,15 +186,19 @@ const MaquinaFicha = ({ equipoId, meta, version = 0, onCerrar, onAbrirSolicitud,
                             <button onClick={onCerrar} className="w-9 h-9 rounded-xl flex items-center justify-center text-zinc-400 hover:bg-zinc-100 shrink-0"><X size={20} /></button>
                         </div>
                         {tec && (
-                            <div className="mt-3 flex flex-wrap gap-1.5">
-                                <button onClick={() => setModal('cambio')} className={btnPri}><Plus size={15} /> Registrar cambio</button>
-                                <button onClick={() => setModal('estado')} className={btnSec}><Cog size={15} /> Cambiar estado</button>
+                            // En celular los dos botones ocupan todo el ancho (mitad y mitad).
+                            <div className="mt-3 flex sm:flex-wrap gap-1.5">
+                                <button onClick={() => setModal('cambio')} className={`${btnPri} flex-1 sm:flex-none justify-center`}><Plus size={15} /> Registrar cambio</button>
+                                <button onClick={() => setModal('estado')} className={`${btnSec} flex-1 sm:flex-none justify-center`}><Cog size={15} /> Cambiar estado</button>
                             </div>
                         )}
-                        <div className="mt-3 flex gap-1 overflow-x-auto">
-                            {pestanas.map(([k, t]) => (
+                        {/* Pestañas: en celular 5 columnas iguales con nombres cortos (sin scroll); desde sm, en fila. */}
+                        <div className="mt-3 grid grid-cols-5 sm:flex sm:gap-1 sm:overflow-x-auto no-scrollbar">
+                            {pestanas.map(([k, t, corto]) => (
                                 <button key={k} onClick={() => setTab(k)}
-                                    className={`px-3 py-2 text-sm font-bold whitespace-nowrap border-b-2 transition-colors ${tab === k ? 'border-brand-cyan text-brand-cyan' : 'border-transparent text-zinc-400 hover:text-zinc-600'}`}>{t}</button>
+                                    className={`px-1 sm:px-3 py-2 text-[13px] sm:text-sm font-bold whitespace-nowrap text-center border-b-2 transition-colors ${tab === k ? 'border-brand-cyan text-brand-cyan' : 'border-transparent text-zinc-400 hover:text-zinc-600'}`}>
+                                    <span className="sm:hidden">{corto}</span><span className="hidden sm:inline">{t}</span>
+                                </button>
                             ))}
                         </div>
                     </div>

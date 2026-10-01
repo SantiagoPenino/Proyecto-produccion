@@ -160,7 +160,11 @@ class LabelGenerationService {
             // como la -R nunca tiene línea propia de cobranza (subtotalOrden 0), caía al
             // fallback del QR/MontoTotal del PEDIDO (comparte NoDocERP con la madre) y el
             // ingreso a depósito por escaneo la metía cobrable con el costo de la madre.
-            const _qrImporte  = (esTerminac || esRepoLocal || esFallaLocal) ? '0.00'
+            // Línea propia en $0 A PROPÓSITO (cubierta por el plan de metros / prepago): importe 0.
+            // Sin esto, cada parte en $0 de un pedido dividido "(n/m)" llevaba en el QR el total
+            // del pedido, y el ingreso a Depósito lo copiaba (ver costoParaDeposito).
+            const ceroIntencional = pcd.Imp === 0 && pcd.CeroIntencional;
+            const _qrImporte  = (esTerminac || esRepoLocal || esFallaLocal || ceroIntencional) ? '0.00'
                 : ((subtotalOrden > 0) ? subtotalOrden.toFixed(2) : (_pp[6] || importeTotalStr));
 
             const SEP = '$*';

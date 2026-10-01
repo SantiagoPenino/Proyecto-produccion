@@ -650,16 +650,29 @@ async function recibirCompra({ compId, depId, lineas, usuarioId = null }) {
                 .input('D', sql.Int, cDetId).input('C', sql.Decimal(18, 4), recibir)
                 .query(`UPDATE dbo.Wms_ComprasDetalle SET CantidadRecibida = CantidadRecibida + @C WHERE CDetId = @D`);
 
+            // El sistema viejo creaba las etiquetas al hacer la compra ('pendiente_recepcion', en 0) y
+            // las activaba al recibir. Acá la etiqueta nace al recibir, así que las de las compras
+            // migradas que llegan después del cambio quedan anuladas en vez de colgadas (no se borran:
+            // su id queda reservado, así un código impreso de las viejas nunca cae en otra etiqueta).
+            await new sql.Request(tran)
+                .input('Comp', sql.Int, compId).input('V', sql.Int, d.VarId)
+                .query(`UPDATE dbo.Wms_Etiquetas SET Estado = 'anulado', UltimaActualizacion = GETDATE()
+                        WHERE CompraId = @Comp AND VarId = @V AND Estado = 'pendiente_recepcion'`);
+
             creadas.push({ cDetId, varId: d.VarId, cantidad: recibir, etiId, etiquetas });
         }
 
-        // Compra totalmente recibida → progreso 'recibido' y estado completada
+        // Compra totalmente recibida → el último paso de su plantilla (cada plantilla tiene sus
+        // claves: en Importaciones "Recibido" es '9') o 'recibido' si no tiene; estado completada.
         await new sql.Request(tran)
             .input('C', sql.Int, compId)
             .query(`
-                UPDATE dbo.Wms_Compras
-                SET Progreso = 'recibido', Estado = 'completada'
-                WHERE CompId = @C
+                UPDATE c
+                SET Progreso = ISNULL((SELECT TOP 1 pp.Clave FROM dbo.Wms_PlantillasProgresoPasos pp
+                                       WHERE pp.PlaId = c.PlaId ORDER BY pp.Orden DESC), 'recibido'),
+                    Estado = 'completada'
+                FROM dbo.Wms_Compras c
+                WHERE c.CompId = @C
                   AND NOT EXISTS (SELECT 1 FROM dbo.Wms_ComprasDetalle
                                   WHERE CompId = @C AND CantidadRecibida < Cantidad - 0.0001)
             `);

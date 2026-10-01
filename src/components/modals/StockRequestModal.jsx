@@ -1,264 +1,106 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { stockService } from '../../services/api';
-import CreateItemModal from './CreateItemModal.jsx';
+import React, { useState, useEffect, useCallback } from 'react';
+import { Boxes, Loader2, X } from 'lucide-react';
+import { toast } from 'sonner';
+import api from '../../services/api';
+import PedirInsumos from '../stock/PedirInsumos';
 
+// Pedido de insumos desde el tablero de un área. Desde el 29/09 es el mismo "Pedir insumos" de Mi
+// Sector (/stock): pide con el sector del stock que el área tiene asignado (Areas.WmsDepId) y el
+// pedido llega a Órdenes solicitadas, donde Logística lo despacha con remito. Antes guardaba en
+// dbo.Solicitudes, una tabla que no existía: el botón nunca funcionó.
 const StockRequestModal = ({ isOpen, onClose, areaName, areaCode }) => {
-    const [activeTab, setActiveTab] = useState('new');
-    const [loading, setLoading] = useState(false);
-    const [history, setHistory] = useState([]);
-    const [isCreateOpen, setIsCreateOpen] = useState(false);
+    const [estado, setEstado] = useState(null);       // respuesta de /area-deposito
+    const [cargando, setCargando] = useState(false);
+    const [depositos, setDepositos] = useState([]);
+    const [asignando, setAsignando] = useState(null); // DepId que se está guardando
 
-    const [formData, setFormData] = useState({
-        item: '',
-        cantidad: '',
-        unidad: 'Unidades',
-        prioridad: 'Normal',
-        observaciones: ''
-    });
-
-    // COMBOBOX LOGIC
-    const [suggestions, setSuggestions] = useState([]);
-    const [showDropdown, setShowDropdown] = useState(false);
-    const dropdownRef = useRef(null);
-    const inputRef = useRef(null);
-
-    // Cargar historial
-    useEffect(() => {
-        if (activeTab === 'history' && isOpen) loadHistory();
-    }, [activeTab, isOpen]);
-
-    const loadHistory = async () => {
+    const cargar = useCallback(async () => {
+        setCargando(true);
         try {
-            const data = await stockService.getHistory(areaCode);
-            setHistory(data);
-        } catch (e) { console.error(e); }
-    };
-
-    // Cerrar dropdown click fuera
-    useEffect(() => {
-        const handleClick = (e) => {
-            if (dropdownRef.current && !dropdownRef.current.contains(e.target)) {
-                setShowDropdown(false);
+            const r = await api.get(`/wms-interno/area-deposito?area=${encodeURIComponent(areaCode || '')}`);
+            setEstado(r.data);
+            if (!r.data?.data && r.data?.puedeAsignar) {
+                const d = await api.get('/wms-interno/depositos');
+                // El central no pide insumos: es de donde salen
+                setDepositos((d.data?.data || []).filter(x => x.Activo !== false && String(x.Tipo || '').trim().toLowerCase() !== 'central'));
             }
-        };
-        document.addEventListener("mousedown", handleClick);
-        return () => document.removeEventListener("mousedown", handleClick);
-    }, []);
+        } catch (e) { setEstado({ error: true }); }
+        finally { setCargando(false); }
+    }, [areaCode]);
 
-    // Modificación para cargar items al principio o al enfocar
-    const searchItems = async (query) => {
+    useEffect(() => {
+        if (!isOpen) return;
+        setEstado(null);
+        if (areaCode) cargar();
+    }, [isOpen, areaCode, cargar]);
+
+    const asignar = async (dep) => {
+        setAsignando(dep.DepId);
         try {
-            const items = await stockService.searchItems(query, areaCode);
-            setSuggestions(items);
-            if (items.length > 0) setShowDropdown(true);
-        } catch (err) { console.error(err); }
-    };
-
-    const handleItemInput = (e) => {
-        const val = e.target.value;
-        setFormData({ ...formData, item: val });
-        // Buscar siempre que cambie, incluso si es vacío (trae todos)
-        searchItems(val);
-    };
-
-    const handleFocus = () => {
-        // Al enfocar, buscar todo lo del área si no hay nada escrito
-        if (suggestions.length === 0) {
-            searchItems(formData.item);
-        } else {
-            setShowDropdown(true);
-        }
-    };
-
-    const selectItem = (item) => {
-        setFormData({ ...formData, item: item.Nombre, unidad: item.UnidadDefault });
-        setShowDropdown(false);
-    };
-
-    const openCreateModal = () => {
-        setShowDropdown(false);
-        setIsCreateOpen(true);
-    };
-
-    const handleItemCreated = (newItem) => {
-        setFormData({ ...formData, item: newItem.nombre, unidad: newItem.unidad });
-    };
-
-    const handleSubmit = async () => {
-        if (!formData.item || !formData.cantidad) return alert("Faltan datos");
-        setLoading(true);
-        try {
-            await stockService.create({ areaId: areaCode, ...formData });
-            alert("✅ Solicitud enviada!");
-            setFormData({ item: '', cantidad: '', unidad: 'Unidades', prioridad: 'Normal', observaciones: '' });
-            onClose();
-        } catch (error) { alert("Error al enviar"); }
-        finally { setLoading(false); }
+            await api.put('/wms-interno/area-deposito', { area: areaCode, depId: dep.DepId });
+            toast.success(`Esta área pide insumos como ${dep.Nombre}`);
+            await cargar();
+        } catch (e) { toast.error(e.response?.data?.error || 'No se pudo asignar el sector'); }
+        finally { setAsignando(null); }
     };
 
     if (!isOpen) return null;
 
-    // -- Clases Reutilizables --
-    const inputClass = "w-full px-3 py-2 border border-orange-200 rounded-lg text-sm text-zinc-800 bg-white outline-none focus:border-orange-500 focus:ring-2 focus:ring-orange-500/10 transition-all placeholder:text-zinc-400";
-    const labelClass = "block mb-1.5 text-xs font-bold text-zinc-500 uppercase tracking-wide";
-    const tabBtnClass = (active) => `px-4 py-2 text-sm font-semibold border-b-2 transition-colors ${active ? 'text-orange-600 border-orange-600 bg-orange-50/50' : 'text-zinc-500 border-transparent hover:text-zinc-700 hover:bg-zinc-50'}`;
+    const sector = estado?.data;
+    const nombreArea = areaName || estado?.area || areaCode;
 
     return (
         <div className="fixed inset-0 z-[1100] flex items-center justify-center bg-zinc-900/60 p-4 animate-in fade-in duration-200">
             <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200">
 
-                {/* HEADER AMARILLO/NARANJA */}
-                <div className="px-6 py-4 bg-amber-50 border-b border-amber-200 flex justify-between items-center shrink-0">
-                    <div className="flex flex-col">
+                <div className="px-6 py-4 bg-amber-50 border-b border-amber-200 flex justify-between items-start gap-4 shrink-0">
+                    <div>
                         <h2 className="text-lg font-bold text-amber-900 flex items-center gap-2">
-                            <i className="fa-solid fa-boxes-stacked text-amber-600"></i> Insumos: {areaName}
+                            <Boxes size={20} className="text-amber-600" /> Insumos: {nombreArea}
                         </h2>
-                        <div className="flex gap-1 mt-3 -mb-4">
-                            <button className={tabBtnClass(activeTab === 'new')} onClick={() => setActiveTab('new')}>Nueva Solicitud</button>
-                            <button className={tabBtnClass(activeTab === 'history')} onClick={() => setActiveTab('history')}>Historial</button>
-                        </div>
+                        {sector && (
+                            <p className="text-xs text-amber-900/70 mt-1">
+                                Pide como <b>{sector.deposito}</b>. El pedido llega a Logística, que lo despacha con remito.
+                            </p>
+                        )}
                     </div>
-                    <button onClick={onClose} className="w-8 h-8 rounded-lg flex items-center justify-center text-amber-800/60 hover:bg-amber-100 hover:text-amber-800 transition-colors">
-                        <i className="fa-solid fa-xmark text-lg"></i>
+                    <button onClick={onClose} className="w-8 h-8 shrink-0 rounded-lg flex items-center justify-center text-amber-800/60 hover:bg-amber-100 hover:text-amber-800 transition-colors">
+                        <X size={18} />
                     </button>
                 </div>
 
                 <div className="flex-1 overflow-y-auto p-6 bg-white">
-
-                    {activeTab === 'new' && (
-                        <div className="flex flex-col gap-5">
-
-                            {/* INPUT COMBOBOX */}
-                            <div className="relative" ref={dropdownRef}>
-                                <label className={labelClass}>Insumo / Material</label>
-                                <div className="relative">
-                                    <input
-                                        ref={inputRef}
-                                        type="text"
-                                        className={`${inputClass} font-bold`}
-                                        placeholder="Escribe para buscar..."
-                                        value={formData.item}
-                                        onChange={handleItemInput}
-                                        onFocus={handleFocus}
-                                        autoComplete="off"
-                                    />
-                                    <i
-                                        className="fa-solid fa-chevron-down absolute right-3 top-2.5 text-zinc-400 cursor-pointer hover:text-zinc-600"
-                                        onClick={() => { inputRef.current?.focus(); handleFocus(); }}
-                                    ></i>
-                                </div>
-
-                                {/* LISTA DESPLEGABLE */}
-                                {showDropdown && (
-                                    <ul className="absolute top-[105%] left-0 w-full bg-white border border-zinc-200 rounded-lg shadow-xl z-50 max-h-48 overflow-y-auto divide-y divide-zinc-50 animate-in slide-in-from-top-1">
-                                        {suggestions.length > 0 ? (
-                                            suggestions.map((s, i) => (
-                                                <li key={i} onClick={() => selectItem(s)} className="px-4 py-3 cursor-pointer hover:bg-orange-50 flex justify-between items-center text-sm text-zinc-700">
-                                                    <span className="font-semibold">{s.Nombre}</span>
-                                                    <span className="text-xs bg-zinc-100 text-zinc-500 px-2 py-0.5 rounded">{s.UnidadDefault}</span>
-                                                </li>
-                                            ))
-                                        ) : (
-                                            <li className="p-3 text-center text-orange-600 font-bold bg-orange-50 hover:bg-orange-100 cursor-pointer transition-colors" onClick={openCreateModal}>
-                                                <div className="flex flex-col items-center gap-1">
-                                                    <i className="fa-solid fa-plus-circle text-lg"></i>
-                                                    <span>Crear "{formData.item}"</span>
-                                                </div>
-                                            </li>
-                                        )}
-                                    </ul>
-                                )}
-                            </div>
-
-                            <div className="flex gap-4">
-                                <div className="flex-1">
-                                    <label className={labelClass}>Cantidad</label>
-                                    <input type="number" className={inputClass} value={formData.cantidad} onChange={e => setFormData({ ...formData, cantidad: e.target.value })} />
-                                </div>
-                                <div className="flex-1">
-                                    <label className={labelClass}>Unidad</label>
-                                    <select className={inputClass} value={formData.unidad} onChange={e => setFormData({ ...formData, unidad: e.target.value })}>
-                                        <option>Unidades</option><option>Litros</option><option>Metros</option><option>Rollos</option><option>Cajas</option><option>Conos</option>
-                                    </select>
-                                </div>
-                            </div>
-
-                            {/* STEPPER PRIORIDAD */}
-                            <div>
-                                <label className={labelClass}>Prioridad</label>
-                                <div className="flex bg-zinc-100 p-1 rounded-lg gap-1">
-                                    {['Normal', 'Alta', 'Urgente'].map((level, idx) => (
-                                        <div
-                                            key={level}
-                                            className={`flex-1 flex flex-col items-center justify-center py-2 rounded-md cursor-pointer transition-all ${formData.prioridad === level
-                                                ? (level === 'Urgente' ? 'bg-red-500 text-white shadow-md' :
-                                                    level === 'Alta' ? 'bg-orange-500 text-white shadow-md' :
-                                                        'bg-white text-zinc-800 shadow-sm border border-zinc-200')
-                                                : 'text-zinc-400 hover:bg-white/50'
-                                                }`}
-                                            onClick={() => setFormData({ ...formData, prioridad: level })}
-                                        >
-                                            <div className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] mb-1 font-bold ${formData.prioridad === level ? 'bg-white/20' : 'bg-zinc-200 text-zinc-500'}`}>{idx + 1}</div>
-                                            <span className="text-xs font-bold">{level}</span>
-                                        </div>
-                                    ))}
-                                </div>
-                            </div>
-
-                            <div>
-                                <label className={labelClass}>Observaciones</label>
-                                <textarea className={`${inputClass} min-h-[80px]`} placeholder="Detalles adicionales..." value={formData.observaciones} onChange={e => setFormData({ ...formData, observaciones: e.target.value })}></textarea>
-                            </div>
-
-                            <div className="flex justify-end pt-4 border-t border-zinc-100">
-                                <button onClick={onClose} className="px-4 py-2 mr-2 text-zinc-500 hover:text-zinc-800 font-semibold transition-colors">Cancelar</button>
-                                <button className="px-6 py-2 bg-orange-600 hover:bg-orange-700 text-white font-bold rounded-lg shadow-lg shadow-orange-500/30 transition-all flex items-center gap-2" onClick={handleSubmit} disabled={loading}>
-                                    {loading ? 'Enviando...' : <><i className="fa-solid fa-paper-plane"></i> Confirmar Pedido</>}
-                                </button>
+                    {cargando && !estado ? (
+                        <div className="flex justify-center py-12 text-slate-400"><Loader2 size={20} className="animate-spin" /></div>
+                    ) : estado?.error ? (
+                        <p className="text-sm text-rose-600 text-center py-8">No se pudo cargar el sector de esta área. Probá de nuevo en un rato.</p>
+                    ) : estado?.falta ? (
+                        <p className="text-sm text-slate-500 text-center py-8">
+                            Pedir insumos desde el área todavía no está habilitado: falta correr el script de sectores
+                            (<span className="font-mono text-xs">areas_sector_stock_2026-09-29.sql</span>).
+                        </p>
+                    ) : sector ? (
+                        <PedirInsumos key={sector.depId} dep={sector.depId} compacto />
+                    ) : estado?.puedeAsignar ? (
+                        <div>
+                            <p className="text-sm font-black text-slate-700">Esta área todavía no tiene un sector del stock</p>
+                            <p className="text-xs text-slate-500 mt-1 mb-4">Elegí con qué sector pide insumos. Queda guardado para el área.</p>
+                            <div className="flex flex-wrap gap-2">
+                                {depositos.map(d => (
+                                    <button key={d.DepId} type="button" disabled={!!asignando} onClick={() => asignar(d)}
+                                        className="px-4 py-2 rounded-xl border border-slate-200 bg-white hover:border-sky-300 hover:bg-sky-50 text-sm font-bold text-slate-700 disabled:opacity-50 flex items-center gap-2">
+                                        {asignando === d.DepId && <Loader2 size={14} className="animate-spin" />} {d.Nombre}
+                                    </button>
+                                ))}
                             </div>
                         </div>
-                    )}
-
-                    {activeTab === 'history' && (
-                        <div className="border border-zinc-200 rounded-lg overflow-hidden">
-                            <table className="w-full text-sm text-left">
-                                <thead className="bg-zinc-50 text-zinc-500 font-semibold border-b border-zinc-200 text-xs uppercase tracking-wide">
-                                    <tr><th className="p-3">Fecha</th><th className="p-3">Detalle</th><th className="p-3">Estado</th></tr>
-                                </thead>
-                                <tbody className="divide-y divide-zinc-100">
-                                    {history.length === 0 ? (
-                                        <tr><td colSpan="3" className="p-8 text-center text-zinc-400 italic">Sin historial reciente.</td></tr>
-                                    ) : (
-                                        history.map(h => (
-                                            <tr key={h.SolicitudID} className="hover:bg-zinc-50 transition-colors">
-                                                <td className="p-3 text-zinc-500">{new Date(h.FechaSolicitud).toLocaleDateString()}</td>
-                                                <td className="p-3">
-                                                    <div className="font-bold text-zinc-700">{h.Item}</div>
-                                                    <div className="text-xs text-zinc-500">{h.Cantidad} {h.Unidad} - <span className="italic">{h.Observaciones}</span></div>
-                                                </td>
-                                                <td className="p-3">
-                                                    <span className={`px-2 py-1 rounded text-xs font-bold ${h.Estado === 'Pendiente' ? 'bg-orange-100 text-orange-600' :
-                                                        h.Estado === 'Entregado' ? 'bg-green-100 text-green-600' : 'bg-zinc-100 text-zinc-500'
-                                                        }`}>
-                                                        {h.Estado}
-                                                    </span>
-                                                </td>
-                                            </tr>
-                                        ))
-                                    )}
-                                </tbody>
-                            </table>
-                        </div>
-                    )}
+                    ) : estado ? (
+                        <p className="text-sm text-slate-500 text-center py-8">
+                            Esta área todavía no tiene un sector del stock para pedir insumos. Pedile a un administrador que se lo asigne.
+                        </p>
+                    ) : null}
                 </div>
             </div>
-
-            <CreateItemModal
-                isOpen={isCreateOpen}
-                onClose={() => setIsCreateOpen(false)}
-                initialName={formData.item}
-                onSuccess={handleItemCreated}
-            />
         </div>
     );
 };

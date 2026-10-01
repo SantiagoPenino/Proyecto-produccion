@@ -12,6 +12,8 @@ import {
 } from './constantes';
 import { chip, label, input, btn, MiniModal, ModalMotivo, ModalEstadoMaquina, Adjunto, Dato, PanelLateral } from './ui';
 import { InsumosUsados } from './Insumos';
+import SelectorFecha from '../ui/SelectorFecha';
+import Selector from '../ui/Selector';
 
 // Detalle de una solicitud de Servicio Técnico (panel lateral). Los técnicos (área SERVICIO o
 // Admin) actúan; quien la pidió puede comentar y adjuntar. Plan: docs/servicio-tecnico-plan.md.
@@ -45,10 +47,10 @@ const ModalDerivar = ({ sol, tecnicos, onConfirmar, onCerrar }) => {
             {destino === 'tecnico' ? (
                 <div>
                     <span className={label}>Técnico</span>
-                    <select className={input} value={tecnicoId} onChange={(e) => setTecnicoId(e.target.value)}>
-                        <option value="">— Elegir —</option>
+                    <Selector value={tecnicoId} onChange={(e) => setTecnicoId(e.target.value)}>
+                        <option value="">Elegir…</option>
                         {tecnicos.filter(t => t.id !== sol.TecnicoId).map(t => <option key={t.id} value={t.id}>{t.nombre}</option>)}
-                    </select>
+                    </Selector>
                 </div>
             ) : (
                 <div>
@@ -120,17 +122,17 @@ const ModalFinalizar = ({ sol, estadosEquipo, onConfirmar, onCerrar }) => {
             </label>
             {d.requiereSeguimiento && (
                 <div className="grid grid-cols-1 sm:grid-cols-[160px_1fr] gap-2">
-                    <input type="date" className={input} value={d.fechaSeguimiento} min={hoyISO()} onChange={(e) => set({ fechaSeguimiento: e.target.value })} />
+                    <SelectorFecha value={d.fechaSeguimiento} min={hoyISO()} placeholder="Fecha" onChange={(e) => set({ fechaSeguimiento: e.target.value })} />
                     <input className={input} value={d.seguimientoNota} maxLength={500} onChange={(e) => set({ seguimientoNota: e.target.value })} placeholder="Qué hay que revisar" />
                 </div>
             )}
             {sol.EquipoId && (
                 <div>
                     <span className={label}>Cómo queda la máquina ({sol.EquipoNombre})</span>
-                    <select className={input} value={d.estadoEquipo} onChange={(e) => set({ estadoEquipo: e.target.value })}>
+                    <Selector value={d.estadoEquipo} onChange={(e) => set({ estadoEquipo: e.target.value })}>
                         <option value="">No cambiar (ahora: {estadoEquipo(sol.EquipoEstado).label})</option>
                         {estadosEquipo.map(e => <option key={e} value={e}>{estadoEquipo(e).label}</option>)}
-                    </select>
+                    </Selector>
                     {otrasParada && (
                         <p className="mt-1.5 text-xs text-amber-700">Hay otra solicitud abierta que tiene esta máquina parada.</p>
                     )}
@@ -172,16 +174,16 @@ const ModalEditar = ({ sol, areas, onConfirmar, onCerrar }) => {
             <div className="grid grid-cols-2 gap-2">
                 <div>
                     <span className={label}>Tipo</span>
-                    <select className={input} value={d.categoria} onChange={(e) => set({ categoria: e.target.value })} disabled={!!sol.EquipoId}>
+                    <Selector value={d.categoria} onChange={(e) => set({ categoria: e.target.value })} disabled={!!sol.EquipoId}>
                         {CATEGORIAS.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
-                    </select>
+                    </Selector>
                 </div>
                 <div>
                     <span className={label}>Área</span>
-                    <select className={input} value={d.areaId} onChange={(e) => set({ areaId: e.target.value })}>
-                        <option value="">— Sin área —</option>
+                    <Selector value={d.areaId} onChange={(e) => set({ areaId: e.target.value })}>
+                        <option value="">Sin área</option>
                         {areas.map(a => <option key={a.AreaID} value={a.AreaID}>{a.Nombre}</option>)}
-                    </select>
+                    </Selector>
                 </div>
             </div>
             {!sol.EquipoId && (
@@ -197,7 +199,7 @@ const ModalEditar = ({ sol, areas, onConfirmar, onCerrar }) => {
             </label>
             {d.requiereSeguimiento && (
                 <div className="grid grid-cols-1 sm:grid-cols-[160px_1fr] gap-2">
-                    <input type="date" className={input} value={d.fechaSeguimiento} onChange={(e) => set({ fechaSeguimiento: e.target.value })} />
+                    <SelectorFecha value={d.fechaSeguimiento} min={hoyISO()} placeholder="Fecha" onChange={(e) => set({ fechaSeguimiento: e.target.value })} />
                     <input className={input} value={d.seguimientoNota} maxLength={500} onChange={(e) => set({ seguimientoNota: e.target.value })} placeholder="Qué hay que revisar" />
                 </div>
             )}
@@ -331,6 +333,13 @@ const SolicitudDetalle = ({ solId, meta, version = 0, onCerrar, onCambio, onAbri
                                     {sol.MaquinaNoTrabaja && <span className="block text-xs font-bold text-amber-700">Se reportó parada</span>}
                                 </Dato>
                                 <Dato titulo="Área">{sol.AreaNombre || sol.AreaId || '—'}</Dato>
+                                {sol.LocalId && (
+                                    <Dato titulo="Local">
+                                        {sol.LocalOtro
+                                            ? <>{sol.LocalOtro} <span className="text-xs text-zinc-400">(otro)</span></>
+                                            : <span className="capitalize">{sol.LocalNombre || `#${sol.LocalId}`}</span>}
+                                    </Dato>
+                                )}
                                 <Dato titulo="Pedida">
                                     {fmtFecha(sol.FechaSolicitud)} <span className="text-xs text-zinc-400">({haceCuanto(sol.FechaSolicitud)})</span>
                                 </Dato>

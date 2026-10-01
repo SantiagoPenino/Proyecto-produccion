@@ -63,7 +63,10 @@ const SQL_RECALC_MONTO_TOTAL = `
  *
  * @param monedaDestino 'USD' | 'UYU', o null/undefined para tomar la de la cabecera del
  *                      pedido al que pertenecen las líneas.
- * @returns { Cant, Imp, Prod } — Imp ya redondeado a 2 decimales.
+ * @returns { Cant, Imp, Prod, CeroIntencional } — Imp ya redondeado a 2 decimales (null si la
+ *          orden no tiene líneas). CeroIntencional: alguna línea está en $0 A PROPÓSITO
+ *          (cubierta por el plan de metros / prepago, o reposición sin cargo) — la orden vale
+ *          0 de verdad y no hay que caer al importe del pedido ni al del QR.
  */
 const totalesCobranzaDeOrden = async (pool, ordenId, monedaDestino = null) => {
     const mon = (monedaDestino || '').toUpperCase();
@@ -87,7 +90,11 @@ const totalesCobranzaDeOrden = async (pool, ordenId, monedaDestino = null) => {
 
             SELECT SUM(Cantidad)               AS Cant,
                    SUM(${conversion('')})      AS Imp,
-                   MIN(ProIdProducto)          AS Prod
+                   MIN(ProIdProducto)          AS Prod,
+                   MAX(CASE WHEN ISNULL(PerfilAplicado, '') LIKE 'Prepago%'
+                              OR ISNULL(PerfilAplicado, '') LIKE 'Reposici%'
+                              OR ISNULL(LogPrecioAplicado, '') LIKE '%Cubierto%por Plan%'
+                            THEN 1 ELSE 0 END) AS CeroIntencional
             FROM dbo.PedidosCobranzaDetalle WITH(NOLOCK)
             WHERE OrdenID = @OID
               AND PedidoCobranzaID = @PedId;
@@ -97,6 +104,7 @@ const totalesCobranzaDeOrden = async (pool, ordenId, monedaDestino = null) => {
         Cant: row.Cant,
         Imp: row.Imp == null ? null : Math.round(parseFloat(row.Imp) * 100) / 100,
         Prod: row.Prod,
+        CeroIntencional: Number(row.CeroIntencional) === 1,
     };
 };
 

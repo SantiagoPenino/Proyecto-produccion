@@ -798,6 +798,56 @@ exports.crearSolicitud = async (req, res) => {
     }
 };
 
+// ── Sector del stock de cada área (29/09) ────────────────────────────────────────────────────
+// El botón de insumos de cada área pide con el sector que tiene en Areas.WmsDepId (columna del
+// script backend/scripts/sql/areas_sector_stock_2026-09-29.sql). Si no tiene, lo asigna un admin
+// desde ese mismo botón. Antes ese botón guardaba en dbo.Solicitudes, una tabla que no existía.
+const esAdminInterno = (req) => req.user?.userType !== 'CLIENT'
+    && (parseInt(req.user?.idRol, 10) === 1 || String(req.user?.role || '').trim().toUpperCase() === 'ADMIN');
+
+// GET /area-deposito?area= → { depId, deposito } o null si el área no tiene sector
+exports.getAreaDeposito = async (req, res) => {
+    const area = String(req.query.area || '').trim();
+    if (!area) return res.status(400).json({ error: 'Falta el área' });
+    try {
+        const pool = await getPool();
+        const r = await pool.request().input('A', sql.VarChar(50), area).query(`
+            SELECT a.AreaID, a.Nombre AS Area, a.WmsDepId AS DepId, d.Nombre AS Deposito
+            FROM dbo.Areas a
+            LEFT JOIN dbo.Wms_Depositos d ON d.DepId = a.WmsDepId
+            WHERE a.AreaID = @A`);
+        const f = r.recordset[0];
+        res.json({
+            success: true,
+            data: f?.DepId ? { depId: f.DepId, deposito: f.Deposito } : null,
+            area: f?.Area || null,     // el tablero a veces no tiene el nombre del área
+            puedeAsignar: esAdminInterno(req),
+        });
+    } catch (e) {
+        // Todavía sin el script: la columna no existe
+        if (/WmsDepId/i.test(e.message)) return res.json({ success: true, data: null, falta: true, puedeAsignar: false });
+        res.status(500).json({ error: e.message });
+    }
+};
+
+// PUT /area-deposito { area, depId } — solo un admin
+exports.setAreaDeposito = async (req, res) => {
+    if (!esAdminInterno(req)) return res.status(403).json({ error: 'Solo un administrador puede asignar el sector de un área' });
+    const area = String(req.body?.area || '').trim();
+    const depId = parseInt(req.body?.depId, 10);
+    if (!area || !depId) return res.status(400).json({ error: 'Faltan el área o el sector' });
+    try {
+        const pool = await getPool();
+        const r = await pool.request().input('A', sql.VarChar(50), area).input('D', sql.Int, depId).query(`
+            UPDATE a SET a.WmsDepId = @D
+            FROM dbo.Areas a
+            WHERE a.AreaID = @A AND EXISTS (SELECT 1 FROM dbo.Wms_Depositos d WHERE d.DepId = @D);
+            SELECT @@ROWCOUNT AS n;`);
+        if (!r.recordset[0]?.n) return res.status(404).json({ error: 'No existe esa área o ese sector' });
+        res.json({ success: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+};
+
 // POST /solicitudes/:id/despachar { depOrigenId, items:[{varId, cantidad}] } — [24/09] arma el
 // remito hacia el sector que pidió y deja el pedido ATENDIDO, las dos cosas en una transacción
 // (antes eran dos pasos a mano: Trasladar y después "Marcar atendido"). Si en el origen hay
@@ -840,28 +890,34 @@ exports.setEstadoSolicitud = async (req, res) => {
 /* ── COMPRAS (F4) ────────────────────────────────────────────────────────── */
 
 // GET /compras?estado=activas|historial — con proveedor, plantilla, progreso y pagado
+// "Recibida" = el progreso está en el ÚLTIMO paso de su plantilla. Las claves de los pasos son
+// de cada plantilla (en Importaciones "Recibido" es '9', en Compra en Plaza es '3'); 'recibido'
+// queda para las compras sin plantilla y las que vinieron así del sistema viejo.
 exports.getCompras = async (req, res) => {
     try {
         const pool = await getPool();
         const filtro = String(req.query.estado || 'activas').toLowerCase();
-        const where = filtro === 'historial'
-            ? `c.Progreso = 'recibido'`
-            : filtro === 'todas' ? '1 = 1' : `ISNULL(c.Progreso, '') <> 'recibido'`;
+        const where = filtro === 'historial' ? 'rc.Recibida = 1'
+            : filtro === 'todas' ? '1 = 1' : 'rc.Recibida = 0';
         const r = await pool.request().query(`
             SELECT c.CompId, c.ReferenciaFactura, c.Estado, c.Progreso, c.TotalCompra, c.GastosExtras,
                    c.AutorizadoRecepcion, c.FechaCreacion, c.PlaId, c.MonedaId, c.DepRecepcionId,
                    c.FechaEstimadaArribo, c.VolumenM3, c.PesoKg, c.Incoterm,
                    p.Nombre AS Proveedor, m.Codigo AS Moneda, m.Simbolo AS MonedaSimbolo,
                    pl.Nombre AS Plantilla,
-                   pas.Etiqueta AS ProgresoEtiqueta, pas.Orden AS ProgresoOrden,
+                   pas.Etiqueta AS ProgresoEtiqueta, pas.Orden AS ProgresoOrden, rc.Recibida,
                    (SELECT COUNT(*) FROM dbo.Wms_ComprasDetalle d WHERE d.CompId = c.CompId) AS Lineas,
                    (SELECT COUNT(*) FROM dbo.Wms_ComprasDetalle d WHERE d.CompId = c.CompId AND d.CantidadRecibida < d.Cantidad - 0.0001) AS LineasPendientes,
                    ISNULL((SELECT SUM(pg.Monto) FROM dbo.Wms_Pagos pg WHERE pg.CompId = c.CompId), 0) AS Pagado
             FROM dbo.Wms_Compras c
+            OUTER APPLY (SELECT TOP 1 up.Clave FROM dbo.Wms_PlantillasProgresoPasos up
+                         WHERE up.PlaId = c.PlaId ORDER BY up.Orden DESC) ult
+            CROSS APPLY (SELECT CAST(CASE WHEN c.Progreso = 'recibido' OR c.Progreso = ult.Clave THEN 1 ELSE 0 END AS BIT) AS Recibida) rc
             LEFT JOIN dbo.Wms_Proveedores p ON p.PrvId = c.PrvId
             LEFT JOIN dbo.Wms_Monedas m ON m.MonId = c.MonedaId
             LEFT JOIN dbo.Wms_PlantillasProgreso pl ON pl.PlaId = c.PlaId
-            LEFT JOIN dbo.Wms_PlantillasProgresoPasos pas ON pas.PlaId = c.PlaId AND pas.Clave = c.Progreso
+            LEFT JOIN dbo.Wms_PlantillasProgresoPasos pas ON pas.PlaId = c.PlaId
+                  AND pas.Clave = CASE WHEN c.Progreso = 'recibido' THEN ult.Clave ELSE c.Progreso END
             WHERE ${where}
             ORDER BY c.FechaCreacion DESC
         `);
