@@ -75,6 +75,8 @@ router.post('/:ordenId/production-file', verifyToken, uploadProdFile.single('fil
 
 // TPU: enviar la orden a aprobación del cliente (retiene hasta que apruebe el arte).
 router.post('/:ordenId/enviar-aprobacion', verifyToken, ordersController.enviarAprobacionTPU);
+// [INGRESO INTERNO] Pedido cargado por el personal: la matriz TPU se aprueba acá, no en el portal.
+router.post('/:ordenId/aprobar-interno', verifyToken, soloInternoConRol(), ordersController.aprobarInternoTPU);
 
 // Notas de producción por orden — ADITIVAS: cada llamada agrega una fila nueva, nunca
 // pisa las anteriores (a diferencia de Ordenes.Nota, que es un solo campo).

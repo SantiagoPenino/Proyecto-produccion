@@ -139,8 +139,9 @@ const tieneDcdArea = async () => {
     return _tieneDcdArea;
 };
 
-const areaParseada = (expr) => `ISNULL(COALESCE(CASE UPPER(LTRIM(RTRIM(
-        LEFT(${expr}, CASE WHEN CHARINDEX('-', ${expr}) > 0 THEN CHARINDEX('-', ${expr}) - 1 ELSE LEN(${expr}) END)
+// Área deducida del PREFIJO de un texto con forma de código de orden ('DTF-23538', 'EUV-22215 LAURA…').
+const casePrefijo = (e) => `CASE UPPER(LTRIM(RTRIM(
+        LEFT(${e}, CASE WHEN CHARINDEX('-', ${e}) > 0 THEN CHARINDEX('-', ${e}) - 1 ELSE LEN(${e}) END)
     )))
     WHEN 'DF'     THEN 'DTF' WHEN 'DTF'    THEN 'DTF' WHEN 'UVDF'   THEN 'DTF' WHEN 'RDF'    THEN 'DTF' WHEN 'RUVDF'  THEN 'DTF' WHEN 'RRDF' THEN 'DTF' WHEN 'RRUVDF' THEN 'DTF'
     WHEN 'SB'     THEN 'Sublimacion' WHEN 'SUB' THEN 'Sublimacion' WHEN 'XSB' THEN 'Sublimacion' WHEN 'RSB' THEN 'Sublimacion' WHEN 'RXSB' THEN 'Sublimacion'
@@ -155,8 +156,22 @@ const areaParseada = (expr) => `ISNULL(COALESCE(CASE UPPER(LTRIM(RTRIM(
     WHEN 'PRO'    THEN 'Productos Confeccionados'
     WHEN 'VEN'    THEN 'Venta Directa'
     ELSE NULL
-END,
-CASE WHEN UPPER(LTRIM(RTRIM(dcd.DcdNomItem))) = 'DTF TEXTIL COMUN' THEN 'DTF' END
+END`;
+
+// Orden de búsqueda: 1) prefijo del código de orden de la línea; 2) prefijo del CONCEPTO cuando
+// el facturador escribió el código ahí y dejó OrdCodigoOrden vacío (prod, sep-2026: 'DTF-23538',
+// 'EUV-25118', 'SUB-27365'… — solo si el concepto tiene un guion cerca del principio, para no
+// confundir un nombre cualquiera con un código); 3) conceptos conocidos por nombre; 4) 'Sin área'.
+const areaParseada = (expr) => `ISNULL(COALESCE(${casePrefijo(expr)},
+CASE WHEN CHARINDEX('-', LTRIM(dcd.DcdNomItem)) BETWEEN 3 AND 8 THEN ${casePrefijo('LTRIM(dcd.DcdNomItem)')} END,
+CASE WHEN UPPER(LTRIM(RTRIM(dcd.DcdNomItem))) = 'DTF TEXTIL COMUN' THEN 'DTF'
+     -- Plata cobrada por adelantado (pedido del usuario 05-oct-2026): la carga de saldo de
+     -- la billetera y los beneficios prepagos se facturan con el concepto "Crédito prepago
+     -- de servicios — …" (webOrdersController / ContabilidadCuentasView), y a mano como
+     -- "Saldo anticipado". No son de ningún área productiva: van a 'Adelanto de Saldo'.
+     WHEN LTRIM(dcd.DcdNomItem) LIKE 'Cr_dito prepago de servicios%' THEN 'Adelanto de Saldo'
+     WHEN UPPER(LTRIM(RTRIM(dcd.DcdNomItem))) = 'SALDO ANTICIPADO' THEN 'Adelanto de Saldo'
+END
 ), 'Sin área')`;
 
 /**
@@ -176,6 +191,7 @@ const areaDesdeCodigo = (expr) => {
 const AREAS_CONOCIDAS = [
     'DTF', 'Sublimacion', 'ECOUV', 'IMPRESION DIRECTA', 'Bordado', 'Corte',
     'Costura', 'Diseño', 'TPU', 'Estampado', 'Productos Confeccionados', 'Venta Directa',
+    'Adelanto de Saldo', // no es un área productiva: cargas de saldo / prepagos facturados
 ];
 
 // Filtro de artículo: DocumentosContablesDetalle no tiene ProIdProducto, así que se

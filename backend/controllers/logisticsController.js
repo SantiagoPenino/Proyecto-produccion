@@ -2942,11 +2942,18 @@ exports.aprobarControlPRO = async (req, res) => {
             return res.status(400).json({ error: `El pedido ${noDocERP} no está completo según el libro de entregas: ${detalle}. No se puede consolidar en PRO hasta que no quede ninguna reposición ni envío parcial abierto.` });
         }
 
+        // Cuántos bultos físicos salen hacia Depósito (lo pregunta la pantalla, igual que
+        // Bordado/Estampado al aprobar). Default 1 = comportamiento anterior.
+        const cantidadBultos = Math.max(1, Math.min(200, parseInt(req.body?.cantidadBultos, 10) || 1));
+
+        // ORDER BY OrdenID: misma PRO que muestra getPedidosCompletosPRO (ordenProId).
         const ordenProRes = await pool.request()
             .input('Doc', sql.VarChar, noDocERP)
             .query(`
-                SELECT TOP 1 OrdenID FROM Ordenes
+                SELECT OrdenID FROM Ordenes
                 WHERE NoDocERP = @Doc AND AreaID = 'PRO' AND ISNULL(EstadoDependencia, '') <> 'VENTA_DIRECTA'
+                  AND ISNULL(Estado, '') <> 'Cancelado'
+                ORDER BY OrdenID
             `);
         const ordenProId = ordenProRes.recordset[0]?.OrdenID;
         if (!ordenProId) return res.status(404).json({ error: 'No se encontró la orden madre PRO de este pedido.' });
@@ -2965,12 +2972,15 @@ exports.aprobarControlPRO = async (req, res) => {
                   AND ISNULL(B.Tipocontenido, '') <> 'ENCOMIENDA'
             `);
 
-        // Bulto FINAL (producto terminado consolidado) sobre la orden madre — su
-        // ProximoServicio ya es 'DEPOSITO', sale PROD_TERMINADO sin overrides.
+        // Bultos FINALES (producto terminado consolidado) sobre la orden madre, numerados
+        // 1..N — mismo servicio que usa la Bandeja de Bordado/Estampado al aprobar.
         const LabelGenerationService = require('../services/LabelGenerationService');
-        const lr = await LabelGenerationService.addOneBulto(ordenProId, req.user?.id || 1, req.user?.usuario || 'Sistema', {});
+        const lr = await LabelGenerationService.addBultosTerminados(
+            ordenProId, cantidadBultos, req.user?.id || 1, req.user?.usuario || 'Sistema',
+            { tipoBulto: 'PROD_TERMINADO', ubicacion: 'PRO' }
+        );
         if (!lr.success) {
-            return res.status(500).json({ error: `No se pudo generar la etiqueta final: ${lr.error}` });
+            return res.status(500).json({ error: `No se pudieron generar las etiquetas finales: ${lr.error}` });
         }
 
         // Consumir (cerrar) los bultos de los componentes — ya cumplieron su función, mismo
@@ -2981,40 +2991,36 @@ exports.aprobarControlPRO = async (req, res) => {
                 .query(`UPDATE Logistica_Bultos SET Estado = 'PROCESADO', UbicacionActual = 'PROCESADO' WHERE BultoID = @BID`);
         }
 
-        // Remito final PRO→DEPOSITO con el bulto nuevo — reusa createRemitoFromOrders tal
-        // cual (mismo patrón de req/res simulados que el remito automático de la Fase 4).
-        let remitoResult = null;
-        const fakeRes = {
-            json: (data) => { remitoResult = data; },
-            status: (code) => ({ json: (data) => { remitoResult = { ...data, _statusCode: code }; } }),
-        };
-        await exports.createRemitoFromOrders({
-            body: {
-                areaOrigen: 'PRO',
-                areaDestino: 'DEPOSITO',
-                usuarioId: req.user?.id || 1,
-                orderIds: [ordenProId],
-                observations: `Control aprobado — pedido completo (${noDocERP})`,
-            },
-            user: req.user || 'Sistema',
-            app: req.app,
-        }, fakeRes);
-
-        if (!remitoResult?.success) {
-            logger.warn(`[PRENDAS] aprobarControlPRO: etiqueta generada pero el remito falló para ${noDocERP}:`, remitoResult);
-            return res.json({
-                success: true,
-                totalBultos: lr.totalBultos,
-                remitoCreado: false,
-                message: 'Etiqueta generada, pero el remito no se pudo armar automáticamente — armalo a mano desde Despacho de PRO.',
-            });
+        // Ya NO se arma el remito PRO→DEPOSITO solo: se arma a mano desde Logística → Crear
+        // Remito, como en el resto de las áreas (pedido del usuario 02-oct-2026: primero se
+        // imprimen las etiquetas de los bultos, después se despacha). Para que los bultos
+        // aparezcan en Crear Remito, las órdenes PRO del pedido pasan a 'Pronto' (getAreaStock
+        // esconde el PROD_TERMINADO mientras haya una hermana de la misma área sin terminar —
+        // sqlExistsHermanaNoPronta). Mismo cambio de estado que Bordado/Estampado al aprobar.
+        const tx = new sql.Transaction(pool);
+        await tx.begin();
+        try {
+            for (const p of ordenProRes.recordset) {
+                await changeOrderState(tx, {
+                    target : { type: 'ORDER', id: p.OrdenID },
+                    estado : 'Pronto',
+                    userObj: req.user || 'Sistema',
+                    detalle: `Control de PRO aprobado — ${lr.totalBultos} bulto(s) para Depósito (pedido ${noDocERP})`,
+                    io     : req.app.get('socketio'),
+                });
+            }
+            await tx.commit();
+        } catch (eEst) {
+            try { await tx.rollback(); } catch (_) { /* nada */ }
+            logger.warn(`[PRENDAS] aprobarControlPRO: bultos generados pero no se pudo pasar la PRO a Pronto (${noDocERP}): ${eEst.message}`);
         }
 
         res.json({
             success: true,
+            ordenProId,
             totalBultos: lr.totalBultos,
-            remitoCreado: true,
-            dispatchCode: remitoResult.dispatchCode,
+            codigos: lr.codigos || [],
+            remitoCreado: false,
             componentesConsumidos: bultosComponentes.recordset.length,
         });
     } catch (err) {

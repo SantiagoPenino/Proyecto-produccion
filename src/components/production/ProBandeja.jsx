@@ -13,6 +13,7 @@ import PendientesPedidoPanel from './components/PendientesPedidoPanel';
 import QuotationEditModal from '../logistics/QuotationEditModal';
 import BuscadorCotizacionOtraArea from './BuscadorCotizacionOtraArea';
 import { useAuth } from '../../context/AuthContext';
+import { printLabelsHelper } from '../../utils/printHelper';
 
 // [PRENDAS] Bandeja de Producción — mismo formato lista + detalle que usan Bordado/Estampado/
 // Corte/Costura (EmbBandeja.jsx: columna angosta con las tarjetas a la izquierda, detalle
@@ -117,16 +118,28 @@ const ProBandeja = () => {
     });
     const cantidadesNoCoinciden = Object.values(cantidadesPorPrenda).some(ns => ns.length > 1 && new Set(ns).size > 1);
 
+    // El remito a Depósito ya NO sale solo: al aprobar se generan los bultos (con su etiqueta)
+    // y se ofrece imprimirlas; el remito se arma después en Logística → Crear Remito, como en
+    // el resto de las áreas.
     const aprobarMut = useMutation({
-        mutationFn: (noDocERP) => logisticsService.aprobarControlPRO(noDocERP),
-        onSuccess: (res) => {
-            if (res.remitoCreado) {
-                toast.success(`Pedido ${selected?.noDocERP} controlado — etiqueta generada y remito ${res.dispatchCode} enviado a Depósito.`);
-            } else {
-                toast.warning(res.message || 'Etiqueta generada, pero el remito no se pudo armar solo.');
-            }
+        mutationFn: ({ noDocERP, cantidadBultos }) => logisticsService.aprobarControlPRO(noDocERP, cantidadBultos),
+        onSuccess: async (res, vars) => {
             queryClient.invalidateQueries({ queryKey: ['logistica', 'pro', 'pedidos-completos'] });
             setSelectedId(null);
+            const r = await Swal.fire({
+                icon: 'success',
+                title: `Pedido ${vars.noDocERP} controlado`,
+                html: `Se generaron <strong>${res.totalBultos}</strong> bulto(s) con su etiqueta${(res.codigos || []).length ? `:<br><span style="font-family:monospace;font-size:12px">${res.codigos.join(' · ')}</span>` : '.'}<br><br>
+                       1. Imprimí las etiquetas y pegá una en cada bulto.<br>
+                       2. Después armá el remito a Depósito en <strong>Logística → Crear Remito</strong>.`,
+                showCancelButton: true,
+                confirmButtonText: 'Imprimir etiquetas',
+                cancelButtonText: 'Imprimir más tarde',
+                confirmButtonColor: '#4f46e5',
+                cancelButtonColor: '#6b7280',
+                reverseButtons: true,
+            });
+            if (r.isConfirmed && res.ordenProId) printLabelsHelper(null, { id: res.ordenProId });
         },
         onError: (err) => toast.error('No se pudo aprobar: ' + (err?.response?.data?.error || err.message)),
     });
@@ -150,16 +163,26 @@ const ProBandeja = () => {
             title: `¿Controlar pedido ${selected.codigoOrden || selected.noDocERP}?`,
             html: `Cliente: <strong>${selected.cliente || 'Sin cliente'}</strong><br>
                    ${selected.componentes.length} componente(s) reunido(s) en PRO.<br><br>
-                   Al confirmar se genera la etiqueta final y sale un remito hacia Depósito.`,
+                   ¿En cuántos bultos sale el pedido hacia Depósito?<br>
+                   <span style="font-size:12px;color:#6b7280">Se genera una etiqueta por cada bulto. El remito a Depósito lo armás después en Logística → Crear Remito.</span>`,
+            input: 'number',
+            inputValue: 1,
+            inputAttributes: { min: 1, max: 200, step: 1 },
+            inputValidator: (v) => {
+                const n = parseInt(v, 10);
+                if (!n || n < 1) return 'Tiene que ser al menos 1 bulto.';
+                if (n > 200) return 'Máximo 200 bultos.';
+                return null;
+            },
             showCancelButton: true,
-            confirmButtonText: 'Sí, controlado — aprobar',
+            confirmButtonText: 'Sí, controlado — generar bultos',
             cancelButtonText: 'Todavía no',
             confirmButtonColor: '#4f46e5',
             cancelButtonColor: '#6b7280',
             reverseButtons: true,
         });
         if (!r.isConfirmed) return;
-        aprobarMut.mutate(selected.noDocERP);
+        aprobarMut.mutate({ noDocERP: selected.noDocERP, cantidadBultos: parseInt(r.value, 10) || 1 });
     };
 
     const ListaCard = ({ p }) => {
@@ -414,7 +437,7 @@ const ProBandeja = () => {
                                     title={selected.libroIncompleto ? 'Todavía hay una reposición o envío parcial abierto en una etapa anterior del pedido' : undefined}
                                     className="flex items-center gap-2 text-sm font-bold px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                                 >
-                                    <PackageCheck size={16} /> Aprobar control y generar bulto
+                                    <PackageCheck size={16} /> Aprobar control y generar bultos
                                 </button>
                             )}
                         </div>

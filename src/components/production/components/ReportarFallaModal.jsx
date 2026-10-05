@@ -25,7 +25,9 @@ export default function ReportarFallaModal({ open, onClose, orden, area, service
     // reportar una falla, y preguntarlo así no tiene sentido). Este modal es EXCLUSIVO de
     // las 4 áreas de bandeja (EMB/EST/TWC/TWT), todas cuentan por prenda.
     const um = 'prendas';
-    const hayAnteriores = !!(pend && pend.anteriores && pend.anteriores.length);
+    // [FALLA EST/PRO] Estampado/PRO también pueden reponer el transfer (DTF/TPU) aunque la
+    // secuencia lineal del pedido no muestre áreas anteriores.
+    const hayAnteriores = !!(pend && ((pend.anteriores && pend.anteriores.length) || (pend.ramasTransfer && pend.ramasTransfer.length)));
     const puedeFaltante = hayAnteriores && !!pend?.cadenaHabilitada;
     // Cuánto se puede reportar como falla PROPIA: lo que ya está trabajado en esta orden y
     // todavía no salió en una tanda aprobada (no se puede reportar como fallado algo que ya
@@ -82,21 +84,28 @@ export default function ReportarFallaModal({ open, onClose, orden, area, service
         setCargando(true);
         try {
             const p = await service.fallaProponer(orden.OrdenID, { tipo: form.tipo, cantidad: Number(form.cantidad) });
-            setPropuesta({ ...p, eslabones: (p.eslabones || []).map(e => ({ ...e })) });
+            // Todo marcado por defecto: el operario destilda lo que no hace falta.
+            setPropuesta({ ...p, incluirPrenda: true, eslabones: (p.eslabones || []).map(e => ({ ...e, incluir: true })) });
             setStep(3);
         } catch (e) { toast.error(e?.response?.data?.error || e.message); }
         finally { setCargando(false); }
     };
 
+    // [FALLA EST/PRO] Eslabones que se van a crear: la rama prenda va entera o no va (es una cadena),
+    // cada transfer (DTF/TPU) se elige por separado.
+    const eslabonesElegidos = (propuesta?.eslabones || []).filter(e =>
+        e.rama === 'TRANSFER' ? e.incluir !== false : propuesta?.incluirPrenda !== false);
+
     const confirmar = async () => {
         if (!propuesta) return;
+        if (propuesta.origenInsumo === 'PROPIO' && eslabonesElegidos.length === 0) return toast.error('Elegí al menos una reposición para crear.');
         setEnviando(true);
         try {
             const res = await service.reportarFalla(orden.OrdenID, {
                 tipo: form.tipo, cantidad: Number(form.cantidad), motivoId: form.motivoId || null, motivoTexto: form.motivoTexto || null,
                 nota: form.nota || null, imagenBase64: form.foto || null, archivoOrigenId: form.archivoOrigenId || null,
                 detallePiezas: form.piezas.filter(p => Number(p.cantidad) > 0),
-                eslabones: propuesta.eslabones.map(e => ({ area: e.area, ordenMadreId: e.ordenMadreId, cantidad: e.cuentaUnidades ? Number(e.cantidad) : null })),
+                eslabones: eslabonesElegidos.map(e => ({ area: e.area, ordenMadreId: e.ordenMadreId, cantidad: e.cuentaUnidades ? Number(e.cantidad) : null, rama: e.rama || null, destino: e.destino || null })),
             });
             toast.success(res.message || 'Reporte registrado.', { duration: 9000 });
             onDone?.(res);
@@ -249,6 +258,19 @@ export default function ReportarFallaModal({ open, onClose, orden, area, service
                                         <div className="flex items-center gap-2 font-black text-xs uppercase"><AlertTriangle size={14} /> Origen del insumo detectado: {propuesta.origenInsumo.replace('_', ' ')}</div>
                                         <p className="text-xs mt-1">Producción no puede reponer esto. <b>No se crea ninguna orden</b>: se abre una solicitud para Atención al Cliente y Administración, que informan al cliente y registran su decisión. {codigo} queda retenida mientras tanto.</p>
                                     </div>
+                                    {propuesta.eslabones.some(e => e.rama === 'TRANSFER') && (
+                                        <div className="border border-violet-200 rounded-xl overflow-hidden">
+                                            <div className="px-3 py-2 bg-violet-50 text-xs font-black uppercase text-violet-700">Transfer nuevo — esto sí es material propio</div>
+                                            {propuesta.eslabones.map((e, i) => e.rama !== 'TRANSFER' ? null : (
+                                                <label key={i} className={`flex items-center gap-2 px-3 py-2 border-t border-zinc-100 bg-white text-xs cursor-pointer ${e.incluir === false ? 'opacity-60' : ''}`}>
+                                                    <input type="checkbox" checked={e.incluir !== false} onChange={ev => setPropuesta(p => ({ ...p, eslabones: p.eslabones.map((x, j) => j === i ? { ...x, incluir: ev.target.checked } : x) }))} />
+                                                    <span className="font-black text-violet-700">{e.area === 'DF' ? 'DTF' : e.area}</span>
+                                                    <span className="font-mono font-bold">{e.codigoMadre}</span>
+                                                    <span className="text-zinc-500">→ se crea la orden de falla ya y va a {e.destino}</span>
+                                                </label>
+                                            ))}
+                                        </div>
+                                    )}
                                     {propuesta.stock && (
                                         <div className={`rounded-xl p-3 border text-xs ${propuesta.stock.encontrado?.length ? 'bg-emerald-50 border-emerald-200 text-emerald-800' : 'bg-zinc-50 border-zinc-200 text-zinc-600'}`}>
                                             <b>Stock de este insumo del cliente:</b> {propuesta.stock.resumen}
@@ -256,6 +278,62 @@ export default function ReportarFallaModal({ open, onClose, orden, area, service
                                         </div>
                                     )}
                                 </div>
+                            ) : propuesta.eslabones.some(e => e.rama) ? (
+                                // [FALLA EST/PRO] Dos ramas: prenda nueva (cadena) y transfer nuevo (DTF/TPU).
+                                (() => {
+                                    const prenda = propuesta.eslabones.map((e, i) => ({ e, i })).filter(x => x.e.rama !== 'TRANSFER');
+                                    const transfer = propuesta.eslabones.map((e, i) => ({ e, i })).filter(x => x.e.rama === 'TRANSFER');
+                                    const setEsl = (i, patch) => setPropuesta(p => ({ ...p, eslabones: p.eslabones.map((x, j) => j === i ? { ...x, ...patch } : x) }));
+                                    // Función (no componente): un componente definido acá se volvería a montar en cada tecla y el input perdería el foco.
+                                    const cant = (e, i, disabled) => e.cuentaUnidades
+                                        ? <input type="number" min="0" disabled={disabled} value={e.cantidad ?? ''} onChange={ev => setEsl(i, { cantidad: ev.target.value })} className="w-24 p-1.5 border border-zinc-200 rounded-lg font-mono font-bold text-right disabled:opacity-40" />
+                                        : <span className="text-[10px] font-black text-zinc-400 uppercase">sin metros</span>;
+                                    return (
+                                        <div className="space-y-3">
+                                            <p className="text-zinc-700 font-bold">¿Qué hay que volver a hacer?</p>
+                                            {prenda.length > 0 && (
+                                                <div className={`border rounded-xl overflow-hidden ${propuesta.incluirPrenda !== false ? 'border-brand-cyan/40' : 'border-zinc-200 opacity-60'}`}>
+                                                    <label className="flex items-center gap-2 px-3 py-2 bg-cyan-50 cursor-pointer">
+                                                        <input type="checkbox" checked={propuesta.incluirPrenda !== false} onChange={ev => setPropuesta(p => ({ ...p, incluirPrenda: ev.target.checked }))} />
+                                                        <span className="text-xs font-black uppercase text-brand-cyan">Prenda nueva</span>
+                                                        <span className="text-[11px] text-zinc-500">({prenda.map(x => x.e.area).join(' → ')} → {area}) — si la prenda se rompió o se perdió</span>
+                                                    </label>
+                                                    {prenda.map(({ e, i }, k) => (
+                                                        <div key={i} className="grid grid-cols-[1fr_auto] gap-3 items-center px-3 py-2 border-t border-zinc-100 bg-white">
+                                                            <div>
+                                                                <div className="text-[10px] font-black uppercase text-brand-cyan">{e.area}</div>
+                                                                <div className="text-xs"><span className="font-mono font-bold">{e.codigoMadre}</span> → nace la orden de falla {k === 0 ? 'primero' : `cuando llegue la de ${prenda[k - 1].e.area}`}</div>
+                                                                <div className="text-[11px] text-zinc-500">{e.nota}</div>
+                                                            </div>
+                                                            {cant(e, i, propuesta.incluirPrenda === false)}
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            )}
+                                            {transfer.length > 0 && (
+                                                <div className="border border-violet-200 rounded-xl overflow-hidden">
+                                                    <div className="px-3 py-2 bg-violet-50 text-xs font-black uppercase text-violet-700">Transfer nuevo — si se arruinó el DTF / TPU</div>
+                                                    {transfer.map(({ e, i }) => (
+                                                        <label key={i} className={`grid grid-cols-[auto_1fr_auto] gap-3 items-center px-3 py-2 border-t border-zinc-100 bg-white cursor-pointer ${e.incluir === false ? 'opacity-60' : ''}`}>
+                                                            <input type="checkbox" checked={e.incluir !== false} onChange={ev => setEsl(i, { incluir: ev.target.checked })} />
+                                                            <div>
+                                                                <div className="text-[10px] font-black uppercase text-violet-700">{e.area === 'DF' ? 'DTF' : e.area}</div>
+                                                                <div className="text-xs"><span className="font-mono font-bold">{e.codigoMadre}</span> → nace la orden de falla ya, en paralelo, y va a {e.destino}</div>
+                                                                <div className="text-[11px] text-zinc-500">{e.nota}</div>
+                                                            </div>
+                                                            {cant(e, i, e.incluir === false)}
+                                                        </label>
+                                                    ))}
+                                                </div>
+                                            )}
+                                            <div className="border border-dashed border-zinc-200 rounded-xl px-3 py-2 bg-zinc-50 text-xs">
+                                                <div className="text-[10px] font-black uppercase text-zinc-400">{area}</div>
+                                                Sin orden nueva. <b>{codigo}</b> queda Retenida hasta que llegue todo lo que elegiste.
+                                            </div>
+                                            {eslabonesElegidos.length === 0 && <div className="text-xs text-rose-600 font-bold">Elegí al menos una reposición.</div>}
+                                        </div>
+                                    );
+                                })()
                             ) : (
                                 <div className="space-y-2">
                                     <p className="text-zinc-700">El sistema propone esta cadena. Podés ajustar las cantidades donde se cuentan prendas.</p>
@@ -281,8 +359,8 @@ export default function ReportarFallaModal({ open, onClose, orden, area, service
                             )}
                             <div className="flex justify-between gap-2 pt-2">
                                 <button onClick={() => setStep(2)} className="px-4 py-2 rounded-lg border border-zinc-200 font-bold text-zinc-600 flex items-center gap-1"><ArrowLeft size={14} /> Atrás</button>
-                                <button onClick={confirmar} disabled={enviando} className="px-4 py-2 rounded-lg bg-[#BD0C7E] text-white font-bold hover:brightness-110 disabled:opacity-50">
-                                    {enviando ? 'Registrando...' : (propuesta.origenInsumo !== 'PROPIO' ? `Abrir solicitud y retener ${codigo}` : `Crear ${propuesta.eslabones.length} reposición(es) y retener ${codigo}`)}
+                                <button onClick={confirmar} disabled={enviando || (propuesta.origenInsumo === 'PROPIO' && eslabonesElegidos.length === 0)} className="px-4 py-2 rounded-lg bg-[#BD0C7E] text-white font-bold hover:brightness-110 disabled:opacity-50">
+                                    {enviando ? 'Registrando...' : (propuesta.origenInsumo !== 'PROPIO' ? `Abrir solicitud y retener ${codigo}` : `Crear ${eslabonesElegidos.length} reposición(es) y retener ${codigo}`)}
                                 </button>
                             </div>
                         </>

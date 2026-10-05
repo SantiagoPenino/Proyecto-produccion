@@ -20,6 +20,30 @@ async function esTrabajoInternoDePedidoConPro(pool, ordenId) {
     `);
     return r.recordset.length > 0;
 }
+
+// Aviso al completar una orden SIN cantidad cotizada (no se genera etiqueta). Dice la causa
+// cuando es la más común — el artículo no tiene precio base, el sync cotizó $0 y desde el
+// 17-sep una línea en $0 no se guarda (EUV-30014, Back pet) — y qué hacer: al guardar la
+// cotización la etiqueta se genera sola (quotationController.sincronizarEtiquetasDelPedido).
+async function mensajeSinCantidadCotizada(pool, ordenId) {
+    const base = 'La orden no tiene cantidad cotizada, así que NO se generó su etiqueta.';
+    const pasos = 'Cotizala en "Cotizar Productos": al guardar la cotización la etiqueta se genera sola.';
+    try {
+        const r = await pool.request().input('OID', sql.Int, ordenId).query(`
+            SELECT TOP 1 A.Descripcion, O.ProIdProducto,
+                   (SELECT COUNT(*) FROM PreciosBase PB WHERE PB.ProIdProducto = O.ProIdProducto) AS Precios
+            FROM Ordenes O LEFT JOIN Articulos A ON A.ProIdProducto = O.ProIdProducto
+            WHERE O.OrdenID = @OID`);
+        const o = r.recordset[0];
+        if (o && o.ProIdProducto && o.Precios === 0) {
+            const art = String(o.Descripcion || '').trim() || `producto ${o.ProIdProducto}`;
+            return `${base} Causa: el artículo "${art}" (ProIdProducto ${o.ProIdProducto}) no tiene precio base cargado. Cargalo en la lista de precios y después ${pasos.charAt(0).toLowerCase()}${pasos.slice(1)}`;
+        }
+    } catch (e) {
+        logger.warn(`[mensajeSinCantidadCotizada] ${ordenId}: ${e.message}`);
+    }
+    return `${base} ${pasos}`;
+}
 const driveService = require('../services/driveService');
 const logger = require('../utils/logger');
 const { changeOrderState } = require('../services/stateManagerService');
@@ -1459,7 +1483,7 @@ const postControlArchivo = async (req, res) => {
                             logger.warn(`[postControlArchivo] Fallo generación etiquetas: ${labelResult.error}`);
                         }
                     } else {
-                        etiquetasError = 'La orden no tiene cantidad cotizada, así que no se generaron etiquetas. Revisá "Cotizar Productos".';
+                        etiquetasError = await mensajeSinCantidadCotizada(pool, ordenId);
                         logger.info(`[postControlArchivo] Magnitud 0, saltando etiquetas.`);
                     }
                 }
@@ -2642,7 +2666,7 @@ async function completarOrden(req, res) {
                         logger.warn(`[completarOrden] No se pudieron generar etiquetas: ${labelResult.error}`);
                     }
                 } else {
-                    etiquetasError = 'La orden no tiene cantidad cotizada, así que no se generaron etiquetas. Revisá "Cotizar Productos".';
+                    etiquetasError = await mensajeSinCantidadCotizada(pool, ordenId);
                     logger.info(`[completarOrden] Orden ${ordenId} sin magnitud cotizada, no se generan etiquetas.`);
                 }
             }

@@ -47,6 +47,16 @@ exports.getPendientes = async (req, res) => {
             x.archivos = a.recordset;
         }
         const [areasCadena, areasUnidades, areasFallaCadena] = await Promise.all([libro.areasConCadena(pool), libro.areasQueCuentanUnidades(pool), libro.areasFallaPropiaRequiereCadena(pool)]);
+        // [FALLA EST/PRO] ¿Hay un transfer (DTF/TPU) que alimenta esta orden? Entonces se puede
+        // reponer aunque la secuencia lineal del pedido no muestre áreas anteriores.
+        let ramasTransfer = [];
+        if (['EST', 'PRO'].includes(area)) {
+            try {
+                const ramas = await libro.ramasReposicion(o.OrdenID, String(o.NoDocERP).trim(), area, pool);
+                ramasTransfer = ramas ? ramas.transfer.map(t => ({ OrdenID: t.OrdenID, CodigoOrden: String(t.CodigoOrden).trim(), AreaID: String(t.AreaID).trim() })) : [];
+            } catch (eR) { logger.warn('[fallaBandeja] ramasReposicion: ' + eR.message); }
+        }
+        const hayAlgoAntes = !!(data.anteriores && data.anteriores.length) || ramasTransfer.length > 0;
         // Cuánto se puede reportar como falla PROPIA de esta orden, "de acuerdo al caso": lo que
         // ya está en mano sin haber salido todavía (trabajado − ya aprobado en tandas). Lo que ya
         // se aprobó y salió en un remito no se puede reportar como fallado ahora — ya no está acá.
@@ -91,14 +101,14 @@ exports.getPendientes = async (req, res) => {
             } catch (eAcc) { logger.warn('[fallaBandeja] accesorios del pedido: ' + eAcc.message); accesorios = []; }
         }
         res.json({ ...data, accesorios, orden: { OrdenID: o.OrdenID, CodigoOrden: o.CodigoOrden, UM: String(o.UM || '').trim(), Magnitud: o.Magnitud, maxFallaPropia },
-                   cadenaHabilitada: areasCadena.includes(area), areasUnidades,
+                   cadenaHabilitada: areasCadena.includes(area), areasUnidades, ramasTransfer,
                    // Spec 39: en estas áreas no hay prenda de repuesto en stock — una falla
                    // PROPIA (no solo un faltante) también arma la cadena completa hacia atrás,
                    // porque si rompió/perdió la prenda física hay que fabricar una nueva.
                    // Además del área, hace falta que ESTE pedido tenga áreas anteriores reales
                    // (mismo criterio que usa `reportar`) — un combo sin tela/corte/costura
                    // detrás no tiene nada que encadenar.
-                   fallaPropiaUsaCadena: areasFallaCadena.includes(area) && !!(data.anteriores && data.anteriores.length) });
+                   fallaPropiaUsaCadena: areasFallaCadena.includes(area) && hayAlgoAntes });
     } catch (err) { logger.error('[fallaBandeja] getPendientes:', err); res.status(err.statusCode || 500).json({ error: err.message }); }
 };
 
@@ -116,6 +126,41 @@ exports.esLoPendiente = async (req, res) => {
  * desde la primera que produce el insumo hasta la inmediata anterior.
  */
 async function proponerCadena(pool, orden, area, cantidad) {
+    // [FALLA EST/PRO] Desde Estampado o PRO la reposición puede tener DOS ramas: la prenda nueva
+    // (cadena hacia atrás, como siempre) y el transfer nuevo (DTF/TPU, que corre en paralelo y
+    // desemboca en Estampado). Cada eslabón lleva `rama` y el operario elige cuáles crear.
+    if (['EST', 'PRO'].includes(area) && orden.OrdenID && orden.NoDocERP) {
+        const ramas = await libro.ramasReposicion(orden.OrdenID, String(orden.NoDocERP).trim(), area, pool);
+        if (ramas) {
+            const areasU = await libro.areasQueCuentanUnidades(pool);
+            const out = [];
+            for (const a of ramas.prenda) {
+                const madre = a.ordenes[0];
+                if (!madre) continue;
+                const areaE = String(a.AreaID).trim().toUpperCase();
+                const cuenta = areasU.includes(areaE);
+                const varias = a.ordenes.length > 1 ? ` (hay ${a.ordenes.length} órdenes de ${areaE} en el pedido: la reposición se hace sobre ${String(madre.CodigoOrden).trim()} y lleva todo lo de esa área)` : '';
+                out.push({
+                    rama: 'PRENDA', area: a.AreaID, ordenMadreId: madre.OrdenID, codigoMadre: String(madre.CodigoOrden).trim(), um: String(madre.UM || '').trim(),
+                    cuentaUnidades: cuenta, cantidad: cuenta ? cantidad : null,
+                    nota: (cuenta ? `Nace con ${cantidad} ${String(madre.UM || '').trim()}` : 'Nace sin metros: los metros aparecen al imprimir y medir. El archivo de reimpresión se sube después desde la orden.') + varias,
+                });
+            }
+            for (const t of ramas.transfer) {
+                const areaE = String(t.AreaID).trim().toUpperCase();
+                const cuenta = areasU.includes(areaE);
+                const destino = String(t.ProximoServicio || area).trim().toUpperCase() || area;
+                out.push({
+                    rama: 'TRANSFER', area: t.AreaID, ordenMadreId: t.OrdenID, codigoMadre: String(t.CodigoOrden).trim(), um: String(t.UM || '').trim(),
+                    cuentaUnidades: cuenta, cantidad: cuenta ? cantidad : null, destino,
+                    nota: (areaE === 'TPU'
+                        ? `Transfer TPU nuevo con la misma matriz (no vuelve a pedir aprobación ni cobra matriz). Nace con ${cantidad} prendas.`
+                        : 'Transfer DTF nuevo: nace sin metros; el archivo de reimpresión se sube desde la orden y los metros aparecen al imprimir.') + ` Va a ${destino}.`,
+                });
+            }
+            if (out.length) return out;
+        }
+    }
     // [PRENDAS] PRO es un caso especial: `getHermanas()` la excluye a propósito de la
     // secuencia (es el "pilar" del pedido, no un paso más), así que nunca aparece en `seq` y
     // `areasAnteriores` normal siempre daría vacío para ella. "Anteriores a PRO" es la
@@ -214,9 +259,11 @@ exports.proponer = async (req, res) => {
                 eslabones = [{ area, ordenMadreId: o.OrdenID, codigoMadre: String(o.CodigoOrden).trim(), um: String(o.UM || '').trim(), cuentaUnidades: cuenta, cantidad: cuenta ? cant : null, nota: 'Orden de falla en esta misma área' }];
             }
         }
-        // Origen del insumo: el de la primera orden de la cadena (o la propia)
-        const primera = await getOrden(pool, eslabones[0].ordenMadreId);
-        const origen = await solicitudes.detectarOrigenInsumo(primera, pool);
+        // Origen del insumo: el de la primera orden de la cadena de la PRENDA (o la propia). El
+        // transfer (DTF/TPU) siempre es material propio.
+        const primeraPrenda = eslabones.find(e => e.rama !== 'TRANSFER');
+        const primera = primeraPrenda ? await getOrden(pool, primeraPrenda.ordenMadreId) : null;
+        const origen = primera ? await solicitudes.detectarOrigenInsumo(primera, pool) : 'PROPIO';
         const stock = origen !== 'PROPIO' ? await solicitudes.buscarStock(origen, primera, pool) : null;
         res.json({ tipo, area, eslabones, origenInsumo: origen, stock, ordenReporta: { OrdenID: o.OrdenID, CodigoOrden: o.CodigoOrden } });
     } catch (err) { logger.error('[fallaBandeja] proponer:', err); res.status(err.statusCode || 500).json({ error: err.message }); }
@@ -289,6 +336,12 @@ exports.reportar = async (req, res) => {
                 eslabones = cadena.length ? cadena : [{ area, ordenMadreId: o.OrdenID, cantidad: cant }];
             }
         }
+        // [FALLA EST/PRO] Dos ramas: prenda (cadena encadenada, como siempre) y transfer (DTF/TPU, en
+        // paralelo, sin ReposicionAnteriorID). Un body sin `rama` (pantalla vieja) es todo prenda.
+        const esTransfer = (e) => String(e?.rama || '').toUpperCase() === 'TRANSFER';
+        const eslabonesPrenda = eslabones.filter(e => !esTransfer(e));
+        const eslabonesTransfer = eslabones.filter(esTransfer);
+        if (!eslabonesPrenda.length && !eslabonesTransfer.length) throw err400('Elegí al menos una reposición para crear.');
         const areasUnidades = await libro.areasQueCuentanUnidades(pool);
         const piezasTxt = Array.isArray(detallePiezas) && detallePiezas.length
             ? detallePiezas.map(p => `${p.cantidad} × ${p.parte || ''}${p.talle ? ' · talle ' + p.talle : ''}`.trim()).join(', ')
@@ -297,10 +350,19 @@ exports.reportar = async (req, res) => {
         tx = new sql.Transaction(pool);
         await tx.begin();
 
-        const primeraMadre = await getOrden(tx, eslabones[0].ordenMadreId);
+        const primeraMadre = await getOrden(tx, (eslabonesPrenda[0] || eslabonesTransfer[0]).ordenMadreId);
         if (!primeraMadre) throw err400('No se encontró la orden madre del primer eslabón.');
-        const origen = await solicitudes.detectarOrigenInsumo(primeraMadre, tx);
+        // El origen del insumo (tela/prenda del cliente, producto del local) lo define la PRENDA. El
+        // transfer (DTF/TPU) siempre es material propio.
+        const origen = eslabonesPrenda.length ? await solicitudes.detectarOrigenInsumo(primeraMadre, tx) : 'PROPIO';
         const imgPath = imagenBase64 ? await saveFallaImage(imagenBase64, String(o.CodigoOrden).trim(), `falta-${Date.now()}`) : null;
+        // ¿De qué orden es el archivo de origen elegido? Si es de un DTF/TPU, va en su reposición.
+        let archOrdenId = null;
+        if (archivoOrigenId) {
+            const ra = await new sql.Request(tx).input('a', sql.Int, parseInt(archivoOrigenId, 10)).query('SELECT OrdenID FROM ArchivosOrden WHERE ArchivoID = @a');
+            archOrdenId = ra.recordset[0]?.OrdenID || null;
+        }
+        const archEsDeTransfer = !!archOrdenId && eslabonesTransfer.some(e => Number(e.ordenMadreId) === Number(archOrdenId));
 
         // Registro de la falla (tabla histórica) sobre la orden madre del primer eslabón
         const fallaIns = await new sql.Request(tx)
@@ -316,15 +378,57 @@ exports.reportar = async (req, res) => {
         const creadas = [];
         let solicitudId = null;
 
-        if (origen !== 'PROPIO') {
+        // [FALLA EST/PRO] Rama TRANSFER: una orden de falla por cada DTF/TPU elegido. Nacen PENDIENTE
+        // (no esperan a nadie: el film/la matriz son nuestros) y van al área que las aplica
+        // (Estampado). Si reporta PRO, el eslabón de Estampado de la rama prenda las espera a ellas
+        // además de a la prenda (ver reposicionesService.alRecibirEnvio).
+        const transfersCreados = [];
+        for (const e of eslabonesTransfer) {
+            const madre = await getOrden(tx, e.ordenMadreId);
+            if (!madre) throw err400(`No se encontró la orden ${e.codigoMadre || e.ordenMadreId}.`);
+            const areaE = String(madre.AreaID).trim().toUpperCase();
+            if (!libro.AREAS_TRANSFER.includes(areaE)) throw err400(`${String(madre.CodigoOrden).trim()} no es una orden de DTF ni de TPU.`);
+            if (String(madre.NoDocERP || '').trim() !== String(o.NoDocERP || '').trim()) throw err400(`${String(madre.CodigoOrden).trim()} no es de este pedido.`);
+            const cuenta = areasUnidades.includes(areaE);
+            const cantE = e.cantidad != null && e.cantidad !== '' ? Number(e.cantidad) : (cuenta ? cant : null);
+            const magnitud = cuenta && cantE != null ? String(cantE) : '0';
+            const destino = String(e.destino || madre.ProximoServicio || area).trim().toUpperCase();
+            const codigo = await codigoFalla(tx, madre.CodigoOrden, fallaId);
+            const notaF = `FALLA (${tipo === 'FALTANTE' ? 'faltante' : 'falla propia'}) reportada desde ${area} por ${String(o.CodigoOrden).trim()}: ${motivo}. Transfer nuevo para ${destino}.` +
+                (piezasTxt ? ` Piezas: ${piezasTxt}.` : '') + (nota ? ` Nota: ${nota}.` : '') +
+                (areaE === 'TPU' ? ' Misma matriz ya aprobada: no se vuelve a pedir aprobación ni se cobra matriz.' : '') +
+                (!cuenta ? ' Sin metros hasta imprimir y medir. Subir el archivo de reimpresión desde el detalle de la orden.' : '');
+            const nuevaId = await crearOrdenFalla(tx, { madre, codigo, magnitud, proximoServicio: destino, liberaCuandoOrdenId: null, estadoDependencia: null, nota: notaF });
+            const repIns = await new sql.Request(tx)
+                .input('madre', sql.Int, madre.OrdenID).input('falla', sql.Int, nuevaId).input('rep', sql.Int, o.OrdenID)
+                .input('ap', sql.VarChar(20), areaE).input('ar', sql.VarChar(20), area)
+                .input('tipo', sql.VarChar(20), tipo)
+                .input('cant', sql.Decimal(12, 2), cuenta ? cantE : null).input('um', sql.NChar(10), String(madre.UM || '').trim() || null)
+                .input('motivo', sql.NVarChar(200), motivo.slice(0, 200)).input('nota', sql.NVarChar(sql.MAX), nota || null)
+                .input('img', sql.NVarChar(300), imgPath)
+                .input('arch', sql.Int, archEsDeTransfer && Number(archOrdenId) === Number(madre.OrdenID) ? parseInt(archivoOrigenId, 10) : null)
+                .input('piezas', sql.NVarChar(sql.MAX), Array.isArray(detallePiezas) && detallePiezas.length ? JSON.stringify(detallePiezas) : null)
+                .input('fid', sql.Int, fallaId)
+                .input('doc', sql.NChar, o.NoDocERP ? String(o.NoDocERP).trim() : null).input('u', sql.Int, usuarioId)
+                .query(`INSERT INTO Reposiciones (OrdenMadreID, OrdenFallaID, OrdenReportaID, AreaProduce, AreaReporta, Tipo, OrigenInsumo, Estado, Cantidad, Unidad, Motivo, Nota, ImagenPath, ArchivoOrigenID, DetallePiezas, ReposicionAnteriorID, FallaID, NoDocERP, UsuarioID)
+                        OUTPUT INSERTED.ReposicionID
+                        VALUES (@madre, @falla, @rep, @ap, @ar, @tipo, 'PROPIO', 'PENDIENTE', @cant, @um, @motivo, @nota, @img, @arch, @piezas, NULL, @fid, @doc, @u)`);
+            const reposicionId = repIns.recordset[0].ReposicionID;
+            transfersCreados.push({ ordenFallaId: nuevaId, destino });
+            creadas.push({ reposicionId, ordenFallaId: nuevaId, codigo, area: areaE, cantidad: cuenta ? cantE : null, sinMetros: !cuenta, estado: 'PENDIENTE', rama: 'TRANSFER' });
+        }
+
+        if (!eslabonesPrenda.length) {
+            // Solo transfer: no hay prenda nueva que fabricar.
+        } else if (origen !== 'PROPIO') {
             // Insumo del cliente / producto del local: NO nace ninguna orden. Se registra la cadena
             // completa en Reposiciones (primer eslabón ESPERANDO_INSUMO, los demás BLOQUEADA) y la
             // solicitud para Atención al Cliente / Administración. Las órdenes -F se crean recién con
             // la decisión (materializarCadena).
             const stock = await solicitudes.buscarStock(origen, primeraMadre, tx);
             let anteriorRepId = null, primeraRepId = null;
-            for (let i = 0; i < eslabones.length; i++) {
-                const e = eslabones[i];
+            for (let i = 0; i < eslabonesPrenda.length; i++) {
+                const e = eslabonesPrenda[i];
                 const madre = i === 0 ? primeraMadre : await getOrden(tx, e.ordenMadreId);
                 if (!madre) throw err400(`No se encontró la orden madre del eslabón ${e.area}.`);
                 const areaE = String(madre.AreaID).trim().toUpperCase();
@@ -337,7 +441,7 @@ exports.reportar = async (req, res) => {
                     .input('estado', sql.VarChar(20), i === 0 ? 'ESPERANDO_INSUMO' : 'BLOQUEADA')
                     .input('cant', sql.Decimal(12, 2), cantE).input('um', sql.NChar(10), String(i === 0 ? (o.UM || madre.UM) : madre.UM || '').trim() || null)
                     .input('motivo', sql.NVarChar(200), motivo.slice(0, 200)).input('nota', sql.NVarChar(sql.MAX), nota || null)
-                    .input('img', sql.NVarChar(300), imgPath).input('arch', sql.Int, i === 0 && archivoOrigenId ? parseInt(archivoOrigenId, 10) : null)
+                    .input('img', sql.NVarChar(300), imgPath).input('arch', sql.Int, i === 0 && archivoOrigenId && !archEsDeTransfer ? parseInt(archivoOrigenId, 10) : null)
                     .input('piezas', sql.NVarChar(sql.MAX), Array.isArray(detallePiezas) && detallePiezas.length ? JSON.stringify(detallePiezas) : null)
                     .input('ant', sql.Int, anteriorRepId).input('falla', sql.Int, fallaId)
                     .input('doc', sql.NChar, o.NoDocERP ? String(o.NoDocERP).trim() : null).input('u', sql.Int, usuarioId)
@@ -348,50 +452,55 @@ exports.reportar = async (req, res) => {
                 if (i === 0) primeraRepId = anteriorRepId;
             }
             solicitudId = await solicitudes.crearSolicitud(tx, { reposicionId: primeraRepId, tipo: origen, stock, usuarioId });
-            creadas.push({ reposicionId: primeraRepId, solicitudId, origen, stock: stock?.resumen, eslabones: eslabones.length });
+            creadas.push({ reposicionId: primeraRepId, solicitudId, origen, stock: stock?.resumen, eslabones: eslabonesPrenda.length });
         } else {
             // Cadena de reposición: una orden de falla por eslabón, encadenadas
             let anteriorRepId = null, anteriorOrdenFallaId = null;
-            for (let i = 0; i < eslabones.length; i++) {
-                const e = eslabones[i];
+            for (let i = 0; i < eslabonesPrenda.length; i++) {
+                const e = eslabonesPrenda[i];
                 const madre = i === 0 ? primeraMadre : await getOrden(tx, e.ordenMadreId);
                 if (!madre) throw err400(`No se encontró la orden madre del eslabón ${e.area}.`);
                 const areaE = String(madre.AreaID).trim().toUpperCase();
                 const cuenta = areasUnidades.includes(areaE);
                 const cantE = e.cantidad != null && e.cantidad !== '' ? Number(e.cantidad) : (cuenta ? cant : null);
                 const magnitud = cuenta && cantE != null ? String(cantE) : '0';
-                const ultimo = i === eslabones.length - 1;
-                const siguiente = ultimo ? null : String(eslabones[i + 1].area).trim().toUpperCase();
-                const mismaArea = areaE === area && eslabones.length === 1 && madre.OrdenID === o.OrdenID;
+                const ultimo = i === eslabonesPrenda.length - 1;
+                const siguiente = ultimo ? null : String(eslabonesPrenda[i + 1].area).trim().toUpperCase();
+                const mismaArea = areaE === area && eslabonesPrenda.length === 1 && madre.OrdenID === o.OrdenID;
                 // A dónde va el material de esta reposición: al siguiente eslabón, o al área que reportó;
                 // si produce y reporta la misma área, sigue el camino de la madre.
                 const prox = siguiente || (mismaArea ? (madre.ProximoServicio || null) : area);
+                // [FALLA EST/PRO] Este eslabón (Estampado, cuando reporta PRO) también espera el transfer nuevo.
+                const transferQueEspera = transfersCreados.find(t => t.destino === areaE) || null;
+                const liberaCuando = anteriorOrdenFallaId || (transferQueEspera ? transferQueEspera.ordenFallaId : null);
                 const codigo = await codigoFalla(tx, madre.CodigoOrden, fallaId);
                 const notaF = `FALLA (${tipo === 'FALTANTE' ? 'faltante' : 'falla propia'}) reportada desde ${area} por ${String(o.CodigoOrden).trim()}: ${motivo}.` +
                     (piezasTxt ? ` Piezas: ${piezasTxt}.` : '') + (nota ? ` Nota: ${nota}.` : '') +
                     (!cuenta ? ' Sin metros hasta imprimir y medir. Subir el archivo de reimpresión desde el detalle de la orden.' : '') +
-                    (anteriorOrdenFallaId ? ` Se libera cuando llegue la reposición del área anterior.` : '');
+                    (anteriorOrdenFallaId ? ` Se libera cuando llegue la reposición del área anterior.` : '') +
+                    (transferQueEspera ? ` Espera también el transfer nuevo (DTF/TPU).` : '');
                 const nuevaId = await crearOrdenFalla(tx, {
                     madre, codigo, magnitud, proximoServicio: prox,
-                    liberaCuandoOrdenId: anteriorOrdenFallaId, estadoDependencia: anteriorOrdenFallaId ? 'ESPERANDO_REPOSICION' : null,
+                    liberaCuandoOrdenId: liberaCuando, estadoDependencia: liberaCuando ? 'ESPERANDO_REPOSICION' : null,
                     nota: notaF,
                 });
                 const repIns = await new sql.Request(tx)
                     .input('madre', sql.Int, madre.OrdenID).input('falla', sql.Int, nuevaId).input('rep', sql.Int, o.OrdenID)
                     .input('ap', sql.VarChar(20), areaE).input('ar', sql.VarChar(20), area)
-                    .input('tipo', sql.VarChar(20), tipo).input('estado', sql.VarChar(20), anteriorRepId ? 'BLOQUEADA' : 'PENDIENTE')
+                    .input('tipo', sql.VarChar(20), tipo).input('estado', sql.VarChar(20), (anteriorRepId || transferQueEspera) ? 'BLOQUEADA' : 'PENDIENTE')
                     .input('cant', sql.Decimal(12, 2), cuenta ? cantE : null).input('um', sql.NChar(10), String(madre.UM || '').trim() || null)
                     .input('motivo', sql.NVarChar(200), motivo.slice(0, 200)).input('nota', sql.NVarChar(sql.MAX), nota || null)
-                    .input('img', sql.NVarChar(300), imgPath).input('arch', sql.Int, i === 0 && archivoOrigenId ? parseInt(archivoOrigenId, 10) : null)
+                    .input('img', sql.NVarChar(300), imgPath).input('arch', sql.Int, i === 0 && archivoOrigenId && !archEsDeTransfer ? parseInt(archivoOrigenId, 10) : null)
                     .input('piezas', sql.NVarChar(sql.MAX), Array.isArray(detallePiezas) && detallePiezas.length ? JSON.stringify(detallePiezas) : null)
                     .input('ant', sql.Int, anteriorRepId).input('fid', sql.Int, fallaId)
                     .input('doc', sql.NChar, o.NoDocERP ? String(o.NoDocERP).trim() : null).input('u', sql.Int, usuarioId)
                     .query(`INSERT INTO Reposiciones (OrdenMadreID, OrdenFallaID, OrdenReportaID, AreaProduce, AreaReporta, Tipo, OrigenInsumo, Estado, Cantidad, Unidad, Motivo, Nota, ImagenPath, ArchivoOrigenID, DetallePiezas, ReposicionAnteriorID, FallaID, NoDocERP, UsuarioID)
                             OUTPUT INSERTED.ReposicionID
                             VALUES (@madre, @falla, @rep, @ap, @ar, @tipo, 'PROPIO', @estado, @cant, @um, @motivo, @nota, @img, @arch, @piezas, @ant, @fid, @doc, @u)`);
+                const estadoEslabon = (anteriorRepId || transferQueEspera) ? 'BLOQUEADA' : 'PENDIENTE';
                 anteriorRepId = repIns.recordset[0].ReposicionID;
                 anteriorOrdenFallaId = nuevaId;
-                creadas.push({ reposicionId: anteriorRepId, ordenFallaId: nuevaId, codigo, area: areaE, cantidad: cuenta ? cantE : null, sinMetros: !cuenta, estado: anteriorRepId && i > 0 ? 'BLOQUEADA' : 'PENDIENTE' });
+                creadas.push({ reposicionId: anteriorRepId, ordenFallaId: nuevaId, codigo, area: areaE, cantidad: cuenta ? cantE : null, sinMetros: !cuenta, estado: estadoEslabon, rama: 'PRENDA' });
             }
         }
 
@@ -415,10 +524,13 @@ exports.reportar = async (req, res) => {
         await registrarAuditoria(tx, usuarioId, 'FALLA_BANDEJA', `${area} ${String(o.CodigoOrden).trim()} [${tipo}] ${motivo} · origen ${origen} · ${creadas.map(c => c.codigo || ('solicitud #' + c.solicitudId)).join(', ')}`, req.ip);
         await tx.commit();
 
+        const transferTxt = creadas.filter(c => c.rama === 'TRANSFER').map(c => c.codigo);
+        const extraTransfer = transferTxt.length ? ` Transfer nuevo: se crearon ${transferTxt.join(' y ')}.` : '';
+        const filaSolicitud = creadas.find(c => c.solicitudId) || {};
         const message = origen === 'PRODUCTO_LOCAL'
-            ? `No se creó ninguna orden todavía: es un producto del local. Se abrió la solicitud #${solicitudId} para que Atención al Cliente apruebe la reposición del stock (VEN interna). Al cliente no se le avisa.`
+            ? `No se creó ninguna orden de la prenda todavía: es un producto del local. Se abrió la solicitud #${solicitudId} para que Atención al Cliente apruebe la reposición del stock (VEN interna). Al cliente no se le avisa.${extraTransfer}`
             : origen !== 'PROPIO'
-            ? `No se creó ninguna orden: el insumo es del cliente o del local. Se abrió la solicitud #${solicitudId} para Atención al Cliente y Administración. ${creadas[0].stock || ''} La orden ${String(o.CodigoOrden).trim()} queda retenida hasta la decisión del cliente.`
+            ? `No se creó ninguna orden de la prenda: el insumo es del cliente o del local. Se abrió la solicitud #${solicitudId} para Atención al Cliente y Administración. ${filaSolicitud.stock || ''} La orden ${String(o.CodigoOrden).trim()} queda retenida hasta la decisión del cliente.${extraTransfer}`
             : `Se crearon ${creadas.map(c => `${c.codigo} (${c.sinMetros ? 'sin metros hasta imprimir' : c.cantidad + ' ' + String(o.UM || '').trim()})`).join(' y ')}. ${String(o.CodigoOrden).trim()} queda retenida hasta recibir la reposición. Podés seguir trabajando con lo que tenés.`;
         res.json({ success: true, origenInsumo: origen, creadas, solicitudId, fallaId, message });
     } catch (err) {

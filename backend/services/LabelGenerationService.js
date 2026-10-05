@@ -6,6 +6,138 @@ const { importeOrdenParaDeposito } = require('../utils/montoTotalPedido');
 class LabelGenerationService {
 
     /**
+     * Arma el QR de 7 campos de UNA orden (código, cliente, trabajo, urgencia, producto,
+     * cantidad, importe) con las mismas validaciones de siempre. Lo usan regenerateLabelsForOrder
+     * (al crear las etiquetas) y refreshQrForOrder (al cambiar la cotización de una orden que ya
+     * tiene etiqueta y todavía no entró a depósito).
+     * @returns {{success:false,error:string}|{success:true,finalQrStringToSave,dbDetalleCostos,dbPerfilesPrecio}}
+     */
+    static async armarQrOrden(pool, o) {
+        const ordenId = o.OrdenID;
+        // --- VALIDACIÓN DE MAGNITUD DESDE PEDIDOSCOBRANZADETALLE ---
+        // A solicitud del usuario, la validación estricta debe basarse en la cotización guardada en el ERP Sync.
+        // Las líneas se suman CONVERTIDAS a la moneda del pedido: con impresión en USD y
+        // terminaciones en UYU, sumar en crudo mandaba a la etiqueta el importe inflado
+        // ~40x (EUV-13767: 859.75 en vez de 40.30).
+        // [POR ÁREA] mismo importe con el que la orden entra a depósito (en la PRO madre de un
+        // pedido por área: el total del pedido), para que el QR y el depósito no difieran.
+        const pcd = await importeOrdenParaDeposito(pool, ordenId);
+
+        const magnitudValor = parseFloat(pcd.Cant) || 0;
+        // Importe y producto de ESTA orden (sus líneas de detalle), para armar el QR por orden
+        const subtotalOrden = parseFloat(pcd.Imp) || 0;
+        const prodOrdenId   = pcd.Prod || null;
+        
+        const codOrdLocal = (o.CodigoOrden || '').trim().toUpperCase();
+        const prioridadLocal = (o.Prioridad || '').trim().toUpperCase();
+        const esRepoLocal = codOrdLocal.includes('-R') || prioridadLocal === 'REPOSICIÓN' || prioridadLocal === 'REPOSICION';
+        // Falla interna (-F#): mismo trato sin cargo que la reposición — su etiqueta
+        // nunca debe heredar el importe del pedido (en julio generó 2 débitos reales).
+        const esFallaLocal = /-F\d/.test(codOrdLocal) || prioridadLocal === 'FALLA';
+        // Hermana de terminaciones (XEUV, área TERMINAC): NO tiene línea de cotización
+        // a propósito (el precio viaja en la orden ECOUV). Sus etiquetas van con
+        // importe 0 intencional — nunca el importe del pedido (duplicaría el retiro).
+        const esTerminac = (o.AreaID || '').trim().toUpperCase() === 'TERMINAC';
+        // [PRENDAS] Bordado/DTF/TPU/Estampado/Corte/Costura de una prenda
+        // comprada+personalizada: trabajo interno de una orden madre PRO (el precio
+        // único viaja ahí). Mismo trato que TERMINAC arriba — necesitan poder imprimir
+        // su propio bulto de "próximo destino" sin cotización propia.
+        const esHermanaPrendaLbl = ['EMB', 'DF', 'TPU', 'EST', 'TWC', 'TWT', 'SB', 'DIRECTA', 'ECOUV'].includes((o.AreaID || '').trim().toUpperCase())
+            ? (await pool.request().input('Doc', sql.VarChar, String(o.NoDocERP || ''))
+                .query("SELECT TOP 1 1 AS X FROM Ordenes WHERE NoDocERP = @Doc AND AreaID = 'PRO'")).recordset.length > 0
+            : false;
+
+        if (magnitudValor <= 0 && !esRepoLocal && !esFallaLocal && !esTerminac && !esHermanaPrendaLbl) {
+            return { success: false, error: `No se pueden generar etiquetas: La magnitud cotizada es 0 o inválida. Revise la cotización de los items para esta área en 'Cotizar Productos'.` };
+        }
+
+        // --- EXTRACCION DE PRECIO Y QR DE DB (NUEVA LOGICA UNIFICADA) ---
+        let importeTotalStr = '0.00';
+        let targetCurrency = 'UYU';
+        let dbQrString = null;
+        let dbDetalleCostos = null;
+        let dbPerfilesPrecio = null;
+
+        try {
+            // Buscamos en PedidosCobranza ya que guarda la fuente de la verdad
+            const pRes = await pool.request().input('Doc', sql.NVarChar, o.NoDocERP || '').query("SELECT MontoTotal, Moneda, QR_String, DetalleCostos, PerfilesPrecio FROM PedidosCobranza WHERE NoDocERP = @Doc");
+            if (pRes.recordset.length > 0) {
+                importeTotalStr = Number(pRes.recordset[0].MontoTotal || 0).toFixed(2);
+                targetCurrency = pRes.recordset[0].Moneda || 'UYU';
+                dbQrString = pRes.recordset[0].QR_String;
+                dbDetalleCostos = pRes.recordset[0].DetalleCostos;
+                dbPerfilesPrecio = pRes.recordset[0].PerfilesPrecio;
+            } else if (o.CostoTotal) {
+                importeTotalStr = Number(o.CostoTotal).toFixed(2);
+            }
+        } catch (ignore) {
+            if (o.CostoTotal) importeTotalStr = Number(o.CostoTotal).toFixed(2);
+        }
+
+        // Validar costo > 0, EXCEPTO para órdenes de Reposición o Prepago.
+        // En Reposición o Prepago el $0 es intencional, se permite imprimir igual.
+        const codOrd = (o.CodigoOrden || '').trim().toUpperCase();
+        const prioridad = (o.Prioridad || '').trim().toUpperCase();
+        const esReposicion = codOrd.includes('-R') || prioridad === 'REPOSICIÓN' || prioridad === 'REPOSICION';
+        const esFalla = /-F\d/.test(codOrd) || prioridad === 'FALLA';
+        const esPrepago = (dbPerfilesPrecio && dbPerfilesPrecio.toLowerCase().includes('prepago')) || (dbDetalleCostos && dbDetalleCostos.toLowerCase().includes('prepago'));
+
+        if (!esReposicion && !esFalla && !esPrepago && !esTerminac && !esHermanaPrendaLbl && (importeTotalStr === '0.00' || importeTotalStr === '0' || Number(importeTotalStr) <= 0)) {
+            return { success: false, error: 'Calculo Frio: La orden no cuenta con un costo válido (Es $0). Vaya a Edit Cotización e ingrese un valor, o asegúrese de aplicar prepago o código R para habilitar $0.' };
+        }
+
+        // --- GENERACIÓN DEL STRING QR ($*) — POR ORDEN ---
+        // Cada orden hermana (mismo NoDocERP) debe llevar SU código (con sufijo n/m), cantidad,
+        // importe y producto, tomados de su línea en PedidosCobranzaDetalle. Antes se estampaba
+        // el QR_String del PEDIDO igual en todas las hermanas (código base + cantidad/importe
+        // totales del pedido) → el retiro sumaba el total por cada hermana (duplicado).
+
+        // IDProdReact del producto de esta orden (campo producto del QR)
+        let idProdReactOrden = null;
+        if (prodOrdenId) {
+            try {
+                const prRes = await pool.request()
+                    .input('P', sql.Int, prodOrdenId)
+                    .query('SELECT TOP 1 IDProdReact FROM Articulos WHERE ProIdProducto = @P');
+                idProdReactOrden = prRes.recordset[0]?.IDProdReact ?? null;
+            } catch (ignore) { }
+        }
+
+        // Partimos del QR del pedido (si existe) para reutilizar cliente/trabajo/urgencia,
+        // y reemplazamos código/producto/cantidad/importe por los de la orden. Cada campo
+        // cae al valor del pedido/QR sólo si la orden no tiene ese dato (ej. reposición).
+        const _pp = dbQrString ? dbQrString.split('$*') : [];
+        const _isUrgent = (o.Prioridad && (o.Prioridad.toLowerCase().includes('urgente') || o.Prioridad.toLowerCase().includes('alta')));
+        const _baseOrderMatch = o.CodigoOrden ? o.CodigoOrden.match(/^(\d+)/) : null;
+
+        const _qrCodigo   = (o.CodigoOrden || _pp[0] || (_baseOrderMatch ? _baseOrderMatch[1] : String(o.OrdenID))).trim();
+        const _qrCliente  = _pp[1] || String(o.IdClienteReact || '0');
+        const _qrTrabajo  = (_pp[2] || o.DescripcionTrabajo || '').replace(/\$\*/g, ' ').trim();
+        const _qrUrgencia = _pp[3] || (_isUrgent ? '2' : '1');
+        const _qrProducto = (idProdReactOrden != null) ? String(idProdReactOrden) : (_pp[4] || (targetCurrency === 'USD' ? '150' : '82'));
+        // TERMINAC: cantidad = la de la propia orden e importe 0 FIJO — sin caer al
+        // fallback del QR del pedido (llevaría cantidad/importe TOTALES y el ingreso
+        // a depósito duplicaría el retiro).
+        const _qrCantidad = esTerminac ? String(o.Magnitud || '1')
+            : ((magnitudValor > 0) ? String(magnitudValor) : (_pp[5] || String(o.Magnitud || '1')));
+        // Reposición cliente (-R): re-trabajo SIN CARGO — importe 0.00 FIJO. Sin esto,
+        // como la -R nunca tiene línea propia de cobranza (subtotalOrden 0), caía al
+        // fallback del QR/MontoTotal del PEDIDO (comparte NoDocERP con la madre) y el
+        // ingreso a depósito por escaneo la metía cobrable con el costo de la madre.
+        // Línea propia en $0 A PROPÓSITO (cubierta por el plan de metros / prepago): importe 0.
+        // Sin esto, cada parte en $0 de un pedido dividido "(n/m)" llevaba en el QR el total
+        // del pedido, y el ingreso a Depósito lo copiaba (ver costoParaDeposito).
+        const ceroIntencional = pcd.Imp === 0 && pcd.CeroIntencional;
+        const _qrImporte  = (esTerminac || esRepoLocal || esFallaLocal || ceroIntencional) ? '0.00'
+            : ((subtotalOrden > 0) ? subtotalOrden.toFixed(2) : (_pp[6] || importeTotalStr));
+
+        const SEP = '$*';
+        let finalQrStringToSave = `${_qrCodigo}${SEP}${_qrCliente}${SEP}${_qrTrabajo}${SEP}${_qrUrgencia}${SEP}${_qrProducto}${SEP}${_qrCantidad}${SEP}${_qrImporte}`;
+
+        return { success: true, finalQrStringToSave, dbDetalleCostos, dbPerfilesPrecio };
+    }
+
+    /**
      * Valida y regenera etiquetas para una orden.
      * SIMPLIFICADO: Ahora solo se encarga de crear los bultos para logística.
      * La cotización y sincronización se movieron al flujo de ERPSyncService.
@@ -25,42 +157,10 @@ class LabelGenerationService {
             }
             const o = orderRes.recordset[0];
 
-            // --- VALIDACIÓN DE MAGNITUD DESDE PEDIDOSCOBRANZADETALLE ---
-            // A solicitud del usuario, la validación estricta debe basarse en la cotización guardada en el ERP Sync.
-            // Las líneas se suman CONVERTIDAS a la moneda del pedido: con impresión en USD y
-            // terminaciones en UYU, sumar en crudo mandaba a la etiqueta el importe inflado
-            // ~40x (EUV-13767: 859.75 en vez de 40.30).
-            // [POR ÁREA] mismo importe con el que la orden entra a depósito (en la PRO madre de un
-            // pedido por área: el total del pedido), para que el QR y el depósito no difieran.
-            const pcd = await importeOrdenParaDeposito(pool, ordenId);
-
-            const magnitudValor = parseFloat(pcd.Cant) || 0;
-            // Importe y producto de ESTA orden (sus líneas de detalle), para armar el QR por orden
-            const subtotalOrden = parseFloat(pcd.Imp) || 0;
-            const prodOrdenId   = pcd.Prod || null;
-            
-            const codOrdLocal = (o.CodigoOrden || '').trim().toUpperCase();
-            const prioridadLocal = (o.Prioridad || '').trim().toUpperCase();
-            const esRepoLocal = codOrdLocal.includes('-R') || prioridadLocal === 'REPOSICIÓN' || prioridadLocal === 'REPOSICION';
-            // Falla interna (-F#): mismo trato sin cargo que la reposición — su etiqueta
-            // nunca debe heredar el importe del pedido (en julio generó 2 débitos reales).
-            const esFallaLocal = /-F\d/.test(codOrdLocal) || prioridadLocal === 'FALLA';
-            // Hermana de terminaciones (XEUV, área TERMINAC): NO tiene línea de cotización
-            // a propósito (el precio viaja en la orden ECOUV). Sus etiquetas van con
-            // importe 0 intencional — nunca el importe del pedido (duplicaría el retiro).
-            const esTerminac = (o.AreaID || '').trim().toUpperCase() === 'TERMINAC';
-            // [PRENDAS] Bordado/DTF/TPU/Estampado/Corte/Costura de una prenda
-            // comprada+personalizada: trabajo interno de una orden madre PRO (el precio
-            // único viaja ahí). Mismo trato que TERMINAC arriba — necesitan poder imprimir
-            // su propio bulto de "próximo destino" sin cotización propia.
-            const esHermanaPrendaLbl = ['EMB', 'DF', 'TPU', 'EST', 'TWC', 'TWT', 'SB', 'DIRECTA', 'ECOUV'].includes((o.AreaID || '').trim().toUpperCase())
-                ? (await pool.request().input('Doc', sql.VarChar, String(o.NoDocERP || ''))
-                    .query("SELECT TOP 1 1 AS X FROM Ordenes WHERE NoDocERP = @Doc AND AreaID = 'PRO'")).recordset.length > 0
-                : false;
-
-            if (magnitudValor <= 0 && !esRepoLocal && !esFallaLocal && !esTerminac && !esHermanaPrendaLbl) {
-                return { success: false, error: `No se pueden generar etiquetas: La magnitud cotizada es 0 o inválida. Revise la cotización de los items para esta área en 'Cotizar Productos'.` };
-            }
+            // --- VALIDACIÓN + QR (ver armarQrOrden) ---
+            const armado = await LabelGenerationService.armarQrOrden(pool, o);
+            if (!armado.success) return armado;
+            const { finalQrStringToSave, dbDetalleCostos, dbPerfilesPrecio } = armado;
 
             // --- CÁLCULO CANTIDAD BULTOS (Lógica Metros/Bulto) ---
             let totalBultos = cantidadManual;
@@ -86,89 +186,6 @@ class LabelGenerationService {
                     totalBultos = 1;
                 }
             }
-
-            // --- EXTRACCION DE PRECIO Y QR DE DB (NUEVA LOGICA UNIFICADA) ---
-            let importeTotalStr = '0.00';
-            let targetCurrency = 'UYU';
-            let dbQrString = null;
-            let dbDetalleCostos = null;
-            let dbPerfilesPrecio = null;
-
-            try {
-                // Buscamos en PedidosCobranza ya que guarda la fuente de la verdad
-                const pRes = await pool.request().input('Doc', sql.NVarChar, o.NoDocERP || '').query("SELECT MontoTotal, Moneda, QR_String, DetalleCostos, PerfilesPrecio FROM PedidosCobranza WHERE NoDocERP = @Doc");
-                if (pRes.recordset.length > 0) {
-                    importeTotalStr = Number(pRes.recordset[0].MontoTotal || 0).toFixed(2);
-                    targetCurrency = pRes.recordset[0].Moneda || 'UYU';
-                    dbQrString = pRes.recordset[0].QR_String;
-                    dbDetalleCostos = pRes.recordset[0].DetalleCostos;
-                    dbPerfilesPrecio = pRes.recordset[0].PerfilesPrecio;
-                } else if (o.CostoTotal) {
-                    importeTotalStr = Number(o.CostoTotal).toFixed(2);
-                }
-            } catch (ignore) {
-                if (o.CostoTotal) importeTotalStr = Number(o.CostoTotal).toFixed(2);
-            }
-
-            // Validar costo > 0, EXCEPTO para órdenes de Reposición o Prepago.
-            // En Reposición o Prepago el $0 es intencional, se permite imprimir igual.
-            const codOrd = (o.CodigoOrden || '').trim().toUpperCase();
-            const prioridad = (o.Prioridad || '').trim().toUpperCase();
-            const esReposicion = codOrd.includes('-R') || prioridad === 'REPOSICIÓN' || prioridad === 'REPOSICION';
-            const esFalla = /-F\d/.test(codOrd) || prioridad === 'FALLA';
-            const esPrepago = (dbPerfilesPrecio && dbPerfilesPrecio.toLowerCase().includes('prepago')) || (dbDetalleCostos && dbDetalleCostos.toLowerCase().includes('prepago'));
-
-            if (!esReposicion && !esFalla && !esPrepago && !esTerminac && !esHermanaPrendaLbl && (importeTotalStr === '0.00' || importeTotalStr === '0' || Number(importeTotalStr) <= 0)) {
-                return { success: false, error: 'Calculo Frio: La orden no cuenta con un costo válido (Es $0). Vaya a Edit Cotización e ingrese un valor, o asegúrese de aplicar prepago o código R para habilitar $0.' };
-            }
-
-            // --- GENERACIÓN DEL STRING QR ($*) — POR ORDEN ---
-            // Cada orden hermana (mismo NoDocERP) debe llevar SU código (con sufijo n/m), cantidad,
-            // importe y producto, tomados de su línea en PedidosCobranzaDetalle. Antes se estampaba
-            // el QR_String del PEDIDO igual en todas las hermanas (código base + cantidad/importe
-            // totales del pedido) → el retiro sumaba el total por cada hermana (duplicado).
-
-            // IDProdReact del producto de esta orden (campo producto del QR)
-            let idProdReactOrden = null;
-            if (prodOrdenId) {
-                try {
-                    const prRes = await pool.request()
-                        .input('P', sql.Int, prodOrdenId)
-                        .query('SELECT TOP 1 IDProdReact FROM Articulos WHERE ProIdProducto = @P');
-                    idProdReactOrden = prRes.recordset[0]?.IDProdReact ?? null;
-                } catch (ignore) { }
-            }
-
-            // Partimos del QR del pedido (si existe) para reutilizar cliente/trabajo/urgencia,
-            // y reemplazamos código/producto/cantidad/importe por los de la orden. Cada campo
-            // cae al valor del pedido/QR sólo si la orden no tiene ese dato (ej. reposición).
-            const _pp = dbQrString ? dbQrString.split('$*') : [];
-            const _isUrgent = (o.Prioridad && (o.Prioridad.toLowerCase().includes('urgente') || o.Prioridad.toLowerCase().includes('alta')));
-            const _baseOrderMatch = o.CodigoOrden ? o.CodigoOrden.match(/^(\d+)/) : null;
-
-            const _qrCodigo   = (o.CodigoOrden || _pp[0] || (_baseOrderMatch ? _baseOrderMatch[1] : String(o.OrdenID))).trim();
-            const _qrCliente  = _pp[1] || String(o.IdClienteReact || '0');
-            const _qrTrabajo  = (_pp[2] || o.DescripcionTrabajo || '').replace(/\$\*/g, ' ').trim();
-            const _qrUrgencia = _pp[3] || (_isUrgent ? '2' : '1');
-            const _qrProducto = (idProdReactOrden != null) ? String(idProdReactOrden) : (_pp[4] || (targetCurrency === 'USD' ? '150' : '82'));
-            // TERMINAC: cantidad = la de la propia orden e importe 0 FIJO — sin caer al
-            // fallback del QR del pedido (llevaría cantidad/importe TOTALES y el ingreso
-            // a depósito duplicaría el retiro).
-            const _qrCantidad = esTerminac ? String(o.Magnitud || '1')
-                : ((magnitudValor > 0) ? String(magnitudValor) : (_pp[5] || String(o.Magnitud || '1')));
-            // Reposición cliente (-R): re-trabajo SIN CARGO — importe 0.00 FIJO. Sin esto,
-            // como la -R nunca tiene línea propia de cobranza (subtotalOrden 0), caía al
-            // fallback del QR/MontoTotal del PEDIDO (comparte NoDocERP con la madre) y el
-            // ingreso a depósito por escaneo la metía cobrable con el costo de la madre.
-            // Línea propia en $0 A PROPÓSITO (cubierta por el plan de metros / prepago): importe 0.
-            // Sin esto, cada parte en $0 de un pedido dividido "(n/m)" llevaba en el QR el total
-            // del pedido, y el ingreso a Depósito lo copiaba (ver costoParaDeposito).
-            const ceroIntencional = pcd.Imp === 0 && pcd.CeroIntencional;
-            const _qrImporte  = (esTerminac || esRepoLocal || esFallaLocal || ceroIntencional) ? '0.00'
-                : ((subtotalOrden > 0) ? subtotalOrden.toFixed(2) : (_pp[6] || importeTotalStr));
-
-            const SEP = '$*';
-            let finalQrStringToSave = `${_qrCodigo}${SEP}${_qrCliente}${SEP}${_qrTrabajo}${SEP}${_qrUrgencia}${SEP}${_qrProducto}${SEP}${_qrCantidad}${SEP}${_qrImporte}`;
 
             // QR Simplificado para Control Interno (Fallback/Logística)
             const qrSimple = `ORD-${o.OrdenID}`;
@@ -365,6 +382,48 @@ class LabelGenerationService {
             throw err;
         }
     }
+    /**
+     * Actualiza el QR guardado (Etiquetas.CodigoQR) de una orden que YA tiene etiqueta, cuando
+     * cambió su cotización. El rótulo impreso solo lleva el código del bulto (NoDoc/B<id>): la
+     * cantidad y el importe se leen de acá al escanear en depósito, así que no hay que reimprimir.
+     * Sin esto, cotizar/corregir después de generar la etiqueta dejaba en el QR la cantidad vieja,
+     * y depósito ingresaba esa (el importe sí se recalcula al ingresar — costoParaDeposito).
+     *
+     * No toca nada si la orden ya entró a depósito (su ingreso ya usó el QR; desde ahí el precio
+     * lo mueve propagarCotizacionADeposito), ni las etiquetas sin QR de 7 campos (bultos de
+     * venta VEN / prendas, creados a propósito sin cotización con addOneBulto).
+     * @returns {{updated:boolean, reason?:string, antes?:string, despues?:string}}
+     */
+    static async refreshQrForOrder(ordenId) {
+        const pool = await getPool();
+        const o = (await pool.request().input('OID', sql.Int, ordenId)
+            .query('SELECT * FROM Ordenes WHERE OrdenID = @OID')).recordset[0];
+        if (!o) return { updated: false, reason: 'Orden no encontrada' };
+        if (/cancel/i.test(String(o.Estado || ''))) return { updated: false, reason: 'Orden cancelada' };
+
+        const etq = (await pool.request().input('OID', sql.Int, ordenId)
+            .query("SELECT TOP 1 CodigoQR FROM Etiquetas WHERE OrdenID = @OID AND CodigoQR LIKE '%$*%' ORDER BY EtiquetaID")).recordset[0];
+        if (!etq) return { updated: false, reason: 'Sin etiqueta con QR de cotización' };
+
+        const enDeposito = (await pool.request()
+            .input('Cod', sql.VarChar(100), String(o.CodigoOrden || '').trim())
+            .query('SELECT TOP 1 1 AS X FROM OrdenesDeposito WITH(NOLOCK) WHERE LTRIM(RTRIM(OrdCodigoOrden)) = @Cod')).recordset.length > 0;
+        if (enDeposito) return { updated: false, reason: 'Ya ingresó a depósito' };
+
+        const armado = await LabelGenerationService.armarQrOrden(pool, o);
+        if (!armado.success) return { updated: false, reason: armado.error };
+        if (armado.finalQrStringToSave === etq.CodigoQR) return { updated: false, reason: 'Sin cambios' };
+
+        await pool.request()
+            .input('OID', sql.Int, ordenId)
+            .input('QR', sql.NVarChar(sql.MAX), armado.finalQrStringToSave)
+            .input('DC', sql.NVarChar(sql.MAX), armado.dbDetalleCostos)
+            .input('PP', sql.NVarChar(sql.MAX), armado.dbPerfilesPrecio)
+            .query("UPDATE Etiquetas SET CodigoQR = @QR, DetalleCostos = @DC, PerfilesPrecio = @PP WHERE OrdenID = @OID AND CodigoQR LIKE '%$*%'");
+        logger.info(`[LabelService] refreshQrForOrder ${o.CodigoOrden}: QR "${etq.CodigoQR}" → "${armado.finalQrStringToSave}"`);
+        return { updated: true, antes: etq.CodigoQR, despues: armado.finalQrStringToSave };
+    }
+
     /**
      * Agrega UN bulto adicional a una orden sin regenerar los existentes.
      * Preserva los CodigoEtiqueta ya impresos. Usa UPDLOCK para evitar race conditions.

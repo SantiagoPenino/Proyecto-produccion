@@ -136,7 +136,7 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
     // También decide el texto del botón del 3D (ver vs. seleccionar texturas).
     // Las texturas elegidas NO se listan acá: se ven y se corrigen en el visor 3D, que es donde
     // se ve lo que se está tocando.
-    const [tpuEstado, setTpuEstado] = useState({ aprobado: false, rechazado: false, enLote: false, texturasElige: null });
+    const [tpuEstado, setTpuEstado] = useState({ aprobado: false, rechazado: false, enLote: false, texturasElige: null, ingresoInterno: false, aprobacionInternaCanal: null });
     const [visor3D, setVisor3D] = useState(false); // visor TPU interno (elegir texturas)
 
     // Reuso de matriz TPU con cantidad distinta: la orden trae arte "base" a regenerar y NO va a
@@ -158,7 +158,8 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
             try {
                 const t = await ordersService.getTexturasOrden(currentOrder.id);
                 if (!vivo) return;
-                setTpuEstado({ aprobado: !!t?.aprobado, rechazado: !!t?.rechazado, enLote: !!t?.enLote, texturasElige: t?.texturasElige || null });
+                setTpuEstado({ aprobado: !!t?.aprobado, rechazado: !!t?.rechazado, enLote: !!t?.enLote, texturasElige: t?.texturasElige || null,
+                               ingresoInterno: !!t?.ingresoInterno, aprobacionInternaCanal: t?.aprobacionInternaCanal || null });
             } catch (_) { /* sin datos: el modal se comporta como antes de la aprobación */ }
         })();
         return () => { vivo = false; };
@@ -454,7 +455,24 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
     // visor 3D y la regeneración los leen de Drive por tipo, no de esta lista. Al operario no le
     // dicen nada, así que no se listan (pedido 07/09). El vector del cliente (MATRIZ FUENTE) sí.
     const esInsumoMatriz = (f) => /^(MATRIZ JOB|VISTA MATRIZ)$/i.test(String(f.TipoArchivo || f.tipo || '').trim());
-    const referenceFiles = referenciasTodas.filter(f => !esInsumoMatriz(f));
+    // Referencias por área: el integral trae las de TODAS las hermanas del pedido, y cada área
+    // veía bocetos que no eran suyos (el de Bordado en Estampado, etc.). Se muestran:
+    //  - las de ESTA orden;
+    //  - las de la orden madre si esta es una reposición (-R) o falla (-F);
+    //  - Costura (TWT) también las de Corte (TWC): es la misma prenda y Costura no recibe boceto propio;
+    //  - de cualquier hermana, solo las planillas de talles / info del pedido (las necesitan todas);
+    //  - PRO ve todo (administra el pedido completo).
+    const areaActual = String(order?.area || order?.AreaID || currentOrder?.area || currentOrder?.AreaID || '').toUpperCase();
+    const codigoBaseActual = String(currentOrder?.code || currentOrder?.CodigoOrden || '').replace(/-[FR]\d+.*$/i, '').trim();
+    const esPlanillaRef = (f) => /PLANILLA|INFO_CORTE|INFO_PEDIDO|TALLE|LISTA/i.test(`${f.TipoArchivo || f.tipo || ''} ${f.nombre || f.NombreArchivo || ''}`);
+    const refEsDeEstaArea = (f) => {
+        if (isPRO) return true;
+        if (!f.OrdenID || String(f.OrdenID) === String(currentOrder?.id)) return true;
+        if ((isRepoOrder || isFallaOrder) && codigoBaseActual && String(f._codigoOrden || '').trim() === codigoBaseActual) return true;
+        if (areaActual === 'TWT' && f._areaOrden === 'TWC') return true;
+        return esPlanillaRef(f);
+    };
+    const referenceFiles = referenciasTodas.filter(f => !esInsumoMatriz(f) && refEsDeEstaArea(f));
 
     // TPU: el arte cuyo nombre contiene "boceto" es el BOCETO DE PRODUCCIÓN. Es LO ÚNICO que hace
     // falta para mandar la orden a aprobación (las otras capas se suben después, ya aprobada), y se
@@ -852,6 +870,39 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
         }
     };
 
+    // TPU — pedido cargado por el personal: no se espera a que el cliente apruebe el boceto, lo
+    // confirma el DISEÑADOR (pedido del usuario 05-oct-2026). No viaja al portal; después sigue igual
+    // que por el portal: Aprobado → subir el arte → Diseñado → lote.
+    const handleAprobarInterno = async () => {
+        if (!currentOrder?.id) return;
+        if (tpuEstado.aprobado) return toast.error('Este boceto ya está confirmado.');
+        const activos = productionFiles.filter(f => (f.Estado || f.estado || f.EstadoArchivo || '').toUpperCase() !== 'CANCELADO');
+        if (!activos.some(esBocetoProduccion)) return toast.error('Falta el boceto: subí un PDF con "boceto" en el nombre.');
+        const r = await Swal.fire({
+            title: '¿Confirmar el diseño?',
+            html: `Este pedido lo cargó el personal: el boceto <b>no se manda al cliente</b>, lo confirma el diseñador.<br/>
+                   La orden pasa a <b>Aprobado</b> y sigue con la subida del arte, igual que por el portal.<br/><br/>
+                   <input id="swal-nota" class="swal2-input" placeholder="Nota (opcional)" style="width:80%;margin:0 auto" />`,
+            icon: 'question',
+            showCancelButton: true,
+            confirmButtonText: 'Sí, confirmo el diseño',
+            cancelButtonText: 'Cancelar',
+            confirmButtonColor: '#059669',
+            customClass: { container: '!z-[99999]' },
+            preConfirm: () => ({ canal: 'Diseñador', nota: document.getElementById('swal-nota')?.value || '' }),
+        });
+        if (!r.isConfirmed || !r.value) return;
+        try {
+            await ordersService.aprobarInternoTPU(currentOrder.id, r.value);
+            toast.success('Diseño confirmado. Ya podés subir el arte.');
+            setTpuEstado(prev => ({ ...prev, aprobado: true, rechazado: false, aprobacionInternaCanal: 'Diseñador' }));
+            loadData(currentOrder.id, currentOrder.area);
+            onOrderUpdated?.();
+        } catch (e) {
+            toast.error('Error: ' + (e?.response?.data?.error || e?.message || ''));
+        }
+    };
+
     // TPU: enviar la orden a aprobación del cliente (con confirmación)
     const handleEnviarAprobacion = async () => {
         if (!currentOrder?.id) return;
@@ -963,16 +1014,21 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                                 // las órdenes del pedido, así que sin esto no se puede distinguir cuáles vienen
                                 // de una orden de falla (-F).
                                 const codigoPorOrden = {};
+                                const areaPorOrden = {};
                                 (integralData.ordenes || []).forEach(o => {
                                     const oid = o.OrdenID ?? o.id;
-                                    if (oid != null) codigoPorOrden[String(oid)] = o.CodigoOrden || o.code || '';
+                                    if (oid != null) {
+                                        codigoPorOrden[String(oid)] = o.CodigoOrden || o.code || '';
+                                        areaPorOrden[String(oid)] = String(o.AreaID || o.area || '').trim().toUpperCase();
+                                    }
                                 });
                                 // Add logic to mark files not from current order as readonly
                                 const allFiles = integralData.archivos.map(f => ({
                                     ...f,
                                     id: f.ArchivoID || f.RefID || f.ServicioID || f.id,
                                     readonly: String(f.OrdenID) !== String(orderId),
-                                    _codigoOrden: codigoPorOrden[String(f.OrdenID)] || ''
+                                    _codigoOrden: codigoPorOrden[String(f.OrdenID)] || '',
+                                    _areaOrden: areaPorOrden[String(f.OrdenID)] || String(f.OrdenAreaID || '').trim().toUpperCase()
                                 }));
                                 setFiles(allFiles);
 
@@ -2000,10 +2056,12 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                                 ...(terminacionesOrden.length > 0 ? [{ id: 'terminaciones', label: 'Terminaciones', count: terminacionesOrden.length, icon: 'fa-scissors' }] : []),
                                 { id: 'refs', label: 'Archivos de Referencia', count: referenceFiles.length + bocetosProduccion.length + (isSB ? fallaImages.length : 0), icon: 'fa-paperclip' },
                                 { id: 'services', label: 'Cotizar Productos', count: serviceFiles.length, icon: 'fa-box-open' },
-                                // [PRO] Sin Etiquetas (los bultos se gestionan en las áreas físicas);
-                                // en su lugar, el Flujo del Pedido (hoja de ruta de todas las áreas).
+                                // [PRO] Flujo del Pedido (hoja de ruta de todas las áreas) + Etiquetas: desde
+                                // el 02-oct PRO genera sus propios bultos finales al aprobar el control y
+                                // tiene que poder reimprimirlos desde acá, como cualquier área.
                                 ...(isPRO
-                                    ? [{ id: 'flujo', label: 'Flujo del Pedido', count: rutaPedido.length, icon: 'fa-timeline' }]
+                                    ? [{ id: 'flujo', label: 'Flujo del Pedido', count: rutaPedido.length, icon: 'fa-timeline' },
+                                       { id: 'labels', label: 'Etiquetas', count: labels.length, icon: 'fa-tags' }]
                                     : [{ id: 'labels', label: 'Etiquetas', count: labels.length, icon: 'fa-tags' }]),
                                 { id: 'reqs', label: 'Requisitos', count: 0, icon: 'fa-list-check' },
                                 { id: 'notas', label: 'Notas', count: notasProduccion.length, icon: 'fa-comment-dots' }
@@ -2285,9 +2343,14 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                                                 </div>
                                             ) : (
                                                 <div className="flex items-center justify-center gap-2 py-3 mb-2 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs font-bold uppercase tracking-wide">
-                                                    <i className="fa-solid fa-check-double"></i> Boceto aprobado por el cliente — subí el arte ({CAPAS_ARTE_TPU_MIN} a {CAPAS_ARTE_TPU} archivos)
+                                                    <i className="fa-solid fa-check-double"></i> {tpuEstado.aprobacionInternaCanal ? 'Diseño confirmado por el diseñador' : 'Boceto aprobado por el cliente'} — subí el arte ({CAPAS_ARTE_TPU_MIN} a {CAPAS_ARTE_TPU} archivos)
                                                 </div>
                                             )
+                                        ) : tpuEstado.ingresoInterno ? (
+                                            // Pedido cargado por el personal: no se manda al portal; se aprueba acá.
+                                            <button onClick={handleAprobarInterno} className="w-full flex items-center justify-center gap-2 py-3 mb-2 rounded-xl bg-emerald-600 text-white text-sm font-bold uppercase tracking-wide hover:opacity-90 transition-opacity shadow-sm">
+                                                <i className="fa-solid fa-user-check"></i> Confirmar diseño (lo confirma el diseñador, no el cliente)
+                                            </button>
                                         ) : currentOrder?.status === 'Cargando...' ? (
                                             <div className="flex items-center justify-center gap-2 py-3 mb-2 rounded-xl bg-amber-50 border border-amber-200 text-amber-700 text-xs font-bold uppercase tracking-wide">
                                                 <i className="fa-regular fa-clock"></i> Esperando aprobación del cliente
@@ -2922,7 +2985,8 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                             reloadFiles();
                             try {
                                 const t = await ordersService.getTexturasOrden(currentOrder.id);
-                                setTpuEstado({ aprobado: !!t?.aprobado, rechazado: !!t?.rechazado, enLote: !!t?.enLote, texturasElige: t?.texturasElige || null });
+                                setTpuEstado({ aprobado: !!t?.aprobado, rechazado: !!t?.rechazado, enLote: !!t?.enLote, texturasElige: t?.texturasElige || null,
+                                               ingresoInterno: !!t?.ingresoInterno, aprobacionInternaCanal: t?.aprobacionInternaCanal || null });
                             } catch (_) { /* sin refresco: se verá al reabrir */ }
                         }}
                     />

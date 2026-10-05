@@ -1725,6 +1725,19 @@ exports.createWebOrder = async (req, res) => {
                 generatedOrders.push(exec.codigoOrden);
                 generatedIDs.push(newOID);
 
+                // [INGRESO INTERNO] Quién del personal cargó el pedido (impersonarClienteInterno /
+                // conversión de Solicitud). Con esto la matriz de TPU se aprueba internamente y no
+                // viaja al portal. Va aparte del INSERT y protegido por COL_LENGTH: si la columna
+                // todavía no existe en la base (SQL sin correr), no hace nada y no rompe el alta.
+                if (req.user?.impersonadoPorInterno) {
+                    await new sql.Request(transaction)
+                        .input('OID', sql.Int, newOID)
+                        .input('IntPor', sql.Int, parseInt(req.user.impersonadoPorInterno, 10) || null)
+                        .query(`IF COL_LENGTH('dbo.Ordenes', 'IngresoInternoPor') IS NOT NULL
+                                    EXEC sp_executesql N'UPDATE dbo.Ordenes SET IngresoInternoPor = @IntPor WHERE OrdenID = @OID',
+                                                       N'@IntPor INT, @OID INT', @IntPor = @IntPor, @OID = @OID;`);
+                }
+
                 // Fecha real: plan fijo + compromiso por agenda (nunca antes del plan). No
                 // bloqueante — si falla, queda el DATEADD(day,3,GETDATE()) del INSERT.
                 try { await calcularFechasOrden(transaction, newOID); }

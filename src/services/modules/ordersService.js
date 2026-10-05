@@ -93,6 +93,11 @@ export const ordersService = {
         const response = await api.post(`/orders/${ordenId}/enviar-aprobacion`);
         return response.data;
     },
+    // Pedido cargado por el personal: el boceto/matriz se aprueba internamente (no va al portal).
+    aprobarInternoTPU: async (ordenId, { canal, nota } = {}) => {
+        const response = await api.post(`/orders/${ordenId}/aprobar-interno`, { canal, nota });
+        return response.data;
+    },
     // Notas de producción por orden — ADITIVAS (cada llamada agrega, nunca pisa).
     getOrderNotes: async (ordenId) => {
         const response = await api.get(`/orders/${ordenId}/notas`);

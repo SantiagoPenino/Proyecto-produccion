@@ -194,12 +194,14 @@ function traducir(pedido) {
       chainedAfterAreaId: null,
     });
   }
-  if (pedido.costura) {
+  // [CORTE/COSTURA] Corte siempre lleva Costura (regla del usuario, 05-oct-2026): si viene Corte sin
+  // bloque de costura, la orden de Costura sale igual con la nota por defecto.
+  if (pedido.costura || corte) {
     listaServicios.push({
       esPrincipal: false, areaId: 'TWT',
       cabecera: { variante: 'Costura', material: { name: 'Costura Standard', codArt: '112', codStock: '1.1.7.1' } },
       archivos: [], items: [],
-      notas: pedido.costura.instrucciones || 'Servicio de Costura solicitado',
+      notas: (pedido.costura && pedido.costura.instrucciones) || 'Servicio de Costura solicitado',
       metadata: {}, chainedAfterAreaId: null,
     });
   }

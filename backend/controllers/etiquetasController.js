@@ -161,6 +161,22 @@ const createExtraLabel = async (req, res) => {
     logger.info(`[etiquetasController] Agregando bulto extra a Orden: ${ordenId}`);
 
     try {
+        // Sin ninguna etiqueta, "extra" copiaba el QR de... ninguna: el bulto nacía con
+        // CodigoQR vacío y depósito lo ingresaba sin cantidad ni importe. En ese caso se
+        // genera la etiqueta completa (misma validación que "Generar Etiquetas"). Las anclas
+        // de PRO (ventas VEN, retiro de prendas) nacen sin QR A PROPÓSITO: siguen como antes.
+        const pool = await getPool();
+        const info = (await pool.request().input('OID', sql.Int, ordenId).query(`
+            SELECT O.AreaID, (SELECT COUNT(*) FROM Etiquetas E WHERE E.OrdenID = O.OrdenID) AS Cant
+            FROM Ordenes O WHERE O.OrdenID = @OID`)).recordset[0];
+        if (info && info.Cant === 0 && String(info.AreaID || '').trim().toUpperCase() !== 'PRO') {
+            const gen = await LabelGenerationService.regenerateLabelsForOrder(ordenId, userId, userName);
+            if (!gen.success) {
+                return res.status(400).json({ error: `La orden no tiene etiquetas y no se pudo generar la primera: ${gen.error}` });
+            }
+            return res.json({ success: true, message: `La orden no tenía etiquetas: se generó la primera con su cotización. Total: ${gen.totalBultos} bulto(s).`, details: gen });
+        }
+
         const result = await LabelGenerationService.addOneBulto(ordenId, userId, userName);
 
         if (!result.success) {
@@ -258,7 +274,8 @@ const AREA_NAMES = {
     'TPU': 'TPU',
     'EST': 'Estampado',
     'DEPOSITO': 'Depósito',
-    'PROD': 'Producción'
+    'PROD': 'Producción',
+    'PRO': 'Producción'
 };
 
 const printEtiquetas = async (req, res) => {

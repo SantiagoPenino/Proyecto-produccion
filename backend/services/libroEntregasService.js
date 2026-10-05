@@ -44,7 +44,9 @@ async function areasQueCuentanUnidades(conn) {
  */
 async function areasFallaPropiaRequiereCadena(conn) {
     const l = await getConfigLista('AREAS_FALLA_PROPIA_REQUIERE_CADENA', conn);
-    return l.length ? l : ['EMB', 'TWC', 'TWT', 'PRO'];
+    // EST (02-oct-2026): una falla en Estampado puede pedir prenda nueva y/o transfer nuevo
+    // (DTF/TPU) — ver ramasReposicion. El operario elige qué ramas crear.
+    return l.length ? l : ['EMB', 'TWC', 'TWT', 'PRO', 'EST'];
 }
 
 // ── Cantidad esperada ────────────────────────────────────────────────────
@@ -119,6 +121,74 @@ async function areasAnterioresAPro(noDocERP, conn) {
     const hermanas = await getHermanas(noDocERP, conn);
     const seq = secuenciaAreas(hermanas);
     return seq.map(a => ({ AreaID: a, ordenes: hermanas.filter(h => String(h.AreaID).trim() === a) }));
+}
+
+/**
+ * Áreas que imprimen el TRANSFER que se aplica en Estampado (DTF / TPU). No son un paso de la
+ * prenda: corren en paralelo y desembocan en Estampado (ProximoServicio = 'EST').
+ */
+const AREAS_TRANSFER = ['DF', 'TPU'];
+
+/**
+ * [FALLA EST/PRO] Reposición en DOS ramas para una falla reportada desde Estampado o PRO
+ * (pedido del usuario 02-oct-2026: "cuando la falla se produce en Estampado o PRO, debo poder
+ * generar además las órdenes para DTF y TPU").
+ *
+ * La secuencia lineal del pedido (secuenciaAreas) no sirve acá: DTF y TPU no son pasos de la
+ * prenda sino ramas que convergen en Estampado, y en la lista lineal quedaban DESPUÉS de EST →
+ * desde EST nunca se proponían. Se recorre el grafo hacia atrás por ProximoServicio desde el
+ * área que reporta:
+ *   - prenda:   las órdenes de la prenda (Sublimación → Corte → Costura → Bordado [→ Estampado
+ *               si reporta PRO]), ordenadas de la más lejana a la más cercana;
+ *   - transfer: las órdenes DTF/TPU que alimentan ese Estampado. Desde EST, si la orden está
+ *               encadenada a un transfer puntual (LiberaCuandoOrdenID), solo ese.
+ * Si la orden es de una prenda puntual (ComboItemID) se recorren solo las órdenes de esa prenda.
+ * Devuelve null si no hay ningún transfer en juego: el llamador sigue con la cadena de siempre.
+ */
+async function ramasReposicion(ordenId, noDocERP, areaId, conn) {
+    const pool = conn || await getPool();
+    const area = String(areaId).trim().toUpperCase();
+    const o = (await new sql.Request(pool).input('id', sql.Int, ordenId)
+        .query(`SELECT OrdenID, ComboItemID, LiberaCuandoOrdenID FROM Ordenes WHERE OrdenID = @id`)).recordset[0];
+    if (!o) return null;
+    let hermanas = await getHermanas(noDocERP, pool);
+    const ids = hermanas.map(h => parseInt(h.OrdenID, 10)).filter(Number.isFinite);
+    if (!ids.length) return null;
+    const det = (await new sql.Request(pool).query(`SELECT OrdenID, ComboItemID FROM Ordenes WHERE OrdenID IN (${ids.join(',')})`)).recordset;
+    const comboDe = new Map(det.map(d => [d.OrdenID, d.ComboItemID]));
+    if (o.ComboItemID && area !== 'PRO') hermanas = hermanas.filter(h => comboDe.get(h.OrdenID) === o.ComboItemID);
+
+    const areaDe = (h) => String(h.AreaID).trim().toUpperCase();
+    const proxDe = (h) => String(h.ProximoServicio || '').trim().toUpperCase();
+    // Recorrido hacia atrás: profundidad 1 = le manda directo al área que reporta.
+    const profundidad = new Map();
+    let frontera = [area], d = 0;
+    while (frontera.length && d < 20) {
+        d++;
+        const siguiente = [];
+        for (const destino of frontera) {
+            for (const h of hermanas) {
+                if (h.OrdenID === o.OrdenID || profundidad.has(h.OrdenID) || proxDe(h) !== destino) continue;
+                profundidad.set(h.OrdenID, d);
+                if (!siguiente.includes(areaDe(h))) siguiente.push(areaDe(h));
+            }
+        }
+        frontera = siguiente;
+    }
+    const alcanzadas = hermanas.filter(h => profundidad.has(h.OrdenID));
+    let transfer = alcanzadas.filter(h => AREAS_TRANSFER.includes(areaDe(h)));
+    if (area === 'EST' && o.LiberaCuandoOrdenID && transfer.some(t => t.OrdenID === o.LiberaCuandoOrdenID)) {
+        transfer = transfer.filter(t => t.OrdenID === o.LiberaCuandoOrdenID);
+    }
+    if (!transfer.length) return null;
+
+    const prendaOrdenes = alcanzadas.filter(h => !AREAS_TRANSFER.includes(areaDe(h)));
+    const profArea = {};
+    prendaOrdenes.forEach(h => { profArea[areaDe(h)] = Math.max(profArea[areaDe(h)] || 0, profundidad.get(h.OrdenID)); });
+    const prenda = Object.keys(profArea)
+        .sort((x, y) => profArea[y] - profArea[x])
+        .map(a => ({ AreaID: a, ordenes: prendaOrdenes.filter(h => areaDe(h) === a) }));
+    return { prenda, transfer };
 }
 
 // ── Libro por orden ──────────────────────────────────────────────────────
@@ -424,7 +494,7 @@ module.exports = {
     getPendientesParaOrden,
     getConfigLista, getConfigValor, areasConParcial, areasConCadena, areasQueCuentanUnidades, areasFallaPropiaRequiereCadena,
     magnitudNumerica, cantidadEsperada,
-    getHermanas, secuenciaAreas, areasAnteriores, areasAnterioresAPro,
+    getHermanas, secuenciaAreas, areasAnteriores, areasAnterioresAPro, ramasReposicion, AREAS_TRANSFER,
     getEnviosOrden, getReposicionesOrden, describirReposicion, getLibroOrden, getLibroPedido,
     puedeCompletar, getPendientesParaArea, ordenesIncompletasPedido,
     registrarLineasEnvio,
