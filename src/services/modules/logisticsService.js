@@ -135,8 +135,8 @@ const logisticsService = {
         return response.data;
     },
 
-    aprobarControlPRO: async (noDocERP) => {
-        const response = await api.post(`/logistics/pro/pedidos/${encodeURIComponent(noDocERP)}/aprobar-control`);
+    aprobarControlPRO: async (noDocERP, cantidadBultos = 1) => {
+        const response = await api.post(`/logistics/pro/pedidos/${encodeURIComponent(noDocERP)}/aprobar-control`, { cantidadBultos });
         return response.data;
     },
 

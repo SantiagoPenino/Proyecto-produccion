@@ -800,6 +800,106 @@ exports.enviarAprobacionTPU = async (req, res) => {
 };
 
 // =====================================================================
+// TPU: CONFIRMACIÓN DEL DISEÑADOR (pedido cargado por el personal, no por el cliente)
+// Cuando el pedido lo cargó un interno (Ordenes.IngresoInternoPor), no se espera a que el cliente
+// apruebe el boceto: lo confirma el DISEÑADOR (pedido del usuario 05-oct-2026). NO viaja al portal:
+// la orden nunca queda AprobacionPendiente=1. El resto del circuito es el mismo que por el portal
+// (Pendiente → boceto → Aprobado → arte → Diseñado → lote). Mismos controles que enviarAprobacionTPU y
+// mismo resultado que aprobarPedido (webOrdersController) cuando el cliente aprueba en el portal,
+// más quién aprobó y por qué medio.
+// =====================================================================
+const CANALES_APROBACION_INTERNA = ['Diseñador', 'WhatsApp', 'Teléfono', 'Presencial', 'Email', 'Otro'];
+exports.aprobarInternoTPU = async (req, res) => {
+    const ordenId = parseInt(req.params?.ordenId || req.body?.ordenId);
+    if (!ordenId) return res.status(400).json({ error: 'Falta ordenId.' });
+    // Quién/cómo se confirmó: por defecto el diseñador (no se espera al cliente).
+    const canal = String(req.body?.canal || 'Diseñador').trim();
+    if (!CANALES_APROBACION_INTERNA.includes(canal)) {
+        return res.status(400).json({ error: `Medio de confirmación inválido (${CANALES_APROBACION_INTERNA.join(', ')}).` });
+    }
+    const nota = String(req.body?.nota || '').trim().slice(0, 500);
+    try {
+        const pool = await getPool();
+        await require('./webOrdersController').ensureColFechaAprobacion(pool);
+        const colsOk = (await pool.request().query(`
+            SELECT CASE WHEN COL_LENGTH('dbo.Ordenes','IngresoInternoPor') IS NOT NULL
+                         AND COL_LENGTH('dbo.Ordenes','AprobacionInternaPor') IS NOT NULL
+                         AND COL_LENGTH('dbo.Ordenes','AprobacionInternaCanal') IS NOT NULL THEN 1 ELSE 0 END AS ok`)).recordset[0]?.ok;
+        if (!colsOk) return res.status(400).json({ error: 'Falta correr el SQL docs/migrations/ingreso_interno_aprobacion.sql en la base.' });
+
+        const check = await pool.request()
+            .input('OID', sql.Int, ordenId)
+            .query(`
+                SELECT o.OrdenID, o.AreaID, o.Estado, o.EstadoenArea, o.RolloID, o.FechaAprobacionCliente, o.AprobacionPendiente,
+                       o.IngresoInternoPor,
+                       CASE WHEN ${GUARD_ORDENES_RESUELTAS} THEN 0 ELSE 1 END AS Resuelta,
+                       (SELECT COUNT(*) FROM ArchivosOrden ao
+                          WHERE ao.OrdenID = o.OrdenID AND ISNULL(ao.EstadoArchivo,'') <> 'Cancelado'
+                            AND LOWER(ao.NombreArchivo) LIKE '%boceto%') AS bocetos
+                FROM Ordenes o WHERE o.OrdenID = @OID
+            `);
+        if (!check.recordset.length) return res.status(404).json({ error: 'Orden no encontrada.' });
+        const o = check.recordset[0];
+        if (String(o.AreaID || '').toUpperCase() !== 'TPU') return res.status(400).json({ error: 'Solo aplica a órdenes TPU.' });
+        if (!o.IngresoInternoPor) {
+            return res.status(400).json({ error: 'Este pedido lo cargó el cliente: la aprobación del boceto se hace en el portal (Enviar a aprobación).' });
+        }
+        const estadoGen = String(o.Estado || '').trim().toUpperCase();
+        if (o.Resuelta || estadoGen === 'CERRADO') {
+            return res.status(400).json({ error: `La orden ya pasó por producción (${o.EstadoenArea}): no hay nada que aprobar.` });
+        }
+        if (o.FechaAprobacionCliente) return res.status(400).json({ error: 'Este boceto ya está aprobado.' });
+        if (o.RolloID != null) return res.status(400).json({ error: 'La orden ya está asignada a un lote.' });
+        if (!o.bocetos) {
+            return res.status(400).json({ error: 'Falta el boceto: subí un PDF con "boceto" en el nombre antes de aprobarlo.' });
+        }
+
+        // Mismo criterio que aprobarPedido: si hay texturas guardadas para la orden son del cliente,
+        // si no las define el diseñador desde el detalle.
+        const texRes = await pool.request().input('OID', sql.Int, ordenId).query(`
+            SELECT COUNT(*) AS n FROM dbo.OrdenTexturasTPU
+            WHERE OrdenID = @OID AND (ArchivoTextura IS NOT NULL OR Barniz = 1)
+        `);
+        const quienTexturas = (texRes.recordset[0]?.n || 0) > 0 ? 'CLIENTE' : 'DISENADOR';
+        const usuarioId = parseInt(req.user?.id, 10) || null;
+
+        const { changeOrderState } = require('../services/stateManagerService');
+        const tx = new sql.Transaction(pool);
+        await tx.begin();
+        try {
+            await new sql.Request(tx)
+                .input('OID', sql.Int, ordenId)
+                .input('TE', sql.VarChar(10), quienTexturas)
+                .input('UID', sql.Int, usuarioId)
+                .input('Canal', sql.NVarChar(30), canal)
+                .query(`EXEC sp_executesql N'UPDATE dbo.Ordenes SET AprobacionPendiente = 0, FechaAprobacionCliente = GETDATE(), FechaRechazoCliente = NULL,
+                                                  TexturasElige = @TE, AprobacionInternaPor = @UID, AprobacionInternaCanal = @Canal
+                                              WHERE OrdenID = @OID',
+                                         N'@TE VARCHAR(10), @UID INT, @Canal NVARCHAR(30), @OID INT',
+                                         @TE = @TE, @UID = @UID, @Canal = @Canal, @OID = @OID;`);
+            await changeOrderState(tx, {
+                target : { type: 'ORDER', id: ordenId },
+                estado : 'Aprobado',
+                userObj: req.user || 'Sistema',
+                detalle: `Boceto confirmado por el diseñador (pedido cargado por el personal${canal !== 'Diseñador' ? `, el cliente lo vio por ${canal}` : ''})${nota ? ` — ${nota}` : ''}`,
+                io     : req.app.get('socketio'),
+            });
+            await tx.commit();
+        } catch (e) { await tx.rollback(); throw e; }
+
+        try {
+            const io = req.app.get('socketio');
+            if (io) io.emit('server:ordersUpdated', { count: 1, source: 'tpu-aprobar-interno', orderIds: [ordenId] });
+        } catch (_) {}
+        logger.info(`[TPU] Orden ${ordenId} aprobada internamente por usuario ${usuarioId} (vía ${canal}).`);
+        res.json({ success: true, texturasElige: quienTexturas });
+    } catch (err) {
+        logger.error('[aprobarInternoTPU] ' + err.message);
+        res.status(500).json({ error: err.message });
+    }
+};
+
+// =====================================================================
 // NOTAS DE PRODUCCIÓN POR ORDEN — aditivas (tabla OrdenNotasProduccion), a diferencia
 // de Ordenes.Nota que es un solo campo que se pisa. Equivalente a la hoja "NOTAS" del
 // Apps Script viejo de Bordado (chat: textarea + historial, inserción al frente).
@@ -868,8 +968,17 @@ exports.getTexturasOrdenInterno = async (req, res) => {
         await wo.ensureColFechaAprobacion(pool);
         const [data, ordRes] = await Promise.all([
             wo.leerTexturasOrden(pool, ordenId),
+            // [INGRESO INTERNO] columnas opcionales (SQL ingreso_interno_aprobacion.sql): si no existen
+            // todavía, se devuelven NULL sin romper la lectura.
             pool.request().input('OID', sql.Int, ordenId)
-                .query('SELECT FechaAprobacionCliente, FechaRechazoCliente, RolloID, TexturasElige FROM dbo.Ordenes WITH(NOLOCK) WHERE OrdenID = @OID'),
+                .query(`IF COL_LENGTH('dbo.Ordenes','AprobacionInternaCanal') IS NOT NULL AND COL_LENGTH('dbo.Ordenes','IngresoInternoPor') IS NOT NULL
+                            EXEC sp_executesql N'SELECT FechaAprobacionCliente, FechaRechazoCliente, RolloID, TexturasElige,
+                                                        IngresoInternoPor, AprobacionInternaCanal
+                                                 FROM dbo.Ordenes WITH(NOLOCK) WHERE OrdenID = @OID', N'@OID INT', @OID = @OID
+                        ELSE
+                            SELECT FechaAprobacionCliente, FechaRechazoCliente, RolloID, TexturasElige,
+                                   CAST(NULL AS INT) AS IngresoInternoPor, CAST(NULL AS NVARCHAR(30)) AS AprobacionInternaCanal
+                            FROM dbo.Ordenes WITH(NOLOCK) WHERE OrdenID = @OID`),
         ]);
         const o = ordRes.recordset[0] || {};
         res.json({
@@ -878,6 +987,8 @@ exports.getTexturasOrdenInterno = async (req, res) => {
             rechazado: !!o.FechaRechazoCliente,
             enLote: o.RolloID != null,
             texturasElige: o.TexturasElige || null, // 'DISENADOR' = aprobó sin elegir: las define el diseñador
+            ingresoInterno: o.IngresoInternoPor != null, // pedido cargado por el personal → se aprueba internamente
+            aprobacionInternaCanal: o.AprobacionInternaCanal || null,
         });
     } catch (err) {
         logger.error('[getTexturasOrdenInterno] ' + err.message);

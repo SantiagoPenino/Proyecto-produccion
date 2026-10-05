@@ -45,7 +45,50 @@ async function crearOrdenFalla(tx, { madre, codigo, magnitud, proximoServicio, l
                    ISNULL(@Pre, PrendaClienteID), 0, OrdenID,
                    @Libera, @Dep
             FROM dbo.Ordenes WHERE OrdenID = @OldID`);
-    return r.recordset[0].OrdenID;
+    const nuevaId = r.recordset[0].OrdenID;
+    await heredarDeLaMadre(tx, madre.OrdenID, nuevaId);
+    return nuevaId;
+}
+
+/**
+ * [FALLA EST/PRO] Lo que la orden de falla hereda de su madre para no trabarse en lo que ya se
+ * resolvió una vez (02-oct-2026):
+ *  - Bordado / Estampado: los requisitos ya cumplidos (matriz, aprobación del cliente, "no aplica"
+ *    de DTF/TPU/prenda). Sin esto la -F nacía con todo pendiente y caía en "Bloqueadas". La espera
+ *    real de la prenda/transfer nuevos la maneja EstadoDependencia (ESPERANDO_REPOSICION).
+ *  - TPU: la aprobación del boceto y las texturas elegidas. Es la MISMA matriz: no vuelve a pedir
+ *    aprobación al cliente ni se cobra matriz (la -F nace con CostoTotal 0 y sin servicios extra).
+ * Todo protegido por COL_LENGTH / OBJECT_ID: si una columna o tabla no existe, se saltea.
+ */
+async function heredarDeLaMadre(tx, madreId, nuevaId) {
+    await new sql.Request(tx).input('Old', sql.Int, madreId).input('New', sql.Int, nuevaId).query(`
+        DECLARE @Area VARCHAR(20) = (SELECT UPPER(LTRIM(RTRIM(AreaID))) FROM dbo.Ordenes WHERE OrdenID = @Old);
+        DECLARE @Cod NVARCHAR(100) = (SELECT LTRIM(RTRIM(CodigoOrden)) FROM dbo.Ordenes WHERE OrdenID = @Old);
+
+        IF @Area IN ('EMB', 'EST') AND OBJECT_ID('dbo.OrdenCumplimientoRequisitos', 'U') IS NOT NULL
+            INSERT INTO dbo.OrdenCumplimientoRequisitos (OrdenID, AreaID, RequisitoID, Estado, FechaCumplimiento, Observaciones)
+            SELECT @New, c.AreaID, c.RequisitoID, 'CUMPLIDO', GETDATE(), LEFT(N'Heredado de ' + ISNULL(@Cod, '') + N' (orden de falla)', 300)
+            FROM dbo.OrdenCumplimientoRequisitos c
+            WHERE c.OrdenID = @Old AND c.Estado = 'CUMPLIDO'
+              AND NOT EXISTS (SELECT 1 FROM dbo.OrdenCumplimientoRequisitos x WHERE x.OrdenID = @New AND x.RequisitoID = c.RequisitoID);
+
+        IF @Area = 'TPU' AND COL_LENGTH('dbo.Ordenes', 'FechaAprobacionCliente') IS NOT NULL AND COL_LENGTH('dbo.Ordenes', 'TexturasElige') IS NOT NULL
+            EXEC sp_executesql N'UPDATE n SET n.FechaAprobacionCliente = m.FechaAprobacionCliente, n.TexturasElige = m.TexturasElige
+                                 FROM dbo.Ordenes n JOIN dbo.Ordenes m ON m.OrdenID = @Old WHERE n.OrdenID = @New',
+                               N'@Old INT, @New INT', @Old = @Old, @New = @New;
+
+        IF @Area = 'TPU' AND OBJECT_ID('dbo.OrdenTexturasTPU', 'U') IS NOT NULL
+        BEGIN
+            DECLARE @cols NVARCHAR(MAX) = STUFF((
+                SELECT ',' + QUOTENAME(name) FROM sys.columns
+                WHERE object_id = OBJECT_ID('dbo.OrdenTexturasTPU') AND name <> 'OrdenID' AND is_identity = 0 AND is_computed = 0
+                FOR XML PATH('')), 1, 1, '');
+            IF @cols IS NOT NULL AND NOT EXISTS (SELECT 1 FROM dbo.OrdenTexturasTPU WHERE OrdenID = @New)
+            BEGIN
+                DECLARE @q NVARCHAR(MAX) = N'INSERT INTO dbo.OrdenTexturasTPU (OrdenID,' + @cols + N') SELECT @New,' + @cols + N' FROM dbo.OrdenTexturasTPU WHERE OrdenID = @Old';
+                EXEC sp_executesql @q, N'@Old INT, @New INT', @Old = @Old, @New = @New;
+            END
+        END`);
 }
 
 async function getOrdenBasica(conn, ordenId) {

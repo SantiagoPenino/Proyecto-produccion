@@ -716,6 +716,50 @@ exports.sincronizarCargosDelPedido = sincronizarCargosDelPedido;
  * Si alguna orden ya fue entregada/facturada/cobrada, responde 409 con
  * { requiereConfirmacion: true, advertencias } salvo que venga confirmado=true.
  */
+/**
+ * Etiquetas de las órdenes del pedido después de guardar la cotización (02-oct-2026, EUV-30014).
+ * La etiqueta se crea al completar la orden en Control y SOLO si en ese momento tiene cantidad
+ * cotizada. Si se cotizaba después, la orden quedaba Pronto y sin etiqueta para siempre: sin
+ * bulto, sin remito, depósito "PENDIENTE A RECIBIR".
+ *   - Orden Pronto SIN etiqueta → se genera ahora (misma validación que el botón Generar).
+ *   - Orden CON etiqueta y sin ingresar a depósito → se actualiza el QR guardado (cantidad e
+ *     importe nuevos; el rótulo impreso sigue sirviendo, solo lleva el código del bulto).
+ *   - Orden todavía en producción → nada: Control genera la etiqueta como siempre, ya con
+ *     esta cotización. Control no duplica: si la etiqueta existe, la usa.
+ * Nunca frena el guardado: devuelve el resumen para avisar en pantalla.
+ */
+const sincronizarEtiquetasDelPedido = async (pool, pedidoId, user) => {
+    const LabelGenerationService = require('../services/LabelGenerationService');
+    const resumen = [];
+    const ords = await pool.request().input('PID', sql.Int, pedidoId).query(`
+        SELECT DISTINCT O.OrdenID, O.CodigoOrden, O.Estado, O.EstadoenArea,
+               (SELECT COUNT(*) FROM Etiquetas E WHERE E.OrdenID = O.OrdenID) AS CantEtiquetas
+        FROM PedidosCobranzaDetalle PCD
+        JOIN Ordenes O ON O.OrdenID = PCD.OrdenID
+        WHERE PCD.PedidoCobranzaID = @PID`);
+    for (const o of ords.recordset) {
+        const codigo = String(o.CodigoOrden || o.OrdenID).trim();
+        const estado = String(o.Estado || '').trim().toUpperCase();
+        if (/CANCEL|ENTREGAD|FINALIZAD/.test(estado)) continue;
+        try {
+            if (o.CantEtiquetas === 0) {
+                if (String(o.EstadoenArea || '').trim().toUpperCase() !== 'PRONTO') continue;
+                const r = await LabelGenerationService.regenerateLabelsForOrder(o.OrdenID, user?.id || 1, user?.usuario || 'Sistema');
+                resumen.push(r.success
+                    ? { orden: codigo, accion: 'GENERADA', mensaje: `${codigo}: se generó su etiqueta (${r.totalBultos} bulto/s). Imprimila desde Etiquetas.` }
+                    : { orden: codigo, accion: 'SIN_ETIQUETA', mensaje: `${codigo}: sigue sin etiqueta — ${r.error}` });
+            } else {
+                const r = await LabelGenerationService.refreshQrForOrder(o.OrdenID);
+                if (r.updated) resumen.push({ orden: codigo, accion: 'QR_ACTUALIZADO', mensaje: `${codigo}: la etiqueta ya impresa quedó con la cantidad e importe nuevos (no hace falta reimprimir).` });
+            }
+        } catch (e) {
+            logger.warn(`[Quotation] Etiqueta de ${codigo} tras guardar cotización: ${e.message}`);
+            resumen.push({ orden: codigo, accion: 'ERROR', mensaje: `${codigo}: no se pudo revisar su etiqueta — ${e.message}` });
+        }
+    }
+    return resumen;
+};
+
 // Spec 39: reutilizado por el "parcial aceptado por el cliente" (solicitudesInsumoController)
 exports.propagarCotizacionADeposito = propagarCotizacionADeposito;
 
@@ -840,14 +884,32 @@ exports.saveQuotation = async (req, res) => {
                 throw new Error(`No se pudo determinar el cliente para el pedido ${noDocERP}.`);
             }
 
+            // La cabecera nace con el NoDocERP REAL del pedido, no con lo que vino en la URL:
+            // el detalle de la orden manda el CÓDIGO ('EUV-30014'). Con el código, la etiqueta
+            // (busca PedidosCobranza por Ordenes.NoDocERP = '30014') no encontraba el importe
+            // y frenaba con "Calculo Frio"; caja y depósito tampoco la veían.
+            let docCabecera = noDocERP;
+            const docRealRes = await new sql.Request(transaction)
+                .input('Cod', sql.NVarChar, noDocERP)
+                .input('OID', sql.Int, parseInt(lineas[0]?.OrdenID) || 0)
+                .query(`SELECT TOP 1 LTRIM(RTRIM(CAST(NoDocERP AS VARCHAR(50)))) AS Doc FROM Ordenes WITH(NOLOCK)
+                        WHERE NoDocERP IS NOT NULL AND LTRIM(RTRIM(CAST(NoDocERP AS VARCHAR(50)))) <> ''
+                          AND (LTRIM(RTRIM(CAST(NoDocERP AS VARCHAR(50)))) = LTRIM(RTRIM(@Cod))
+                               OR LTRIM(RTRIM(CodigoOrden)) = LTRIM(RTRIM(@Cod))
+                               OR LTRIM(RTRIM(CodigoOrden)) LIKE LTRIM(RTRIM(@Cod)) + ' %'
+                               OR OrdenID = @OID)
+                        ORDER BY CASE WHEN LTRIM(RTRIM(CAST(NoDocERP AS VARCHAR(50)))) = LTRIM(RTRIM(@Cod)) THEN 0
+                                      WHEN LTRIM(RTRIM(CodigoOrden)) = LTRIM(RTRIM(@Cod)) THEN 1 ELSE 2 END`);
+            if (docRealRes.recordset[0]?.Doc) docCabecera = docRealRes.recordset[0].Doc;
+
             const initialMoneda = lineas.some(l => (l.Moneda || '').toUpperCase() === 'USD') ? 'USD' : 'UYU';
             await new sql.Request(transaction)
-                .input('Doc', sql.NVarChar, noDocERP)
+                .input('Doc', sql.NVarChar, docCabecera)
                 .input('Cli', sql.Int, clienteId)
                 .input('Mon', sql.VarChar(10), initialMoneda)
                 .query(`INSERT INTO PedidosCobranza (NoDocERP, ClienteID, MontoTotal, Moneda, FechaGeneracion, EstadoCobro) VALUES (LTRIM(RTRIM(@Doc)), @Cli, 0, @Mon, GETDATE(), 'PENDIENTE')`);
             cabRes = await new sql.Request(transaction)
-                .input('Doc', sql.NVarChar, noDocERP)
+                .input('Doc', sql.NVarChar, docCabecera)
                 .query(`SELECT * FROM PedidosCobranza WHERE LTRIM(RTRIM(NoDocERP)) = LTRIM(RTRIM(@Doc))`);
         }
         const cabecera = cabRes.recordset[0];
@@ -1139,6 +1201,14 @@ exports.saveQuotation = async (req, res) => {
             logger.warn(`[Quotation] No se pudo propagar a depósito para ${noDocERP}: ${propErr.message}`);
         }
 
+        // Etiquetas: generar la que falta (orden ya Pronto) o actualizar el QR de la ya impresa
+        let resumenEtiquetas = [];
+        try {
+            resumenEtiquetas = await sincronizarEtiquetasDelPedido(pool, pedidoId, req.user);
+        } catch (etqErr) {
+            logger.warn(`[Quotation] No se pudieron revisar las etiquetas de ${noDocERP}: ${etqErr.message}`);
+        }
+
         logger.info(`[Quotation] ✅ Cotización guardada para ${noDocERP} | Total: ${nuevoTotal} | QR: ${nuevoQrString}`);
 
         res.json({
@@ -1146,7 +1216,8 @@ exports.saveQuotation = async (req, res) => {
             noDocERP,
             montoTotal: nuevoTotal,
             qrString: nuevoQrString,
-            deposito: resumenDeposito
+            deposito: resumenDeposito,
+            etiquetas: resumenEtiquetas
         });
 
     } catch (err) {

@@ -325,7 +325,7 @@ const AREA_COLOR_MAP = {
     'DTF': '#10b981', 'Sublimacion': '#8b5cf6', 'ECOUV': '#f59e0b', 'IMPRESION DIRECTA': '#84cc16',
     'Bordado': '#ec4899', 'Corte': '#ef4444', 'Costura': '#06b6d4', 'Diseño': '#3b82f6',
     'TPU': '#0ea5e9', 'Estampado': '#f97316', 'Productos Confeccionados': '#38bdf8',
-    'Venta Directa': '#a855f7', 'Sin área': '#94a3b8',
+    'Venta Directa': '#a855f7', 'Adelanto de Saldo': '#14b8a6', 'Sin área': '#94a3b8',
 };
 const colorArea = (a) => AREA_COLOR_MAP[a] || '#94a3b8';
 

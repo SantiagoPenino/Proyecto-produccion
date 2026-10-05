@@ -794,6 +794,10 @@ export default function QuotationEditModal({ noDocERP, onClose, onSaved, current
         try {
             const res = await api.post('/prices/calculate', {
                 codArticulo: line.CodArticulo,
+                // El código de artículo NO es único (Back pet y "Rib 1,70" comparten el '28'):
+                // sin el producto, el motor tomaba el primero que encontraba y cotizaba con el
+                // precio de OTRO artículo (EUV-30014 salió a USD 10, el precio del Rib).
+                proIdProducto: line.ProIdProducto || undefined,
                 cantidad: line.Cantidad,
                 // la línea conserva su moneda (la del pedido, o la elegida en la columna Moneda);
                 // sin esto el motor devolvía la moneda base del artículo y la línea cambiaba sola
@@ -1046,6 +1050,9 @@ export default function QuotationEditModal({ noDocERP, onClose, onSaved, current
             if (cobradas.length > 0) {
                 msg += ` ${cobradas.join(', ')} ya fue${cobradas.length === 1 ? '' : 'n'} cobrada${cobradas.length === 1 ? '' : 's'}: ahí el precio de depósito/caja NO se tocó.`;
             }
+            // Etiquetas: el backend genera la que faltaba (orden ya Pronto) o actualiza el QR de
+            // la ya impresa. Se dice orden por orden qué pasó (o por qué sigue sin etiqueta).
+            (resp?.data?.etiquetas || []).forEach(e => { msg += ` ${e.mensaje}`; });
             setSuccess(msg);
             if (onSaved) onSaved();
         } catch (err) {

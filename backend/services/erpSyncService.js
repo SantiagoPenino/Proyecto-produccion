@@ -1176,7 +1176,16 @@ class ERPSyncService {
                 const cubiertaPorPlan = !!(d.desglose && d.desglose.cobertura && d.desglose.cobertura.tipo === 'PLAN')
                     || /prepago/i.test(String(d.Perfiles || ''));
                 if (!esFacturable && !d.esProMadre && !cubiertaPorPlan) {
-                    logger.info(`[ERPSync] ${d.OrdenID}: línea no facturable (hermana consolidada o subtotal 0) — no se inserta en PedidosCobranzaDetalle.`);
+                    if (!d.esHermanaConsolidada) {
+                        // Subtotal 0 sin plan ni hermana = casi siempre artículo SIN PRECIO BASE.
+                        // La orden queda sin cantidad cotizada y sin etiqueta al completarla
+                        // (EUV-30014, Back pet). No se guarda en $0 a propósito: una línea en $0
+                        // que no es "cero intencional" haría caer la etiqueta y el depósito al
+                        // importe del PEDIDO (cobro de más en pedidos con varias órdenes).
+                        logger.warn(`[ERPSync] ${d.OrdenID}: SIN PRECIO — art ${codArt || '?'} (ProIdProducto ${prodId || '?'}) cotizó ${cant} a $0; la orden queda SIN cotización hasta que se cargue el precio y se cotice a mano.`);
+                    } else {
+                        logger.info(`[ERPSync] ${d.OrdenID}: línea no facturable (hermana consolidada) — no se inserta en PedidosCobranzaDetalle.`);
+                    }
                     continue;
                 }
                 if (!esFacturable && cubiertaPorPlan) {

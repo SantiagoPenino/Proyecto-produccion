@@ -33,10 +33,29 @@ const CAMPOS_ENRIQUECIDOS = `
     (SELECT TOP 1 f.CodigoOrden FROM Ordenes f WHERE f.OrdenID = o.LiberaCuandoOrdenID) AS FuenteCodigo,
     m.Nombre AS MaquinaNombre,
     u.Nombre AS OperarioNombre,
+    -- Bocetos/logos primero: antes era TOP 4 por fecha y una planilla o tizada subida después
+    -- dejaba el boceto afuera. [COSTURA] no recibe boceto propio al crear el pedido: ve los
+    -- bocetos de su hermana de Corte (misma prenda). CodigoOrdenRef = orden dueña del archivo
+    -- cuando no es esta (para armar la miniatura local).
     (
-        SELECT TOP 4 RefID, NombreOriginal, TipoArchivo, UbicacionStorage
-        FROM ArchivosReferencia WHERE OrdenID = o.OrdenID
-        ORDER BY FechaSubida DESC
+        SELECT TOP 4 x.RefID, x.NombreOriginal, x.TipoArchivo, x.UbicacionStorage, x.CodigoOrdenRef
+        FROM (
+            SELECT ar.RefID, ar.NombreOriginal, ar.TipoArchivo, ar.UbicacionStorage, ar.FechaSubida,
+                   CAST(NULL AS VARCHAR(100)) AS CodigoOrdenRef, 0 AS Ajena
+            FROM ArchivosReferencia ar WHERE ar.OrdenID = o.OrdenID
+            UNION ALL
+            SELECT ar.RefID, ar.NombreOriginal, ar.TipoArchivo, ar.UbicacionStorage, ar.FechaSubida,
+                   CAST(LTRIM(RTRIM(oc.CodigoOrden)) AS VARCHAR(100)), 1
+            FROM ArchivosReferencia ar JOIN Ordenes oc ON oc.OrdenID = ar.OrdenID
+            WHERE o.AreaID = 'TWT' AND oc.AreaID = 'TWC' AND oc.NoDocERP = o.NoDocERP
+              AND ISNULL(oc.Estado, '') <> 'Cancelado'
+              AND UPPER(ISNULL(ar.TipoArchivo, '')) LIKE '%BOCETO%'
+        ) x
+        ORDER BY
+            CASE WHEN UPPER(ISNULL(x.TipoArchivo, '')) LIKE '%BOCETO%' OR UPPER(ISNULL(x.TipoArchivo, '')) LIKE '%LOGO%'
+                      OR UPPER(ISNULL(x.TipoArchivo, '')) LIKE '%PREDISENO%' OR UPPER(ISNULL(x.TipoArchivo, '')) LIKE '%MATRIZ%'
+                 THEN 0 ELSE 1 END,
+            x.Ajena, x.FechaSubida DESC
         FOR JSON PATH
     ) AS RefsJson,
     (SELECT COUNT(*) FROM OrdenNotasProduccion WHERE OrdenID = o.OrdenID) AS NotasCount,
@@ -180,7 +199,7 @@ function enriquecerPreview(row) {
         const driveId = getDriveId(f.UbicacionStorage);
         const previewUrl = driveId
             ? `https://drive.google.com/thumbnail?id=${driveId}&sz=w300`
-            : `/thumbnails/${encodeURIComponent(row.CodigoOrden)}/${f.RefID}.jpg`;
+            : `/thumbnails/${encodeURIComponent(f.CodigoOrdenRef || row.CodigoOrden)}/${f.RefID}.jpg`;
         const tipo = (f.TipoArchivo || '').toUpperCase();
         // [BORDADO] El prediseño se chequea PRIMERO y se excluye de las otras dos
         // categorías: es el arte que coloreó el cliente y es solo REFERENCIA — la
@@ -191,7 +210,7 @@ function enriquecerPreview(row) {
         const esLogo = !esPrediseno && (tipo.includes('LOGO') || tipo.includes('MATRIZ'));
         // Planilla de talles y archivos de tizada: se muestran en el bloque "Lista de talles", no como
         // "Referencia" suelta arriba (COR-26025 mostraba ahí la planilla y la tizada sin decir qué eran).
-        const esPlanilla = /PLANILLA|INFO_CORTE|TALLE|LISTA/.test(tipo);
+        const esPlanilla = /PLANILLA|INFO_CORTE|INFO_PEDIDO|TALLE|LISTA/.test(tipo);
         const esTizada = !esPlanilla && /ARCHIVO_CORTE|TIZADA/.test(tipo);
         return { ...f, previewUrl, esBoceto, esLogo, esPrediseno, esPlanilla, esTizada };
     });
@@ -513,7 +532,9 @@ exports.getContextoPedido = async (req, res) => {
             });
         const tipo = (r) => r.TipoArchivo.toUpperCase();
         const nombre = (r) => String(r.NombreOriginal || '').toUpperCase();
-        const esPlanilla = (r) => /PLANILLA|INFO_CORTE|TALLE|LISTA/.test(tipo(r)) || /PLANILLA|TALLES?\b/.test(nombre(r));
+        // INFO_PEDIDO = el Excel de talles cuando el pedido no tiene Corte (va pegado a la producción
+        // principal): sin esto Bordado/Estampado solos no veían la lista de talles.
+        const esPlanilla = (r) => /PLANILLA|INFO_CORTE|INFO_PEDIDO|TALLE|LISTA/.test(tipo(r)) || /PLANILLA|TALLES?\b/.test(nombre(r));
         const esTizada = (r) => !esPlanilla(r) && (/ARCHIVO_CORTE|TIZADA/.test(tipo(r)) || /^REF-\d+-(HOJA_|FICHA_TECNICA)/.test(nombre(r)) || /FICHA_TECNICA|TIZADA/.test(nombre(r)));
         const esBoceto = (r) => /BOCETO|PREDISENO/.test(tipo(r));
         const planillas = refs.filter(esPlanilla);
@@ -529,7 +550,11 @@ exports.getContextoPedido = async (req, res) => {
             hojas.forEach(h => tizadas.push({ RefID: null, ArchivoID: h.ArchivoID, NombreOriginal: h.NombreArchivo, TipoArchivo: 'TIZADA', UbicacionStorage: h.RutaAlmacenamiento, CodigoOrden: h.CodigoOrden, AreaID: 'TWC', Piezas: h.Piezas, Copias: h.Copias,
                 previewUrl: getDriveId(h.RutaAlmacenamiento) ? `https://drive.google.com/thumbnail?id=${getDriveId(h.RutaAlmacenamiento)}&sz=w300` : null }));
         } catch (e) { logger.warn('[Bandeja] contexto-pedido hojas de corte: ' + e.message); }
-        const bocetos = refs.filter(r => esBoceto(r) && !esPlanilla(r));
+        // Bocetos solo del área de esta orden (cada área ve los suyos); Costura (TWT) además los de
+        // Corte (TWC), porque es la misma prenda y Costura no recibe boceto propio.
+        const areaOrden = String(o.AreaID || '').trim().toUpperCase();
+        const areasBoceto = areaOrden === 'TWT' ? ['TWT', 'TWC'] : [areaOrden];
+        const bocetos = refs.filter(r => esBoceto(r) && !esPlanilla(r) && areasBoceto.includes(String(r.AreaID || '').trim().toUpperCase()));
         // Ficha técnica del pedido: el PDF que se pega a la orden madre PRO (pedido + producto + costuras/avíos +
         // órdenes + archivos). Se toma la última generada; si no hay, la bandeja ofrece generarla.
         const fichas = refs.filter(r => /FICHA_PEDIDO/.test(tipo(r)));

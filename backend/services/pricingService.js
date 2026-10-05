@@ -213,18 +213,29 @@ class PricingService {
                         WHERE ProIdProducto = @ProId
                     `;
                 } else {
+                    // El CodArticulo NO es único (ej. '28' = Back pet y Rib 1,70). Sin ORDER BY
+                    // salía cualquiera y se cotizaba con el precio de otro artículo (EUV-30014).
+                    // Se prefiere el activo y visible; si hay más de uno queda avisado en el log
+                    // — quien llama debería mandar el ProIdProducto.
                     reqArea.input('CodSearch', sql.VarChar(50), String(cleanCod).trim());
                     queryArea = `
                         SELECT TOP 1 ProIdProducto,
                             (SELECT TOP 1 AreaID FROM Ordenes WHERE ProIdProducto = Articulos.ProIdProducto) as AreaID,
-                            Grupo
-                        FROM Articulos 
+                            Grupo,
+                            (SELECT COUNT(*) FROM Articulos A2 WHERE LTRIM(RTRIM(A2.CodArticulo)) = @CodSearch) AS Candidatos
+                        FROM Articulos
                         WHERE LTRIM(RTRIM(CodArticulo)) = @CodSearch
+                        ORDER BY CASE WHEN ISNULL(borrar, 0) = 0 THEN 0 ELSE 1 END,
+                                 CASE WHEN Mostrar = 1 THEN 0 ELSE 1 END,
+                                 ProIdProducto DESC
                     `;
                 }
                 
                 const areaGrupoRes = await reqArea.query(queryArea);
                 if (areaGrupoRes.recordset.length > 0) {
+                    if (areaGrupoRes.recordset[0].Candidatos > 1) {
+                        logger.warn(`[PricingService] CodArticulo '${cleanCod}' lo comparten ${areaGrupoRes.recordset[0].Candidatos} artículos y no vino ProIdProducto: se cotiza con ProIdProducto ${areaGrupoRes.recordset[0].ProIdProducto}.`);
+                    }
                     if (!resolvedProId) resolvedProId = areaGrupoRes.recordset[0].ProIdProducto;
                     if (!resolvedAreaId) resolvedAreaId = areaGrupoRes.recordset[0].AreaID?.toString().trim().toUpperCase();
                     resolvedGrupo = areaGrupoRes.recordset[0].Grupo?.toString();

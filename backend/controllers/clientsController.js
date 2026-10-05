@@ -337,9 +337,26 @@ exports.searchClients = async (req, res) => {
     try {
         if (!termino) return res.json([]);
         const pool = await getPool();
+        // Prioridad: IDCliente exacto → CodCliente exacto → IDCliente que empieza con el término →
+        // el resto (contiene en IDCliente / nombre / fantasía). Antes era TOP 10 sin orden y un ID
+        // corto ("45") quedaba enterrado entre nombres que lo contenían.
         const result = await pool.request()
             .input('term', sql.NVarChar(200), `%${termino}%`)
-            .query('SELECT TOP 10 * FROM dbo.Clientes WHERE Nombre LIKE @term OR IDCliente LIKE @term OR NombreFantasia LIKE @term');
+            .input('exacto', sql.NVarChar(100), termino)
+            .input('prefijo', sql.NVarChar(200), `${termino}%`)
+            .query(`
+                SELECT TOP 10 * FROM dbo.Clientes
+                WHERE Nombre LIKE @term OR IDCliente LIKE @term OR NombreFantasia LIKE @term
+                   OR CAST(CodCliente AS VARCHAR(20)) = @exacto
+                ORDER BY
+                    CASE
+                        WHEN LTRIM(RTRIM(IDCliente)) = @exacto THEN 0
+                        WHEN CAST(CodCliente AS VARCHAR(20)) = @exacto THEN 1
+                        WHEN LTRIM(RTRIM(IDCliente)) LIKE @prefijo THEN 2
+                        WHEN IDCliente LIKE @term THEN 3
+                        ELSE 4
+                    END,
+                    LTRIM(RTRIM(IDCliente))`);
         res.json(result.recordset);
     } catch (err) {
         logger.error(`[clients/search] Error buscando "${termino}": ${err.message}`);

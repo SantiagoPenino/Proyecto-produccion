@@ -216,7 +216,9 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
 
         if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
 
-        if (val.trim().length < 3) {
+        // Mínimo 1 carácter: se busca por IdCliente, que puede ser corto ("45").
+        // El backend devuelve primero el IdCliente exacto.
+        if (val.trim().length < 1) {
             setSearchResults([]);
             return;
         }
@@ -224,7 +226,7 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
         setIsSearchingClient(true);
         searchTimeoutRef.current = setTimeout(async () => {
             try {
-                const res = await apiClient.get(`/clients/search?q=${encodeURIComponent(val)}`);
+                const res = await apiClient.get(`/clients/search?q=${encodeURIComponent(val.trim())}`);
                 // /clients/search devuelve el array directo (res.json(result.recordset)),
                 // no envuelto en {data:...} — fallback a res mismo si res.data no está.
                 setSearchResults(res.data || res || []);
@@ -531,7 +533,8 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                     actions.setDtfVariant('DTF Textil');
                     actions.setEstampadoOrigin('Stock User');
                 }
-                if (res.componentes.some(c => (c.servicios || []).some(s => s.areaId === 'TWC'))) actions.setEnableCorte(true);
+                // [CORTE/COSTURA] Corte siempre lleva Costura (y Costura siempre lleva Corte).
+                if (res.componentes.some(c => (c.servicios || []).some(s => s.areaId === 'TWC'))) { actions.setEnableCorte(true); actions.setEnableCostura(true); }
                 if (res.componentes.some(c => (c.servicios || []).some(s => s.areaId === 'TWT'))) actions.setEnableCostura(true);
 
                 // [COMBOS] Para cada componente×EMB/DF/TPU que quedó en "opción libre" (sin
@@ -590,7 +593,8 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
             }
 
             // Corte / Costura: su propio interruptor, no la barra de arriba.
-            if (servicios.some(s => areaDe(s) === 'TWC')) actions.setEnableCorte(true);
+            // [CORTE/COSTURA] Corte siempre lleva Costura (y Costura siempre lleva Corte).
+            if (servicios.some(s => areaDe(s) === 'TWC')) { actions.setEnableCorte(true); actions.setEnableCostura(true); }
             if (servicios.some(s => areaDe(s) === 'TWT')) actions.setEnableCostura(true);
         }).catch(e => console.error('Error cargando servicios del producto', e));
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1793,7 +1797,9 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                         metadata: { moldType, fabricOrigin, clientFabricName, selectedSubOrderId, selectedBobinaId }
                     };
                 }
-                if (enableCostura) {
+                // [CORTE/COSTURA] Corte siempre lleva Costura: si hay Corte, la orden de Costura sale aunque el
+                // interruptor de Costura haya quedado apagado (pedido 26026 nació sin COS).
+                if (enableCostura || enableCorte) {
                     enrichedComplementary['TWT'] = {
                         activo: true,
                         observacion: costuraNote || 'Servicio de Costura solicitado',
@@ -2641,7 +2647,7 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                                         <input
                                             type="text"
                                             className="w-full bg-brand-dark border border-zinc-700 rounded-lg pl-11 pr-4 py-3 text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-brand-magenta focus:border-transparent transition-all"
-                                            placeholder="Buscar cliente (RUC, CI, Nombre)..."
+                                            placeholder="Buscar por IdCliente o nombre..."
                                             value={clientSearchTerm}
                                             onChange={handleClientSearch}
                                         />
@@ -2650,7 +2656,7 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                                         )}
                                     </div>
 
-                                    {searchResults.length > 0 && clientSearchTerm.length >= 3 && (
+                                    {searchResults.length > 0 && clientSearchTerm.trim().length >= 1 && (
                                         <div className="absolute z-50 mt-2 w-full bg-white rounded-xl shadow-xl border border-zinc-200 overflow-hidden max-h-60 overflow-y-auto">
                                             {searchResults.map(client => (
                                                 <div
@@ -2662,8 +2668,11 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                                                         setClientSearchTerm('');
                                                     }}
                                                 >
-                                                    <p className="font-bold text-zinc-800 text-sm">{client.Nombre || client.RazonSocial || client.nombre}</p>
-                                                    <p className="text-xs text-zinc-500 mt-0.5">ID: {client.CodCliente || client.ClienteID || client.id} | DOC: {client.CioRuc || client.RUT || client.RUC || client.CI || 'N/A'}</p>
+                                                    <p className="font-bold text-zinc-800 text-sm">
+                                                        <span className="font-mono text-brand-magenta mr-2">{String(client.IDCliente || '').trim() || '—'}</span>
+                                                        {client.Nombre || client.RazonSocial || client.nombre}
+                                                    </p>
+                                                    <p className="text-xs text-zinc-500 mt-0.5">Cód. interno: {client.CodCliente || client.ClienteID || client.id} | DOC: {client.CioRuc || client.RUT || client.RUC || client.CI || 'N/A'}</p>
                                                 </div>
                                             ))}
                                         </div>
@@ -2679,7 +2688,7 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                                         <div className="min-w-0 flex-1">
                                             <div className="flex items-center gap-2">
                                                 <h3 className="font-bold text-zinc-100 text-sm leading-tight truncate">{selectedClient.Nombre || selectedClient.RazonSocial || selectedClient.nombre}</h3>
-                                                <span className="text-[10px] text-zinc-500 font-mono uppercase shrink-0">#{selectedClient.CodCliente || selectedClient.ClienteID || selectedClient.id}</span>
+                                                <span className="text-[10px] text-zinc-500 font-mono uppercase shrink-0">{String(selectedClient.IDCliente || '').trim() || `#${selectedClient.CodCliente || selectedClient.ClienteID || selectedClient.id}`}</span>
                                             </div>
                                             <p className="text-[11px] text-zinc-500 truncate mt-0.5">
                                                 {selectedClient.CioRuc || selectedClient.RUT || selectedClient.RUC || selectedClient.CI || 'Sin RUC/CI'}
@@ -3674,6 +3683,11 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                                     actions.setEnableCostura(false);
                                     addToast('También se desactivó Costura: no hay Costura sin Corte.');
                                 }
+                                // [CORTE/COSTURA] Corte siempre lleva Costura: prender el Corte prende también la Costura
+                                if (!enableCorte && !enableCostura) {
+                                    actions.setEnableCostura(true);
+                                    addToast('Se activó también el Servicio de Costura: el Corte siempre lleva Costura.');
+                                }
                                 actions.setEnableCorte(!enableCorte);
                             }}
                             icon={Zap}
@@ -3723,6 +3737,15 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                                 if (!enableCostura && !enableCorte) {
                                     actions.setEnableCorte(true);
                                     addToast('Se activó también el Servicio de Corte: no hay Costura sin Corte. Completá sus datos.');
+                                }
+                                // [CORTE/COSTURA] El Corte siempre lleva Costura: sacar la Costura saca también el Corte
+                                if (enableCostura && enableCorte) {
+                                    if (serviciosObligatorios.has('TWC')) {
+                                        addToast('El producto elegido incluye Corte, y el Corte siempre lleva Costura: no se puede sacar la Costura.', { error: true });
+                                        return;
+                                    }
+                                    actions.setEnableCorte(false);
+                                    addToast('También se desactivó el Corte: Corte y Costura van siempre juntos.');
                                 }
                                 actions.setEnableCostura(!enableCostura);
                             }}

@@ -837,18 +837,19 @@ const FilePrintControl = ({ areaCode }) => {
     if (!id) return;
     setToast({ visible: true, message: 'Obteniendo etiquetas...', type: 'info' });
 
-    // GUARD: si la orden ya está en estado final, solo imprimir — nunca regenerar
-    const saUp = (selectedOrder?.statusArea || '').toUpperCase().trim();
+    // GUARD: con etiquetas existentes nunca se regenera (acá solo se llega si NO hay ninguna).
+    // Sin etiquetas, una orden Pronto/En tránsito SÍ se puede generar: no hay nada que pisar.
+    // Pasa cuando se completó sin cotización y se cotizó después (EUV-30014): antes avisaba
+    // "ya fue despachada" — falso — y la orden quedaba sin bulto. Solo se frena si ya terminó.
     const sUp  = (selectedOrder?.status     || '').toUpperCase().trim();
-    const isAlreadyDone = saUp === 'PRONTO' || saUp === 'EN TRANSITO' || sUp === 'FINALIZADO';
+    const isFinalizada = sUp === 'FINALIZADO' || sUp === 'ENTREGADO';
 
     try {
       let data = await fileControlService.getEtiquetas(id);
 
       if (!data || !data.etiquetas || data.etiquetas.length === 0) {
-        if (isAlreadyDone) {
-          // Orden ya despachada: no regenerar, solo avisar
-          setToast({ visible: true, message: 'La orden ya fue despachada. Las etiquetas originales pueden no estar disponibles.', type: 'warning' });
+        if (isFinalizada) {
+          setToast({ visible: true, message: `La orden está ${sUp.toLowerCase()} y no tiene etiquetas: no se generan desde acá. Revisala en Producción → Etiquetas.`, type: 'warning' });
           return;
         }
         // Primera vez (orden no despachada) → generar
@@ -1814,8 +1815,8 @@ const FilePrintControl = ({ areaCode }) => {
                   setCompletedOrderData(null);
                   if (wasLast) setActiveRoll(null);
                   // Usar printLabelsHelper directamente: las etiquetas acaban de generarse
-                  // por completarOrden, NO llamar handlePrintLabels que podría regenerar
-                  // si selectedOrder es null (isAlreadyDone = false en ese momento).
+                  // por completarOrden, NO llamar handlePrintLabels (con selectedOrder null
+                  // no tiene el estado de la orden para decidir).
                   printLabelsHelper(null, { id });
                 }} className="w-full py-3 rounded-xl bg-brand-cyan text-white font-black text-lg shadow-lg shadow-brand-cyan/30 hover:bg-brand-cyan hover:scale-[1.02] transition-all active:scale-95">
                   <i className="fa-solid fa-print mr-2"></i> IMPRIMIR ETIQUETAS
