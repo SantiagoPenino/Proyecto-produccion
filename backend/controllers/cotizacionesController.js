@@ -96,4 +96,33 @@ const fetchFromBCU = async (req, res) => {
   }
 };
 
-module.exports = { getCotizacionesHoy, insertCotizacion, fetchFromBCU };
+// La última cotización cargada hasta una fecha (inclusive). "Ventas por vendedor" la usa para
+// los meses cerrados: con el último día del mes da la última cotización de ese mes.
+const getCotizacionHasta = async (req, res) => {
+  const fecha = String(req.query.fecha || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha)) {
+    return res.status(400).json({ error: 'Fecha inválida: tiene que ser AAAA-MM-DD.' });
+  }
+  try {
+    const pool = await getPool();
+    const result = await pool.request()
+      .input('fecha', sql.VarChar(10), fecha)
+      .query(`
+        SELECT TOP 1 CotFecha, CotDolar
+        FROM Cotizaciones WITH(NOLOCK)
+        WHERE CotDolar > 0 AND CotFecha < DATEADD(DAY, 1, CAST(@fecha AS date))
+        ORDER BY CotFecha DESC
+      `);
+
+    if (result.recordset.length === 0) {
+      return res.status(404).json({ message: `No hay cotizaciones hasta el ${fecha}.` });
+    }
+
+    res.status(200).json({ cotizaciones: result.recordset });
+  } catch (error) {
+    logger.error('Error al obtener la cotización hasta una fecha:', error);
+    res.status(500).json({ error: 'Error al obtener la cotización' });
+  }
+};
+
+module.exports = { getCotizacionesHoy, insertCotizacion, fetchFromBCU, getCotizacionHasta };

@@ -22,6 +22,17 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
   - Quién puede hacerlo se maneja con el permiso de Gestión de Sistema. En "Catálogo y WMS" el alta funciona igual que antes. El formulario se movió a `src/components/stock/AltaProductoStock.jsx` para que lo usen las dos pantallas; en las dos, los desplegables pasan a ser los propios y en el celular ocupa la pantalla completa.
   - Probado en local sin grabar nada: el alta sin el dato nuevo crea el artículo del catálogo, igual que antes; con "se vende" también; como insumo interno crea el producto y sus variantes sin artículo. El build compila.
 - **Servicio Técnico: pantalla nueva para pedir y seguir reparaciones** (menú Servicio Técnico, `/servicio-tecnico`; es la etapa 1 del plan en `docs/servicio-tecnico-plan.md`). Cualquier usuario pide ayuda por una máquina de producción, una PC, internet, un software o las instalaciones. Carga qué pasa, la prioridad, quién reporta (el logueado ya elegido, otro usuario o alguien sin usuario, porque hay tablets compartidas) y fotos, capturas, PDF o videos cortos; las fotos se achican antes de subir.
+  - **Cada sección es su propia entrada del menú** (02/10): Solicitudes, Mi semana, Calendario, Máquinas, Planes y procedimientos, Proyectos, Insumos y Reportes cuelgan de Servicio Técnico en la barra lateral, como Stock. Desde Roles se elige qué rol ve cada una.
+    - Cada página muestra solo su sección, sin las pestañas ni el desplegable de celular y tablet. Se cambia de sección desde la barra lateral; en celular, desde el menú (☰).
+    - Una sección la ve quien la tenga en el menú de su rol. Lo que se hace adentro sigue siendo de los técnicos (área SERVICIO) y Admin, como hasta ahora: tomar, empezar, programar, crear y editar. Quien vea una sección sin ser técnico la ve sin esos botones.
+    - Reportes también lo ve un rol que lo tenga en el menú, aunque no sea técnico. Antes el servidor lo dejaba solo a técnicos y Admin.
+    - Los avisos de la campanita y los push siguen abriendo lo mismo: un link a `/servicio-tecnico` lleva a la sección que corresponde y abre la solicitud, el trabajo o el proyecto.
+    - El menú lo arma `docs/servicio-tecnico/st-menu-secciones.sql`: Solicitudes para todos los roles que ven Servicio Técnico, y las otras siete solo para Admin, para repartirlas después desde Roles. Sin el script, Servicio Técnico sigue como hasta ahora, con pestañas.
+    - Probado en local, sin dejar nada grabado:
+      - el script, en una transacción revertida, arma el grupo y las ocho secciones con esos roles, y si se corre dos veces la segunda frena;
+      - los reportes responden a Admin y a un técnico, y rechazan a un usuario de otra área cuyo rol no tiene Reportes;
+      - los links de los avisos llevan a la sección correcta: una solicitud a Solicitudes, un trabajo a Mi semana (o al Calendario, o a Solicitudes, según lo que vea el rol), un proyecto a Proyectos y el reporte semanal a Reportes;
+      - el build compila. No se vio en el navegador.
   - **Local** (30/09): el formulario pide el local: Inca, Arenal Grande, Vilardebo, Paullier u Otro, que pide especificar cuál. Es opcional, sale de la tabla `Locales` y se ve en el detalle de la solicitud. Probado en local sin grabar nada: sin el script el campo no aparece y la solicitud se crea igual; con el script, se guardan el local y lo especificado, y el detalle los muestra.
   - **Franja horaria, y mantenimientos que se repiten por días de la semana** (30/09):
     - **Franja horaria.** Al programar una tarea o un mantenimiento, y en los planes, se puede elegir una franja horaria: de 06:00 a 22:00, por hora y de al menos 1 hora. Es opcional. Se ve en el calendario (que ordena cada día por hora), en Mi semana, en el detalle del trabajo y en la lista de planes. En el trabajo se cambia desde Editar.
@@ -50,6 +61,13 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
       - una cantidad inválida, un artículo que no existe o una foto que no llegó se rechazan.
     - El build compila.
   - **Los técnicos** (área SERVICIO) y Admin tienen la bandeja. Pueden tomar una solicitud, ponerla en espera diciendo qué se espera, y derivarla a otro técnico o a un servicio externo, con motivo obligatorio.
+  - **El encargado asigna las solicitudes** (02/10). En el detalle, en lugar de "Tomar", el encargado (y un Admin) tiene "Asignar": un desplegable con los técnicos, donde el que la tiene figura como "Asignado". Si la solicitud ya tiene técnico, el botón dice "Reasignar".
+    - La solicitud queda En curso a nombre del técnico elegido, como si la hubiera tomado. Cuenta como tomada por él en los reportes, y el tiempo de respuesta corre hasta la primera asignación.
+    - Al técnico le llega el aviso "Te asignaron ST-…". Asignársela a uno mismo es tomarla, sin aviso.
+    - Se puede reasignar a otro técnico, sin motivo. El historial dice quién asignó, a quién y quién la tenía antes.
+    - El encargado ve la bandeja de los técnicos aunque no sea del área SERVICIO. Si no es técnico, en el detalle solo tiene "Asignar": tomar, poner en espera, derivar, finalizar y editar siguen siendo de los técnicos y Admin.
+    - Probado en local con las funciones reales del servidor, sin mandar avisos de verdad, y con las solicitudes de prueba borradas al final (18 pruebas). Un usuario cualquiera y un técnico que no es el encargado no pueden asignar. No se puede asignar a alguien que no es técnico, ni una solicitud finalizada. La encargada asigna y después un Admin reasigna, con su historial y sus avisos. El resumen de reportes cuenta las asignadas.
+    - El botón se probó aparte en el navegador: el ícono, el texto y la flecha quedan centrados.
   - **Al finalizar** se anota el resultado (resuelta, en parte, no resuelta, cancelada), lo realizado, si hacen falta repuestos, si requiere seguimiento y con qué fecha, y cómo queda la máquina. Se puede reabrir con motivo.
   - **Cada solicitud guarda** la fecha en que se pidió, en que un técnico la tomó y en que se finalizó, con los tiempos de respuesta, de resolución y de parada de la máquina. Todo cambio queda en su historial, con quién y cuándo.
   - **Buscador por palabra:** número, título, detalle, lo realizado, máquina, persona. También hay filtros por estado, tipo, prioridad, área, técnico y fechas.
@@ -168,6 +186,7 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
     - Las vistas (Abiertas / Tomadas por mí / Historial) y los contadores se reparten todo el ancho de su fila.
     - Planes, Proyectos e Insumos: los botones de crear o usar van solo con el ícono, como el "+" del calendario.
       - Planes: una fila con las pestañas, un ojo para ver los desactivados (se prende en celeste) y "+".
+      - Tarjeta de cada plan (02/10, estaba todo apretado): el próximo trabajo va con su estado al lado y la última vez abajo, con más aire; el lápiz y el encendido van separados por una línea.
       - Proyectos: una fila con el buscador, el estado y "+".
       - Insumos: Stock / Usos a lo ancho. Debajo, el depósito, que se achica y corta el texto (antes se desbordaba y tapaba "Usar insumo"), y el ícono de usar.
       - Probado a 402 y 375 px: sin desborde horizontal.
@@ -188,6 +207,143 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
     - Probado en el navegador integrado a 402, 700 y 1280 px, con datos simulados.
 
 ### Cambiado
+- **Toda la app se ve con la fuente Inter** (02/10). El layout usa `font-sans`, que en `tailwind.config.js` es Inter, pero Inter no se cargaba: se veía Segoe UI, la fuente del sistema de Windows. Solo pasaba a Inter después de entrar a Clientes o Presupuestos, que la bajan de Google Fonts, así que la letra cambiaba según por dónde se hubiera pasado. Ahora `main.jsx` la carga desde `@fontsource/inter` (ya estaba instalada), con los pesos 400 a 900, igual que DM Sans. El build la incluye en el CSS principal. Cambia la letra de todas las pantallas que usan el layout.
+- **Configurar Productos usa todo el ancho de la pantalla** (02/10). Estaba limitada a 1280 px y centrada, con franjas vacías a los costados en pantallas anchas. Desde 1536 px la lista de productos pasa de 340 a 400 px, y en EcoUV las tres tarjetas entran en una fila desde 1280 px. Los textos y los formularios angostos conservan su ancho para que se lean bien: los pasos Accesorios, Ficha de diseño y Resumen, y los catálogos de avíos y costuras. El build compila; no se vio en el navegador.
+  - 05/10: los catálogos de avíos y de costuras también van a todo el ancho, como el de técnicas, porque con 896 px quedaba media pantalla vacía. El nombre ocupa el lugar libre y la unidad, en uso, activo y Guardar quedan fijos a la derecha. El texto de arriba conserva su ancho para leerse bien. (Los pasos del editor ya habían pasado a todo el ancho el 02/10.)
+- **Configurar Productos: los contadores son el filtro de la lista** (02/10). Arriba había un resumen (publicados, borradores, paquetes promo, sin configurar) y en la lista se repetían como botones; el desplegable de área se cortaba ("Todas l…").
+  - Ahora los filtros van en la misma fila que las pestañas, a la derecha: Todos, Publicados, Borradores y Sin configurar, cada uno con su número, y al final el área, con el desplegable propio. Tocar el filtro prendido vuelve a Todos.
+  - Si en una pantalla angosta no entran, pasan a una fila propia debajo de las pestañas, y la línea de las pestañas queda donde estaba.
+  - El desplegable de área muestra solo el nombre del área, sin "Produce" adelante, con mayúscula inicial en cada palabra: "Impresion Directa", "Ecouv", "Sublimacion". En la base están escritos "IMPRESION DIRECTA", "ECOUV" y "Sublimacion".
+  - Los números cuentan lo de la pestaña abierta (confeccionados o combos), con la búsqueda y el área aplicadas: cada número es lo que muestra la lista al tocarlo. Antes contaban todos los productos juntos.
+  - "Paquetes promo" ya no está: es el número de la pestaña Combos y Promos.
+  - El filtro de área solo aplica a los confeccionados, que es donde se elige. Antes también sacaba combos de la otra pestaña sin que se viera por qué.
+  - En la lista, el encabezado de cada grupo (Banderas, Camisetas…) ya no desenfoca lo que pasa por debajo: fondo sólido.
+  - El build compila. La fila de filtros se vio en el navegador en una copia aparte. En la fila de las pestañas no la vi: la línea de abajo se verificó en el CSS que genera Tailwind.
+- **Configurar Productos: los 18 desplegables que quedaban del navegador pasan al desplegable propio** (02/10), el mismo de Servicio Técnico.
+  - Están en la vista del molde, en los pasos Producción principal, Técnicas, Combo, Precio, Molde, Accesorios y Ficha de diseño, y en el catálogo de avíos.
+  - Con más de 8 opciones tienen buscador: producto del combo y del accesorio, variante del WMS, molde de TizadaPro, avío, costura y opción de cada técnica.
+  - Mantienen el borde, el tamaño y el rojo de "falta elegir" de cada campo. Tienen ancho fijo, así no cambian de tamaño al elegir otra opción.
+  - Qué se elige y cómo se guarda no cambia.
+  - El build compila. No se vio en el navegador porque la página pide login: hay que recorrer los pasos del editor.
+- **Configurar Productos: una sola fila de pestañas** (02/10). Antes había dos niveles, las pastillas Prendas y Combos / EcoUV y abajo cinco pestañas, que se veían igual que los filtros y los pasos del editor (todos con el elegido en negro).
+  - Ahora es una sola fila: Confeccionados, Combos y Promos y EcoUV a la izquierda, y separados por una línea, Técnicas, Avíos y Costuras, en un tono más suave porque son catálogos de apoyo.
+  - La pestaña elegida va subrayada en brand-cyan, como en Servicio Técnico, y sin emojis.
+  - EcoUV pasa a ser una pestaña más, con sus tres tarjetas.
+  - En celular, un desplegable con la pestaña actual, con los productos y los catálogos agrupados.
+  - El build compila. La fila se vio en el navegador en una copia aparte; la página real no.
+- **Configurar Productos: cada pestaña muestra su propio producto abierto** (02/10). Si se abría un combo en Combos y Promos y se volvía a Productos Confeccionados, el combo seguía en el editor. Ahora cada pestaña recuerda lo suyo: al volver se ve el producto que estaba abierto ahí, en el mismo paso y con los cambios sin guardar, o el cartel para elegir uno si no había ninguno. Los catálogos no cambian lo abierto. El build compila; no se vio en el navegador.
+- **Configurar Productos: íconos de las áreas y nombres de los avíos** (02/10).
+  - Los íconos de Sublimación, Impresión directa, Gran formato, Corte, Costura, Bordado, TPU y DTF pasan a Lucide, todos en brand-cyan y sin el cuadrado de color de fondo. Antes eran de Font Awesome, sobre un degradé distinto por área.
+  - Cambian en el catálogo de técnicas, en los pasos Producción principal y Técnicas, y en las opciones de cada técnica.
+  - En el catálogo de avíos los nombres se muestran con mayúscula en cada palabra. Se guardan como se escriben.
+  - El precio sube y baja de a 0,10 (antes de a 0,01), en dos lugares (05/10). Se puede seguir escribiendo cualquier precio a mano.
+    - En el catálogo de técnicas, con las flechitas.
+    - En el precio del producto, al lado del nombre: ese campo no muestra flechitas, así que va con las flechas del teclado.
+  - El build compila; no se vio en el navegador.
+- **Configurar Productos: el editor del producto, más compacto y con lo que falta a la vista** (02/10).
+  - **Familia y etiqueta** dejan de ser dos franjas de botones y pasan a ser desplegables debajo del nombre: código · familia › etiqueta · origen · precio.
+    - Tienen buscador y, al final, "+ Nueva familia" o "+ Nueva etiqueta". El lápiz al lado de la etiqueta la renombra.
+    - Se siguen aplicando al instante. Si la familia es Prendas, se marca en ámbar como sin clasificar.
+  - **El origen ya no es el paso 1:** es un desplegable en esa misma línea, y el editor abre directo en Producción principal (7 pasos en vez de 8).
+    - Si el origen es Local o Ambos, debajo del encabezado aparece el producto del local. Una vez elegido se ve en una sola línea, con "Cambiar".
+    - Ahí mismo va el interruptor de validar stock.
+  - **Los pasos muestran su estado:** ✓ si ya tienen lo suyo, y un punto ámbar si les falta algo para guardar o publicar. Pasando el mouse se ve qué falta.
+    - Usan las mismas reglas que revisa Guardar: molde, medida fija, pieza del molde de cada aplique, técnicas apagadas que tienen apliques, cantidad mínima o del paquete y productos del combo.
+    - El paso elegido va en brand-cyan; antes, en negro, como los filtros y las familias.
+    - Los pasos se reparten todo el ancho del editor: el primero pegado al borde izquierdo, el último al derecho y el mismo espacio entre todos. Si en una pantalla angosta no entran, bajan de renglón.
+    - Al cambiar de paso, el contenido entra con una animación de 0,22 s: se desliza desde la derecha si se va a un paso de adelante y desde la izquierda si se vuelve a uno de atrás. Con "reducir movimiento" activado en la computadora, cambia sin animación.
+  - **Guardar** pierde el emoji y se pinta de brand-cyan ("Guardar cambios") cuando hay algo sin guardar. No cuentan la foto, el nombre, la familia ni la etiqueta, que se guardan al instante, ni el relleno automático del material y las tallas de la ficha.
+  - En la línea de abajo del nombre, si no hay precio dice "sin precio" (antes, "—").
+  - **Paso Producción principal, con un mismo estilo.** Antes las tarjetas del área ocupaban poco más de la mitad del ancho y las del molde, todo.
+    - Las dos elecciones (área y molde) usan la misma tarjeta, en la misma grilla a todo el ancho. Cada tarjeta lleva ícono si tiene, título, detalle y un círculo que marca la elegida.
+    - Los nombres de las áreas van con mayúscula inicial, como en el filtro.
+    - Todas las secciones llevan el título y la ayuda arriba.
+    - "Obligatoria para publicar sin molde" va en ámbar, como lo que falta en los pasos (antes en rojo).
+    - La estrella de "por defecto" de los materiales es un ícono y no un emoji.
+  - **Paso Precio y cantidades, con el mismo estilo.** Antes eran dos recuadros lado a lado, de distinto alto, con la ayuda abajo y la política como botoncitos con el elegido en negro.
+    - Ahora son secciones una debajo de la otra, con el título y la ayuda arriba.
+    - El precio y la moneda llevan etiqueta arriba y el mismo tamaño que los campos de la medida fija.
+    - La política de cantidad (Libre, Cantidad mínima, Paquete fijo) usa las mismas tarjetas que el área y el molde, cada una con una línea que la explica. Debajo aparece el mínimo o las unidades del paquete.
+    - El surtido del paquete usa interruptores, como los materiales (antes, casillas del navegador).
+    - El aviso "elegí el producto del local en el paso Origen" ahora dice "arriba", porque ese paso ya no existe.
+  - **Paso Accesorios y estructura, con el mismo estilo.**
+    - Una sección a todo el ancho con el título y la ayuda arriba. Antes ocupaba unos 770 px.
+    - Sin accesorios, se ve una línea de texto. Antes había un recuadro punteado encima del botón punteado de agregar.
+    - En cada accesorio, "Siempre va / Opcional" e "Incluido en el precio / Se cobra aparte" usan los mismos checks que el paso Técnicas, con una línea que explica cada opción. Antes eran botoncitos que cambiaban al tocarlos, con "Siempre va" en negro.
+    - El número del accesorio va en gris en vez de negro.
+    - El desplegable del depósito muestra solo el nombre ("Depósito de ventas", "Centro de stock general"…), sin "Sale de:" adelante. Qué es se ve al pasar el mouse.
+  - **Paso Molde, telas y apliques, con el mismo estilo.**
+    - Todas las secciones llevan el título y la ayuda arriba. Las piezas y los talles del molde pasan a una sección propia, "Piezas y talles".
+    - Si el molde es obligatorio y no está vinculado, el título dice "(obligatorio para publicar)" en ámbar y el desplegable tiene borde ámbar. Así se ve qué marca el punto ámbar del paso.
+    - Los modelos usan la misma tarjeta que las otras elecciones: check verde si se vende, estrella si se ofrece primero. La explicación de los tres clics pasó a la ayuda. Antes estaban la ⭐ y el ✓ como texto.
+    - "Actualizar" lleva ícono en vez de ↻. La estrella de la tela que se ofrece primero es un ícono, y el candado y la carpeta del resumen del molde también.
+    - En el desplegable "Ver las piezas de", los modelos dicen "· primero" o "· se vende" en vez de ⭐ y ✓.
+    - Los apliques se ven como los accesorios: renglones con el mismo borde, la pieza o la técnica que falta en ámbar (antes en rojo), "Incluido en el precio / Se cobra aparte" con el check de Técnicas, y "+ Agregar aplique" a todo el ancho.
+    - El título "Apliques — posición · técnica · cantidad" pasa a "Apliques": la cantidad no se carga en ese renglón.
+  - **Paso Ficha de diseño, con el mismo estilo.**
+    - Las secciones van a todo el ancho; antes ocupaban unos 770 px.
+    - El recuadro del dibujo también va a todo el ancho. El lienzo de adentro, donde se hace clic y van las flechas, conserva su ancho de siempre (732 px) y va centrado. Las anotaciones se guardan en % del lienzo y, con otro ancho, las flechas ya cargadas se correrían de lugar sobre el dibujo.
+    - Los campos (referencia, marca, material, tallas, marcación) tienen el mismo tamaño y la misma etiqueta que en los otros pasos. Los renglones de avíos se ven como los de accesorios. Si falta elegir el avío, el borde va en ámbar (antes rojo). La cantidad dice "u por prenda".
+    - "+ Agregar anotación / campo / avío / costura" van a todo el ancho, como en Accesorios y Apliques.
+    - Los emojis pasaron a íconos: 📤 y 🔄 en Subir/Cambiar dibujo, ↻ en "Automático", 🖨 en "Ver ficha técnica" (que deja de ser negro) y ⎙ en "Imprimir / PDF".
+    - La vista imprimible queda por encima de la navbar y de la barra lateral (antes quedaba debajo) y en el celular ocupa toda la pantalla.
+    - Textos: "Foto del producto (primera pestaña)" pasa a "(la de arriba, al lado del nombre)", que es donde está. En Costuras se sacó "Abajo, las que sugiere el despiece de la combinación ⭐ default", porque esa lista no existe en la página.
+  - **El precio se escribe en el encabezado y el paso "Precio y cantidades" desaparece.**
+    - En la línea de abajo del nombre dice "sin precio" hasta que se toca. Ahí se escribe el precio, con el símbolo adelante ("$" si es UYU, "US$" si es USD) y la moneda al lado. Pasando el mouse se ve la ayuda que tenía el paso. Se guarda con "Guardar", como antes.
+    - La política de cantidad (Libre, Cantidad mínima, Paquete fijo, con el surtido) pasó al paso de los accesorios, arriba de los artículos de stock. Ese paso cambia de nombre: de "Accesorios y estructura" a "Cantidad y accesorios". Si falta la cantidad, el punto ámbar ahora está en ese paso.
+    - Quedan 6 pasos en los confeccionados y 2 en los combos (Composición y Revisar). La nota de cantidad de los combos ya estaba en la composición.
+  - **Los precios de toda la página usan "$" para pesos y "US$" para dólares** ("$ 1.200", "US$ 15"). Antes iba siempre "$" con el código atrás ("$ 15 USD").
+  - **Paso Revisar y publicar, con el mismo estilo.**
+    - En pantallas anchas va en dos columnas: a la izquierda, cómo lo ve el cliente y el resumen; a la derecha, dónde se ve y el estado con Guardar.
+    - El recuadro del estado dice "Borrador" con "No se ve en ningún canal" abajo, o "Publicado" con "Se ve en los canales marcados" (05/10). Antes decía "Borrador — NO se ve en ningún canal" y "El cambio rige al Guardar".
+    - Todo en secciones con el título arriba.
+    - En el resumen, el precio vacío dice "Sin precio" (antes "— /u sin servicios"). La familia sin clasificar y el molde que falta van en ámbar con ícono, en vez de ⚠. La producción principal, con mayúscula inicial.
+    - La tarjeta de vista previa ("Así lo ve el cliente") tiene el marco en brand-cyan (antes índigo). Las etiquetas de los servicios son todas iguales, en gris con el ícono del área en brand-cyan: antes había un color por área (ámbar, celeste, violeta, rosa…) y el paquete iba en ámbar con emoji. Sin precio, dice "Sin precio" (antes "— /u · servicios aparte").
+  - **Las tarjetas de la lista** (confeccionados y combos, ahora con la misma fila):
+    - El estado va escrito entero ("Publicado", "Borrador", "Sin configurar"), con los colores del filtro de arriba. Antes era "● PUB" / "○ BORR", y nada si no estaba configurado.
+    - Las técnicas son sus íconos, en el orden de la página; los nombres se ven al pasar el mouse. Antes eran los códigos: "DF,EMB,SB,TPU,TWC,TWT".
+    - El producto abierto va en brand-cyan, como la pestaña y el paso (antes en índigo).
+    - Sin precio dice "sin precio" (antes "—"). El paquete de los combos lleva ícono y no va en ámbar (antes 📦).
+    - La miniatura sin foto lleva un ícono de Lucide sobre fondo liso. Antes era Font Awesome sobre un degradé, y se ve igual en todas las miniaturas de la página.
+    - Las etiquetas (Básquet, Fútbol…) van en brand-magenta, con el ícono de Lucide (antes índigo). También va en magenta la línea que une los productos de la etiqueta y el ícono de la etiqueta en el encabezado del editor.
+  - **El ícono del título de la página** es de Lucide, en brand-cyan y sin fondo. Antes era Font Awesome sobre un cuadrado con degradé violeta.
+  - **Editor StockArt (el modal de "Variantes y Artículos")** (05/10). Es el mismo que abren Configuración y la configuración de EcoUV del sector, así que cambia en los tres lugares.
+    - Queda por encima de la navbar y de la barra lateral; antes quedaba debajo.
+    - El encabezado es blanco, con el ícono de Lucide en brand-cyan y sin cuadrado de fondo. Antes era un degradé gris oscuro con el ícono en un cuadrado celeste.
+    - En celular ocupa toda la pantalla.
+    - Los 11 desplegables del navegador que tenía pasan al desplegable propio, el mismo del resto de la página. Son el filtro de grupo, los formularios de nueva variante y nueva terminación, la unidad y el artículo de cada terminación, la UM y el tipo de cada variante, y "Mover a…" de cada artículo. Mantienen su tamaño y sus colores (el tipo, con el color de su etiqueta). Los que tienen más de 8 opciones traen buscador, como el artículo para facturar. Lo que se elige y cómo se guarda no cambia.
+    - El filtro de grupo, el desplegable del artículo para facturar (en cada terminación y al crear una) y "Mover a…" de cada artículo muestran la lista entera, sin scroll, todo lo que entre en la pantalla. Si abajo no hay lugar, se abren hacia arriba. Antes cortaban en 320 px y había que bajar. Para eso el desplegable propio (`ui/Selector.jsx`) tiene una opción nueva, `altoMax`. Si no se pasa, sigue en 320 px, así que los demás desplegables de la app no cambian.
+  - **Productos Terminados (el modal de "Nuevo Producto Terminado")**, igual que los otros dos (05/10). Es el mismo que abre la configuración de EcoUV del sector.
+    - Queda por encima de la navbar y de la barra lateral; antes quedaba debajo.
+    - El encabezado es blanco y del mismo tamaño que los otros, con la caja de Lucide en brand-cyan y sin cuadrado de fondo. Antes era un degradé gris oscuro con el ícono en un cuadrado violeta.
+    - En celular ocupa toda la pantalla.
+    - Sus 5 desplegables del navegador (variante, material de impresión, tinta, ubicación de cada terminación y moneda) pasan al desplegable propio, con el aspecto de los campos. La ubicación va chiquita, dentro de la pastilla de la terminación.
+    - Todo el violeta pasa a brand-cyan: "Nuevo producto", el producto elegido en la lista, las terminaciones incluidas, el recuadro "Así lo ve el cliente" (el texto queda en gris oscuro), el foco de los campos y el botón Guardar / Crear producto.
+    - El precio sube y baja de a 0,10 con las flechitas, como los demás precios (antes de a 0,01).
+    - Los números de los pasos (azul y verde) quedan como estaban.
+  - **Terminaciones EcoUV (el modal de "Terminaciones")**, igual que el Editor StockArt (05/10). Es el mismo que abre la configuración de EcoUV del sector.
+    - Queda por encima de la navbar y de la barra lateral; antes quedaba debajo.
+    - El encabezado es blanco, con la tijera de Lucide en brand-cyan y sin cuadrado de fondo. Antes era un degradé gris oscuro con el ícono en un cuadrado ámbar. Refrescar y cerrar van en gris.
+    - En celular ocupa toda la pantalla.
+    - Sus 4 desplegables del navegador (se cobra por, moneda, artículo y cantidad sugerida) pasan al desplegable propio, con el mismo tamaño. El del artículo muestra la lista entera mientras entre en la pantalla, como en el Editor StockArt. Lo que se elige y cómo se guarda no cambia.
+    - El precio sube y baja de a 0,10 con las flechitas, como en el catálogo de técnicas (antes de a 0,01).
+  - **Pestaña EcoUV: las tres tarjetas** (Variantes y Artículos, Terminaciones, Nuevo Producto Terminado) llevan íconos de Lucide en brand-cyan y sin fondo (05/10). Antes eran Font Awesome sobre un cuadrado con un degradé distinto por tarjeta (violeta, naranja, morado). El resaltado al pasar el mouse también pasa a brand-cyan, y la flechita y el ícono de la nota de abajo son de Lucide.
+  - **Combos y Promos, con el mismo estilo que los confeccionados.**
+    - Los dos pasos (Composición y Revisar) ocupan la mitad del ancho cada uno. Pegados a los bordes quedaban muy lejos.
+    - La composición es una sección con el título y la ayuda arriba. La nota en ámbar pasó a la ayuda. Cada producto se ve como un renglón de accesorios: número en gris (antes negro) y "en el paquete" al lado de la cantidad.
+    - Los servicios elegidos de cada producto van en brand-cyan con un check. Antes iban con el color de cada área.
+    - En la línea de abajo del nombre, "Combos y Promos" tiene el mismo margen que los desplegables, así los "·" quedan parejos con "sin precio".
+    - En el resumen ya no salen "Producción principal" ni "Molde (TizadaPro)", que no corresponden a combos (decía "Sublimacion · por unidad" y "sin molde vinculado" en ámbar).
+    - Sin productos, el resumen dice "Combo sin productos todavía" y "sin productos en el combo" (en ámbar). Antes decía "Combo de 0 productos del local" y "paquete fijo de — u · surtido: todas".
+    - Se sacaron los colores por área de la página (`chip` en `AREAS`): ya no los usaba nadie.
+  - Probado: la lógica de cambios sin guardar y del estado de los pasos, con 22 casos sobre el código del archivo; el build compila. No se vio en el navegador.
+- **Configurar Productos: en la lista de confeccionados, abrir una familia cierra las demás** (02/10). Antes cada familia se abría y se cerraba por su cuenta, y todas arrancaban abiertas.
+  - Al entrar están todas cerradas.
+  - La familia del producto abierto se abre sola cuando se abre otro producto, cuando se crea uno o cuando se lo mueve de familia, así no queda escondido. Si después se la cierra a mano, queda cerrada.
+  - Con la búsqueda se siguen viendo todas abiertas, como antes.
+  - Las familias y las etiquetas de adentro (Básquet, Fútbol…) se abren y se cierran con una animación de 0,3 s, y la flecha gira en vez de cambiar de golpe. Si la computadora tiene activado "reducir movimiento" (accesibilidad), cambian sin animación.
+  - El build compila; no se vio en el navegador.
+- **El detalle del lote muestra la misma fecha que la planilla** (01/10). Debajo del código de cada orden salía siempre la fecha de ingreso, en formato de 12 horas ("25/09/26, 05:14 p. m."). La planilla, en TPU, muestra la fecha en que el cliente aprobó o rechazó el boceto, así que las dos pantallas no coincidían. Ahora el lote usa la misma regla y el mismo formato: si el cliente ya se expidió, la fecha de su última acción, en verde si aprobó y en rojo si rechazó; si no, la de ingreso. Todo en 24 horas ("25/09/26 17:15"). Probado en local comparando lo que mandan la planilla, el tablero de lotes y el detalle del lote: 264 órdenes de TPU, DTF y Sublimación, todas iguales (17 de TPU con veredicto del cliente). El build compila; no se vio en el navegador.
 - **La navbar en celular (menos de 768 px) se reordena:**
   - A la izquierda, el logo y el usuario (nombre, estado del servidor y rol).
   - A la derecha, el botón de Servicio Técnico, la campanita y, al final, el menú (☰).
@@ -223,34 +379,61 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
 - **`/api/failures` no pedía login: ahora pide usuario interno.** Queda solo el catálogo de tipos de falla, que usa el panel de producción. Los tickets de mantenimiento que vivían ahí pasaron a Servicio Técnico. Se borraron la pantalla `ServicioTecnico.jsx`, que nadie abría, el modal viejo `ReportFailureModal.jsx` y `failuresService.js`.
 - **El Control de archivos no pide la lista de lotes con la pestaña oculta.** Usa el mismo mecanismo que el tablero del área desde el deploy de hoy: como mucho una recarga cada 8 segundos y, si la pestaña no se está mirando, una sola recarga al volver. La lista de órdenes del lote elegido sigue como estaba (cada 4 segundos como mucho), porque de ella depende el aviso de orden completada.
 - **Se sacó "Observaciones Generales" del formulario de pedidos del portal.** El campo de texto libre al final del pedido (Sublimación, DTF, ECOUV, Bordado, TPU, Directa y compra sin personalizar) ya no se muestra. El pedido sigue mandando el campo vacío al servidor; no se tocó el guardado.
-- **"Ventas por vendedor" muestra plata por documento, no órdenes** (`/vendedores/ventas`, 01/10). Contaba las órdenes que entraban a Depósito y cuántas estaban cobradas. Ahora muestra, por vendedor, tres columnas: lo vendido en pesos, lo vendido en dólares y el total unificado en dólares. Toma los documentos de venta igual que Contabilidad → Reportes → "Ventas por Documento (DGI)".
+- **"Ventas por vendedor" muestra plata por documento, no órdenes** (`/vendedores/ventas`, 01/10). Contaba las órdenes que entraban a Depósito y cuántas estaban cobradas. Ahora muestra, por vendedor, lo vendido, lo cobrado y lo pendiente, en pesos y en dólares, el total vendido unificado en dólares y la comisión por franjas. Toma los documentos de venta igual que Contabilidad → Reportes → "Ventas por Documento (DGI)".
   - **Qué cuenta.** Los e-tickets, e-facturas y Pedidos Caja emitidos en el mes, sin los anulados, estén o no aceptados por DGI. Las notas de crédito restan y las de débito suman.
     - Los rollos (planes de metros) y la carga de billetera cuentan cuando se venden: salen en un documento normal.
     - Los anticipos y los recibos no son ventas, igual que en Contabilidad. El anticipo cuenta cuando se factura lo consumido.
-  - **Sin cobrado ni sin cobrar, y sin filtro de DGI.** Estuvieron en la primera versión y se sacaron el mismo día. El servidor los sigue calculando, por si vuelven.
-  - **Foto de cada vendedor** al lado del nombre: la misma del registro del portal (`public/assets/images/asesores/<cédula>.webp`). Si un vendedor no tiene foto, va su inicial.
+  - **Pendiente** es lo que todavía se debe de esos documentos. **Cobrado** es vendido menos pendiente, así que un pago parcial cuenta por lo pagado. Van en la misma columna, en pesos y en dólares: el cobrado arriba, en verde, y el pendiente abajo, en rojo, con una línea entre los dos como en el encabezado. Los números van centrados en el alto de la fila.
+  - **Sin filtro de DGI.** La primera versión tenía el selector Sin DGI / Todo / DGI de Contabilidad y se sacó el mismo día. El servidor lo sigue aceptando, por si vuelve.
+  - **Foto de cada vendedor**, cuadrada, de todo el alto de su fila y pegada a la izquierda: la misma del registro del portal (`public/assets/images/asesores/<cédula>.webp`). Si un vendedor no tiene foto, va su inicial. La página ocupa todo el ancho.
   - **Vendedor:** el de la cartera del cliente del documento.
     - Si el documento salió con la ficha de mostrador, se busca el cliente real: primero el dueño de la orden facturada y después el RUC del receptor.
-    - Lo que no se puede atribuir va en la fila "Mostrador / sin identificar", para que el total cierre con Contabilidad.
+    - Lo que no es de ningún vendedor («Clientes sin vendedor del área» y «Mostrador / sin identificar») va junto en una sola fila, «Otras ventas», al final y sin foto. Suma sus partes y, al tocarla, las muestra cada una con sus números. Está para que el total cierre con Contabilidad.
   - **Las monedas son las del documento** y no se convierten.
-  - **Total unificado:** la última columna, que suma lo vendido en dólares y lo vendido en pesos pasado a dólares. Es la única que mezcla monedas.
-    - Da lo mismo que el "Total facturado" del resumen unificado de Contabilidad, que ahora también resta las notas de crédito (ver el punto siguiente). Setiembre: US$ 380.748,65.
-    - Usa la cotización del día, no la de cada documento. Es la misma de Caja.
-    - La cotización se ve arriba ("1 US$ = $ 40,89"), con un botón al lado para actualizarla. El botón pide la de hoy: si ya está cargada devuelve esa, y si no la busca en el BCU y la guarda, igual que el de Caja.
+  - **Total unificado en US$:** la última columna, que suma lo vendido en dólares y lo vendido en pesos pasado a dólares. Es la única que mezcla monedas.
+    - La cotización: en el mes en curso, la del día (la misma de Caja); en un mes cerrado, la última de ese mes (setiembre: $ 40,84 del 30/09; agosto: $ 40,89 del 31/08). Así el total de un mes que ya pasó no cambia según el día en que se mire. Nunca la de cada documento.
+    - Con la misma cotización da lo mismo que el "Total facturado" del resumen unificado de Contabilidad, que ahora también resta las notas de crédito (ver el punto siguiente). Allá la cotización es la del día y se puede cambiar a mano.
+    - La cotización se ve arriba, con su fecha. En el mes en curso lleva un botón al lado para actualizarla: pide la de hoy; si ya está cargada devuelve esa, y si no la busca en el BCU y la guarda, igual que el de Caja.
     - Sin cotización, la columna queda en guiones y la pantalla lo avisa.
+  - **El vendido en pesos, también en dólares:** debajo del vendido en pesos (y de su total) va, en letra chica, cuánto es en dólares, con la misma cotización.
+  - **Franjas de comisión** (las definió Santiago el 02/10), sobre el total unificado en US$: desde 50.000, 0,8 %; desde 75.000, 1 %; desde 100.000, 1,2 %; desde 125.000, 1,3 %. Por debajo de 50.000 no hay comisión. El % de la franja alcanzada se aplica a todo el total.
+    - Cada vendedor lleva debajo del nombre una barra con las franjas, en la misma escala para todos. Al cargar se llena y va completando las franjas, y la pastilla con el % cambia a medida que las cruza.
+    - Debajo de la barra, cuánto le falta para la próxima franja. La comisión va en letra chica debajo del total unificado, y la suma en la fila de totales.
+    - Setiembre, con $ 40,84: US$ 3.518,81 en total. Soledad Ferreri 1,2 % (US$ 1.285,06), Matías Siri 1 % (US$ 981,11), Fabiana Limpias 1 % (US$ 834,42) y Lucas Fernández 0,8 % (US$ 418,22).
+  - **Orden:** los vendedores van por total unificado, de mayor a menor. Al cargar, las filas aparecen como llegan y enseguida se acomodan a la vista: cada fila se desliza entera hasta su lugar, con una sombra mientras se mueve. «Otras ventas» no entra en el orden: queda siempre al final.
+  - **Desde junio 2026.** Antes no hay datos, o no son confiables: la pantalla no deja ir más atrás.
+  - **Al cambiar de mes,** el nombre del mes y la tabla entran deslizándose desde el lado hacia el que se fue: para adelante, desde la derecha; para atrás, desde la izquierda. Al abrir la pantalla o al actualizar, solo aparecen. Si el sistema pide reducir el movimiento, no se anima.
+  - **Ganadores** (02/10): el primero de cada mes por total unificado.
+    - Arriba de la tabla, una tira con el ganador de cada mes y su foto. Muestra a lo sumo 6 meses, con flechas para ver los anteriores; tocar un mes lo abre en la tabla. Los meses seguidos del mismo vendedor van unidos en una franja dorada con la racha ("4 SEGUIDOS").
+    - En la fila del primero: corona en la foto, «Ganó setiembre» y «4 meses seguidos». En el mes en curso, una sola pastilla con borde punteado: «Va ganando» (sin racha, porque el mes no terminó). Debajo, cuánto le sacó al segundo, y al segundo, cuánto le faltó.
+    - Con la copia local, Soledad Ferreri ganó junio, julio, agosto y setiembre, con US$ 75.067,74, 17.612,27, 9.408,46 y 8.977,10 de ventaja.
+    - Servidor: ruta nueva `GET /api/vendedor-360/ganadores`, con la cotización de cada mes (la última de ese mes; la del día en el mes en curso), igual que la pantalla. La consulta de plata por vendedor pasó a una función compartida, `consultarPlataPorVendedor`, que ventas-mensuales usa igual que antes.
   - **Qué cambia al leerla:**
     - La venta cuenta cuando se factura, no cuando la orden entra a Depósito. Las semanas sin facturar no aparecen hasta que se facturan.
     - La mayoría de los documentos sale en pesos aunque la orden esté en dólares. En setiembre, Matías Siri pasa de $ 108.226 y US$ 89.339 (órdenes) a $ 1.676.174 y US$ 57.069 (documentos).
     - "Coordinacion user", de la cartera de Agustín Palmero, casi deja de pesar: en setiembre ingresó 457 órdenes y tiene 6 documentos. Agustín queda en $ 162.995 y US$ 7.369.
   - Reemplaza el criterio de "cobrada" por orden, que estaba en esta lista sin deployar y nunca llegó a un commit.
   - **Probado en local,** sobre la copia de producción del 30/09: 47 pruebas del servidor, sin fallas.
-    - Julio, agosto y setiembre: el vendido da el total de "Ventas por Documento" al centavo, y "Total unificado" da el total unificado de Ventas por Documento y de Ventas por Área.
-    - Setiembre: $ 6.861.556,80 y US$ 212.943,40 vendidos; total unificado a $ 40,89, US$ 380.748,65. Las notas del mes restan $ 56.385,10 y US$ 3.362,47.
+    - Julio, agosto y setiembre: el vendido da el total de "Ventas por Documento" al centavo, el pendiente da el pendiente de cobro de Contabilidad, y el total unificado, con la misma cotización, da el de Ventas por Documento y el de Ventas por Área.
+    - Setiembre:
+
+      | | Vendido | Cobrado | Pendiente |
+      |---|---|---|---|
+      | Pesos | 6.861.556,80 | 6.333.798,81 | 527.757,99 |
+      | Dólares | 212.943,40 | 184.336,86 | 28.606,54 |
+
+      Total unificado a $ 40,89 (la del 01/10, con la que se comparó contra Contabilidad): US$ 380.748,65. Con la última cotización de setiembre ($ 40,84), que es la que usa ahora la pantalla: US$ 380.954,10. Las notas del mes restan $ 56.385,10 y US$ 3.362,47.
+    - De junio a octubre, ninguna fila queda con cobrado negativo.
     - Responde en 166 ms.
-  - **La pantalla** se probó en el navegador integrado con los datos de setiembre simulados, a 1440 y 375 px. No se desborda; en celular la tabla necesita 517 px y se desliza de costado dentro de su recuadro. Con sesión iniciada contra el backend no se abrió.
+    - `/api/apicotizaciones/hasta` (nueva): 7 pruebas contra el backend local. El último día de julio, agosto y setiembre da la de ese día; un domingo da la del viernes; una fecha mal escrita da 400; una fecha anterior a todas las cotizaciones da 404; `/hoy` no cambia.
+    - Ganadores: 20 pruebas. Junio a octubre, la cotización de cada mes, y el ganador y el segundo iguales a la primera y segunda fila de la tabla de ese mes. Después de mover la consulta a la función compartida, las 47 de ventas-mensuales siguen dando lo mismo.
+  - **La pantalla** se probó en el navegador integrado con los datos de setiembre simulados, a 1440 y 375 px. No se desborda, y en celular la tabla se desliza de costado dentro de su recuadro. Con cobrado y pendiente en la misma columna la tabla necesita 762 px (con las columnas separadas eran 1009). Con sesión iniciada contra el backend no se abrió.
+    - El orden por total y su animación se miraron cuadro por cuadro (al llegar, a mitad de camino y al terminar), también al cambiar de mes y al recargar a mitad del movimiento. En movimiento no se vio: el panel no dibuja mientras está oculto.
     - La cotización sí se pidió al backend local de verdad: trae $ 40,89 del 01/10, y el botón la vuelve a pedir y muestra el valor.
-    - "Total unificado" da lo mismo que la cuenta a mano en las 8 filas: US$ 380.748,65 en total y US$ 98.061,14 de Matías Siri.
+    - En las 8 filas, vendido = cobrado + pendiente, y el total unificado da lo mismo que la cuenta a mano (a $ 40,89): US$ 380.748,65 en total y US$ 98.061,14 de Matías Siri.
     - Con la cotización fallando, la columna queda en guiones, avisa y el botón sigue disponible.
+    - 02/10, con los datos reales de agosto, setiembre y octubre de la copia local: setiembre usa la cotización del 30/09 ($ 40,84) y agosto la del 31/08 ($ 40,89), sin botón de actualizar; octubre usa la del día ($ 41,07), con el botón. Las comisiones dan la cuenta a mano (setiembre US$ 3.518,81, agosto US$ 4.034,26). Las fotos miden 75 × 75, pegadas a la izquierda, y la tabla ocupa todo el ancho. «Otras ventas» de agosto suma sus dos partes (US$ 40.900,24) y se abre y se cierra con un clic o con Enter. La barra se vio cuadro por cuadro, no en movimiento. Los últimos ajustes (Otras ventas sin foto y a la izquierda, celdas centradas, la línea entre cobrado y pendiente) solo se compilaron.
+    - Ganadores, en el navegador integrado con los datos reales de junio a octubre: la tira, la corona, «Ganó setiembre · 4 meses seguidos», la ventaja de los dos primeros, el mes en curso provisorio (simulado con las ventas de setiembre) y las filas en 76 px con la foto cuadrada. Las flechas se probaron con una lista inventada de 10 meses: muestran 6, van y vuelven, y elegir un mes de los anteriores lo abre en la tabla.
     - Las 6 fotos cargan (256×256), y un vendedor sin foto muestra la inicial.
 - **Los reportes de ventas de Contabilidad ahora restan las notas de crédito** (01/10). Hasta ahora solo las restaba Top Clientes. Ventas por Área, Ventas por Documento (con su resumen unificado en dólares), Resumen Mensual, Top Productos y el árbol de ventas las dejaban afuera, así que una factura anulada con nota de crédito seguía contando entera.
   - **Cómo entra una nota.** Como una venta en negativo (la de débito, en positivo), el día en que se emite y con su propio estado de DGI. Se reparte entre las áreas y los artículos de sus propias líneas, que se copian de la factura.
@@ -365,6 +548,12 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
   - La cotización ajusta solo la parte que cambió.
 
 ### Notas de deploy
+- Configurar Productos (ancho, filtros, pestañas, desplegables, íconos, producto abierto por pestaña, familias en acordeón y editor del producto): `src/components/pages/ConfigurarProductosPage.jsx`, en el build. Sin backend ni SQL.
+- Editor StockArt (por encima de la navbar, encabezado blanco, desplegables propios): `src/components/modals/config/StockArtEditModal.jsx` y `src/components/ui/Selector.jsx` (opción `altoMax`), en el build.
+- Terminaciones EcoUV (por encima de la navbar, encabezado blanco, desplegables propios): `src/components/modals/config/TerminacionesEcouvModal.jsx`, en el build.
+- Productos Terminados (por encima de la navbar, encabezado blanco, desplegables propios, brand-cyan en vez de violeta): `src/components/modals/config/NuevoProductoTerminadoModal.jsx`, en el build.
+- Fuente Inter en toda la app: `src/main.jsx`, en el build. No hace falta instalar nada en la máquina donde se compiló hoy: `@fontsource/inter` ya estaba en `package.json` y en `node_modules`. Donde se haga el build, tiene que estar instalado; no lo verifiqué en el servidor.
+- Fecha del lote igual a la de la planilla: `backend/controllers/rollsController.js` (necesita reiniciar; sin SQL) y `src/components/modals/RollDetailsModal.jsx` en el build. Se pueden subir en cualquier orden: con el backend solo no cambia nada, y con el build solo el lote muestra la fecha de ingreso en 24 horas.
 - Seguridad (usuarios, roles, configuración, menú, procesos automáticos y login): `backend/middleware/authMiddleware.js`, `backend/routes/usersRoutes.js`, `backend/routes/rolesRoutes.js`, `backend/routes/adminRoutes.js`, `backend/routes/menuRoutes.js`, `backend/routes/configuracionesRoutes.js`, `backend/controllers/configGlobalController.js`, `backend/controllers/authController.js` y `backend/server.js`. Necesita reiniciar; sin SQL y sin build.
   - **Verificado en producción el 28/09, antes de deployar:** Usuarios, Roles, Configuración, la consola de SysAdmin y el editor del menú (`/admin/users`, `/admin/roles`, `/admin/database`, `/admin/consola`, `/admin/menu`) los tiene solo el rol Admin, y no hay ningún usuario interno sin contraseña. Nadie se queda afuera.
   - **Después del deploy:** con un Admin, Configuración → Usuarios (listar y guardar uno), Roles (abrir un rol y guardar permisos), Configuración General (listar y guardar un valor), el editor del menú (que liste) y Procesos Automáticos (que liste). Con un usuario de planta que no sea Admin: el menú de la izquierda carga igual que antes, la bandeja de Bordado, Estampado, Corte o Costura sigue mostrando los operarios y Logística → Stock del Depósito sigue enviando. Sin sesión, `curl -i https://user.com.uy/api/users`, `curl -i https://user.com.uy/api/admin/config-global` y `curl -i https://user.com.uy/api/configuraciones` tienen que dar 403, no 200. Los días siguientes, `grep -hE '/api/(users|roles|admin|menu|configuraciones)[^ ]* 40[13] ' /home/logs/http-*.log*`: fuera de esos curl no debería aparecer nada; si aparece, algo llamaba sin token y quedó afuera. Y `grep -h 'no tiene contraseña cargada' /home/logs/combined-*.log*` muestra a quién rebotó el login por no tener contraseña.
@@ -378,9 +567,11 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
   - Las 26 que ya existían se cerraron el 30/09 con el SQL de limpieza. Después del reinicio, volver a correr la consulta de control: tiene que dar 0 filas. Si aparecieron restos nuevos entre la limpieza y el deploy, se corre la limpieza una vez más.
 - Ventas por vendedor, por documento:
   - Backend, necesita reiniciar: `backend/controllers/vendedorVistaController.js` y `backend/controllers/contabilidadReportesController.js`. Van juntos: el primero usa las reglas de venta que exporta el segundo. Si falta el segundo, la pantalla avisa con un error que lo dice.
+  - Backend, también: `backend/controllers/cotizacionesController.js` y `backend/routes/getwayCotizaciones.js`, con la ruta nueva `/api/apicotizaciones/hasta`. La pantalla la usa para la cotización de los meses cerrados: sin ella, en esos meses avisa que no pudo cargar la cotización y el total unificado queda en guiones.
+  - Backend, también: `backend/routes/vendedorVistaRoutes.js`, con la ruta nueva `/api/vendedor-360/ganadores` (va con `vendedorVistaController.js`). Sin ella, la pantalla avisa que no pudo cargar los ganadores y se ve sin la tira ni la racha.
   - En el build: `src/components/pages/VendedorVentasMensuales.jsx`.
   - Backend y build van en el mismo deploy: la pantalla nueva con el backend viejo muestra todo en guiones.
-  - La cotización usa `/api/apicotizaciones`, que ya existía (lo usa Caja): no lleva cambios de backend.
+  - La cotización del mes en curso sigue saliendo de `/api/apicotizaciones/hoy`, la de Caja.
   - Sin SQL.
 - Reportes de Contabilidad con las notas de crédito restando:
   - Backend, necesita reiniciar: `backend/controllers/contabilidadReportesController.js`, el mismo archivo del punto anterior.
@@ -427,11 +618,12 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
      - `st-etapa4.sql`: proyectos y usos de insumos. Al final lista los depósitos del stock. Se puede repetir sin problema. Crea las tablas `ST_*`, `NotificacionesUsuario` y `PushSuscripcionesInternas`, copia los tickets viejos y agrega "Servicio Técnico" al menú de todos los roles. `docs/` no está en git: el archivo está en la máquina de desarrollo. Al final lista las máquinas que hoy están en FALLA: decidir a mano cuáles pasan a DISPONIBLE y cuáles a MANTENIMIENTO. Sin el script, la pantalla avisa que falta y la campanita queda vacía.
      - `st-procedimiento-insumos.sql` (30/09): crea `ST_ProcedimientoInsumos`, los insumos necesarios de cada procedimiento. Va después de `st-etapa3.sql`. Si no se corre, los procedimientos funcionan igual, pero al guardar uno con insumos avisa que falta este script.
      - `st-locales.sql` (30/09): crea la tabla `Locales` (inca, arenal grande, vilardebo, paullier, otro) y el local de cada solicitud. Va después de `st-etapa1.sql`. Si no se corre, el formulario funciona igual pero sin el campo Local.
+     - `st-menu-secciones.sql` (02/10): convierte Servicio Técnico en un grupo con sus ocho secciones. Va después de `st-etapa1.sql`; se puede correr antes o después de subir el build. Deja Solicitudes para todos los roles que ven Servicio Técnico y las otras siete solo para Admin. Después, en Roles, darle las secciones al rol de los técnicos, y cada usuario recarga la página.
   2. **Backend, necesita reiniciar.**
      - Nuevos: `backend/controllers/servicioTecnicoController.js`, `backend/controllers/stEquiposController.js`, `backend/controllers/stMantenimientoController.js`, `backend/controllers/stProyectosController.js`, `backend/controllers/stInsumosController.js`, `backend/controllers/stReportesController.js`, `backend/services/servicioTecnicoComun.js`, `backend/services/stMantenimientoService.js`, `backend/jobs/servicioTecnico.job.js` (lo arranca `server.js`), `backend/routes/servicioTecnicoRoutes.js`, `backend/middleware/multerServicioTecnico.js`, `backend/controllers/notificacionesController.js`, `backend/routes/notificacionesRoutes.js`, `backend/services/notificacionesService.js`, `backend/utils/salasUsuario.js` y `backend/utils/estadoEquipo.js`.
      - Cambiados: `backend/server.js`, `backend/services/pushNotificationService.js`, `backend/controllers/failuresController.js`, `backend/routes/failuresRoutes.js`, `backend/controllers/productionKanbanController.js`, `backend/controllers/productionController.js` y `backend/controllers/embBoardController.js`.
   3. **Build.**
-     - Nuevos: `src/components/pages/ServicioTecnicoPage.jsx`, `src/components/servicio-tecnico/*`, `src/components/ui/Selector.jsx`, `src/components/ui/SelectorFecha.jsx`, `src/components/layout/CampanaNotificaciones.jsx`, `src/components/layout/BotonNuevaSolicitud.jsx`, los dos servicios en `src/services/modules/`, `src/utils/pushInterno.js` y `src/utils/comprimirImagen.js`.
+     - Nuevos: `src/components/pages/ServicioTecnicoPage.jsx`, `src/components/pages/servicioTecnicoSecciones.js`, `src/components/servicio-tecnico/*`, `src/components/ui/Selector.jsx`, `src/components/ui/SelectorFecha.jsx`, `src/components/layout/CampanaNotificaciones.jsx`, `src/components/layout/BotonNuevaSolicitud.jsx`, los dos servicios en `src/services/modules/`, `src/utils/pushInterno.js` y `src/utils/comprimirImagen.js`.
      - Cambiados: `src/components/layout/Navbar.jsx`, `src/components/layout/MainAppContent.jsx`, `src/components/production/areas/AreaView.jsx`, `src/components/production/components/MachineControl.jsx`, `src/components/production/EmbBandeja.jsx`, `src/services/api.js` y `public/sw.js`.
      - El cambio del service worker hace aparecer el aviso de nueva versión.
      - El backend y el build van juntos: el backend viejo no tiene las rutas nuevas, y el build viejo llama a `/api/failures`, que ya no existe.

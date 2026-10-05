@@ -5,8 +5,12 @@ import {
     X, Plus, Loader2, RefreshCw, ChevronDown, ChevronRight,
     Package, Eye, EyeOff, Save, ArrowRightLeft, Boxes, Trash2
 } from 'lucide-react';
+import Selector from '../../ui/Selector';
 
 const API = '/stockart';
+// Botón del desplegable propio (ui/Selector) con el aspecto que tenía cada <select> nativo (05/10): reemplazó a
+// los desplegables del navegador. Recibe las clases de cada uno (borde, tamaño, ancho fijo).
+const claseSel = (clases) => `flex items-center gap-1.5 text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-brand-cyan/20 disabled:cursor-not-allowed disabled:opacity-60 ${clases}`;
 
 const TIPOS = [
     { value: 'MATERIAL', label: 'Material', color: 'bg-cyan-100 text-cyan-700' },
@@ -269,22 +273,23 @@ export default function StockArtEditModal({ isOpen, onClose, initialGrupo = '', 
     };
 
     return (
-        <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-slate-900/70 p-4">
-            <div className="bg-white rounded-3xl shadow-2xl w-full max-w-6xl h-[90vh] flex flex-col overflow-hidden border border-slate-200">
+        // 05/10: en z-[6000], por encima de la navbar (z-[5010]) y de la barra lateral; antes z-[1000] quedaba
+        // debajo. En celular ocupa toda la pantalla.
+        <div className="fixed inset-0 z-[6000] flex items-center justify-center bg-slate-900/70 sm:p-4">
+            <div className="bg-white w-full h-full sm:h-[90vh] sm:max-w-6xl sm:rounded-3xl shadow-2xl flex flex-col overflow-hidden sm:border sm:border-slate-200">
 
-                {/* HEADER */}
-                <div className="bg-gradient-to-r from-slate-800 to-slate-700 px-8 py-5 flex items-center justify-between shrink-0">
-                    <div className="flex items-center gap-4">
-                        <div className="w-10 h-10 bg-cyan-400/20 rounded-xl flex items-center justify-center">
-                            <Boxes className="text-cyan-300" size={20} />
-                        </div>
+                {/* HEADER (05/10): fondo blanco y el ícono de Lucide en brand-cyan, sin cuadrado de fondo; antes un
+                    degradé gris oscuro con el ícono en un cuadrado celeste */}
+                <div className="bg-white border-b border-slate-100 px-8 py-5 flex items-center justify-between shrink-0">
+                    <div className="flex items-center gap-3">
+                        <Boxes className="shrink-0 text-brand-cyan" size={28} aria-hidden="true" />
                         <div>
-                            <h2 className="text-xl font-black text-white">EDITOR STOCKART</h2>
+                            <h2 className="text-xl font-black text-slate-800">EDITOR STOCKART</h2>
                             <p className="text-slate-400 text-xs">Variantes por grupo · tipo de comportamiento · artículos</p>
                         </div>
                     </div>
-                    <button onClick={onClose} className="p-2 hover:bg-white/10 rounded-xl transition-colors">
-                        <X className="text-white" size={20} />
+                    <button onClick={onClose} className="p-2 rounded-xl text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition-colors" title="Cerrar" aria-label="Cerrar">
+                        <X size={20} />
                     </button>
                 </div>
 
@@ -304,14 +309,11 @@ export default function StockArtEditModal({ isOpen, onClose, initialGrupo = '', 
 
                     {view === 'variantes' ? (
                         <>
-                            <div className="relative">
-                                <select value={grupoFilter} onChange={e => setGrupoFilter(e.target.value)}
-                                    className="bg-slate-100 border border-slate-200 rounded-xl px-4 py-2 pr-8 text-xs font-bold text-slate-700 appearance-none outline-none focus:border-cyan-400">
-                                    <option value="">Todos los grupos</option>
-                                    {grupos.map(g => <option key={g} value={g}>Grupo {g}</option>)}
-                                </select>
-                                <ChevronDown size={12} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
-                            </div>
+                            {/* La lista entera, sin scroll mientras entre en la pantalla (05/10) */}
+                            <Selector filtro value={grupoFilter} onChange={e => setGrupoFilter(e.target.value)} anchoLista={200} altoMax={Infinity} aria-label="Grupo">
+                                <option value="">Todos los grupos</option>
+                                {grupos.map(g => <option key={g} value={g}>Grupo {g}</option>)}
+                            </Selector>
                             <span className="text-[10px] text-slate-400 font-bold uppercase">{visible.length} variantes</span>
                             <div className="flex-1" />
                             <button onClick={load} disabled={loading}
@@ -350,20 +352,20 @@ export default function StockArtEditModal({ isOpen, onClose, initialGrupo = '', 
                         </div>
                         <div>
                             <label className="text-[10px] font-black text-slate-500 uppercase block mb-1">Se cobra por</label>
-                            <select value={newTerm.unidadCobro} onChange={e => setNewTerm(p => ({ ...p, unidadCobro: e.target.value }))}
-                                className="bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold outline-none focus:border-amber-400">
+                            <Selector value={newTerm.unidadCobro} onChange={e => setNewTerm(p => ({ ...p, unidadCobro: e.target.value }))}
+                                claseBoton={claseSel('bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-700 w-[150px]')} anchoLista={170}>
                                 <option value="U">Unidad</option>
                                 <option value="M">Metro lineal</option>
                                 <option value="M2">Metro cuadrado</option>
-                            </select>
+                            </Selector>
                         </div>
                         <div className="min-w-[220px]">
                             <label className="text-[10px] font-black text-slate-500 uppercase block mb-1">Artículo para facturar (opcional)</label>
-                            <select value={newTerm.codArticulo} onChange={e => setNewTerm(p => ({ ...p, codArticulo: e.target.value }))}
-                                className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold outline-none focus:border-amber-400">
+                            <Selector value={newTerm.codArticulo} onChange={e => setNewTerm(p => ({ ...p, codArticulo: e.target.value }))}
+                                claseBoton={claseSel('w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-700')} anchoLista={320} altoMax={Infinity}>
                                 <option value="">— Sin artículo —</option>
                                 {termArts.map(a => <option key={a.CodArticulo} value={a.CodArticulo}>{a.CodArticulo} · {a.Descripcion}</option>)}
-                            </select>
+                            </Selector>
                         </div>
                         <button onClick={crearTerminacion} disabled={creatingTerm}
                             className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold transition-all">
@@ -377,12 +379,12 @@ export default function StockArtEditModal({ isOpen, onClose, initialGrupo = '', 
                     <div className="px-8 py-4 bg-cyan-50/60 border-b border-cyan-100 flex items-end gap-3 flex-wrap shrink-0">
                         <div>
                             <label className="text-[10px] font-black text-slate-500 uppercase block mb-1">Grupo</label>
-                            <select value={newRow.grupo}
+                            <Selector value={newRow.grupo}
                                 onChange={e => setNewRow(p => ({ ...p, grupo: e.target.value, codStock: sugerirCodStock(e.target.value) }))}
-                                className="bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold outline-none focus:border-cyan-400 w-32">
+                                claseBoton={claseSel('bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-700 w-32')} anchoLista={160}>
                                 <option value="">Elegir...</option>
                                 {grupos.map(g => <option key={g} value={g}>{g}</option>)}
-                            </select>
+                            </Selector>
                         </div>
                         <div>
                             <label className="text-[10px] font-black text-slate-500 uppercase block mb-1">CodStock</label>
@@ -398,19 +400,19 @@ export default function StockArtEditModal({ isOpen, onClose, initialGrupo = '', 
                         </div>
                         <div>
                             <label className="text-[10px] font-black text-slate-500 uppercase block mb-1">UM</label>
-                            <select value={newRow.um} onChange={e => setNewRow(p => ({ ...p, um: e.target.value }))}
-                                className="bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold outline-none focus:border-cyan-400">
+                            <Selector value={newRow.um} onChange={e => setNewRow(p => ({ ...p, um: e.target.value }))}
+                                claseBoton={claseSel('bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-700 w-[84px]')} anchoLista={100}>
                                 <option value="M2">M2</option>
                                 <option value="M">M</option>
                                 <option value="U">U</option>
-                            </select>
+                            </Selector>
                         </div>
                         <div>
                             <label className="text-[10px] font-black text-slate-500 uppercase block mb-1">Tipo</label>
-                            <select value={newRow.tipoStock} onChange={e => setNewRow(p => ({ ...p, tipoStock: e.target.value }))}
-                                className="bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold outline-none focus:border-cyan-400">
+                            <Selector value={newRow.tipoStock} onChange={e => setNewRow(p => ({ ...p, tipoStock: e.target.value }))}
+                                claseBoton={claseSel('bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-700 w-[170px]')} anchoLista={200}>
                                 {TIPOS.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
-                            </select>
+                            </Selector>
                         </div>
                         <button onClick={crearVariante} disabled={creating}
                             className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold transition-all">
@@ -448,21 +450,21 @@ export default function StockArtEditModal({ isOpen, onClose, initialGrupo = '', 
                                                         className="w-full bg-transparent border border-transparent hover:border-slate-200 focus:border-amber-400 focus:bg-white rounded-lg px-2 py-1 outline-none font-bold text-slate-800" />
                                                 </td>
                                                 <td className="py-2">
-                                                    <select value={getTermVal(t, 'unidadCobro', t.UnidadCobro)}
+                                                    <Selector value={getTermVal(t, 'unidadCobro', t.UnidadCobro)}
                                                         onChange={e => setTermEdit(t.TerminacionID, 'unidadCobro', e.target.value)}
-                                                        className="bg-transparent border border-transparent hover:border-slate-200 rounded-lg px-1 py-1 outline-none font-bold text-slate-600">
+                                                        claseBoton={claseSel('w-[136px] bg-transparent border border-transparent hover:border-slate-200 rounded-lg px-2 py-1 font-bold text-slate-600')} anchoLista={170}>
                                                         <option value="U">Unidad</option>
                                                         <option value="M">Metro lineal</option>
                                                         <option value="M2">Metro cuadrado</option>
-                                                    </select>
+                                                    </Selector>
                                                 </td>
                                                 <td className="py-2">
-                                                    <select value={getTermVal(t, 'codArticulo', (t.CodArticulo || '').trim())}
+                                                    <Selector value={getTermVal(t, 'codArticulo', (t.CodArticulo || '').trim())}
                                                         onChange={e => setTermEdit(t.TerminacionID, 'codArticulo', e.target.value)}
-                                                        className="w-full bg-transparent border border-transparent hover:border-slate-200 rounded-lg px-1 py-1 outline-none text-slate-600 truncate">
+                                                        claseBoton={claseSel('w-full bg-transparent border border-transparent hover:border-slate-200 rounded-lg px-2 py-1 text-slate-600')} anchoLista={320} altoMax={Infinity}>
                                                         <option value="">— Sin artículo —</option>
                                                         {termArts.map(a => <option key={a.CodArticulo} value={a.CodArticulo}>{a.CodArticulo} · {a.Descripcion}</option>)}
-                                                    </select>
+                                                    </Selector>
                                                 </td>
                                                 <td className="py-2 text-center">
                                                     <button onClick={() => toggleTermActivo(t)} disabled={termSavingId === t.TerminacionID}
@@ -526,22 +528,22 @@ export default function StockArtEditModal({ isOpen, onClose, initialGrupo = '', 
                                                         className="w-full bg-slate-50 border border-slate-200 hover:border-slate-300 focus:border-cyan-400 focus:bg-white rounded-lg px-2 py-1 outline-none font-bold text-slate-800 transition-colors" />
                                                 </td>
                                                 <td className="py-2">
-                                                    <select value={getVal(row, 'um', row.UM)}
+                                                    <Selector value={getVal(row, 'um', row.UM)}
                                                         onChange={e => setEdit(row.CodStock, 'um', e.target.value)}
-                                                        className="bg-transparent border border-transparent hover:border-slate-200 rounded-lg px-1 py-1 outline-none font-bold text-slate-600">
+                                                        claseBoton={claseSel('w-[72px] bg-transparent border border-transparent hover:border-slate-200 rounded-lg px-2 py-1 font-bold text-slate-600')} anchoLista={100}>
                                                         <option value="M2">M2</option>
                                                         <option value="M">M</option>
                                                         <option value="U">U</option>
                                                         {!['M2', 'M', 'U'].includes((getVal(row, 'um', row.UM) || '').toUpperCase()) &&
                                                             <option value={getVal(row, 'um', row.UM)}>{getVal(row, 'um', row.UM)}</option>}
-                                                    </select>
+                                                    </Selector>
                                                 </td>
                                                 <td className="py-2">
-                                                    <select value={getVal(row, 'tipoStock', row.TipoStock)}
+                                                    <Selector value={getVal(row, 'tipoStock', row.TipoStock)}
                                                         onChange={e => setEdit(row.CodStock, 'tipoStock', e.target.value)}
-                                                        className={`rounded-full px-2.5 py-1 text-[10px] font-black uppercase outline-none border-0 cursor-pointer ${badge.color}`}>
+                                                        claseBoton={claseSel(`w-[150px] rounded-full px-2.5 py-1 text-[10px] font-black uppercase border-0 cursor-pointer ${badge.color}`)} anchoLista={200}>
                                                         {TIPOS.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
-                                                    </select>
+                                                    </Selector>
                                                 </td>
                                                 <td className="py-2 text-center">
                                                     <span className="inline-flex items-center gap-1 text-slate-500 font-bold">
@@ -590,14 +592,14 @@ export default function StockArtEditModal({ isOpen, onClose, initialGrupo = '', 
                                                                         <span className={`text-xs flex-1 truncate ${a.Mostrar ? 'text-slate-700' : 'text-slate-400 line-through'}`}>{a.Descripcion}</span>
                                                                         <div className="flex items-center gap-1 shrink-0" title="Mover a otra variante">
                                                                             <ArrowRightLeft size={11} className="text-slate-300" />
-                                                                            <select value="" disabled={movingArt === a.CodArticulo}
+                                                                            <Selector value="" disabled={movingArt === a.CodArticulo}
                                                                                 onChange={e => moverArticulo(a.CodArticulo, e.target.value)}
-                                                                                className="bg-slate-100 border border-slate-200 rounded-lg px-1.5 py-1 text-[10px] font-bold text-slate-500 outline-none cursor-pointer max-w-[130px]">
+                                                                                claseBoton={claseSel('w-[130px] bg-slate-100 border border-slate-200 rounded-lg px-1.5 py-1 text-[10px] font-bold text-slate-500')} anchoLista={260} altoMax={Infinity}>
                                                                                 <option value="">Mover a...</option>
                                                                                 {rows.filter(r => r.Grupo === row.Grupo && r.CodStock !== row.CodStock).map(r => (
                                                                                     <option key={r.CodStock} value={r.CodStock}>{r.CodStock} · {r.Articulo}</option>
                                                                                 ))}
-                                                                            </select>
+                                                                            </Selector>
                                                                             {movingArt === a.CodArticulo && <Loader2 size={11} className="animate-spin text-cyan-500" />}
                                                                             <button onClick={() => eliminarArticulo(a, row.CodStock)} disabled={movingArt === a.CodArticulo}
                                                                                 className="p-1 rounded-md text-slate-300 hover:text-red-500 hover:bg-red-50 transition-colors"

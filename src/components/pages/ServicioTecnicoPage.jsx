@@ -21,11 +21,16 @@ import InsumosVista from '../servicio-tecnico/Insumos';
 import ReportesVista from '../servicio-tecnico/ReportesVista';
 import { mensajeError } from '../servicio-tecnico/constantes';
 import { useAuth } from '../../context/AuthContext';
+import { SECCIONES_ST } from './servicioTecnicoSecciones';
 
 // Servicio Técnico — pantalla principal. Plan: docs/servicio-tecnico-plan.md.
 // Marco de las secciones (solicitudes, máquinas, ...) y de los paneles de detalle, que se pueden
 // abrir desde cualquier sección (y desde un aviso: ?sol=ID).
-// Técnicos (área SERVICIO) y Admin ven todas las secciones; el resto, solo sus solicitudes.
+// Desde el 02/10 cada sección es su propia entrada del menú (servicioTecnicoSecciones.js) y la
+// página la recibe en `seccion`: la ve quien la tenga en el menú de su rol, y se muestra sola, sin
+// pestañas. Lo que se hace adentro (tomar, programar, crear, editar) sigue siendo de los técnicos
+// (área SERVICIO) y Admin, como en el backend. Sin `seccion` (menú viejo, con /servicio-tecnico):
+// los técnicos y Admin ven las ocho con pestañas; el resto, solo sus solicitudes.
 
 const SECCIONES_TECNICO = [
     { key: 'solicitudes', label: 'Solicitudes', Icono: ClipboardList },
@@ -145,10 +150,11 @@ const Encargado = ({ meta, onCambio }) => {
     );
 };
 
-const ServicioTecnicoPage = () => {
+const ServicioTecnicoPage = ({ seccion: seccionFija = null, rutasPermitidas = null }) => {
+    const unaSola = !!seccionFija;
     const [searchParams, setSearchParams] = useSearchParams();
     const [meta, setMeta] = useState(null);
-    const [seccion, setSeccion] = useState('solicitudes');
+    const [seccion, setSeccion] = useState(seccionFija || 'solicitudes');
     const [abierta, setAbierta] = useState(null);            // SolId del detalle
     const [maquinaAbierta, setMaquinaAbierta] = useState(null); // EquipoID de la ficha
     const [trabajoAbierto, setTrabajoAbierto] = useState(null); // TrabId del detalle de trabajo
@@ -173,6 +179,14 @@ const ServicioTecnicoPage = () => {
     const esTecnicoSesion = String(user?.rol || user?.role || '').trim().toLowerCase() === 'admin'
         || String(user?.areaKey || '').trim().toLowerCase() === 'servicio';
     const esTecnico = meta ? !!meta.esTecnico : esTecnicoSesion;
+    // Con secciones en el menú manda el rol: se muestra la sección de la ruta a quien la tenga. Con
+    // el menú viejo, quien no es técnico ve solo sus solicitudes.
+    const seccionActual = unaSola ? seccionFija : (esTecnico ? seccion : 'solicitudes');
+    const infoSeccion = SECCIONES_TECNICO.find(s => s.key === seccionActual) || SECCIONES_TECNICO[0];
+    // La ficha de una máquina se abre desde una solicitud o un trabajo para los técnicos, o para quien
+    // tenga Máquinas en el menú (leerla no pide ser técnico).
+    const rutaMaquinas = SECCIONES_ST.find(s => s.id === 'maquinas').ruta;
+    const puedeVerMaquinas = esTecnico || (unaSola && (rutasPermitidas || []).includes(rutaMaquinas));
 
     const cargarMeta = useCallback(async () => {
         try { setMeta(await servicioTecnicoService.meta()); }
@@ -188,9 +202,10 @@ const ServicioTecnicoPage = () => {
         if (t > 0) setTrabajoAbierto(t);
         const p = parseInt(searchParams.get('proy'), 10);
         if (p > 0) setProyectoAbierto(p);
+        // Con secciones en el menú, ?seccion= lo resuelve el layout antes de llegar acá (lleva a esa ruta).
         const sec = searchParams.get('seccion');
-        if (sec && SECCIONES_TECNICO.some(x => x.key === sec)) setSeccion(sec);
-    }, [searchParams]);
+        if (!unaSola && sec && SECCIONES_TECNICO.some(x => x.key === sec)) setSeccion(sec);
+    }, [searchParams, unaSola]);
     const quitarParam = (k) => {
         if (searchParams.get(k)) { searchParams.delete(k); setSearchParams(searchParams, { replace: true }); }
     };
@@ -228,21 +243,32 @@ const ServicioTecnicoPage = () => {
             {/* Encabezado. En celular, para los técnicos, la sección elegida hace de título (tocándola se
                 cambia de sección): "Servicio Técnico" + un desplegable aparte eran dos filas para lo mismo. */}
             <div className="flex flex-wrap items-center gap-3 mb-5">
-                {esTecnico && (
-                    <div className="sm:hidden min-w-0 flex-1">
-                        <Selector value={seccion} onChange={(e) => setSeccion(e.target.value)} aria-label="Sección" anchoLista={260}
-                            claseBoton="max-w-full flex items-center gap-2 rounded-lg text-left text-xl font-black text-zinc-800 outline-none focus-visible:ring-2 focus-visible:ring-brand-cyan/20">
-                            {opcionesSeccion}
-                        </Selector>
+                {unaSola ? (
+                    // Sección del menú: su nombre es el título; se cambia de sección desde la barra lateral.
+                    <>
+                        <div className="hidden sm:flex w-11 h-11 rounded-xl bg-brand-cyan/10 text-brand-cyan items-center justify-center shrink-0"><infoSeccion.Icono size={24} /></div>
+                        <div className="min-w-0 flex-1">
+                            <h1 className="text-xl sm:text-2xl font-black text-zinc-800 leading-none">{infoSeccion.label}</h1>
+                            <p className="text-sm text-zinc-400 mt-1">Servicio Técnico</p>
+                        </div>
+                    </>
+                ) : (<>
+                    {esTecnico && (
+                        <div className="sm:hidden min-w-0 flex-1">
+                            <Selector value={seccion} onChange={(e) => setSeccion(e.target.value)} aria-label="Sección" anchoLista={260}
+                                claseBoton="max-w-full flex items-center gap-2 rounded-lg text-left text-xl font-black text-zinc-800 outline-none focus-visible:ring-2 focus-visible:ring-brand-cyan/20">
+                                {opcionesSeccion}
+                            </Selector>
+                        </div>
+                    )}
+                    <div className={`${esTecnico ? 'hidden sm:flex' : 'flex'} w-11 h-11 rounded-xl bg-brand-cyan/10 text-brand-cyan items-center justify-center shrink-0`}><Wrench size={24} /></div>
+                    <div className={`${esTecnico ? 'hidden sm:block' : ''} min-w-[200px] flex-1`}>
+                        <h1 className="text-2xl font-black text-zinc-800 leading-none">Servicio Técnico</h1>
+                        <p className="hidden sm:block text-sm text-zinc-400 mt-1">
+                            {esTecnico ? 'Solicitudes, máquinas y mantenimiento.' : 'Tus pedidos a Servicio Técnico y su estado.'}
+                        </p>
                     </div>
-                )}
-                <div className={`${esTecnico ? 'hidden sm:flex' : 'flex'} w-11 h-11 rounded-xl bg-brand-cyan/10 text-brand-cyan items-center justify-center shrink-0`}><Wrench size={24} /></div>
-                <div className={`${esTecnico ? 'hidden sm:block' : ''} min-w-[200px] flex-1`}>
-                    <h1 className="text-2xl font-black text-zinc-800 leading-none">Servicio Técnico</h1>
-                    <p className="hidden sm:block text-sm text-zinc-400 mt-1">
-                        {esTecnico ? 'Solicitudes, máquinas y mantenimiento.' : 'Tus pedidos a Servicio Técnico y su estado.'}
-                    </p>
-                </div>
+                </>)}
                 <div className="flex flex-wrap items-center gap-2 max-w-full">
                     {esTecnico && (meta
                         ? <Encargado meta={meta} onCambio={(enc) => setMeta((m) => ({ ...m, encargado: enc }))} />
@@ -254,7 +280,7 @@ const ServicioTecnicoPage = () => {
 
             {/* Secciones en tablet (sm a lg): las 8 pestañas no entran (piden ~920 px), un desplegable con la
                 sección actual. */}
-            {esTecnico && (
+            {esTecnico && !unaSola && (
                 <div className="hidden sm:block lg:hidden mb-4">
                     <Selector value={seccion} onChange={(e) => setSeccion(e.target.value)} aria-label="Sección"
                         claseBoton="w-full flex items-center gap-2 px-4 py-3 rounded-xl border border-zinc-200 bg-white text-left text-base font-bold text-zinc-800 shadow-sm outline-none transition-colors hover:border-zinc-300 focus-visible:border-brand-cyan focus-visible:ring-2 focus-visible:ring-brand-cyan/15">
@@ -264,7 +290,7 @@ const ServicioTecnicoPage = () => {
             )}
             {/* Desde lg, pestañas. La línea de abajo es una sombra interna: con un borde + -mb-px los botones
                 desbordaban 1px y aparecía una barra de scroll. */}
-            {esTecnico && (
+            {esTecnico && !unaSola && (
                 <div className="hidden lg:flex gap-1 mb-4 overflow-x-auto no-scrollbar shadow-[inset_0_-1px_0_0_#e4e4e7]">
                     {SECCIONES_TECNICO.map(s => (
                         <button key={s.key} onClick={() => setSeccion(s.key)}
@@ -276,14 +302,14 @@ const ServicioTecnicoPage = () => {
             )}
 
             {!meta ? null
-                : !esTecnico || seccion === 'solicitudes' ? <SolicitudesVista meta={meta} onAbrir={setAbierta} version={versionLista} />
-                : seccion === 'semana' ? <MiSemanaVista meta={meta} onAbrirTrabajo={setTrabajoAbierto} onAbrirSolicitud={setAbierta} version={versionLista} />
-                : seccion === 'calendario' ? <CalendarioVista meta={meta} onAbrirTrabajo={setTrabajoAbierto} onAbrirSolicitud={setAbierta} version={versionLista} />
-                : seccion === 'maquinas' ? <MaquinasVista onAbrirMaquina={setMaquinaAbierta} />
-                : seccion === 'planes' ? <PlanesVista meta={meta} onAbrirTrabajo={setTrabajoAbierto} />
-                : seccion === 'proyectos' ? <ProyectosVista meta={meta} onAbrir={setProyectoAbierto} />
-                : seccion === 'insumos' ? <InsumosVista meta={meta} />
-                : seccion === 'reportes' ? <ReportesVista semanaInicial={searchParams.get('semana') || undefined} onAbrirMaquina={setMaquinaAbierta} />
+                : seccionActual === 'solicitudes' ? <SolicitudesVista meta={meta} onAbrir={setAbierta} version={versionLista} />
+                : seccionActual === 'semana' ? <MiSemanaVista meta={meta} onAbrirTrabajo={setTrabajoAbierto} onAbrirSolicitud={setAbierta} version={versionLista} />
+                : seccionActual === 'calendario' ? <CalendarioVista meta={meta} onAbrirTrabajo={setTrabajoAbierto} onAbrirSolicitud={setAbierta} version={versionLista} />
+                : seccionActual === 'maquinas' ? <MaquinasVista onAbrirMaquina={setMaquinaAbierta} />
+                : seccionActual === 'planes' ? <PlanesVista meta={meta} onAbrirTrabajo={setTrabajoAbierto} />
+                : seccionActual === 'proyectos' ? <ProyectosVista meta={meta} onAbrir={setProyectoAbierto} />
+                : seccionActual === 'insumos' ? <InsumosVista meta={meta} />
+                : seccionActual === 'reportes' ? <ReportesVista semanaInicial={searchParams.get('semana') || undefined} onAbrirMaquina={setMaquinaAbierta} />
                 : null}
 
             {maquinaAbierta && (
@@ -295,12 +321,12 @@ const ServicioTecnicoPage = () => {
             )}
             {trabajoAbierto && (
                 <TrabajoDetalle trabId={trabajoAbierto} meta={meta} version={versionTrabajo}
-                    onCerrar={cerrarTrabajo} onCambio={alCambiarAlgo} onAbrirMaquina={esTecnico ? setMaquinaAbierta : undefined} />
+                    onCerrar={cerrarTrabajo} onCambio={alCambiarAlgo} onAbrirMaquina={puedeVerMaquinas ? setMaquinaAbierta : undefined} />
             )}
             {abierta && (
                 <SolicitudDetalle solId={abierta} meta={meta} version={versionDetalle}
                     onCerrar={cerrarDetalle} onCambio={alCambiarAlgo} onAbrir={setAbierta}
-                    onAbrirMaquina={esTecnico ? setMaquinaAbierta : undefined} />
+                    onAbrirMaquina={puedeVerMaquinas ? setMaquinaAbierta : undefined} />
             )}
         </div>
     );

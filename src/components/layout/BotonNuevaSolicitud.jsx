@@ -19,8 +19,9 @@ const BotonNuevaSolicitud = ({ className = '' }) => {
             {abierta && (
                 <Suspense fallback={null}>
                     <NuevaSolicitudModal abierta onCerrar={() => setAbierta(false)}
-                        // En la pantalla de Servicio Técnico se abre la solicitud recién creada.
-                        onCreada={(sol) => { if (location.pathname.startsWith('/servicio-tecnico')) navigate(`/servicio-tecnico?sol=${sol.SolId}`); }} />
+                        // En la pantalla de Servicio Técnico se abre la solicitud recién creada, sobre la
+                        // misma sección (cada sección es su propia ruta desde el 02/10).
+                        onCreada={(sol) => { if (location.pathname.startsWith('/servicio-tecnico')) navigate(`${location.pathname}?sol=${sol.SolId}`); }} />
                 </Suspense>
             )}
         </>

@@ -55,6 +55,30 @@ const exigirTecnico = (req, res, que = 'hacer esto') => {
     return false;
 };
 
+// ¿El rol del usuario tiene esta entrada del menú? Por Ruta, porque los IdModulo de local y
+// producción no coinciden. Desde el 02/10 cada sección de Servicio Técnico es una entrada del menú
+// (docs/servicio-tecnico/st-menu-secciones.sql) y cada rol ve las que tiene.
+const rolVeRuta = async (pool, req, ruta) => {
+    const idRol = Number(req.user?.idRol);
+    if (!Number.isInteger(idRol) || req.user?.userType !== 'INTERNAL') return false;
+    const r = await pool.request()
+        .input('Rol', sql.Int, idRol)
+        .input('Ruta', sql.NVarChar(200), ruta)
+        .query(`SELECT TOP 1 1 AS Si
+                FROM dbo.PermisosRoles pr
+                JOIN dbo.Modulos m ON m.IdModulo = pr.IdModulo
+                WHERE pr.IdRol = @Rol AND LTRIM(RTRIM(m.Ruta)) = @Ruta`);
+    return r.recordset.length > 0;
+};
+
+// Para lo que solo se mira (reportes): técnicos y Admin, o quien tenga la sección en el menú de su
+// rol. Responde 403 y devuelve false si no.
+const exigirTecnicoOSeccion = async (req, res, pool, ruta, que = 'ver esto') => {
+    if (esTecnico(req) || await rolVeRuta(pool, req, ruta)) return true;
+    res.status(403).json({ success: false, error: `Tu rol no tiene acceso a ${que}.` });
+    return false;
+};
+
 // Aviso por socket para que las pantallas del módulo se refresquen. `datos` indica qué cambió.
 const emitirST = (req, datos = {}) => {
     try { req.app.get('socketio')?.emit('st:updated', datos); } catch (_) { /* sin sockets no pasa nada */ }
@@ -204,7 +228,7 @@ async function leerAdjuntos(pool, entidad, entidadId) {
 module.exports = {
     MODULO, CATEGORIAS, PRIORIDADES, ESTADOS, RESULTADOS, ETIQUETA_RESULTADO, ETIQUETA_PRIORIDAD,
     codigo, urlSolicitud, esTecnico, esAdmin, texto, bool, idNum, fechaISO, escaparLike, hoyUY, numero,
-    responderError, exigirTecnico, emitirST, emitirCambio, avisarTableros,
+    responderError, exigirTecnico, rolVeRuta, exigirTecnicoOSeccion, emitirST, emitirCambio, avisarTableros,
     nombreUsuario, usuarioActual, tecnicos, encargado, destinatariosServicio,
     historial, leerHistorial, cambiarEstadoEquipo, guardarAdjuntos, leerAdjuntos, limpiarTemporales,
 };

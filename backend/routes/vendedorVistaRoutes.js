@@ -9,6 +9,8 @@ router.get('/clientes/:CliIdCliente/deposito-pendiente', verifyToken, ctrl.getDe
 // Ventas del mes por vendedor — antes de '/vendedores/:VendedorID/...' no hace falta
 // (no comparten prefijo), pero se deja arriba por legibilidad.
 router.get('/ventas-mensuales',                 verifyToken, ctrl.getVentasMensuales);
+// El ganador de cada mes desde junio 2026 (para la tira de ganadores y la racha)
+router.get('/ganadores',                        verifyToken, ctrl.getGanadores);
 
 // Cartera de vendedores (Clientes.VendedorID)
 router.get('/vendedores',                       verifyToken, ctrl.getVendedores);

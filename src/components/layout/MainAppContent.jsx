@@ -1,7 +1,8 @@
 import { useState, useEffect, useMemo, useRef, useCallback, Suspense, lazy } from 'react';
-import { LayoutDashboard, Warehouse, Printer, ClipboardList, Terminal, CircleUserRound, Tags, Headset, Calculator, Landmark, Shirt, Sun, Sparkles, Flame, Scissors, Pen, Shapes, PenLine, QrCode, ShieldBan, PrinterCheck, History, LayoutGrid, PackagePlus, PackageCheck, Truck, FileSearch, Boxes, Waypoints, Send, Package, Bus, ClipboardCheck, Menu, Users, Shield, Eye, Settings, Database, UserX, RefreshCw, BadgeDollarSign, Layers, BookOpen, Banknote, CreditCard, ShieldCheck, Calendar, CalendarCheck, MapPin, Store, LifeBuoy, Ticket, ScanLine, FileText, Cpu, FileDown, Inbox, Receipt, ShoppingCart, Palette, Megaphone, ScanEye, FileSignature, TrendingUp, Wrench } from 'lucide-react';
+import { LayoutDashboard, Warehouse, Printer, ClipboardList, Terminal, CircleUserRound, Tags, Headset, Calculator, Landmark, Shirt, Sun, Sparkles, Flame, Scissors, Pen, Shapes, PenLine, QrCode, ShieldBan, PrinterCheck, History, LayoutGrid, PackagePlus, PackageCheck, Truck, FileSearch, Boxes, Waypoints, Send, Package, Bus, ClipboardCheck, Menu, Users, Shield, Eye, Settings, Database, UserX, RefreshCw, BadgeDollarSign, Layers, BookOpen, Banknote, CreditCard, ShieldCheck, Calendar, CalendarCheck, MapPin, Store, LifeBuoy, Ticket, ScanLine, FileText, Cpu, FileDown, Inbox, Receipt, ShoppingCart, Palette, Megaphone, ScanEye, FileSignature, TrendingUp, Wrench, Gift, Handshake, ClipboardPen, PenTool, ChartGantt, UserPen, ListChecks, Target, Zap, ReceiptText, CalendarDays, Repeat, FolderKanban } from 'lucide-react';
 import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
 import { SECCIONES_STOCK } from '../pages/stockSecciones';
+import { SECCIONES_ST, destinoServicioTecnico } from '../pages/servicioTecnicoSecciones';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Toaster, toast } from 'sonner';
 import { ToastContainer, Slide } from 'react-toastify';
@@ -312,6 +313,14 @@ const lucideIconMapRaw = {
     // Servicio Técnico (docs/servicio-tecnico-plan.md)
     'servicio técnico': Wrench,
     'servicio tecnico': Wrench,
+    // y sus secciones (una entrada de menú cada una desde el 02/10). "Solicitudes", "Insumos" y
+    // "Reportes" ya tenían ícono por título.
+    'mi semana': ListChecks,
+    'calendario': CalendarDays,
+    'máquinas': Printer,
+    'maquinas': Printer,
+    'planes y procedimientos': Repeat,
+    'proyectos': FolderKanban,
     // Marketing
     'marketing': Megaphone,
     'precios': BadgeDollarSign,
@@ -350,6 +359,25 @@ const lucideIconMapRaw = {
     'imprimir cierres de caja': PrinterCheck,
     'reportes administración': FileText,
     'reportes administracion': FileText,
+    'beneficios predefinidos': Gift,
+    'beneficios pactados': Handshake,
+    'solicitudes': ClipboardPen,          // las solicitudes de los vendedores (/ventas/solicitudes)
+    'bandeja de diseño': PenTool,
+    'bandeja de diseno': PenTool,
+    'planificación': ChartGantt,           // /produccion/planificacion
+    'planificacion': ChartGantt,
+    // En Modulos tiene Icono = 'PenTool' (un nombre de Lucide, no una clase de Font Awesome): sin esta
+    // entrada salía en blanco
+    'diseñadores': UserPen,
+    'disenadores': UserPen,
+    // Los que todavía usaban Font Awesome (02/10): el mismo dibujo, en Lucide
+    'tareas': ListChecks,
+    'crm de leads': Target,
+    'jobs/cron': Zap,
+    'productos terminados': Layers,
+    'solicitudes de insumo': Scissors,
+    'pagos online/web (handy)': CreditCard,
+    'facturas': ReceiptText,
 };
 const getLucideIcon = (name) => lucideIconMapRaw[name?.toLowerCase?.()?.trim?.()?.replace(/\s+/g, ' ')];
 
@@ -786,7 +814,8 @@ const MainAppContent = ({ menuItems = [] }) => {
                 <Route path="/color"                          element={<ColorMatcherPage />} />
                 <Route path="/reportes"                      element={<ReportesPage />} />
                 <Route path="/tareas"                        element={<TareasPage />} />
-                <Route path="/servicio-tecnico"              element={<ServicioTecnicoPage />} />
+                {/* Servicio Técnico y sus secciones van por DynamicRouter (02/10), como Stock: cada
+                    sección respeta el menú del rol. */}
                 <Route path="/*" element={<DynamicRouter menuItems={menuItems} />} />
             </Routes>
         </Suspense>
@@ -1030,6 +1059,12 @@ const DynamicRouter = ({ menuItems }) => {
             const primera = SECCIONES_STOCK.find(s => menuItems.some(m => m.Ruta === s.ruta));
             if (primera) return <Navigate to={primera.ruta} replace />;
         }
+        // Servicio Técnico quedó como grupo sin ruta (02/10): /servicio-tecnico lleva a una de sus
+        // secciones con el resto del link, porque los avisos abren /servicio-tecnico?sol=, ?trab=…
+        if (normalizedPath === '/servicio-tecnico') {
+            const destino = destinoServicioTecnico(location.search, menuItems.map(m => m.Ruta));
+            if (destino) return <Navigate to={destino} replace />;
+        }
 
         // En lugar del fantasma, rebotamos al usuario silenciosamente de vuelta a su dashboard
         return <Navigate to="/" replace />;
@@ -1057,6 +1092,11 @@ const DynamicRouter = ({ menuItems }) => {
     const seccionStock = SECCIONES_STOCK.find(s => s.ruta === menuItem.Ruta);
     if (seccionStock) return <StockGestionPage key={seccionStock.id} seccion={seccionStock.id} rutasPermitidas={menuItems.map(m => m.Ruta)} />;
     if (menuItem.Ruta === '/stock') return <StockGestionPage />;
+    // Servicio Técnico: ídem (02/10). La ruta /servicio-tecnico sola es el menú viejo (antes de
+    // docs/servicio-tecnico/st-menu-secciones.sql): las secciones con pestañas, como antes.
+    const seccionST = SECCIONES_ST.find(s => s.ruta === menuItem.Ruta);
+    if (seccionST) return <ServicioTecnicoPage key={seccionST.id} seccion={seccionST.id} rutasPermitidas={menuItems.map(m => m.Ruta)} />;
+    if (menuItem.Ruta === '/servicio-tecnico') return <ServicioTecnicoPage />;
     if (menuItem.Ruta === '/marketing/productos') return <MarketingProductosPage />;
     if (menuItem.Ruta === '/admin/price-catalog') return <CustomerPriceCatalogPage />;
     // Terminaciones (pedido 29/07): la entrada del menú abre el ÁREA TERMINAC en su

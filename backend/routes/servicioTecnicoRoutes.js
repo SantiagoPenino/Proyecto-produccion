@@ -34,6 +34,7 @@ router.post('/solicitudes', subirAdjuntos, c.crear);             // multipart: c
 router.get('/solicitudes/:id', c.detalle);
 router.put('/solicitudes/:id', c.editar);
 router.post('/solicitudes/:id/tomar', c.tomar);
+router.post('/solicitudes/:id/asignar', c.asignar);              // { tecnicoId } — encargado o Admin
 router.post('/solicitudes/:id/estado', c.cambiarEstado);         // { estado: EN_CURSO | EN_ESPERA, motivo }
 router.post('/solicitudes/:id/derivar', c.derivar);              // { tecnicoId | externo, motivo }
 router.post('/solicitudes/:id/finalizar', c.finalizar);

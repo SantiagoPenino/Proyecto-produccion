@@ -2,6 +2,11 @@ import React, { useState, useEffect, useCallback } from 'react';
 import api from '../../../services/apiClient';
 import { toast } from 'sonner';
 import { X, Plus, Loader2, RefreshCw, Save, Scissors, ChevronDown, ChevronRight } from 'lucide-react';
+import Selector from '../../ui/Selector';
+
+// Botón del desplegable propio (ui/Selector) con el aspecto que tenía cada desplegable del navegador (05/10),
+// igual que en el Editor StockArt. Recibe las clases de cada uno.
+const claseSel = (clases) => `flex items-center gap-1.5 text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-brand-cyan/20 disabled:cursor-not-allowed disabled:opacity-60 ${clases}`;
 
 // Configuración de terminaciones ECOUV (una sola puerta para la matriz):
 // catálogo + manera de aplicación (ubicaciones/regla de cantidad) + precio
@@ -182,26 +187,27 @@ export default function TerminacionesEcouvModal({ isOpen, onClose }) {
     };
 
     return (
-        <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-slate-900/70 p-4">
-            <div className="bg-white rounded-3xl shadow-2xl w-full max-w-6xl h-[92vh] flex flex-col overflow-hidden border border-slate-200">
+        // 05/10: en z-[6000], por encima de la navbar (z-[5010]) y de la barra lateral; antes z-[1000] quedaba
+        // debajo. En celular ocupa toda la pantalla. (Igual que el Editor StockArt.)
+        <div className="fixed inset-0 z-[6000] flex items-center justify-center bg-slate-900/70 sm:p-4">
+            <div className="bg-white w-full h-full sm:h-[92vh] sm:max-w-6xl sm:rounded-3xl shadow-2xl flex flex-col overflow-hidden sm:border sm:border-slate-200">
 
-                {/* HEADER */}
-                <div className="bg-gradient-to-r from-slate-800 to-slate-700 px-8 py-5 flex items-center justify-between shrink-0">
-                    <div className="flex items-center gap-4">
-                        <div className="w-10 h-10 bg-amber-400/20 rounded-xl flex items-center justify-center">
-                            <Scissors className="text-amber-300" size={20} />
-                        </div>
+                {/* HEADER (05/10): fondo blanco y el ícono de Lucide en brand-cyan, sin cuadrado de fondo; antes un
+                    degradé gris oscuro con el ícono en un cuadrado ámbar */}
+                <div className="bg-white border-b border-slate-100 px-8 py-5 flex items-center justify-between shrink-0">
+                    <div className="flex items-center gap-3">
+                        <Scissors className="shrink-0 text-brand-cyan" size={28} aria-hidden="true" />
                         <div>
-                            <h2 className="text-xl font-black text-white">TERMINACIONES ECOUV</h2>
+                            <h2 className="text-xl font-black text-slate-800">TERMINACIONES ECOUV</h2>
                             <p className="text-slate-400 text-xs">Catálogo · manera de aplicación · precio · dónde se ofrece</p>
                         </div>
                     </div>
                     <div className="flex items-center gap-2">
-                        <button onClick={load} className="p-2 hover:bg-white/10 rounded-xl transition-colors" title="Refrescar">
-                            {loading ? <Loader2 className="text-white animate-spin" size={18} /> : <RefreshCw className="text-white" size={18} />}
+                        <button onClick={load} className="p-2 rounded-xl text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition-colors" title="Refrescar" aria-label="Refrescar">
+                            {loading ? <Loader2 className="animate-spin" size={18} /> : <RefreshCw size={18} />}
                         </button>
-                        <button onClick={onClose} className="p-2 hover:bg-white/10 rounded-xl transition-colors">
-                            <X className="text-white" size={20} />
+                        <button onClick={onClose} className="p-2 rounded-xl text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition-colors" title="Cerrar" aria-label="Cerrar">
+                            <X size={20} />
                         </button>
                     </div>
                 </div>
@@ -254,34 +260,35 @@ export default function TerminacionesEcouvModal({ isOpen, onClose }) {
                             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                                 <div>
                                     <label className="text-[10px] font-black text-slate-500 uppercase block mb-1">Se cobra por</label>
-                                    <select value={form.unidadCobro} onChange={e => setF('unidadCobro', e.target.value)}
-                                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-2 py-2 text-xs font-bold outline-none">
+                                    <Selector value={form.unidadCobro} onChange={e => setF('unidadCobro', e.target.value)} aria-label="Se cobra por"
+                                        claseBoton={claseSel('w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-700')} anchoLista={200}>
                                         <option value="U">Unidad</option>
                                         <option value="M">Metro lineal</option>
                                         <option value="M2">Metro cuadrado</option>
-                                    </select>
+                                    </Selector>
                                 </div>
                                 <div>
                                     <label className="text-[10px] font-black text-slate-500 uppercase block mb-1">Precio</label>
-                                    <input type="number" step="0.01" min="0" value={form.precio} onChange={e => setF('precio', e.target.value)}
+                                    <input type="number" step="0.1" min="0" value={form.precio} onChange={e => setF('precio', e.target.value)}
                                         placeholder="0.00"
                                         className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-black text-right outline-none focus:border-amber-400" />
                                 </div>
                                 <div>
                                     <label className="text-[10px] font-black text-slate-500 uppercase block mb-1">Moneda</label>
-                                    <select value={form.moneda} onChange={e => setF('moneda', e.target.value)}
-                                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-2 py-2 text-xs font-bold outline-none">
+                                    <Selector value={form.moneda} onChange={e => setF('moneda', e.target.value)} aria-label="Moneda"
+                                        claseBoton={claseSel('w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-700')} anchoLista={160}>
                                         <option value="UYU">$ UYU</option>
                                         <option value="USD">US$ USD</option>
-                                    </select>
+                                    </Selector>
                                 </div>
                                 <div>
                                     <label className="text-[10px] font-black text-slate-500 uppercase block mb-1">Artículo (factura)</label>
-                                    <select value={form.codArticulo} onChange={e => setF('codArticulo', e.target.value)}
-                                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-2 py-2 text-xs outline-none">
+                                    {/* La lista entera, sin scroll mientras entre en la pantalla, como en el Editor StockArt */}
+                                    <Selector value={form.codArticulo} onChange={e => setF('codArticulo', e.target.value)} aria-label="Artículo (factura)"
+                                        claseBoton={claseSel('w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-700')} anchoLista={320} altoMax={Infinity}>
                                         <option value="">— Sin artículo —</option>
                                         {artsTerm.map(a => <option key={a.CodArticulo} value={a.CodArticulo}>{a.CodArticulo} · {a.Descripcion}</option>)}
-                                    </select>
+                                    </Selector>
                                 </div>
                             </div>
                             <p className="text-[10px] text-slate-400 -mt-3">El precio se guarda directo en PreciosBase del artículo vinculado.</p>
@@ -311,10 +318,10 @@ export default function TerminacionesEcouvModal({ isOpen, onClose }) {
                                 <div className="grid grid-cols-1 md:grid-cols-[2fr_1fr] gap-3">
                                     <div>
                                         <label className="text-[10px] font-black text-slate-500 uppercase block mb-1">Cantidad sugerida</label>
-                                        <select value={form.reglaCantidad} onChange={e => setF('reglaCantidad', e.target.value)}
-                                            className="w-full bg-white border border-slate-200 rounded-xl px-2 py-2 text-xs font-bold outline-none">
+                                        <Selector value={form.reglaCantidad} onChange={e => setF('reglaCantidad', e.target.value)} aria-label="Cantidad sugerida"
+                                            claseBoton={claseSel('w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-700')} anchoLista={280}>
                                             {REGLAS.map(r => <option key={r.v} value={r.v}>{r.l}</option>)}
-                                        </select>
+                                        </Selector>
                                     </div>
                                     {form.reglaCantidad !== 'METROS_TRAMO' && (
                                         <div>

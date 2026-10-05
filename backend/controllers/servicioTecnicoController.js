@@ -12,8 +12,11 @@
 //
 // Avisos (services/notificacionesService.js): solicitud nueva → encargado (selector guardado en
 // ConfiguracionGlobal 'ST_EncargadoId'; si no hay, env ST_ENCARGADO_USUARIO = id o usuario; si
-// tampoco, todos los técnicos). Derivación → técnico que la recibe + encargado. Finalizada →
-// quien la pidió. Nunca se le avisa a quien hizo la acción.
+// tampoco, todos los técnicos). Derivación → técnico que la recibe + encargado. Asignación →
+// técnico que la recibe. Finalizada → quien la pidió. Nunca se le avisa a quien hizo la acción.
+//
+// Asignar (02/10): el encargado o un Admin le asigna la solicitud a un técnico (en el detalle, en
+// lugar de "Tomar"). Queda En curso a su nombre, como si la hubiera tomado.
 //
 // Tablas: docs/servicio-tecnico/st-etapa1.sql. Fechas con GETDATE() como el resto del sistema;
 // las columnas DATE se devuelven como texto 'AAAA-MM-DD' para que el navegador no las corra.
@@ -88,6 +91,8 @@ exports.getMeta = async (req, res) => {
             data: {
                 usuario: { ...usuario, area: areaUsuario.recordset[0]?.Area || '' },
                 esTecnico: esTecnico(req), esAdmin: esAdmin(req),
+                // El encargado asigna las solicitudes y ve la bandeja aunque no sea del área SERVICIO.
+                esEncargado: !!enc && enc.id === usuario.id,
                 encargado: enc, tecnicos: tecs,
                 areas: areas.recordset, equipos: equipos.recordset,
                 estadosEquipo: ESTADOS_EQUIPO, locales,
@@ -396,6 +401,56 @@ exports.tomar = async (req, res) => {
         emitirCambio(req, sol.SolId);
         res.json({ success: true, data: await leerSolicitud(pool, sol.SolId) });
     } catch (err) { responderError(res, err, 'tomar'); }
+};
+
+// POST /solicitudes/:id/asignar { tecnicoId } → el encargado o un Admin se la da a un técnico.
+// Queda EN_CURSO a su nombre, igual que si la hubiera tomado: los reportes la cuentan como tomada
+// por él, y el tiempo de respuesta corre hasta acá. Asignársela a uno mismo es tomarla.
+exports.asignar = async (req, res) => {
+    const tecnicoId = idNum(req.body?.tecnicoId);
+    if (!tecnicoId) return res.status(400).json({ success: false, error: 'Elegí un técnico.' });
+    try {
+        const pool = await getPool();
+        const usuario = await usuarioActual(pool, req);
+        const enc = await encargado(pool);
+        if (!esAdmin(req) && !(enc && enc.id === usuario.id)) {
+            return res.status(403).json({ success: false, error: 'Solo el encargado o un administrador asignan solicitudes.' });
+        }
+        const id = idNum(req.params.id);
+        if (!id) return res.status(400).json({ success: false, error: 'Solicitud inválida.' });
+        const sol = await leerSolicitud(pool, id);
+        if (!sol) return res.status(404).json({ success: false, error: 'No existe la solicitud.' });
+        if (sol.Estado === 'FINALIZADA') return res.status(409).json({ success: false, error: `${sol.Codigo} ya está finalizada.` });
+
+        // A un técnico (área SERVICIO), o a uno mismo si puede actuar como técnico (Admin).
+        const tecs = await tecnicos(pool);
+        const destino = tecs.find(t => t.id === tecnicoId) || (tecnicoId === usuario.id && esTecnico(req) ? usuario : null);
+        if (!destino) return res.status(400).json({ success: false, error: 'El elegido no es técnico de Servicio Técnico.' });
+        if (sol.TecnicoId === destino.id && sol.Estado === 'EN_CURSO') {
+            return res.json({ success: true, data: sol });
+        }
+
+        await pool.request().input('Id', sql.Int, sol.SolId).input('T', sql.Int, destino.id).input('TN', sql.NVarChar(150), destino.nombre)
+            .query(`UPDATE dbo.ST_Solicitudes
+                    SET TecnicoId = @T, TecnicoNombre = @TN, Estado = 'EN_CURSO', EsperaMotivo = NULL, DerivadaExterno = NULL,
+                        FechaTomada = ISNULL(FechaTomada, GETDATE()), FechaActualizacion = GETDATE()
+                    WHERE SolId = @Id`);
+        const antes = sol.TecnicoId && sol.TecnicoId !== destino.id ? `Antes la tenía ${sol.TecnicoNombre}` : null;
+        if (destino.id === usuario.id) {
+            await historial(pool, { entidadId: sol.SolId, usuario, accion: 'TOMADA', detalle: antes });
+        } else {
+            await historial(pool, {
+                entidadId: sol.SolId, usuario, accion: 'ASIGNADA', aUsuario: destino,
+                detalle: [`A ${destino.nombre}`, antes].filter(Boolean).join(' · '),
+            });
+            notificar({
+                modulo: MODULO, io: req.app.get('socketio'), url: urlSolicitud(sol.SolId), tag: `st-${sol.SolId}`,
+                usuarioIds: [destino.id], titulo: `Te asignaron ${sol.Codigo}`, texto: `${sol.Titulo} (asignó ${usuario.nombre})`,
+            });
+        }
+        emitirCambio(req, sol.SolId);
+        res.json({ success: true, data: await leerSolicitud(pool, sol.SolId) });
+    } catch (err) { responderError(res, err, 'asignar'); }
 };
 
 // POST /solicitudes/:id/estado { estado: EN_CURSO | EN_ESPERA, motivo }

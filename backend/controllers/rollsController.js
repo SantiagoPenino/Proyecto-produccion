@@ -93,6 +93,14 @@ exports.getNextRollName = async (req, res) => {
     }
 };
 
+// TPU: si el cliente ya se expidió sobre el boceto, la fecha que importa es la de su última
+// acción (verde si aprobó, roja si rechazó), no la de ingreso. Misma regla y mismos nombres que
+// la planilla (ordersController.getOrdersByArea), para que el lote muestre la misma fecha.
+const veredictoDeCliente = (o) => ({
+    veredictoCliente: o.FechaAprobacionCliente ? 'APROBADO' : (o.FechaRechazoCliente ? 'RECHAZADO' : null),
+    fechaVeredictoCliente: o.FechaAprobacionCliente || o.FechaRechazoCliente || null,
+});
+
 // ==========================================
 // 1. OBTENER TABLERO KANBAN (GET)
 // ==========================================
@@ -111,6 +119,8 @@ exports.getBoardData = async (req, res) => {
 
         const pool = await getPool();
         await ensureOrderColumns(pool); // garantiza Impreso/Calandrado antes de seleccionarlas (idempotente)
+        // Ídem FechaAprobacionCliente/FechaRechazoCliente (cacheado, igual que en la planilla)
+        await require('./webOrdersController').ensureColFechaAprobacion(pool);
 
         // A. TRAER ROLLOS ACTIVOS
         const rollsRes = await pool.request()
@@ -139,7 +149,8 @@ exports.getBoardData = async (req, res) => {
                     o.Prioridad, 
                     o.Estado, 
                     o.EstadoenArea, -- ✅ AGREGADO PARA TABLERO
-                    o.FechaIngreso, 
+                    o.FechaIngreso,
+                    o.FechaAprobacionCliente, o.FechaRechazoCliente, -- TPU: la fecha que muestra el lote es la misma de la planilla
                     o.Secuencia,
                     o.Tinta, -- ✅ AGREGADO
                     o.Impreso, o.Calandrado, -- Estado impreso/calandrado (gate "Finalizar Lote" en planeación)
@@ -233,6 +244,7 @@ exports.getBoardData = async (req, res) => {
                 material: o.Material,
                 variantCode: o.Variante,
                 entryDate: o.FechaIngreso,
+                ...veredictoDeCliente(o),
                 priority: o.Prioridad,
                 status: o.Estado,
                 areaStatus: o.EstadoenArea, // ✅ Mapeado
@@ -1351,6 +1363,7 @@ exports.getRollDetails = async (req, res) => {
 
         const pool = await getPool();
         await ensureOrderColumns(pool);
+        await require('./webOrdersController').ensureColFechaAprobacion(pool);
 
         // A. TRAER ROLLO
         const rollsRes = await pool.request()
@@ -1408,6 +1421,7 @@ exports.getRollDetails = async (req, res) => {
                     o.OrdenID, o.CodigoOrden, o.Cliente, o.DescripcionTrabajo, 
                     o.Magnitud, o.Material, o.Variante, o.RolloID, 
                     o.Prioridad, o.Estado, o.FechaIngreso, o.Secuencia, o.Tinta, o.NoDocERP, o.IdCabezalERP, o.Nota, o.Impreso, o.FechaImpreso, o.Calandrado, o.UM, o.CantidadImpresa, o.CantidadCortada, o.MetrosGrupoFalla, o.GrupoManual,
+                    o.FechaAprobacionCliente, o.FechaRechazoCliente,
                     o.BobinaTelaID,
                     -- TELA DE CLIENTE: partes de la bobina elegida (para mostrar como material y agrupar por Referencia)
                     ibt.Referencia AS BobRef, ibt.DescripcionTela AS BobDesc, COALESCE(ibt.AnchoReal, ibt.Ancho) AS BobAncho,
@@ -1461,6 +1475,7 @@ exports.getRollDetails = async (req, res) => {
                 referencia,         // Tela de Cliente: clave de agrupado (Referencia de la bobina)
                 variantCode: o.Variante,
                 entryDate: o.FechaIngreso,
+                ...veredictoDeCliente(o),
                 priority: o.Prioridad,
                 status: o.Estado,
                 rollId: o.RolloID,

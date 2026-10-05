@@ -7,16 +7,21 @@
 //   mantenimientos y tareas, proyectos (avances) y la lista de fallas de la semana.
 //
 // Criterios (los mismos en todo el módulo):
-//   - "Tomadas": veces que un técnico tomó una solicitud (si pasó por dos técnicos, cuenta para los dos).
+//   - "Tomadas": veces que un técnico tomó una solicitud o el encargado se la asignó (si pasó por dos
+//     técnicos, cuenta para los dos).
 //   - "Finalizadas": solicitudes cerradas en el período, a nombre del técnico que la tenía.
 //   - "Resueltas": finalizadas con resultado Resuelta (aparte: en parte, no resuelta, cancelada).
 //   - "Derivadas": veces que el técnico la derivó, con el motivo que escribió.
 //   - Fallas de una máquina: solicitudes pedidas en el período, sin contar las canceladas (duplicadas).
 //   - Parada: minutos desde que se pidió hasta que se finalizó (o hasta ahora) de las que la reportaron parada.
 // Fechas: días de Uruguay ('AAAA-MM-DD'), ambos inclusive.
+// Quién los ve: técnicos y Admin, o un rol con Reportes en el menú (02/10, cada sección de Servicio
+// Técnico es su propia entrada del menú y se reparte por rol).
 // ─────────────────────────────────────────────────────────────────────────────
 const { getPool, sql } = require('../config/db');
-const { codigo, fechaISO, hoyUY, responderError, exigirTecnico, tecnicos } = require('../services/servicioTecnicoComun');
+const { codigo, fechaISO, hoyUY, responderError, exigirTecnicoOSeccion, tecnicos } = require('../services/servicioTecnicoComun');
+
+const RUTA_MENU = '/servicio-tecnico/reportes';
 
 const sumarDias = (iso, n) => {
     const [y, m, d] = iso.split('-').map(Number);
@@ -38,9 +43,14 @@ const SQL_PARADA = `ISNULL(s.MinutosParada, CASE WHEN s.Estado <> 'FINALIZADA' A
 async function datosPeriodo(pool, desde, hasta) {
     const req = () => pool.request().input('Desde', sql.VarChar(10), desde).input('Hasta', sql.VarChar(10), hasta);
     const [tomadas, finalizadas, derivaciones, trabTec, pospuestos, maquinas, titulosMaq, solicitantes, categorias, totales, insumos, insumosTop, tecs] = await Promise.all([
-        req().query(`SELECT h.UsuarioId, MAX(h.UsuarioNombre) AS Nombre, COUNT(*) AS Tomadas
-                     FROM dbo.ST_Historial h WHERE h.Entidad = 'SOLICITUD' AND h.Accion = 'TOMADA' AND ${EN_RANGO('h.Fecha')}
-                     GROUP BY h.UsuarioId`),
+        // Tomadas: las que tomó él, más las que le asignó el encargado (02/10)
+        req().query(`SELECT x.UsuarioId, MAX(x.Nombre) AS Nombre, COUNT(*) AS Tomadas
+                     FROM (SELECT h.UsuarioId, h.UsuarioNombre AS Nombre
+                           FROM dbo.ST_Historial h WHERE h.Entidad = 'SOLICITUD' AND h.Accion = 'TOMADA' AND ${EN_RANGO('h.Fecha')}
+                           UNION ALL
+                           SELECT h.AUsuarioId, h.AUsuarioNombre
+                           FROM dbo.ST_Historial h WHERE h.Entidad = 'SOLICITUD' AND h.Accion = 'ASIGNADA' AND ${EN_RANGO('h.Fecha')}) x
+                     GROUP BY x.UsuarioId`),
         req().query(`SELECT s.TecnicoId, MAX(s.TecnicoNombre) AS Nombre, COUNT(*) AS Finalizadas,
                             SUM(CASE WHEN s.Resultado = 'RESUELTA' THEN 1 ELSE 0 END) AS Resueltas,
                             SUM(CASE WHEN s.Resultado = 'PARCIAL' THEN 1 ELSE 0 END) AS Parciales,
@@ -160,26 +170,26 @@ async function datosPeriodo(pool, desde, hasta) {
 
 // GET /reportes/resumen?desde=&hasta= (por defecto: los últimos 30 días)
 exports.resumen = async (req, res) => {
-    if (!exigirTecnico(req, res, 'ver los reportes')) return;
     const hoy = hoyUY();
     const hasta = fechaISO(req.query.hasta) || hoy;
     const desde = fechaISO(req.query.desde) || sumarDias(hasta, -29);
     if (hasta < desde) return res.status(400).json({ success: false, error: 'Rango de fechas inválido.' });
     try {
         const pool = await getPool();
+        if (!(await exigirTecnicoOSeccion(req, res, pool, RUTA_MENU, 'los reportes de Servicio Técnico'))) return;
         res.json({ success: true, data: await datosPeriodo(pool, desde, hasta) });
     } catch (err) { responderError(res, err, 'reportes.resumen'); }
 };
 
 // GET /reportes/semanal?semana=AAAA-MM-DD (cualquier día de la semana; por defecto la anterior)
 exports.semanal = async (req, res) => {
-    if (!exigirTecnico(req, res, 'ver los reportes')) return;
     const hoy = hoyUY();
     const base = fechaISO(req.query.semana) || sumarDias(hoy, -7);
     const desde = lunesDe(base);
     const hasta = sumarDias(desde, 6);
     try {
         const pool = await getPool();
+        if (!(await exigirTecnicoOSeccion(req, res, pool, RUTA_MENU, 'los reportes de Servicio Técnico'))) return;
         const req2 = () => pool.request().input('Desde', sql.VarChar(10), desde).input('Hasta', sql.VarChar(10), hasta).input('Hoy', sql.VarChar(10), hoy);
         const [periodo, trabajos, pospuestos, avances, cambiosProy, activos, fallas, usos] = await Promise.all([
             datosPeriodo(pool, desde, hasta),

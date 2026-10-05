@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { toast } from 'sonner';
 import {
     X, Loader2, Hand, Pause, Play, ArrowRightLeft, CheckCircle2, RotateCcw, Pencil, Cog, Paperclip,
-    Send, MessageSquare, User, Clock,
+    Send, MessageSquare, User, Clock, UserPlus, ChevronDown,
 } from 'lucide-react';
 import { servicioTecnicoService } from '../../services/api';
 import { comprimirImagen } from '../../utils/comprimirImagen';
@@ -259,6 +259,22 @@ const SolicitudDetalle = ({ solId, meta, version = 0, onCerrar, onCambio, onAbri
     const tec = !!sol?.puedeActuar;
     const puedeAportar = tec || !!sol?.esMia;
     const esMiaEnCurso = sol && sol.Estado === 'EN_CURSO' && meta?.usuario?.id === sol.TecnicoId;
+    // El encargado (o un Admin) asigna en lugar de tomar: un desplegable con los técnicos (02/10).
+    // Si quien asigna puede actuar como técnico y no está en la lista (un Admin), se suma como "Yo".
+    const puedeAsignar = !!(meta?.esAdmin || meta?.esEncargado);
+    // Si ya tiene técnico, el mismo botón dice "Reasignar": sirve para pasársela a otro.
+    const textoAsignar = sol?.TecnicoId ? 'Reasignar' : 'Asignar';
+    const yo = meta?.usuario;
+    const opcionesAsignar = [
+        ...(meta?.tecnicos || []),
+        ...(tec && yo?.id && !(meta?.tecnicos || []).some(t => t.id === yo.id) ? [{ id: yo.id, nombre: `Yo (${yo.nombre})` }] : []),
+    ];
+    const asignar = (v) => {
+        const elegido = opcionesAsignar.find(t => String(t.id) === v);
+        if (!elegido) return;
+        accion(() => servicioTecnicoService.asignar(solId, elegido.id),
+            elegido.id === yo?.id ? 'Solicitud tomada' : `${sol?.TecnicoId ? 'Reasignada' : 'Asignada'} a ${elegido.nombre}`);
+    };
     const cat = sol ? categoriaInfo(sol.Categoria) : null;
 
     return (
@@ -289,29 +305,48 @@ const SolicitudDetalle = ({ solId, meta, version = 0, onCerrar, onCambio, onAbri
                                 <button onClick={onCerrar} className="w-9 h-9 rounded-xl flex items-center justify-center text-zinc-400 hover:bg-zinc-100 shrink-0"><X size={20} /></button>
                             </div>
 
-                            {/* Acciones del técnico */}
-                            {tec && (
+                            {/* Acciones del técnico. El encargado (o un Admin) asigna en lugar de tomar. */}
+                            {(tec || puedeAsignar) && (
                                 <div className="mt-3 flex flex-wrap gap-1.5">
                                     {sol.Estado === 'FINALIZADA' ? (
-                                        <button onClick={() => setModal('reabrir')} className={`${btn} bg-zinc-800 text-white hover:bg-zinc-700`}><RotateCcw size={15} /> Reabrir</button>
+                                        tec && <button onClick={() => setModal('reabrir')} className={`${btn} bg-zinc-800 text-white hover:bg-zinc-700`}><RotateCcw size={15} /> Reabrir</button>
                                     ) : (
                                         <>
-                                            {!esMiaEnCurso && (
+                                            {puedeAsignar ? (
+                                                <Selector value={sol.TecnicoId ? String(sol.TecnicoId) : ''} onChange={(e) => asignar(e.target.value)}
+                                                    aria-label={sol.TecnicoId ? 'Pasársela a otro técnico' : 'Asignar a un técnico'}
+                                                    title={sol.TecnicoId ? `La tiene ${sol.TecnicoNombre}: pasársela a otro técnico` : 'Asignar a un técnico'} anchoLista={260} sinFlecha
+                                                    claseBoton={`${btn} bg-brand-cyan text-white hover:bg-brand-cyan/90 outline-none focus-visible:ring-2 focus-visible:ring-brand-cyan/30`}
+                                                    // La flecha va adentro y en blanco: la del Selector es gris y sobre el celeste no se ve.
+                                                    // `flex` y no `inline-flex`: dentro del span del Selector, un inline-flex se apoya
+                                                    // en la línea de texto y el texto y la flecha quedaban corridos hacia abajo.
+                                                    renderValor={() => (
+                                                        <span className="flex items-center gap-1.5">
+                                                            <UserPlus size={15} className="shrink-0" /><span>{textoAsignar}</span><ChevronDown size={14} className="shrink-0 opacity-80" />
+                                                        </span>
+                                                    )}>
+                                                    {opcionesAsignar.map(t => (
+                                                        <option key={t.id} value={t.id} descripcion={t.id === sol.TecnicoId ? 'Asignado' : undefined}>{t.nombre}</option>
+                                                    ))}
+                                                </Selector>
+                                            ) : !esMiaEnCurso && (
                                                 <button onClick={() => accion(() => servicioTecnicoService.tomar(solId), 'Solicitud tomada')} className={`${btn} bg-brand-cyan text-white hover:bg-brand-cyan/90`}>
                                                     <Hand size={15} /> Tomar
                                                 </button>
                                             )}
-                                            {sol.Estado === 'EN_ESPERA' ? (
-                                                <button onClick={() => accion(() => servicioTecnicoService.cambiarEstado(solId, 'EN_CURSO'), 'Retomada')} className={`${btn} bg-white border border-zinc-200 text-zinc-700 hover:bg-zinc-100`}><Play size={15} /> Retomar</button>
-                                            ) : sol.Estado === 'EN_CURSO' && (
-                                                <button onClick={() => setModal('espera')} className={`${btn} bg-white border border-zinc-200 text-zinc-700 hover:bg-zinc-100`}><Pause size={15} /> En espera</button>
-                                            )}
-                                            <button onClick={() => setModal('derivar')} className={`${btn} bg-white border border-zinc-200 text-zinc-700 hover:bg-zinc-100`}><ArrowRightLeft size={15} /> Derivar</button>
-                                            <button onClick={() => setModal('finalizar')} className={`${btn} bg-emerald-600 text-white hover:bg-emerald-700`}><CheckCircle2 size={15} /> Finalizar</button>
+                                            {tec && (<>
+                                                {sol.Estado === 'EN_ESPERA' ? (
+                                                    <button onClick={() => accion(() => servicioTecnicoService.cambiarEstado(solId, 'EN_CURSO'), 'Retomada')} className={`${btn} bg-white border border-zinc-200 text-zinc-700 hover:bg-zinc-100`}><Play size={15} /> Retomar</button>
+                                                ) : sol.Estado === 'EN_CURSO' && (
+                                                    <button onClick={() => setModal('espera')} className={`${btn} bg-white border border-zinc-200 text-zinc-700 hover:bg-zinc-100`}><Pause size={15} /> En espera</button>
+                                                )}
+                                                <button onClick={() => setModal('derivar')} className={`${btn} bg-white border border-zinc-200 text-zinc-700 hover:bg-zinc-100`}><ArrowRightLeft size={15} /> Derivar</button>
+                                                <button onClick={() => setModal('finalizar')} className={`${btn} bg-emerald-600 text-white hover:bg-emerald-700`}><CheckCircle2 size={15} /> Finalizar</button>
+                                            </>)}
                                         </>
                                     )}
-                                    <button onClick={() => setModal('editar')} className={`${btn} bg-white border border-zinc-200 text-zinc-700 hover:bg-zinc-100`}><Pencil size={15} /> Editar</button>
-                                    {sol.EquipoId && (
+                                    {tec && <button onClick={() => setModal('editar')} className={`${btn} bg-white border border-zinc-200 text-zinc-700 hover:bg-zinc-100`}><Pencil size={15} /> Editar</button>}
+                                    {tec && sol.EquipoId && (
                                         <button onClick={() => setModal('maquina')} className={`${btn} bg-white border border-zinc-200 text-zinc-700 hover:bg-zinc-100`}><Cog size={15} /> Estado máquina</button>
                                     )}
                                 </div>

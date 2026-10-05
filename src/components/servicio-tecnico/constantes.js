@@ -103,6 +103,7 @@ export const diaCorto = (iso) => { const [, m, d] = iso.split('-'); return `${d}
 export const ACCIONES = {
     CREADA: 'Creada',
     TOMADA: 'Tomada',
+    ASIGNADA: 'Asignada',
     ESTADO: 'Cambio de estado',
     DERIVADA: 'Derivada',
     COMENTARIO: 'Comentario',

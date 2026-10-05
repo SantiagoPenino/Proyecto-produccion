@@ -636,11 +636,25 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
     // falla va en la FILA de cada orden (su prioridad), no en el header del grupo.
     const isFalla = (o) => /-F\d+/i.test(o?.code || o?.CodigoOrden || '');
     const matKey = (o) => (groupKeyOf(o) || '—');
-    // Fecha y hora de ingreso de la orden (FechaIngreso), formato corto dd/mm/aa hh:mm.
-    const fmtEntry = (d) => {
-        if (!d) return '';
-        const dt = new Date(d);
-        return isNaN(dt) ? '' : dt.toLocaleString('es-AR', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' });
+    // Fecha de la orden: la MISMA que la planilla (ProductionTable → DateRenderer). En TPU, si el
+    // cliente ya se expidió sobre el boceto manda la fecha de su última acción — verde si aprobó,
+    // roja si rechazó —; si no, la de ingreso. dd/mm/aa hh:mm en 24 h, como allá.
+    const renderFecha = (o, extra = '') => {
+        const veredicto = o?.veredictoCliente;
+        const valor = veredicto ? o.fechaVeredictoCliente : o?.entryDate;
+        if (!valor) return null;
+        const dt = new Date(valor);
+        if (isNaN(dt)) return null;
+        const aprobado = veredicto === 'APROBADO';
+        const color = veredicto ? (aprobado ? 'text-emerald-600' : 'text-red-600') : 'text-zinc-400';
+        const titulo = veredicto
+            ? `${aprobado ? 'Boceto APROBADO' : 'Boceto RECHAZADO'} por el cliente el ${dt.toLocaleString('es-ES')}`
+            : undefined;
+        return (
+            <div className={`text-[10px] mt-0.5 ${color} ${extra}`} title={titulo}>
+                {dt.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: '2-digit' })} {dt.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}
+            </div>
+        );
     };
     const selectedOrders = orders.filter(o => selectedOrderIds.includes(o.id));
     const selectedMaterials = [...new Set(selectedOrders.map(groupKeyOf).filter(Boolean))];
@@ -1889,7 +1903,7 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
                                                             acá solo para que el operario la reconozca. */}
                                                         {isNewOrder(o.id) && <span className="px-1 rounded bg-amber-100 text-amber-700 border border-amber-300 text-[9px] font-black uppercase tracking-wider" title="Se asignó al lote con el detalle abierto">Nueva</span>}
                                                       </div>
-                                                      {o.entryDate && <div className="text-[10px] font-normal text-zinc-400 mt-0.5">{fmtEntry(o.entryDate)}</div>}
+                                                      {renderFecha(o, 'font-normal')}
                                                     </div>
                                                     <div className="flex-1 min-w-[150px] px-2 overflow-hidden">
                                                       <div className="font-semibold text-zinc-800 truncate text-sm tablet:text-xs">{o.clientId || o.client || o.Cliente}</div>
@@ -2111,7 +2125,7 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
                                             <td className="px-4 py-3 text-center text-zinc-300 font-mono text-xs w-10">{idx + 1}</td>
                                             <td className="px-4 py-3 font-mono text-xs w-36 break-words">
                                                 <div className="font-bold text-zinc-700">{o.code || o.CodigoOrden}</div>
-                                                {o.entryDate && <div className="text-[10px] text-zinc-400 mt-0.5 whitespace-nowrap">{fmtEntry(o.entryDate)}</div>}
+                                                {renderFecha(o, 'whitespace-nowrap')}
                                             </td>
                                             <td className="px-4 py-3 w-48">
                                                 <div className="font-semibold text-zinc-800 truncate text-sm max-w-[170px]">{o.clientId || o.client || o.Cliente}</div>

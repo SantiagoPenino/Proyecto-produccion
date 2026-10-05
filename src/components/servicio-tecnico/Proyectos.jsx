@@ -272,7 +272,10 @@ export const ProyectoDetalle = ({ proyId, meta, version = 0, onCerrar, onCambio 
 };
 
 // ── Lista ────────────────────────────────────────────────────────────────────
+// Desde el 02/10 la puede ver cualquier rol que la tenga en el menú: "Nuevo proyecto" (y lo del
+// detalle) queda solo para técnicos y Admin, como en el backend.
 const ProyectosVista = ({ meta, onAbrir }) => {
+    const tec = !!meta?.esTecnico;
     const [estado, setEstado] = useState('ABIERTOS');
     const [q, setQ] = useState('');
     const [lista, setLista] = useState(null);
@@ -300,9 +303,11 @@ const ProyectosVista = ({ meta, onAbrir }) => {
                     {Object.entries(ESTADOS_PROYECTO).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
                     <option value="TODOS">Todos</option>
                 </Selector>
-                <button onClick={() => setNuevo(true)} className={`hidden sm:inline-flex ${btnPri} ml-auto`}><Plus size={16} /> Nuevo proyecto</button>
-                <button onClick={() => setNuevo(true)} title="Nuevo proyecto" aria-label="Nuevo proyecto"
-                    className="sm:hidden w-9 h-9 rounded-xl flex items-center justify-center bg-brand-cyan text-white hover:bg-brand-cyan/90 shrink-0"><Plus size={18} /></button>
+                {tec && (<>
+                    <button onClick={() => setNuevo(true)} className={`hidden sm:inline-flex ${btnPri} ml-auto`}><Plus size={16} /> Nuevo proyecto</button>
+                    <button onClick={() => setNuevo(true)} title="Nuevo proyecto" aria-label="Nuevo proyecto"
+                        className="sm:hidden w-9 h-9 rounded-xl flex items-center justify-center bg-brand-cyan text-white hover:bg-brand-cyan/90 shrink-0"><Plus size={18} /></button>
+                </>)}
             </div>
             {!lista ? <div className="py-16 text-center text-zinc-400"><Loader2 className="inline animate-spin" size={22} /></div>
                 : lista.length === 0 ? <div className="py-16 text-center text-sm text-zinc-400">No hay proyectos{estado === 'ABIERTOS' ? ' abiertos' : ''}.</div>

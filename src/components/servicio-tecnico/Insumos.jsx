@@ -170,6 +170,9 @@ export const InsumosUsados = ({ filtro, version = 0, puedeUsar = false, contexto
 // selector de depósito para mirar: era redundante con la pastilla. El stock de otros depósitos se ve
 // en "Usar insumo" (se elige de dónde sale) o en /stock.
 const InsumosVista = ({ meta }) => {
+    // Desde el 02/10 la puede ver cualquier rol que la tenga en el menú: "Usar insumo" queda solo para
+    // técnicos y Admin, como en el backend.
+    const tec = !!meta?.esTecnico;
     const [tab, setTab] = useState('stock');
     const [config, setConfig] = useState(null);
     const [q, setQ] = useState('');
@@ -240,9 +243,11 @@ const InsumosVista = ({ meta }) => {
                             {config.depositos.map(d => <option key={d.DepId} value={d.DepId}>{d.Nombre}</option>)}
                         </Selector>
                     ) : <PastillaFija className="min-w-0 flex-1 sm:flex-none" titulo="Depósito del que salen los insumos. Lo elige un administrador.">{contenidoDeposito}</PastillaFija>)}
-                    <button onClick={() => setUsar({})} className={`hidden sm:inline-flex ${btnPri} shrink-0`}><PackageMinus size={16} /> Usar insumo</button>
-                    <button onClick={() => setUsar({})} title="Usar insumo" aria-label="Usar insumo"
-                        className="sm:hidden w-9 h-9 rounded-xl flex items-center justify-center bg-brand-cyan text-white hover:bg-brand-cyan/90 shrink-0"><PackageMinus size={18} /></button>
+                    {tec && (<>
+                        <button onClick={() => setUsar({})} className={`hidden sm:inline-flex ${btnPri} shrink-0`}><PackageMinus size={16} /> Usar insumo</button>
+                        <button onClick={() => setUsar({})} title="Usar insumo" aria-label="Usar insumo"
+                            className="sm:hidden w-9 h-9 rounded-xl flex items-center justify-center bg-brand-cyan text-white hover:bg-brand-cyan/90 shrink-0"><PackageMinus size={18} /></button>
+                    </>)}
                 </div>
             </div>
             {config && !config.deposito && (

@@ -23,6 +23,7 @@ export const servicioTecnicoService = {
         (await api.post('/servicio-tecnico/solicitudes', armarForm(campos, archivos), multipart)).data.data,
     editar: async (id, campos) => (await api.put(`/servicio-tecnico/solicitudes/${id}`, campos)).data.data,
     tomar: async (id) => (await api.post(`/servicio-tecnico/solicitudes/${id}/tomar`)).data.data,
+    asignar: async (id, tecnicoId) => (await api.post(`/servicio-tecnico/solicitudes/${id}/asignar`, { tecnicoId })).data.data,
     cambiarEstado: async (id, estado, motivo) =>
         (await api.post(`/servicio-tecnico/solicitudes/${id}/estado`, { estado, motivo })).data.data,
     derivar: async (id, datos) => (await api.post(`/servicio-tecnico/solicitudes/${id}/derivar`, datos)).data.data,

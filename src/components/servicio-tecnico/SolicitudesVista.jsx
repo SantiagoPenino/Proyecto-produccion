@@ -30,7 +30,8 @@ const ESTADOS_ABIERTOS = Object.entries(ESTADOS).filter(([k]) => k !== 'FINALIZA
 const barraPrioridad = { BAJA: 'bg-emerald-400', MEDIA: 'bg-amber-400', ALTA: 'bg-orange-500', CRITICA: 'bg-red-600' };
 
 const SolicitudesVista = ({ meta, onAbrir, version = 0 }) => {
-    const esTecnico = !!meta?.esTecnico;
+    // El encargado ve la bandeja de los técnicos aunque no sea del área: es quien asigna (02/10).
+    const esTecnico = !!(meta?.esTecnico || meta?.esEncargado);
     const vistas = esTecnico ? VISTAS_TECNICO : VISTAS_USUARIO;
     const [vista, setVista] = useState(esTecnico ? 'abiertas' : 'mis');
     const [filtros, setFiltros] = useState(FILTROS_VACIOS);

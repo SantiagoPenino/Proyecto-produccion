@@ -1,7 +1,12 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import api from '../../../services/apiClient';
 import { toast } from 'sonner';
-import { X, Loader2, Box, Plus, Eye, EyeOff, Trash2, RefreshCw } from 'lucide-react';
+import { X, Loader2, Box, Plus, Eye, EyeOff, Trash2, RefreshCw, ChevronDown } from 'lucide-react';
+import Selector from '../../ui/Selector';
+
+// Botón del desplegable propio (ui/Selector) con el aspecto que tenía cada desplegable del navegador (05/10),
+// igual que en el Editor StockArt y en Terminaciones. Recibe las clases de cada uno.
+const claseSel = (clases) => `flex items-center gap-1.5 text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-brand-cyan/20 disabled:cursor-not-allowed disabled:opacity-60 ${clases}`;
 
 // Gestor de PRODUCTOS TERMINADOS EcoUV: barra lateral con la lista (seleccionar,
 // activar/desactivar, eliminar) + ficha completa a la derecha (alta y edición).
@@ -208,23 +213,29 @@ export default function NuevoProductoTerminadoModal({ isOpen, onClose, onCreated
         }
     };
 
-    const inputCls = "w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs outline-none focus:border-purple-400";
+    // 05/10: el foco de los campos pasa de violeta a brand-cyan; los desplegables (selCls) se ven como los campos
+    const inputCls = "w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs outline-none focus:border-brand-cyan";
+    const selCls = 'w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-700';
 
     return (
-        <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-slate-900/70 p-4">
-            <div className="bg-white rounded-3xl shadow-2xl w-full max-w-5xl h-[92vh] flex flex-col overflow-hidden border border-slate-200">
+        // 05/10: en z-[6000], por encima de la navbar (z-[5010]) y de la barra lateral; antes z-[1000] quedaba
+        // debajo. En celular ocupa toda la pantalla. (Igual que el Editor StockArt y Terminaciones.)
+        <div className="fixed inset-0 z-[6000] flex items-center justify-center bg-slate-900/70 sm:p-4">
+            <div className="bg-white w-full h-full sm:h-[92vh] sm:max-w-5xl sm:rounded-3xl shadow-2xl flex flex-col overflow-hidden sm:border sm:border-slate-200">
 
-                <div className="bg-gradient-to-r from-slate-800 to-slate-700 px-6 py-4 flex items-center justify-between shrink-0">
+                {/* HEADER (05/10): como el de los otros modales de EcoUV: fondo blanco y el ícono de Lucide en
+                    brand-cyan, sin cuadrado de fondo; antes un degradé gris oscuro con el ícono en un cuadrado violeta */}
+                <div className="bg-white border-b border-slate-100 px-8 py-5 flex items-center justify-between shrink-0">
                     <div className="flex items-center gap-3">
-                        <div className="w-9 h-9 bg-purple-400/20 rounded-xl flex items-center justify-center">
-                            <Box className="text-purple-300" size={18} />
-                        </div>
+                        <Box className="shrink-0 text-brand-cyan" size={28} aria-hidden="true" />
                         <div>
-                            <h2 className="text-lg font-black text-white">PRODUCTOS TERMINADOS</h2>
-                            <p className="text-slate-400 text-[11px]">Alta y edición · el código se asigna solo (= ID interno)</p>
+                            <h2 className="text-xl font-black text-slate-800">PRODUCTOS TERMINADOS</h2>
+                            <p className="text-slate-400 text-xs">Alta y edición · el código se asigna solo (= ID interno)</p>
                         </div>
                     </div>
-                    <button onClick={onClose} className="p-2 hover:bg-white/10 rounded-xl"><X className="text-white" size={18} /></button>
+                    <button onClick={onClose} className="p-2 rounded-xl text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition-colors" title="Cerrar" aria-label="Cerrar">
+                        <X size={20} />
+                    </button>
                 </div>
 
                 <div className="flex-1 grid grid-cols-1 md:grid-cols-[250px_1fr] overflow-hidden">
@@ -234,8 +245,8 @@ export default function NuevoProductoTerminadoModal({ isOpen, onClose, onCreated
                         <div className="p-3 border-b border-slate-100 flex gap-2">
                             <button onClick={nuevo}
                                 className={`flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-xl text-xs font-bold transition-all ${!selCod
-                                    ? 'bg-purple-600 text-white'
-                                    : 'bg-purple-50 text-purple-700 hover:bg-purple-100 border border-purple-200'}`}>
+                                    ? 'bg-brand-cyan text-white'
+                                    : 'bg-brand-cyan/5 text-brand-cyan hover:bg-brand-cyan/10 border border-brand-cyan/30'}`}>
                                 <Plus size={14} /> Nuevo producto
                             </button>
                             <button onClick={cargarLista} className="px-2.5 bg-slate-100 hover:bg-slate-200 rounded-xl text-slate-500">
@@ -246,7 +257,7 @@ export default function NuevoProductoTerminadoModal({ isOpen, onClose, onCreated
                             {lista.map(p => (
                                 <div key={p.CodArticulo}
                                     className={`group flex items-center gap-1.5 rounded-xl border transition-all ${selCod === p.CodArticulo
-                                        ? 'bg-purple-50 border-purple-300'
+                                        ? 'bg-brand-cyan/5 border-brand-cyan/40'
                                         : 'border-transparent hover:bg-slate-50'} ${!p.Mostrar ? 'opacity-50' : ''}`}>
                                     <button onClick={() => seleccionar(p)} className="flex-1 text-left px-2.5 py-2 min-w-0">
                                         <p className="text-xs font-bold text-slate-800 truncate">{p.Descripcion}</p>
@@ -290,9 +301,9 @@ export default function NuevoProductoTerminadoModal({ isOpen, onClose, onCreated
                             <div className="grid grid-cols-1 md:grid-cols-[2fr_1fr] gap-3 mt-3">
                                 <div>
                                     <label className="text-[10px] font-black text-slate-400 uppercase block mb-1">Variante (dónde lo ve el cliente)</label>
-                                    <select value={f.codStock} onChange={e => setF('codStock', e.target.value)} className={inputCls}>
+                                    <Selector value={f.codStock} onChange={e => setF('codStock', e.target.value)} aria-label="Variante" claseBoton={claseSel(selCls)} anchoLista={280}>
                                         {variantesPT.map(v => <option key={v.CodStock} value={v.CodStock}>{v.Articulo}</option>)}
-                                    </select>
+                                    </Selector>
                                 </div>
                                 <label className="flex items-end gap-2 pb-2 cursor-pointer">
                                     <input type="checkbox" checked={f.visible} onChange={e => setF('visible', e.target.checked)} className="w-4 h-4 accent-emerald-500" />
@@ -305,20 +316,20 @@ export default function NuevoProductoTerminadoModal({ isOpen, onClose, onCreated
                             <div className="grid grid-cols-1 md:grid-cols-[2fr_1fr] gap-3">
                                 <div>
                                     <label className="text-[10px] font-black text-slate-400 uppercase block mb-1">Material de impresión</label>
-                                    <select value={f.material} onChange={e => setF('material', e.target.value)} className={inputCls}>
+                                    <Selector value={f.material} onChange={e => setF('material', e.target.value)} aria-label="Material de impresión" claseBoton={claseSel(selCls)} anchoLista={320}>
                                         <option value="">— Sin definir —</option>
                                         {materiales.map(m => <option key={m.CodArticulo} value={(m.CodArticulo || '').trim()}>{(m.Descripcion || m.Material || '').trim()}</option>)}
-                                    </select>
+                                    </Selector>
                                 </div>
                                 <div>
                                     <label className="text-[10px] font-black text-slate-400 uppercase block mb-1">Tinta</label>
                                     {/* Sin tinta fija = el cliente la elige al pedir, y si elige UV/Latex
                                         se le aplica solo el recargo % del perfil de tinta */}
-                                    <select value={f.tinta} onChange={e => setF('tinta', e.target.value)} className={inputCls}>
+                                    <Selector value={f.tinta} onChange={e => setF('tinta', e.target.value)} aria-label="Tinta" claseBoton={claseSel(selCls)} anchoLista={340}>
                                         <option value="">— El cliente la elige (aplica recargo % si corresponde) —</option>
                                         <option value="Ecosolvente">Ecosolvente</option>
                                         <option value="UV">UV</option>
-                                    </select>
+                                    </Selector>
                                 </div>
                             </div>
                             <div className="grid grid-cols-3 gap-3 mt-3">
@@ -350,22 +361,23 @@ export default function NuevoProductoTerminadoModal({ isOpen, onClose, onCreated
                                     const ubis = (t.Ubicaciones || '').split(',').map(x => x.trim()).filter(Boolean);
                                     return (
                                         <div key={t.TerminacionID} className={`inline-flex items-center rounded-full border transition-all overflow-hidden ${active
-                                            ? 'bg-purple-500 border-purple-500 text-white'
-                                            : 'bg-white border-slate-200 text-slate-500 hover:border-purple-300'}`}>
+                                            ? 'bg-brand-cyan border-brand-cyan text-white'
+                                            : 'bg-white border-slate-200 text-slate-500 hover:border-brand-cyan/40'}`}>
                                             <button type="button" onClick={() => toggleInc(t.TerminacionID)} className="px-3 py-1.5 text-xs font-bold">
                                                 {active ? '✓ ' : '+ '}{(t.Nombre || '').trim()}
                                             </button>
                                             {active && ubis.length > 0 && (
-                                                <select value={v.ubicacion} onChange={e => setIncluidas(p => ({ ...p, [t.TerminacionID]: { ...p[t.TerminacionID], ubicacion: e.target.value } }))}
-                                                    className="text-[10px] font-bold text-purple-700 bg-white rounded-full px-1.5 py-1 mr-1 outline-none max-w-[105px]">
+                                                <Selector value={v.ubicacion} onChange={e => setIncluidas(p => ({ ...p, [t.TerminacionID]: { ...p[t.TerminacionID], ubicacion: e.target.value } }))} aria-label="Ubicación"
+                                                    claseBoton={claseSel('w-[105px] text-[10px] font-bold text-brand-cyan bg-white rounded-full px-2 py-1 mr-1')} anchoLista={180} sinFlecha
+                                                    renderValor={o => <span className="flex min-w-0 items-center gap-0.5"><span className="truncate">{o?.contenido}</span><ChevronDown size={11} className="shrink-0" aria-hidden="true" /></span>}>
                                                     <option value="">Ubicación...</option>
                                                     {UBICACIONES.filter(u => ubis.includes(u.v)).map(u => <option key={u.v} value={u.v}>{u.l}</option>)}
-                                                </select>
+                                                </Selector>
                                             )}
                                             {active && (
                                                 <input type="number" min="0.5" step="0.5" value={v.cantidad}
                                                     onChange={e => setIncluidas(p => ({ ...p, [t.TerminacionID]: { ...p[t.TerminacionID], cantidad: e.target.value } }))}
-                                                    className="w-12 px-1 py-1 mr-1 text-xs font-black text-purple-700 bg-white rounded-full outline-none text-center" />
+                                                    className="w-12 px-1 py-1 mr-1 text-xs font-black text-brand-cyan bg-white rounded-full outline-none text-center" />
                                             )}
                                         </div>
                                     );
@@ -377,22 +389,22 @@ export default function NuevoProductoTerminadoModal({ isOpen, onClose, onCreated
                             <div className="grid grid-cols-[1fr_1fr_2fr] gap-3 items-end">
                                 <div>
                                     <label className="text-[10px] font-black text-slate-400 uppercase block mb-1">Moneda</label>
-                                    <select value={f.moneda} onChange={e => setF('moneda', e.target.value)} className={inputCls}>
+                                    <Selector value={f.moneda} onChange={e => setF('moneda', e.target.value)} aria-label="Moneda" claseBoton={claseSel(selCls)} anchoLista={160}>
                                         <option value="UYU">$ UYU</option>
                                         <option value="USD">US$ USD</option>
-                                    </select>
+                                    </Selector>
                                 </div>
                                 <div>
                                     <label className="text-[10px] font-black text-slate-400 uppercase block mb-1">Precio</label>
-                                    <input type="number" step="0.01" min="0" value={f.precio} onChange={e => setF('precio', e.target.value)} className={inputCls + ' text-right font-black'} placeholder="450.00" />
+                                    <input type="number" step="0.1" min="0" value={f.precio} onChange={e => setF('precio', e.target.value)} className={inputCls + ' text-right font-black'} placeholder="450.00" />
                                 </div>
                                 <p className="text-[10px] text-slate-400 pb-2">Incluye impresión, borde y las terminaciones del paso 3. Se guarda en PreciosBase.</p>
                             </div>
                         </Paso>
 
-                        <div className="bg-purple-50 border border-purple-200 rounded-2xl px-4 py-3">
-                            <p className="text-[10px] font-black text-purple-500 uppercase tracking-wider mb-1">Así lo ve el cliente</p>
-                            <p className="text-xs text-purple-800 font-medium">
+                        <div className="bg-brand-cyan/5 border border-brand-cyan/20 rounded-2xl px-4 py-3">
+                            <p className="text-[10px] font-black text-brand-cyan uppercase tracking-wider mb-1">Así lo ve el cliente</p>
+                            <p className="text-xs text-slate-700 font-medium">
                                 {f.nombre || 'Producto'} — {f.moneda === 'USD' ? 'US$' : '$'} {f.precio || '0'}
                                 {f.ancho && f.alto ? ` · ${f.ancho} × ${f.alto} m` : ''}{f.borde ? ` (+${f.borde} cm de borde)` : ''}
                                 {matSel ? ` · Se imprime en ${(matSel.Descripcion || '').trim()}` : ''}{f.tinta ? ` · Tinta ${f.tinta.toLowerCase()}` : ''}
@@ -409,7 +421,7 @@ export default function NuevoProductoTerminadoModal({ isOpen, onClose, onCreated
                     <div className="flex gap-2">
                         <button onClick={onClose} className="px-4 py-2 bg-slate-200 hover:bg-slate-300 rounded-xl text-xs font-bold text-slate-600">Cerrar</button>
                         <button onClick={guardar} disabled={saving}
-                            className="flex items-center gap-2 px-5 py-2 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold">
+                            className="flex items-center gap-2 px-5 py-2 bg-brand-cyan hover:bg-brand-cyan/90 disabled:opacity-50 text-white rounded-xl text-xs font-bold">
                             {saving && <Loader2 size={14} className="animate-spin" />} {selCod ? 'Guardar cambios' : 'Crear producto'}
                         </button>
                     </div>

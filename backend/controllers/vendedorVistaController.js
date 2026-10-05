@@ -175,48 +175,34 @@ exports.getClientesDeVendedor = async (req, res) => {
 // Reglas de qué documento es una venta, compartidas con los reportes de Contabilidad.
 const { reglasVentas } = require('./contabilidadReportesController');
 
-exports.getVentasMensuales = async (req, res) => {
-  try {
-    const hoy = new Date();
-    const anio = parseInt(req.query.anio, 10) || hoy.getFullYear();
-    const mes = parseInt(req.query.mes, 10) || (hoy.getMonth() + 1);
-    if (mes < 1 || mes > 12) {
-      return res.status(400).json({ success: false, error: 'Mes inválido' });
-    }
-    const dgiPedido = String(req.query.dgi || '').toUpperCase();
-    const dgi = ['DGI', 'SIN_DGI'].includes(dgiPedido) ? dgiPedido : 'TODO';
-    if (!reglasVentas) {
-      throw new Error('Falta la versión nueva de contabilidadReportesController.js (reglasVentas): van juntos.');
-    }
-    const { condEsVenta, condVentaONota, signoExpr, condDgi, primerToken, CLIENTES_GENERICOS } = reglasVentas;
+// Primer mes de Ventas por vendedor: antes de junio 2026 no hay datos, o no son confiables (Santiago,
+// 02/10/2026). La pantalla no deja ir más atrás, y los ganadores se cuentan desde acá.
+const PRIMER_MES_VENTAS = { anio: 2026, mes: 6 };
 
-    // Día calendario como texto, igual que los reportes de Contabilidad: no depende del reloj
-    // ni de la zona horaria del proceso.
-    const mm = String(mes).padStart(2, '0');
-    const ultimoDia = String(new Date(anio, mes, 0).getDate()).padStart(2, '0');
-    const genericos = CLIENTES_GENERICOS.join(', ');
-    const sinFicha = (alias) => `(${alias}.CliIdCliente IS NULL OR ${alias}.CliIdCliente IN (${genericos}))`;
-    const filtroDgi = condDgi('doc', dgi);
+/**
+ * Plata por vendedor y moneda sobre documentos, entre dos fechas ('AAAA-MM-DDThh:mm:ss', día
+ * calendario como texto). La usan ventas-mensuales (un mes) y ganadores (varios meses). Con
+ * `porMes` agrega la columna Mes = AAAAMM del mes de emisión.
+ * Devuelve filas con Tipo (VENDEDOR / SIN_VENDEDOR / MOSTRADOR), Cedula, MonIdMoneda, Vendido,
+ * SinCobrar y Notas (y Mes).
+ */
+const consultarPlataPorVendedor = async (pool, { desde, hasta, dgi = 'TODO', porMes = false }) => {
+  if (!reglasVentas) {
+    throw new Error('Falta la versión nueva de contabilidadReportesController.js (reglasVentas): van juntos.');
+  }
+  const { condEsVenta, condVentaONota, signoExpr, condDgi, primerToken, CLIENTES_GENERICOS } = reglasVentas;
+  const genericos = CLIENTES_GENERICOS.join(', ');
+  const sinFicha = (alias) => `(${alias}.CliIdCliente IS NULL OR ${alias}.CliIdCliente IN (${genericos}))`;
+  const filtroDgi = condDgi('doc', dgi);
+  // Con `porMes`, el mes de emisión pasa por toda la consulta
+  const conMes = (expr, alFrente = false) => (!porMes ? '' : alFrente ? `${expr} AS Mes, ` : ` ${expr} AS Mes,`);
 
-    const pool = await getPool();
-
-    // 1. Vendedores del área (aunque no tengan ventas en el mes: van con ceros)
-    const vendRes = await pool.request().query(`
-      SELECT CAST(Cedula AS NVARCHAR(50))   AS Cedula,
-             LTRIM(RTRIM(Nombre))           AS Nombre,
-             LTRIM(RTRIM(ISNULL(Puesto,''))) AS Puesto
-      FROM dbo.Trabajadores WITH(NOLOCK)
-      WHERE LTRIM(RTRIM(UPPER(ISNULL([Área], '')))) = 'VENTAS'
-      ORDER BY Nombre
-    `);
-
-    // 2. Plata del mes por vendedor y moneda
-    const totRes = await pool.request()
-      .input('desde', sql.VarChar(30), `${anio}-${mm}-01T00:00:00`)
-      .input('hasta', sql.VarChar(30), `${anio}-${mm}-${ultimoDia}T23:59:59.997`)
-      .query(`
+  const resultado = await pool.request()
+    .input('desde', sql.VarChar(30), desde)
+    .input('hasta', sql.VarChar(30), hasta)
+    .query(`
         ;WITH Docs AS (
-          SELECT doc.DocIdDocumento, doc.CliIdCliente, doc.DocCliDocumento,
+          SELECT doc.DocIdDocumento, doc.CliIdCliente, doc.DocCliDocumento,${conMes('YEAR(doc.DocFechaEmision) * 100 + MONTH(doc.DocFechaEmision)')}
                  ISNULL(doc.MonIdMoneda, 1) AS MonIdMoneda,
                  CASE WHEN ${condEsVenta('doc')} THEN 0 ELSE 1 END AS EsNota,
                  doc.DocTotal * ${signoExpr('doc')} AS Vendido,
@@ -265,18 +251,18 @@ exports.getVentasMensuales = async (req, res) => {
           GROUP BY d.DocIdDocumento
         ),
         Resueltos AS (
-          SELECT d.MonIdMoneda, d.EsNota, d.Vendido, d.SinCobrar,
+          SELECT ${conMes('d.Mes', true)}d.MonIdMoneda, d.EsNota, d.Vendido, d.SinCobrar,
                  CASE WHEN ${sinFicha('d')} THEN COALESCE(du.CliOrden, pr.CliRuc) ELSE d.CliIdCliente END AS CliResuelto
           FROM Docs d
           LEFT JOIN Duenos du ON du.DocIdDocumento = d.DocIdDocumento
           LEFT JOIN PorRuc pr ON pr.DocIdDocumento = d.DocIdDocumento
         )
-        SELECT x.Tipo, x.Cedula, x.MonIdMoneda,
+        SELECT ${conMes('x.Mes', true)}x.Tipo, x.Cedula, x.MonIdMoneda,
                SUM(x.Vendido)   AS Vendido,
                SUM(x.SinCobrar) AS SinCobrar,
                SUM(CASE WHEN x.EsNota = 1 THEN x.Vendido ELSE 0 END) AS Notas
         FROM (
-          SELECT r.MonIdMoneda, r.EsNota, r.Vendido, r.SinCobrar,
+          SELECT ${conMes('r.Mes', true)}r.MonIdMoneda, r.EsNota, r.Vendido, r.SinCobrar,
                  CASE WHEN r.CliResuelto IS NULL THEN 'MOSTRADOR'
                       WHEN t.Cedula IS NULL      THEN 'SIN_VENDEDOR'
                       ELSE 'VENDEDOR' END AS Tipo,
@@ -287,8 +273,44 @@ exports.getVentasMensuales = async (req, res) => {
             ON CAST(t.Cedula AS NVARCHAR(50)) = LTRIM(RTRIM(c.VendedorID))
            AND LTRIM(RTRIM(UPPER(ISNULL(t.[Área], '')))) = 'VENTAS'
         ) x
-        GROUP BY x.Tipo, x.Cedula, x.MonIdMoneda
+        GROUP BY ${porMes ? 'x.Mes, ' : ''}x.Tipo, x.Cedula, x.MonIdMoneda
       `);
+  return resultado.recordset;
+};
+
+exports.getVentasMensuales = async (req, res) => {
+  try {
+    const hoy = new Date();
+    const anio = parseInt(req.query.anio, 10) || hoy.getFullYear();
+    const mes = parseInt(req.query.mes, 10) || (hoy.getMonth() + 1);
+    if (mes < 1 || mes > 12) {
+      return res.status(400).json({ success: false, error: 'Mes inválido' });
+    }
+    const dgiPedido = String(req.query.dgi || '').toUpperCase();
+    const dgi = ['DGI', 'SIN_DGI'].includes(dgiPedido) ? dgiPedido : 'TODO';
+    // Día calendario como texto, igual que los reportes de Contabilidad: no depende del reloj
+    // ni de la zona horaria del proceso.
+    const mm = String(mes).padStart(2, '0');
+    const ultimoDia = String(new Date(anio, mes, 0).getDate()).padStart(2, '0');
+
+    const pool = await getPool();
+
+    // 1. Vendedores del área (aunque no tengan ventas en el mes: van con ceros)
+    const vendRes = await pool.request().query(`
+      SELECT CAST(Cedula AS NVARCHAR(50))   AS Cedula,
+             LTRIM(RTRIM(Nombre))           AS Nombre,
+             LTRIM(RTRIM(ISNULL(Puesto,''))) AS Puesto
+      FROM dbo.Trabajadores WITH(NOLOCK)
+      WHERE LTRIM(RTRIM(UPPER(ISNULL([Área], '')))) = 'VENTAS'
+      ORDER BY Nombre
+    `);
+
+    // 2. Plata del mes por vendedor y moneda
+    const filasPlata = await consultarPlataPorVendedor(pool, {
+      desde: `${anio}-${mm}-01T00:00:00`,
+      hasta: `${anio}-${mm}-${ultimoDia}T23:59:59.997`,
+      dgi,
+    });
 
     // 3. ¿Cuál de los vendedores es el usuario logueado? Primero por la cédula
     //    cargada en su ficha (Usuarios.Cedula); si no la tiene, por nombre — que es
@@ -328,7 +350,7 @@ exports.getVentasMensuales = async (req, res) => {
       }
       return monedas;
     };
-    const filasDe = (tipo, cedula = null) => totRes.recordset.filter(f =>
+    const filasDe = (tipo, cedula = null) => filasPlata.filter(f =>
       f.Tipo === tipo && (cedula === null || String(f.Cedula || '').trim() === cedula));
     const tienePlata = (monedas) => ['UYU', 'USD'].some(k =>
       Math.abs(monedas[k].vendido) >= 0.005 || Math.abs(monedas[k].sinCobrar) >= 0.005);
@@ -355,7 +377,7 @@ exports.getVentasMensuales = async (req, res) => {
 
     // Notas del mes ya restadas del vendido (con su signo): la pantalla lo dice al pie.
     const notas = { UYU: 0, USD: 0 };
-    totRes.recordset.forEach(f => { notas[monedaKey(f.MonIdMoneda)] += Number(f.Notas) || 0; });
+    filasPlata.forEach(f => { notas[monedaKey(f.MonIdMoneda)] += Number(f.Notas) || 0; });
     notas.UYU = r2(notas.UYU);
     notas.USD = r2(notas.USD);
 
@@ -368,6 +390,94 @@ exports.getVentasMensuales = async (req, res) => {
     });
   } catch (err) {
     logger.error('[VENDEDOR-360] getVentasMensuales:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+/**
+ * GET /api/vendedor-360/ganadores
+ *
+ * El ganador de cada mes, de junio 2026 al mes en curso: el vendedor del área con más total
+ * unificado en US$ (US$ vendido + $ vendido ÷ cotización), con las reglas de ventas-mensuales y
+ * sin filtro de DGI. La cotización de cada mes es la última cargada hasta su último día: en un mes
+ * cerrado, la última de ese mes; en el mes en curso, la del día. Es la misma que usa la pantalla,
+ * así que el ganador es la primera fila de su tabla. Trae también el segundo, para la ventaja.
+ * La racha (meses seguidos) la cuenta la pantalla con esta lista.
+ */
+exports.getGanadores = async (req, res) => {
+  try {
+    const hoy = new Date();
+    const meses = [];
+    for (let a = PRIMER_MES_VENTAS.anio, m = PRIMER_MES_VENTAS.mes;
+      a < hoy.getFullYear() || (a === hoy.getFullYear() && m <= hoy.getMonth() + 1);) {
+      meses.push({ anio: a, mes: m });
+      if (m === 12) { a += 1; m = 1; } else { m += 1; }
+    }
+    if (meses.length === 0) return res.json({ success: true, meses: [] });
+    const finDe = ({ anio, mes }) =>
+      `${anio}-${String(mes).padStart(2, '0')}-${String(new Date(anio, mes, 0).getDate()).padStart(2, '0')}`;
+    const primero = meses[0];
+    const ultimo = meses[meses.length - 1];
+
+    const pool = await getPool();
+
+    // 1. Vendedores del área, para el nombre
+    const vendRes = await pool.request().query(`
+      SELECT CAST(Cedula AS NVARCHAR(50)) AS Cedula, LTRIM(RTRIM(Nombre)) AS Nombre
+      FROM dbo.Trabajadores WITH(NOLOCK)
+      WHERE LTRIM(RTRIM(UPPER(ISNULL([Área], '')))) = 'VENTAS'
+    `);
+    const nombres = new Map(vendRes.recordset.map(v => [String(v.Cedula || '').trim(), v.Nombre]));
+
+    // 2. Plata por mes, vendedor y moneda
+    const filas = await consultarPlataPorVendedor(pool, {
+      desde: `${primero.anio}-${String(primero.mes).padStart(2, '0')}-01T00:00:00`,
+      hasta: `${finDe(ultimo)}T23:59:59.997`,
+      porMes: true,
+    });
+
+    // 3. La cotización de cada mes: la última cargada hasta su último día. Los valores de la lista
+    //    salen de los meses armados acá, no de nada que mande el usuario.
+    const lista = meses.map(x => `(${x.anio * 100 + x.mes}, '${finDe(x)}')`).join(', ');
+    const cotRes = await pool.request().query(`
+      SELECT v.Mes, c.CotDolar, CONVERT(VARCHAR(10), c.CotFecha, 23) AS CotFecha
+      FROM (VALUES ${lista}) v(Mes, Hasta)
+      OUTER APPLY (
+        SELECT TOP 1 CotDolar, CotFecha
+        FROM dbo.Cotizaciones WITH(NOLOCK)
+        WHERE CotDolar > 0 AND CotFecha < DATEADD(DAY, 1, CAST(v.Hasta AS date))
+        ORDER BY CotFecha DESC
+      ) c
+    `);
+    const cotizacionDe = new Map(cotRes.recordset.map(c => [Number(c.Mes),
+      Number(c.CotDolar) > 0 ? { valor: Number(c.CotDolar), fecha: c.CotFecha } : null]));
+
+    // 4. Por mes, el total unificado de cada vendedor, de mayor a menor. Cada moneda se redondea al
+    //    centavo antes de unificar, como en la pantalla.
+    const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+    const resultado = meses.map(({ anio, mes }) => {
+      const clave = anio * 100 + mes;
+      const cotizacion = cotizacionDe.get(clave) || null;
+      const enCurso = anio === hoy.getFullYear() && mes === hoy.getMonth() + 1;
+      const base = { anio, mes, enCurso, cotizacion, ganador: null, segundo: null };
+      if (!cotizacion) return base;
+      const porVendedor = new Map();   // cédula → { UYU, USD }
+      filas.filter(f => Number(f.Mes) === clave && f.Tipo === 'VENDEDOR').forEach(f => {
+        const ced = String(f.Cedula || '').trim();
+        const plata = porVendedor.get(ced) || { UYU: 0, USD: 0 };
+        plata[parseInt(f.MonIdMoneda, 10) === 2 ? 'USD' : 'UYU'] += Number(f.Vendido) || 0;
+        porVendedor.set(ced, plata);
+      });
+      const ranking = [...porVendedor.entries()]
+        .map(([cedula, p]) => ({ cedula, nombre: nombres.get(cedula) || cedula, total: r2(r2(p.USD) + r2(p.UYU) / cotizacion.valor) }))
+        .filter(x => x.total > 0)
+        .sort((x, y) => y.total - x.total);
+      return { ...base, ganador: ranking[0] || null, segundo: ranking[1] || null };
+    });
+
+    res.json({ success: true, meses: resultado });
+  } catch (err) {
+    logger.error('[VENDEDOR-360] getGanadores:', err.message);
     res.status(500).json({ success: false, error: err.message });
   }
 };

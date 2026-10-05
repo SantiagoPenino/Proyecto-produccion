@@ -212,6 +212,18 @@ const validarLibroParaDeposito = async (db, ordenes) => {
  *  - Cantidad: opcional; obligatoria y acotada a lo esperado donde se cuentan prendas o unidades.
  * Devuelve { lineasFinales, ordenesSinCompletar } — las madres que NO pasan a "En transito".
  */
+// Aprobada por tandas en Control sin llegar al total: un envío suyo no la completa (mismo criterio que getEnvioInfo).
+const sigueEnProduccionPorTandas = async (transaction, madre, madreId, areasUnidades) => {
+    if (madre.CantidadAprobadaBultos == null) return false;
+    if (String(madre.EstadoenArea || '').trim().toUpperCase() === 'PRONTO') return false;
+    let magnitud = parseFloat(madre.Magnitud) || 0;
+    if (areasUnidades.includes(String(madre.AreaID || '').trim().toUpperCase())) {
+        const { getMagnitudEfectiva } = require('./embBoardController');
+        magnitud = (await getMagnitudEfectiva(transaction, madreId)) || magnitud;
+    }
+    return magnitud > 0 && parseFloat(madre.CantidadAprobadaBultos) < magnitud;
+};
+
 const armarLineasRemito = async (transaction, { dispatchedOrders, bultosPorOrden, lineasOrden, permiteParcial, areaOrigen, areaDestino }) => {
     const lineasFinales = [];
     const ordenesSinCompletar = new Set();
@@ -220,7 +232,7 @@ const armarLineasRemito = async (transaction, { dispatchedOrders, bultosPorOrden
     const err400 = (msg) => { const e = new Error(msg); e.statusCode = 400; return e; };
 
     const infoRes = await new sql.Request(transaction).query(`
-        SELECT o.OrdenID, o.CodigoOrden, o.AreaID, o.UM, o.NoDocERP, o.EstadoEnvio, o.Magnitud, o.CantidadEsperada
+        SELECT o.OrdenID, o.CodigoOrden, o.AreaID, o.UM, o.NoDocERP, o.EstadoEnvio, o.Magnitud, o.CantidadEsperada, o.CantidadAprobadaBultos, o.EstadoenArea
         FROM Ordenes o WHERE o.OrdenID IN (${[...dispatchedOrders].map(Number).filter(n => !isNaN(n)).join(',')})`);
     if (!infoRes.recordset.length) return { lineasFinales, ordenesSinCompletar };
     const areasUnidades = await libroEntregas.areasQueCuentanUnidades(transaction);
@@ -241,7 +253,7 @@ const armarLineasRemito = async (transaction, { dispatchedOrders, bultosPorOrden
         let madre = g.madre;
         if (!madre) {
             const m = await new sql.Request(transaction).input('id', sql.Int, madreId)
-                .query(`SELECT OrdenID, CodigoOrden, AreaID, UM, NoDocERP, EstadoEnvio, Magnitud, CantidadEsperada FROM Ordenes WHERE OrdenID = @id`);
+                .query(`SELECT OrdenID, CodigoOrden, AreaID, UM, NoDocERP, EstadoEnvio, Magnitud, CantidadEsperada, CantidadAprobadaBultos, EstadoenArea FROM Ordenes WHERE OrdenID = @id`);
             madre = m.recordset[0];
             if (!madre) continue;
         }
@@ -258,6 +270,7 @@ const armarLineasRemito = async (transaction, { dispatchedOrders, bultosPorOrden
         const detalleAbiertas = abiertasRestantes.map(r => `${r.CodigoFalla || 'reposición sin orden'} (${libroEntregas.describirReposicion(r)})`).join(', ');
 
         let completa;
+        let tandaAbierta = false;
         if (!permiteParcial) {
             completa = sinAbiertas;
         } else if (declarada && declarada.completaOrden != null) {
@@ -270,6 +283,10 @@ const armarLineasRemito = async (transaction, { dispatchedOrders, bultosPorOrden
                 .input('OID', sql.Int, madreId).input('AreaOrig', sql.VarChar, areaOrigen || '')
                 .query(`SELECT COUNT(*) AS n FROM Logistica_Bultos WHERE OrdenID = @OID AND Tipocontenido = 'PROD_TERMINADO' AND Estado = 'EN_STOCK' AND UbicacionActual = @AreaOrig`);
             completa = (rem.recordset[0]?.n || 0) === 0 && sinAbiertas;
+            if (completa && await sigueEnProduccionPorTandas(transaction, madre, madreId, areasUnidades)) {
+                completa = false;
+                tandaAbierta = true;
+            }
         }
 
         // Cantidad
@@ -286,6 +303,11 @@ const armarLineasRemito = async (transaction, { dispatchedOrders, bultosPorOrden
             const esperada = libroEntregas.cantidadEsperada(madre);
             const envios = await libroEntregas.getEnviosOrden(madreId, transaction);
             const enviada = envios.reduce((s, e) => s + (e.Cantidad != null ? Number(e.Cantidad) : 0), 0);
+            // Pantallas que no piden la cantidad (carrito, Entrega de pedidos): la misma precarga que Crear Remito.
+            if (cantidad == null && tandaAbierta) {
+                const sugerida = (parseFloat(madre.CantidadAprobadaBultos) || 0) - enviada;
+                if (sugerida > 0) cantidad = sugerida;
+            }
             if (cantidad == null && !completa && permiteParcial) {
                 throw err400(`${codigo}: en ${String(madre.AreaID).trim()} la cantidad del envío parcial es obligatoria (se cuentan ${String(madre.UM || 'unidades').trim()}).`);
             }

@@ -1280,6 +1280,9 @@ export default function EmbBandeja({ area = 'EMB', fase = 'trabajo', onSelectOrd
                             const aprobadoPrevio = parseFloat(selected.CantidadAprobadaBultos) || 0;
                             const aprobable = enReposicion && total > 0 && cantRepos > 0 ? Math.max(0, Math.min(controlado, total - cantRepos)) : controlado;
                             const nuevoParaTanda = aprobable - aprobadoPrevio;
+                            // Mismo criterio que aprobarControl (yaTrabajadoTodo): define si la orden vuelve a la Bandeja.
+                            const trabajadoCtl = selected.CantidadTerminada != null ? (parseFloat(selected.CantidadTerminada) || 0) : null;
+                            const tandaVuelveABandeja = !(total > 0 && ((trabajadoCtl != null && trabajadoCtl >= total) || controlado >= total));
                             return (
                                 <div className="bg-white border border-zinc-200 rounded-2xl p-4 mb-5">
                                     <h3 className="text-xs font-black text-emerald-600 uppercase tracking-wide mb-3">
@@ -1352,7 +1355,13 @@ export default function EmbBandeja({ area = 'EMB', fase = 'trabajo', onSelectOrd
                                                     explica "cuánto aprobaste / cuánto falta"; acá no se repite. */}
                                                 {aprobadoPrevio === 0 && !enReposicion && (
                                                     <p className="text-xs font-bold text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 flex-1">
-                                                        Contá todas las prendas para aprobar ({controlado}/{total})
+                                                        {permiteParcial && nuevoParaTanda > 0
+                                                            ? (tandaVuelveABandeja
+                                                                ? `Llevás ${controlado} de ${total} controladas. Aprobá esta tanda para mandar estas ${nuevoParaTanda} y que la orden vuelva a la Bandeja por las ${total - controlado} que faltan.`
+                                                                : `Llevás ${controlado} de ${total} controladas. Aprobá esta tanda para mandar estas ${nuevoParaTanda}; la orden sigue acá para controlar las ${total - controlado} que faltan.`)
+                                                            : permiteParcial
+                                                                ? `Contá las prendas que vas controlando (${controlado}/${total}): podés aprobarlas de a tandas o todas juntas.`
+                                                                : `Contá todas las prendas para aprobar (${controlado}/${total})`}
                                                     </p>
                                                 )}
                                                 {/* Spec 39: aprobar por tandas — solo en áreas con envío parcial habilitado,
@@ -1363,10 +1372,10 @@ export default function EmbBandeja({ area = 'EMB', fase = 'trabajo', onSelectOrd
                                                         disabled={aprobando === selected.OrdenID}
                                                         title={enReposicion
                                                             ? `Genera bultos para las ${nuevoParaTanda} prenda(s) sanas; las ${cantRepos} en reposición se aprueban cuando lleguen`
-                                                            : `Genera bultos para las ${nuevoParaTanda} prenda(s) nuevas controladas y la orden sigue en producción por el resto`}
-                                                        className="bg-white hover:bg-amber-50 text-amber-700 border border-amber-300 px-3 py-2 rounded-lg text-xs font-bold shadow-sm transition-all flex items-center gap-1.5 disabled:opacity-50"
+                                                            : `Genera bultos para las ${nuevoParaTanda} prenda(s) nuevas controladas; ${tandaVuelveABandeja ? 'la orden vuelve a la Bandeja por el resto' : 'la orden sigue en Control por el resto'}`}
+                                                        className="bg-amber-600 hover:bg-amber-700 text-white px-4 py-2 rounded-lg text-sm font-bold shadow-sm shadow-amber-200 transition-all flex items-center gap-2 shrink-0 whitespace-nowrap disabled:opacity-50"
                                                     >
-                                                        <CheckCircle2 size={13} /> Aprobar esta tanda ({nuevoParaTanda})
+                                                        <CheckCircle2 size={14} /> Aprobar esta tanda ({nuevoParaTanda})
                                                     </button>
                                                 )}
                                                 {enReposicion && permiteParcial && nuevoParaTanda <= 0 && (

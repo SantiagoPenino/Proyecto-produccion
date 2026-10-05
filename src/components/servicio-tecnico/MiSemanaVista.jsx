@@ -11,7 +11,8 @@ import { chip, btn, btnPri, ModalMotivo } from './ui';
 
 // "Mi semana" (etapa 3): lo que tiene que hacer el técnico logueado, con botones grandes para tablet
 // y celular — hoy, lo atrasado, el resto de la semana, sus solicitudes, sus seguimientos y lo que
-// está sin asignar.
+// está sin asignar. Desde el 02/10 la puede ver cualquier rol que la tenga en el menú: Empezar,
+// Hecho y Tomar quedan solo para técnicos y Admin, como en el backend.
 
 const diaDe = (iso) => {
     const [y, m, d] = iso.split('-').map(Number);
@@ -31,6 +32,7 @@ const Seccion = ({ titulo, icono: Icono, cantidad, alerta = false, children }) =
 );
 
 const MiSemanaVista = ({ meta, onAbrirTrabajo, onAbrirSolicitud, version = 0 }) => {
+    const tec = !!meta?.esTecnico;
     const [d, setD] = useState(null);
     const [ocupado, setOcupado] = useState(null);
     const [seguimiento, setSeguimiento] = useState(null);
@@ -85,7 +87,7 @@ const MiSemanaVista = ({ meta, onAbrirTrabajo, onAbrirSolicitud, version = 0 }) 
                     </div>
                 )}
                 <div className="mt-3 flex gap-2">
-                    {t.Estado === 'PENDIENTE' && (
+                    {tec && t.Estado === 'PENDIENTE' && (
                         <button disabled={ocupado === t.TrabId} onClick={() => hacer(t.TrabId, () => servicioTecnicoService.empezarTrabajo(t.TrabId), 'Empezado')}
                             className={`${btnPri} flex-1 justify-center py-3 text-base`}>
                             {ocupado === t.TrabId ? <Loader2 size={18} className="animate-spin" /> : <Play size={18} />} Empezar
@@ -175,7 +177,7 @@ const MiSemanaVista = ({ meta, onAbrirTrabajo, onAbrirSolicitud, version = 0 }) 
                                         <div className="text-sm font-bold text-zinc-800 truncate">{s.Titulo}</div>
                                         {s.SeguimientoNota && <div className="text-xs text-zinc-500 truncate">{s.SeguimientoNota}</div>}
                                     </button>
-                                    <button onClick={() => setSeguimiento(s)} className={`${btn} bg-violet-600 text-white hover:bg-violet-700 shrink-0`}><CheckCircle2 size={15} /> Hecho</button>
+                                    {tec && <button onClick={() => setSeguimiento(s)} className={`${btn} bg-violet-600 text-white hover:bg-violet-700 shrink-0`}><CheckCircle2 size={15} /> Hecho</button>}
                                 </div>
                             ))}
                         </div>
@@ -192,7 +194,7 @@ const MiSemanaVista = ({ meta, onAbrirTrabajo, onAbrirSolicitud, version = 0 }) 
                     <Seccion titulo="Sin asignar" icono={Hand} cantidad={d.sinAsignar.length}>
                         <div className="flex flex-col gap-2">
                             {d.sinAsignar.map(t => (
-                                <Fila key={t.TrabId} t={t} accion={
+                                <Fila key={t.TrabId} t={t} accion={tec &&
                                     <button disabled={ocupado === t.TrabId} onClick={() => hacer(t.TrabId, () => servicioTecnicoService.editarTrabajo(t.TrabId, { tecnicoId: meta?.usuario?.id }), 'Es tuyo')}
                                         className={`${btn} bg-brand-cyan text-white hover:bg-brand-cyan/90 shrink-0`}>
                                         {ocupado === t.TrabId ? <Loader2 size={15} className="animate-spin" /> : <Hand size={15} />} Tomar

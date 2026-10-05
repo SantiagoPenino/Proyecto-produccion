@@ -17,6 +17,8 @@ import { ChevronDown, Check, Search } from 'lucide-react';
 //   filtro      → botón compacto para barras de filtros; se resalta cuando no está en la primera opción.
 //   claseBoton  → reemplaza el estilo del botón; renderValor(opcion) → lo que muestra el botón;
 //   sinFlecha   → sin la flecha (botones que son solo un ícono).
+//   altoMax     → alto máximo de la lista (320 px si no se pasa). Más alto, para que entren todas las opciones sin
+//                 scroll; igual nunca pasa el lugar que hay en la pantalla.
 
 const ALTO_MAX = 320;
 
@@ -56,6 +58,7 @@ const leerOpciones = (hijos, gid = null, salida = []) => {
 const Selector = ({
     value, onChange, children, disabled = false, name, id, title, 'aria-label': ariaLabel,
     filtro = false, resaltar = filtro, buscar, className = '', claseBoton, renderValor, anchoLista = 220, sinFlecha = false,
+    altoMax = ALTO_MAX,
 }) => {
     const items = leerOpciones(children);
     const opciones = items.filter(i => i.tipo === 'opcion');
@@ -102,9 +105,9 @@ const Selector = ({
         const left = Math.max(8, Math.min(r.left, vw - ancho - 8));
         const abajo = vh - r.bottom - 8;
         const arriba = r.top - 8;
-        const deseado = Math.min(ALTO_MAX, items.length * 38 + (conBuscador ? 60 : 12));
+        const deseado = Math.min(altoMax, items.length * 38 + (conBuscador ? 60 : 12));
         const haciaArriba = abajo < deseado && arriba > abajo;
-        const alto = Math.max(140, Math.min(ALTO_MAX, (haciaArriba ? arriba : abajo) - 4));
+        const alto = Math.max(140, Math.min(altoMax, (haciaArriba ? arriba : abajo) - 4));
         return haciaArriba ? { left, ancho, alto, bottom: vh - r.top + 4 } : { left, ancho, alto, top: r.bottom + 4 };
     };
     const calcularRef = useRef(calcularPos);
