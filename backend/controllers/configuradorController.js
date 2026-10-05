@@ -133,6 +133,18 @@ async function tieneAccesorios(pool) {
 }
 const COBROS_ACCESORIO = ['INCLUIDO', 'APARTE'];
 
+// [PASO A PASO] ¿Ya se corrió docs/migrations/configurador_costuras_paso_a_paso.sql? (MaquinasCostura +
+// etapa/máquina/piezas/tiempo/observaciones/imagen en cada costura de la ficha). Sin el script, las
+// costuras siguen guardando solo Unión + ISO, como antes.
+let _tieneCosturasPaso = false;
+async function tieneCosturasPaso(poolOrTx) {
+    if (_tieneCosturasPaso) return true;
+    const r = await new sql.Request(poolOrTx).query(`SELECT COL_LENGTH('dbo.ProductoFichaDisenoCosturas', 'MaquinaCosturaID') AS c, OBJECT_ID('dbo.MaquinasCostura', 'U') AS m, COL_LENGTH('dbo.CosturasISO', 'ImagenUrl') AS i`);
+    _tieneCosturasPaso = r.recordset[0].c != null && r.recordset[0].m != null && r.recordset[0].i != null;
+    return _tieneCosturasPaso;
+}
+const FALTA_SQL_PASOS = 'Falta correr docs/migrations/configurador_costuras_paso_a_paso.sql en esta base.';
+
 // Áreas que pueden ser producción principal de un producto: las áreas de producción de ConfigMapeoERP
 // (sin PRO, que es la orden madre, ni las que no producen nada).
 async function areasPrincipales(pool) {
@@ -267,6 +279,7 @@ exports.getProductoFicha = async (req, res) => {
         const conTizada = await tieneTizadaPro(pool);
         const conAcc = await tieneAccesorios(pool);   // [ACCESORIOS]
         const conF1 = await tieneF1(pool);
+        const conPaso = await tieneCosturasPaso(pool);   // [PASO A PASO]
         const rq = () => pool.request().input('PID', sql.Int, proId);
 
         const datos = await rq().query(`
@@ -337,7 +350,8 @@ exports.getProductoFicha = async (req, res) => {
                         WHERE ProIdProducto = @PID ORDER BY ISNULL(Orden, 999), AnotacionID`),
             rq().query(`SELECT ExtraID, Etiqueta, Valor FROM dbo.ProductoFichaDisenoExtra
                         WHERE ProIdProducto = @PID ORDER BY ISNULL(Orden, 999), ExtraID`),
-            rq().query(`SELECT ID, UnionNombre, CodigoISO FROM dbo.ProductoFichaDisenoCosturas
+            rq().query(`SELECT ID, UnionNombre, CodigoISO${conPaso ? ', Etapa, Descripcion, MaquinaCosturaID, TiempoMin, Observaciones, ImagenUrl' : ''}
+                        FROM dbo.ProductoFichaDisenoCosturas
                         WHERE ProIdProducto = @PID ORDER BY ISNULL(Orden, 999), ID`),
             conAcc ? rq().query(`SELECT ac.ID, ac.ItemProIdProducto, ac.WmsVarianteId, ac.Cantidad, ac.Obligatorio, ac.Cobro, ac.Orden, ac.WmsDepositoId,
                                         LTRIM(RTRIM(a.Descripcion)) AS ItemDescripcion, v.nombre_variante AS VarianteNombre
@@ -422,10 +436,11 @@ function validarVenta(body) {
         if (a.x == null || a.y == null || !Number.isFinite(Number(a.x)) || !Number.isFinite(Number(a.y)))
             errores.push('Cada anotación de la ficha de diseño necesita posición X e Y.');
     }
-    for (const c of (Array.isArray(body.fichaDisenoCosturas) ? body.fichaDisenoCosturas : [])) {
-        if (!c.union || !String(c.union).trim()) errores.push('Cada costura de la ficha de diseño necesita un nombre de unión.');
-        if (!c.iso || !String(c.iso).trim()) errores.push('Cada costura de la ficha de diseño necesita un código ISO.');
-    }
+    // [PASO A PASO] el código ISO ya no es obligatorio (planchado, control…); se chequea al guardar si falta el SQL
+    (Array.isArray(body.fichaDisenoCosturas) ? body.fichaDisenoCosturas : []).forEach((c, i) => {
+        if (!c.union || !String(c.union).trim()) errores.push(`El paso ${i + 1} de costura necesita el nombre de la operación (ej. "Unir hombros").`);
+        if (c.tiempoMin != null && c.tiempoMin !== '' && !(Number(c.tiempoMin) >= 0)) errores.push(`El tiempo del paso ${i + 1} tiene que ser un número de minutos.`);
+    });
     return errores;
 }
 
@@ -626,17 +641,37 @@ async function aplicarSetsHijos(transaction, proId, body, conTizada = false, con
         }
     }
     if (body.fichaDisenoCosturas !== undefined) {
+        // [PASO A PASO] cada fila es un paso de la secuencia de costura (orden = el de la lista)
+        const conPaso = await tieneCosturasPaso(transaction);
+        const txt = (v, n) => (v != null && String(v).trim() ? String(v).trim().slice(0, n) : null);
+        if (!conPaso && (body.fichaDisenoCosturas || []).some(c => c.union && String(c.union).trim() && !txt(c.iso, 20))) {
+            const e = new Error(`Hay pasos sin costura ISO (planchado, control…). ${FALTA_SQL_PASOS}`); e.status = 400; throw e;
+        }
         await del('ProductoFichaDisenoCosturas');
         let orden = 1;
         for (const c of (body.fichaDisenoCosturas || [])) {
-            if (!c.union || !String(c.union).trim() || !c.iso) continue;
-            await new sql.Request(transaction)
+            if (!c.union || !String(c.union).trim()) continue;
+            const rqC = new sql.Request(transaction)
                 .input('PID', sql.Int, proId)
-                .input('Un', sql.VarChar(100), String(c.union).trim())
-                .input('Iso', sql.VarChar(20), String(c.iso).trim())
-                .input('Ord', sql.Int, orden)
-                .query(`INSERT INTO dbo.ProductoFichaDisenoCosturas (ProIdProducto, UnionNombre, CodigoISO, Orden)
-                        VALUES (@PID, @Un, @Iso, @Ord)`);
+                .input('Un', sql.VarChar(100), String(c.union).trim().slice(0, 100))
+                .input('Iso', sql.VarChar(20), txt(c.iso, 20))
+                .input('Ord', sql.Int, orden);
+            if (conPaso) {
+                const maq = Number(c.maquinaId);
+                const tmin = c.tiempoMin === '' || c.tiempoMin == null ? null : Number(c.tiempoMin);
+                rqC.input('Eta', sql.VarChar(60), txt(c.etapa, 60))   // etapa: texto libre
+                    .input('Des', sql.VarChar(500), txt(c.descripcion, 500))
+                    .input('Maq', sql.Int, Number.isInteger(maq) && maq > 0 ? maq : null)
+                    .input('Tmin', sql.Decimal(7, 2), Number.isFinite(tmin) && tmin >= 0 ? tmin : null)
+                    .input('Obs', sql.VarChar(500), txt(c.observaciones, 500))
+                    .input('Img', sql.VarChar(500), txt(c.imagenUrl, 500));
+                await rqC.query(`INSERT INTO dbo.ProductoFichaDisenoCosturas
+                                    (ProIdProducto, UnionNombre, CodigoISO, Orden, Etapa, Descripcion, MaquinaCosturaID, TiempoMin, Observaciones, ImagenUrl)
+                                 VALUES (@PID, @Un, @Iso, @Ord, @Eta, @Des, @Maq, @Tmin, @Obs, @Img)`);
+            } else {
+                await rqC.query(`INSERT INTO dbo.ProductoFichaDisenoCosturas (ProIdProducto, UnionNombre, CodigoISO, Orden)
+                                 VALUES (@PID, @Un, @Iso, @Ord)`);
+            }
             orden++;
         }
     }
@@ -1089,10 +1124,11 @@ exports.getProductosLocal = async (req, res) => {
 exports.getCosturasIso = async (req, res) => {
     try {
         const pool = await getPool();
+        const conPaso = await tieneCosturasPaso(pool);   // [PASO A PASO]
         const r = await pool.request().query(`
-            SELECT CosturaISOID, CodigoISO, Nombre, Activo FROM dbo.CosturasISO
+            SELECT CosturaISOID, CodigoISO, Nombre, Activo${conPaso ? ', Descripcion, ImagenUrl, MaquinaCosturaID' : ''} FROM dbo.CosturasISO
             ${req.query.all === '1' ? '' : 'WHERE Activo = 1'} ORDER BY CodigoISO`);
-        res.json({ success: true, data: r.recordset });
+        res.json({ success: true, pasoAPaso: conPaso, data: r.recordset });
     } catch (e) {
         logger.error('[Configurador] getCosturasIso:', e);
         res.status(500).json({ error: e.message });
@@ -1438,10 +1474,91 @@ exports.updateCosturaIso = async (req, res) => {
     if (b.codigoISO !== undefined) { const c = String(b.codigoISO || '').trim().slice(0, 20); if (!c) return res.status(400).json({ error: 'El código no puede quedar vacío.' }); sets.push('CodigoISO = @C'); rq.input('C', sql.VarChar(20), c); }
     if (b.nombre !== undefined) { const n = String(b.nombre || '').trim().slice(0, 200); if (!n) return res.status(400).json({ error: 'El nombre no puede quedar vacío.' }); sets.push('Nombre = @N'); rq.input('N', sql.VarChar(200), n); }
     if (b.activo !== undefined) { sets.push('Activo = @A'); rq.input('A', sql.Bit, b.activo ? 1 : 0); }
+    // [PASO A PASO] descripción (para qué se usa) y máquina típica
+    if (b.descripcion !== undefined || b.maquinaId !== undefined) {
+        if (!(await tieneCosturasPaso(await getPool()))) return res.status(409).json({ error: FALTA_SQL_PASOS });
+        if (b.descripcion !== undefined) { sets.push('Descripcion = @D'); rq.input('D', sql.VarChar(500), String(b.descripcion || '').trim().slice(0, 500) || null); }
+        if (b.maquinaId !== undefined) { const m = Number(b.maquinaId); sets.push('MaquinaCosturaID = @M'); rq.input('M', sql.Int, Number.isInteger(m) && m > 0 ? m : null); }
+    }
     if (!sets.length) return res.status(400).json({ error: 'Nada para cambiar.' });
     try {
         const r = await rq.query(`UPDATE dbo.CosturasISO SET ${sets.join(', ')} WHERE CosturaISOID = @ID; SELECT @@ROWCOUNT AS n;`);
         if (!r.recordset[0].n) return res.status(404).json({ error: 'Costura no encontrada.' });
         res.json({ success: true });
     } catch (e) { logger.error('[Configurador] updateCosturaIso:', e); res.status(500).json({ error: e.message }); }
+};
+// [PASO A PASO] POST /api/configurador/costuras-iso/:id/imagen — reemplaza la imagen de la costura (multipart 'imagen')
+exports.subirImagenCosturaIso = async (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isInteger(id)) return res.status(400).json({ error: 'Costura inválida.' });
+    if (!req.file) return res.status(400).json({ error: 'No se subió ninguna imagen.' });
+    try {
+        const pool = await getPool();
+        if (!(await tieneCosturasPaso(pool))) return res.status(409).json({ error: FALTA_SQL_PASOS });
+        const url = `/uploads/fichas-diseno/${req.file.filename}`;
+        const r = await pool.request().input('ID', sql.Int, id).input('U', sql.VarChar(500), url)
+            .query(`UPDATE dbo.CosturasISO SET ImagenUrl = @U WHERE CosturaISOID = @ID; SELECT @@ROWCOUNT AS n;`);
+        if (!r.recordset[0].n) return res.status(404).json({ error: 'Costura no encontrada.' });
+        logger.info(`[Configurador] Imagen de costura #${id} reemplazada por ${req.user?.username || 'N/A'}`);
+        res.json({ success: true, imagenUrl: url });
+    } catch (e) { logger.error('[Configurador] subirImagenCosturaIso:', e); res.status(500).json({ error: e.message }); }
+};
+// [PASO A PASO] POST /api/configurador/ficha-diseno/imagen-paso — foto propia de un paso de costura (multipart 'imagen').
+// Solo sube el archivo y devuelve la URL; queda guardada en el paso cuando se guarda el producto.
+exports.subirImagenPasoCostura = async (req, res) => {
+    if (!req.file) return res.status(400).json({ error: 'No se subió ninguna imagen.' });
+    res.json({ success: true, imagenUrl: `/uploads/fichas-diseno/${req.file.filename}` });
+};
+
+// ═════════════════════════════════════════════════════════════════════════
+//  [PASO A PASO] CATÁLOGO DE MÁQUINAS DE COSTURA (dbo.MaquinasCostura) — tipos de máquina
+//  (recta, overlock 4 hilos, recubridora…), no las máquinas físicas de ConfigEquipos.
+// ═════════════════════════════════════════════════════════════════════════
+// GET /api/configurador/maquinas-costura — ?all=1 incluye inactivas
+exports.getMaquinasCostura = async (req, res) => {
+    try {
+        const pool = await getPool();
+        if (!(await tieneCosturasPaso(pool))) return res.json({ success: true, data: [], faltaSql: true });
+        const r = await pool.request().query(`
+            SELECT MaquinaCosturaID, Nombre, Descripcion, Activo FROM dbo.MaquinasCostura
+            ${req.query.all === '1' ? '' : 'WHERE Activo = 1'} ORDER BY ISNULL(Orden, 999), Nombre`);
+        res.json({ success: true, data: r.recordset });
+    } catch (e) { logger.error('[Configurador] getMaquinasCostura:', e); res.status(500).json({ error: e.message }); }
+};
+// POST /api/configurador/maquinas-costura — { nombre, descripcion? }
+exports.crearMaquinaCostura = async (req, res) => {
+    const nombre = String(req.body?.nombre || '').trim().slice(0, 100);
+    if (!nombre) return res.status(400).json({ error: 'Poné el nombre de la máquina (ej. Overlock 4 hilos).' });
+    try {
+        const pool = await getPool();
+        if (!(await tieneCosturasPaso(pool))) return res.status(409).json({ error: FALTA_SQL_PASOS });
+        const dup = await pool.request().input('N', sql.VarChar(100), nombre).query(`SELECT 1 FROM dbo.MaquinasCostura WHERE Nombre = @N`);
+        if (dup.recordset.length) return res.status(409).json({ error: `Ya existe una máquina llamada "${nombre}".` });
+        const r = await pool.request().input('N', sql.VarChar(100), nombre)
+            .input('D', sql.VarChar(300), String(req.body?.descripcion || '').trim().slice(0, 300) || null)
+            .query(`INSERT INTO dbo.MaquinasCostura (Nombre, Descripcion, Activo, Orden) OUTPUT INSERTED.MaquinaCosturaID
+                    VALUES (@N, @D, 1, (SELECT ISNULL(MAX(Orden), 0) + 1 FROM dbo.MaquinasCostura))`);
+        res.json({ success: true, data: { MaquinaCosturaID: r.recordset[0].MaquinaCosturaID } });
+    } catch (e) { logger.error('[Configurador] crearMaquinaCostura:', e); res.status(500).json({ error: e.message }); }
+};
+// PUT /api/configurador/maquinas-costura/:id — { nombre?, descripcion?, activo? }
+exports.updateMaquinaCostura = async (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isInteger(id)) return res.status(400).json({ error: 'Máquina inválida.' });
+    const b = req.body || {}; const sets = [];
+    try {
+        const pool = await getPool();
+        if (!(await tieneCosturasPaso(pool))) return res.status(409).json({ error: FALTA_SQL_PASOS });
+        const rq = pool.request().input('ID', sql.Int, id);
+        if (b.nombre !== undefined) { const n = String(b.nombre || '').trim().slice(0, 100); if (!n) return res.status(400).json({ error: 'El nombre no puede quedar vacío.' }); sets.push('Nombre = @N'); rq.input('N', sql.VarChar(100), n); }
+        if (b.descripcion !== undefined) { sets.push('Descripcion = @D'); rq.input('D', sql.VarChar(300), String(b.descripcion || '').trim().slice(0, 300) || null); }
+        if (b.activo !== undefined) { sets.push('Activo = @A'); rq.input('A', sql.Bit, b.activo ? 1 : 0); }
+        if (!sets.length) return res.status(400).json({ error: 'Nada para cambiar.' });
+        const r = await rq.query(`UPDATE dbo.MaquinasCostura SET ${sets.join(', ')} WHERE MaquinaCosturaID = @ID; SELECT @@ROWCOUNT AS n;`);
+        if (!r.recordset[0].n) return res.status(404).json({ error: 'Máquina no encontrada.' });
+        res.json({ success: true });
+    } catch (e) {
+        if (String(e.message).includes('UQ_MaquinasCostura_Nombre')) return res.status(409).json({ error: 'Ya existe otra máquina con ese nombre.' });
+        logger.error('[Configurador] updateMaquinaCostura:', e); res.status(500).json({ error: e.message });
+    }
 };

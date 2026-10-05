@@ -14,6 +14,7 @@ import {
     NOMBRE_PARTE, Pill, PillModificada, ROL_ARCHIVO, Sello, Checklist, TIPO_TRABAJO, VisorPdf, errorDe, plata,
 } from './solicitudesComunes';
 import EstadoProduccionPanel from './EstadoProduccionPanel';
+import TizadaProBloque from './TizadaProBloque';
 import './fichaPedido.css';
 
 /**
@@ -281,7 +282,7 @@ export function ProductoTab({ s, p, n, id, user, perfil, busy, abierta, puedeVen
     const planillas = delProducto.filter(a => a.Rol === 'PLANILLA');
     const faltaSubl = subl.aplica && !p.Datos?.sublimacion?.completo
         ? (p.Datos?.sublimacion?.modeloClave ? 'Faltan telas en "Piezas y telas".' : 'Primero elegí el modelo y la tela de cada pieza en "Piezas y telas".')
-        : (!planillas.length && !String(p.Datos?.notaTalles || '').trim() && p.Datos?.comoSeDefine !== 'MEDIDA' && p.Config?.Molde !== 'NO' ? 'Falta la planilla de talles y nombres (o la nota de talles).' : null);
+        : (!planillas.length && !String(p.Datos?.notaTalles || '').trim() && !(p.Datos?.tizadaPro?.planilla?.length > 0) && p.Datos?.comoSeDefine !== 'MEDIDA' && p.Config?.Molde !== 'NO' ? 'Falta la planilla de talles y nombres (o la nota de talles).' : null);
     const principal = p.Partes.find(pa => pa.Tipo === 'PRINCIPAL');
 
     return (
@@ -345,11 +346,14 @@ function PrincipalBloque({ p, pa, id, perfil, busy, abierta, puedeVender, arte, 
     const puede = puedeVender && !p.PedidoNoDocERP;
     const d = pa.Datos || {};
     const Sub = ({ children }) => <div className="text-[9px] font-black uppercase tracking-wide text-slate-400 mb-1">{children}</div>;
+    // Con molde de TIZADA PRO: el arte es UN archivo por diseño (todas las piezas); diseños + lista de jugadores = paso 3
+    const conTizada = p.TipoFabricacion === 'PRODUCTO_TERMINADO' && !!p.Config?.TizadaProMoldeRef;
     return (
         <section className="fp-zona">
             <div className="fp-zona-tit flex flex-wrap items-center justify-between gap-2">
-                <span>Producción principal ({nombrePrincipal(p)}) <small>{p.Config?.Molde === 'NO' ? 'arte → con eso se envía a Diseño' : 'arte · telas por pieza · planilla de talles → con eso se envía a Diseño'}</small></span>
+                <span>Producción principal ({nombrePrincipal(p)}) <small>{p.Config?.Molde === 'NO' ? 'arte → con eso se envía a Diseño' : conTizada ? 'arte · telas por pieza · diseños y lista de jugadores → TIZADA PRO arma la tizada' : 'arte · telas por pieza · planilla de talles → con eso se envía a Diseño'}</small></span>
                 <span className="flex items-center gap-1.5"><Pill e={pa.Estado} mapa={ESTADO_PARTE} />{pa.Modificada ? <PillModificada /> : null}
+                    {d.disenoAutomatico ? <span className="px-2 py-0.5 rounded-full border text-[10px] font-black bg-emerald-100 text-emerald-700 border-emerald-200 normal-case tracking-normal" title={`Lo hizo ${d.disenoAutomatico.sistema} (${d.disenoAutomatico.referencia})`}>Diseño automático · {d.disenoAutomatico.sistema}</span> : null}
                     {pa.DisenadorNombre ? <span className="text-[11px] font-bold text-slate-600 normal-case tracking-normal" style={{ fontFamily: 'Barlow, sans-serif' }}>{pa.Estado === 'DISENADO' ? 'Diseñó' : 'Lo tiene'} <b>{pa.DisenadorNombre}</b></span>
                         : pa.Estado === 'ENVIADO_DISENO' ? <span className="text-[11px] font-bold text-slate-500 normal-case tracking-normal" style={{ fontFamily: 'Barlow, sans-serif' }}>nadie lo tomó todavía</span> : null}</span>
             </div>
@@ -361,15 +365,17 @@ function PrincipalBloque({ p, pa, id, perfil, busy, abierta, puedeVender, arte, 
                     {pa.Observaciones ? <div className="text-slate-500 whitespace-pre-line">Indicaciones: {pa.Observaciones}</div> : <div className="text-slate-400">Sin indicaciones para Diseño.</div>}
                 </div>
                 <div>
-                    <Sub>1 · Arte del cliente <span className="normal-case font-normal">(escudos, logos, bocetos: después se asigna a cada pieza)</span></Sub>
+                    <Sub>1 · Arte del cliente <span className="normal-case font-normal">{conTizada
+                        ? '(UN archivo .ai o .pdf por diseño — jugador, alternativa… — con todas las piezas: se elige en el paso 3)'
+                        : '(escudos, logos, bocetos: después se asigna a cada pieza)'}</span></Sub>
                     <ArchivosCelda archivos={arte} vacio="Sin archivos" puedeQuitar={puede} onQuitar={(a) => hacer(() => svc.quitarArchivo(id, a.ArchivoID), 'Archivo quitado.')} conRol />
                     {puede && <div className="mt-1.5"><BotonSubir busy={busy} roles={ROLES_PARTE} onFiles={(files, Rol) => subir(files, { Rol, ParteID: pa.ParteID }, pa.Tipo)} /></div>}
                 </div>
             </div>
 
-            {p.TipoFabricacion === 'PRODUCTO_TERMINADO' && <PiezasTelasBloque plano id={id} p={p} busy={busy} puede={puede} hacer={hacer} artes={artes} onEstado={onEstadoSubl} />}
+            {p.TipoFabricacion === 'PRODUCTO_TERMINADO' && <PiezasTelasBloque plano id={id} p={p} busy={busy} puede={puede} hacer={hacer} artes={artes} onEstado={onEstadoSubl} conTizada={conTizada} />}
 
-            {p.Config?.Molde !== 'NO' && <div className="pt-3 mt-3 border-t border-slate-200 text-xs">
+            {p.Config?.Molde !== 'NO' && !conTizada && <div className="pt-3 mt-3 border-t border-slate-200 text-xs">
                 <Sub>{p.TipoFabricacion === 'PRODUCTO_TERMINADO' ? '3' : '2'} · Planilla de talles y nombres <span className="normal-case font-normal">(cuántas prendas de cada talle, nombres y números) y referencias</span></Sub>
                 <div className="grid md:grid-cols-2 gap-4">
                     <div>
@@ -379,6 +385,25 @@ function PrincipalBloque({ p, pa, id, perfil, busy, abierta, puedeVender, arte, 
                     <TallesCampos id={id} p={p} puede={puede} busy={busy} hacer={hacer} />
                 </div>
             </div>}
+
+            {/* Con molde de TIZADA PRO el paso 3 es UNO: diseños (nombre + arte) + lista de jugadores → la tizada
+                vuelve sola como diseño pronto (diseño automático). La planilla original del cliente y los datos de
+                nombres y números quedan adentro, como opcionales. */}
+            {conTizada && (
+                <TizadaProBloque id={id} p={p} puede={puede && !bloqueada} onCargado={() => hacer(async () => { })} numero={3}
+                    extra={(
+                        <details className="mt-3 border border-slate-200 rounded-xl px-3 py-2" open={planillas.length > 0}>
+                            <summary className="cursor-pointer text-[11px] font-bold text-slate-600">Planilla original del cliente y datos de nombres y números (opcional){planillas.length ? ` · ${planillas.length} archivo(s)` : ''}</summary>
+                            <div className="grid md:grid-cols-2 gap-4 mt-2">
+                                <div>
+                                    <ArchivosCelda archivos={planillas} vacio="Sin archivos" puedeQuitar={puede} onQuitar={(a) => hacer(() => svc.quitarArchivo(id, a.ArchivoID), 'Archivo quitado.')} conRol />
+                                    {puede && <div className="mt-1.5"><BotonSubir busy={busy} roles={ROLES_PRODUCTO} onFiles={(files, Rol) => subir(files, { Rol, ProductoSolID: p.ProductoSolID })} /></div>}
+                                </div>
+                                <TallesCampos id={id} p={p} puede={puede} busy={busy} hacer={hacer} />
+                            </div>
+                        </details>
+                    )} />
+            )}
 
             <div className="pt-3 mt-3 border-t border-slate-200 flex flex-wrap items-center gap-2 text-xs">
                 {pa.Estado === 'INGRESADO' ? (
@@ -478,12 +503,33 @@ export function DisenoTab({ s, id, user, perfil, busy, abierta, telas, archivosD
                                     <EstadoParteDiseno key={pa.ParteID} pa={pa} user={user} perfil={perfil} busy={busy} bloqueada={bloqueada} onAbrirFicha={onAbrirFicha}
                                         enProduccion={(conv.disenoProduccion || []).filter(o => o.AreaID === ({ BORDADO: 'EMB', TPU: 'TPU' })[pa.Tipo])}
                                         onTomar={() => hacer(() => svc.tomar(pa.ParteID), 'Trabajo tomado: quedó a tu nombre.')}
+                                        // Con molde de TIZADA PRO la principal no se "toma": se manda a TIZADA y vuelve sola como diseño pronto
+                                        onEnviarTizada={pa.Tipo === 'PRINCIPAL' && p.TipoFabricacion === 'PRODUCTO_TERMINADO' && p.Config?.TizadaProMoldeRef
+                                            ? () => hacer(async () => {
+                                                const r = await svc.tizadaProEnviar(id, p.ProductoSolID, false);
+                                                if (r.Estado === 'RECHAZADO') toast.error(`TIZADA no lo acepta: ${r.mensaje || 'mirá las alarmas en "Tizada automática · TIZADA PRO"'}.`);
+                                                else toast.success(`Mandado a TIZADA PRO (${r.Referencia}). La tizada vuelve sola cuando termine.`);
+                                            })
+                                            : null}
                                         onAceptar={() => hacer(() => svc.aceptarCambio(pa.ParteID), 'Cambio aceptado.')} />
                                 ))}
                             </div>
                         </div>
                         {p.FichaProducto && <FichaProductoBloque f={p.FichaProducto} />}
                         {p.TipoFabricacion === 'PRODUCTO_TERMINADO' && <PiezasTelasBloque id={id} p={p} busy={busy} puede={false} hacer={hacer} artes={artes} />}
+                        {/* TIZADA PRO: el diseñador elige la letra de nombre y número y genera la tizada (vuelve sola como diseño pronto) */}
+                        {p.TipoFabricacion === 'PRODUCTO_TERMINADO' && p.Config?.TizadaProMoldeRef && (() => {
+                            const pa = p.Partes.find(x => x.Tipo === 'PRINCIPAL');
+                            const esDis = perfil.esDisenador || perfil.esAdmin;
+                            const enviada = pa && pa.Estado !== 'INGRESADO';
+                            return (
+                                <section className="fp-zona">
+                                    <TizadaProBloque id={id} p={p} modo="diseno" puede={esDis && !bloqueada} puedeGenerar={esDis && !bloqueada && enviada}
+                                        motivoNoGenerar={!esDis ? 'La tizada la genera un diseñador.' : !enviada ? 'El vendedor todavía no tocó "Enviar a Diseño" en la solicitud.' : bloqueada ? 'La solicitud está cerrada o ya es pedido.' : null}
+                                        onCargado={() => hacer(async () => { })} />
+                                </section>
+                            );
+                        })()}
                         <TablaServicios vista="diseno" s={s} p={p} id={id} user={user} perfil={perfil} busy={busy} abierta={abierta} telas={telas} archivosDe={archivosDe} hacer={hacer} subir={subir} onAbrirFicha={onAbrirFicha} />
                         {/* El pedido de producción lo crea el diseñador desde acá, con la tizada y los archivos ya cargados */}
                         <div className="max-w-3xl">
@@ -525,7 +571,7 @@ function FichaProductoBloque({ f }) {
               <div>
                 <div className="text-[9px] font-black uppercase tracking-wide text-slate-400 mb-1">Costuras (ISO 4915)</div>
                 {f.costuras.length ? (
-                  <table className="w-full"><tbody>{f.costuras.map((c, i) => <tr key={i} className="border-t border-slate-100"><td className="py-1 pr-2 font-bold text-slate-800">{c.union}</td><td className="py-1 text-slate-600">{c.codigoISO}{c.nombre ? ` · ${c.nombre}` : ''}</td></tr>)}</tbody></table>
+                  <table className="w-full"><tbody>{f.costuras.map((c, i) => <tr key={i} className="border-t border-slate-100"><td className="py-1 pr-2 font-bold text-slate-800">{i + 1}. {c.union}{c.piezas ? <span className="font-normal text-slate-500"> · {c.piezas}</span> : null}</td><td className="py-1 text-slate-600">{c.codigoISO || 'Sin costura'}{c.nombre ? ` · ${c.nombre}` : ''}{c.maquina ? ` · ${c.maquina}` : ''}{c.tiempoMin != null ? ` · ${c.tiempoMin} min` : ''}</td></tr>)}</tbody></table>
                 ) : <div className="text-slate-400">Sin costuras cargadas en el configurador.</div>}
               </div>
             </div>
@@ -539,7 +585,7 @@ function FichaProductoBloque({ f }) {
 
 /* Estado de UN servicio en la pantalla de Diseño: pill, tipo de trabajo, diseñador, fechas, y las
    acciones del diseñador (tomar el trabajo, aceptar un cambio del vendedor) + seguimiento en planta. */
-function EstadoParteDiseno({ pa, user, perfil, busy, bloqueada, enProduccion = [], onAbrirFicha, onTomar, onAceptar }) {
+function EstadoParteDiseno({ pa, user, perfil, busy, bloqueada, enProduccion = [], onAbrirFicha, onTomar, onAceptar, onEnviarTizada = null }) {
     const esMia = pa.DisenadorID && pa.DisenadorID === user?.id;
     return (
         <div className={`bg-white border rounded-lg p-2 text-xs space-y-1 ${pa.Modificada ? 'border-fuchsia-300' : 'border-slate-200'}`}>
@@ -579,7 +625,10 @@ function EstadoParteDiseno({ pa, user, perfil, busy, bloqueada, enProduccion = [
                             : <div className="text-[11px] text-slate-500 mt-1">{pa.DisenadorID ? `Lo tiene que aceptar ${pa.DisenadorNombre || 'el diseñador'}.` : 'Lo acepta el diseñador que tome el trabajo.'} Mientras tanto el producto no se puede convertir en pedido.</div>}
                 </div>
             ) : null}
-            {!bloqueada && perfil.esDisenador && pa.Estado === 'ENVIADO_DISENO' && <button disabled={busy} onClick={onTomar} className={BTN_PRIMARIO}>Tomar este trabajo</button>}
+            {/* Con molde de TIZADA PRO: "Enviar a TIZADA PRO" en vez de tomar; si ya lo tomaron, lo manda quien lo tomó (o un admin) */}
+            {!bloqueada && perfil.esDisenador && onEnviarTizada && (pa.Estado === 'ENVIADO_DISENO' || (pa.Estado === 'DISENO_INICIADO' && (esMia || perfil.esAdmin)))
+                ? <button disabled={busy} onClick={onEnviarTizada} className={BTN_PRIMARIO} title="Revisa arte y datos, y lo manda a TIZADA PRO; la tizada vuelve sola como diseño pronto"><Send size={12} /> Enviar a TIZADA PRO</button>
+                : !bloqueada && perfil.esDisenador && pa.Estado === 'ENVIADO_DISENO' && <button disabled={busy} onClick={onTomar} className={BTN_PRIMARIO}>Tomar este trabajo</button>}
         </div>
     );
 }
@@ -787,7 +836,7 @@ function FilaServicio({ vista = 'cliente', pa, user, perfil, busy, bloqueada, te
    (entre las que el producto ofrece; una pieza con tela fija en el molde no se elige) y el
    ARTE del cliente que va en esa pieza. Es lo que el diseñador necesita para armar la tizada;
    hasta que está completo, la producción principal no se manda a Diseño. */
-function PiezasTelasBloque({ id, p, busy, puede, hacer, artes = [], onEstado, plano = false }) {
+function PiezasTelasBloque({ id, p, busy, puede, hacer, artes = [], onEstado, plano = false, conTizada = false }) {
     const zona = plano ? 'pt-3 mt-3 border-t border-slate-200' : 'fp-zona';
     const tit = plano ? 'fp-subtit' : 'fp-zona-tit';
     const [info, setInfo] = useState(null);      // respuesta de moldeDelProducto
@@ -839,7 +888,7 @@ function PiezasTelasBloque({ id, p, busy, puede, hacer, artes = [], onEstado, pl
         return (
             <section className={zona}>
                 <div className={`${tit} flex flex-wrap items-center justify-between gap-2`}>
-                    <span>{plano ? '2 · ' : ''}Piezas y telas <small>modelo {guardado.modeloNombre} · para el diseñador</small></span>
+                    <span>{plano ? '2 · ' : ''}Piezas y telas <small>modelo {guardado.modeloNombre} · {conTizada ? 'TIZADA PRO la usa para armar la tizada' : 'para el diseñador'}</small></span>
                     <span className="flex items-center gap-2">
                         {guardado.completo ? <span className="text-[10px] font-black uppercase text-emerald-700 inline-flex items-center gap-1"><CheckCircle2 size={12} /> Completo</span> : <span className="text-[10px] font-black uppercase text-amber-700 inline-flex items-center gap-1"><AlertTriangle size={12} /> Faltan telas</span>}
                         {puede && <button type="button" disabled={busy} onClick={() => setEditando(true)} className={BTN_SECUNDARIO}><Pencil size={11} /> Cambiar</button>}
@@ -854,7 +903,7 @@ function PiezasTelasBloque({ id, p, busy, puede, hacer, artes = [], onEstado, pl
                                 <div className="min-w-0">
                                     <div className="font-black text-slate-800 truncate">{z.generico || z.pieza}{z.generico && z.generico !== z.pieza ? <span className="font-normal text-slate-400"> · {z.pieza}</span> : null}</div>
                                     <div className={z.telaNombre ? 'text-slate-700' : 'text-rose-600 font-bold'}>{z.telaNombre || 'Sin tela'}{z.fija ? <span className="text-[10px] text-slate-400"> · fija del molde</span> : null}</div>
-                                    <div className="text-[10px] text-slate-500 truncate">{z.archivoNombre ? <>Arte: {z.archivoNombre}</> : 'Sin arte asignado'}{z.nota ? <> · {z.nota}</> : null}</div>
+                                    {(!conTizada || z.archivoNombre || z.nota) && <div className="text-[10px] text-slate-500 truncate">{z.archivoNombre ? <>Arte: {z.archivoNombre}</> : conTizada ? null : 'Sin arte asignado'}{z.nota ? <>{z.archivoNombre ? ' · ' : ''}{z.nota}</> : null}</div>}
                                 </div>
                             </div>
                         );
@@ -873,7 +922,9 @@ function PiezasTelasBloque({ id, p, busy, puede, hacer, artes = [], onEstado, pl
 
     return (
         <section className={zona}>
-            <div className={tit}>{plano ? '2 · ' : ''}Piezas y telas <small>qué tela y qué arte lleva cada pieza · lo lee el diseñador para armar la tizada</small></div>
+            <div className={tit}>{plano ? '2 · ' : ''}Piezas y telas <small>{conTizada
+                ? 'qué tela lleva cada pieza · TIZADA PRO la usa para armar la tizada (vale para todos los diseños; el arte va por diseño en el paso 3)'
+                : 'qué tela y qué arte lleva cada pieza · lo lee el diseñador para armar la tizada'}</small></div>
             <div className="flex flex-wrap items-end gap-3 mb-3 text-xs">
                 <label className="min-w-[220px]">
                     <div className="text-[9px] font-black uppercase tracking-wide text-slate-400">Modelo <span className="font-normal normal-case">(molde {info.moldeNombre})</span></div>
@@ -899,7 +950,7 @@ function PiezasTelasBloque({ id, p, busy, puede, hacer, artes = [], onEstado, pl
                         <tr className="bg-slate-50 text-[9px] font-black uppercase tracking-wide text-slate-500 text-left">
                             <th className="px-2 py-1.5 w-[26%]">Pieza</th>
                             <th className="px-2 py-1.5 w-[28%]">Tela</th>
-                            <th className="px-2 py-1.5 w-[28%]">Arte del cliente</th>
+                            {!conTizada && <th className="px-2 py-1.5 w-[28%]">Arte del cliente</th>}
                             <th className="px-2 py-1.5">Nota</th>
                         </tr>
                     </thead>
@@ -927,12 +978,12 @@ function PiezasTelasBloque({ id, p, busy, puede, hacer, artes = [], onEstado, pl
                                                 </select>
                                             )}
                                     </td>
-                                    <td className="px-2 py-1.5">
+                                    {!conTizada && <td className="px-2 py-1.5">
                                         <select value={v.archivoId || ''} onChange={e => set(z.pieza, 'archivoId', e.target.value)} className={INPUT}>
                                             <option value="">Sin arte (lo diseña el taller)</option>
                                             {artes.map(a => <option key={a.ArchivoID} value={a.ArchivoID}>{a.NombreOriginal}</option>)}
                                         </select>
-                                    </td>
+                                    </td>}
                                     <td className="px-2 py-1.5"><input value={v.nota || ''} onChange={e => set(z.pieza, 'nota', e.target.value)} placeholder="Ej: color, ubicación del arte" className={INPUT} maxLength={200} /></td>
                                 </tr>
                             );
@@ -940,7 +991,7 @@ function PiezasTelasBloque({ id, p, busy, puede, hacer, artes = [], onEstado, pl
                     </tbody>
                 </table>
             </div>
-            {!artes.length && <div className="text-[10px] text-slate-500 mt-1">Para asignar un arte por pieza, subilo primero como "Arte del cliente" en la producción principal (tabla de abajo).</div>}
+            {!conTizada && !artes.length && <div className="text-[10px] text-slate-500 mt-1">Para asignar un arte por pieza, subilo primero como "Arte del cliente" en el paso 1 de la producción principal (arriba).</div>}
             <div className="mt-2 flex flex-wrap items-center gap-2">
                 <button type="button" disabled={busy || !mod} onClick={guardar} className={BTN_PRIMARIO}><CheckCircle2 size={12} /> Guardar piezas y telas</button>
                 {guardado && <button type="button" disabled={busy} onClick={() => setEditando(false)} className={BTN_SECUNDARIO}>Cancelar</button>}

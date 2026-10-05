@@ -30,7 +30,7 @@ export function evaluarProducto(cab, p, archivos = [], extra = []) {
         c(t(d.medidas), 'Medidas exactas en cm y cantidad por medida');
         c(t(d.terminacion), 'Tipo de terminación o costura');
     } else if (!porUnidad) {
-        c(arch(['PLANILLA']) || t(d.notaTalles), 'Lista de talles');
+        c(arch(['PLANILLA']) || t(d.notaTalles) || (d.tizadaPro?.planilla?.length > 0), 'Lista de talles');
         if (!(t(d.medidasPrenda) || d.tablaEstandar)) luego.push('Medidas de la prenda');
         if (d.personalizacion) c(!!d.listaCerrada, 'Lista de nombres y números completa y cerrada');
     }

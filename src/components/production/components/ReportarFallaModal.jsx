@@ -18,6 +18,8 @@ export default function ReportarFallaModal({ open, onClose, orden, area, service
     const [form, setForm] = useState({ tipo: 'FALLA_PROPIA', cantidad: '', motivoId: '', motivoTexto: '', nota: '', archivoOrigenId: '', piezas: [], foto: null });
     const [propuesta, setPropuesta] = useState(null); // paso 3: { eslabones, origenInsumo, stock }
     const [enviando, setEnviando] = useState(false);
+    // [FALLA EST/PRO] Qué se arruinó: 'PRENDA' y/o cada transfer (OrdenID del DTF/TPU), cada uno con su cantidad.
+    const [ramasSel, setRamasSel] = useState({});
 
     // La cantidad que se reporta acá SIEMPRE son prendas (cuántas piezas fallaron/faltan) —
     // nunca la unidad técnica de producción de la orden (Bordado factura por "punt" de
@@ -42,9 +44,19 @@ export default function ReportarFallaModal({ open, onClose, orden, area, service
     const fallaPropiaUsaCadena = !!pend?.fallaPropiaUsaCadena && hayAnteriores;
     const usaCadena = form.tipo === 'FALTANTE' || (form.tipo === 'FALLA_PROPIA' && fallaPropiaUsaCadena);
 
+    // [FALLA EST/PRO] En Estampado/PRO lo que se arruinó no siempre es la prenda: puede ser el DTF o el
+    // TPU. Primero se elige QUÉ se arruinó (la rama) y cuántas prendas afecta cada una.
+    const ramasTransfer = pend?.ramasTransfer || [];
+    const ramaPrenda = (pend?.ramaPrenda && pend.ramaPrenda.length) ? pend.ramaPrenda : (pend?.anteriores || []).filter(a => !['DF', 'TPU'].includes(String(a).toUpperCase()));
+    const conRamas = ramasTransfer.length > 0;
+    const rama = (k) => ramasSel[k] || { on: false, cant: '' };
+    const setRama = (k, patch) => setRamasSel(s => ({ ...s, [k]: { ...(s[k] || { on: false, cant: '' }), ...patch } }));
+    const ramasElegidas = conRamas ? Object.entries(ramasSel).filter(([, v]) => v.on) : [];
+    const cantMaxRamas = ramasElegidas.reduce((m, [, v]) => Math.max(m, Number(v.cant) || 0), 0);
+
     useEffect(() => {
         if (!open || !orden) return;
-        setStep(1); setPropuesta(null);
+        setStep(1); setPropuesta(null); setRamasSel({});
         setForm({ tipo: 'FALLA_PROPIA', cantidad: '', motivoId: '', motivoTexto: '', nota: '', archivoOrigenId: '', piezas: [], foto: null });
         setCargando(true);
         Promise.all([service.getFallaPendientes(orden.OrdenID), fileControlService.getTiposFalla(area).catch(() => [])])
@@ -61,7 +73,17 @@ export default function ReportarFallaModal({ open, onClose, orden, area, service
             .finally(() => setCargando(false));
     }, [open, orden?.OrdenID]);
 
-    const archivosOrigen = useMemo(() => (pend?.ordenes || []).flatMap(o => (o.archivos || []).map(a => ({ ...a, codigoOrden: o.CodigoOrden, area: o.AreaID }))), [pend]);
+    const archivosOrigen = useMemo(() => {
+        const prendaArch = (pend?.ordenes || []).filter(o => !conRamas || !['DF', 'TPU'].includes(String(o.AreaID).trim().toUpperCase()))
+            .flatMap(o => (o.archivos || []).map(a => ({ ...a, codigoOrden: o.CodigoOrden, area: o.AreaID })));
+        if (!conRamas) return prendaArch;
+        // Con ramas: solo los archivos de lo que se eligió (la prenda y/o cada transfer marcado)
+        const transferArch = ramasTransfer.filter(t => rama(t.OrdenID).on)
+            .flatMap(t => (t.archivos || []).map(a => ({ ...a, codigoOrden: t.CodigoOrden, area: t.AreaID })));
+        return [...(rama('PRENDA').on ? prendaArch : []), ...transferArch];
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [pend, ramasSel, conRamas]);
+    const archivosPrenda = (pend?.ordenes || []).filter(o => !['DF', 'TPU'].includes(String(o.AreaID).trim().toUpperCase())).some(o => (o.archivos || []).length > 0);
     const set = (patch) => setForm(f => ({ ...f, ...patch }));
 
     const onFoto = (file) => {
@@ -78,14 +100,41 @@ export default function ReportarFallaModal({ open, onClose, orden, area, service
     };
 
     const irAPropuesta = async () => {
-        if (!(Number(form.cantidad) > 0)) return toast.error('Indicá cuánto falta.');
+        if (conRamas) {
+            if (!ramasElegidas.length) return toast.error('Elegí qué se arruinó: la prenda, el DTF y/o el TPU.');
+            for (const [k, v] of ramasElegidas) {
+                const nombre = k === 'PRENDA' ? 'la prenda' : (ramasTransfer.find(t => String(t.OrdenID) === String(k))?.CodigoOrden || 'el transfer');
+                if (!(Number(v.cant) > 0)) return toast.error(`Indicá cuántas prendas hay que reponer de ${nombre}.`);
+                if (form.tipo === 'FALLA_PROPIA' && maxFallaPropia != null && Number(v.cant) > maxFallaPropia) return toast.error(`De ${nombre} no podés reportar más de ${maxFallaPropia} (lo que tenés en mano sin despachar).`);
+            }
+        } else if (!(Number(form.cantidad) > 0)) return toast.error('Indicá cuánto falta.');
         if (!form.motivoId && !form.motivoTexto.trim()) return toast.error('Indicá el motivo.');
-        if (usaCadena && archivosOrigen.length > 0 && !form.archivoOrigenId) return toast.error('Elegí de qué archivo del área anterior viene lo que falta.');
+        // El archivo de origen se exige para la prenda (de qué tela/corte viene); para el transfer es opcional.
+        const exigeArchivo = conRamas ? (rama('PRENDA').on && usaCadena && archivosPrenda) : (usaCadena && archivosOrigen.length > 0);
+        if (exigeArchivo && !form.archivoOrigenId) return toast.error('Elegí de qué archivo del área anterior viene lo que falta.');
+        const cantTotal = conRamas ? cantMaxRamas : Number(form.cantidad);
         setCargando(true);
         try {
-            const p = await service.fallaProponer(orden.OrdenID, { tipo: form.tipo, cantidad: Number(form.cantidad) });
-            // Todo marcado por defecto: el operario destilda lo que no hace falta.
-            setPropuesta({ ...p, incluirPrenda: true, eslabones: (p.eslabones || []).map(e => ({ ...e, incluir: true })) });
+            const p = await service.fallaProponer(orden.OrdenID, { tipo: form.tipo, cantidad: cantTotal });
+            if (conRamas) {
+                // Lo elegido en el paso 2 ya decide qué ramas van y con qué cantidad; el paso 3 es para revisar.
+                const cPrenda = Number(rama('PRENDA').cant) || null;
+                // Si no se repone la prenda, el origen del insumo (tela/prenda del cliente) no aplica:
+                // el transfer siempre es material propio.
+                const conPrenda = rama('PRENDA').on;
+                setPropuesta({ ...p, origenInsumo: conPrenda ? p.origenInsumo : 'PROPIO', stock: conPrenda ? p.stock : null,
+                               incluirPrenda: conPrenda, eslabones: (p.eslabones || []).map(e => {
+                    if (e.rama === 'TRANSFER') {
+                        const r = rama(e.ordenMadreId);
+                        const c = Number(r.cant) || null;
+                        return { ...e, incluir: !!r.on, cantidad: e.cuentaUnidades ? c : null, cantidadInformada: c };
+                    }
+                    return { ...e, incluir: true, cantidad: e.cuentaUnidades ? cPrenda : null };
+                }) });
+            } else {
+                // Todo marcado por defecto: el operario destilda lo que no hace falta.
+                setPropuesta({ ...p, incluirPrenda: true, eslabones: (p.eslabones || []).map(e => ({ ...e, incluir: true })) });
+            }
             setStep(3);
         } catch (e) { toast.error(e?.response?.data?.error || e.message); }
         finally { setCargando(false); }
@@ -102,10 +151,10 @@ export default function ReportarFallaModal({ open, onClose, orden, area, service
         setEnviando(true);
         try {
             const res = await service.reportarFalla(orden.OrdenID, {
-                tipo: form.tipo, cantidad: Number(form.cantidad), motivoId: form.motivoId || null, motivoTexto: form.motivoTexto || null,
+                tipo: form.tipo, cantidad: conRamas ? cantMaxRamas : Number(form.cantidad), motivoId: form.motivoId || null, motivoTexto: form.motivoTexto || null,
                 nota: form.nota || null, imagenBase64: form.foto || null, archivoOrigenId: form.archivoOrigenId || null,
                 detallePiezas: form.piezas.filter(p => Number(p.cantidad) > 0),
-                eslabones: eslabonesElegidos.map(e => ({ area: e.area, ordenMadreId: e.ordenMadreId, cantidad: e.cuentaUnidades ? Number(e.cantidad) : null, rama: e.rama || null, destino: e.destino || null })),
+                eslabones: eslabonesElegidos.map(e => ({ area: e.area, ordenMadreId: e.ordenMadreId, cantidad: e.cuentaUnidades ? Number(e.cantidad) : null, cantidadInformada: e.cantidadInformada ?? null, rama: e.rama || null, destino: e.destino || null })),
             });
             toast.success(res.message || 'Reporte registrado.', { duration: 9000 });
             onDone?.(res);
@@ -170,16 +219,56 @@ export default function ReportarFallaModal({ open, onClose, orden, area, service
                             <div>
                                 <div className="text-[10px] font-black uppercase text-zinc-500 mb-1">Tipo</div>
                                 <div className="flex gap-2 flex-wrap">
-                                    <button onClick={() => set({ tipo: 'FALLA_PROPIA', cantidad: maxFallaPropia != null ? String(maxFallaPropia) : form.cantidad })} className={`px-3 py-2 rounded-lg border font-bold ${form.tipo === 'FALLA_PROPIA' ? 'border-[#BD0C7E] text-[#BD0C7E] bg-pink-50' : 'border-zinc-200 text-zinc-600'}`}>{fallaPropiaUsaCadena ? 'Falla en esta área (rompimos la prenda)' : 'Falla en esta área (lo arruinamos acá)'}</button>
+                                    <button onClick={() => set({ tipo: 'FALLA_PROPIA', cantidad: maxFallaPropia != null ? String(maxFallaPropia) : form.cantidad })} className={`px-3 py-2 rounded-lg border font-bold ${form.tipo === 'FALLA_PROPIA' ? 'border-[#BD0C7E] text-[#BD0C7E] bg-pink-50' : 'border-zinc-200 text-zinc-600'}`}>{conRamas ? 'Falla en esta área' : (fallaPropiaUsaCadena ? 'Falla en esta área (rompimos la prenda)' : 'Falla en esta área (lo arruinamos acá)')}</button>
                                     <button onClick={() => puedeFaltante && set({ tipo: 'FALTANTE' })} disabled={!puedeFaltante} title={!hayAnteriores ? 'Este pedido no tiene áreas anteriores' : (!pend?.cadenaHabilitada ? 'La cadena de reposición no está habilitada para esta área' : '')} className={`px-3 py-2 rounded-lg border font-bold ${form.tipo === 'FALTANTE' ? 'border-[#BD0C7E] text-[#BD0C7E] bg-pink-50' : 'border-zinc-200 text-zinc-600'} disabled:opacity-40 disabled:cursor-not-allowed`}>Faltante de insumo (vino mal o no vino)</button>
                                 </div>
-                                {form.tipo === 'FALLA_PROPIA' && fallaPropiaUsaCadena && (
+                                {conRamas && (
+                                    <p className="text-xs text-zinc-500 mt-1">Elegí abajo qué se arruinó. Cada reposición nace en el área que lo produce y llega hasta acá. De {area} en adelante no se crea ninguna orden.</p>
+                                )}
+                                {!conRamas && form.tipo === 'FALLA_PROPIA' && fallaPropiaUsaCadena && (
                                     <p className="text-xs text-zinc-500 mt-1">Acá no hay prenda de repuesto en stock: si se rompió/perdió, hay que fabricar una nueva desde cero. La reposición nace en el área que produce el insumo ({pend?.anteriores?.join(' → ')}) y llega hasta acá. De {area} en adelante no se crea ninguna orden.</p>
                                 )}
-                                {form.tipo === 'FALTANTE' && <p className="text-xs text-zinc-500 mt-1">La reposición nace en el área que produce el insumo ({pend?.anteriores?.join(' → ')}) y llega hasta acá. De {area} en adelante no se crea ninguna orden.</p>}
+                                {!conRamas && form.tipo === 'FALTANTE' && <p className="text-xs text-zinc-500 mt-1">La reposición nace en el área que produce el insumo ({pend?.anteriores?.join(' → ')}) y llega hasta acá. De {area} en adelante no se crea ninguna orden.</p>}
                             </div>
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                <div>
+                            {conRamas && (
+                                <div className="border border-[#BD0C7E]/30 rounded-xl overflow-hidden">
+                                    <div className="px-3 py-2 bg-pink-50 text-[10px] font-black uppercase text-[#BD0C7E]">
+                                        ¿Qué se arruinó? · elegí uno o más y cuántas prendas{form.tipo === 'FALLA_PROPIA' && maxFallaPropia != null ? ` (máx. ${maxFallaPropia})` : ''}
+                                    </div>
+                                    {[
+                                        ...(ramaPrenda.length ? [{ k: 'PRENDA', titulo: 'La prenda', detalle: `Se rompió o se perdió: se fabrica una nueva (${ramaPrenda.join(' → ')})` }] : []),
+                                        ...ramasTransfer.map(t => {
+                                            const esDtf = String(t.AreaID).toUpperCase() === 'DF';
+                                            return { k: t.OrdenID, titulo: `El transfer ${esDtf ? 'DTF' : t.AreaID}`, detalle: `Se arruinó la estampa: se reimprime ${t.CodigoOrden}${esDtf ? '' : ' (misma matriz, sin pedir aprobación)'}` };
+                                        }),
+                                    ].map(op => {
+                                        const r = rama(op.k);
+                                        return (
+                                            <div key={op.k} className={`grid grid-cols-[auto_1fr_auto] gap-3 items-center px-3 py-2 border-t border-zinc-100 ${r.on ? 'bg-white' : 'bg-zinc-50'}`}>
+                                                <input
+                                                    type="checkbox" checked={r.on} className="w-4 h-4 accent-[#BD0C7E]"
+                                                    onChange={e => setRama(op.k, { on: e.target.checked, cant: e.target.checked && !r.cant && form.tipo === 'FALLA_PROPIA' && maxFallaPropia != null ? String(maxFallaPropia) : r.cant })}
+                                                />
+                                                <div className="cursor-pointer" onClick={() => setRama(op.k, { on: !r.on })}>
+                                                    <div className="text-xs font-black text-zinc-800">{op.titulo}</div>
+                                                    <div className="text-[11px] text-zinc-500">{op.detalle}</div>
+                                                </div>
+                                                <input
+                                                    type="number" min="0" step="1" disabled={!r.on} value={r.cant} placeholder="prendas"
+                                                    onChange={e => {
+                                                        let v = e.target.value;
+                                                        if (form.tipo === 'FALLA_PROPIA' && maxFallaPropia != null && v !== '' && Number(v) > maxFallaPropia) v = String(maxFallaPropia);
+                                                        setRama(op.k, { cant: v });
+                                                    }}
+                                                    className="w-24 p-1.5 border border-zinc-200 rounded-lg font-mono font-bold text-right disabled:opacity-40"
+                                                />
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            )}
+                            <div className={`grid grid-cols-1 ${conRamas ? '' : 'md:grid-cols-2'} gap-3`}>
+                                {!conRamas && <div>
                                     <div className="text-[10px] font-black uppercase text-zinc-500 mb-1">
                                         Cantidad que falta ({um}){form.tipo === 'FALLA_PROPIA' && maxFallaPropia != null && <span className="text-zinc-400 normal-case font-bold"> · máx. {maxFallaPropia}</span>}
                                     </div>
@@ -198,7 +287,7 @@ export default function ReportarFallaModal({ open, onClose, orden, area, service
                                     {form.tipo === 'FALLA_PROPIA' && maxFallaPropia != null && (
                                         <p className="text-[10px] text-zinc-400 mt-1">No podés reportar más de lo que tenés en mano sin despachar todavía.</p>
                                     )}
-                                </div>
+                                </div>}
                                 <div>
                                     <div className="text-[10px] font-black uppercase text-zinc-500 mb-1">Motivo</div>
                                     <select value={form.motivoId} onChange={e => set({ motivoId: e.target.value })} className="w-full p-2 border border-zinc-200 rounded-lg bg-white font-bold">
@@ -208,9 +297,11 @@ export default function ReportarFallaModal({ open, onClose, orden, area, service
                                     <input value={form.motivoTexto} onChange={e => set({ motivoTexto: e.target.value })} className="w-full p-2 border border-zinc-200 rounded-lg mt-1" placeholder="Otro motivo (texto libre)" />
                                 </div>
                             </div>
-                            {usaCadena && archivosOrigen.length > 0 && (
+                            {(conRamas ? archivosOrigen.length > 0 : (usaCadena && archivosOrigen.length > 0)) && (
                                 <div>
-                                    <div className="text-[10px] font-black uppercase text-zinc-500 mb-1">De qué archivo del área anterior viene</div>
+                                    <div className="text-[10px] font-black uppercase text-zinc-500 mb-1">
+                                        De qué archivo viene{conRamas && !(rama('PRENDA').on && usaCadena && archivosPrenda) ? ' (opcional)' : ''}
+                                    </div>
                                     <select value={form.archivoOrigenId} onChange={e => set({ archivoOrigenId: e.target.value })} className="w-full p-2 border border-[#BD0C7E]/40 rounded-lg bg-white font-bold">
                                         <option value="">Elegí el archivo...</option>
                                         {archivosOrigen.map(a => <option key={a.ArchivoID} value={a.ArchivoID}>{a.codigoOrden} · {a.NombreArchivo}{a.Metros ? ` · ${a.Metros} m` : ''}{a.Piezas ? ` · ${a.Piezas} piezas` : ''}</option>)}

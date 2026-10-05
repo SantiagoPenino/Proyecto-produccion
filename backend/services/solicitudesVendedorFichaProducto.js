@@ -17,13 +17,19 @@ async function fichaProducto(pool, proIdProducto) {
   const pid = parseInt(proIdProducto, 10);
   if (!pid) return null;
   const ex = (await pool.request().query(`SELECT OBJECT_ID('dbo.ProductoFichaDiseno','U') AS f, OBJECT_ID('dbo.ProductoAvios','U') AS a, OBJECT_ID('dbo.ProductoFichaDisenoCosturas','U') AS c,
-                                                 OBJECT_ID('dbo.ProductoFichaDisenoExtra','U') AS e, OBJECT_ID('dbo.ProductoFichaDisenoAnotaciones','U') AS n, OBJECT_ID('dbo.CosturasISO','U') AS iso`)).recordset[0];
+                                                 OBJECT_ID('dbo.ProductoFichaDisenoExtra','U') AS e, OBJECT_ID('dbo.ProductoFichaDisenoAnotaciones','U') AS n, OBJECT_ID('dbo.CosturasISO','U') AS iso,
+                                                 COL_LENGTH('dbo.ProductoFichaDisenoCosturas','MaquinaCosturaID') AS paso`)).recordset[0];
+  // [PASO A PASO] etapa, máquina, piezas, tiempo, observaciones e imagen (configurador_costuras_paso_a_paso.sql)
+  const paso = ex.c && ex.iso && ex.paso != null;
   const rq = () => pool.request().input('PID', sql.Int, pid);
   const [f, a, c, e, n] = await Promise.all([
     ex.f ? rq().query('SELECT Ref, Marca, Material, Tallas, Marcacion, DibujoUrl FROM dbo.ProductoFichaDiseno WHERE ProIdProducto = @PID') : { recordset: [] },
     ex.a ? rq().query('SELECT Nombre, Cantidad, Unidad, Medida, Nota FROM dbo.ProductoAvios WHERE ProIdProducto = @PID ORDER BY ISNULL(Orden, 999), ID') : { recordset: [] },
     ex.c ? rq().query(`SELECT c.UnionNombre, c.CodigoISO${ex.iso ? ', i.Nombre AS CosturaNombre' : ', NULL AS CosturaNombre'}
+                       ${paso ? `, c.Etapa, c.Descripcion, c.TiempoMin, c.Observaciones, COALESCE(c.ImagenUrl, i.ImagenUrl) AS ImagenUrl,
+                                 m.Nombre AS Maquina` : ''}
                        FROM dbo.ProductoFichaDisenoCosturas c${ex.iso ? ' LEFT JOIN dbo.CosturasISO i ON i.CodigoISO = c.CodigoISO' : ''}
+                       ${paso ? 'LEFT JOIN dbo.MaquinasCostura m ON m.MaquinaCosturaID = c.MaquinaCosturaID' : ''}
                        WHERE c.ProIdProducto = @PID ORDER BY ISNULL(c.Orden, 999), c.ID`) : { recordset: [] },
     ex.e ? rq().query('SELECT Etiqueta, Valor FROM dbo.ProductoFichaDisenoExtra WHERE ProIdProducto = @PID ORDER BY ISNULL(Orden, 999), ExtraID') : { recordset: [] },
     ex.n ? rq().query('SELECT Texto FROM dbo.ProductoFichaDisenoAnotaciones WHERE ProIdProducto = @PID ORDER BY ISNULL(Orden, 999), AnotacionID') : { recordset: [] },
@@ -33,7 +39,11 @@ async function fichaProducto(pool, proIdProducto) {
     ref: t(fd.Ref) || null, marca: t(fd.Marca) || null, material: t(fd.Material) || null, tallas: t(fd.Tallas) || null, marcacion: t(fd.Marcacion) || null,
     dibujoUrl: t(fd.DibujoUrl) || null,
     avios: a.recordset.map(x => ({ nombre: t(x.Nombre), cantidad: x.Cantidad, unidad: t(x.Unidad) || 'u', medida: t(x.Medida) || null, nota: t(x.Nota) || null })),
-    costuras: c.recordset.map(x => ({ union: t(x.UnionNombre), codigoISO: t(x.CodigoISO), nombre: t(x.CosturaNombre) || null })),
+    costuras: c.recordset.map(x => ({
+      union: t(x.UnionNombre), codigoISO: t(x.CodigoISO), nombre: t(x.CosturaNombre) || null,
+      etapa: t(x.Etapa) || null, piezas: t(x.Descripcion) || null, maquina: t(x.Maquina) || null,
+      tiempoMin: x.TiempoMin != null ? Number(x.TiempoMin) : null, observaciones: t(x.Observaciones) || null, imagenUrl: t(x.ImagenUrl) || null,
+    })),
     notas: [...e.recordset.map(x => ({ etiqueta: t(x.Etiqueta), valor: t(x.Valor) })), ...n.recordset.map(x => ({ etiqueta: null, valor: t(x.Texto) }))].filter(x => x.valor),
   };
   const vacia = !out.material && !out.tallas && !out.marcacion && !out.dibujoUrl && !out.avios.length && !out.costuras.length && !out.notas.length;
@@ -43,9 +53,14 @@ async function fichaProducto(pool, proIdProducto) {
 // El dibujo como data URI para el PDF (puppeteer arma la página con setContent: no resuelve /uploads).
 function dibujoDataUri(dibujoUrl) {
   try {
-    if (!dibujoUrl || !dibujoUrl.startsWith('/uploads/')) return null;
-    const ruta = path.join(__dirname, '..', dibujoUrl.replace(/^\//, ''));
-    if (!fs.existsSync(ruta)) return null;
+    if (!dibujoUrl) return null;
+    let ruta = null;
+    if (dibujoUrl.startsWith('/uploads/')) ruta = path.join(__dirname, '..', dibujoUrl.replace(/^\//, ''));
+    // [PASO A PASO] esquemas de costura ISO: van con el frontend (build en backend/public; fuente en public/)
+    else if (/^\/costuras-iso\/[\w.-]+$/.test(dibujoUrl)) {
+      ruta = [path.join(__dirname, '..', 'public', dibujoUrl), path.join(__dirname, '..', '..', 'public', dibujoUrl)].find(r => fs.existsSync(r)) || null;
+    }
+    if (!ruta || !fs.existsSync(ruta)) return null;
     const ext = path.extname(ruta).slice(1).toLowerCase();
     const mime = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml' }[ext] || 'image/png';
     return `data:${mime};base64,${fs.readFileSync(ruta).toString('base64')}`;

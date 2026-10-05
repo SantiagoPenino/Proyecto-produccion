@@ -1023,14 +1023,27 @@ export default function EmbBandeja({ area = 'EMB', fase = 'trabajo', onSelectOrd
                                 <div className="bg-white border border-zinc-200 rounded-2xl p-4 mb-5">
                                     <div className="text-[10px] font-black uppercase text-zinc-400 tracking-wide mb-2">Costuras y avíos{contexto.producto ? ` · ${contexto.producto.nombre}` : ''}</div>
                                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                        <div>
-                                            <div className="text-[10px] font-bold text-zinc-500 uppercase mb-1.5">Costuras (ISO 4915)</div>
+                                        {/* [PASO A PASO] secuencia de costura: paso, operación, piezas, máquina, tiempo, observaciones, imagen */}
+                                        <div className="md:col-span-2">
+                                            <div className="text-[10px] font-bold text-zinc-500 uppercase mb-1.5">
+                                                Paso a paso de costura
+                                                {(f.costuras || []).some(c => c.tiempoMin != null) && <span className="normal-case font-normal text-zinc-400"> · {(f.costuras || []).reduce((s, c) => s + (Number(c.tiempoMin) || 0), 0).toFixed(2)} min por prenda</span>}
+                                            </div>
                                             {(f.costuras || []).length ? (
                                                 <div className="border border-zinc-100 rounded-lg overflow-hidden">
                                                     {f.costuras.map((c, i) => (
-                                                        <div key={i} className="grid grid-cols-[1fr_auto] gap-2 px-3 py-1 text-xs border-t border-zinc-100 first:border-t-0">
-                                                            <span className="text-zinc-700">{c.union}{c.nombre ? <span className="text-zinc-400"> · {c.nombre}</span> : null}</span>
-                                                            <span className="font-mono font-bold text-zinc-700">{c.codigoISO}</span>
+                                                        <div key={i} className="flex items-start gap-3 px-3 py-2 text-xs border-t border-zinc-100 first:border-t-0">
+                                                            <span className="w-5 h-5 rounded-full bg-zinc-800 text-white text-[10px] font-black flex items-center justify-center flex-shrink-0">{i + 1}</span>
+                                                            <div className="flex-1 min-w-0">
+                                                                <div className="text-zinc-800 font-bold">{c.union}{c.piezas ? <span className="font-normal text-zinc-500"> · {c.piezas}</span> : null}</div>
+                                                                <div className="text-zinc-500">
+                                                                    {c.codigoISO ? <span className="font-mono font-bold text-zinc-700">{c.codigoISO}</span> : 'Sin costura'}{c.nombre ? ` · ${c.nombre}` : ''}
+                                                                    {c.maquina ? <> · Máquina: <b className="text-zinc-700">{c.maquina}</b></> : null}
+                                                                    {c.tiempoMin != null ? <> · <b className="text-zinc-700">{c.tiempoMin} min</b></> : null}
+                                                                </div>
+                                                                {c.observaciones && <div className="text-amber-700 mt-0.5">⚠ {c.observaciones}</div>}
+                                                            </div>
+                                                            {c.imagenUrl && <a href={c.imagenUrl} target="_blank" rel="noreferrer" title="Ver imagen grande"><img src={c.imagenUrl} alt="" className="w-24 h-14 object-contain border border-zinc-100 rounded bg-white flex-shrink-0" /></a>}
                                                         </div>
                                                     ))}
                                                 </div>

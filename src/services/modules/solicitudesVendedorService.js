@@ -43,6 +43,14 @@ export const solicitudesVendedorService = {
     guardarSublimacion: (id, productoSolId, payload) => dato(api.put(`${BASE}/${id}/productos/${productoSolId}/sublimacion`, payload)),
     /** payload: { comoSeDefine, notaTalles, medidas, terminacion, medidasPrenda, tablaEstandar, personalizacion, listaCerrada } */
     guardarTalles: (id, productoSolId, payload) => dato(api.put(`${BASE}/${id}/productos/${productoSolId}/talles`, payload)),
+    /** TIZADA PRO por API: estructura de la planilla del molde, diseños, lista de talles, artes y envíos del producto. */
+    tizadaProVer: (id, productoSolId) => dato(api.get(`${BASE}/${id}/productos/${productoSolId}/tizadapro`)),
+    /** payload: { disenos: [{ nombre, variable, variableNombre, tela, telasPorPieza, arteArchivoId }], planilla: [{ diseno, <columna>: valor }] } */
+    tizadaProGuardar: (id, productoSolId, payload) => dato(api.put(`${BASE}/${id}/productos/${productoSolId}/tizadapro`, payload)),
+    /** Arma el .zip y lo manda a TIZADA PRO. soloRevisar = solo POST /pedidos/validar (no genera nada). */
+    tizadaProEnviar: (id, productoSolId, soloRevisar) => dato(api.post(`${BASE}/${id}/productos/${productoSolId}/tizadapro/enviar`, { soloRevisar: !!soloRevisar })),
+    /** Pregunta a TIZADA por un envío (y si está listo carga la tizada). reintentar = volver a cargar un resultado que falló. */
+    tizadaProActualizar: (id, envioId, reintentar) => dato(api.post(`${BASE}/${id}/tizadapro/envios/${envioId}/actualizar`, { reintentar: !!reintentar })),
     /** Tizadas terminadas en TizadaPro (base externa, solo lectura). parteId filtra por el molde del producto; todas=1 las muestra igual. */
     tizadasTizadaPro: (parteId, todas) => dato(api.get(`${BASE}/tizadapro/trabajos`, { params: { parteId: parteId || undefined, todas: todas ? 1 : undefined } })),
     /** Vincula una tizada de TizadaPro a la producción principal (guarda copia del resultado). forzar = aunque sea de otro molde. */

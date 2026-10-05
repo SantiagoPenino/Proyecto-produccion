@@ -252,3 +252,22 @@ exports.uploadToDrive = async (fileInput, fileName, areaName, retries = 2) => {
         throw error;
     }
 };
+
+// [TIZADA PRO] Copia un archivo que ya está en Drive (ej. la tizada que dejó TIZADA PRO en su carpeta)
+// a PEDIDOS WEB/<área> con otro nombre, sin bajarlo ni volver a subirlo. Requiere que nuestra cuenta de
+// Google pueda leer el original (misma cuenta, o carpeta compartida). Devuelve { id, url, bytes }.
+exports.copyFile = async (fileId, newName, areaName) => {
+    const rootFolderId = await getOrCreateFolder('PEDIDOS WEB');
+    const areaFolderId = await getOrCreateFolder(areaName || 'GENERAL', rootFolderId);
+    const r = await drive.files.copy({
+        fileId, supportsAllDrives: true, fields: 'id, webViewLink, size',
+        requestBody: { name: newName, parents: [areaFolderId] },
+    });
+    try {
+        await drive.permissions.create({ fileId: r.data.id, supportsAllDrives: true, requestBody: { role: 'reader', type: 'anyone' } });
+    } catch (permErr) {
+        logger.warn(`⚠️ [Drive] No se pudo hacer pública la copia ${newName}: ${permErr.message}`);
+    }
+    logger.info(`✅ [Drive] Copiado ${fileId} -> ${newName}`);
+    return { id: r.data.id, url: r.data.webViewLink, bytes: r.data.size ? Number(r.data.size) : null };
+};

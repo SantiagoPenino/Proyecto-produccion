@@ -51,6 +51,20 @@ export default function BandejaDisenoPage() {
         finally { setBusy(false); }
     };
 
+    // Producción principal de un producto con molde de TIZADA PRO: no se toma, se manda a TIZADA y vuelve sola
+    const esTizada = (pa) => pa.Tipo === 'PRINCIPAL' && pa.TipoFabricacion === 'PRODUCTO_TERMINADO' && !!pa.TizadaProMoldeRef;
+    const enviarTizada = async (pa) => {
+        if (!window.confirm(`Vas a mandar "${NOMBRE_PARTE[pa.Tipo]}" de ${pa.ClienteNombre} (${pa.NombreTrabajo}) a TIZADA PRO. Antes se revisan el arte y los datos; si TIZADA lo acepta, la tizada vuelve sola como diseño pronto. ¿Mandarlo?`)) return;
+        setBusy(true);
+        try {
+            const r = await svc.tizadaProEnviar(pa.SolicitudID, pa.ProductoSolID, false);
+            if (r.Estado === 'RECHAZADO') toast.error(`TIZADA no lo acepta: ${r.mensaje || 'mirá las alarmas en la solicitud'}.`);
+            else toast.success(`Mandado a TIZADA PRO (${r.Referencia}). La tizada vuelve sola cuando termine.`);
+            navigate(`/ventas/solicitudes/${pa.SolicitudID}/diseno`);
+        } catch (e) { toast.error(errorDe(e)); await cargar(); }
+        finally { setBusy(false); }
+    };
+
     if (!perfil) return <div className="fp fp-oscuro"><div className="p-10 flex justify-center"><Loader2 className="animate-spin" /></div></div>;
 
     return (
@@ -75,12 +89,14 @@ export default function BandejaDisenoPage() {
             ) : (
                 <>
                     <Tabla titulo={`Mis trabajos (${data.mias.length})`} vacio="No tenés trabajos tomados." rows={data.mias} mias
-                        accion={(pa) => <button onClick={() => navigate(`/ventas/solicitudes/${pa.SolicitudID}/diseno`)} className={BTN_PRIMARIO}>{pa.Modificada ? 'Abrir y aceptar el cambio' : pa.Estado === 'DISENADO' ? 'Abrir (sustituir archivo)' : 'Abrir y subir el diseño'}</button>} />
+                        accion={(pa) => <button onClick={() => navigate(`/ventas/solicitudes/${pa.SolicitudID}/diseno`)} className={BTN_PRIMARIO}>{pa.Modificada ? 'Abrir y aceptar el cambio' : pa.Estado === 'DISENADO' ? 'Abrir (sustituir archivo)' : esTizada(pa) ? 'Abrir y enviar a TIZADA PRO' : 'Abrir y subir el diseño'}</button>} />
                     <Tabla titulo={`Disponibles para tomar (${data.disponibles.length})`} vacio="No hay trabajos esperando en la bandeja." rows={data.disponibles}
                         accion={(pa) => (
                             <span className="inline-flex gap-1">
                                 <button onClick={() => navigate(`/ventas/solicitudes/${pa.SolicitudID}`)} className={BTN_SECUNDARIO}>Ver solicitud</button>
-                                <button disabled={busy} onClick={() => tomar(pa)} className={BTN_PRIMARIO}>Tomar este trabajo</button>
+                                {esTizada(pa)
+                                    ? <button disabled={busy} onClick={() => enviarTizada(pa)} className={BTN_PRIMARIO} title="Revisa arte y datos, y lo manda a TIZADA PRO: la tizada vuelve sola como diseño pronto">Enviar a TIZADA PRO</button>
+                                    : <button disabled={busy} onClick={() => tomar(pa)} className={BTN_PRIMARIO}>Tomar este trabajo</button>}
                             </span>
                         )} />
                     <EnProduccion rows={enProduccion} onVerSolicitud={(sid) => navigate(`/ventas/solicitudes/${sid}`)} onAbrir={(o) => setFicha({ id: o.OrdenID, area: o.AreaID, codigo: o.CodigoOrden, cliente: o.Cliente })} />

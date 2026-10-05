@@ -69,6 +69,10 @@ const limiter = rateLimit({
 app.use('/api', limiter);
 
 app.use(cors());
+// [TIZADA PRO] Aviso firmado: necesita el cuerpo CRUDO para comprobar la firma → se monta ANTES de express.json.
+try {
+    app.use('/api/integracion/tizadapro', require('./routes/tizadaProAvisoRoutes'));
+} catch (e) { console.error('[TIZADA PRO] no se pudo montar el aviso:', e.message); }
 app.use(express.json({ limit: '200mb' }));
 
 // 🔍 REQUEST LOGGER: Loguea cada HTTP request

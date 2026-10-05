@@ -50,6 +50,12 @@ router.post('/tizadapro/moldes/:ref/pdf', (req, res, next) => uploadMoldeTizada.
 router.get('/costuras-iso', configuradorController.getCosturasIso);          // ?all=1 incluye inactivas
 router.post('/costuras-iso', configuradorController.crearCosturaIso);
 router.put('/costuras-iso/:id', configuradorController.updateCosturaIso);
+// [PASO A PASO] imagen de la costura, foto de un paso y catálogo de máquinas de costura
+router.post('/costuras-iso/:id/imagen', uploadFichaDiseno.single('imagen'), configuradorController.subirImagenCosturaIso);
+router.post('/ficha-diseno/imagen-paso', uploadFichaDiseno.single('imagen'), configuradorController.subirImagenPasoCostura);
+router.get('/maquinas-costura', configuradorController.getMaquinasCostura);  // ?all=1 incluye inactivas
+router.post('/maquinas-costura', configuradorController.crearMaquinaCostura);
+router.put('/maquinas-costura/:id', configuradorController.updateMaquinaCostura);
 
 // Catálogo de avíos (cierres, botones, elásticos…)
 router.get('/avios', configuradorController.getAvios);                     // ?all=1 incluye inactivos

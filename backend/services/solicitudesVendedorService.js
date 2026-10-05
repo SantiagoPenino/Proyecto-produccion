@@ -545,6 +545,9 @@ async function enviarADiseno(pool, user, parteId, b) {
   exigirVendedor(user);
   const tipoTrabajo = String(b.TipoTrabajo || '').toUpperCase();
   if (!['REVISAR', 'DESDE_CERO'].includes(tipoTrabajo)) throw fallo(400, 'Elegí el tipo de trabajo: "Revisar" o "Diseñar desde cero".');
+  // TIZADA PRO: con molde de TIZADA, la principal solo sale a Diseño si TIZADA acepta los datos y el arte pasa la
+  // revisión de letras (fuera de la transacción: llama a TIZADA y deja registrada la revisión).
+  await require('./solicitudesVendedorTizadaPro').validarParaDiseno(pool, user, baseTizadaPro(), parteId);
   const transaction = new sql.Transaction(pool);
   await transaction.begin();
   try {
@@ -560,6 +563,11 @@ async function enviarADiseno(pool, user, parteId, b) {
     await cambiarEstadoParte(transaction, user, pa, 'ENVIADO_DISENO', 'UsuarioEnvioDiseno = @U',
       tipoTrabajo === 'REVISAR' ? 'para revisar el arte del cliente' : 'para diseñar desde cero');
     await transaction.commit();
+    // TIZADA PRO: con TIZADAPRO_ENVIO_MODO=AL_ENVIAR_A_DISENO la principal sale sola a TIZADA (si tiene diseños y lista
+    // de talles cargados). Después de responder: si falla, el envío a Diseño ya quedó hecho (queda en el log).
+    if (pa.Tipo === 'PRINCIPAL') {
+      setImmediate(() => require('./solicitudesVendedorTizadaPro').envioAutomatico(pool, user, baseTizadaPro(), pa.SolicitudID, pa.ProductoSolID));
+    }
     return { ok: true };
   } catch (err) {
     await rollbackSeguro(transaction, `solicitudesVendedor.enviarADiseno parte ${parteId}`);
@@ -573,7 +581,10 @@ const SQL_BANDEJA = `
          pa.Modificada, pa.ModificadaDetalle, pa.ModificadaFecha,
          s.NombreTrabajo, s.CodCliente, LTRIM(RTRIM(c.Nombre)) AS ClienteNombre,
          p.ProductoNombre, p.TipoFabricacion, p.Cantidad AS CantidadPrendas,
-         uv.Nombre AS VendedorNombre, ud.Nombre AS DisenadorNombre
+         uv.Nombre AS VendedorNombre, ud.Nombre AS DisenadorNombre,
+         -- molde de TIZADA PRO del producto: la principal no se "toma", se manda a TIZADA (vuelve sola como diseño pronto)
+         CASE WHEN COL_LENGTH('dbo.ProductoVentaConfig', 'TizadaProMoldeRef') IS NULL THEN NULL
+              ELSE (SELECT LTRIM(RTRIM(vc.TizadaProMoldeRef)) FROM dbo.ProductoVentaConfig vc WHERE vc.ProIdProducto = p.ProIdProducto) END AS TizadaProMoldeRef
   FROM dbo.SolicitudesVendedorPartes pa
   JOIN dbo.SolicitudesVendedor s          ON s.SolicitudID = pa.SolicitudID AND s.Estado <> 'CANCELADA'
   JOIN dbo.SolicitudesVendedorProductos p ON p.ProductoSolID = pa.ProductoSolID AND p.Activo = 1 AND p.PedidoNoDocERP IS NULL
@@ -1173,6 +1184,18 @@ const moldeDelProducto = (pool, user, solicitudId, productoSolId) => require('./
 const guardarSublimacion = (pool, user, solicitudId, productoSolId, b) => require('./solicitudesVendedorSublimacion').guardarSublimacion(pool, user, baseTizadas(), solicitudId, productoSolId, b);
 const guardarTalles = (pool, user, solicitudId, productoSolId, b) => require('./solicitudesVendedorSublimacion').guardarTalles(pool, user, baseTizadas(), solicitudId, productoSolId, b);
 const vincularTizada = (pool, user, parteId, b) => require('./solicitudesVendedorTizadas').vincular(pool, user, baseTizadas(), parteId, b);
+// TIZADA PRO por API: diseños + lista de talles → pedido a TIZADA → vuelve la tizada (services/solicitudesVendedorTizadaPro.js)
+const baseTizadaPro = () => ({ ...baseTizadas(), cambiarEstadoParte });
+const tizadaProVer = (pool, user, solicitudId, productoSolId) => require('./solicitudesVendedorTizadaPro').ver(pool, user, baseTizadaPro(), solicitudId, productoSolId);
+const tizadaProGuardar = (pool, user, solicitudId, productoSolId, b) => require('./solicitudesVendedorTizadaPro').guardar(pool, user, baseTizadaPro(), solicitudId, productoSolId, b);
+const tizadaProEnviar = (pool, user, solicitudId, productoSolId, b) => require('./solicitudesVendedorTizadaPro').enviar(pool, user, baseTizadaPro(), solicitudId, productoSolId, b);
+async function tizadaProActualizar(pool, user, solicitudId, envioId, b) {
+  if (!esVendedor(user) && !(await esDisenador(pool, user))) throw fallo(403, 'Esto lo hace el vendedor o un diseñador habilitado.');
+  const r = await pool.request().input('E', sql.Int, envioId).input('S', sql.Int, solicitudId).query("SELECT EnvioID FROM dbo.TizadaProEnvios WHERE EnvioID = @E AND Origen = 'SOLICITUD' AND OrigenID = @S");
+  if (!r.recordset.length) throw fallo(404, 'Ese envío a TIZADA PRO no es de esta solicitud.');
+  const tz = require('./solicitudesVendedorTizadaPro');
+  return b?.reintentar ? tz.reintentarAplicar(pool, envioId) : tz.actualizar(pool, envioId);
+}
 const convertir = (pool, user, solicitudId, productoSolId, b, app) => require('./solicitudesVendedorConversion').convertir(pool, user, baseConversion(), solicitudId, productoSolId, b, app);
 // ¿Se llega a la fecha de entrega? Recorre los sectores sobre la cola real de cada uno (solo lectura).
 async function estimarPlazo(pool, user, solicitudId) {
@@ -1223,6 +1246,7 @@ const bobinasDelCliente = (pool, user, solicitudId) => require('./solicitudesVen
 const reintentarArchivos = (pool, user, solicitudId, productoSolId, app) => require('./solicitudesVendedorConversion').reintentarArchivos(pool, user, baseConversion(), solicitudId, productoSolId, app);
 
 module.exports = {
+  tizadaProVer, tizadaProGuardar, tizadaProEnviar, tizadaProActualizar, _baseTizadaPro: () => baseTizadaPro(),
   materialesPrincipal, definirProduccionArchivo, tizadasTizadaPro, vincularTizada, moldeDelProducto, guardarSublimacion, guardarTalles, convertir, reintentarArchivos, bobinasDelCliente, disenosEnProduccion, estimarPlazo, calendario,
   crear, actualizar, listar, obtener, guardarPrecio, confirmarSena, agregarInteraccion,
   enviarADiseno, bandeja, tomarParte, aceptarCambio, subirArchivo, quitarArchivo, cancelar,

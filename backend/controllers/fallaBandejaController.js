@@ -49,11 +49,20 @@ exports.getPendientes = async (req, res) => {
         const [areasCadena, areasUnidades, areasFallaCadena] = await Promise.all([libro.areasConCadena(pool), libro.areasQueCuentanUnidades(pool), libro.areasFallaPropiaRequiereCadena(pool)]);
         // [FALLA EST/PRO] ¿Hay un transfer (DTF/TPU) que alimenta esta orden? Entonces se puede
         // reponer aunque la secuencia lineal del pedido no muestre áreas anteriores.
-        let ramasTransfer = [];
+        let ramasTransfer = [], ramaPrenda = [];
         if (['EST', 'PRO'].includes(area)) {
             try {
                 const ramas = await libro.ramasReposicion(o.OrdenID, String(o.NoDocERP).trim(), area, pool);
                 ramasTransfer = ramas ? ramas.transfer.map(t => ({ OrdenID: t.OrdenID, CodigoOrden: String(t.CodigoOrden).trim(), AreaID: String(t.AreaID).trim() })) : [];
+                // Recorrido real de la prenda (SB → TWC → TWT → EMB …), para que el operario vea qué se rehace
+                ramaPrenda = ramas ? ramas.prenda.map(a => String(a.AreaID).trim()) : [];
+                // Archivos de cada DTF/TPU: para elegir qué transfer hay que reimprimir
+                for (const t of ramasTransfer) {
+                    const a = await pool.request().input('id', sql.Int, t.OrdenID).query(`
+                        SELECT ArchivoID, NombreArchivo, Metros, Copias, Piezas, Ancho, Alto, EstadoArchivo FROM ArchivosOrden
+                        WHERE OrdenID = @id AND ISNULL(EstadoArchivo,'') NOT IN ('CANCELADO','Cancelado') ORDER BY ArchivoID`);
+                    t.archivos = a.recordset;
+                }
             } catch (eR) { logger.warn('[fallaBandeja] ramasReposicion: ' + eR.message); }
         }
         const hayAlgoAntes = !!(data.anteriores && data.anteriores.length) || ramasTransfer.length > 0;
@@ -101,7 +110,7 @@ exports.getPendientes = async (req, res) => {
             } catch (eAcc) { logger.warn('[fallaBandeja] accesorios del pedido: ' + eAcc.message); accesorios = []; }
         }
         res.json({ ...data, accesorios, orden: { OrdenID: o.OrdenID, CodigoOrden: o.CodigoOrden, UM: String(o.UM || '').trim(), Magnitud: o.Magnitud, maxFallaPropia },
-                   cadenaHabilitada: areasCadena.includes(area), areasUnidades, ramasTransfer,
+                   cadenaHabilitada: areasCadena.includes(area), areasUnidades, ramasTransfer, ramaPrenda,
                    // Spec 39: en estas áreas no hay prenda de repuesto en stock — una falla
                    // PROPIA (no solo un faltante) también arma la cadena completa hacia atrás,
                    // porque si rompió/perdió la prenda física hay que fabricar una nueva.
@@ -394,7 +403,11 @@ exports.reportar = async (req, res) => {
             const magnitud = cuenta && cantE != null ? String(cantE) : '0';
             const destino = String(e.destino || madre.ProximoServicio || area).trim().toUpperCase();
             const codigo = await codigoFalla(tx, madre.CodigoOrden, fallaId);
+            // DTF mide metros (no cuenta unidades): la cantidad que dijo el operario viaja en la nota
+            // para que Diseño sepa cuántos transfers reimprimir; los metros aparecen al imprimir.
+            const cantInformada = e.cantidadInformada != null && e.cantidadInformada !== '' ? Number(e.cantidadInformada) : null;
             const notaF = `FALLA (${tipo === 'FALTANTE' ? 'faltante' : 'falla propia'}) reportada desde ${area} por ${String(o.CodigoOrden).trim()}: ${motivo}. Transfer nuevo para ${destino}.` +
+                (!cuenta && cantInformada > 0 ? ` Reponer ${cantInformada} prenda(s).` : '') +
                 (piezasTxt ? ` Piezas: ${piezasTxt}.` : '') + (nota ? ` Nota: ${nota}.` : '') +
                 (areaE === 'TPU' ? ' Misma matriz ya aprobada: no se vuelve a pedir aprobación ni se cobra matriz.' : '') +
                 (!cuenta ? ' Sin metros hasta imprimir y medir. Subir el archivo de reimpresión desde el detalle de la orden.' : '');

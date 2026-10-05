@@ -118,6 +118,19 @@ function piezasTelas(p) {
     </tbody></table>`;
 }
 
+// [PASO A PASO] secuencia de costura: paso, etapa, operación + piezas que une, costura ISO, máquina, tiempo, observaciones, imagen
+function pasosCostura(costuras, dataUri) {
+  const total = costuras.reduce((s, c) => s + (Number(c.tiempoMin) || 0), 0);
+  const conTiempo = costuras.some(c => c.tiempoMin != null);
+  return `<table><thead><tr><th>#</th><th>Etapa</th><th>Operación · piezas que une</th><th>Costura (ISO 4915)</th><th>Máquina</th><th>Min</th><th>Observaciones</th><th></th></tr></thead><tbody>${costuras.map((c, i) => {
+    const img = dataUri(c.imagenUrl);
+    return `<tr><td>${i + 1}</td><td>${esc(c.etapa || '')}</td><td><b>${esc(c.union)}</b>${c.piezas ? '<br>' + esc(c.piezas) : ''}</td>
+      <td>${esc(c.codigoISO || '—')}${c.nombre ? ' · ' + esc(c.nombre) : ''}</td><td>${esc(c.maquina || '')}</td>
+      <td>${c.tiempoMin != null ? esc(String(c.tiempoMin)) : ''}</td><td>${esc(c.observaciones || '')}</td>
+      <td>${img ? `<img src="${img}" alt="" style="width:90px;max-height:56px;object-fit:contain">` : ''}</td></tr>`;
+  }).join('')}${conTiempo ? `<tr><td colspan="5" style="text-align:right"><b>Tiempo total por prenda</b></td><td><b>${total.toFixed(2)}</b></td><td colspan="2">min</td></tr>` : ''}</tbody></table>`;
+}
+
 // Ficha técnica del producto del catálogo (Configurar productos → Ficha de diseño): avíos, costuras, material, tallas, notas, dibujo
 function fichaTecnica(p) {
   const f = p.FichaProducto;
@@ -130,7 +143,7 @@ function fichaTecnica(p) {
     </div>
     ${dib ? `<figure style="margin:6px 0"><div class="img" style="max-width:260px"><img src="${dib}" alt="" style="max-width:100%;max-height:220px"></div><figcaption>Dibujo de la ficha</figcaption></figure>` : ''}
     ${f.avios.length ? `<table><thead><tr><th>Avío</th><th>Por prenda</th><th>Medida</th><th>Nota</th></tr></thead><tbody>${f.avios.map(a => `<tr><td><b>${esc(a.nombre)}</b></td><td>${esc(a.cantidad ?? '')} ${esc(a.unidad)}</td><td>${esc(a.medida || '')}</td><td>${esc(a.nota || '')}</td></tr>`).join('')}</tbody></table>` : '<p class="nota">Sin avíos cargados en el configurador.</p>'}
-    ${f.costuras.length ? `<table><thead><tr><th>Unión</th><th>Costura (ISO 4915)</th></tr></thead><tbody>${f.costuras.map(c => `<tr><td><b>${esc(c.union)}</b></td><td>${esc(c.codigoISO)}${c.nombre ? ' · ' + esc(c.nombre) : ''}</td></tr>`).join('')}</tbody></table>` : '<p class="nota">Sin costuras cargadas en el configurador.</p>'}
+    ${f.costuras.length ? pasosCostura(f.costuras, dibujoDataUri) : '<p class="nota">Sin costuras cargadas en el configurador.</p>'}
     ${f.notas.length ? `<ul class="lista">${f.notas.map(n => `<li>${n.etiqueta ? '<b>' + esc(n.etiqueta) + ':</b> ' : ''}${esc(n.valor)}</li>`).join('')}</ul>` : ''}`;
 }
 

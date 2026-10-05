@@ -163,7 +163,9 @@ async function faltaSublimacion(cx, productoSolId) {
   }
   // Planilla de talles: no aplica a productos por medidas ni a los que no llevan molde (se piden por unidad)
   const sinTalles = datos.comoSeDefine === 'MEDIDA' || (esCatalogo && molde === 'NO');
-  if (!sinTalles && !p.Planillas && !String(datos.notaTalles || '').trim()) return 'Antes de enviar a Diseño, adjuntá la planilla de talles y nombres (o escribí la nota de talles).';
+  // La lista de jugadores cargada en el bloque TIZADA PRO también vale como lista de talles
+  const listaTizada = Array.isArray(datos.tizadaPro?.planilla) && datos.tizadaPro.planilla.length > 0;
+  if (!sinTalles && !p.Planillas && !listaTizada && !String(datos.notaTalles || '').trim()) return 'Antes de enviar a Diseño, adjuntá la planilla de talles y nombres (o escribí la nota de talles, o cargá la lista en TIZADA PRO).';
   return null;
 }
 

@@ -365,7 +365,6 @@ export default function SolicitudVendedorForm() {
     const SOLO_AL_EDITAR = [6];
     const bloquesVis = esEdicion ? BLOQUES : BLOQUES.filter(b => !SOLO_AL_EDITAR.includes(b.n));
     const numDe = (n) => bloquesVis.findIndex(b => b.n === n) + 1;
-    if (cargando) return <div className="fp"><div className="fp-wrap" style={{ display: 'flex', justifyContent: 'center', paddingTop: 60 }}><Loader2 className="animate-spin" /></div></div>;
 
     // ── Estado del pedido, en vivo (mismas reglas que el sello guardado) ──
     const cabChk = { NombreTrabajo: cab.NombreTrabajo, VendedorID: cab.VendedorID, FechaEntrega: cab.FechaEntrega, Ficha: cab.Ficha };
@@ -480,6 +479,10 @@ export default function SolicitudVendedorForm() {
     const restante = pago.ModoCobro === 'PRECIO_ESTABLECIDO' ? num(pago.PrecioPactado) - (pago.pagoSena ? num(pago.SenaMonto) : 0) : null;
     const iPaso = Math.max(0, bloquesVis.findIndex(b => b.n === paso));   // posición del paso abierto (el 4 ya no existe)
     const textoGuardar = esEdicion ? 'Guardar cambios' : 'Ingresar solicitud';
+
+    // Cargando (solo al editar): este return va DESPUÉS de todos los hooks. Si va antes, al terminar de cargar
+    // React encuentra más hooks que en el primer dibujo y la pantalla se cae ("No se pudo cargar la aplicación").
+    if (cargando) return <div className="fp"><div className="fp-wrap" style={{ display: 'flex', justifyContent: 'center', paddingTop: 60 }}><Loader2 className="animate-spin" /></div></div>;
 
     return (
         <div className="fp">

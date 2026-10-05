@@ -5,6 +5,7 @@ import StockArtEditModal from '../modals/config/StockArtEditModal';
 import TerminacionesEcouvModal from '../modals/config/TerminacionesEcouvModal';
 import NuevoProductoTerminadoModal from '../modals/config/NuevoProductoTerminadoModal';
 import Selector from '../ui/Selector';
+import { PasosCosturaEditor, TablaPasosCostura } from './ConfiguradorPasosCostura';   // [PASO A PASO]
 import { PaintBucket, Flag, Image as IconoImagen, Scissors, Shirt, Spool, Sticker, Palette, Factory, Check, ChevronDown, Pencil, Save, Star, Store, Handshake, Shuffle, TriangleAlert, X, RefreshCw, FolderOpen, CircleCheck, Lock, Upload, Printer, RotateCcw, Package, Boxes, SlidersHorizontal, Tag, ChevronRight, Box, Info } from 'lucide-react';
 
 /*
@@ -422,7 +423,12 @@ const fichaToForm = (d) => ({
     },
     fichaDisenoAnotaciones: (d.fichaDisenoAnotaciones || []).map(a => ({ x: Number(a.PosX), y: Number(a.PosY), texto: a.Texto })),
     fichaDisenoExtra: (d.fichaDisenoExtra || []).map(c => ({ label: c.Etiqueta, valor: c.Valor || '' })),
-    fichaDisenoCosturas: (d.fichaDisenoCosturas || []).map(c => ({ union: c.UnionNombre, iso: c.CodigoISO })),
+    // [PASO A PASO] cada costura es un paso de la secuencia de confección
+    fichaDisenoCosturas: (d.fichaDisenoCosturas || []).map(c => ({
+        union: c.UnionNombre || '', iso: c.CodigoISO || '', etapa: c.Etapa || '', descripcion: c.Descripcion || '',
+        maquinaId: c.MaquinaCosturaID ? String(c.MaquinaCosturaID) : '', tiempoMin: c.TiempoMin != null ? String(Number(c.TiempoMin)) : '',
+        observaciones: c.Observaciones || '', imagenUrl: c.ImagenUrl || '',
+    })),
     avios: (d.avios || []).map(a => ({ avioId: a.AvioID || '', nombre: a.Nombre || '', cantidad: a.Cantidad ?? 1, unidad: a.Unidad || 'u', medida: a.Medida || '', nota: a.Nota || '' })),
 });
 
@@ -481,7 +487,11 @@ const formToPayload = (f) => ({
         },
         fichaDisenoAnotaciones: f.fichaDisenoAnotaciones.map(a => ({ x: a.x, y: a.y, texto: a.texto })),
         fichaDisenoExtra: f.fichaDisenoExtra.filter(c => (c.label || '').trim()).map(c => ({ label: c.label.trim(), valor: c.valor || '' })),
-        fichaDisenoCosturas: f.fichaDisenoCosturas.filter(c => c.union && c.iso).map(c => ({ union: c.union, iso: c.iso })),
+        fichaDisenoCosturas: f.fichaDisenoCosturas.filter(c => (c.union || '').trim()).map(c => ({
+            union: c.union.trim(), iso: c.iso || null, etapa: c.etapa || null, descripcion: (c.descripcion || '').trim() || null,
+            maquinaId: c.maquinaId ? Number(c.maquinaId) : null, tiempoMin: c.tiempoMin === '' || c.tiempoMin == null ? null : Number(c.tiempoMin),
+            observaciones: (c.observaciones || '').trim() || null, imagenUrl: c.imagenUrl || null,
+        })),
         avios: f.avios.filter(a => (a.nombre || '').trim()).map(a => ({ avioId: a.avioId || null, nombre: a.nombre.trim(), cantidad: Number(a.cantidad) || 1, unidad: a.unidad || null, medida: a.medida || null, nota: a.nota || null })),
     }),
 });
@@ -509,6 +519,8 @@ export default function ConfigurarProductosPage() {
     const [filtroArea, setFiltroArea] = useState('');               // F1: filtro de la lista por producción principal
     const [moldesTpError, setMoldesTpError] = useState(null);  // TizadaPro no se puede leer (base o permiso)
     const [costurasIsoCat, setCosturasIsoCat] = useState([]); // CosturasISO (catálogo, ficha de diseño; incluye inactivas)
+    const [maquinasCosturaCat, setMaquinasCosturaCat] = useState([]); // [PASO A PASO] MaquinasCostura (incluye inactivas)
+    const [costurasPasoAPaso, setCosturasPasoAPaso] = useState(false); // [PASO A PASO] ¿se corrió configurador_costuras_paso_a_paso.sql?
     const [aviosCat, setAviosCat] = useState([]);             // CatalogoAvios (incluye inactivos)
     const [locales, setLocales] = useState([]);               // productos del local
     const [stockArts, setStockArts] = useState([]);           // [ACCESORIOS] cualquier artículo con variantes WMS (mástil, base…)
@@ -571,12 +583,15 @@ export default function ConfigurarProductosPage() {
 
     const loadCatalogos = useCallback(async () => {
         try {
-            const [t, iso, av, ar] = await Promise.all([
+            const [t, iso, av, ar, maq] = await Promise.all([
                 api.get(`${API}/tecnicas?all=1`),
                 api.get(`${API}/costuras-iso?all=1`),
                 api.get(`${API}/avios?all=1`),
                 api.get(`${API}/areas-principales`).catch(() => ({ data: { data: [] } })),
+                api.get(`${API}/maquinas-costura?all=1`).catch(() => ({ data: { data: [] } })),   // [PASO A PASO]
             ]);
+            setMaquinasCosturaCat(maq.data?.data || []);
+            setCosturasPasoAPaso(!!iso.data?.pasoAPaso);
             setAreasPrincipales(ar.data?.data || []);
             setTecnicasCat(t.data?.data || []);
             setCosturasIsoCat(iso.data?.data || []);
@@ -2490,28 +2505,10 @@ export default function ConfigurarProductosPage() {
                                                     </div>
 
                                                     <div className="border border-slate-200 rounded-xl p-4">
-                                                        {tituloSeccion('Costuras (ISO)', 'Elegí las costuras de la lista ISO 4915: qué unión y con qué costura.')}
-                                                        <div className="space-y-2">
-                                                            {form.fichaDisenoCosturas.map((c, i) => (
-                                                                <div key={i} className="flex items-center gap-2">
-                                                                    <input value={c.union} placeholder="Unión (ej. Hombros)"
-                                                                        onChange={e => setF({ fichaDisenoCosturas: form.fichaDisenoCosturas.map((x, j) => j === i ? { ...x, union: e.target.value } : x) })}
-                                                                        className={`w-48 ${claseCampoFila}`} />
-                                                                    <Selector value={c.iso}
-                                                                        onChange={e => setF({ fichaDisenoCosturas: form.fichaDisenoCosturas.map((x, j) => j === i ? { ...x, iso: e.target.value } : x) })}
-                                                                        claseBoton={claseSel('flex-1 border border-slate-200 rounded-lg px-2.5 py-1.5 text-sm text-slate-800')} anchoLista={300}>
-                                                                        {costurasIsoCat.filter(o => o.Activo !== false || o.CodigoISO === c.iso).map(o => <option key={o.CosturaISOID} value={o.CodigoISO}>{o.CodigoISO} — {o.Nombre}</option>)}
-                                                                    </Selector>
-                                                                    <button type="button" title="Quitar" onClick={() => setF({ fichaDisenoCosturas: form.fichaDisenoCosturas.filter((_, j) => j !== i) })}
-                                                                        className="text-red-400 hover:text-red-600 font-black px-1.5">×</button>
-                                                                </div>
-                                                            ))}
-                                                            <button type="button"
-                                                                onClick={() => setF({ fichaDisenoCosturas: [...form.fichaDisenoCosturas, { union: '', iso: costurasIsoCat.find(o => o.Activo !== false)?.CodigoISO || '' }] })}
-                                                                className={claseAgregar}>
-                                                                + Agregar costura
-                                                            </button>
-                                                        </div>
+                                                        {/* [PASO A PASO] la secuencia de costura de la prenda, de la preparación al planchado */}
+                                                        {tituloSeccion('Costura paso a paso', 'Cómo se cose la prenda, en orden: en cada paso, qué operación es, qué costura lleva (ISO 4915), en qué máquina, qué piezas une, cuánto tarda y qué cuidar. La imagen sale del catálogo de costuras, o subí una foto del paso.')}
+                                                        <PasosCosturaEditor pasos={form.fichaDisenoCosturas} onChange={pasos => setF({ fichaDisenoCosturas: pasos })}
+                                                            costurasIso={costurasIsoCat} maquinas={maquinasCosturaCat} pasoAPaso={costurasPasoAPaso} />
                                                     </div>
 
                                                     <div className="flex items-center gap-3">
@@ -2562,9 +2559,10 @@ export default function ConfigurarProductosPage() {
                                                                     )}
 
                                                                     {form.fichaDisenoCosturas.length > 0 && (
-                                                                        <div className="text-xs mb-3"><b>Costuras:</b> {form.fichaDisenoCosturas.map((c, i) => (
-                                                                            <span key={i} className="mr-2">{c.union}: <b>{c.iso}</b></span>
-                                                                        ))}</div>
+                                                                        <>
+                                                                            <div className="text-xs font-black uppercase mb-1">Costura paso a paso</div>
+                                                                            <TablaPasosCostura pasos={form.fichaDisenoCosturas} costurasIso={costurasIsoCat} maquinas={maquinasCosturaCat} />
+                                                                        </>
                                                                     )}
 
                                                                     {form.fichaDisenoExtra.length > 0 && (
@@ -2751,7 +2749,7 @@ export default function ConfigurarProductosPage() {
                         <CatalogoTecnicas tecnicas={tecnicasCat} onReload={loadCatalogos} />
                     )}
                     {vista === 'avios' && <CatalogoAvios avios={aviosCat} onReload={loadCatalogos} />}
-                    {vista === 'costuras' && <CatalogoCosturas costuras={costurasIsoCat} onReload={loadCatalogos} />}
+                    {vista === 'costuras' && <CatalogoCosturas costuras={costurasIsoCat} maquinas={maquinasCosturaCat} pasoAPaso={costurasPasoAPaso} onReload={loadCatalogos} />}
 
                 </div>
             )}
@@ -2944,11 +2942,24 @@ function CatalogoAvios({ avios, onReload }) {
 // ═════════════════════════════════════════════════════════════════════════
 //  Catálogo de costuras (dbo.CosturasISO): código ISO 4915 + nombre
 // ═════════════════════════════════════════════════════════════════════════
-function CatalogoCosturas({ costuras, onReload }) {
+function CatalogoCosturas({ costuras, maquinas = [], pasoAPaso = false, onReload }) {
     const [edits, setEdits] = useState({});
     const [savingId, setSavingId] = useState(null);
     const [nueva, setNueva] = useState({ codigoISO: '', nombre: '' });
     const [creando, setCreando] = useState(false);
+    const [subiendoImg, setSubiendoImg] = useState(null);   // [PASO A PASO] CosturaISOID que está subiendo imagen
+    // [PASO A PASO] la imagen se sube al toque y reemplaza el esquema de la costura en todas las fichas que la usan
+    const subirImagen = async (c, file) => {
+        if (!file) return;
+        setSubiendoImg(c.CosturaISOID);
+        try {
+            const fd = new FormData(); fd.append('imagen', file);
+            await api.post(`${API}/costuras-iso/${c.CosturaISOID}/imagen`, fd, { headers: { 'Content-Type': 'multipart/form-data' } });
+            toast.success(`✅ Imagen de ${c.CodigoISO} reemplazada. Se ve en todos los pasos que usan esta costura (salvo los que tienen foto propia).`);
+            onReload();
+        } catch (err) { toast.error('Error subiendo la imagen: ' + (err.response?.data?.error || err.message)); }
+        finally { setSubiendoImg(null); }
+    };
     const val = (c, k, orig) => edits[c.CosturaISOID]?.[k] ?? (orig ?? '');
     const setVal = (id, k, v) => setEdits(prev => ({ ...prev, [id]: { ...prev[id], [k]: v } }));
     const guardar = async (c) => {
@@ -2969,17 +2980,47 @@ function CatalogoCosturas({ costuras, onReload }) {
     return (
         // A todo el ancho, como el catálogo de técnicas (05/10)
         <div className="space-y-4">
-            <p className="text-xs text-slate-400 max-w-3xl">Tipos de costura con su código ISO 4915 (pespunte, overlock, recubridora…). En la ficha de diseño de cada producto se indica qué costura lleva cada unión. Una costura inactiva no se ofrece más, pero las fichas que ya la usan la conservan.</p>
+            <p className="text-xs text-slate-400 max-w-3xl">Tipos de costura con su código ISO 4915 (pespunte, overlock, recubridora…). En la ficha de diseño de cada producto, cada paso de costura usa una de estas: de acá salen su imagen y la máquina que se propone. Una costura inactiva no se ofrece más, pero las fichas que ya la usan la conservan.</p>
+            {!pasoAPaso && (
+                <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 max-w-3xl">Falta correr <b>docs/migrations/configurador_costuras_paso_a_paso.sql</b>: hasta entonces no hay imagen, descripción ni máquina por costura, ni catálogo de máquinas.</p>
+            )}
             <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
                 <table className="w-full text-sm">
                     <thead><tr className="text-left text-[10px] font-black uppercase tracking-wider text-slate-400 border-b border-slate-100">
-                        <th className="px-4 py-2 w-32">Código</th><th className="px-3 py-2">Nombre</th><th className="px-3 py-2 w-20 text-center">Activa</th><th className="px-3 py-2 w-28"></th>
+                        {pasoAPaso && <th className="px-4 py-2 w-40">Imagen</th>}
+                        <th className="px-4 py-2 w-32">Código</th><th className="px-3 py-2">Nombre{pasoAPaso ? ' · para qué se usa' : ''}</th>
+                        {pasoAPaso && <th className="px-3 py-2 w-56">Máquina típica</th>}
+                        <th className="px-3 py-2 w-20 text-center">Activa</th><th className="px-3 py-2 w-28"></th>
                     </tr></thead>
                     <tbody>
                         {costuras.map(c => (
-                            <tr key={c.CosturaISOID} className={`border-b border-slate-50 ${c.Activo === false ? 'opacity-50' : ''}`}>
+                            <tr key={c.CosturaISOID} className={`border-b border-slate-50 align-top ${c.Activo === false ? 'opacity-50' : ''}`}>
+                                {pasoAPaso && (
+                                    <td className="px-4 py-1.5">
+                                        {c.ImagenUrl
+                                            ? <a href={c.ImagenUrl} target="_blank" rel="noreferrer" title="Ver la imagen grande"><img src={c.ImagenUrl} alt={c.CodigoISO} className="h-16 w-32 object-contain rounded border border-slate-100 bg-white" /></a>
+                                            : <div className="h-16 w-32 rounded border border-dashed border-slate-200 text-[10px] text-slate-400 flex items-center justify-center">Sin imagen</div>}
+                                        <label className={`mt-1 inline-flex cursor-pointer items-center gap-1 text-[10px] font-bold text-indigo-600 hover:underline ${subiendoImg === c.CosturaISOID ? 'pointer-events-none opacity-50' : ''}`}
+                                            title="Reemplaza la imagen de esta costura en todas las fichas (no toca los pasos con foto propia)">
+                                            <Upload size={11} aria-hidden="true" />{subiendoImg === c.CosturaISOID ? 'Subiendo…' : 'Reemplazar imagen'}
+                                            <input type="file" accept="image/*" className="hidden" onChange={e => { const f = e.target.files?.[0]; e.target.value = ''; subirImagen(c, f); }} />
+                                        </label>
+                                    </td>
+                                )}
                                 <td className="px-4 py-1.5"><input value={val(c, 'codigoISO', c.CodigoISO)} onChange={e => setVal(c.CosturaISOID, 'codigoISO', e.target.value)} className="w-full border border-transparent hover:border-slate-200 focus:border-indigo-300 rounded-lg px-2 py-1 text-sm font-mono font-bold" /></td>
-                                <td className="px-3 py-1.5"><input value={val(c, 'nombre', c.Nombre)} onChange={e => setVal(c.CosturaISOID, 'nombre', e.target.value)} className="w-full border border-transparent hover:border-slate-200 focus:border-indigo-300 rounded-lg px-2 py-1 text-sm" /></td>
+                                <td className="px-3 py-1.5">
+                                    <input value={val(c, 'nombre', c.Nombre)} onChange={e => setVal(c.CosturaISOID, 'nombre', e.target.value)} className="w-full border border-transparent hover:border-slate-200 focus:border-indigo-300 rounded-lg px-2 py-1 text-sm" />
+                                    {pasoAPaso && <textarea rows={2} value={val(c, 'descripcion', c.Descripcion)} placeholder="Para qué se usa (ej. ruedos de remera, bocamangas)" onChange={e => setVal(c.CosturaISOID, 'descripcion', e.target.value)} className="mt-1 w-full border border-transparent hover:border-slate-200 focus:border-indigo-300 rounded-lg px-2 py-1 text-xs text-slate-500 resize-none" />}
+                                </td>
+                                {pasoAPaso && (
+                                    <td className="px-3 py-1.5">
+                                        <Selector value={String(val(c, 'maquinaId', c.MaquinaCosturaID) || '')} onChange={e => setVal(c.CosturaISOID, 'maquinaId', e.target.value)} title="Se propone sola al elegir esta costura en un paso"
+                                            claseBoton={claseSel('w-full border border-slate-200 rounded-lg px-2.5 py-1 text-sm')} anchoLista={260}>
+                                            <option value="">Sin máquina</option>
+                                            {maquinas.filter(m => m.Activo !== false || m.MaquinaCosturaID === c.MaquinaCosturaID).map(m => <option key={m.MaquinaCosturaID} value={String(m.MaquinaCosturaID)}>{m.Nombre}</option>)}
+                                        </Selector>
+                                    </td>
+                                )}
                                 <td className="px-3 py-1.5 text-center"><Toggle on={c.Activo !== false} onChange={() => toggle(c)} /></td>
                                 <td className="px-3 py-1.5 text-right">{edits[c.CosturaISOID] && <button onClick={() => guardar(c)} disabled={savingId === c.CosturaISOID} className="bg-indigo-600 text-white rounded-lg px-3 py-1 text-xs font-bold disabled:opacity-50">{savingId === c.CosturaISOID ? '…' : 'Guardar'}</button>}</td>
                             </tr>
@@ -2990,6 +3031,59 @@ function CatalogoCosturas({ costuras, onReload }) {
                     <input value={nueva.codigoISO} onChange={e => setNueva({ ...nueva, codigoISO: e.target.value })} placeholder="ISO 401" className="w-32 border border-slate-200 rounded-lg px-3 py-2 text-sm font-mono" />
                     <input value={nueva.nombre} onChange={e => setNueva({ ...nueva, nombre: e.target.value })} onKeyDown={e => e.key === 'Enter' && crear()} placeholder="Nombre (ej. Cadeneta 2 hilos)" className="flex-1 min-w-[220px] border border-slate-200 rounded-lg px-3 py-2 text-sm" />
                     <button onClick={crear} disabled={creando} className="bg-slate-800 text-white rounded-lg px-4 py-2 text-xs font-bold disabled:opacity-50">{creando ? '…' : '+ Agregar costura'}</button>
+                </div>
+            </div>
+            {pasoAPaso && <CatalogoMaquinasCostura maquinas={maquinas} onReload={onReload} />}
+        </div>
+    );
+}
+
+// [PASO A PASO] Catálogo de máquinas de costura (dbo.MaquinasCostura): tipos de máquina del taller
+function CatalogoMaquinasCostura({ maquinas, onReload }) {
+    const [edits, setEdits] = useState({});
+    const [savingId, setSavingId] = useState(null);
+    const [nueva, setNueva] = useState({ nombre: '', descripcion: '' });
+    const [creando, setCreando] = useState(false);
+    const val = (m, k, orig) => edits[m.MaquinaCosturaID]?.[k] ?? (orig ?? '');
+    const setVal = (id, k, v) => setEdits(prev => ({ ...prev, [id]: { ...prev[id], [k]: v } }));
+    const err = (e) => toast.error('Error: ' + (e.response?.data?.error || e.message));
+    const guardar = async (m) => {
+        const e = edits[m.MaquinaCosturaID]; if (!e) return;
+        setSavingId(m.MaquinaCosturaID);
+        try { await api.put(`${API}/maquinas-costura/${m.MaquinaCosturaID}`, e); toast.success('✅ Máquina guardada'); setEdits(prev => { const n = { ...prev }; delete n[m.MaquinaCosturaID]; return n; }); onReload(); }
+        catch (e2) { err(e2); } finally { setSavingId(null); }
+    };
+    const toggle = async (m) => { try { await api.put(`${API}/maquinas-costura/${m.MaquinaCosturaID}`, { activo: !m.Activo }); onReload(); } catch (e) { err(e); } };
+    const crear = async () => {
+        if (!nueva.nombre.trim()) return toast.error('Poné el nombre de la máquina (ej. Overlock 4 hilos).');
+        setCreando(true);
+        try { await api.post(`${API}/maquinas-costura`, nueva); toast.success('✅ Máquina creada'); setNueva({ nombre: '', descripcion: '' }); onReload(); }
+        catch (e) { err(e); } finally { setCreando(false); }
+    };
+    return (
+        <div className="space-y-2 pt-2">
+            <p className="text-[11px] font-black uppercase tracking-wider text-slate-400">Máquinas de costura</p>
+            <p className="text-xs text-slate-400 max-w-3xl">Tipos de máquina del taller (recta, overlock, recubridora…) para indicar en qué máquina se hace cada paso. Son tipos, no cada máquina física. Una máquina inactiva no se ofrece más, pero los pasos que ya la usan la conservan.</p>
+            <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+                <table className="w-full text-sm">
+                    <thead><tr className="text-left text-[10px] font-black uppercase tracking-wider text-slate-400 border-b border-slate-100">
+                        <th className="px-4 py-2 w-64">Máquina</th><th className="px-3 py-2">Para qué se usa</th><th className="px-3 py-2 w-20 text-center">Activa</th><th className="px-3 py-2 w-28"></th>
+                    </tr></thead>
+                    <tbody>
+                        {maquinas.map(m => (
+                            <tr key={m.MaquinaCosturaID} className={`border-b border-slate-50 ${m.Activo === false ? 'opacity-50' : ''}`}>
+                                <td className="px-4 py-1.5"><input value={val(m, 'nombre', m.Nombre)} onChange={e => setVal(m.MaquinaCosturaID, 'nombre', e.target.value)} className="w-full border border-transparent hover:border-slate-200 focus:border-indigo-300 rounded-lg px-2 py-1 text-sm font-bold" /></td>
+                                <td className="px-3 py-1.5"><input value={val(m, 'descripcion', m.Descripcion)} onChange={e => setVal(m.MaquinaCosturaID, 'descripcion', e.target.value)} className="w-full border border-transparent hover:border-slate-200 focus:border-indigo-300 rounded-lg px-2 py-1 text-sm text-slate-600" /></td>
+                                <td className="px-3 py-1.5 text-center"><Toggle on={m.Activo !== false} onChange={() => toggle(m)} /></td>
+                                <td className="px-3 py-1.5 text-right">{edits[m.MaquinaCosturaID] && <button onClick={() => guardar(m)} disabled={savingId === m.MaquinaCosturaID} className="bg-indigo-600 text-white rounded-lg px-3 py-1 text-xs font-bold disabled:opacity-50">{savingId === m.MaquinaCosturaID ? '…' : 'Guardar'}</button>}</td>
+                            </tr>
+                        ))}
+                    </tbody>
+                </table>
+                <div className="flex flex-wrap gap-2 px-4 py-3 border-t border-slate-100 bg-slate-50/60">
+                    <input value={nueva.nombre} onChange={e => setNueva({ ...nueva, nombre: e.target.value })} placeholder="Nombre (ej. Pretinadora)" className="w-64 border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+                    <input value={nueva.descripcion} onChange={e => setNueva({ ...nueva, descripcion: e.target.value })} onKeyDown={e => e.key === 'Enter' && crear()} placeholder="Para qué se usa" className="flex-1 min-w-[220px] border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+                    <button onClick={crear} disabled={creando} className="bg-slate-800 text-white rounded-lg px-4 py-2 text-xs font-bold disabled:opacity-50">{creando ? '…' : '+ Agregar máquina'}</button>
                 </div>
             </div>
         </div>
