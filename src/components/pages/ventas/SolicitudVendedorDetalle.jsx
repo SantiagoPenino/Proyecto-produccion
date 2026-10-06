@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { toast } from 'sonner';
-import { AlertTriangle, ArrowLeft, Ban, CalendarClock, CheckCircle2, ClipboardList, FileText, History, Loader2, MessageSquare, Paperclip, Pencil, Printer, RefreshCw, Send, Trash2, Upload } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, Ban, CalendarClock, CheckCircle2, ClipboardList, Factory, FileText, History, Loader2, MessageSquare, Paperclip, Pencil, Printer, RefreshCw, RotateCcw, Send, Trash2, Upload } from 'lucide-react';
 import { useAuth } from '../../../context/AuthContext';
 import { fileService } from '../../../client-portal/api/fileService';
 import api from '../../../services/apiClient';
@@ -11,11 +11,36 @@ import { RESPUESTA_MUESTRA } from './checklistSolicitud';
 import OrderDetailModal from '../../production/components/OrderDetailModal';
 import {
     BTN_PELIGRO, BTN_PRIMARIO, BTN_SECUNDARIO, Campo, ESTADO_PARTE, ESTADO_SOLICITUD, INPUT, Info, MONEDA, MotivoModal,
-    NOMBRE_PARTE, Pill, PillModificada, ROL_ARCHIVO, Sello, Checklist, TIPO_TRABAJO, VisorPdf, errorDe, plata,
+    NOMBRE_PARTE, ROL_ARCHIVO, Checklist, SEL_CAMPO, TIPO_TRABAJO, VisorPdf, claseSel, errorDe, plata, useConfirmar,
 } from './solicitudesComunes';
+import Selector from '../../ui/Selector';
 import EstadoProduccionPanel from './EstadoProduccionPanel';
 import TizadaProBloque from './TizadaProBloque';
+// fichaPedido.css sigue solo por la grilla con el panel "Estado para producción" al costado (fp-det-grid /
+// fp-det-aside, que son solo de diseño de página). El tema oscuro (fp-oscuro) y el panel con fp-panel ya no se usan acá.
 import './fichaPedido.css';
+
+// Tema claro (06/10): las zonas, sus títulos y los subtítulos con el estilo del resto del sistema. Antes eran clases
+// de fichaPedido.css (fp-zona, fp-zona-tit, fp-subtit), con el amarillo y la Barlow del tema oscuro.
+const ZONA = 'rounded-xl border border-slate-200 bg-white p-4';
+const TIT_ZONA = 'mb-3 text-sm font-black text-slate-800 [&_small]:ml-2 [&_small]:text-xs [&_small]:font-medium [&_small]:text-slate-400';
+const SUBTIT = 'mb-1.5 text-[10px] font-black uppercase tracking-wider text-slate-400 [&_small]:ml-1.5 [&_small]:text-[11px] [&_small]:font-medium [&_small]:normal-case [&_small]:tracking-normal';
+// Mayúscula inicial en cada palabra ("admin" → "Admin"), como el vendedor en la lista de solicitudes
+const capitalizar = (v) => String(v || '').trim().toLowerCase().replace(/\S+/g, w => w.charAt(0).toUpperCase() + w.slice(1));
+
+// Estados escritos normal, sin mayúsculas, con su color (06/10), como en la lista de solicitudes y la Bandeja. Las
+// pastillas de solicitudesComunes (Pill, PillModificada y el Sello torcido de la maqueta) van en mayúsculas; acá van
+// propias, con los mismos textos y colores. Pastilla la usa también la pantalla de Diseño.
+const PASTILLA = 'inline-block whitespace-nowrap rounded-xl px-2 py-0.5 text-xs font-semibold leading-snug';
+export const Pastilla = ({ e, mapa }) => {
+    const st = mapa[e] || { txt: e, cls: 'bg-slate-100 text-slate-600' };
+    return <span className={`${PASTILLA} ${st.cls}`}>{st.txt}</span>;
+};
+const PastillaModificada = ({ titulo }) => <span title={titulo || ''} className={`${PASTILLA} bg-fuchsia-50 text-fuchsia-700`}>Modificada · falta aceptar</span>;
+// Lo que antes era el sello ("LISTO PARA INGRESAR" / "FALTA INFO"), como en la lista de solicitudes
+const PastillaIngreso = ({ listo, faltan }) => (listo
+    ? <span className={`${PASTILLA} bg-emerald-50 text-emerald-700`}>Lista para ingresar</span>
+    : <span className={`${PASTILLA} bg-rose-50 text-rose-700`}>{faltan > 0 ? `Falta${faltan === 1 ? '' : 'n'} ${faltan} cosa${faltan === 1 ? '' : 's'}` : 'Falta info'}</span>);
 
 /**
  * Spec 41 — Detalle de una Solicitud: desde acá el vendedor adjunta archivos, libera a Diseño
@@ -120,7 +145,7 @@ export default function SolicitudVendedorDetalle() {
         finally { setSubida(null); setBusy(false); await cargar(); }
     };
 
-    if (!s) return <div className="fp fp-oscuro"><div className="p-10 flex justify-center"><Loader2 className="animate-spin" /></div></div>;
+    if (!s) return <div className="p-10 flex justify-center"><Loader2 className="animate-spin text-brand-cyan" /></div>;
 
     const abierta = s.Estado === 'INGRESADA' || s.Estado === 'EN_DISENO';
     const puedeVender = perfil.esVendedor && abierta;
@@ -137,17 +162,22 @@ export default function SolicitudVendedorDetalle() {
         { k: 'historial', t: 'Historial', n: s.Eventos.length },
     ];
 
+    // Tema claro, como la lista de solicitudes y la Bandeja de Diseño (06/10), y a todo el ancho como ellas (antes
+    // max-w-7xl centrado). Antes iba dentro de .fp-oscuro, el tema oscuro de Solicitudes (fichaPedido.css).
     return (
         <>
-        <div className="fp fp-oscuro">
-        <div className="max-w-7xl mx-auto space-y-4">
+        <div className="p-3 md:p-6 space-y-4">
+            {/* Encabezado como el de las otras pantallas: ícono de Lucide en brand-cyan y sin fondo, título grande */}
             <div className="flex flex-wrap items-start justify-between gap-3">
-                <div>
-                    <div className="flex flex-wrap items-center gap-2"><Pill e={s.Estado} mapa={ESTADO_SOLICITUD} />
-                        {abierta && s.Conversion.some(c => c.checklist) && <Sello listo={s.Conversion.every(c => !c.checklist || c.checklist.listo)} chico />}
-                        <span className="text-[11px] text-slate-400">Solicitud #{s.SolicitudID} · {fmtFechaHora(s.FechaSolicitud)}</span></div>
-                    <h1 className="text-xl font-black text-slate-800 mt-1 flex items-center gap-2"><ClipboardList size={20} className="text-indigo-500" /> {s.NombreTrabajo}</h1>
-                    <p className="text-sm text-slate-600">{s.ClienteNombre}{s.ClienteCodigo ? <span className="font-mono text-xs text-slate-400"> · {s.ClienteCodigo}</span> : null} · vendedor <b>{s.VendedorNombre || '—'}</b></p>
+                <div className="flex min-w-0 items-start gap-3">
+                    <ClipboardList size={30} className="mt-1 shrink-0 text-brand-cyan" aria-hidden="true" />
+                    <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2"><Pastilla e={s.Estado} mapa={ESTADO_SOLICITUD} />
+                            {abierta && s.Conversion.some(c => c.checklist) && <PastillaIngreso listo={s.Conversion.every(c => !c.checklist || c.checklist.listo)} faltan={s.Conversion.reduce((n, c) => n + (c.checklist?.faltan?.length || 0), 0)} />}
+                            <span className="text-xs text-slate-400">Solicitud #{s.SolicitudID} · {fmtFechaHora(s.FechaSolicitud)}</span></div>
+                        <h1 className="mt-1 text-2xl font-black leading-tight text-slate-800">{s.NombreTrabajo}</h1>
+                        <p className="text-sm text-slate-500">{s.ClienteNombre}{s.ClienteCodigo ? <span className="text-xs text-slate-400"> · {s.ClienteCodigo}</span> : null} · vendedor <b className="text-slate-700">{capitalizar(s.VendedorNombre) || '—'}</b></p>
+                    </div>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                     <button onClick={() => navigate(perfil.esVendedor ? '/ventas/solicitudes' : '/ventas/bandeja-diseno')} className={BTN_SECUNDARIO}><ArrowLeft size={14} /> Volver</button>
@@ -167,9 +197,9 @@ export default function SolicitudVendedorDetalle() {
             )}
 
             {subida && (
-                <div className="sticky top-2 z-20 bg-white border border-indigo-200 rounded-xl p-3 shadow">
-                    <div className="text-xs font-bold text-slate-700 flex items-center gap-2"><Loader2 size={12} className="animate-spin" /> Subiendo "{subida.nombre}"… {subida.pct}%</div>
-                    <div className="h-1.5 bg-slate-100 rounded-full mt-2 overflow-hidden"><div className="h-full bg-indigo-500 transition-all" style={{ width: `${subida.pct}%` }} /></div>
+                <div className="sticky top-2 z-20 bg-white border border-brand-cyan/30 rounded-xl p-3 shadow">
+                    <div className="text-xs font-bold text-slate-700 flex items-center gap-2"><Loader2 size={12} className="animate-spin text-brand-cyan" /> Subiendo "{subida.nombre}"… {subida.pct}%</div>
+                    <div className="h-1.5 bg-slate-100 rounded-full mt-2 overflow-hidden"><div className="h-full bg-brand-cyan transition-all" style={{ width: `${subida.pct}%` }} /></div>
                 </div>
             )}
 
@@ -185,13 +215,18 @@ export default function SolicitudVendedorDetalle() {
             </div>
 
             <div className="bg-white border border-slate-200 rounded-2xl">
-                <div className="flex flex-wrap gap-1 border-b border-slate-200 px-2 pt-2">
-                    {TABS.map(t => (
-                        <button key={t.k} onClick={() => setTab(t.k)}
-                            className={`px-3 py-2 text-xs font-bold border-b-2 -mb-px inline-flex items-center gap-1 ${tabActual === t.k ? 'border-indigo-600 text-indigo-700' : 'border-transparent text-slate-500 hover:text-slate-700'}`}>
-                            {t.ok ? <CheckCircle2 size={12} className="text-emerald-600" /> : null}{t.t}{t.n != null ? <span className="text-[10px] font-bold text-slate-400">{t.n}</span> : null}
-                        </button>
-                    ))}
+                {/* Pestañas subrayadas en brand-cyan, con su contador, como en Configurar Productos (antes texto de 12 px) */}
+                <div className="flex flex-wrap gap-1 border-b border-slate-200 px-2">
+                    {TABS.map(t => {
+                        const on = tabActual === t.k;
+                        return (
+                            <button key={t.k} type="button" onClick={() => setTab(t.k)} aria-current={on ? 'page' : undefined}
+                                className={`-mb-px inline-flex items-center gap-1.5 border-b-2 px-3 py-2.5 text-sm font-bold transition-colors ${on ? 'border-brand-cyan text-brand-cyan' : 'border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-700'}`}>
+                                {t.ok ? <CheckCircle2 size={13} className="text-emerald-600" /> : null}{t.t}
+                                {t.n != null ? <span className={`rounded-full px-1.5 text-[11px] font-black ${on ? 'bg-brand-cyan/10 text-brand-cyan' : 'bg-slate-100 text-slate-500'}`}>{t.n}</span> : null}
+                            </button>
+                        );
+                    })}
                 </div>
 
                 <div className="p-4">
@@ -256,18 +291,18 @@ export default function SolicitudVendedorDetalle() {
                     onConfirm={async (motivo) => { if (await hacer(() => svc.cancelar(id, motivo), 'Solicitud cancelada.')) setCancelando(false); }} />
             )}
         </div>
-        </div>
-        {/* La MISMA ficha de la orden que se abre con el ojito en el área: ahí se sube la matriz / el boceto / el arte.
-            Va fuera del tema oscuro: es una pantalla de producción y se ve igual que en las áreas. */}
+        {/* La MISMA ficha de la orden que se abre con el ojito en el área: ahí se sube la matriz / el boceto / el arte. */}
         <OrderDetailModal order={ficha} onClose={() => { setFicha(null); cargar(); }} onOrderUpdated={cargar} />
         <VisorPdf blob={pdf} nombre={`Ficha pedido SOL-${s.SolicitudID}.pdf`} onClose={() => setPdf(null)} />
         </>
     );
 }
 
+// Las tarjetas de arriba (cómo se cobra, precio, entrega, seña, servicios): blancas con borde sobre el fondo gris de la
+// página (06/10; con el gris claro de antes no se distinguían del fondo)
 const Dato = ({ l, v }) => (
-    <div className="bg-slate-50 rounded-xl px-3 py-2">
-        <div className="text-[9px] font-black uppercase tracking-wide text-slate-400">{l}</div>
+    <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
+        <div className="text-[10px] font-black uppercase tracking-wider text-slate-400">{l}</div>
         <div className="text-sm font-bold text-slate-800">{v}</div>
     </div>
 );
@@ -293,8 +328,8 @@ export function ProductoTab({ s, p, n, id, user, perfil, busy, abierta, puedeVen
                 {p.PedidoNoDocERP ? <span className="text-[10px] font-black uppercase text-emerald-700">Pedido {p.PedidoNoDocERP} · {fmtFechaHora(p.FechaConversion)}</span> : null}
             </div>
 
-            <section className="fp-zona">
-            <div className="fp-zona-tit">Solicitud del cliente <small>lo carga el vendedor</small></div>
+            <section className={ZONA}>
+            <div className={TIT_ZONA}>Solicitud del cliente <small>lo carga el vendedor</small></div>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
                 <Info l="Corte" v={p.Datos?.corte?.activo ? `${p.Datos.corte.tipoMolde} · ${p.Datos.corte.origenTela}` : 'No lleva'} />
                 <Info l="Costura" v={p.Datos?.costura?.activo ? (p.Datos.costura.instrucciones || 'Sin instrucciones especiales') : 'No lleva'} />
@@ -349,13 +384,13 @@ function PrincipalBloque({ p, pa, id, perfil, busy, abierta, puedeVender, arte, 
     // Con molde de TIZADA PRO: el arte es UN archivo por diseño (todas las piezas); diseños + lista de jugadores = paso 3
     const conTizada = p.TipoFabricacion === 'PRODUCTO_TERMINADO' && !!p.Config?.TizadaProMoldeRef;
     return (
-        <section className="fp-zona">
-            <div className="fp-zona-tit flex flex-wrap items-center justify-between gap-2">
+        <section className={ZONA}>
+            <div className={`${TIT_ZONA} flex flex-wrap items-center justify-between gap-2`}>
                 <span>Producción principal ({nombrePrincipal(p)}) <small>{p.Config?.Molde === 'NO' ? 'arte → con eso se envía a Diseño' : conTizada ? 'arte · telas por pieza · diseños y lista de jugadores → TIZADA PRO arma la tizada' : 'arte · telas por pieza · planilla de talles → con eso se envía a Diseño'}</small></span>
-                <span className="flex items-center gap-1.5"><Pill e={pa.Estado} mapa={ESTADO_PARTE} />{pa.Modificada ? <PillModificada /> : null}
+                <span className="flex items-center gap-1.5"><Pastilla e={pa.Estado} mapa={ESTADO_PARTE} />{pa.Modificada ? <PastillaModificada /> : null}
                     {d.disenoAutomatico ? <span className="px-2 py-0.5 rounded-full border text-[10px] font-black bg-emerald-100 text-emerald-700 border-emerald-200 normal-case tracking-normal" title={`Lo hizo ${d.disenoAutomatico.sistema} (${d.disenoAutomatico.referencia})`}>Diseño automático · {d.disenoAutomatico.sistema}</span> : null}
-                    {pa.DisenadorNombre ? <span className="text-[11px] font-bold text-slate-600 normal-case tracking-normal" style={{ fontFamily: 'Barlow, sans-serif' }}>{pa.Estado === 'DISENADO' ? 'Diseñó' : 'Lo tiene'} <b>{pa.DisenadorNombre}</b></span>
-                        : pa.Estado === 'ENVIADO_DISENO' ? <span className="text-[11px] font-bold text-slate-500 normal-case tracking-normal" style={{ fontFamily: 'Barlow, sans-serif' }}>nadie lo tomó todavía</span> : null}</span>
+                    {pa.DisenadorNombre ? <span className="text-[11px] font-bold text-slate-600 normal-case tracking-normal">{pa.Estado === 'DISENADO' ? 'Diseñó' : 'Lo tiene'} <b>{pa.DisenadorNombre}</b></span>
+                        : pa.Estado === 'ENVIADO_DISENO' ? <span className="text-[11px] font-bold text-slate-500 normal-case tracking-normal">nadie lo tomó todavía</span> : null}</span>
             </div>
             <div className="grid md:grid-cols-2 gap-3 text-xs">
                 <div className="space-y-0.5">
@@ -410,9 +445,9 @@ function PrincipalBloque({ p, pa, id, perfil, busy, abierta, puedeVender, arte, 
                     !bloqueada && perfil.esVendedor ? (faltaEnvio
                         ? <span className="text-[11px] font-bold text-amber-700 inline-flex items-center gap-1"><AlertTriangle size={12} /> Todavía no se puede enviar a Diseño: {faltaEnvio}</span>
                         : <>
-                            <select value={tipoTrabajo} onChange={e => setTipoTrabajo(e.target.value)} className="border border-slate-200 rounded-lg px-2 py-1.5 text-xs bg-white">
+                            <Selector value={tipoTrabajo} onChange={e => setTipoTrabajo(e.target.value)} claseBoton={claseSel('border border-slate-200 rounded-lg px-2 py-1.5 text-xs')} anchoLista={240}>
                                 {Object.entries(TIPO_TRABAJO).map(([k, t]) => <option key={k} value={k}>{t}</option>)}
-                            </select>
+                            </Selector>
                             <button disabled={busy} onClick={() => hacer(() => svc.enviarADiseno(pa.ParteID, tipoTrabajo), 'Producción principal enviada a la bandeja de Diseño.')} className={BTN_PRIMARIO}><Send size={12} /> Enviar a Diseño</button>
                         </>)
                     : <span className="text-slate-500">Todavía no se envió a Diseño.</span>
@@ -455,7 +490,7 @@ function TallesCampos({ id, p, puede, busy, hacer }) {
                 <div className="flex flex-wrap gap-1">
                     {[['TALLE', 'Por talle (prendas de vestir)'], ['MEDIDA', 'Por medidas en cm (banderas, toallas…)']].map(([k, t]) => (
                         <button type="button" key={k} disabled={!puede} onClick={() => set({ comoSeDefine: k })}
-                            className={`px-2.5 py-1 rounded-lg border text-[11px] font-bold ${v.comoSeDefine === k ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-600 border-slate-200'}`}>{t}</button>
+                            className={`px-2.5 py-1 rounded-lg border text-[11px] font-bold ${v.comoSeDefine === k ? 'bg-brand-cyan text-white border-brand-cyan' : 'bg-white text-slate-600 border-slate-200'}`}>{t}</button>
                     ))}
                 </div>
             )}
@@ -523,7 +558,7 @@ export function DisenoTab({ s, id, user, perfil, busy, abierta, telas, archivosD
                             const esDis = perfil.esDisenador || perfil.esAdmin;
                             const enviada = pa && pa.Estado !== 'INGRESADO';
                             return (
-                                <section className="fp-zona">
+                                <section className={ZONA}>
                                     <TizadaProBloque id={id} p={p} modo="diseno" puede={esDis && !bloqueada} puedeGenerar={esDis && !bloqueada && enviada}
                                         motivoNoGenerar={!esDis ? 'La tizada la genera un diseñador.' : !enviada ? 'El vendedor todavía no tocó "Enviar a Diseño" en la solicitud.' : bloqueada ? 'La solicitud está cerrada o ya es pedido.' : null}
                                         onCargado={() => hacer(async () => { })} />
@@ -549,8 +584,8 @@ function FichaProductoBloque({ f }) {
   const base = (api.defaults?.baseURL || '').replace(/\/api\/?$/, '');
   const dib = f.dibujoUrl ? (f.dibujoUrl.startsWith('http') ? f.dibujoUrl : base + f.dibujoUrl) : null;
   return (
-    <section className="fp-zona">
-      <div className="fp-zona-tit flex flex-wrap items-center justify-between gap-2">
+    <section className={ZONA}>
+      <div className={`${TIT_ZONA} flex flex-wrap items-center justify-between gap-2`}>
         <span>Ficha técnica del producto <small>del configurador · avíos, costuras, material, tallas</small></span>
         <button type="button" onClick={() => setAbierta(v => !v)} className={BTN_SECUNDARIO}>{abierta ? 'Ocultar' : 'Ver'}</button>
       </div>
@@ -589,7 +624,7 @@ function EstadoParteDiseno({ pa, user, perfil, busy, bloqueada, enProduccion = [
     const esMia = pa.DisenadorID && pa.DisenadorID === user?.id;
     return (
         <div className={`bg-white border rounded-lg p-2 text-xs space-y-1 ${pa.Modificada ? 'border-fuchsia-300' : 'border-slate-200'}`}>
-            <div className="flex flex-wrap items-center gap-1.5"><span className="font-black text-slate-800">{pa.Nombre}</span><Pill e={pa.Estado} mapa={ESTADO_PARTE} />{pa.Modificada ? <PillModificada /> : null}</div>
+            <div className="flex flex-wrap items-center gap-1.5"><span className="font-black text-slate-800">{pa.Nombre}</span><Pastilla e={pa.Estado} mapa={ESTADO_PARTE} />{pa.Modificada ? <PastillaModificada /> : null}</div>
             <div className="text-slate-600">
                 {pa.TipoTrabajo ? <>{TIPO_TRABAJO[pa.TipoTrabajo]} · </> : null}
                 {pa.DisenadorNombre ? <>Diseñador: <b>{pa.DisenadorNombre}</b></> : pa.Estado === 'INGRESADO' ? 'El vendedor todavía no lo envió a Diseño.' : pa.Estado === 'ENVIADO_DISENO' ? 'Nadie lo tomó todavía.' : null}
@@ -607,8 +642,8 @@ function EstadoParteDiseno({ pa, user, perfil, busy, bloqueada, enProduccion = [
                         return (
                             <div key={o.OrdenID} className="flex flex-wrap items-center gap-2">
                                 <span className="font-mono font-bold text-slate-700">{o.CodigoOrden}</span>
-                                <span className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-black uppercase border ${et.cls}`}>{et.txt}</span>
-                                <button type="button" onClick={() => onAbrirFicha?.({ id: o.OrdenID, area: o.AreaID, codigo: o.CodigoOrden, cliente: o.Cliente })} className="text-indigo-600 font-bold hover:underline">Abrir la ficha de la orden</button>
+                                <span className={`${PASTILLA} ${et.cls}`}>{et.txt}</span>
+                                <button type="button" onClick={() => onAbrirFicha?.({ id: o.OrdenID, area: o.AreaID, codigo: o.CodigoOrden, cliente: o.Cliente })} className="text-brand-cyan font-bold hover:underline">Abrir la ficha de la orden</button>
                             </div>
                         );
                     })}
@@ -656,15 +691,18 @@ function TablaServicios({ vista, s, p, id, user, perfil, busy, abierta, telas: t
     const telasElegidas = telas.filter(t => elegidas.has(normTxt(t.Material)));
     const telasPrincipal = telasElegidas.length ? telasElegidas : telas;
     return (
+        // Tema claro (06/10): el encabezado de grupo (cliente / diseñador) con el título como el de las zonas; antes, Barlow
+        // en mayúsculas, amarillo el del cliente y celeste el del diseñador, y cada columna con su tinte (fp-tabla-serv).
+        // En la vista de Diseño, una línea separa lo del cliente de lo del diseñador.
         <div className="overflow-x-auto border border-slate-200 rounded-xl">
-            <table className={`w-full text-xs fp-tabla-serv ${esDiseno ? 'min-w-[760px]' : 'min-w-[560px]'}`}>
+            <table className={`w-full text-xs ${esDiseno ? 'min-w-[760px] [&_td:nth-child(2)]:border-l [&_td:nth-child(2)]:border-slate-200' : 'min-w-[560px]'}`}>
                 <thead>
-                    <tr className="fp-grupo">
+                    <tr className="bg-slate-50 text-left [&>th]:px-3 [&>th]:py-2.5 [&>th]:text-sm [&>th]:font-black [&>th]:text-slate-800 [&_small]:ml-2 [&_small]:text-xs [&_small]:font-medium [&_small]:text-slate-400">
                         {esDiseno
-                            ? <><th className="cli">Solicitud del cliente <small>solo lectura</small></th><th className="dis">Diseñador <small>lo que va a producción</small></th></>
-                            : <th colSpan={2} className="cli">{titulo || 'Producción principal'} <small>lo que pidió y mandó · el diseño lo sigue Diseño desde su bandeja</small></th>}
+                            ? <><th>Solicitud del cliente <small>solo lectura</small></th><th className="border-l border-slate-200">Diseñador <small>lo que va a producción</small></th></>
+                            : <th colSpan={2}>{titulo || 'Producción principal'} <small>lo que pidió y mandó · el diseño lo sigue Diseño desde su bandeja</small></th>}
                     </tr>
-                    <tr className="bg-slate-50 text-[9px] font-black uppercase tracking-wide text-slate-500 text-left">
+                    <tr className="border-t border-slate-200 text-[10px] font-black uppercase tracking-wider text-slate-400 text-left">
                         <th className={`px-3 py-2 ${esDiseno ? 'w-[34%]' : 'w-[45%]'}`}>{esDiseno ? 'Servicio y archivos del cliente' : 'Servicio'}</th>
                         {!esDiseno && <th className="px-3 py-2">Archivos del cliente</th>}
                         {esDiseno && <th className="px-3 py-2">Diseño pronto (lo que va a producción)</th>}
@@ -694,6 +732,7 @@ function TablaServicios({ vista, s, p, id, user, perfil, busy, abierta, telas: t
 
 function FilaServicio({ vista = 'cliente', pa, user, perfil, busy, bloqueada, telas, archivos, onEnviar, onTomar, onAceptar, onSubir, onQuitar, onProduccion, enProduccion = [], onAbrirFicha, tizada = null, onVincularTizada, faltaEnvio = null, onDeshacerDisenado, archivosProducto = [] }) {
     const [tipoTrabajo, setTipoTrabajo] = useState(pa.ArteOrigen === 'CLIENTE' ? 'REVISAR' : 'DESDE_CERO');
+    const [dialogo, preguntar] = useConfirmar();   // confirmaciones con el estilo del sistema (06/10; antes window.confirm)
     const esDiseno = vista === 'diseno';
     const esPrincipal = pa.Tipo === 'PRINCIPAL';
     const esMia = pa.DisenadorID && pa.DisenadorID === user?.id;
@@ -718,20 +757,20 @@ function FilaServicio({ vista = 'cliente', pa, user, perfil, busy, bloqueada, te
             {pa.Observaciones && <div className="text-slate-500 whitespace-pre-line pt-1">Indicaciones: {pa.Observaciones}</div>}
             {!esDiseno && (
                 <div className="pt-1.5 flex flex-wrap items-center gap-1.5">
-                    <Pill e={pa.Estado} mapa={ESTADO_PARTE} />{pa.Modificada ? <PillModificada /> : null}
+                    <Pastilla e={pa.Estado} mapa={ESTADO_PARTE} />{pa.Modificada ? <PastillaModificada /> : null}
                     {pa.DisenadorNombre && <span className="text-[10px] text-slate-500">{pa.DisenadorNombre}</span>}
                     {!bloqueada && perfil.esVendedor && pa.Estado === 'INGRESADO' && (faltaEnvio
                         ? <span className="text-[10px] font-bold text-amber-700 inline-flex items-center gap-1" title={faltaEnvio}><AlertTriangle size={11} /> Para enviar a Diseño, completá "Piezas y telas"</span>
                         : <>
-                            <select value={tipoTrabajo} onChange={e => setTipoTrabajo(e.target.value)} className="border border-slate-200 rounded-lg px-1.5 py-1 text-[11px] bg-white">
+                            <Selector value={tipoTrabajo} onChange={e => setTipoTrabajo(e.target.value)} claseBoton={claseSel('border border-slate-200 rounded-lg px-1.5 py-1 text-[11px]')} anchoLista={240}>
                                 {Object.entries(TIPO_TRABAJO).map(([k, t]) => <option key={k} value={k}>{t}</option>)}
-                            </select>
+                            </Selector>
                             <button disabled={busy} onClick={() => onEnviar(tipoTrabajo)} className={BTN_PRIMARIO}><Send size={12} /> Enviar a Diseño</button>
                         </>)}
                     {/* "Diseñado" sin pasar por Diseño (RN-SOL.20): el vendedor adjuntó el diseño pronto. Deshacerlo = quitar ese archivo. */}
                     {!bloqueada && perfil.esVendedor && pa.Estado === 'DISENADO' && !pa.DisenadorID && prontos.length > 0 && (
                         <button type="button" disabled={busy} className={BTN_SECUNDARIO} title="Quedó Diseñado porque se adjuntó un diseño pronto sin pasar por Diseño. Al deshacerlo se quita ese archivo y el servicio vuelve a Ingresado."
-                            onClick={() => { if (window.confirm(`${pa.Nombre} quedó "Diseñado" porque se adjuntó ${prontos.length === 1 ? `"${prontos[0].NombreOriginal}"` : prontos.length + ' archivos'} como diseño pronto sin pasar por Diseño.\n\n¿Quitar ese archivo y volver a "Ingresado"? Queda en el historial.`)) onDeshacerDisenado?.(prontos); }}>
+                            onClick={async () => { if (await preguntar({ Icono: RotateCcw, titulo: 'Deshacer "Diseñado"', peligro: true, boton: 'Quitar y volver a Ingresado', texto: `${pa.Nombre} quedó "Diseñado" porque se adjuntó ${prontos.length === 1 ? `"${prontos[0].NombreOriginal}"` : prontos.length + ' archivos'} como diseño pronto sin pasar por Diseño. Se quita ${prontos.length === 1 ? 'ese archivo' : 'esos archivos'} y el servicio vuelve a "Ingresado". Queda en el historial.` })) onDeshacerDisenado?.(prontos); }}>
                             <Trash2 size={11} /> Deshacer "Diseñado"
                         </button>
                     )}
@@ -783,14 +822,14 @@ function FilaServicio({ vista = 'cliente', pa, user, perfil, busy, bloqueada, te
                 {prontos.map(a => (
                     <li key={a.ArchivoID} className="bg-emerald-50 border border-emerald-200 rounded-lg px-2 py-1.5">
                         <Miniatura a={a} tam={44} />
-                    <a href={a.UrlDrive} target="_blank" rel="noreferrer" className="font-bold text-indigo-700 hover:underline inline-flex items-center gap-1 break-all flex-1 min-w-0"><FileText size={12} /> {a.NombreOriginal}</a>
+                    <a href={a.UrlDrive} target="_blank" rel="noreferrer" className="font-bold text-brand-cyan hover:underline inline-flex items-center gap-1 break-all flex-1 min-w-0"><FileText size={12} /> {a.NombreOriginal}</a>
                         <div className="text-[10px] text-slate-500">{a.AnchoM && a.AltoM ? `${Number(a.AnchoM).toFixed(2)} × ${Number(a.AltoM).toFixed(2)} m · ` : ''}{a.UsuarioNombre || ''} · {fmtFechaHora(a.FechaSubida)}</div>
                         {esPrincipal && <TelaCopias a={a} telas={telas} puede={puedeDisenar} busy={busy} onGuardar={(datos) => onProduccion(a, datos)} />}
                         {pa.Tipo === 'DTF' && <TelaCopias soloCopias a={a} telas={[]} puede={puedeSubirPronto} busy={busy} onGuardar={(datos) => onProduccion(a, datos)} />}
                         {puedeSubirPronto && (
                             <div className="mt-1 flex flex-wrap items-center gap-3">
                                 <BotonArchivo etiqueta="Sustituir por el archivo corregido" chico onFiles={(files) => onSubir(files, { Rol: 'DISENO_PRONTO', ReemplazaA: a.ArchivoID })} />
-                                {(prontos.length > 1 || !pa.DisenadorID) && <button type="button" disabled={busy} onClick={() => { if (window.confirm(prontos.length > 1 ? `¿Quitar "${a.NombreOriginal}" del diseño pronto de ${pa.Nombre}? No va a ir a producción. Queda registrado en el historial.` : `¿Quitar "${a.NombreOriginal}"? Es el único diseño pronto de ${pa.Nombre}: el servicio vuelve a "Ingresado" y se puede enviar a Diseño. Queda registrado en el historial.`)) onQuitar(a); }} className="text-rose-600 font-bold hover:underline inline-flex items-center gap-0.5"><Trash2 size={11} /> {prontos.length > 1 ? 'Quitar este archivo' : 'Quitar (vuelve a Ingresado)'}</button>}
+                                {(prontos.length > 1 || !pa.DisenadorID) && <button type="button" disabled={busy} onClick={async () => { if (await preguntar({ Icono: Trash2, titulo: 'Quitar el archivo', peligro: true, boton: 'Quitar', texto: prontos.length > 1 ? `"${a.NombreOriginal}" sale del diseño pronto de ${pa.Nombre}: no va a ir a producción. Queda registrado en el historial.` : `"${a.NombreOriginal}" es el único diseño pronto de ${pa.Nombre}: el servicio vuelve a "Ingresado" y se puede enviar a Diseño. Queda registrado en el historial.` })) onQuitar(a); }} className="text-rose-600 font-bold hover:underline inline-flex items-center gap-0.5"><Trash2 size={11} /> {prontos.length > 1 ? 'Quitar este archivo' : 'Quitar (vuelve a Ingresado)'}</button>}
                             </div>
                         )}
                     </li>
@@ -808,7 +847,7 @@ function FilaServicio({ vista = 'cliente', pa, user, perfil, busy, bloqueada, te
 
     const estadoBase = (
         <>
-            <div className="flex flex-wrap items-center gap-1"><Pill e={pa.Estado} mapa={ESTADO_PARTE} />{pa.Modificada ? <PillModificada /> : null}</div>
+            <div className="flex flex-wrap items-center gap-1"><Pastilla e={pa.Estado} mapa={ESTADO_PARTE} />{pa.Modificada ? <PastillaModificada /> : null}</div>
             {pa.TipoTrabajo && <div className="text-slate-500">{TIPO_TRABAJO[pa.TipoTrabajo]}</div>}
             {pa.DisenadorNombre && <div className="text-slate-600">Diseñador: <b>{pa.DisenadorNombre}</b></div>}
             {pa.FechaEnvioDiseno && <div className="text-[10px] text-slate-400">Enviado a diseño {fmtFechaHora(pa.FechaEnvioDiseno)}</div>}
@@ -821,6 +860,7 @@ function FilaServicio({ vista = 'cliente', pa, user, perfil, busy, bloqueada, te
         <tr className={`align-top border-t border-slate-200 ${pa.Modificada ? 'bg-fuchsia-50/40' : ''}`}>
             {esDiseno ? celdaServicioArchivos : <>{celdaServicio}{celdaCliente}</>}
             {esDiseno ? celdaDiseno : null}
+            {dialogo}
         </tr>
     );
 }
@@ -837,8 +877,8 @@ function FilaServicio({ vista = 'cliente', pa, user, perfil, busy, bloqueada, te
    ARTE del cliente que va en esa pieza. Es lo que el diseñador necesita para armar la tizada;
    hasta que está completo, la producción principal no se manda a Diseño. */
 function PiezasTelasBloque({ id, p, busy, puede, hacer, artes = [], onEstado, plano = false, conTizada = false }) {
-    const zona = plano ? 'pt-3 mt-3 border-t border-slate-200' : 'fp-zona';
-    const tit = plano ? 'fp-subtit' : 'fp-zona-tit';
+    const zona = plano ? 'pt-3 mt-3 border-t border-slate-200' : ZONA;
+    const tit = plano ? SUBTIT : TIT_ZONA;
     const [info, setInfo] = useState(null);      // respuesta de moldeDelProducto
     const [modelo, setModelo] = useState('');
     const [piezas, setPiezas] = useState({});    // pieza → { telaProIdProducto, archivoId, nota }
@@ -928,17 +968,17 @@ function PiezasTelasBloque({ id, p, busy, puede, hacer, artes = [], onEstado, pl
             <div className="flex flex-wrap items-end gap-3 mb-3 text-xs">
                 <label className="min-w-[220px]">
                     <div className="text-[9px] font-black uppercase tracking-wide text-slate-400">Modelo <span className="font-normal normal-case">(molde {info.moldeNombre})</span></div>
-                    <select value={mod?.clave || ''} onChange={e => setModelo(e.target.value)} className={INPUT} disabled={info.modelos.length <= 1}>
+                    <Selector value={mod?.clave || ''} onChange={e => setModelo(e.target.value)} claseBoton={claseSel(SEL_CAMPO)} disabled={info.modelos.length <= 1} anchoLista={300}>
                         {info.modelos.map(m => <option key={m.clave} value={m.clave}>{m.nombre}{m.esDefault ? ' ★' : ''} · {m.piezas.length} piezas</option>)}
-                    </select>
+                    </Selector>
                 </label>
                 {info.telas.length > 0 && (
                     <label className="min-w-[220px]">
                         <div className="text-[9px] font-black uppercase tracking-wide text-slate-400">Poner todas las piezas en</div>
-                        <select value="" onChange={e => { if (e.target.value) todasEn(e.target.value); }} className={INPUT}>
+                        <Selector value="" onChange={e => { if (e.target.value) todasEn(e.target.value); }} claseBoton={claseSel(SEL_CAMPO)} anchoLista={260}>
                             <option value="">Elegir una tela…</option>
                             {info.telas.map(t => <option key={t.proIdProducto} value={t.proIdProducto}>{t.nombre}</option>)}
-                        </select>
+                        </Selector>
                     </label>
                 )}
                 {!info.telas.length && <div className="text-rose-600 font-bold">El molde no tiene telas que existan en nuestro catálogo: revisá TizadaPro y Configurar productos.</div>}
@@ -972,17 +1012,17 @@ function PiezasTelasBloque({ id, p, busy, puede, hacer, artes = [], onEstado, pl
                                         {z.telaFija
                                             ? <div className="text-slate-700">{z.telaFija.nombre} <span className="text-[10px] text-slate-400">· fija del molde</span></div>
                                             : (
-                                                <select value={v.telaProIdProducto || ''} onChange={e => set(z.pieza, 'telaProIdProducto', e.target.value)} className={INPUT + (!v.telaProIdProducto ? ' border-rose-300' : '')}>
+                                                <Selector value={v.telaProIdProducto || ''} onChange={e => set(z.pieza, 'telaProIdProducto', e.target.value)} claseBoton={claseSel(SEL_CAMPO + (!v.telaProIdProducto ? ' border-rose-300' : ''))} anchoLista={260}>
                                                     <option value="">Elegir tela…</option>
                                                     {info.telas.map(t => <option key={t.proIdProducto} value={t.proIdProducto}>{t.nombre}{telaDefault?.proIdProducto === t.proIdProducto ? ' ★' : ''}</option>)}
-                                                </select>
+                                                </Selector>
                                             )}
                                     </td>
                                     {!conTizada && <td className="px-2 py-1.5">
-                                        <select value={v.archivoId || ''} onChange={e => set(z.pieza, 'archivoId', e.target.value)} className={INPUT}>
+                                        <Selector value={v.archivoId || ''} onChange={e => set(z.pieza, 'archivoId', e.target.value)} claseBoton={claseSel(SEL_CAMPO)} anchoLista={280}>
                                             <option value="">Sin arte (lo diseña el taller)</option>
                                             {artes.map(a => <option key={a.ArchivoID} value={a.ArchivoID}>{a.NombreOriginal}</option>)}
-                                        </select>
+                                        </Selector>
                                     </td>}
                                     <td className="px-2 py-1.5"><input value={v.nota || ''} onChange={e => set(z.pieza, 'nota', e.target.value)} placeholder="Ej: color, ubicación del arte" className={INPUT} maxLength={200} /></td>
                                 </tr>
@@ -1023,11 +1063,11 @@ function TizadaBloque({ pa, tizada, prontos, puede, busy, onVincular, onSubirHoj
     const fmtM = (cm) => (cm ? (Number(cm) / 100).toFixed(2) + ' m' : '—');
 
     return (
-        <div className="mb-2 rounded-lg border border-indigo-200 bg-indigo-50/40 px-2.5 py-2">
+        <div className="mb-2 rounded-lg border border-brand-cyan/30 bg-brand-cyan/5 px-2.5 py-2">
             <div className="flex items-center justify-between gap-2 flex-wrap">
-                <div className="text-[10px] font-black uppercase tracking-wide text-indigo-700">Tizada (TizadaPro)</div>
+                <div className="text-[10px] font-black uppercase tracking-wide text-brand-cyan">Tizada (TizadaPro)</div>
                 {puede && !abierto && (
-                    <button type="button" disabled={busy} onClick={abrir} className="text-[11px] font-bold text-indigo-700 hover:underline">
+                    <button type="button" disabled={busy} onClick={abrir} className="text-[11px] font-bold text-brand-cyan hover:underline">
                         {tizada ? 'Cambiar tizada' : 'Vincular tizada de TizadaPro'}
                     </button>
                 )}
@@ -1082,7 +1122,7 @@ function TizadaBloque({ pa, tizada, prontos, puede, busy, onVincular, onSubirHoj
                                         {t.hojas.some(h => !h.codArticulo) && <div className="text-rose-600 font-bold">Tiene una tela que no está en el catálogo de Sublimación.</div>}
                                     </div>
                                     <button type="button" disabled={busy || t.hojas.some(h => !h.codArticulo)} onClick={() => elegir(t)}
-                                        className="text-[11px] font-black px-2.5 py-1 rounded-full bg-indigo-600 text-white disabled:opacity-50">
+                                        className="text-[11px] font-black px-2.5 py-1 rounded-full bg-brand-cyan text-white disabled:opacity-50">
                                         {lista.moldeRef && t.moldeRef && lista.moldeRef !== t.moldeRef ? 'Usar igual (otro molde)' : 'Usar esta tizada'}
                                     </button>
                                 </li>
@@ -1110,12 +1150,12 @@ function TelaCopias({ a, telas, puede, busy, onGuardar, soloCopias }) {
     return (
         <div className="flex flex-wrap items-end gap-1 mt-1">
             {!soloCopias && <label className={`text-[10px] ${a.Material ? 'text-slate-500' : 'text-rose-600 font-bold'}`}>{a.Material ? 'Tela de este archivo' : 'Falta elegir la tela de este archivo'}
-                <select value={a.CodArticulo || ''} disabled={busy} onChange={e => { if (e.target.value) onGuardar({ CodArticulo: e.target.value, Copias: parseInt(copias, 10) || 1 }); }}
-                    className={`block border rounded-lg px-2 py-1 text-xs bg-white max-w-[200px] font-normal text-slate-800 ${a.Material ? 'border-slate-200' : 'border-rose-300'}`}>
+                <Selector value={a.CodArticulo || ''} disabled={busy} onChange={e => { if (e.target.value) onGuardar({ CodArticulo: e.target.value, Copias: parseInt(copias, 10) || 1 }); }}
+                    claseBoton={claseSel(`border rounded-lg px-2 py-1 text-xs max-w-[200px] font-normal ${a.Material ? 'border-slate-200' : 'border-rose-300'}`)} anchoLista={260}>
                     <option value="">Elegir la tela…</option>
                     {a.CodArticulo && !telas.some(t => t.CodArticulo === a.CodArticulo) && <option value={a.CodArticulo}>{a.Material}</option>}
                     {telas.map(t => <option key={t.CodArticulo} value={t.CodArticulo}>{t.Material}</option>)}
-                </select>
+                </Selector>
             </label>}
             <label className="text-[10px] text-slate-500">{soloCopias ? 'Copias de este archivo' : 'Copias'}
                 <input type="number" min="1" step="1" value={copias} disabled={busy} onChange={e => setCopias(e.target.value)} onBlur={guardarCopias}
@@ -1135,29 +1175,38 @@ function Miniatura({ a, tam = 64 }) {
     const src = idDrive && !error ? `https://drive.google.com/thumbnail?id=${idDrive}&sz=w300` : null;
     const ext = (String(a.NombreOriginal || '').split('.').pop() || '').toUpperCase().slice(0, 4);
     return (
-        <a href={a.UrlDrive} target="_blank" rel="noreferrer" className="fp-mini" style={{ width: tam, height: tam }} title={`Abrir "${a.NombreOriginal}"`}>
-            {src ? <img src={src} alt="" loading="lazy" onError={() => setError(true)} /> : <span className="fp-mini-ext">{ext || <FileText size={16} />}</span>}
+        // Tema claro (06/10): antes fp-mini / fp-mini-ext de fichaPedido.css, con los colores del tema oscuro
+        <a href={a.UrlDrive} target="_blank" rel="noreferrer" style={{ width: tam, height: tam }} title={`Abrir "${a.NombreOriginal}"`}
+            className="inline-flex shrink-0 items-center justify-center overflow-hidden rounded-lg border border-slate-200 bg-slate-50 transition-colors hover:border-brand-cyan">
+            {src ? <img src={src} alt="" loading="lazy" onError={() => setError(true)} className="h-full w-full bg-white object-cover" /> : <span className="text-[11px] font-black text-slate-400">{ext || <FileText size={16} />}</span>}
         </a>
     );
 }
 
+// Quitar un archivo de la solicitud: la confirmación (06/10; antes window.confirm)
+const quitarArchivo = (a) => ({ Icono: Trash2, titulo: 'Quitar el archivo', peligro: true, boton: 'Quitar', texto: `"${a.NombreOriginal}" sale de la solicitud. Queda registrado en el historial.` });
+
 function ArchivosCelda({ archivos, vacio, puedeQuitar, onQuitar, conRol }) {
+    const [dialogo, preguntar] = useConfirmar();
     if (!archivos.length) return <div className="text-slate-400">{vacio}</div>;
     return (
+        <>
         <ul className="space-y-1.5">
             {archivos.map(a => (
-                <li key={a.ArchivoID} className="fp-archivo">
+                <li key={a.ArchivoID} className="flex items-start gap-2">
                     <Miniatura a={a} />
                     <div className="min-w-0">
-                    <a href={a.UrlDrive} target="_blank" rel="noreferrer" className="font-bold text-indigo-700 hover:underline inline-flex items-center gap-1 break-all">{a.NombreOriginal}</a>
+                    <a href={a.UrlDrive} target="_blank" rel="noreferrer" className="font-bold text-brand-cyan hover:underline inline-flex items-center gap-1 break-all">{a.NombreOriginal}</a>
                     <div className="text-[10px] text-slate-500">
                         {conRol || a.Rol ? (ROL_ARCHIVO[a.Rol] || a.Rol) : ''} · {a.UsuarioNombre || ''} · {fmtFechaHora(a.FechaSubida)}
-                        {puedeQuitar && onQuitar && <button onClick={() => { if (window.confirm(`¿Quitar "${a.NombreOriginal}" de la solicitud? Queda registrado en el historial.`)) onQuitar(a); }} className="ml-2 text-rose-600 hover:underline inline-flex items-center gap-0.5"><Trash2 size={11} /> Quitar</button>}
+                        {puedeQuitar && onQuitar && <button onClick={async () => { if (await preguntar(quitarArchivo(a))) onQuitar(a); }} className="ml-2 text-rose-600 hover:underline inline-flex items-center gap-0.5"><Trash2 size={11} /> Quitar</button>}
                     </div>
                     </div>
                 </li>
             ))}
         </ul>
+        {dialogo}
+        </>
     );
 }
 
@@ -1170,11 +1219,16 @@ function Conversion({ s, p, pedido, faltantes, avisos = [], checklist, puedeVend
     useEffect(() => {
         if (usaTelaCliente && puedeVender && !p.PedidoNoDocERP) svc.bobinas(id).then(setBobinas).catch(() => setBobinas([]));
     }, [usaTelaCliente, puedeVender, p.PedidoNoDocERP, id]);
+    const [dialogo, preguntar] = useConfirmar();   // confirmación con el estilo del sistema (06/10; antes window.confirm)
     if (s.Estado === 'CANCELADA') return null;
     const creado = pedido && ['PASANDO_ARCHIVOS', 'CREADO', 'ERROR_ARCHIVOS'].includes(pedido.estado);
-    const convertir = () => {
-        const txt = `Vas a crear el pedido de producción del Producto "${p.TipoFabricacion === 'PRODUCTO_TERMINADO' ? (p.ProductoNombre || p.ProIdProducto) : 'personalizado del cliente'}" (${p.Cantidad} prendas).\n\nEntra a producción igual que si lo cargaras en "Ventas → Pedido de prenda": se crean las órdenes de cada área y se les pasan los archivos de diseño pronto.\n\nNo se puede deshacer desde acá. ¿Crear el pedido?`;
-        if (!window.confirm(txt)) return;
+    const convertir = async () => {
+        const ok = await preguntar({
+            Icono: Factory, titulo: 'Crear el pedido de producción', boton: 'Crear el pedido',
+            texto: `Producto "${p.TipoFabricacion === 'PRODUCTO_TERMINADO' ? (p.ProductoNombre || p.ProIdProducto) : 'personalizado del cliente'}" (${p.Cantidad} prendas). Entra a producción igual que si lo cargaras en "Ventas → Pedido de prenda": se crean las órdenes de cada área y se les pasan los archivos de diseño pronto.`,
+            nota: 'No se puede deshacer desde acá.',
+        });
+        if (!ok) return;
         hacer(() => svc.convertir(id, p.ProductoSolID, usaTelaCliente ? bobinaId : null));
     };
 
@@ -1203,13 +1257,14 @@ function Conversion({ s, p, pedido, faltantes, avisos = [], checklist, puedeVend
 
     return (
         <div className="text-xs space-y-2">
+            {dialogo}
             <EstadoProduccionPanel ch={checklist || { listo: faltantes.length === 0, faltan: faltantes, ok: [], luego: [] }} />
             {faltantes.length ? (
                 <>
                     <div className="mt-2 text-[11px] text-slate-600 bg-white border border-slate-200 rounded-lg p-2">
                         <b>Dónde se completa cada cosa:</b> la <b>tela y las copias</b> las carga el diseñador en esta misma tabla, columna "Diseño pronto", debajo de cada archivo (se guardan solas al cambiar).
                         Los <b>datos de un servicio</b> (tipo / variante, material, cantidades) se cargan en
-                        {' '}{puedeVender ? <button type="button" onClick={() => navigate(`/ventas/solicitudes/${id}/editar`)} className="text-indigo-600 font-bold hover:underline">Editar solicitud</button> : <b>Editar solicitud</b>}
+                        {' '}{puedeVender ? <button type="button" onClick={() => navigate(`/ventas/solicitudes/${id}/editar`)} className="text-brand-cyan font-bold hover:underline">Editar solicitud</button> : <b>Editar solicitud</b>}
                         {' '}y se guardan con "Guardar cambios de la solicitud". Los <b>archivos</b> se guardan solos al subirlos.
                     </div>
                 </>
@@ -1232,10 +1287,10 @@ function Conversion({ s, p, pedido, faltantes, avisos = [], checklist, puedeVend
 
             {puedeVender && usaTelaCliente && (
                 <label className="block mt-2 text-[11px] font-bold text-slate-700">Bobina de tela del cliente (se le descuentan los metros del pedido)
-                    <select value={bobinaId} onChange={e => setBobinaId(e.target.value)} className="block mt-1 w-full max-w-xl border border-slate-200 rounded-lg px-2 py-1.5 text-xs bg-white font-normal">
+                    <Selector value={bobinaId} onChange={e => setBobinaId(e.target.value)} claseBoton={claseSel('mt-1 w-full max-w-xl border border-slate-200 rounded-lg px-2 py-1.5 text-xs font-normal')} anchoLista={520}>
                         <option value="">{bobinas === null ? 'Cargando bobinas…' : bobinas.length ? 'Elegir la bobina…' : 'El cliente no tiene bobinas con metros disponibles'}</option>
                         {(bobinas || []).map(b => <option key={b.BobinaID} value={b.BobinaID}>{(b.DescripcionTela || 'Tela sin descripción').trim()} · {b.CodigoEtiqueta} · {Number(b.MetrosRestantes).toFixed(2)} m de largo · {Number(b.AnchoReal ?? b.Ancho ?? 0).toFixed(2)} m de ancho</option>)}
-                    </select>
+                    </Selector>
                 </label>
             )}
 
@@ -1249,6 +1304,7 @@ function Conversion({ s, p, pedido, faltantes, avisos = [], checklist, puedeVend
 }
 
 function ListaArchivos({ titulo, archivos, puedeQuitar, onQuitar, onSustituir, destacado }) {
+    const [dialogo, preguntar] = useConfirmar();
     if (!archivos.length) return destacado ? <p className="text-[11px] text-slate-400">Diseño pronto: todavía no hay archivo.</p> : null;
     return (
         <div>
@@ -1256,15 +1312,16 @@ function ListaArchivos({ titulo, archivos, puedeQuitar, onQuitar, onSustituir, d
             <ul className="space-y-1">
                 {archivos.map(a => (
                     <li key={a.ArchivoID} className={`flex flex-wrap items-center justify-between gap-2 rounded-lg px-2.5 py-1.5 text-xs ${destacado ? 'bg-emerald-50 border border-emerald-200' : 'bg-slate-50'}`}>
-                        <a href={a.UrlDrive} target="_blank" rel="noreferrer" className="font-bold text-indigo-700 hover:underline inline-flex items-center gap-1 break-all"><FileText size={12} /> {a.NombreOriginal}</a>
+                        <a href={a.UrlDrive} target="_blank" rel="noreferrer" className="font-bold text-brand-cyan hover:underline inline-flex items-center gap-1 break-all"><FileText size={12} /> {a.NombreOriginal}</a>
                         <span className="text-[10px] text-slate-500 flex items-center gap-2">
                             {ROL_ARCHIVO[a.Rol] || a.Rol}{a.AnchoM && a.AltoM ? ` · ${Number(a.AnchoM).toFixed(2)} × ${Number(a.AltoM).toFixed(2)} m` : ''} · {a.UsuarioNombre || ''} · {fmtFechaHora(a.FechaSubida)}
                             {onSustituir && <BotonArchivo etiqueta="Sustituir por el archivo corregido" chico onFiles={(files) => onSustituir(a, files)} />}
-                            {puedeQuitar && onQuitar && <button onClick={() => { if (window.confirm(`¿Quitar "${a.NombreOriginal}" de la solicitud? Queda registrado en el historial.`)) onQuitar(a); }} className="text-rose-600 hover:underline inline-flex items-center gap-0.5"><Trash2 size={11} /> Quitar</button>}
+                            {puedeQuitar && onQuitar && <button onClick={async () => { if (await preguntar(quitarArchivo(a))) onQuitar(a); }} className="text-rose-600 hover:underline inline-flex items-center gap-0.5"><Trash2 size={11} /> Quitar</button>}
                         </span>
                     </li>
                 ))}
             </ul>
+            {dialogo}
         </div>
     );
 }
@@ -1274,7 +1331,7 @@ function BotonArchivo({ etiqueta, onFiles, busy, multiple, primario, chico }) {
     return (
         <>
             <input ref={ref} type="file" hidden multiple={!!multiple} onChange={e => { const fs = e.target.files; if (fs?.length) onFiles(fs); e.target.value = ''; }} />
-            <button type="button" disabled={busy} onClick={() => ref.current?.click()} className={chico ? 'text-indigo-600 font-bold hover:underline inline-flex items-center gap-0.5' : (primario ? BTN_PRIMARIO : BTN_SECUNDARIO)}><Upload size={chico ? 11 : 12} /> {etiqueta}</button>
+            <button type="button" disabled={busy} onClick={() => ref.current?.click()} className={chico ? 'text-brand-cyan font-bold hover:underline inline-flex items-center gap-0.5' : (primario ? BTN_PRIMARIO : BTN_SECUNDARIO)}><Upload size={chico ? 11 : 12} /> {etiqueta}</button>
         </>
     );
 }
@@ -1283,9 +1340,9 @@ function BotonSubir({ roles, onFiles, busy }) {
     const [rol, setRol] = useState(roles[0]);
     return (
         <span className="inline-flex items-center gap-1">
-            <select value={rol} onChange={e => setRol(e.target.value)} className="border border-slate-200 rounded-lg px-2 py-1.5 text-xs bg-white">
+            <Selector value={rol} onChange={e => setRol(e.target.value)} claseBoton={claseSel('border border-slate-200 rounded-lg px-2 py-1.5 text-xs')} anchoLista={260}>
                 {roles.map(r => <option key={r} value={r}>{ROL_ARCHIVO[r]}</option>)}
-            </select>
+            </Selector>
             <BotonArchivo busy={busy} multiple etiqueta="Adjuntar archivo" onFiles={(files) => onFiles(files, rol)} />
         </span>
     );
@@ -1301,7 +1358,7 @@ function PrecioSena({ s, puede, busy, hacer }) {
         <section className="bg-white border border-slate-200 rounded-2xl p-4 space-y-3">
             <div className="flex items-center justify-between">
                 <h2 className="text-[10px] font-black uppercase tracking-wide text-slate-500">Precio pactado y seña</h2>
-                {puede && !editando && <button onClick={abrir} className="text-xs font-bold text-indigo-600 hover:underline">{s.ModoCobro ? 'Cambiar' : 'Cargar precio pactado'}</button>}
+                {puede && !editando && <button onClick={abrir} className="text-xs font-bold text-brand-cyan hover:underline">{s.ModoCobro ? 'Cambiar' : 'Cargar precio pactado'}</button>}
             </div>
 
             {!editando ? (
@@ -1314,13 +1371,13 @@ function PrecioSena({ s, puede, busy, hacer }) {
             ) : (
                 <div className="space-y-2">
                     <Campo label="Cómo se cobra">
-                        <select value={f.ModoCobro} onChange={e => setF(x => ({ ...x, ModoCobro: e.target.value }))} className={INPUT}>
+                        <Selector value={f.ModoCobro} onChange={e => setF(x => ({ ...x, ModoCobro: e.target.value }))} claseBoton={claseSel(SEL_CAMPO)} anchoLista={320}>
                             <option value="PRECIO_ESTABLECIDO">Precio establecido (un total, todo incluido)</option>
                             <option value="POR_AREA">Facturar por cada área</option>
-                        </select>
+                        </Selector>
                     </Campo>
                     <div className="grid grid-cols-3 gap-2">
-                        <Campo label="Moneda"><select value={f.MonIdMoneda} onChange={e => setF(x => ({ ...x, MonIdMoneda: Number(e.target.value) }))} className={INPUT}>{Object.entries(MONEDA).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></Campo>
+                        <Campo label="Moneda"><Selector value={String(f.MonIdMoneda)} onChange={e => setF(x => ({ ...x, MonIdMoneda: Number(e.target.value) }))} claseBoton={claseSel(SEL_CAMPO)}>{Object.entries(MONEDA).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</Selector></Campo>
                         {f.ModoCobro === 'PRECIO_ESTABLECIDO' && <div className="col-span-2"><Campo label="Precio de la solicitud entera"><input type="number" min="0" step="0.01" value={f.PrecioPactado} onChange={e => setF(x => ({ ...x, PrecioPactado: e.target.value }))} className={INPUT} /></Campo></div>}
                     </div>
                     <label className="flex items-center gap-2 text-xs font-bold text-slate-700"><input type="checkbox" checked={f.RequiereSena} onChange={e => setF(x => ({ ...x, RequiereSena: e.target.checked }))} /> Requiere seña inicial</label>
@@ -1378,7 +1435,7 @@ function Interacciones({ s, puede, busy, hacer, subir }) {
                     <div className="flex flex-wrap items-center justify-between gap-2">
                         <span className="text-[11px] text-slate-500">
                             <input ref={ref} type="file" hidden multiple onChange={e => { setFiles(Array.from(e.target.files || [])); e.target.value = ''; }} />
-                            <button type="button" onClick={() => ref.current?.click()} className="text-indigo-600 font-bold hover:underline inline-flex items-center gap-1"><Paperclip size={12} /> {files.length ? `${files.length} archivo(s) para adjuntar` : 'Adjuntar archivos a la interacción'}</button>
+                            <button type="button" onClick={() => ref.current?.click()} className="text-brand-cyan font-bold hover:underline inline-flex items-center gap-1"><Paperclip size={12} /> {files.length ? `${files.length} archivo(s) para adjuntar` : 'Adjuntar archivos a la interacción'}</button>
                         </span>
                         <button disabled={busy || !texto.trim()} onClick={registrar} className={BTN_PRIMARIO}>Registrar interacción</button>
                     </div>
@@ -1390,7 +1447,7 @@ function Interacciones({ s, puede, busy, hacer, subir }) {
                         <li key={ev.EventoID} className="text-xs bg-slate-50 rounded-lg p-2">
                             <div className="text-[10px] text-slate-400">{fmtFechaHora(ev.Fecha)} · <b className="text-slate-600">{ev.UsuarioNombre}</b></div>
                             <div className="text-slate-700 whitespace-pre-line">{ev.Texto}</div>
-                            {s.Archivos.filter(a => a.EventoID === ev.EventoID && a.Vigente).map(a => <a key={a.ArchivoID} href={a.UrlDrive} target="_blank" rel="noreferrer" className="block text-indigo-700 font-bold hover:underline mt-1"><FileText size={11} className="inline" /> {a.NombreOriginal}</a>)}
+                            {s.Archivos.filter(a => a.EventoID === ev.EventoID && a.Vigente).map(a => <a key={a.ArchivoID} href={a.UrlDrive} target="_blank" rel="noreferrer" className="block text-brand-cyan font-bold hover:underline mt-1"><FileText size={11} className="inline" /> {a.NombreOriginal}</a>)}
                         </li>
                     ))}
                 </ul>

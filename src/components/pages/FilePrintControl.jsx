@@ -833,7 +833,10 @@ const FilePrintControl = ({ areaCode }) => {
   };
 
   const handlePrintLabels = async (ordenIdToPrint) => {
-    const id = ordenIdToPrint || selectedOrder?.id;
+    // Solo un número de orden sirve: si llega otra cosa (el evento de un onClick={handlePrintLabels}), va la
+    // orden seleccionada. Desde el 29/05 el botón mandaba el evento como id: /orden/[object Object]/etiquetas.
+    const id = (typeof ordenIdToPrint === 'number' || typeof ordenIdToPrint === 'string') && String(ordenIdToPrint).trim() !== ''
+      ? ordenIdToPrint : selectedOrder?.id;
     if (!id) return;
     setToast({ visible: true, message: 'Obteniendo etiquetas...', type: 'info' });
 
@@ -1326,7 +1329,7 @@ const FilePrintControl = ({ areaCode }) => {
                   {/* Label Button (Etiquetas) */}
                   <div
                     className={`flex items-center gap-3 group ${selectedOrder.hasLabels > 0 ? 'opacity-100 cursor-pointer hover:bg-slate-50 rounded-lg px-2 py-1.5 transition-all border border-transparent hover:border-slate-100' : 'opacity-40 pointer-events-none'}`}
-                    onClick={selectedOrder.hasLabels > 0 ? handlePrintLabels : undefined}
+                    onClick={selectedOrder.hasLabels > 0 ? () => handlePrintLabels() : undefined}
                     title="Reimprimir etiquetas"
                   >
                     <div className={`w-8 h-8 rounded-full flex items-center justify-center transition-colors ${selectedOrder.hasLabels > 0 ? 'bg-brand-cyan/10 text-brand-cyan group-hover:bg-brand-cyan/30' : 'bg-slate-100 text-slate-300'}`}>

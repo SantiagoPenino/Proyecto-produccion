@@ -1,5 +1,6 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { Loader2, Search, X } from 'lucide-react';
+import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { Ban, Loader2, Search, X } from 'lucide-react';
 import api from '../../../services/apiClient';
 import { fmtFecha } from '../../../utils/fechas';
 
@@ -46,8 +47,11 @@ export const Campo = ({ label, children, ayuda }) => (
     </label>
 );
 
-export const INPUT = 'block w-full border border-slate-200 rounded-lg px-2.5 py-1.5 text-sm text-slate-800 outline-none focus:border-indigo-500 bg-white disabled:bg-slate-50 disabled:text-slate-400';
-export const BTN_PRIMARIO = 'px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold inline-flex items-center gap-1 disabled:opacity-50';
+// 06/10: brand-cyan (antes índigo). BTN_PRIMARIO lo usan el detalle, Diseño y TIZADA PRO, que pasaron al tema claro;
+// el formulario de la solicitud (que sigue oscuro) no lo usa. INPUT sí llega al formulario por BuscadorCliente, pero
+// ahí fichaPedido.css le pone su propio foco (.fp input:focus), así que no cambia.
+export const INPUT = 'block w-full border border-slate-200 rounded-lg px-2.5 py-1.5 text-sm text-slate-800 outline-none focus:border-brand-cyan bg-white disabled:bg-slate-50 disabled:text-slate-400';
+export const BTN_PRIMARIO = 'px-3 py-1.5 rounded-lg bg-brand-cyan hover:bg-brand-cyan/90 text-white text-xs font-bold inline-flex items-center gap-1 disabled:opacity-50';
 export const BTN_SECUNDARIO = 'px-3 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-600 text-xs font-bold inline-flex items-center gap-1 disabled:opacity-50';
 export const BTN_PELIGRO = 'px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold inline-flex items-center gap-1 disabled:opacity-50';
 
@@ -183,28 +187,25 @@ export function BuscadorPresupuesto({ presupuesto, onPick, clienteNombre }) {
     );
 }
 
-/** Modal de confirmación con motivo obligatorio (cancelar la solicitud). */
-export function MotivoModal({ titulo, descripcion, etiquetaBoton, busy, onConfirm, onClose }) {
+/** Modal de confirmación con motivo obligatorio (cancelar la solicitud).
+ *  06/10: en una Ventana, con el estilo del resto del sistema (encabezado blanco con el ícono en brand-cyan, a
+ *  pantalla completa en el celular) y por encima de la navbar: antes iba en z-50 y la navbar (z-5010) la tapaba. */
+export function MotivoModal({ titulo, descripcion, etiquetaBoton, busy, onConfirm, onClose, Icono = Ban }) {
     const [motivo, setMotivo] = useState('');
-    const ref = useRef(null);
-    useEffect(() => { ref.current?.focus(); }, []);
+    const cerrar = () => { if (!busy) onClose(); };
     return (
-        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={busy ? undefined : onClose}>
-            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-5 space-y-3" onClick={e => e.stopPropagation()}>
-                <div className="flex items-start justify-between gap-3">
-                    <h3 className="text-base font-black text-slate-800">{titulo}</h3>
-                    <button onClick={onClose} disabled={busy} className="p-1 rounded-lg hover:bg-slate-100 text-slate-500"><X size={16} /></button>
-                </div>
-                <p className="text-xs text-slate-600 whitespace-pre-line">{descripcion}</p>
+        <Ventana Icono={Icono} titulo={titulo} onClose={cerrar} ancho="sm:max-w-lg"
+            pie={<>
+                <button type="button" onClick={cerrar} disabled={busy} className={BTN_GRANDE_NO}>No cancelar</button>
+                <button type="button" onClick={() => onConfirm(motivo.trim())} disabled={busy || !motivo.trim()} className={BTN_GRANDE_PELIGRO}>{busy && <Loader2 size={14} className="animate-spin" />} {etiquetaBoton}</button>
+            </>}>
+            <div className="space-y-4">
+                <p className="text-sm text-slate-600 whitespace-pre-line">{descripcion}</p>
                 <Campo label="Motivo (obligatorio)">
-                    <textarea ref={ref} rows={3} value={motivo} onChange={e => setMotivo(e.target.value)} className={INPUT} />
+                    <textarea data-autofocus rows={3} value={motivo} onChange={e => setMotivo(e.target.value)} className={INPUT} />
                 </Campo>
-                <div className="flex justify-end gap-2">
-                    <button onClick={onClose} disabled={busy} className={BTN_SECUNDARIO}>No cancelar</button>
-                    <button onClick={() => onConfirm(motivo.trim())} disabled={busy || !motivo.trim()} className={BTN_PELIGRO}>{busy && <Loader2 size={12} className="animate-spin" />} {etiquetaBoton}</button>
-                </div>
             </div>
-        </div>
+        </Ventana>
     );
 }
 
@@ -244,7 +245,8 @@ export function VisorPdf({ blob, nombre, onClose }) {
     }, [blob]);
     if (!blob) return null;
     return (
-        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-3" onClick={onClose}>
+        // z-[6000] (06/10): en z-50 la navbar (z-5010) tapaba la parte de arriba del visor
+        <div className="fixed inset-0 bg-black/60 z-[6000] flex items-center justify-center p-3" onClick={onClose}>
             <div className="bg-white rounded-2xl shadow-2xl w-full max-w-5xl h-[92vh] flex flex-col" onClick={e => e.stopPropagation()}>
                 <div className="flex items-center justify-between gap-3 px-4 py-2.5 border-b border-slate-200">
                     <h3 className="text-sm font-black text-slate-800 truncate">{nombre || 'Ficha del pedido'}</h3>
@@ -258,4 +260,89 @@ export function VisorPdf({ blob, nombre, onClose }) {
             </div>
         </div>
     );
+}
+
+// ── Desplegables y ventanas con el estilo del sistema (06/10) ──
+
+// Botón del desplegable propio (ui/Selector) con el aspecto que tenía cada <select> del navegador al que reemplaza:
+// recibe sus clases (borde, tamaño, ancho, rojo si falta elegir). SEL_CAMPO es el de los campos, como INPUT.
+export const claseSel = (clases) => `flex items-center gap-1.5 bg-white text-left text-slate-800 outline-none transition-colors hover:border-slate-300 focus-visible:border-brand-cyan focus-visible:ring-2 focus-visible:ring-brand-cyan/15 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-400 ${clases}`;
+export const SEL_CAMPO = 'w-full border border-slate-200 rounded-lg px-2.5 py-1.5 text-sm';
+
+// Ventanas: por encima de la navbar (z-[6000]), encabezado blanco con el ícono de Lucide en brand-cyan y sin fondo, y
+// a pantalla completa en el celular. Las confirmaciones (`chica`) van en z-[6100], porque pueden abrirse encima de
+// otra ventana, y en el celular no ocupan toda la pantalla: son de dos líneas, como las de Servicio Técnico. Se
+// cierran con Escape, con la cruz o tocando afuera. Van en un portal. Nacieron en la Bandeja de Diseño y las usan
+// también el detalle de la solicitud y Diseño.
+// Botones de las ventanas, más grandes que los de las filas; en el celular se reparten el ancho y miden 44 px
+const BTN_GRANDE = 'inline-flex items-center justify-center gap-1.5 rounded-xl px-4 py-2 text-sm font-bold transition-colors disabled:opacity-50 max-sm:min-h-[44px] max-sm:flex-1';
+export const BTN_GRANDE_SI = `${BTN_GRANDE} bg-brand-cyan text-white hover:bg-brand-cyan/90`;
+export const BTN_GRANDE_NO = `${BTN_GRANDE} border border-slate-200 bg-white text-slate-600 hover:bg-slate-50`;
+export const BTN_GRANDE_PELIGRO = `${BTN_GRANDE} bg-rose-600 text-white hover:bg-rose-700`;
+
+// Las ventanas abiertas, la de arriba al final. Escape cierra solo la de arriba, tenga o no el foco: una confirmación
+// puede abrirse sobre otra ventana. Al cerrar una, el foco vuelve adonde estaba o, si eso ya no existe (un botón que
+// desapareció con lo que se confirmó), a la ventana de abajo.
+const ventanasAbiertas = [];
+
+export function Ventana({ Icono, titulo, onClose, children, pie, chica = false, ancho = 'sm:max-w-2xl' }) {
+    const idTitulo = useId();
+    const panel = useRef(null);
+    const cerrar = useRef(onClose);
+    cerrar.current = onClose;
+    const enfocadoAntes = useRef(document.activeElement);
+    useEffect(() => {
+        const yo = { panel };
+        ventanasAbiertas.push(yo);
+        // El foco arranca en lo marcado con data-autofocus o en el panel (sin abrir el teclado del celular).
+        // Acá y no con autoFocus: en desarrollo, StrictMode monta dos veces y el autoFocus se perdía.
+        (panel.current?.querySelector('[data-autofocus]') || panel.current)?.focus();
+        const tecla = (e) => { if (e.key === 'Escape' && ventanasAbiertas[ventanasAbiertas.length - 1] === yo) cerrar.current(); };
+        document.addEventListener('keydown', tecla);
+        const antes = enfocadoAntes.current;
+        return () => {
+            document.removeEventListener('keydown', tecla);
+            ventanasAbiertas.splice(ventanasAbiertas.indexOf(yo), 1);
+            if (antes?.isConnected) antes.focus();
+            else ventanasAbiertas[ventanasAbiertas.length - 1]?.panel.current?.focus();
+        };
+    }, []);
+    return createPortal(
+        <div className={`fixed inset-0 flex justify-center bg-slate-900/70 sm:items-center sm:p-4 ${chica ? 'z-[6100] items-center p-3' : 'z-[6000]'}`} onMouseDown={onClose}>
+            <div ref={panel} role="dialog" aria-modal="true" aria-labelledby={idTitulo} tabIndex={-1}
+                onMouseDown={e => e.stopPropagation()}
+                className={`flex w-full flex-col overflow-hidden bg-white shadow-2xl outline-none sm:rounded-3xl sm:border sm:border-slate-200 ${chica ? 'max-w-md rounded-2xl' : `h-full sm:h-auto sm:max-h-[85vh] ${ancho}`}`}>
+                <div className="flex shrink-0 items-center justify-between gap-3 border-b border-slate-100 px-6 py-4">
+                    <div className="flex min-w-0 items-center gap-3">
+                        <Icono size={24} className="shrink-0 text-brand-cyan" aria-hidden="true" />
+                        <h2 id={idTitulo} className="text-lg font-black text-slate-800">{titulo}</h2>
+                    </div>
+                    <button type="button" onClick={onClose} className="rounded-xl p-2 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600" title="Cerrar" aria-label="Cerrar"><X size={20} /></button>
+                </div>
+                <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">{children}</div>
+                {pie ? <div className="flex shrink-0 flex-wrap justify-end gap-2 border-t border-slate-100 bg-slate-50 px-6 py-3">{pie}</div> : null}
+            </div>
+        </div>,
+        document.body
+    );
+}
+
+// En vez de window.confirm (la ventana del navegador), y se usa igual: if (!(await preguntar({ ... }))) return;
+// Opciones: Icono, titulo, texto (admite saltos de línea), nota (en ámbar, opcional), boton y peligro (botón rojo, para
+// quitar o deshacer). Devuelve la ventana para dibujar (o null) y la función que pregunta.
+export function useConfirmar() {
+    const [pedido, setPedido] = useState(null);
+    const preguntar = useCallback((opciones) => new Promise(resolver => setPedido({ ...opciones, resolver })), []);
+    const responder = (si) => { pedido.resolver(si); setPedido(null); };
+    const dialogo = pedido && (
+        <Ventana chica Icono={pedido.Icono} titulo={pedido.titulo} onClose={() => responder(false)}
+            pie={<>
+                <button type="button" onClick={() => responder(false)} className={BTN_GRANDE_NO}>Cancelar</button>
+                <button type="button" data-autofocus onClick={() => responder(true)} className={pedido.peligro ? BTN_GRANDE_PELIGRO : BTN_GRANDE_SI}>{pedido.boton}</button>
+            </>}>
+            <p className="whitespace-pre-line text-sm text-slate-600">{pedido.texto}</p>
+            {pedido.nota ? <p className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">{pedido.nota}</p> : null}
+        </Ventana>
+    );
+    return [dialogo, preguntar];
 }

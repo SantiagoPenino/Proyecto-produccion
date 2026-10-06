@@ -2528,8 +2528,11 @@ exports.uploadOrderFile = async (req, res) => {
         res.json({ success: true, driveUrl });
 
     } catch (error) {
-        logger.error("❌ Error en subida streaming:", error);
-        res.status(500).json({ error: "Fallo subida a Drive: " + error.message });
+        // Solo el resumen: con el error entero (el de googleapis trae el request y el archivo adentro) el
+        // log se rompía antes del res.status y el portal se quedaba esperando (DTF-31473, 06/10/2026).
+        const motivo = driveService.resumenError(error);
+        logger.error(`❌ Error en subida streaming de ${finalName}: ${motivo}`);
+        if (!res.headersSent) res.status(500).json({ error: `Fallo subida a Drive: ${motivo}` });
     } finally {
         // Borrar archivo temporal del disco
         if (tmpPath) {

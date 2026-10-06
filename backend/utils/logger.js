@@ -24,11 +24,44 @@ const timestampFormat = winston.format.timestamp({
 // "[NOTA-CREDITO]"). Los objetos y los Error ya los incorpora winston al mensaje o a meta; acá se
 // suman solo los textos y números, en el orden en que vinieron.
 const SPLAT = Symbol.for('splat');
+
+// JSON para el log que nunca tira excepción (06/10/2026). Un error de googleapis/axios trae adentro el
+// request, el socket y el archivo que se estaba subiendo: tiene referencias circulares y
+// JSON.stringify tiraba "Converting circular structure to JSON" DENTRO de logger.error, así que el que
+// llamaba se cortaba ahí (la subida de DTF-31473 nunca le contestó al portal). Además:
+//  · streams, sockets y requests van solo con su tipo (no aportan y pesan);
+//  · las claves con credenciales (Authorization, token, password, cookie…) salen ocultas: esos
+//    errores traen el token de Google en los headers;
+//  · los textos de más de 2000 caracteres se cortan (las páginas HTML de error).
+const CLAVES_SECRETAS = /^(authorization|proxy-authorization|cookie|set-cookie|password|contrasena|contraseña|token|access_token|refresh_token|id_token|client_secret|api[-_]?key|x-api-key)$/i;
+const TIPOS_SIN_DETALLE = new Set(['Socket', 'TLSSocket', 'ClientRequest', 'IncomingMessage', 'ServerResponse', 'Agent', 'ReadStream', 'WriteStream']);
+const jsonSeguro = (valor) => {
+    const vistos = new WeakSet();
+    try {
+        return JSON.stringify(valor, (clave, v) => {
+            if (clave && CLAVES_SECRETAS.test(clave)) return '[oculto]';
+            if (typeof v === 'string' && v.length > 2000) return `${v.slice(0, 2000)}… (${v.length} caracteres)`;
+            if (typeof v === 'bigint') return String(v);
+            if (typeof v === 'object' && v !== null) {
+                // Un Buffer llega ya convertido por su toJSON: { type: 'Buffer', data: [...] }
+                if (v.type === 'Buffer' && Array.isArray(v.data)) return `[Buffer de ${v.data.length} bytes]`;
+                const tipo = v.constructor && v.constructor.name;
+                if (TIPOS_SIN_DETALLE.has(tipo) || typeof v.pipe === 'function') return `[${tipo || 'stream'}]`;
+                if (vistos.has(v)) return '[repetido]';
+                vistos.add(v);
+            }
+            return v;
+        });
+    } catch (e) {
+        return `"[no se pudo pasar a texto: ${e.message}]"`;
+    }
+};
+
 const printFormat = winston.format.printf((info) => {
     const { timestamp, level, message, ...meta } = info;
     const sueltos = (info[SPLAT] || []).filter(a => a !== null && a !== undefined && typeof a !== 'object');
     const texto = sueltos.length ? `${message} ${sueltos.join(' ')}` : message;
-    const metaStr = Object.keys(meta).length ? ' ' + JSON.stringify(meta) : '';
+    const metaStr = Object.keys(meta).length ? ' ' + jsonSeguro(meta) : '';
     return `${timestamp} [${level.toUpperCase()}] ${texto}${metaStr}`;
 });
 

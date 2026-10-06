@@ -6,8 +6,8 @@ import { useAuth } from '../../../context/AuthContext';
 import { solicitudesVendedorService as svc } from '../../../services/modules/solicitudesVendedorService';
 import { fmtFecha, fmtFechaHora } from '../../../utils/fechas';
 import OrderDetailModal from '../../production/components/OrderDetailModal';
-import { BTN_PRIMARIO, BTN_SECUNDARIO, ESTADO_SOLICITUD, Pill, VisorPdf, errorDe } from './solicitudesComunes';
-import { DisenoTab, ProductoTab, medirDisenoPronto } from './SolicitudVendedorDetalle';
+import { BTN_PRIMARIO, BTN_SECUNDARIO, ESTADO_SOLICITUD, VisorPdf, errorDe } from './solicitudesComunes';
+import { DisenoTab, Pastilla, ProductoTab, medirDisenoPronto } from './SolicitudVendedorDetalle';
 import './fichaPedido.css';
 
 /**
@@ -70,20 +70,25 @@ export default function SolicitudDisenoPage() {
         finally { setGenerandoFicha(false); }
     };
 
-    if (!s) return <div className="fp fp-oscuro"><div className="p-10 flex justify-center"><Loader2 className="animate-spin" /></div></div>;
+    if (!s) return <div className="p-10 flex justify-center"><Loader2 className="animate-spin text-brand-cyan" /></div>;
     const abierta = s.Estado === 'INGRESADA' || s.Estado === 'EN_DISENO';
     const archivosDe = (filtro) => s.Archivos.filter(a => a.Vigente && filtro(a));
 
+    // Tema claro, como el detalle de la solicitud (06/10): comparten ProductoTab y DisenoTab, así que pasan juntas.
+    // Antes iba dentro de .fp-oscuro (fichaPedido.css) y en max-w-7xl centrado; ahora a todo el ancho.
     return (
         <>
-        <div className="fp fp-oscuro">
-        <div className="max-w-7xl mx-auto space-y-4">
+        <div className="p-3 md:p-6 space-y-4">
+            {/* Encabezado como el del detalle: ícono de Lucide en brand-cyan y sin fondo, título grande */}
             <div className="flex flex-wrap items-start justify-between gap-3">
-                <div>
-                    <div className="flex flex-wrap items-center gap-2"><Pill e={s.Estado} mapa={ESTADO_SOLICITUD} />
-                        <span className="text-[11px] text-slate-400">Solicitud #{s.SolicitudID} · {fmtFechaHora(s.FechaSolicitud)}</span></div>
-                    <h1 className="text-xl font-black text-slate-800 mt-1 flex items-center gap-2"><ClipboardList size={20} className="text-indigo-500" /> Diseño · {s.NombreTrabajo}</h1>
-                    <p className="text-sm text-slate-600">{s.ClienteNombre}{s.ClienteCodigo ? <span className="font-mono text-xs text-slate-400"> · {s.ClienteCodigo}</span> : null} · vendedor <b>{s.VendedorNombre || '—'}</b>{s.FechaEntrega ? <> · entrega <b>{fmtFecha(s.FechaEntrega)}</b></> : null}</p>
+                <div className="flex min-w-0 items-start gap-3">
+                    <ClipboardList size={30} className="mt-1 shrink-0 text-brand-cyan" aria-hidden="true" />
+                    <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2"><Pastilla e={s.Estado} mapa={ESTADO_SOLICITUD} />
+                            <span className="text-xs text-slate-400">Solicitud #{s.SolicitudID} · {fmtFechaHora(s.FechaSolicitud)}</span></div>
+                        <h1 className="mt-1 text-2xl font-black leading-tight text-slate-800">Diseño · {s.NombreTrabajo}</h1>
+                        <p className="text-sm text-slate-500">{s.ClienteNombre}{s.ClienteCodigo ? <span className="text-xs text-slate-400"> · {s.ClienteCodigo}</span> : null} · vendedor <b className="text-slate-700">{s.VendedorNombre || '—'}</b>{s.FechaEntrega ? <> · entrega <b className="text-slate-700">{fmtFecha(s.FechaEntrega)}</b></> : null}</p>
+                    </div>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                     <button onClick={() => navigate('/ventas/bandeja-diseno')} className={BTN_SECUNDARIO}><ArrowLeft size={14} /> Bandeja de Diseño</button>
@@ -96,17 +101,18 @@ export default function SolicitudDisenoPage() {
             {!abierta && <div className="bg-slate-100 border border-slate-300 rounded-xl p-3 text-sm text-slate-700">La solicitud está <b>{ESTADO_SOLICITUD[s.Estado]?.txt || s.Estado}</b>: acá se mira, no se cambia.</div>}
 
             {subida && (
-                <div className="sticky top-2 z-20 bg-white border border-indigo-200 rounded-xl p-3 shadow">
-                    <div className="text-xs font-bold text-slate-700 flex items-center gap-2"><Loader2 size={12} className="animate-spin" /> Subiendo "{subida.nombre}"… {subida.pct}%</div>
-                    <div className="h-1.5 bg-slate-100 rounded-full mt-2 overflow-hidden"><div className="h-full bg-indigo-500 transition-all" style={{ width: `${subida.pct}%` }} /></div>
+                <div className="sticky top-2 z-20 bg-white border border-brand-cyan/30 rounded-xl p-3 shadow">
+                    <div className="text-xs font-bold text-slate-700 flex items-center gap-2"><Loader2 size={12} className="animate-spin text-brand-cyan" /> Subiendo "{subida.nombre}"… {subida.pct}%</div>
+                    <div className="h-1.5 bg-slate-100 rounded-full mt-2 overflow-hidden"><div className="h-full bg-brand-cyan transition-all" style={{ width: `${subida.pct}%` }} /></div>
                 </div>
             )}
 
             <div className="bg-white border border-slate-200 rounded-2xl">
-                <div className="flex flex-wrap gap-1 border-b border-slate-200 px-2 pt-2">
+                {/* Pestañas subrayadas en brand-cyan, como las del detalle (antes texto de 12 px) */}
+                <div className="flex flex-wrap gap-1 border-b border-slate-200 px-2">
                     {[['solicitud', 'Lo que llegó de la solicitud'], ['diseno', 'Diseño: tizada y archivos']].map(([k, t]) => (
-                        <button key={k} onClick={() => setTab(k)}
-                            className={`px-3 py-2 text-xs font-bold border-b-2 -mb-px ${tab === k ? 'border-indigo-600 text-indigo-700' : 'border-transparent text-slate-500 hover:text-slate-700'}`}>{t}</button>
+                        <button key={k} type="button" onClick={() => setTab(k)} aria-current={tab === k ? 'page' : undefined}
+                            className={`-mb-px border-b-2 px-3 py-2.5 text-sm font-bold transition-colors ${tab === k ? 'border-brand-cyan text-brand-cyan' : 'border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-700'}`}>{t}</button>
                     ))}
                 </div>
                 <div className="p-4 space-y-6">
@@ -128,7 +134,6 @@ export default function SolicitudDisenoPage() {
                     )}
                 </div>
             </div>
-        </div>
         </div>
         <OrderDetailModal order={ficha} onClose={() => { setFicha(null); cargar(); }} onOrderUpdated={cargar} />
         <VisorPdf blob={pdf} nombre={`Ficha pedido SOL-${s.SolicitudID}.pdf`} onClose={() => setPdf(null)} />

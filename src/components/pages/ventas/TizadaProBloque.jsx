@@ -3,7 +3,8 @@ import { toast } from 'sonner';
 import { AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, ClipboardPaste, FileSpreadsheet, Loader2, Plus, RefreshCw, Trash2, Wand2 } from 'lucide-react';
 import { solicitudesVendedorService as svc } from '../../../services/modules/solicitudesVendedorService';
 import { fmtFechaHora } from '../../../utils/fechas';
-import { BTN_PRIMARIO, BTN_SECUNDARIO, INPUT, errorDe } from './solicitudesComunes';
+import { BTN_PRIMARIO, BTN_SECUNDARIO, INPUT, SEL_CAMPO, claseSel, errorDe } from './solicitudesComunes';
+import Selector from '../../ui/Selector';
 
 /**
  * TIZADA PRO (por API) en la solicitud: los DISEÑOS del producto (jugador, golero…: nombre + arte; el modelo
@@ -227,15 +228,15 @@ export default function TizadaProBloque({ id, p, puede, onCargado, numero = null
                             {disenos.map((d, i) => (
                                 <tr key={i} className="border-t border-slate-200 align-top">
                                     <td className="px-2 py-1.5"><input value={d.nombre} disabled={!puede} onChange={e => cambiarDiseno(i, { nombre: e.target.value.toUpperCase() })} className={INPUT} placeholder="JUGADOR" /></td>
-                                    <td className="px-2 py-1.5"><select value={d.arteArchivoId || ''} disabled={!puede} onChange={e => cambiarDiseno(i, { arteArchivoId: Number(e.target.value) || null })} className={INPUT}>
+                                    <td className="px-2 py-1.5"><Selector value={d.arteArchivoId || ''} disabled={!puede} onChange={e => cambiarDiseno(i, { arteArchivoId: Number(e.target.value) || null })} claseBoton={claseSel(SEL_CAMPO)} anchoLista={280}>
                                         <option value="">— elegir el archivo —</option>{(info.artes || []).map(a => <option key={a.ArchivoID} value={a.ArchivoID}>{a.nombre}</option>)}
-                                    </select>
+                                    </Selector>
                                         {!(info.artes || []).length && <div className="text-[10px] text-amber-700 mt-0.5">Subí el arte (.ai o .pdf armado sobre la base de TIZADA) en "Arte del cliente".</div>}
                                     </td>
                                     <td className="px-2 py-1.5 text-right">{puede && disenos.length > 1 && <button type="button" title="Quitar este diseño" onClick={() => { setDisenos(ds => ds.filter((_, k) => k !== i)); setSucio(true); }} className="p-1 text-slate-400 hover:text-rose-600"><Trash2 size={14} /></button>}</td>
                                 </tr>
                             ))}
-                            {!disenos.length && <tr><td colSpan={3} className="px-3 py-3 text-slate-500">Sin diseños. {puede && <button type="button" onClick={agregarDiseno} className="font-bold text-indigo-600 hover:underline">Agregar el primero</button>}</td></tr>}
+                            {!disenos.length && <tr><td colSpan={3} className="px-3 py-3 text-slate-500">Sin diseños. {puede && <button type="button" onClick={agregarDiseno} className="font-bold text-brand-cyan hover:underline">Agregar el primero</button>}</td></tr>}
                         </tbody>
                     </table>
                 </div>
@@ -281,12 +282,12 @@ export default function TizadaProBloque({ id, p, puede, onCargado, numero = null
                                         {columnas.map(c => (
                                             <td key={c.id} className="px-2 py-1">
                                                 {(c.tipo === 'talle' || c.tipo === 'lista') && c.opciones.length
-                                                    ? <select value={f[c.id] || ''} disabled={!puede} onChange={e => cambiarFila(i, c.id, e.target.value)} className={INPUT}><option value="">—</option>{c.opciones.map(o => <option key={o} value={o}>{o}</option>)}{f[c.id] && !c.opciones.includes(f[c.id]) && <option value={f[c.id]}>{f[c.id]}</option>}</select>
+                                                    ? <Selector value={f[c.id] || ''} disabled={!puede} onChange={e => cambiarFila(i, c.id, e.target.value)} claseBoton={claseSel(SEL_CAMPO)} anchoLista={200}><option value="">—</option>{c.opciones.map(o => <option key={o} value={o}>{o}</option>)}{f[c.id] && !c.opciones.includes(f[c.id]) && <option value={f[c.id]}>{f[c.id]}</option>}</Selector>
                                                     : <input value={f[c.id] || ''} disabled={!puede} type={c.tipo === 'numero' ? 'number' : 'text'} min={c.tipo === 'numero' ? 1 : undefined} onChange={e => cambiarFila(i, c.id, c.rol === 'nombre' ? e.target.value.toUpperCase() : e.target.value)} className={INPUT} />}
                                             </td>
                                         ))}
                                         <td className="px-2 py-1">{disenos.length > 1
-                                            ? <select value={f.diseno || ''} disabled={!puede} onChange={e => cambiarFila(i, 'diseno', e.target.value)} className={INPUT}><option value="">—</option>{disenos.map(d => <option key={d.nombre} value={d.nombre}>{d.nombre}</option>)}</select>
+                                            ? <Selector value={f.diseno || ''} disabled={!puede} onChange={e => cambiarFila(i, 'diseno', e.target.value)} claseBoton={claseSel(SEL_CAMPO)} anchoLista={220}><option value="">—</option>{disenos.map(d => <option key={d.nombre} value={d.nombre}>{d.nombre}</option>)}</Selector>
                                             : <span className="text-slate-700">{disenos[0]?.nombre || '—'}</span>}</td>
                                         <td className="px-2 py-1">{prob ? <span className="font-bold text-rose-600">{prob}</span> : <span className="text-emerald-700">{dis ? `${dis.nombre} · ${nombreModelo(dis.variable)}` : 'OK'}</span>}</td>
                                         <td className="px-2 py-1 text-right">{puede && <button type="button" onClick={() => { setFilas(fs => fs.filter((_, k) => k !== i)); setSucio(true); }} className="text-[11px] font-bold text-slate-400 hover:text-rose-600">Quitar</button>}</td>
@@ -353,14 +354,14 @@ export default function TizadaProBloque({ id, p, puede, onCargado, numero = null
                                         {e.Alarmas?.length > 0 && <ul className="text-[11px] space-y-0.5">{e.Alarmas.map((a, k) => (
                                             <li key={k} className={a.frena ? 'text-rose-700' : 'text-amber-700'}><AlertTriangle size={10} className="inline -mt-0.5" /> {a.mensaje || a.codigo}{a.donde?.campo ? <span className="text-slate-500"> · {a.donde.campo}{a.donde.fila != null ? ` (fila ${a.donde.fila})` : ''}</span> : null}</li>
                                         ))}</ul>}
-                                        {e.Archivos?.length > 0 && <div className="flex flex-wrap gap-2">{e.Archivos.map(a => <a key={a.ArchivoID} href={a.url} target="_blank" rel="noreferrer" className="font-bold text-indigo-700 hover:underline">{a.nombre}</a>)}</div>}
+                                        {e.Archivos?.length > 0 && <div className="flex flex-wrap gap-2">{e.Archivos.map(a => <a key={a.ArchivoID} href={a.url} target="_blank" rel="noreferrer" className="font-bold text-brand-cyan hover:underline">{a.nombre}</a>)}</div>}
                                     </div>
                                 )}
                             </div>
                         );
                     })}
                     {info.envios.length > 1 && (
-                        <button type="button" onClick={() => setVerAnteriores(v => !v)} className="text-[11px] font-bold text-indigo-600 hover:underline inline-flex items-center gap-1">
+                        <button type="button" onClick={() => setVerAnteriores(v => !v)} className="text-[11px] font-bold text-brand-cyan hover:underline inline-flex items-center gap-1">
                             {verAnteriores ? <><ChevronDown size={12} /> Ocultar los anteriores</> : <><ChevronRight size={12} /> Ver los {info.envios.length - 1} anteriores</>}
                         </button>
                     )}

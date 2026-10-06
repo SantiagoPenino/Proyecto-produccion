@@ -166,6 +166,38 @@ exports.getThumbnailUrl = async (fileId) => {
     }
 };
 
+// Estado HTTP de un error de googleapis/gaxios, o null si no hubo respuesta (corte de red)
+const estadoHttp = (error) => {
+    const n = Number(error?.response?.status ?? error?.status ?? error?.code);
+    return Number.isInteger(n) && n >= 100 && n < 600 ? n : null;
+};
+const esPaginaHtml = (texto) => /^\s*<(!doctype html|html)/i.test(String(texto || ''));
+
+// El error de Google en una línea: el estado HTTP y el motivo, sin la página HTML entera que devuelve
+// Drive cuando falla de su lado (06/10/2026: el log y el portal recibían el HTML como mensaje).
+exports.resumenError = (error) => {
+    const estado = estadoHttp(error);
+    let texto = String(error?.message || error || '').trim();
+    if (esPaginaHtml(texto)) {
+        const titulo = (texto.match(/<title>([^<]*)<\/title>/i) || [])[1];
+        texto = `Google devolvió una página de error${titulo ? ` («${titulo.trim()}»)` : ''}`;
+    }
+    texto = texto.replace(/\s+/g, ' ').slice(0, 300);
+    return estado ? `HTTP ${estado} · ${texto}` : texto;
+};
+
+// Lo que se sube, listo para otro intento: un Buffer o un texto se reusan; un stream de un archivo se
+// vuelve a abrir, porque el intento que falló ya lo leyó. Un stream que no sale de un archivo no se
+// puede repetir: null (no se reintenta).
+const rearmarEntrada = (fileInput) => {
+    if (Buffer.isBuffer(fileInput) || typeof fileInput === 'string') return fileInput;
+    if (fileInput && typeof fileInput.pipe === 'function' && typeof fileInput.path === 'string' && fs.existsSync(fileInput.path)) {
+        try { if (typeof fileInput.destroy === 'function') fileInput.destroy(); } catch (_) { /* ya estaba cerrado */ }
+        return fs.createReadStream(fileInput.path);
+    }
+    return null;
+};
+
 exports.uploadToDrive = async (fileInput, fileName, areaName, retries = 2) => {
 
     // Validar autorización
@@ -241,14 +273,23 @@ exports.uploadToDrive = async (fileInput, fileName, areaName, retries = 2) => {
 
 
     } catch (error) {
-        // Reintentos automáticos para errores de red
-        if (retries > 0 && (error.code === 'ECONNRESET' || error.code === 'ETIMEDOUT' || error.message.includes('socket'))) {
-            logger.warn(`⚠️ [DriveService] Error de red. Reintentando subida de ${fileName}... (${retries})`);
-            // Esperar un poco antes de reintentar
-            await new Promise(r => setTimeout(r, 1500));
-            return exports.uploadToDrive(fileInput, fileName, areaName, retries - 1);
+        // Reintentos automáticos: cortes de red y fallas del lado de Google (5xx, 429, o una página HTML
+        // en vez de la respuesta de la API, como DTF-31473 el 06/10/2026).
+        const estado = estadoHttp(error);
+        const deRed = error.code === 'ECONNRESET' || error.code === 'ETIMEDOUT' || String(error.message || '').includes('socket');
+        const deGoogle = (estado >= 500 && estado < 600) || estado === 429 || esPaginaHtml(error.message);
+        if (retries > 0 && (deRed || deGoogle)) {
+            // Un stream ya se leyó en el intento que falló: se vuelve a abrir el archivo. Antes se
+            // reintentaba con el mismo stream y Drive recibía un archivo vacío o cortado.
+            const deNuevo = rearmarEntrada(fileInput);
+            if (deNuevo) {
+                const espera = deGoogle ? 3000 : 1500;
+                logger.warn(`⚠️ [DriveService] ${deGoogle ? 'Google falló' : 'Error de red'} subiendo ${fileName} (${exports.resumenError(error)}). Reintento en ${espera / 1000} s (quedan ${retries}).`);
+                await new Promise(r => setTimeout(r, espera));
+                return exports.uploadToDrive(deNuevo, fileName, areaName, retries - 1);
+            }
         }
-        logger.error(`❌ [DriveService] Error subiendo ${fileName}:`, error.message);
+        logger.error(`❌ [DriveService] Error subiendo ${fileName}: ${exports.resumenError(error)}`);
         throw error;
     }
 };

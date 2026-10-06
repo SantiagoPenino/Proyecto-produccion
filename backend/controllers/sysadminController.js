@@ -452,11 +452,26 @@ exports.backupDatabase = async (req, res) => {
     }
 };
 
+// Errores del navegador que no son de la app (06/10/2026, visto en el log de producción):
+//  · "window.ethereum…": los tira el script de billetera de Brave para iPhone (y de otras apps de
+//    criptomonedas) en páginas sin billetera: asigna window.ethereum.selectedAddress antes de que
+//    exista. Es un bug de Brave (brave/brave-browser#58670); la página sigue funcionando.
+//  · "Script error." sin archivo ni línea: error de un script de otro origen (extensiones, scripts que
+//    inyecta el navegador). El navegador esconde el detalle: no hay nada para mirar.
+// No se guardan ni se loguean, y no cuentan para la alerta de "muchos errores".
+const esRuidoAjeno = (message, source) => {
+    const m = String(message || '');
+    if (/window\.ethereum/i.test(m)) return true;
+    const sinOrigen = !source || /^(undefined|null)?:0:0$/.test(String(source).trim());
+    return m.trim() === 'Script error.' && sinOrigen;
+};
+
 // ─── POST /api/sysadmin/client-error ──────────────────────
 // #14 — Frontend error reporting (no auth required — mounted separately)
 exports.reportClientError = async (req, res) => {
     const { message, stack, source, url, userAgent, userId, timestamp } = req.body;
     const ip = (req.ip || '').replace(/^::ffff:/, '');
+    if (esRuidoAjeno(message, source)) return res.json({ ok: true, ignorado: true });
 
     // Store in memory + log
     if (!global.__frontendErrors) global.__frontendErrors = [];
