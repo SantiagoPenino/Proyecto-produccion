@@ -253,6 +253,15 @@ async function guardar(pool, user, base, solicitudId, productoSolId, b) {
   await pool.request().input('P', sql.Int, productoSolId).input('D', sql.NVarChar(sql.MAX), JSON.stringify(datos))
     .query('UPDATE dbo.SolicitudesVendedorProductos SET DatosJson = @D WHERE ProductoSolID = @P');
   await base.registrarEvento(pool, user, { solicitudId, productoSolId, tipo: 'EDICION', texto: `TIZADA PRO: ${disenos.length} diseño(s) y ${planilla.length} prenda(s) en la lista de talles guardados.` });
+  // Si el vendedor cambia diseños o lista con la producción principal ya en Diseño (o con la tizada hecha), queda
+  // "Modificada": Diseño se entera, tiene que aceptar el cambio (y rehacer la tizada) y no se convierte con la vieja.
+  if (!(await base.esDisenador(pool, user))) {
+    const pa = (await pool.request().input('P', sql.Int, productoSolId).query(
+      "SELECT TOP 1 ParteID, Estado FROM dbo.SolicitudesVendedorPartes WHERE ProductoSolID = @P AND Tipo = 'PRINCIPAL' AND Activo = 1")).recordset[0];
+    if (pa && pa.Estado !== 'INGRESADO') {
+      await base.marcarModificada(pool, user, pa.ParteID, `TIZADA PRO: el vendedor cambió los diseños o la lista de talles (${disenos.length} diseño(s), ${planilla.length} prenda(s))${pa.Estado === 'DISENADO' ? ' — hay que rehacer la tizada' : ''}.`);
+    }
+  }
   return ver(pool, user, base, solicitudId, productoSolId);
 }
 
@@ -348,9 +357,12 @@ async function enviar(pool, user, base, solicitudId, productoSolId, b = {}, inte
   if (!conf.ok) throw fallo(503, conf.motivo);
   if (!(await tieneTabla(pool))) throw fallo(503, 'Falta correr scripts/add_tizadapro_envios.sql en la base (tabla TizadaProEnvios).');
   const sol = await base.obtener(pool, user, solicitudId);
-  base.exigirAbierta(sol);
   const p = await productoConMolde(pool, solicitudId, productoSolId);
-  if (p.PedidoNoDocERP) throw fallo(409, `Este producto ya se convirtió en el pedido ${p.PedidoNoDocERP}.`);
+  // Convertido: solo si su pedido tiene archivos que no pasaron a producción (recuperación: solicitudesVendedorRecuperar.js).
+  // En recuperación la solicitud ya está "Pedido solicitado": no se exige que esté abierta (sí que no esté cancelada).
+  const recuperando = !!p.PedidoNoDocERP && await require('./solicitudesVendedorRecuperar').puedeRecuperar(pool, solicitudId, productoSolId);
+  if (!recuperando || sol.Estado === 'CANCELADA') base.exigirAbierta(sol);
+  if (p.PedidoNoDocERP && !recuperando) throw fallo(409, `Este producto ya se convirtió en el pedido ${p.PedidoNoDocERP}.`);
   if (!p.MoldeRef) throw fallo(409, 'Este producto no tiene molde de TIZADA PRO vinculado.');
   const soloRevisar = !!b.soloRevisar;
   // No mandar dos veces el mismo producto mientras uno sigue en curso

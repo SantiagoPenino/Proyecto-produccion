@@ -62,6 +62,12 @@ exports.getPendientes = async (req, res) => {
                         SELECT ArchivoID, NombreArchivo, Metros, Copias, Piezas, Ancho, Alto, EstadoArchivo FROM ArchivosOrden
                         WHERE OrdenID = @id AND ISNULL(EstadoArchivo,'') NOT IN ('CANCELADO','Cancelado') ORDER BY ArchivoID`);
                     t.archivos = a.recordset;
+                    // El DTF/TPU también va en "lo pendiente" (paso 1): con sus reposiciones abiertas.
+                    if (!data.ordenes.some(x => x.OrdenID === t.OrdenID)) {
+                        const h = (await pool.request().input('id', sql.Int, t.OrdenID).query(`
+                            SELECT OrdenID, CodigoOrden, AreaID, Estado, EstadoenArea, ProximoServicio, DescripcionTrabajo, UM FROM Ordenes WHERE OrdenID = @id`)).recordset[0];
+                        if (h) data.ordenes.push(await libro.filaPendiente(h, String(h.AreaID).trim(), area, pool));
+                    }
                 }
             } catch (eR) { logger.warn('[fallaBandeja] ramasReposicion: ' + eR.message); }
         }

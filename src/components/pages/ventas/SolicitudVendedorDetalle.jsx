@@ -629,6 +629,13 @@ function EstadoParteDiseno({ pa, user, perfil, busy, bloqueada, enProduccion = [
             {!bloqueada && perfil.esDisenador && onEnviarTizada && (pa.Estado === 'ENVIADO_DISENO' || (pa.Estado === 'DISENO_INICIADO' && (esMia || perfil.esAdmin)))
                 ? <button disabled={busy} onClick={onEnviarTizada} className={BTN_PRIMARIO} title="Revisa arte y datos, y lo manda a TIZADA PRO; la tizada vuelve sola como diseño pronto"><Send size={12} /> Enviar a TIZADA PRO</button>
                 : !bloqueada && perfil.esDisenador && pa.Estado === 'ENVIADO_DISENO' && <button disabled={busy} onClick={onTomar} className={BTN_PRIMARIO}>Tomar este trabajo</button>}
+            {/* Rehacer: con la tizada ya hecha (Diseñado) se puede volver a mandar; la nueva reemplaza al diseño pronto actual */}
+            {!bloqueada && perfil.esDisenador && onEnviarTizada && pa.Estado === 'DISENADO' && (esMia || perfil.esAdmin || !pa.DisenadorID) && (
+                <button disabled={busy} className={BTN_SECUNDARIO} title="Vuelve a mandar diseños, arte y lista a TIZADA PRO; cuando vuelve, la tizada nueva reemplaza a la actual"
+                    onClick={() => { if (window.confirm('Rehacer la tizada: se manda de nuevo a TIZADA PRO con los diseños, el arte y la lista de talles que estén guardados ahora. Cuando vuelva, la tizada nueva REEMPLAZA a los archivos de diseño pronto actuales. ¿Mandarla?')) onEnviarTizada(); }}>
+                    <RefreshCw size={12} /> Rehacer la tizada en TIZADA PRO
+                </button>
+            )}
         </div>
     );
 }
@@ -1195,6 +1202,24 @@ function Conversion({ s, p, pedido, faltantes, avisos = [], checklist, puedeVend
                         <ul className="list-disc pl-5 text-slate-700">{arch.filter(a => !a.subido).map((a, k) => <li key={k}>"{a.nombre}"{a.error ? `: ${a.error}` : ''}</li>)}</ul>
                         <div className="text-slate-600">Las órdenes que esperan estos archivos siguen en "Cargando…" y producción no las ve.</div>
                         {puedeVender && <button disabled={busy} onClick={() => hacer(() => svc.reintentarArchivos(id, p.ProductoSolID), 'Reintentando el pase de archivos a producción…')} className={BTN_PRIMARIO}><RefreshCw size={12} /> Volver a pasar los archivos que faltan</button>}
+                        {/* Recuperar: si el archivo estaba mal (ej. tizada de 2 páginas), se rehace y se pasa a las órdenes que lo esperaban
+                            (reactiva las que canceló la limpieza automática; un lugar por archivo). services/solicitudesVendedorRecuperar.js */}
+                        {puedeVender && (
+                            <div className="mt-2 border border-slate-200 rounded-lg p-2 space-y-1.5">
+                                <div className="font-black text-slate-700">Si el archivo estaba mal: rehacerlo y pasarlo a este pedido</div>
+                                <div className="text-[11px] text-slate-600">1) Rehacé el archivo{p.Config?.TizadaProMoldeRef ? ' (la tizada en TIZADA PRO)' : ' (subí el diseño pronto corregido en la pantalla de Diseño)'} y esperá que quede cargado. 2) Pasalo al pedido: se pone en las órdenes que lo esperaban, un archivo por mesa, y si la limpieza automática había cancelado alguna, se reactiva.</div>
+                                <div className="flex flex-wrap gap-2">
+                                    {p.Config?.TizadaProMoldeRef && (
+                                        <button disabled={busy} className={BTN_SECUNDARIO} onClick={() => { if (window.confirm('Se manda de nuevo a TIZADA PRO con los diseños, el arte y la lista guardados. Cuando vuelva, la tizada nueva reemplaza a los diseños prontos de la solicitud (todavía NO toca el pedido). ¿Mandarla?')) hacer(async () => { const r = await svc.tizadaProEnviar(id, p.ProductoSolID, false); if (r.Estado === 'RECHAZADO') toast.error(`TIZADA no lo acepta: ${r.mensaje || 'mirá las alarmas en el bloque de TIZADA PRO'}.`); else toast.success(`Mandado a TIZADA PRO (${r.Referencia}). Cuando diga "Tizada cargada", pasala al pedido.`); }); }}>
+                                            <Send size={12} /> 1. Rehacer la tizada en TIZADA PRO
+                                        </button>
+                                    )}
+                                    <button disabled={busy} className={BTN_PRIMARIO} onClick={() => { if (window.confirm(`Se pasan los archivos de diseño pronto ACTUALES de la producción principal al pedido ${pedido?.noDocERP || ''}: se ponen en las órdenes que los esperaban (un archivo por mesa) y, si la limpieza automática canceló alguna, se reactiva. Antes se controla que cada PDF tenga 1 página. ¿Pasarlos?`)) hacer(async () => { const r = await svc.recuperarArchivos(id, p.ProductoSolID); toast.success(`Pasando a producción: ${(r.ordenes || []).map(o => `${o.codigo}${o.reactivada ? ' (reactivada)' : ''} · ${o.archivos} archivo(s)`).join(' · ')}`); }); }}>
+                                        <RefreshCw size={12} /> 2. Pasar la tizada nueva al pedido
+                                    </button>
+                                </div>
+                            </div>
+                        )}
                     </>
                 )}
             </div>

@@ -36,6 +36,7 @@ exports.definirProduccionArchivo = accion('definirProduccionArchivo', (pool, req
 exports.convertir         = accion('convertir',         (pool, req) => svc.convertir(pool, req.user, id(req.params.id), id(req.params.productoSolId), req.body || {}, req.app));
 exports.bobinasDelCliente = accion('bobinasDelCliente', (pool, req) => svc.bobinasDelCliente(pool, req.user, id(req.params.id)));
 exports.reintentarArchivos = accion('reintentarArchivos', (pool, req) => svc.reintentarArchivos(pool, req.user, id(req.params.id), id(req.params.productoSolId), req.app));
+exports.recuperarArchivos = accion('recuperarArchivos', (pool, req) => svc.recuperarArchivos(pool, req.user, id(req.params.id), id(req.params.productoSolId), req.app));
 exports.quitarArchivo     = accion('quitarArchivo',     (pool, req) => svc.quitarArchivo(pool, req.user, id(req.params.id), id(req.params.archivoId)));
 
 // Tizadas de TizadaPro: lista de trabajos terminados y vínculo con la producción principal

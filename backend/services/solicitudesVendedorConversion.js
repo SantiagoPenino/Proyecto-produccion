@@ -211,7 +211,10 @@ function armarPedido(sol, p, bobinaId) {
     servicios,
     bocetos: principal ? deParte(principal, 'BOCETO') : [],
     planillas: [...delProducto('PLANILLA'), ...generales('PLANILLA')],
-    archivosReferencia: [...(principal ? deParte(principal, 'REFERENCIA') : []), ...delProducto('REFERENCIA'), ...generales('REFERENCIA')],
+    // La ficha técnica de TIZADA PRO ("FICHA TECNICA SOL-…pdf") no va suelta: va adentro de la Ficha del pedido
+    // (solicitudesVendedorFichaPdf.generarPdf la pone primero, tal cual llegó), que se adjunta a la orden PRO.
+    archivosReferencia: [...(principal ? deParte(principal, 'REFERENCIA') : []), ...delProducto('REFERENCIA'), ...generales('REFERENCIA')]
+      .filter(x => !/^FICHA TECNICA [A-Z]+-\d+-P\d+-\d+\.pdf$/i.test(String(x.nombre || ''))),
   };
 }
 

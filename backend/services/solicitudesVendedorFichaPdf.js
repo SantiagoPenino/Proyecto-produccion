@@ -192,9 +192,87 @@ const CSS = `
   .pie { margin-top: 14px; border-top: 1px solid #CDD4DF; padding-top: 3px; font-size: 8.5px; color: #9AA6BE; }
 `;
 
-function htmlFicha(s) {
+// Estilo de la ficha técnica de TIZADA PRO (la que devuelve con cada tizada): la ficha del pedido de la
+// solicitud se arma igual, para que el PDF unificado (ficha de TIZADA + datos del pedido) se lea como uno solo.
+// Colores, letra y márgenes sacados de su PDF: celeste #008C9E, texto #1A1A1A, cabecera de tabla #404752,
+// filas #F2F5F8, bordes #CCD1D6, gris #737373, Helvetica, 12,7 mm a los costados. El encabezado de cada página
+// (franja gris, "Ficha técnica", subtítulo y "Pág. n/t") lo pone pdfDesdeHtml (encabezado).
+const CSS_TIZADA = `
+  * { box-sizing: border-box; }
+  html, body { background: #fff; }
+  body { font-family: Helvetica, Arial, sans-serif; font-size: 9.5px; color: #1A1A1A; margin: 0; }
+  .banda { color: #008C9E; font-weight: 700; text-transform: uppercase; font-size: 14.5px; margin: 16px 0 6px; }
+  .banda:first-child { margin-top: 2px; }
+  h2 { font-size: 12px; margin: 12px 0 5px; padding-bottom: 3px; border-bottom: 1px solid #DBDEE0; }
+  h3 { font-size: 10.5px; margin: 10px 0 4px; }
+  h2 small, h3 small { font-weight: 400; color: #737373; font-size: 9px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 18px; }
+  .f { display: flex; gap: 4px; line-height: 1.4; }
+  .f span { color: #737373; white-space: nowrap; }
+  .f span::after { content: ":"; }
+  .f b { font-weight: 600; white-space: pre-line; }
+  .caja { border: 1px solid #CCD1D6; padding: 6px 8px; margin: 6px 0; background: #FBFCFE; }
+  .caja.rojo { border-color: #C0262D; }
+  .caja .cap { font-size: 9px; font-weight: 700; text-transform: uppercase; color: #737373; margin-bottom: 3px; }
+  .caja.rojo .cap { color: #C0262D; }
+  table { width: 100%; border-collapse: collapse; margin: 2px 0 6px; }
+  th { background: #404752; color: #fff; font-weight: 700; text-transform: uppercase; font-size: 8px; text-align: left; padding: 5px 6px; border: 1px solid #404752; }
+  td { border: 1px solid #CCD1D6; padding: 4px 6px; text-align: left; vertical-align: top; }
+  tbody tr:nth-child(even) td { background: #F2F5F8; }
+  small { color: #737373; }
+  .minis { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin: 4px 0 8px; }
+  figure { margin: 0; break-inside: avoid; }
+  figure .img { height: 110px; display: flex; align-items: center; justify-content: center; background: #FBFCFE; border: 1px solid #CCD1D6; box-shadow: 3px 3px 0 #DBDEE0; overflow: hidden; }
+  figure img { max-width: 100%; max-height: 104px; object-fit: contain; }
+  .ext { font-size: 16px; font-weight: 700; color: #BFBFBF; }
+  figcaption { font-size: 8px; line-height: 1.3; margin-top: 5px; word-break: break-all; color: #008C9E; font-weight: 700; }
+  figcaption b { color: #1A1A1A; font-size: 8.5px; }
+  .parte { border-left: 3px solid #008C9E; padding: 2px 0 2px 8px; margin: 8px 0; break-inside: avoid-page; }
+  .parte-tit { font-weight: 700; font-size: 10.5px; margin-bottom: 3px; }
+  .pill { display: inline-block; border: 1px solid #737373; border-radius: 9px; padding: 0 6px; font-size: 8px; font-weight: 700; color: #404752; }
+  .pill.rojo { border-color: #C0262D; color: #C0262D; }
+  b.rojo { color: #C0262D; }
+  .nota { color: #737373; margin: 2px 0; }
+  .salto { break-before: page; }
+  ul { margin: 2px 0 0 16px; padding: 0; }
+  .pie { margin-top: 14px; border-top: 1px solid #DBDEE0; padding-top: 3px; font-size: 8px; color: #737373; }
+`;
+
+// Encabezado de cada página, igual al de la ficha de TIZADA (franja gris, título, subtítulo, Pág. n/t, línea celeste)
+// (margin-top -6mm: Chrome deja ~6 mm libres arriba del encabezado; así la franja arranca en el borde, como la de TIZADA)
+const encabezadoTizada = (subtitulo) => `<div style="width:100%;margin:-6mm 0 0 0;padding:0;font-family:Helvetica,Arial,sans-serif;-webkit-print-color-adjust:exact;print-color-adjust:exact">
+  <div style="background:#F5F7F8;padding:5mm 12.7mm 3mm;display:flex;justify-content:space-between;align-items:flex-end">
+    <div><div style="font-size:15pt;font-weight:700;color:#1A1A1A">Ficha técnica</div><div style="font-size:9pt;color:#737373;margin-top:1.5mm">${esc(subtitulo)}</div></div>
+    <div style="font-size:8pt;color:#737373;padding-bottom:1mm">Datos del pedido · Pág. <span class="pageNumber"></span>/<span class="totalPages"></span></div>
+  </div>
+  <div style="margin:0 12.7mm;border-top:1.5pt solid #008C9E"></div>
+</div>`;
+
+// La ficha técnica que devolvió TIZADA PRO para cada producto (la sube aplicarResultado como REFERENCIA
+// "FICHA TECNICA <referencia>.pdf"): la última vigente de cada producto.
+const ES_FICHA_TIZADA = /^FICHA TECNICA [A-Z]+-\d+-P\d+-\d+\.pdf$/i;
+function fichasTizadaDe(sol) {
+  const vig = (sol.Archivos || []).filter(a => a.Vigente && a.Rol === 'REFERENCIA' && ES_FICHA_TIZADA.test(String(a.NombreOriginal || '')));
+  return sol.Productos.map(p => vig.filter(a => a.ProductoSolID === p.ProductoSolID).sort((x, y) => y.ArchivoID - x.ArchivoID)[0]).filter(Boolean);
+}
+async function bajarDeDrive(url) {
+  const id = driveIdDe(url);
+  if (!id) throw new Error('no se reconoce el enlace de Drive');
+  const { stream } = await require('./driveService').getFileStream(id);
+  const partes = [];
+  for await (const ch of stream) partes.push(Buffer.isBuffer(ch) ? ch : Buffer.from(ch));
+  return Buffer.concat(partes);
+}
+
+function htmlFicha(s, opts = {}) {
+  // opts.estilo 'tizada': estilo de la ficha de TIZADA, sin el encabezado propio (lo pone pdfDesdeHtml);
+  // opts.conFichaTizada: productos cuya ficha de TIZADA va adelante en el mismo PDF (no se repite "Piezas y telas")
+  // opts.excluir: ArchivoID que no se muestran en miniatura (la propia ficha de TIZADA); opts.aviso: texto en rojo arriba
+  const tz = opts.estilo === 'tizada';
+  const conFichaTz = opts.conFichaTizada || new Set();
+  const excluir = opts.excluir || new Set();
   const f = s.Ficha || {};
-  const vig = (s.Archivos || []).filter(a => a.Vigente);
+  const vig = (s.Archivos || []).filter(a => a.Vigente && !excluir.has(a.ArchivoID));
   const pedidos = s.Productos.filter(p => p.PedidoNoDocERP).map(p => p.PedidoNoDocERP);
   const generales = vig.filter(a => !a.ProductoSolID && !a.ParteID && !a.EventoID && a.Rol !== 'COMPROBANTE');
   const comprobantes = vig.filter(a => a.Rol === 'COMPROBANTE');
@@ -212,7 +290,7 @@ function htmlFicha(s) {
     <section class="${i > 0 ? 'salto' : ''}">
       ${H2(`Producto ${i + 1}: ${nombre}`, `${p.Cantidad} unidades`)}
       ${datosProducto(p)}
-      ${piezasTelas(p)}
+      ${conFichaTz.has(p.ProductoSolID) ? '' : piezasTelas(p)}
       ${fichaTecnica(p)}
       ${extras.length ? `${H3('Servicios y extras')}<table><thead><tr><th>Servicio</th><th>Cantidad</th><th>Dónde va</th><th>Tipo / material</th><th>El arte</th></tr></thead><tbody>${extras.map(servicio).join('')}</tbody></table>` : `${H3('Servicios y extras')}<p class="nota">No lleva extras.</p>`}
       ${delCliente.length ? `${H3('Archivos del cliente', 'arte, bocetos, referencias y planillas')}${miniaturas(delCliente, false)}` : ''}
@@ -243,8 +321,9 @@ function htmlFicha(s) {
   }).join('');
 
   return `<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Ficha del pedido — Solicitud #${s.SolicitudID}</title>
-<style>${CSS}</style></head><body>
-  <div class="top">
+<style>${tz ? CSS_TIZADA : CSS}</style></head><body>
+  ${opts.aviso ? `<div class="caja rojo"><div class="cap">Atención</div>${esc(opts.aviso)}</div>` : ''}
+  ${tz ? '' : `<div class="top">
     <div>
       <div class="kicker">Ficha del pedido · Solicitud #${s.SolicitudID} · ${esc(ESTADO_SOLICITUD[s.Estado] || s.Estado)} · ingresada el ${fechaHora(s.FechaSolicitud)}</div>
       <h1>${esc(s.NombreTrabajo)}</h1>
@@ -254,11 +333,12 @@ function htmlFicha(s) {
       ${pedidos.length ? `<div class="ped">Pedido ${esc(pedidos.join(', '))}</div>` : ''}
       <div>Entrega: <b>${s.FechaEntrega ? `${fecha(s.FechaEntrega)}${s.FechaEntregaHasta ? ` → ${fecha(s.FechaEntregaHasta)}` : ''}` : 'sin fecha'}</b></div>
     </div>
-  </div>
+  </div>`}
 
   <div class="banda">Solicitud del cliente</div>
   ${H2('Identificación')}
   <div class="grid">
+    ${tz ? F('Pedido', pedidos.join(', ')) + F('Solicitud', `#${s.SolicitudID} · ${ESTADO_SOLICITUD[s.Estado] || s.Estado} · ingresada el ${fechaHora(s.FechaSolicitud)}`) : ''}
     ${F('Cliente', s.ClienteNombre)}${F('Vendedor', s.VendedorNombre)}
     ${F('Nombre del trabajo', s.NombreTrabajo)}${F('Presupuesto', s.PreNumero)}
     ${F('Fecha que necesita el cliente', fecha(s.FechaEntrega))}${F('Hasta', fecha(s.FechaEntregaHasta))}
@@ -294,8 +374,8 @@ function htmlFicha(s) {
 </body></html>`;
 }
 
-/** Arma el PDF de la solicitud (Buffer). `sol` = lo que devuelve obtener(). */
-async function pdfDesdeHtml(html) {
+/** Arma el PDF de la solicitud (Buffer). `sol` = lo que devuelve obtener(). opts.encabezado: subtítulo del encabezado estilo TIZADA. */
+async function pdfDesdeHtml(html, opts = {}) {
   const puppeteer = require('puppeteer');
   const browser = await puppeteer.launch({ headless: 'new', args: ['--no-sandbox', '--disable-setuid-sandbox'] });
   try {
@@ -303,13 +383,47 @@ async function pdfDesdeHtml(html) {
     // networkidle0: espera las miniaturas de Drive. Tope 45 s: si Drive tarda, sale igual (con la extensión).
     await page.setContent(html, { waitUntil: 'networkidle0', timeout: 45000 }).catch(e => logger.warn(`[FICHA-PDF] miniaturas: ${e.message}`));
     // puppeteer ≥ 22 devuelve Uint8Array: a Express hay que darle un Buffer (si no, res.send lo serializa como JSON y el PDF no abre)
+    if (opts.encabezado != null) {
+      return Buffer.from(await page.pdf({ format: 'A4', printBackground: true, displayHeaderFooter: true,
+        headerTemplate: encabezadoTizada(opts.encabezado), footerTemplate: '<span></span>',
+        margin: { top: '26mm', right: '12.7mm', bottom: '12mm', left: '12.7mm' } }));
+    }
     return Buffer.from(await page.pdf({ format: 'A4', printBackground: true, margin: { top: '14mm', right: '12mm', bottom: '14mm', left: '12mm' } }));
   } finally {
     await browser.close().catch(() => { });
   }
 }
 
-const generarPdf = (sol) => pdfDesdeHtml(htmlFicha(sol));
+/**
+ * Ficha del pedido = UN solo PDF: primero la ficha técnica que devolvió TIZADA PRO (tal cual llegó, sin tocarla),
+ * después los datos del pedido con el mismo estilo. Sin ficha de TIZADA: solo los datos del pedido, igual estilo.
+ */
+async function generarPdf(sol) {
+  const fichasTz = [];
+  let aviso = null;
+  for (const a of fichasTizadaDe(sol)) {
+    try { fichasTz.push({ a, buffer: await bajarDeDrive(a.UrlDrive) }); }
+    catch (e) { aviso = `No se pudo incorporar la ficha técnica de TIZADA PRO (${a.NombreOriginal}): ${e.message}. Está en la solicitud #${sol.SolicitudID}.`; logger.warn(`[FICHA-PDF] SOL-${sol.SolicitudID}: ${aviso}`); }
+  }
+  const pedidos = sol.Productos.filter(p => p.PedidoNoDocERP).map(p => p.PedidoNoDocERP);
+  const subtitulo = [sol.NombreTrabajo, pedidos.length ? `Pedido ${pedidos.join(', ')}` : null, `Solicitud #${sol.SolicitudID}`, ahoraLocal().slice(0, 10)].filter(Boolean).join(' · ');
+  const html = htmlFicha(sol, {
+    estilo: 'tizada', aviso,
+    conFichaTizada: new Set(fichasTz.map(f => f.a.ProductoSolID)),
+    excluir: new Set(fichasTz.map(f => f.a.ArchivoID)),
+  });
+  const datos = await pdfDesdeHtml(html, { encabezado: subtitulo });
+  if (!fichasTz.length) return datos;
+  const { PDFDocument } = require('pdf-lib');
+  const out = await PDFDocument.create();
+  for (const buf of [...fichasTz.map(f => f.buffer), datos]) {
+    const src = await PDFDocument.load(buf, { ignoreEncryption: true, updateMetadata: false });
+    (await out.copyPages(src, src.getPageIndices())).forEach(pg => out.addPage(pg));
+  }
+  out.setTitle(`Ficha del pedido — Solicitud #${sol.SolicitudID}`);
+  out.setCreator('USER · ficha técnica de TIZADA PRO + datos del pedido');
+  return Buffer.from(await out.save());
+}
 
 const nombreArchivo = (sol) => `Ficha pedido SOL-${sol.SolicitudID}.pdf`;
 

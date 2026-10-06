@@ -61,6 +61,7 @@ export const solicitudesVendedorService = {
     convertir: (id, productoSolId, bobinaId) => dato(api.post(`${BASE}/${id}/productos/${productoSolId}/convertir`, { bobinaId: bobinaId || null })),
     bobinas: (id) => dato(api.get(`${BASE}/${id}/bobinas`)),
     reintentarArchivos: (id, productoSolId) => dato(api.post(`${BASE}/${id}/productos/${productoSolId}/reintentar-archivos`)),
+    recuperarArchivos: (id, productoSolId) => dato(api.post(`${BASE}/${id}/productos/${productoSolId}/recuperar-archivos`)),
 
     /** Ficha del pedido en PDF (Blob): todo lo de la solicitud, la misma que se adjunta al pedido al convertir. */
     fichaPdf: async (id) => (await api.get(`${BASE}/${id}/ficha-pdf`, { responseType: 'blob' })).data,
