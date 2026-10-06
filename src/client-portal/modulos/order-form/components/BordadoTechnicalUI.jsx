@@ -32,6 +32,8 @@ export const BordadoTechnicalUI = ({
     serviceId, garmentQuantity, setGarmentQuantity,
     bocetoFile, setBocetoFile,
     ponchadoFiles, setPonchadoFiles,
+    // [UNA ORDEN POR ARCHIVO] (opcional, solo la página interna): prendas por logo cuando hay más de uno
+    prendasDeArchivo = null, setPrendasArchivo = null,
     globalMaterial, handleGlobalMaterialChange,
     serviceInfo, userStock,
     handleSpecializedFileUpload,
@@ -562,11 +564,22 @@ export const BordadoTechnicalUI = ({
                                         color="emerald"
                                         multiple={true}
                                     />
+                                    {setPrendasArchivo && ponchadoFiles.length > 1 && (
+                                        <p className="mt-2 text-[10px] text-emerald-400 text-center">Cada logo sale como una orden de Bordado propia. Indicá cuántas prendas lleva cada uno (por defecto, todas).</p>
+                                    )}
                                     {ponchadoFiles.length > 0 && (
                                         <div className="mt-3 flex flex-wrap gap-2 justify-center">
                                             {ponchadoFiles.map((f, idx) => (
                                                 <div key={idx} className="flex items-center gap-2 bg-zinc-800/50 border border-emerald-500/30 px-4 py-2 rounded-xl">
                                                     <span className="text-[10px] font-bold text-zinc-300 max-w-[100px] truncate">{f.name}</span>
+                                                    {setPrendasArchivo && ponchadoFiles.length > 1 && (
+                                                        <input
+                                                            type="number" min="1" title="Prendas que llevan este logo"
+                                                            value={prendasDeArchivo ? prendasDeArchivo(f) : ''}
+                                                            onChange={(e) => setPrendasArchivo(f, e.target.value)}
+                                                            className="w-14 bg-zinc-900 border border-zinc-700 rounded px-1 py-0.5 text-[10px] font-mono text-zinc-200 text-right"
+                                                        />
+                                                    )}
                                                     <button
                                                         onClick={() => setPonchadoFiles(ponchadoFiles.filter((_, i) => i !== idx))}
                                                         className="text-emerald-500 hover:text-red-500 transition-colors"

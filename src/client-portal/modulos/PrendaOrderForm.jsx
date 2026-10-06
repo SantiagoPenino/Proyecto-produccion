@@ -350,6 +350,19 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
         uniqueVariants, variantsInfo, dynamicMaterials: dynamicMaterialsHook, visibleConfig, prioritiesList, areasConUrgencia,
         activeSubOrders, embroideryVariants, embroideryMaterials
     } = state;
+
+    // [UNA ORDEN POR ARCHIVO] TPU y Bordado con más de un archivo (diseño / logo) salen como UNA ORDEN POR
+    // ARCHIVO: cada TPU con su matriz y su Estampado, cada Bordado con su ponchado. Cada orden lleva sus
+    // prendas: por defecto todas las del pedido, editable por archivo.
+    const [prendasPorArchivo, setPrendasPorArchivo] = useState({});
+    const claveArchivo = (f) => `${f?.name || ''}|${f?.size || 0}`;
+    const prendasDeArchivo = (f) => {
+        const v = prendasPorArchivo[claveArchivo(f)];
+        if (v !== undefined && v !== '') return v;
+        return parseInt(garmentQuantity, 10) || '';
+    };
+    const setPrendasArchivo = (f, v) => setPrendasPorArchivo(p => ({ ...p, [claveArchivo(f)]: v }));
+    const prendasNumArchivo = (f) => parseInt(prendasDeArchivo(f), 10) || parseInt(garmentQuantity, 10) || 0;
     // [F1] Con producto del catálogo, los materiales de la producción principal son los del producto
     // (sus telas o los del área que lo produce), no los de Sublimación de la URL.
     const dynamicMaterials = (principalProd?.materiales?.length ? principalProd.materiales : dynamicMaterialsHook);
@@ -2353,12 +2366,21 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                             comp.cabecera.codStock = '1.1.5.1';
                             comp.cabecera.material = 'Estampado (Servicio)';
 
+                            // [UNA ORDEN POR ARCHIVO] Con varios diseños de TPU hay una orden TPU por diseño, y cada
+                            // una necesita SU Estampado, encadenado a ella (chainedAfterKey) y con sus prendas.
                             const cadenas = [];
-                            if (selectedComplementary['DF']) cadenas.push('DF');
-                            if (selectedComplementary['TPU']) cadenas.push('TPU');
-                            if (cadenas.length === 0) cadenas.push(null);
+                            if (selectedComplementary['DF']) cadenas.push({ area: 'DF' });
+                            if (selectedComplementary['TPU']) {
+                                if (tpuArchivos.length > 1) {
+                                    tpuArchivos.forEach((f, i) => cadenas.push({ area: 'TPU', key: `TPU#${i + 1}`, prendas: prendasNumArchivo(f), nombre: f.name }));
+                                } else {
+                                    cadenas.push({ area: 'TPU' });
+                                }
+                            }
+                            if (cadenas.length === 0) cadenas.push({ area: null });
 
-                            cadenas.forEach(chainedAfterAreaId => {
+                            cadenas.forEach(c => {
+                                const chainedAfterAreaId = c.area;
                                 listaServicios.push({
                                     esPrincipal: false,
                                     areaId: key,
@@ -2366,9 +2388,10 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                                     cabecera: { ...comp.cabecera, variante: chainedAfterAreaId === 'TPU' ? 'Estampado TPU' : (chainedAfterAreaId === 'DF' ? 'Estampado DTF' : (comp.cabecera?.variante || 'Estampado')) },
                                     archivos: archivosExtra,
                                     items: [],
-                                    notas: comp.observacion,
-                                    metadata: comp.metadata || {},
+                                    notas: [comp.observacion, c.nombre ? `[ESTAMPA EL DISEÑO TPU: ${c.nombre}]` : null].filter(Boolean).join(' '),
+                                    metadata: c.prendas ? { ...(comp.metadata || {}), prendas: c.prendas } : (comp.metadata || {}),
                                     chainedAfterAreaId,
+                                    chainedAfterKey: c.key || null,
                                 });
                             });
                             return; // ya se empujaron su(s) orden(es), no caer al push genérico de abajo
@@ -2381,6 +2404,33 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                         // Impresión ni como Referencia: se perdía.
                         // [TPU COMO PORTAL] TPU ya no manda archivo de impresión (va como boceto de referencia):
                         // su cantidad la pone el backend desde los metadatos (prendas × bajadas).
+                        // [UNA ORDEN POR ARCHIVO] TPU / Bordado con más de un archivo: una orden por archivo.
+                        // Cada una lleva SU archivo (diseño TPU o logo) + lo compartido (boceto de ubicación),
+                        // sus prendas y un chainKey para que su Estampado se encadene a ella.
+                        const esTpuMulti = key === 'TPU' && tpuArchivos.length > 1;
+                        const esEmbMulti = (key === 'EMB' || key === 'bordado') && ponchadoFiles.length > 1;
+                        if (esTpuMulti || esEmbMulti) {
+                            const archivosPorOrden = esTpuMulti ? tpuArchivos : ponchadoFiles;
+                            const tipoPropio = esTpuMulti ? 'ARCHIVO DE BOCETO' : 'LOGO_BORDADO';
+                            const nombresPropios = new Set(archivosPorOrden.map(f => f.name));
+                            const compartidos = archivosExtra.filter(a => !(a.tipo === tipoPropio && nombresPropios.has(a.name)));
+                            archivosPorOrden.forEach((f, i) => {
+                                listaServicios.push({
+                                    esPrincipal: false,
+                                    areaId: key,
+                                    cabecera: comp.cabecera,
+                                    archivos: [{ name: f.name, size: f.size, tipo: tipoPropio }, ...compartidos],
+                                    items: [],
+                                    notas: [comp.observacion, `[${esTpuMulti ? 'DISEÑO' : 'LOGO'} ${i + 1}/${archivosPorOrden.length}: ${f.name}]`].filter(Boolean).join(' '),
+                                    metadata: { ...(comp.metadata || {}), prendas: prendasNumArchivo(f) },
+                                    chainedAfterAreaId: null,
+                                    chainKey: `${esTpuMulti ? 'TPU' : 'EMB'}#${i + 1}`,
+                                    porArchivo: true,
+                                });
+                            });
+                            return;
+                        }
+
                         const itemsProduccion = (key === 'DF')
                             ? archivosExtra
                                 .filter(f => f.tipo === 'PRODUCCION')
@@ -3902,6 +3952,7 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                                         garmentQuantity={garmentQuantity} setGarmentQuantity={actions.setGarmentQuantity}
                                         bocetoFile={bordadoBocetoFile} setBocetoFile={actions.setBordadoBocetoFile}
                                         ponchadoFiles={ponchadoFiles} setPonchadoFiles={actions.setPonchadoFiles}
+                                        prendasDeArchivo={prendasDeArchivo} setPrendasArchivo={setPrendasArchivo}
                                         globalMaterial={globalMaterial} handleGlobalMaterialChange={actions.setGlobalMaterial}
                                         serviceInfo={serviceInfo} userStock={userStock}
                                         handleSpecializedFileUpload={(f) => handleSpecializedFileUpload(actions.setBordadoBocetoFile, f)}
@@ -3935,6 +3986,7 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                                     <TpuTechnicalUI
                                         garmentQuantity={garmentQuantity} setGarmentQuantity={actions.setGarmentQuantity}
                                         tpuArchivos={tpuArchivos} removeTpuArchivo={actions.removeTpuArchivo}
+                                        prendasDeArchivo={prendasDeArchivo} setPrendasArchivo={setPrendasArchivo}
                                         tpuBocetoFile={tpuBocetoFile} setTpuBocetoFile={actions.setTpuBocetoFile}
                                         tpuAlto={tpuAlto} tpuAncho={tpuAncho} setTpuAlto={actions.setTpuAlto} setTpuAncho={actions.setTpuAncho}
                                         tpuVariant={tpuVariant} tpuVariants={tpuVariants} handleTpuVariantChange={actions.handleTpuVariantChange}

@@ -534,6 +534,8 @@ exports.createWebOrder = async (req, res) => {
         const prendasPedido = (req.body.servicios || [])
             .filter(x => x && (x.esProductoFabricado || x.esProductoComprado))
             .reduce((sum, x) => sum + (x.items || []).reduce((a, it) => a + (parseInt(it.cantidad) || 0), 0), 0)
+            // [UNA ORDEN POR ARCHIVO] una orden partida por archivo puede llevar menos prendas que el pedido: no sirve de referencia
+            || parseInt((req.body.servicios || []).find(x => x?.metadata?.prendas && !x.porArchivo)?.metadata?.prendas)
             || parseInt((req.body.servicios || []).find(x => x?.metadata?.prendas)?.metadata?.prendas) || 0;
     const jobName = nombreTrabajo || req.body.jobName;
     const urgency = prioridad || req.body.urgency || 'Normal';
@@ -948,7 +950,11 @@ exports.createWebOrder = async (req, res) => {
                     // [PRENDAS] Mismo problema con la prenda comprada por WMS: tampoco trae archivo,
                     // así que sin esto quedaba en Magnitud=0 (y "confirmar retiro" descontaría 1
                     // unidad del WMS externo en vez de la cantidad real comprada).
-                    magnitudInicial: ((serviceId === 'tpu' && srv.esPrincipal) || srv.esProductoComprado || srv.esProductoFabricado)
+                    // [UNA ORDEN POR ARCHIVO] Bordado partido por archivo: cada orden lleva SUS prendas (editable
+                    // por archivo en la página). Con Magnitud 0 tomaría las de la PRO madre (todas).
+                    magnitudInicial: (srv.porArchivo && areaID === 'EMB' && parseInt(srv.metadata?.prendas) > 0)
+                        ? parseInt(srv.metadata.prendas)
+                        : ((serviceId === 'tpu' && srv.esPrincipal) || srv.esProductoComprado || srv.esProductoFabricado)
                         ? (srv.items || []).reduce((s, it) => s + (parseInt(it.cantidad) || 0), 0)
                         // [CORTE/COSTURA] Hermanas de un producto fabricado: nacían con Magnitud 0 y el listado
                         // mostraba "0 prend". Llevan las prendas del pedido (las de la orden madre PRO), igual
@@ -961,6 +967,11 @@ exports.createWebOrder = async (req, res) => {
                     // OTRA termine primero (ej. Estampado espera a su DTF/TPU), acá viaja el
                     // AreaID de esa Orden — se resuelve a OrdenID real más abajo, en el loop.
                     chainedAfterAreaId: srv.chainedAfterAreaId || null,
+                    // [UNA ORDEN POR ARCHIVO] TPU/Bordado con varios archivos salen como varias órdenes de la
+                    // misma área: chainKey identifica a cada una y chainedAfterKey dice a cuál de ellas se
+                    // encadena su Estampado (sin esto todos los Estampados quedaban colgados del primer TPU).
+                    chainKey: srv.chainKey || null,
+                    chainedAfterKey: srv.chainedAfterKey || null,
                     // [PRENDAS] "Comprar y personalizar": esta línea es la prenda comprada por
                     // WMS (no un servicio de decoración) — dispara el gate ESPERANDO_RETIRO_WMS
                     // y guarda su wms_variante_id para poder descontar el stock correcto.
@@ -1359,6 +1370,8 @@ exports.createWebOrder = async (req, res) => {
             // Orden encadenada (ej. Estampado) guarde el OrdenID real de aquella de la que
             // depende (ej. su DTF/TPU), aunque esta última se haya creado unos pasos antes.
             const insertedOrdenIdByAreaId = {};
+            // [UNA ORDEN POR ARCHIVO] OrdenID por chainKey (una por archivo de TPU/Bordado)
+            const insertedOrdenIdByChainKey = {};
             // [COMBOS] Clave compuesta cuando la orden pertenece a un componente de combo —
             // sin esto, dos componentes con la MISMA área (ej. dos Bordados) se pisarían el
             // OrdenID entre sí y un Estampado encadenaría con el DTF/TPU del OTRO componente.
@@ -1605,7 +1618,8 @@ exports.createWebOrder = async (req, res) => {
                 let estadoDependenciaExec = null;
                 let liberaCuandoOrdenIDExec = null;
                 if (exec.chainedAfterAreaId) {
-                    liberaCuandoOrdenIDExec = insertedOrdenIdByAreaId[claveOrdenArea(grupoDeExec(exec), exec.chainedAfterAreaId.toUpperCase())] || null;
+                    liberaCuandoOrdenIDExec = (exec.chainedAfterKey && insertedOrdenIdByChainKey[exec.chainedAfterKey])
+                        || insertedOrdenIdByAreaId[claveOrdenArea(grupoDeExec(exec), exec.chainedAfterAreaId.toUpperCase())] || null;
                     // [REQUISITOS] 'ESPERANDO_IMPRESION' solo tiene sentido (y solo se libera)
                     // para Estampado esperando su DTF/TPU — el evento de release está
                     // hardcodeado a esas dos áreas en productionFileController.js. Para el
@@ -1749,6 +1763,7 @@ exports.createWebOrder = async (req, res) => {
                 if (!insertedOrdenIdByAreaId[claveArea]) {
                     insertedOrdenIdByAreaId[claveArea] = newOID;
                 }
+                if (exec.chainKey) insertedOrdenIdByChainKey[exec.chainKey] = newOID;
 
                 // [VENTA UNA LÍNEA] Cada artículo del carrito como línea extra de la PRO única:
                 // ServiciosExtraOrden es lo que la cotización (erpSyncService) ya cotiza por

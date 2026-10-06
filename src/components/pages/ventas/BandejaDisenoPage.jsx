@@ -144,11 +144,17 @@ function EnProduccion({ rows, onAbrir, onVerSolicitud }) {
                         {rows.length === 0 && <tr><td colSpan={7} className="text-center text-slate-400 py-6">No hay órdenes de Bordado ni de TPU esperando diseño.</td></tr>}
                         {rows.map(o => {
                             const et = ETAPA_PRODUCCION[o.Etapa] || { txt: o.Etapa, cls: 'bg-slate-50 text-slate-600 border-slate-200', hacer: '' };
-                            const hacer = typeof et.hacer === 'string' ? et.hacer : (et.hacer[o.AreaID] || '');
+                            // [INGRESO INTERNO] Pedido cargado por el personal: el boceto de TPU no va al cliente,
+                            // lo confirma el diseñador desde la ficha ("Confirmar diseño").
+                            const interno = o.IngresoInternoPor != null;
+                            const hacer = (interno && o.AreaID === 'TPU' && o.Etapa === 'FALTA_DISENO')
+                                ? 'Subir el boceto de producción y confirmar el diseño (pedido interno: no va al cliente)'
+                                : (typeof et.hacer === 'string' ? et.hacer : (et.hacer[o.AreaID] || ''));
                             return (
                                 <tr key={o.OrdenID} className="border-t border-slate-100">
                                     <td className="px-3 py-2"><span className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-black uppercase border ${et.cls}`}>{et.txt}</span></td>
-                                    <td className="px-3 py-2"><div className="font-mono font-bold text-slate-800">{o.CodigoOrden}</div><div className="text-[10px] text-slate-400">{AREA_NOMBRE[o.AreaID] || o.AreaID} · pedido {o.NoDocERP}</div></td>
+                                    <td className="px-3 py-2"><div className="font-mono font-bold text-slate-800">{o.CodigoOrden}</div><div className="text-[10px] text-slate-400">{AREA_NOMBRE[o.AreaID] || o.AreaID} · pedido {o.NoDocERP}</div>
+                                        {interno && <span className="inline-block mt-0.5 px-1.5 py-0.5 rounded text-[9px] font-black uppercase bg-indigo-50 text-indigo-700 border border-indigo-200">Pedido interno</span>}</td>
                                     <td className="px-3 py-2"><div className="font-bold text-slate-800">{o.Cliente}</div><div className="text-slate-500">{o.DescripcionTrabajo}</div>
                                         {o.SolicitudID ? <div className="text-[10px] text-slate-500 mt-0.5">Viene de la <button type="button" onClick={() => onVerSolicitud(o.SolicitudID)} className="text-indigo-600 font-bold hover:underline">Solicitud #{o.SolicitudID}</button>{o.DisenadorSolicitud ? <> · ahí lo había tomado <b>{o.DisenadorSolicitud}</b></> : null}</div> : null}</td>
                                     <td className="px-3 py-2 text-slate-600">{o.Material}</td>

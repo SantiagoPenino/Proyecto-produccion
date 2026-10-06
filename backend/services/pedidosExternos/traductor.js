@@ -130,12 +130,29 @@ function traducir(pedido) {
     (bordado.bocetos || []).forEach(a => archivos.push({ name: reg.usar(a).name, tipo: 'BOCETO_BORDADO' }));
     (bordado.archivos || []).forEach(a => archivos.push({ name: reg.usar(a).name, tipo: 'LOGO_BORDADO' }));
     (bordado.referencias || []).forEach(a => archivos.push({ name: reg.usar(a).name, tipo: 'REFERENCIA' }));
-    listaServicios.push({
-      esPrincipal: false, areaId: 'EMB', cabecera: cabeceraDe(bordado), archivos, items: [],
-      notas: notaDe(bordado),
-      metadata: { prendas: parseInt(bordado.prendas, 10), material: bordado.material.nombre, variante: bordado.variante },
-      chainedAfterAreaId: null,
-    });
+    const logos = bordado.archivos || [];
+    if (logos.length > 1) {
+      // [UNA ORDEN POR ARCHIVO] Varios logos → una orden de Bordado por logo (cada una con su ponchado y
+      // sus prendas: las del logo si vienen, si no las del bordado). Lo compartido (bocetos, referencias) va en todas.
+      const compartidos = archivos.filter(x => x.tipo !== 'LOGO_BORDADO');
+      logos.forEach((a, i) => {
+        const nombre = reg.usar(a).name;
+        listaServicios.push({
+          esPrincipal: false, areaId: 'EMB', cabecera: cabeceraDe(bordado),
+          archivos: [{ name: nombre, tipo: 'LOGO_BORDADO' }, ...compartidos], items: [],
+          notas: [notaDe(bordado), `[LOGO ${i + 1}/${logos.length}: ${nombre}]`].filter(Boolean).join(' '),
+          metadata: { prendas: parseInt(a.prendas, 10) || parseInt(bordado.prendas, 10), material: bordado.material.nombre, variante: bordado.variante },
+          chainedAfterAreaId: null, chainKey: `EMB#${i + 1}`, porArchivo: true,
+        });
+      });
+    } else {
+      listaServicios.push({
+        esPrincipal: false, areaId: 'EMB', cabecera: cabeceraDe(bordado), archivos, items: [],
+        notas: notaDe(bordado),
+        metadata: { prendas: parseInt(bordado.prendas, 10), material: bordado.material.nombre, variante: bordado.variante },
+        chainedAfterAreaId: null,
+      });
+    }
   }
 
   // DTF / TPU: cada archivo a imprimir es un ítem; el boceto va como referencia (jsx:1607-1623, 2215-2230)
@@ -158,6 +175,24 @@ function traducir(pedido) {
     });
     (s.bocetos || []).forEach(a => archivos.push({ name: reg.usar(a).name, tipo: 'REFERENCIA' }));
     (s.referencias || []).forEach(a => archivos.push({ name: reg.usar(a).name, tipo: 'REFERENCIA' }));
+    const disenos = tipo === 'TPU' ? (s.archivos || []) : [];
+    if (disenos.length > 1) {
+      // [UNA ORDEN POR ARCHIVO] Varios diseños de TPU → una orden TPU por diseño (su matriz, sus prendas) y un
+      // Estampado encadenado a CADA una (chainKey / chainedAfterKey).
+      const compartidos = archivos.filter(x => x.tipo !== 'BOCETO');
+      disenos.forEach((a, i) => {
+        const nombre = reg.usar(a).name;
+        const prendas = parseInt(a.prendas, 10) || cantidadPrendas;
+        listaServicios.push({
+          esPrincipal: false, areaId, cabecera: cabeceraDe(s),
+          archivos: [{ name: nombre, tipo: 'BOCETO' }, ...compartidos], items: [],
+          notas: [notaDe(s), `[DISEÑO ${i + 1}/${disenos.length}: ${nombre}]`].filter(Boolean).join(' '),
+          metadata: { prendas }, chainedAfterAreaId: null, chainKey: `TPU#${i + 1}`, porArchivo: true,
+        });
+        estampados.push({ areaId, s, chainKey: `TPU#${i + 1}`, prendas, nombre });
+      });
+      return;
+    }
     listaServicios.push({
       esPrincipal: false, areaId, cabecera: cabeceraDe(s), archivos, items,
       notas: notaDe(s), metadata: { prendas: cantidadPrendas }, chainedAfterAreaId: null,
@@ -166,16 +201,17 @@ function traducir(pedido) {
   });
 
   // Estampado: UNA orden por cada DTF/TPU, encadenada a la suya (jsx:2173-2208)
-  estampados.forEach(({ areaId, s }) => {
+  estampados.forEach(({ areaId, s, chainKey, prendas, nombre }) => {
     listaServicios.push({
       esPrincipal: false, areaId: 'EST',
       // [ESTAMPADO] la variante dice QUÉ se estampa (DTF o TPU): se ve en la bandeja y en el listado
       cabecera: { variante: areaId === 'TPU' ? 'Estampado TPU' : 'Estampado DTF', material: 'Estampado (Servicio)', codArticulo: '110', codStock: '1.1.5.1' },
       archivos: (s.bocetos || []).map(a => ({ name: reg.usar(a).name, tipo: 'BOCETO_ESTAMPADO' })),
       items: [],
-      notas: notaDe(s),
-      metadata: { prendas: parseInt(s.estampado.prendas, 10), estampadosPorPrenda: parseInt(s.estampado.estampadosPorPrenda, 10), origen: s.estampado.origen || 'Stock User' },
+      notas: [notaDe(s), nombre ? `[ESTAMPA EL DISEÑO TPU: ${nombre}]` : null].filter(Boolean).join(' '),
+      metadata: { prendas: prendas || parseInt(s.estampado.prendas, 10), estampadosPorPrenda: parseInt(s.estampado.estampadosPorPrenda, 10), origen: s.estampado.origen || 'Stock User' },
       chainedAfterAreaId: areaId,
+      chainedAfterKey: chainKey || null,
     });
   });
 
