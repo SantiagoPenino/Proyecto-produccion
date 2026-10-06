@@ -32,6 +32,15 @@ async function limpiarOrdenesCargando(io) {
     // La columna F4 puede no existir aún en esta base — filtrar solo si existe
     const colRes = await pool.request().query("SELECT COL_LENGTH('dbo.Ordenes','AprobacionPendiente') AS L");
     const filtroAprob = colRes.recordset[0]?.L ? 'AND ISNULL(o.AprobacionPendiente, 0) = 0' : '';
+    // Pedidos creados por el SISTEMA (solicitud de vendedor, API externa) con archivos que no pasaron: no son un
+    // cliente que abandonó la subida — esperan que alguien corrija el archivo y los vuelva a pasar ("Volver a
+    // pasar los archivos" / "Recuperar"). No se cancelan.
+    const tabInt = await pool.request().query("SELECT OBJECT_ID('dbo.IntegracionPedidos', 'U') AS T");
+    const filtroSistema = tabInt.recordset[0]?.T
+      ? `AND NOT EXISTS (SELECT 1 FROM dbo.IntegracionPedidos ip WITH (NOLOCK)
+                        WHERE ip.Estado IN ('ERROR_ARCHIVOS', 'PASANDO_ARCHIVOS')
+                          AND LTRIM(RTRIM(CAST(ip.NoDocERP AS varchar(60)))) = LTRIM(RTRIM(CAST(o.NoDocERP AS varchar(60)))))`
+      : '';
 
     const cand = await pool.request()
         .input('Min', sql.Int, MAX_MIN)
@@ -41,6 +50,7 @@ async function limpiarOrdenesCargando(io) {
             WHERE o.Estado = 'Cargando...'
               AND o.FechaIngreso < DATEADD(MINUTE, -@Min, GETDATE())
               ${filtroAprob}
+              ${filtroSistema}
               AND NOT EXISTS (
                   SELECT 1 FROM dbo.ArchivosOrden ao WITH (NOLOCK)
                   WHERE ao.OrdenID = o.OrdenID

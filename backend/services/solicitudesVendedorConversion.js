@@ -211,7 +211,10 @@ function armarPedido(sol, p, bobinaId) {
     servicios,
     bocetos: principal ? deParte(principal, 'BOCETO') : [],
     planillas: [...delProducto('PLANILLA'), ...generales('PLANILLA')],
-    archivosReferencia: [...(principal ? deParte(principal, 'REFERENCIA') : []), ...delProducto('REFERENCIA'), ...generales('REFERENCIA')],
+    // La ficha técnica de TIZADA PRO ("FICHA TECNICA SOL-…pdf") no va suelta: va adentro de la Ficha del pedido
+    // (solicitudesVendedorFichaPdf.generarPdf la pone primero, tal cual llegó), que se adjunta a la orden PRO.
+    archivosReferencia: [...(principal ? deParte(principal, 'REFERENCIA') : []), ...delProducto('REFERENCIA'), ...generales('REFERENCIA')]
+      .filter(x => !/^FICHA TECNICA [A-Z]+-\d+-P\d+-\d+\.pdf$/i.test(String(x.nombre || ''))),
   };
 }
 
@@ -267,9 +270,13 @@ const SQL_ORDEN_VIVA = `o.AreaID IN ('EMB', 'TPU')
 
 async function disenosEnProduccion(pool, user, base) {
   if (!base.esVendedor(user) && !(await base.esDisenador(pool, user))) throw fallo(403, 'Esta lista es para diseñadores y vendedores.');
+  // [INGRESO INTERNO] Pedido cargado por el personal: el TPU no va al cliente, lo confirma el diseñador. La columna
+  // existe solo si se corrió docs/migrations/ingreso_interno_aprobacion.sql; sin ella la lista funciona igual.
+  const tieneIngresoInterno = (await pool.request().query(`SELECT CASE WHEN COL_LENGTH('dbo.Ordenes', 'IngresoInternoPor') IS NULL THEN 0 ELSE 1 END AS ok`)).recordset[0]?.ok === 1;
   const r = await pool.request().query(`
     SELECT TOP 300 o.OrdenID, LTRIM(RTRIM(o.CodigoOrden)) AS CodigoOrden, LTRIM(RTRIM(o.AreaID)) AS AreaID, LTRIM(RTRIM(CAST(o.NoDocERP AS varchar(50)))) AS NoDocERP,
            LTRIM(RTRIM(o.Cliente)) AS Cliente, o.DescripcionTrabajo, LTRIM(RTRIM(o.Material)) AS Material, o.Magnitud, o.FechaIngreso, x.Etapa,
+           ${tieneIngresoInterno ? 'o.IngresoInternoPor' : 'CAST(NULL AS INT) AS IngresoInternoPor'},
            sv.SolicitudID, sv.DisenadorSolicitud
     FROM dbo.Ordenes o
     -- Si el pedido nació de una Solicitud: cuál, y quién tenía tomado ese servicio ahí (para que el trabajo no se pierda de vista)

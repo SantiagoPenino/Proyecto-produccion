@@ -21,6 +21,8 @@ const opcionesCm = (max) => Array.from({ length: Math.floor(max) }, (_, i) => ({
 export const TpuTechnicalUI = ({
     garmentQuantity, setGarmentQuantity,
     tpuArchivos, removeTpuArchivo,
+    // [UNA ORDEN POR ARCHIVO] (opcional, solo la página interna): prendas por diseño cuando hay más de uno
+    prendasDeArchivo = null, setPrendasArchivo = null,
     tpuBocetoFile, setTpuBocetoFile,
     tpuVariant, tpuVariants, handleTpuVariantChange,
     tpuMaterial, tpuMaterials, setTpuMaterial,
@@ -174,11 +176,22 @@ export const TpuTechnicalUI = ({
                                     color="emerald"
                                     multiple={true}
                                 />
+                                {setPrendasArchivo && tpuArchivos.length > 1 && (
+                                    <p className="mt-2 text-[10px] text-emerald-400 text-center">Cada diseño sale como una orden TPU propia, con su matriz y su Estampado. Indicá cuántas prendas lleva cada uno (por defecto, todas).</p>
+                                )}
                                 {tpuArchivos.length > 0 && (
                                     <div className="mt-3 flex flex-wrap gap-2 justify-center">
                                         {tpuArchivos.map((f, idx) => (
                                             <div key={idx} className="flex items-center gap-2 bg-zinc-800/50 border border-emerald-500/30 px-4 py-2 rounded-xl">
                                                 <span className="text-[10px] font-bold text-zinc-300 max-w-[100px] truncate">{f.name}</span>
+                                                {setPrendasArchivo && tpuArchivos.length > 1 && (
+                                                    <input
+                                                        type="number" min="1" title="Prendas que llevan este diseño"
+                                                        value={prendasDeArchivo ? prendasDeArchivo(f) : ''}
+                                                        onChange={(e) => setPrendasArchivo(f, e.target.value)}
+                                                        className="w-14 bg-zinc-900 border border-zinc-700 rounded px-1 py-0.5 text-[10px] font-mono text-zinc-200 text-right"
+                                                    />
+                                                )}
                                                 <button
                                                     type="button"
                                                     onClick={() => removeTpuArchivo(idx)}

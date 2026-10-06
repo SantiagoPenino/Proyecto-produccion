@@ -252,6 +252,27 @@ async function completarMedidas(pedido) {
  * color, preflight, y al llegar el último la orden pasa de "Cargando..." a "Pendiente".
  * Se puede volver a llamar: solo procesa los que no están subidos.
  */
+// Antes de subir cada archivo: ¿su lugar en la orden sigue esperando? Solo se sube a una orden que está
+// "Cargando..." o "Pendiente" sin empezar en el área (no a una cancelada, en producción o terminada), y
+// si ese lugar ya tiene archivo (lo subió otra vía) no se vuelve a subir: se da por subido (no se duplica).
+async function destinoDe(pool, m) {
+  const esRef = m.type === 'REF';
+  const r = await pool.request().input('ID', sql.Int, parseInt(m.dbId, 10) || 0).query(esRef
+    ? `SELECT ar.UbicacionStorage AS Ruta, NULL AS EstadoArchivo, o.Estado, o.EstadoenArea, LTRIM(RTRIM(o.CodigoOrden)) AS CodigoOrden
+       FROM dbo.ArchivosReferencia ar JOIN dbo.Ordenes o ON o.OrdenID = ar.OrdenID WHERE ar.RefID = @ID`
+    : `SELECT ao.RutaAlmacenamiento AS Ruta, ao.EstadoArchivo, o.Estado, o.EstadoenArea, LTRIM(RTRIM(o.CodigoOrden)) AS CodigoOrden
+       FROM dbo.ArchivosOrden ao JOIN dbo.Ordenes o ON o.OrdenID = ao.OrdenID WHERE ao.ArchivoID = @ID`);
+  const d = r.recordset[0];
+  if (!d) return { ok: false, motivo: 'Ese archivo ya no tiene lugar en la orden (se borró).' };
+  const estado = String(d.Estado || '').trim();
+  const enArea = String(d.EstadoenArea || '').trim();
+  const yaTiene = esRef ? (d.Ruta && d.Ruta !== 'Pendiente') : (d.Ruta && String(d.EstadoArchivo || '').toUpperCase() !== 'CANCELADO');
+  if (yaTiene) return { ok: true, yaSubido: true };
+  const libre = estado === 'Cargando...' || (estado === 'Pendiente' && (!enArea || enArea === 'Pendiente'));
+  if (!libre) return { ok: false, motivo: `La orden ${d.CodigoOrden} está "${estado}${enArea && enArea !== estado ? ` / ${enArea}` : ''}": solo se le suben archivos mientras está "Cargando..." o "Pendiente" sin empezar.` };
+  return { ok: true };
+}
+
 async function pasarArchivos(pool, integracionId, usuarioInterno, app) {
   const r = await pool.request().input('Id', sql.Int, integracionId).query('SELECT * FROM dbo.IntegracionPedidos WHERE IntegracionID = @Id');
   const fila = r.recordset[0];
@@ -267,6 +288,9 @@ async function pasarArchivos(pool, integracionId, usuarioInterno, app) {
       if (m.subido) continue;
       try {
         if (!m.url) throw new Error('No se encontró de dónde sale este archivo.');
+        const destino = await destinoDe(pool, m);
+        if (destino.yaSubido) { m.subido = true; m.error = null; await guardar(pool, integracionId, { ArchivosJson: json(manifiesto) }); continue; }
+        if (!destino.ok) throw new Error(destino.motivo);
         if (!bajados[m.url]) {
           const ruta = path.join(dir, `origen-${Object.keys(bajados).length}`);
           bajados[m.url] = { ruta, mime: (await bajar(m.url, ruta)).mime };

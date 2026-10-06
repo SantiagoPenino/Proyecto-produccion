@@ -282,10 +282,20 @@ function EnProduccion({ rows, onAbrir, onVerSolicitud }) {
     const esperaCliente = (o) => o.Etapa === 'ESPERANDO_APROBACION';
     const fila = (o) => {
         const et = ETAPA_PRODUCCION[o.Etapa] || { txt: o.Etapa, cls: 'bg-slate-50 text-slate-600 border-slate-200', hacer: '' };
-        const hacer = typeof et.hacer === 'string' ? et.hacer : (et.hacer[o.AreaID] || '');
+        // [INGRESO INTERNO] Pedido cargado por el personal: el boceto de TPU no va al cliente,
+        // lo confirma el diseñador desde la ficha ("Confirmar diseño").
+        const interno = o.IngresoInternoPor != null;
+        const hacer = (interno && o.AreaID === 'TPU' && o.Etapa === 'FALTA_DISENO')
+            ? 'Subir el boceto de producción y confirmar el diseño (pedido interno: no va al cliente)'
+            : (typeof et.hacer === 'string' ? et.hacer : (et.hacer[o.AreaID] || ''));
         return {
             key: o.OrdenID,
-            estado: <PastillaEstado txt={et.txt} cls={et.cls} />,
+            estado: (
+                <>
+                    <PastillaEstado txt={et.txt} cls={et.cls} />
+                    {interno ? <div className="mt-1"><PastillaEstado txt="Pedido interno" cls="bg-cyan-50 text-brand-cyan" title="Lo cargó el personal. En TPU el boceto no va al cliente: lo confirma el diseñador." /></div> : null}
+                </>
+            ),
             // La orden (antes una columna aparte) va con el cliente; el área, en "Qué hay que hacer", como el servicio en las solicitudes
             cliente: (
                 <>

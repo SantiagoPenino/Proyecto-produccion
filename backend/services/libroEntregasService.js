@@ -491,7 +491,7 @@ async function getPendientesParaOrden(ordenId, noDocERP, areaId, conn) {
 }
 
 module.exports = {
-    getPendientesParaOrden,
+    getPendientesParaOrden, filaPendiente,
     getConfigLista, getConfigValor, areasConParcial, areasConCadena, areasQueCuentanUnidades, areasFallaPropiaRequiereCadena,
     magnitudNumerica, cantidadEsperada,
     getHermanas, secuenciaAreas, areasAnteriores, areasAnterioresAPro, ramasReposicion, AREAS_TRANSFER,

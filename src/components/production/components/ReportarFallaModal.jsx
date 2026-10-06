@@ -10,6 +10,18 @@ import { fileControlService } from '../../../services/modules/fileControlService
  *   3. Reposiciones propuestas: cadena hacia atrás (o falla propia) — o la solicitud de insumo
  *      cuando lo dañado es del cliente o del local (no nace ninguna orden).
  */
+// Etiqueta de color para un estado de producción (EstadoenArea u otro texto de estado).
+function BadgeEstado({ texto }) {
+    const e = String(texto || '').toUpperCase();
+    const color = /PRONTO|RECIBIDO|ENTREGAD|FINALIZADO/.test(e) ? 'bg-emerald-100 text-emerald-700'
+        : /TRANSITO|TRÁNSITO/.test(e) ? 'bg-sky-100 text-sky-700'
+        : /MAQUINA|MÁQUINA|PROCESO|CONTROL|PRODUCCION|PRODUCCIÓN|DISE|LOTE|IMPRES/.test(e) ? 'bg-indigo-100 text-indigo-700'
+        : /CANCEL/.test(e) ? 'bg-zinc-100 text-zinc-500'
+        : /BLOQUEAD|RETENIDO|FALLA|ESPERANDO/.test(e) ? 'bg-rose-100 text-rose-700'
+        : 'bg-amber-100 text-amber-700';
+    return <span className={`inline-block text-[9px] font-black uppercase px-2 py-0.5 rounded-full whitespace-nowrap ${color}`}>{texto}</span>;
+}
+
 export default function ReportarFallaModal({ open, onClose, orden, area, service, onDone }) {
     const [step, setStep] = useState(1);
     const [cargando, setCargando] = useState(false);
@@ -194,15 +206,31 @@ export default function ReportarFallaModal({ open, onClose, orden, area, service
                                     <div key={o.OrdenID} className="grid grid-cols-[1.2fr_1fr_auto] gap-3 items-center px-3 py-2 border-t border-amber-100 text-xs bg-white">
                                         <div>
                                             <span className="font-bold text-brand-cyan">{o.CodigoOrden}</span> <span className="text-zinc-500">· {o.AreaID}</span>
-                                            <div className="text-zinc-600">Recibido {o.recibido.envios ? `${o.recibido.envios} envío(s), ${o.recibido.bultos} bulto(s)${o.recibido.cantidad != null ? `, ${o.recibido.cantidad} ${(o.UM || '').trim()}` : ''}` : 'nada todavía'}</div>
+                                            <div className="text-zinc-600">Llegó a {area}: {o.recibido.envios ? `${o.recibido.envios} envío(s), ${o.recibido.bultos} bulto(s)${o.recibido.cantidad != null ? `, ${o.recibido.cantidad} ${(o.UM || '').trim()}` : ''}` : 'nada todavía'}</div>
                                         </div>
-                                        <div className="text-zinc-600">
-                                            {o.reposicionesAbiertas.map((r, i) => <div key={i}>Reposición <span className="font-mono font-bold">{r.CodigoFalla || '(sin orden)'}</span> · {r.descripcion}</div>)}
-                                            {o.enCamino.map((e, i) => <div key={'c' + i}>En camino: remito {e.remito}{e.cantidad != null ? ` · ${e.cantidad}` : ''}</div>)}
+                                        <div className="text-zinc-600 space-y-1">
+                                            {/* Estado REAL de cada orden de falla (-F) en producción — es lo que está pendiente */}
+                                            {o.reposicionesAbiertas.map((r, i) => {
+                                                const est = r.Estado === 'BLOQUEADA' ? 'Bloqueada'
+                                                    : r.Estado === 'ESPERANDO_INSUMO' ? 'Esperando insumo'
+                                                    : (String(r.EstadoEnAreaFalla || '').trim() || 'Pendiente');
+                                                return (
+                                                    <div key={i} className="flex flex-wrap items-center gap-1.5">
+                                                        <span>Falla <span className="font-mono font-bold">{r.CodigoFalla || '(sin orden)'}</span></span>
+                                                        <BadgeEstado texto={est} />
+                                                        {r.Estado === 'BLOQUEADA' && <span className="text-[10px] text-zinc-400 w-full">espera la reposición del área anterior</span>}
+                                                    </div>
+                                                );
+                                            })}
+                                            {o.enCamino.map((e, i) => <div key={'c' + i}>En camino a {area}: remito {e.remito}{e.cantidad != null ? ` · ${e.cantidad}` : ''}</div>)}
                                             {o.estadoEnvio === 'PARCIAL' && !o.reposicionesAbiertas.length && !o.enCamino.length && <div>Envío parcial: el resto sigue en producción en {o.AreaID}</div>}
                                             {!o.incompleta && <div>Sin pendientes</div>}
                                         </div>
-                                        <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded-full ${o.incompleta ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'}`}>{o.incompleta ? 'En camino' : 'Completo'}</span>
+                                        {/* Estado de la orden ORIGINAL (no de la falla): "Recibido en Destino" es en SU destino, no acá */}
+                                        <div className="text-right" title="Estado de la orden original en producción">
+                                            <div className="text-[9px] font-bold uppercase text-zinc-400 mb-0.5">Orden original</div>
+                                            <BadgeEstado texto={/RECIBIDO EN DESTINO/i.test(String(o.EstadoenArea || '')) && o.ProximoServicio ? `Entregada a ${o.ProximoServicio}` : (String(o.EstadoenArea || o.Estado || '').trim() || 'Sin estado')} />
+                                        </div>
                                     </div>
                                 ))}
                             </div>

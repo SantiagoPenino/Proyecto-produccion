@@ -1244,10 +1244,12 @@ async function calendario(pool, user, f) {
 const disenosEnProduccion = (pool, user) => require('./solicitudesVendedorConversion').disenosEnProduccion(pool, user, baseConversion());
 const bobinasDelCliente = (pool, user, solicitudId) => require('./solicitudesVendedorConversion').bobinasDelCliente(pool, user, baseConversion(), solicitudId);
 const reintentarArchivos = (pool, user, solicitudId, productoSolId, app) => require('./solicitudesVendedorConversion').reintentarArchivos(pool, user, baseConversion(), solicitudId, productoSolId, app);
+// Recuperar los archivos de un pedido ya creado (tizada rehecha → órdenes que los esperaban; services/solicitudesVendedorRecuperar.js)
+const recuperarArchivos = (pool, user, solicitudId, productoSolId, app) => require('./solicitudesVendedorRecuperar').recuperar(pool, user, baseConversion(), solicitudId, productoSolId, app);
 
 module.exports = {
   tizadaProVer, tizadaProGuardar, tizadaProEnviar, tizadaProActualizar, _baseTizadaPro: () => baseTizadaPro(),
-  materialesPrincipal, definirProduccionArchivo, tizadasTizadaPro, vincularTizada, moldeDelProducto, guardarSublimacion, guardarTalles, convertir, reintentarArchivos, bobinasDelCliente, disenosEnProduccion, estimarPlazo, calendario,
+  materialesPrincipal, definirProduccionArchivo, tizadasTizadaPro, vincularTizada, moldeDelProducto, guardarSublimacion, guardarTalles, convertir, reintentarArchivos, recuperarArchivos, bobinasDelCliente, disenosEnProduccion, estimarPlazo, calendario,
   crear, actualizar, listar, obtener, guardarPrecio, confirmarSena, agregarInteraccion,
   enviarADiseno, bandeja, tomarParte, aceptarCambio, subirArchivo, quitarArchivo, cancelar,
   listarVendedores, listarDisenadores, definirDisenador, miPerfil,

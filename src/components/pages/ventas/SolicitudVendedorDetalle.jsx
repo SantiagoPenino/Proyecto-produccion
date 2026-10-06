@@ -622,6 +622,7 @@ function FichaProductoBloque({ f }) {
    acciones del diseñador (tomar el trabajo, aceptar un cambio del vendedor) + seguimiento en planta. */
 function EstadoParteDiseno({ pa, user, perfil, busy, bloqueada, enProduccion = [], onAbrirFicha, onTomar, onAceptar, onEnviarTizada = null }) {
     const esMia = pa.DisenadorID && pa.DisenadorID === user?.id;
+    const [dialogo, preguntar] = useConfirmar();   // confirmación con el estilo del sistema (06/10; antes window.confirm)
     return (
         <div className={`bg-white border rounded-lg p-2 text-xs space-y-1 ${pa.Modificada ? 'border-fuchsia-300' : 'border-slate-200'}`}>
             <div className="flex flex-wrap items-center gap-1.5"><span className="font-black text-slate-800">{pa.Nombre}</span><Pastilla e={pa.Estado} mapa={ESTADO_PARTE} />{pa.Modificada ? <PastillaModificada /> : null}</div>
@@ -664,6 +665,14 @@ function EstadoParteDiseno({ pa, user, perfil, busy, bloqueada, enProduccion = [
             {!bloqueada && perfil.esDisenador && onEnviarTizada && (pa.Estado === 'ENVIADO_DISENO' || (pa.Estado === 'DISENO_INICIADO' && (esMia || perfil.esAdmin)))
                 ? <button disabled={busy} onClick={onEnviarTizada} className={BTN_PRIMARIO} title="Revisa arte y datos, y lo manda a TIZADA PRO; la tizada vuelve sola como diseño pronto"><Send size={12} /> Enviar a TIZADA PRO</button>
                 : !bloqueada && perfil.esDisenador && pa.Estado === 'ENVIADO_DISENO' && <button disabled={busy} onClick={onTomar} className={BTN_PRIMARIO}>Tomar este trabajo</button>}
+            {/* Rehacer: con la tizada ya hecha (Diseñado) se puede volver a mandar; la nueva reemplaza al diseño pronto actual */}
+            {!bloqueada && perfil.esDisenador && onEnviarTizada && pa.Estado === 'DISENADO' && (esMia || perfil.esAdmin || !pa.DisenadorID) && (
+                <button disabled={busy} className={BTN_SECUNDARIO} title="Vuelve a mandar diseños, arte y lista a TIZADA PRO; cuando vuelve, la tizada nueva reemplaza a la actual"
+                    onClick={async () => { if (await preguntar({ Icono: RefreshCw, titulo: 'Rehacer la tizada', texto: 'Se manda de nuevo a TIZADA PRO con los diseños, el arte y la lista de talles que estén guardados ahora.', nota: 'Cuando vuelva, la tizada nueva reemplaza a los archivos de diseño pronto actuales.', boton: 'Mandarla' })) onEnviarTizada(); }}>
+                    <RefreshCw size={12} /> Rehacer la tizada en TIZADA PRO
+                </button>
+            )}
+            {dialogo}
         </div>
     );
 }
@@ -1249,6 +1258,24 @@ function Conversion({ s, p, pedido, faltantes, avisos = [], checklist, puedeVend
                         <ul className="list-disc pl-5 text-slate-700">{arch.filter(a => !a.subido).map((a, k) => <li key={k}>"{a.nombre}"{a.error ? `: ${a.error}` : ''}</li>)}</ul>
                         <div className="text-slate-600">Las órdenes que esperan estos archivos siguen en "Cargando…" y producción no las ve.</div>
                         {puedeVender && <button disabled={busy} onClick={() => hacer(() => svc.reintentarArchivos(id, p.ProductoSolID), 'Reintentando el pase de archivos a producción…')} className={BTN_PRIMARIO}><RefreshCw size={12} /> Volver a pasar los archivos que faltan</button>}
+                        {/* Recuperar: si el archivo estaba mal (ej. tizada de 2 páginas), se rehace y se pasa a las órdenes que lo esperaban
+                            (reactiva las que canceló la limpieza automática; un lugar por archivo). services/solicitudesVendedorRecuperar.js */}
+                        {puedeVender && (
+                            <div className="mt-2 border border-slate-200 rounded-lg p-2 space-y-1.5">
+                                <div className="font-black text-slate-700">Si el archivo estaba mal: rehacerlo y pasarlo a este pedido</div>
+                                <div className="text-[11px] text-slate-600">1) Rehacé el archivo{p.Config?.TizadaProMoldeRef ? ' (la tizada en TIZADA PRO)' : ' (subí el diseño pronto corregido en la pantalla de Diseño)'} y esperá que quede cargado. 2) Pasalo al pedido: se pone en las órdenes que lo esperaban, un archivo por mesa, y si la limpieza automática había cancelado alguna, se reactiva.</div>
+                                <div className="flex flex-wrap gap-2">
+                                    {p.Config?.TizadaProMoldeRef && (
+                                        <button disabled={busy} className={BTN_SECUNDARIO} onClick={async () => { if (await preguntar({ Icono: Send, titulo: 'Rehacer la tizada', texto: 'Se manda de nuevo a TIZADA PRO con los diseños, el arte y la lista guardados.', nota: 'Cuando vuelva, la tizada nueva reemplaza a los diseños prontos de la solicitud. Todavía no toca el pedido.', boton: 'Mandarla' })) hacer(async () => { const r = await svc.tizadaProEnviar(id, p.ProductoSolID, false); if (r.Estado === 'RECHAZADO') toast.error(`TIZADA no lo acepta: ${r.mensaje || 'mirá las alarmas en el bloque de TIZADA PRO'}.`); else toast.success(`Mandado a TIZADA PRO (${r.Referencia}). Cuando diga "Tizada cargada", pasala al pedido.`); }); }}>
+                                            <Send size={12} /> 1. Rehacer la tizada en TIZADA PRO
+                                        </button>
+                                    )}
+                                    <button disabled={busy} className={BTN_PRIMARIO} onClick={async () => { if (await preguntar({ Icono: RefreshCw, titulo: 'Pasar la tizada nueva al pedido', texto: `Se pasan los archivos de diseño pronto actuales de la producción principal al pedido ${pedido?.noDocERP || ''}: van a las órdenes que los esperaban, un archivo por mesa. Si la limpieza automática canceló alguna, se reactiva.`, nota: 'Antes se controla que cada PDF tenga 1 página.', boton: 'Pasarlos' })) hacer(async () => { const r = await svc.recuperarArchivos(id, p.ProductoSolID); toast.success(`Pasando a producción: ${(r.ordenes || []).map(o => `${o.codigo}${o.reactivada ? ' (reactivada)' : ''} · ${o.archivos} archivo(s)`).join(' · ')}`); }); }}>
+                                        <RefreshCw size={12} /> 2. Pasar la tizada nueva al pedido
+                                    </button>
+                                </div>
+                            </div>
+                        )}
                     </>
                 )}
             </div>

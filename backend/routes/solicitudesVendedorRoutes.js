@@ -61,5 +61,6 @@ router.put('/:id/productos/:productoSolId/talles', ctrl.guardarTalles);         
 router.get('/:id/bobinas', ctrl.bobinasDelCliente);   // tela del cliente: la bobina se elige al convertir
 router.post('/:id/productos/:productoSolId/convertir', ctrl.convertir);
 router.post('/:id/productos/:productoSolId/reintentar-archivos', ctrl.reintentarArchivos);
+router.post('/:id/productos/:productoSolId/recuperar-archivos', ctrl.recuperarArchivos);   // tizada rehecha → órdenes del pedido
 
 module.exports = router;
