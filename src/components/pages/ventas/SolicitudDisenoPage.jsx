@@ -40,6 +40,14 @@ export default function SolicitudDisenoPage() {
         svc.materialesPrincipal().then(setTelas).catch(() => setTelas([]));
     }, [cargar]);
 
+    // Mientras un pedido está pasando sus archivos a producción, se refresca solo cada 3 s.
+    const pasando = !!s?.Conversion?.some(c => ['PROCESANDO', 'PASANDO_ARCHIVOS'].includes(c.pedido?.estado) && !c.pedido?.archivosColgados);
+    useEffect(() => {
+        if (!pasando) return undefined;
+        const t = setInterval(cargar, 3000);
+        return () => clearInterval(t);
+    }, [pasando, cargar]);
+
     const hacer = async (fn, okMsg) => {
         setBusy(true);
         try { await fn(); if (okMsg) toast.success(okMsg); await cargar(); return true; }

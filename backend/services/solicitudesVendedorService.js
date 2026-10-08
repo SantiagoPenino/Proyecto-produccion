@@ -1187,6 +1187,7 @@ const vincularTizada = (pool, user, parteId, b) => require('./solicitudesVendedo
 // TIZADA PRO por API: diseños + lista de talles → pedido a TIZADA → vuelve la tizada (services/solicitudesVendedorTizadaPro.js)
 const baseTizadaPro = () => ({ ...baseTizadas(), cambiarEstadoParte });
 const tizadaProVer = (pool, user, solicitudId, productoSolId) => require('./solicitudesVendedorTizadaPro').ver(pool, user, baseTizadaPro(), solicitudId, productoSolId);
+const tizadaProEditables = (pool, user, solicitudId, productoSolId, b) => require('./solicitudesVendedorTizadaPro').leerEditables(pool, user, baseTizadaPro(), solicitudId, productoSolId, b && b.arteArchivoId);
 const tizadaProGuardar = (pool, user, solicitudId, productoSolId, b) => require('./solicitudesVendedorTizadaPro').guardar(pool, user, baseTizadaPro(), solicitudId, productoSolId, b);
 const tizadaProEnviar = (pool, user, solicitudId, productoSolId, b) => require('./solicitudesVendedorTizadaPro').enviar(pool, user, baseTizadaPro(), solicitudId, productoSolId, b);
 async function tizadaProActualizar(pool, user, solicitudId, envioId, b) {
@@ -1248,7 +1249,7 @@ const reintentarArchivos = (pool, user, solicitudId, productoSolId, app) => requ
 const recuperarArchivos = (pool, user, solicitudId, productoSolId, app) => require('./solicitudesVendedorRecuperar').recuperar(pool, user, baseConversion(), solicitudId, productoSolId, app);
 
 module.exports = {
-  tizadaProVer, tizadaProGuardar, tizadaProEnviar, tizadaProActualizar, _baseTizadaPro: () => baseTizadaPro(),
+  tizadaProVer, tizadaProEditables, tizadaProGuardar, tizadaProEnviar, tizadaProActualizar, _baseTizadaPro: () => baseTizadaPro(),
   materialesPrincipal, definirProduccionArchivo, tizadasTizadaPro, vincularTizada, moldeDelProducto, guardarSublimacion, guardarTalles, convertir, reintentarArchivos, recuperarArchivos, bobinasDelCliente, disenosEnProduccion, estimarPlazo, calendario,
   crear, actualizar, listar, obtener, guardarPrecio, confirmarSena, agregarInteraccion,
   enviarADiseno, bandeja, tomarParte, aceptarCambio, subirArchivo, quitarArchivo, cancelar,

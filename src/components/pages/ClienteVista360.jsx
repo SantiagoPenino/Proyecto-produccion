@@ -837,7 +837,7 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
               <span className="text-[10px] text-amber-600 font-semibold">
                 Incluye el saldo real acumulado{fCuentaEC !== 'TODAS' ? ' de esta cuenta' : ''} antes de {fmtFechaCorta(desde)}:{' '}
                 {Object.entries(arrastreVisible).filter(([, v]) => Math.abs(v) > 0.01)
-                  .map(([mon, v]) => `${mon} ${v > 0 ? '' : '-'}${fmtMoney(Math.abs(v))}${v > 0 ? ' (debía)' : ' (a favor)'}`)
+                  .map(([mon, v]) => `${mon} ${v > 0 ? '-' : ''}${fmtMoney(Math.abs(v))}${v > 0 ? ' (debía)' : ' (a favor)'}`)
                   .join(' · ')}.
               </span>
             </div>
@@ -953,9 +953,12 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
                         <td className="px-4 py-3 text-right tabular-nums font-bold text-emerald-600 align-middle whitespace-nowrap">
                           {m.abono > 0 ? `${m.moneda} ${fmtMoney(m.abono)}` : <span className="text-slate-300">—</span>}
                         </td>
+                        {/* m.saldo > 0 = debe. Mismo criterio que el PDF y la billetera del
+                            encabezado: lo que debe va en rojo y negativo; lo a favor, en verde
+                            y positivo. */}
                         {mostrarSaldo && (
-                          <td className={`px-4 py-3 text-right tabular-nums font-black align-middle whitespace-nowrap ${Math.abs(m.saldo) < 0.01 ? 'text-slate-400' : m.saldo > 0 ? 'text-slate-800' : 'text-emerald-700'}`}>
-                            {m.moneda} {fmtMoney(Math.abs(m.saldo))}
+                          <td className={`px-4 py-3 text-right tabular-nums font-black align-middle whitespace-nowrap ${Math.abs(m.saldo) < 0.01 ? 'text-slate-400' : m.saldo > 0 ? 'text-rose-600' : 'text-emerald-700'}`}>
+                            {m.moneda} {m.saldo > 0.01 ? '-' : ''}{fmtMoney(Math.abs(m.saldo))}
                             {m.saldo < -0.01 && <span className="block text-[9px] font-bold text-emerald-600 uppercase tracking-wide">a favor</span>}
                           </td>
                         )}
@@ -980,8 +983,8 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
                       <td className="px-4 py-2.5 text-right tabular-nums font-black text-slate-700 whitespace-nowrap">{r.moneda} {fmtMoney(r.cargos)}</td>
                       <td className="px-4 py-2.5 text-right tabular-nums font-black text-emerald-700 whitespace-nowrap">{r.moneda} {fmtMoney(r.abonos)}</td>
                       {mostrarSaldo && (
-                        <td className={`px-4 py-2.5 text-right tabular-nums font-black whitespace-nowrap ${r.saldo >= -0.01 ? 'text-slate-800' : 'text-emerald-700'}`}>
-                          {r.moneda} {fmtMoney(Math.abs(r.saldo))}{r.saldo < -0.01 ? ' a favor' : ''}
+                        <td className={`px-4 py-2.5 text-right tabular-nums font-black whitespace-nowrap ${Math.abs(r.saldo) < 0.01 ? 'text-slate-400' : r.saldo > 0 ? 'text-rose-600' : 'text-emerald-700'}`}>
+                          {r.moneda} {r.saldo > 0.01 ? '-' : ''}{fmtMoney(Math.abs(r.saldo))}{r.saldo < -0.01 ? ' a favor' : ''}
                         </td>
                       )}
                       <td></td>

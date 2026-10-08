@@ -1252,7 +1252,21 @@ function Conversion({ s, p, pedido, faltantes, avisos = [], checklist, puedeVend
                     Pedido {pedido?.noDocERP || p.PedidoNoDocERP}{pedido ? ` — ${pedido.archivosColgados ? 'el pase de archivos quedó cortado a mitad de camino' : ESTADO_PEDIDO[pedido.estado]}` : ''}
                 </div>
                 {pedido?.codigosOrden?.length ? <div className="text-slate-700">Órdenes: <b>{pedido.codigosOrden.join(' · ')}</b></div> : null}
-                {arch.length ? <div className="text-slate-600">Archivos en producción: {subidos} de {arch.length}</div> : null}
+                {arch.length ? <div className="text-slate-600">Archivos en producción: {subidos} de {arch.length}{pedido?.segundos != null ? ` · ${pedido.estado === 'PASANDO_ARCHIVOS' ? 'lleva' : 'tardó'} ${pedido.segundos < 60 ? `${pedido.segundos} s` : `${Math.floor(pedido.segundos / 60)} min ${pedido.segundos % 60} s`}` : ''}</div> : null}
+                {/* Mientras pasa: qué está haciendo con cada archivo (se actualiza cada 5 s) */}
+                {pedido?.estado === 'PASANDO_ARCHIVOS' && !pedido.archivosColgados && arch.length ? (
+                    <ul className="space-y-0.5">
+                        {arch.map((a, k) => (
+                            <li key={k} className="flex items-center gap-1.5 text-[11px]">
+                                {a.subido ? <CheckCircle2 size={11} className="text-emerald-600 shrink-0" /> : a.paso ? <Loader2 size={11} className="animate-spin text-sky-600 shrink-0" /> : a.error ? <AlertTriangle size={11} className="text-rose-600 shrink-0" /> : <span className="w-[11px] h-[11px] rounded-full border border-slate-300 shrink-0" />}
+                                <span className="text-slate-700 truncate">{a.destino || a.nombre}</span>
+                                <span className={a.subido ? 'text-emerald-700' : a.paso ? 'text-sky-700 font-bold' : a.error ? 'text-rose-700' : 'text-slate-400'}>
+                                    — {a.subido ? 'listo' : a.paso ? `${a.paso}…` : a.error ? `falló: ${a.error}` : 'en espera'}
+                                </span>
+                            </li>
+                        ))}
+                    </ul>
+                ) : null}
                 {mal && (
                     <>
                         <ul className="list-disc pl-5 text-slate-700">{arch.filter(a => !a.subido).map((a, k) => <li key={k}>"{a.nombre}"{a.error ? `: ${a.error}` : ''}</li>)}</ul>

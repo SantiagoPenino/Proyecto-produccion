@@ -242,10 +242,14 @@ async function guardar(pool, user, base, solicitudId, productoSolId, b) {
     nombre: txt(d.nombre, 40).toUpperCase(), variable: txt(d.variable, 96), variableNombre: txt(d.variableNombre, 200) || null,
     tela: txt(d.tela, 20) || null, arteArchivoId: parseInt(d.arteArchivoId, 10) || null,
     telasPorPieza: Object.fromEntries(Object.entries(d.telasPorPieza || {}).filter(([k, v]) => txt(k) && txt(v)).map(([k, v]) => [txt(k, 60), txt(v, 20)])),
-    editables: Object.fromEntries(Object.entries(d.editables || {}).filter(([k, v]) => txt(k) && txt(v)).map(([k, v]) => [txt(k, 60), txt(v, 20)])),
+    editables: Object.fromEntries(Object.entries(d.editables || {}).filter(([k, v]) => txt(k) && ['sublimado', 'dtf', 'tpu', 'bordado'].includes(txt(v))).map(([k, v]) => [txt(k, 60), txt(v, 20)])),
+    editablesDetalle: (Array.isArray(d.editablesDetalle) ? d.editablesDetalle : []).slice(0, 20).map(o => ({ objeto: txt(o.objeto, 60), pieza: txt(o.pieza, 60) || null,
+      anchoCm: Number(o.anchoCm) || null, altoCm: Number(o.altoCm) || null, posicion: txt(o.posicion, 120) || null, sugerido: txt(o.sugerido, 20) || null,
+      vista: esMiniatura(o.vista) ? o.vista : null })).filter(o => o.objeto),
   }));
   const planilla = (Array.isArray(b.planilla) ? b.planilla : []).slice(0, 2000).map(f => {
-    const fila = { diseno: txt(f.diseno, 40).toUpperCase() || (disenos.length === 1 ? disenos[0].nombre : '') };
+    // Con un solo diseño, todas las filas son de ese (si se quitó el GOLERO, sus filas no quedan apuntando a él)
+    const fila = { diseno: disenos.length === 1 ? disenos[0].nombre : txt(f.diseno, 40).toUpperCase() };
     Object.keys(f || {}).forEach(k => { if (ids.has(k)) { const v = txt(f[k], 80); if (v) fila[k] = v; } });
     return fila;
   }).filter(f => Object.keys(f).some(k => k !== 'diseno'));
@@ -253,6 +257,10 @@ async function guardar(pool, user, base, solicitudId, productoSolId, b) {
   await pool.request().input('P', sql.Int, productoSolId).input('D', sql.NVarChar(sql.MAX), JSON.stringify(datos))
     .query('UPDATE dbo.SolicitudesVendedorProductos SET DatosJson = @D WHERE ProductoSolID = @P');
   await base.registrarEvento(pool, user, { solicitudId, productoSolId, tipo: 'EDICION', texto: `TIZADA PRO: ${disenos.length} diseño(s) y ${planilla.length} prenda(s) en la lista de talles guardados.` });
+  // Los editables que van en DTF / TPU / Bordado quedan como arte del cliente de ese servicio. Si falla, lo guardado queda igual.
+  let avisoEditables = null;
+  try { await adjuntarEditables(pool, user, base, solicitudId, productoSolId, disenos); }
+  catch (e) { avisoEditables = `Se guardó, pero no se pudo adjuntar el arte de los editables a los servicios: ${e.message}`; logger.warn(`[TIZADAPRO] adjuntarEditables ${solicitudId}/${productoSolId}: ${e.message}`); }
   // Si el vendedor cambia diseños o lista con la producción principal ya en Diseño (o con la tizada hecha), queda
   // "Modificada": Diseño se entera, tiene que aceptar el cambio (y rehacer la tizada) y no se convierte con la vieja.
   if (!(await base.esDisenador(pool, user))) {
@@ -262,13 +270,14 @@ async function guardar(pool, user, base, solicitudId, productoSolId, b) {
       await base.marcarModificada(pool, user, pa.ParteID, `TIZADA PRO: el vendedor cambió los diseños o la lista de talles (${disenos.length} diseño(s), ${planilla.length} prenda(s))${pa.Estado === 'DISENADO' ? ' — hay que rehacer la tizada' : ''}.`);
     }
   }
-  return ver(pool, user, base, solicitudId, productoSolId);
+  const r = await ver(pool, user, base, solicitudId, productoSolId);
+  return avisoEditables ? { ...r, avisoEditables } : r;
 }
 
 // ─────────────────────────────────────────────────────────────────────
 // Armar y mandar
 // ─────────────────────────────────────────────────────────────────────
-function armarPedidoJson(sol, p, datos, est, referencia, rutasArte) {
+function armarPedidoJson(sol, p, datos, est, referencia, rutasArte, editablesPorDiseno = {}) {
   const ids = (est?.columnas || []).map(c => c.id);
   return {
     formato: 'tizadapro.pedido/1',
@@ -289,19 +298,42 @@ function armarPedidoJson(sol, p, datos, est, referencia, rutasArte) {
       carpeta: `${PREFIJO()}-${sol.SolicitudID}/${referencia}`,
     },
     mesas: { modo: String(process.env.TIZADAPRO_MESAS_MODO || 'normal') },
-    disenos: datos.disenos.map(d => ({
-      nombre: d.nombre,
-      moldes: [{
-        variable: d.variable,
-        arte: rutasArte[d.arteArchivoId],
-        tela: String(d.tela),
-        ...(Object.keys(d.telasPorPieza || {}).length ? { telas_por_pieza: d.telasPorPieza } : {}),
-        ...(Object.keys(d.editables || {}).length ? { editables: d.editables } : {}),
-      }],
-    })),
+    disenos: datos.disenos.map(d => {
+      const editablesRaw = { ...(d.editables || {}), ...(editablesPorDiseno[d.nombre] || {}) };
+      const editables = {};
+      const cruzPorDefecto = process.env.TIZADAPRO_EDITABLES_CRUZ === '1';
+      for (const [k, v] of Object.entries(editablesRaw)) {
+        if (!k || !v) continue;
+        const claveObj = String(k).trim();
+        let proc = '';
+        let cruz = cruzPorDefecto;
+        if (typeof v === 'string') {
+          proc = v.trim().toLowerCase();
+        } else if (typeof v === 'object' && v.proceso) {
+          proc = String(v.proceso).trim().toLowerCase();
+          if (v.cruz != null) cruz = !!v.cruz;
+        }
+        if (proc === 'sublimado') {
+          editables[claveObj] = 'sublimado';
+        } else if (proc) {
+          editables[claveObj] = { proceso: proc, cruz };
+        }
+      }
+      return {
+        nombre: d.nombre,
+        moldes: [{
+          variable: d.variable,
+          arte: rutasArte[d.arteArchivoId],
+          tela: String(d.tela),
+          ...(Object.keys(d.telasPorPieza || {}).length ? { telas_por_pieza: d.telasPorPieza } : {}),
+          ...(Object.keys(editables).length ? { editables } : {}),
+        }],
+      };
+    }),
     planilla: datos.planilla.map(f => {
       const fila = {};
-      if (datos.disenos.length > 1 || f.diseno) fila.diseno = f.diseno || datos.disenos[0].nombre;
+      // Con un solo diseño, todas las filas van a ese (aunque quede guardado el nombre de un diseño que se quitó)
+      fila.diseno = datos.disenos.length === 1 ? datos.disenos[0].nombre : f.diseno;
       ids.forEach(k => { if (f[k] != null && f[k] !== '') fila[k] = (est.columnas.find(c => c.id === k)?.tipo === 'numero') ? Number(f[k]) : f[k]; });
       return fila;
     }),
@@ -340,6 +372,201 @@ async function guardarEnvio(pool, e) {
             OUTPUT INSERTED.EnvioID
             VALUES ('SOLICITUD', @S, @P, @R, @I, @E, @Et, @Rev, @Ped, @Al, @Err, @U, GETDATE(), CASE WHEN @E IN ('REVISADO','RECHAZADO','ERROR') THEN GETDATE() END)`);
   return r.recordset[0].EnvioID;
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// EDITABLES del arte (services/tizadaProEditables.js). Al mandar la tizada:
+//   1. prepararEditables: se extraen las capas "Editable …" de cada arte, se decide el proceso de cada objeto y se
+//      ponen en el pedido (`editables`). DTF → se arma el pliego (objeto × prendas del diseño); TPU / Bordado → el
+//      arte del objeto. Nada se sube todavía.
+//   2. editablesEnEspera (solo si TIZADA recibió el pedido): se suben a Drive y quedan en DatosJson.editablesTizada
+//      de cada servicio, atados a la referencia, esperando la tizada.
+//   3. cargarEditables (en aplicarResultado, cuando vuelve la tizada): DTF → diseño pronto del Estampado DTF, que pasa
+//      a Diseñado; TPU / Bordado → archivo de REFERENCIA del servicio (como si lo hubieran subido a mano; no cambia
+//      de estado). Si TIZADA rechaza, lo que quedó en espera no se carga nunca (lo pisa el envío siguiente).
+// Se apaga con TIZADAPRO_EDITABLES=0.
+// ─────────────────────────────────────────────────────────────────────
+async function prepararEditables(pool, productoSolId, datos, artes, rutasArte, est) {
+  const alarmas = []; const aviso = (codigo, mensaje) => alarmas.push({ codigo, frena: false, etapa: 'editables (USER)', mensaje });
+  const partes = (await pool.request().input('P', sql.Int, productoSolId).query(
+    "SELECT ParteID, Tipo, DatosJson FROM dbo.SolicitudesVendedorPartes WHERE ProductoSolID = @P AND Activo = 1 AND Tipo IN ('DTF', 'TPU', 'BORDADO')")).recordset;
+  const ed = require('./tizadaProEditables');
+  let porArte;
+  try { porArte = await ed.extraer(artes.map(a => ({ clave: a.ruta, buffer: a.buffer }))); }
+  catch (e) { aviso('editables-no-leidos', `No se pudieron leer los editables del arte (${e.message}): se manda sin editables y no se arma el pliego de DTF.`); return { alarmas, preparado: null }; }
+  const colCant = (est?.columnas || []).find(c => c.rol === 'cantidad');
+  const prendasDe = (nombre) => (datos.planilla || []).filter(f => datos.disenos.length === 1 || sinTilde(f.diseno) === sinTilde(nombre))
+    .reduce((t, f) => t + (colCant && Number(f[colCant.id]) > 0 ? Number(f[colCant.id]) : 1), 0);
+  const objetos = [];
+  const editablesPorDiseno = {};
+  for (const d of datos.disenos) {
+    const lista = porArte[rutasArte[d.arteArchivoId]] || [];
+    const cantidad = prendasDe(d.nombre);
+    const editables = {};
+    for (const o of lista) {
+      const elegido = (d.editables || {})[o.objeto];
+      const proceso = ['sublimado', 'dtf', 'tpu', 'bordado'].includes(elegido) ? elegido : ed.procesoDe(o.objeto, partes.map(x => x.Tipo));
+      editables[o.objeto] = proceso;
+      objetos.push({ ...o, diseno: d.nombre, proceso, cantidad });
+      aviso('editable', `${d.nombre} · "${o.objeto}" → ${proceso.toUpperCase()} · ${o.pieza} · ${o.anchoCm} × ${o.altoCm} cm · ${o.posicion} · ${cantidad} prenda(s)`);
+    }
+    editablesPorDiseno[d.nombre] = editables;
+  }
+  const preparado = {};
+  const deTipo = (t) => partes.find(x => x.Tipo === t);
+  const dtf = objetos.filter(o => o.proceso === 'dtf');
+  if (dtf.length) {
+    if (!deTipo('DTF')) aviso('editable-sin-servicio', `${dtf.map(o => `"${o.objeto}"`).join(', ')} va en DTF pero el producto no tiene Estampado DTF: no se arma el pliego.`);
+    else {
+      const pliego = await ed.armarPliego(dtf);
+      if (pliego) { preparado.DTF = { parte: deTipo('DTF'), pliego, objetos: dtf }; aviso('pliego-dtf', `Pliego de DTF: ${dtf.map(o => `${o.cantidad} × ${o.diseno} "${o.objeto}"`).join(' + ')} → ${pliego.anchoCm} × ${pliego.largoCm} cm (${pliego.transfers} transfers). Se carga en el Estampado DTF cuando vuelva la tizada.`); }
+    }
+  }
+  for (const t of ['TPU', 'BORDADO']) {
+    const objs = objetos.filter(o => o.proceso === t.toLowerCase());
+    if (!objs.length) continue;
+    if (!deTipo(t)) { aviso('editable-sin-servicio', `${objs.map(o => `"${o.objeto}"`).join(', ')} va en ${t} pero el producto no tiene ese servicio: no se carga en ningún lado.`); continue; }
+    // TPU / Bordado: el arte ya quedó en la solicitud como "Arte del cliente" del servicio al guardar (adjuntarEditables)
+    aviso(`arte-${t.toLowerCase()}`, `${t}: ${objs.map(o => `${o.diseno} "${o.objeto}" (${o.anchoCm} × ${o.altoCm} cm)`).join(', ')} → ya está en la solicitud como arte del cliente del servicio.`);
+  }
+  return { alarmas, preparado: Object.keys(preparado).length ? preparado : null, editablesPorDiseno };
+}
+
+async function editablesEnEspera(pool, referencia, preparado) {
+  if (!preparado) return;
+  const drive = require('./driveService');
+  for (const [tipo, x] of Object.entries(preparado)) {
+    const archivos = [];
+    if (tipo === 'DTF') {
+      const n = `${referencia}_DTF_pliego_${x.pliego.transfers}transfers_${(x.pliego.largoCm / 100).toFixed(2)}m.pdf`;
+      archivos.push({ rol: 'DISENO_PRONTO', nombre: n, url: await drive.uploadToDrive(x.pliego.buffer, n, AREA_DRIVE), bytes: x.pliego.buffer.length,
+        anchoM: x.pliego.anchoCm / 100, altoM: x.pliego.largoCm / 100, material: leer(x.parte.DatosJson, {}).material || null, copias: 1 });
+    } else {
+      for (const o of x.objetos) {
+        const n = `${referencia}_${tipo}_${slug(o.diseno)}_${slug(o.objeto)}_${o.anchoCm}x${o.altoCm}cm.png`;
+        archivos.push({ rol: 'REFERENCIA', nombre: n, url: await drive.uploadToDrive(o.png, n, AREA_DRIVE), bytes: o.png.length, anchoM: o.anchoCm / 100, altoM: o.altoCm / 100,
+          nota: `${o.diseno} · ${o.objeto} · ${o.pieza} · ${o.posicion} · ${o.cantidad} prenda(s)` });
+      }
+    }
+    const datosPa = leer((await pool.request().input('Pa', sql.Int, x.parte.ParteID).query('SELECT DatosJson FROM dbo.SolicitudesVendedorPartes WHERE ParteID = @Pa')).recordset[0]?.DatosJson, {});
+    datosPa.editablesTizada = { referencia, fecha: new Date().toISOString(), archivos };
+    await pool.request().input('Pa', sql.Int, x.parte.ParteID).input('D', sql.NVarChar(sql.MAX), JSON.stringify(datosPa))
+      .query('UPDATE dbo.SolicitudesVendedorPartes SET DatosJson = @D WHERE ParteID = @Pa');
+  }
+}
+
+// Dentro de la transacción de aplicarResultado: lo que quedó esperando esta tizada pasa a los servicios
+async function cargarEditables(tx, env, user, base) {
+  const creados = [];
+  const partes = (await new sql.Request(tx).input('P', sql.Int, env.ProductoSolID).query(
+    "SELECT * FROM dbo.SolicitudesVendedorPartes WHERE ProductoSolID = @P AND Activo = 1 AND Tipo IN ('DTF', 'TPU', 'BORDADO')")).recordset;
+  for (const pa of partes) {
+    const datosPa = leer(pa.DatosJson, {});
+    const esp = datosPa.editablesTizada;
+    if (!esp || esp.referencia !== env.Referencia) continue;
+    if (pa.Tipo === 'DTF') {
+      await new sql.Request(tx).input('Pa', sql.Int, pa.ParteID)
+        .query("UPDATE dbo.SolicitudesVendedorArchivos SET Vigente = 0 WHERE ParteID = @Pa AND Rol = 'DISENO_PRONTO' AND Vigente = 1");
+    }
+    for (const a of esp.archivos || []) {
+      const r = await new sql.Request(tx)
+        .input('S', sql.Int, env.SolicitudID).input('P', sql.Int, env.ProductoSolID).input('Pa', sql.Int, pa.ParteID).input('R', sql.VarChar(30), a.rol)
+        .input('N', sql.NVarChar(260), a.nombre).input('U', sql.NVarChar(sql.MAX), a.url).input('B', sql.BigInt, a.bytes || null)
+        .input('An', sql.Decimal(10, 4), a.anchoM || null).input('Al', sql.Decimal(10, 4), a.altoM || null).input('M', sql.NVarChar(200), a.material || null)
+        .input('C', sql.Int, a.rol === 'DISENO_PRONTO' ? (a.copias || 1) : null).input('Us', sql.Int, user.id)
+        .query(`INSERT INTO dbo.SolicitudesVendedorArchivos (SolicitudID, ProductoSolID, ParteID, Rol, NombreOriginal, UrlDrive, TamanoBytes, AnchoM, AltoM, Vigente, UsuarioSube, Material, Copias)
+                OUTPUT INSERTED.ArchivoID VALUES (@S, @P, @Pa, @R, @N, @U, @B, @An, @Al, 1, @Us, @M, @C)`);
+      creados.push({ ArchivoID: r.recordset[0].ArchivoID, nombre: a.nombre, tipo: pa.Tipo === 'DTF' ? 'pliego DTF' : `referencia ${pa.Tipo}`, url: a.url });
+    }
+    delete datosPa.editablesTizada;
+    if (pa.Tipo === 'DTF') datosPa.disenoAutomatico = { sistema: 'TIZADA PRO', referencia: env.Referencia, detalle: 'pliego armado con los editables del arte', fecha: new Date().toISOString() };
+    await new sql.Request(tx).input('Pa', sql.Int, pa.ParteID).input('D', sql.NVarChar(sql.MAX), JSON.stringify(datosPa))
+      .query('UPDATE dbo.SolicitudesVendedorPartes SET DatosJson = @D WHERE ParteID = @Pa');
+    const lista = (esp.archivos || []).map(a => a.nombre).join(', ');
+    if (pa.Tipo === 'DTF' && pa.Estado !== 'DISENADO') {
+      await base.cambiarEstadoParte(tx, user, pa, 'DISENADO', 'FechaDisenado = GETDATE(), UsuarioDisenado = @U', `diseño automático: pliego de DTF armado con los editables del arte (${env.Referencia}): ${lista}`);
+    } else {
+      await base.registrarEvento(tx, user, { solicitudId: env.SolicitudID, productoSolId: env.ProductoSolID, parteId: pa.ParteID, tipo: 'ARCHIVO',
+        texto: pa.Tipo === 'DTF' ? `Pliego de DTF (editables del arte, ${env.Referencia}) reemplazó al diseño pronto: ${lista}` : `Arte de los editables (${env.Referencia}) cargado como referencia: ${lista}` });
+    }
+  }
+  return creados;
+}
+
+// Al guardar: cada editable que va en DTF, TPU o Bordado queda en la solicitud como "Arte del cliente" de ese
+// servicio (un PNG por objeto, como si lo hubieran subido a mano). Nombre: EDITABLE_<diseño>_<objeto>_<SERVICIO>_A<arte>.png
+// Si se cambia el proceso o el arte, el viejo deja de estar vigente y se sube el nuevo. No se le manda nada a TIZADA.
+async function adjuntarEditables(pool, user, base, solicitudId, productoSolId, disenos) {
+  if (process.env.TIZADAPRO_EDITABLES === '0') return [];
+  const partes = (await pool.request().input('P', sql.Int, productoSolId).query(
+    "SELECT ParteID, Tipo FROM dbo.SolicitudesVendedorPartes WHERE ProductoSolID = @P AND Activo = 1 AND Tipo IN ('DTF', 'TPU', 'BORDADO')")).recordset;
+  const nombreDe = (d, objeto, tipo) => `EDITABLE_${slug(d.nombre)}_${slug(objeto)}_${tipo}_A${d.arteArchivoId}.png`;
+  const quiero = [];   // { d, o, parte, nombre }
+  for (const d of disenos) {
+    if (!d.arteArchivoId) continue;
+    for (const o of d.editablesDetalle || []) {
+      const proc = d.editables[o.objeto] || o.sugerido || 'sublimado';
+      const parte = partes.find(x => x.Tipo === String(proc).toUpperCase());
+      if (parte) quiero.push({ d, o, parte, nombre: nombreDe(d, o.objeto, parte.Tipo) });
+    }
+  }
+  const hay = (await pool.request().input('P', sql.Int, productoSolId).query(
+    "SELECT ArchivoID, ParteID, NombreOriginal FROM dbo.SolicitudesVendedorArchivos WHERE ProductoSolID = @P AND Rol = 'ARTE_CLIENTE' AND Vigente = 1 AND NombreOriginal LIKE 'EDITABLE[_]%'")).recordset;
+  const sobran = hay.filter(h => !quiero.some(q => q.nombre === h.NombreOriginal && q.parte.ParteID === h.ParteID));
+  const faltan = quiero.filter(q => !hay.some(h => h.NombreOriginal === q.nombre && h.ParteID === q.parte.ParteID));
+  const hechos = [];
+  for (const h of sobran) {
+    await pool.request().input('A', sql.Int, h.ArchivoID).query('UPDATE dbo.SolicitudesVendedorArchivos SET Vigente = 0 WHERE ArchivoID = @A');
+    hechos.push(`saqué ${h.NombreOriginal}`);
+  }
+  if (faltan.length) {
+    // Se lee cada arte una sola vez (a resolución completa, no la miniatura)
+    const artesIds = [...new Set(faltan.map(q => q.d.arteArchivoId))];
+    const artes = (await pool.request().input('S', sql.Int, solicitudId).query(
+      `SELECT ArchivoID, NombreOriginal, UrlDrive FROM dbo.SolicitudesVendedorArchivos WHERE SolicitudID = @S AND Vigente = 1 AND ArchivoID IN (${artesIds.map(Number).join(',')})`)).recordset;
+    const ed = require('./tizadaProEditables');
+    const porArte = await ed.extraer(await Promise.all(artes.map(async a => ({ clave: String(a.ArchivoID), buffer: await bajarDeDrive(a.UrlDrive) }))));
+    const drive = require('./driveService');
+    for (const q of faltan) {
+      const o = (porArte[String(q.d.arteArchivoId)] || []).find(x => x.objeto === q.o.objeto);
+      if (!o) { hechos.push(`"${q.o.objeto}" (${q.d.nombre}) ya no está en el arte: no se adjuntó`); continue; }
+      const url = await drive.uploadToDrive(o.png, q.nombre, AREA_DRIVE);
+      await pool.request().input('S', sql.Int, solicitudId).input('P', sql.Int, productoSolId).input('Pa', sql.Int, q.parte.ParteID)
+        .input('N', sql.NVarChar(260), q.nombre).input('U', sql.NVarChar(sql.MAX), url).input('B', sql.BigInt, o.png.length)
+        .input('An', sql.Decimal(10, 4), o.anchoCm / 100).input('Al', sql.Decimal(10, 4), o.altoCm / 100).input('Us', sql.Int, user.id)
+        .query(`INSERT INTO dbo.SolicitudesVendedorArchivos (SolicitudID, ProductoSolID, ParteID, Rol, NombreOriginal, UrlDrive, TamanoBytes, AnchoM, AltoM, Vigente, UsuarioSube)
+                VALUES (@S, @P, @Pa, 'ARTE_CLIENTE', @N, @U, @B, @An, @Al, 1, @Us)`);
+      hechos.push(`${q.parte.Tipo}: ${q.d.nombre} "${o.objeto}" (${o.anchoCm} × ${o.altoCm} cm, ${o.pieza})`);
+    }
+  }
+  if (hechos.length) {
+    await base.registrarEvento(pool, user, { solicitudId, productoSolId, tipo: 'ARCHIVO', texto: `Editables del arte como arte del cliente de cada servicio: ${hechos.join(' · ')}` });
+  }
+  return hechos;
+}
+
+// Miniatura de un editable (la achica el navegador a ~100 px): solo PNG/JPEG en base64 y chica, para no inflar DatosJson.
+const esMiniatura = (v) => typeof v === 'string' && v.length <= 40000 && /^data:image\/(png|jpeg);base64,[A-Za-z0-9+/=]+$/.test(v);
+
+/** "Leer los editables del arte": objetos de las capas "Editable …" de un arte de la solicitud, con el proceso sugerido. */
+async function leerEditables(pool, user, base, solicitudId, productoSolId, arteArchivoId) {
+  if (!base.esVendedor(user) && !(await base.esDisenador(pool, user))) throw fallo(403, 'Esto lo hace el vendedor o un diseñador habilitado.');
+  const a = (await pool.request().input('A', sql.Int, Number(arteArchivoId) || 0).input('S', sql.Int, solicitudId)
+    .query('SELECT ArchivoID, NombreOriginal, UrlDrive FROM dbo.SolicitudesVendedorArchivos WHERE ArchivoID = @A AND SolicitudID = @S AND Vigente = 1')).recordset[0];
+  if (!a) throw fallo(404, 'Ese arte no está en la solicitud.');
+  let buffer;
+  try { buffer = await bajarDeDrive(a.UrlDrive); } catch (e) { throw fallo(502, `No se pudo leer el arte "${a.NombreOriginal}" de Drive: ${e.message}`); }
+  const tipos = (await pool.request().input('P', sql.Int, productoSolId).query(
+    "SELECT Tipo FROM dbo.SolicitudesVendedorPartes WHERE ProductoSolID = @P AND Activo = 1 AND Tipo IN ('DTF', 'TPU', 'BORDADO')")).recordset.map(x => x.Tipo);
+  const ed = require('./tizadaProEditables');
+  let lista;
+  try { lista = (await ed.extraer([{ clave: 'a', buffer }])).a || []; }
+  catch (e) { throw fallo(422, `No se pudieron leer las capas del arte "${a.NombreOriginal}": ${e.message}`); }
+  return {
+    arte: a.NombreOriginal, servicios: tipos,
+    objetos: lista.map(o => ({ objeto: o.objeto, pieza: o.pieza, anchoCm: o.anchoCm, altoCm: o.altoCm, posicion: o.posicion,
+      sugerido: ed.procesoDe(o.objeto, tipos), vista: 'data:image/png;base64,' + o.png.toString('base64') })),
+  };
 }
 
 /** Arma el .zip y lo manda (o solo lo revisa). Devuelve el envío. */
@@ -389,7 +616,9 @@ async function enviar(pool, user, base, solicitudId, productoSolId, b = {}, inte
 
   const intento = ((await pool.request().input('P', sql.Int, productoSolId).query("SELECT ISNULL(MAX(Intento), 0) AS N FROM dbo.TizadaProEnvios WHERE Origen = 'SOLICITUD' AND OrigenItemID = @P")).recordset[0].N) + 1;
   const referencia = `${PREFIJO()}-${solicitudId}-P${productoSolId}-${intento}`;
-  const pedido = armarPedidoJson(sol, p, datos, est, referencia, rutasArte);
+  // Editables: se analizan para armar el pedido.json de TIZADA y preparar DTF / TPU / Bordado
+  const edits = (process.env.TIZADAPRO_EDITABLES !== '0') ? await prepararEditables(pool, productoSolId, datos, artes, rutasArte, est) : { alarmas: [], preparado: null, editablesPorDiseno: {} };
+  const pedido = armarPedidoJson(sol, p, datos, est, referencia, rutasArte, edits?.editablesPorDiseno);
   const zip = await zipEnMemoria(pedido, artes);
   const reg = { SolicitudID: solicitudId, ProductoSolID: productoSolId, Referencia: referencia, Intento: intento, Pedido: pedido, UsuarioID: user.id, SoloRevision: soloRevisar };
 
@@ -404,6 +633,7 @@ async function enviar(pool, user, base, solicitudId, productoSolId, b = {}, inte
     return { EnvioID: id, Referencia: referencia, Estado: 'RECHAZADO', Alarmas: alarmasArte, mensaje: alarmasArte[0].mensaje };
   }
 
+  let envioId = null;
   try {
     {   // siempre: primero TIZADA revisa los datos; recién si los acepta se manda
       const v = await api.validar(null, zip);
@@ -412,14 +642,46 @@ async function enviar(pool, user, base, solicitudId, productoSolId, b = {}, inte
         return { EnvioID: id, Referencia: referencia, Estado: 'REVISADO', Alarmas: v?.alarmas || [] };
       }
     }
+    // Guardamos el envío ANTES de llamar a TIZADA y de subir a Drive para que si TIZADA
+    // rechaza o avisa en milisegundos, el webhook encuentre la referencia en la base.
+    envioId = await guardarEnvio(pool, { ...reg, Estado: 'EN_COLA', Etapa: 'esperando al robot de TIZADA', Alarmas: edits.alarmas });
+
     const r = await api.enviar(zip);
-    const id = await guardarEnvio(pool, { ...reg, Estado: 'EN_COLA', Etapa: r?.etapa || 'esperando al robot de TIZADA', Alarmas: r?.alarmas || [] });
+    // TIZADA lo recibió: lo de los editables queda esperando la tizada (si falla, el pedido sigue: queda en el aviso)
+    try { await editablesEnEspera(pool, referencia, edits.preparado); }
+    catch (e) { edits.alarmas.push({ codigo: 'editables-sin-guardar', frena: false, etapa: 'editables (USER)', mensaje: `No se pudo dejar preparado el pliego / las referencias: ${e.message}` }); logger.warn(`[TIZADAPRO] ${referencia} editables: ${e.message}`); }
+
+    // Actualizamos etapa y alarmas solo si el webhook de TIZADA no cambió ya el estado (ej. a RECHAZADO o PROCESANDO)
+    await pool.request()
+      .input('E', sql.Int, envioId)
+      .input('Et', sql.NVarChar(300), txt(r?.etapa, 300) || 'esperando al robot de TIZADA')
+      .input('Al', sql.NVarChar(sql.MAX), json([...(r?.alarmas || []), ...edits.alarmas]))
+      .query(`UPDATE dbo.TizadaProEnvios
+              SET Etapa = ISNULL(@Et, Etapa),
+                  AlarmasJson = CASE WHEN Estado = 'EN_COLA' THEN @Al ELSE AlarmasJson END,
+                  FechaActualizado = GETDATE()
+              WHERE EnvioID = @E AND Estado = 'EN_COLA'`);
+
     await base.registrarEvento(pool, user, { solicitudId, productoSolId, tipo: 'EDICION', texto: `Pedido mandado a TIZADA PRO para generar la tizada (referencia ${referencia}).` });
-    return { EnvioID: id, Referencia: referencia, Estado: 'EN_COLA' };
+    return { EnvioID: envioId, Referencia: referencia, Estado: 'EN_COLA' };
   } catch (e) {
     if (e instanceof api.ErrorTizada && (e.status === 422 || e.status === 415)) {
-      const id = await guardarEnvio(pool, { ...reg, Estado: 'RECHAZADO', Etapa: 'TIZADA no lo acepta', Alarmas: e.alarmas, ErrorTexto: e.message });
-      return { EnvioID: id, Referencia: referencia, Estado: 'RECHAZADO', Alarmas: e.alarmas, mensaje: e.message };
+      if (envioId) {
+        await pool.request().input('E', sql.Int, envioId).input('Al', sql.NVarChar(sql.MAX), json(e.alarmas || []))
+          .input('Err', sql.NVarChar(1000), txt(e.message, 1000) || null)
+          .query(`UPDATE dbo.TizadaProEnvios
+                  SET Estado = 'RECHAZADO', Etapa = 'TIZADA no lo acepta', AlarmasJson = @Al, ErrorTexto = @Err, FechaFin = GETDATE(), FechaActualizado = GETDATE()
+                  WHERE EnvioID = @E`);
+      } else {
+        envioId = await guardarEnvio(pool, { ...reg, Estado: 'RECHAZADO', Etapa: 'TIZADA no lo acepta', Alarmas: e.alarmas, ErrorTexto: e.message });
+      }
+      return { EnvioID: envioId, Referencia: referencia, Estado: 'RECHAZADO', Alarmas: e.alarmas, mensaje: e.message };
+    }
+    if (envioId) {
+      await pool.request().input('E', sql.Int, envioId).input('Err', sql.NVarChar(1000), txt(e.message, 1000) || null)
+        .query(`UPDATE dbo.TizadaProEnvios
+                SET Estado = 'ERROR', Etapa = 'Error al mandar a TIZADA', ErrorTexto = @Err, FechaFin = GETDATE(), FechaActualizado = GETDATE()
+                WHERE EnvioID = @E AND Estado = 'EN_COLA'`);
     }
     throw fallo(e.status || 502, e.message);
   }
@@ -439,7 +701,12 @@ async function envioPorReferencia(pool, referencia) {
 async function procesarEstado(pool, data) {
   const ref = data?.referencia;
   if (!ref) return { ok: false, motivo: 'sin referencia' };
-  const env = await envioPorReferencia(pool, ref);
+  let env = await envioPorReferencia(pool, ref);
+  if (!env) {
+    // Si el aviso llegó casi simultáneo al envío, esperamos 1.5 s y reintentamos buscar la referencia
+    await new Promise(r => setTimeout(r, 1500));
+    env = await envioPorReferencia(pool, ref);
+  }
   if (!env) return { ok: false, motivo: `referencia ${ref} desconocida` };
   if (['APLICADO', 'APLICANDO'].includes(env.Estado)) return { ok: true, estado: env.Estado };
   const estado = ESTADO_DE[String(data.estado || '').toLowerCase()] || env.Estado;
@@ -563,6 +830,8 @@ async function aplicarResultado(pool, envioId, resultado) {
                   OUTPUT INSERTED.ArchivoID VALUES (@S, @P, 'REFERENCIA', @N, @U, @B, 1, @Us)`);
         creados.push({ ArchivoID: r.recordset[0].ArchivoID, nombre: fichaLista.nombre, tipo: 'ficha', url: fichaLista.url });
       }
+      // Editables que esperaban esta tizada: pliego DTF / referencias TPU y Bordado
+      creados.push(...await cargarEditables(transaction, env, user, base));
       // Marca de diseño automático en la parte + estado DISEÑADO
       const datosPa = leer(pa.DatosJson, {});
       datosPa.disenoAutomatico = { sistema: 'TIZADA PRO', referencia: env.Referencia, tizadaId: resultado.tizada_id || null, fecha: new Date().toISOString(), hojas: creados.filter(c => c.tipo === 'tizada').length };
@@ -688,4 +957,5 @@ async function envioAutomatico(pool, user, base, solicitudId, productoSolId) {
   }
 }
 
-module.exports = { validarParaDiseno, ver, guardar, enviar, actualizar, reintentarAplicar, procesarEstado, aplicarResultado, recibirAviso, iniciarSondeo, sondear, envioAutomatico, estructura, revisar, armarPedidoJson, MODO_ENVIO };
+module.exports = { validarParaDiseno, leerEditables, ver, guardar, enviar, actualizar, reintentarAplicar, procesarEstado, aplicarResultado, recibirAviso, iniciarSondeo, sondear, envioAutomatico, estructura, revisar, armarPedidoJson, MODO_ENVIO };
+// Configuración actualizada: TIZADAPRO_SI_PIEZAS_EN_BLANCO=seguir

@@ -154,12 +154,30 @@ function armarPedido(sol, p, bobinaId) {
   const corte = p.Datos?.corte?.activo ? p.Datos.corte : null;
   const costura = p.Datos?.costura?.activo ? p.Datos.costura : null;
 
+  // Bordado / TPU sin diseño pronto: van los archivos del cliente (ej. los editables del arte, EDITABLE_<diseño>_…)
+  // y el armador hace UNA ORDEN POR ARCHIVO, como la página de pedido de prenda. Un editable de un diseño de TIZADA
+  // lleva las prendas de ESE diseño (las filas de la lista de talles con ese diseño).
+  const slug = (x) => String(x || '').normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 60) || 'x';
+  const tz = p.Datos?.tizadaPro;
+  const prendasDelDiseno = (nombreArchivo) => {
+    const d = (tz?.disenos || []).find(x => String(nombreArchivo).startsWith(`EDITABLE_${slug(x.nombre)}_`));
+    if (!d) return null;
+    const filas = (tz.planilla || []).filter(f => tz.disenos.length === 1 || String(f.diseno || '').toUpperCase() === d.nombre);
+    return filas.reduce((t, f) => t + (Number(f.cantidad) > 0 ? Number(f.cantidad) : 1), 0) || null;
+  };
+  const archivosDelServicio = (pa) => {
+    const prontos = deParte(pa, 'DISENO_PRONTO');
+    if (prontos.length || !['BORDADO', 'TPU'].includes(pa.Tipo)) return prontos;
+    return vigentes.filter(a => a.ParteID === pa.ParteID && a.Rol === 'ARTE_CLIENTE')
+      .map(a => { const n = prendasDelDiseno(a.NombreOriginal); return n ? { ...arch(a), prendas: n } : arch(a); });
+  };
+
   const servicios = p.Partes.filter(pa => pa.Tipo !== 'PRINCIPAL').map(pa => {
     const d = pa.Datos || {};
     const s = {
       tipo: pa.Tipo, variante: d.variante || null, material: d.material ? { nombre: d.material } : null,
       ubicacion: pa.Ubicacion || '', nota: pa.Observaciones || '',
-      archivos: deParte(pa, 'DISENO_PRONTO'), bocetos: deParte(pa, 'BOCETO'), referencias: deParte(pa, 'REFERENCIA'),
+      archivos: archivosDelServicio(pa), bocetos: deParte(pa, 'BOCETO'), referencias: deParte(pa, 'REFERENCIA'),
     };
     if (pa.Tipo === 'BORDADO') s.prendas = pa.CantidadTotal || p.Cantidad;
     else s.estampado = { prendas: pa.CantidadTotal, estampadosPorPrenda: pa.PorPrenda, origen: d.origenPrendas || 'Stock User' };

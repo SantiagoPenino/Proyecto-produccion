@@ -65,6 +65,7 @@ const motorContable    = require('./motorContable');     // Motor de Eventos: fu
 const { estamparAreaLineas } = require('./areaLineaService');
 const { resolverCuentaDineroCliente } = require('./cuentaDineroCliente');
 const { absorberSobregiroEnPlan } = require('./planSobregiroService');
+const { esDeadlock } = require('../utils/reintentarDeadlock');
 
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -737,6 +738,11 @@ async function procesarVentaDirecta(payload) {
 
   } catch (err) {
     try { if (transaction) await transaction.rollback(); } catch (e) { logger.warn('Rollback error:', e.message); }
+    if (esDeadlock(err)) {
+      logger.warn(`[CAJA] ⚠️ Deadlock (1205) en procesarVentaDirecta (será reintentado): ${err.message}`);
+    } else {
+      logger.error('[CAJA] Error procesarVentaDirecta:', err.message);
+    }
     throw err;
   }
 }
@@ -1130,7 +1136,7 @@ async function procesarTransaccion(payload) {
           FROM   dbo.DeudaDocumento dd WITH (UPDLOCK, ROWLOCK)
           WHERE  dd.OrdIdOrden IN (${inListDeuda})
             AND  dd.DDeEstado IN ('PENDIENTE','PARCIAL')
-          ORDER  BY dd.DDeFechaEmision ASC
+          ORDER  BY dd.DDeFechaEmision ASC, dd.DDeIdDocumento ASC
         `);
 
         for (const dd of ddRes.recordset) {
@@ -1197,7 +1203,7 @@ async function procesarTransaccion(payload) {
               FROM   dbo.DeudaDocumento dd WITH (UPDLOCK, ROWLOCK)
               WHERE  dd.CueIdCuenta = @CueId
                 AND  dd.DDeEstado IN ('PENDIENTE','PARCIAL')
-              ORDER  BY dd.DDeFechaEmision ASC
+              ORDER  BY dd.DDeFechaEmision ASC, dd.DDeIdDocumento ASC
             `);
 
           for (const dd of ddFb.recordset) {
@@ -1249,6 +1255,7 @@ async function procesarTransaccion(payload) {
     // ── PASO 4: Actualizar órdenes (estado + FKs) ──────────────────────
     const ordenesRetiro  = aplicaciones.filter(a => a.tipo === 'ORDEN_RETIRO'   && a.referenciaId);
     const ordenesDeposito = aplicaciones.filter(a => a.tipo === 'ORDEN_DEPOSITO' && a.referenciaId);
+    const ordenesPagadasIds = [];
 
     // OrdenesRetiro → determinar nuevo estado según estado actual
     for (const ap of ordenesRetiro) {
@@ -1284,8 +1291,8 @@ async function procesarTransaccion(payload) {
             FROM @cambios WHERE EstadoViejo <> EstadoNuevo;
           `);
 
-          // Sincronizar la vista de cobranza (Caja/portal/tótem la leen por EstadoCobro)
-          await marcarCobranzaPagada(transaction, ap.orderNumbers);
+          // Acumular para sincronizar cobranza post-commit (no bloquea la transacción activa)
+          ordenesPagadasIds.push(...ap.orderNumbers);
       }
 
       if (isVirtual) {
@@ -1361,8 +1368,8 @@ async function procesarTransaccion(payload) {
         FROM @cambios WHERE EstadoViejo <> EstadoNuevo;
       `);
 
-      // Sincronizar la vista de cobranza (Caja/portal/tótem la leen por EstadoCobro)
-      await marcarCobranzaPagada(transaction, ids);
+      // Acumular para sincronizar cobranza post-commit (no bloquea la transacción activa)
+      ordenesPagadasIds.push(...ids);
     }
 
 
@@ -1560,6 +1567,7 @@ async function procesarTransaccion(payload) {
 
       // ── PASO 5.6: GENERACIÓN CFE (FACTURACIÓN ELECTRÓNICA) ─────────────
       if (header.tipoDocumento && header.tipoDocumento !== 'NINGUNO') {
+        const hintSeq = header.numeroDoc ? 'WITH(NOLOCK)' : 'WITH(UPDLOCK)';
         const resConfig = await new sql.Request(transaction)
           .input('codDoc', sql.VarChar(10), header.tipoDocumento)
           .query(`
@@ -1567,7 +1575,7 @@ async function procesarTransaccion(payload) {
                    30 AS DiasVencimiento,
                    s.SecSerie, s.SecUltimoNumero, s.SecIdSecuencia 
             FROM dbo.Config_TiposDocumento c WITH(NOLOCK)
-            LEFT JOIN dbo.SecuenciaDocumentos s WITH(UPDLOCK) ON c.SecIdSecuencia = s.SecIdSecuencia
+            LEFT JOIN dbo.SecuenciaDocumentos s ${hintSeq} ON c.SecIdSecuencia = s.SecIdSecuencia
             WHERE c.CodDocumento = @codDoc
           `);
 
@@ -1941,6 +1949,13 @@ async function procesarTransaccion(payload) {
     await transaction.commit();
     logger.info(`[CAJA] ✅ Transaccion ${tcaIdTransaccion} completada. Pagos: ${pagosCreados.length}`);
 
+    // Sincronizar la vista de cobranza post-commit (no retiene locks de la transacción)
+    if (ordenesPagadasIds.length > 0) {
+      marcarCobranzaPagada(null, ordenesPagadasIds).catch(err =>
+        logger.warn(`[CAJA] Error sincronizando cobranza post-commit: ${err.message}`)
+      );
+    }
+
 
     // ── PASO 6: HOOKS CONTABLES (post-commit, no críticos) ─────────────
     _lanzarHooksContables({ aplicaciones, pagosNorm, pagosCreados, header, usuarioId, totalNeto }).catch(err =>
@@ -1964,7 +1979,11 @@ async function procesarTransaccion(payload) {
 
   } catch (err) {
     await rollbackSeguro(transaction, 'procesarTransaccion');
-    logger.error(`[CAJA] ❌ Error procesarTransaccion: ${err.message}`, err);
+    if (esDeadlock(err)) {
+      logger.warn(`[CAJA] ⚠️ Deadlock (1205) en procesarTransaccion (será reintentado): ${err.message}`);
+    } else {
+      logger.error(`[CAJA] ❌ Error procesarTransaccion: ${err.message}`, err);
+    }
     throw err;
   }
 }
@@ -2101,15 +2120,19 @@ async function anularTransaccion({ tcaIdTransaccion, usuarioId, motivo }) {
         FROM @cambios WHERE EstadoViejo <> EstadoNuevo;
       `);
 
-    // La cobranza vuelve a Pendiente (inverso de marcarCobranzaPagada)
-    await marcarCobranzaPendiente(transaction, ordAnuladas);
-
     // Revertir la compra de recurso (rollo por adelantado) si esta venta creó/recargó un plan.
     // Lanza si el recurso ya fue consumido → rollback de toda la anulación.
     await contabilidadSvc.revertirRecursosPorTransaccion(tcaIdTransaccion, usuarioId, transaction);
 
     await transaction.commit();
     logger.info(`[CAJA] 🔄 Transaccion ${tcaIdTransaccion} anulada por usuario ${usuarioId}.`);
+
+    // Sincronizar la vista de cobranza post-commit (no retiene locks de la transacción)
+    if (ordAnuladas.length > 0) {
+      marcarCobranzaPendiente(null, ordAnuladas).catch(err =>
+        logger.warn(`[CAJA] Error revirtiendo cobranza post-commit: ${err.message}`)
+      );
+    }
 
     return { success: true, mensaje: `Transacción ${tcaIdTransaccion} anulada correctamente.` };
 

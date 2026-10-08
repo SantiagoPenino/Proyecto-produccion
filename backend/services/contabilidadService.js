@@ -3595,6 +3595,29 @@ async function cerrarCicloCompleto({
         docImpuestos /= cotDolar;
       }
 
+      // Factura en OTRA moneda que el ciclo (ej. ciclo en dólares facturado en pesos): el cargo
+      // va a la cuenta de la moneda de la factura, así que el saldo a favor que se le aplica es
+      // el de ESA cuenta, no el de la cuenta del ciclo (importePendiente de arriba). Antes la
+      // deuda cruzada nacía siempre por el total y la plata a favor de la cuenta destino quedaba
+      // sin imputar: el estado de cuenta cerraba bien pero la deuda seguía entera (caso Angel
+      // Carballo PC-4969, 29-09-2026: 5.231 a favor en pesos, deuda viva por los 6.037,57).
+      // Todavía no hay ningún movimiento de este documento en la cuenta destino: el saldo medido
+      // acá es el PREVIO a la factura.
+      let pendienteFactura = importePendiente;
+      if (esCrossMoneda) {
+        const saldoDestinoRes = await pool.request()
+          .input('CueIdCuenta', sql.Int, cueIdFactura)
+          .query(`
+            SELECT ISNULL(SUM(m.MovImporte), 0) AS SaldoReal
+            FROM dbo.MovimientosCuenta m
+            WHERE m.CueIdCuenta = @CueIdCuenta
+              AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)
+              AND m.MovTipo NOT IN ('ORDEN', 'ORDEN_ANTICIPO')
+          `);
+        const saldoDestino = Number(saldoDestinoRes.recordset[0]?.SaldoReal) || 0;
+        pendienteFactura = saldoDestino > 0 ? Math.max(0, docTotal - saldoDestino) : docTotal;
+      }
+
       // Refactored to use crearDocumentoContable
       // El frontend ya envía DcdSubtotal en la moneda de factura (hace la
       // conversión usando d.Moneda). El backend solo mapea los valores.
@@ -3678,7 +3701,7 @@ async function cerrarCicloCompleto({
           // caja), se marca pagada acá — si no, quedaba "Crédito" para siempre en la
           // bandeja (caso ET-4058 Tamara, 22-ago-2026). La forma de pago ante DGI la
           // resuelve sisnetService por el tipo de documento, no por este flag.
-          docPagado: (!esCrossMoneda && importePendiente <= 0.01),
+          docPagado: pendienteFactura <= 0.01,
           cicIdCiclo: CicIdCiclo,
           docFechaDesde: ciclo.CicFechaInicio,
           docFechaHasta: fechaCierreReal,
@@ -3731,7 +3754,7 @@ async function cerrarCicloCompleto({
       // Sin esto seguían "cobrables" en caja y se facturaban de nuevo
       // (caso SUB-12304: ET-4059 del cierre + ET-4060 del cobro del retiro, 24-ago-2026).
       // El estado de la ORDEN no se toca: el pago es independiente del estado.
-      if (importePendiente <= 0.01) {
+      if (pendienteFactura <= 0.01) {
         try {
           const ordsCubiertas = await pool.request()
             .input('DocId', sql.Int, DocIdDocumento)
@@ -3765,9 +3788,8 @@ async function cerrarCicloCompleto({
     const deudaCuentaId = esCrossMoneda ? cueIdFactura : ciclo.CueIdCuenta;
     const deudaImporte = esCrossMoneda ? docTotal : saldoFacturar;
     // Lo que queda por cobrar después de aplicarle el saldo a favor previo (abajo se
-    // asienta como pago VISIBLE). Cross-moneda: el saldo de la cuenta destino no es el
-    // que se midió arriba, así que la deuda queda entera y se cobra normal.
-    const deudaPendiente = esCrossMoneda ? docTotal : importePendiente;
+    // asienta como pago VISIBLE). Cross-moneda: medido sobre la cuenta destino (pendienteFactura).
+    const deudaPendiente = pendienteFactura;
 
     // La deuda nace SIEMPRE por el TOTAL de la factura (criterio unificado con producción,
     // reporte 26-ago-2026: nunca más "nace cobrada" por una resta invisible). La parte

@@ -56,7 +56,7 @@ async function guardar(pool, id, campos) {
 
 async function filaDe(pool, origen, idExterno) {
   const r = await pool.request().input('O', sql.VarChar(50), origen).input('E', sql.VarChar(100), idExterno)
-    .query('SELECT *, DATEDIFF(MINUTE, FechaRecibido, GETDATE()) AS MinutosDesdeRecibido FROM dbo.IntegracionPedidos WHERE Origen = @O AND IdExterno = @E');
+    .query('SELECT *, DATEDIFF(MINUTE, FechaRecibido, GETDATE()) AS MinutosDesdeRecibido, DATEDIFF(SECOND, FechaRecibido, ISNULL(FechaFin, GETDATE())) AS SegundosDesdeRecibido FROM dbo.IntegracionPedidos WHERE Origen = @O AND IdExterno = @E');
   return r.recordset[0] || null;
 }
 
@@ -68,7 +68,8 @@ const respuesta = (f) => ({
   errores: leer(f.ErroresJson, []),
   // PASANDO_ARCHIVOS hace más de 15 minutos = se cortó a mitad de camino: se puede reintentar
   archivosColgados: f.Estado === 'PASANDO_ARCHIVOS' && f.MinutosDesdeRecibido > 15,
-  archivos: leer(f.ArchivosJson, []).map(a => ({ nombre: a.originalName, destino: a.finalName, subido: !!a.subido, error: a.error || null })),
+  archivos: leer(f.ArchivosJson, []).map(a => ({ nombre: a.originalName, destino: a.finalName, subido: !!a.subido, error: a.error || null, paso: a.paso || null })),
+  segundos: f.SegundosDesdeRecibido != null ? f.SegundosDesdeRecibido : null,   // cuánto lleva (o cuánto tardó, si terminó)
 });
 
 /**
@@ -191,7 +192,13 @@ async function procesar(pool, id, { origen, idExterno, pedido, usuarioInterno, a
 async function ponerCantidades(pool, noDoc, pedido, usuarioInterno, cliente) {
   const prendas = parseInt(pedido.producto?.cantidad, 10);
   const tpu = (pedido.servicios || []).find(s => s.tipo === 'TPU');
-  const parches = tpu ? (parseInt(tpu.estampado?.prendas, 10) || 0) * (parseInt(tpu.estampado?.estampadosPorPrenda, 10) || 1) : 0;
+  const parches = tpu ? (parseInt(tpu.estampado?.prendas, 10) || prendas || 0) * (parseInt(tpu.estampado?.estampadosPorPrenda, 10) || 1) : 0;
+  const bordado = (pedido.servicios || []).find(s => s.tipo === 'BORDADO');
+  const prendasBordado = bordado ? (parseInt(bordado.prendas, 10) || prendas || 0) : 0;
+  const dtf = (pedido.servicios || []).find(s => s.tipo === 'DTF');
+  const bajadasDtf = dtf ? (parseInt(dtf.estampado?.prendas, 10) || prendas || 0) * (parseInt(dtf.estampado?.estampadosPorPrenda, 10) || 1) : 0;
+  const bajadasTpu = tpu ? (parseInt(tpu.estampado?.prendas, 10) || prendas || 0) * (parseInt(tpu.estampado?.estampadosPorPrenda, 10) || 1) : 0;
+
   if (!noDoc) return;
   try {
     const poner = async (areas, cantidad) => {
@@ -202,9 +209,36 @@ async function ponerCantidades(pool, noDoc, pedido, usuarioInterno, cliente) {
                   AND ISNULL(TRY_CAST(Magnitud AS float), 0) = 0`);
       return r.rowsAffected[0];
     };
-    const tocadas = (pedido.corte || pedido.costura ? await poner("'TWC', 'TWT'", prendas) : 0) + await poner("'TPU'", parches);
+    let tocadas = (pedido.corte || pedido.costura ? await poner("'TWC', 'TWT'", prendas) : 0) + await poner("'TPU'", parches);
+    if (prendasBordado > 0) {
+      tocadas += await poner("'EMB'", prendasBordado);
+    }
+    if (bajadasDtf > 0) {
+      const r = await pool.request().input('N', sql.VarChar(50), String(noDoc)).input('Mag', sql.VarChar(50), String(bajadasDtf))
+        .query(`UPDATE dbo.Ordenes SET Magnitud = @Mag
+                WHERE LTRIM(RTRIM(CAST(NoDocERP AS varchar(50)))) = @N AND AreaID = 'EST'
+                  AND (Variante LIKE '%DTF%' OR Nota LIKE '%DTF%')
+                  AND ISNULL(TRY_CAST(Magnitud AS float), 0) = 0`);
+      tocadas += r.rowsAffected[0] || 0;
+    }
+    if (bajadasTpu > 0) {
+      const r = await pool.request().input('N', sql.VarChar(50), String(noDoc)).input('Mag', sql.VarChar(50), String(bajadasTpu))
+        .query(`UPDATE dbo.Ordenes SET Magnitud = @Mag
+                WHERE LTRIM(RTRIM(CAST(NoDocERP AS varchar(50)))) = @N AND AreaID = 'EST'
+                  AND (Variante LIKE '%TPU%' OR Nota LIKE '%TPU%')
+                  AND ISNULL(TRY_CAST(Magnitud AS float), 0) = 0`);
+      tocadas += r.rowsAffected[0] || 0;
+    }
+    if (prendas > 0) {
+      const r = await pool.request().input('N', sql.VarChar(50), String(noDoc)).input('Mag', sql.VarChar(50), String(prendas))
+        .query(`UPDATE dbo.Ordenes SET Magnitud = @Mag
+                WHERE LTRIM(RTRIM(CAST(NoDocERP AS varchar(50)))) = @N AND AreaID = 'EST'
+                  AND ISNULL(TRY_CAST(Magnitud AS float), 0) = 0`);
+      tocadas += r.rowsAffected[0] || 0;
+    }
+
     if (!tocadas) return;
-    logger.info(`[PEDIDOS-SISTEMA] pedido ${noDoc}: Corte / Costura con ${prendas} prenda(s)${parches ? `, TPU con ${parches} parche(s)` : ''}.`);
+    logger.info(`[PEDIDOS-SISTEMA] pedido ${noDoc}: Cantidades fijadas (Corte/Costura: ${prendas}, Bordado: ${prendasBordado}, TPU: ${parches}, DTF: ${bajadasDtf}).`);
     setImmediate(async () => {
       try {
         const ERPSyncService = require('../erpSyncService');
@@ -212,9 +246,44 @@ async function ponerCantidades(pool, noDoc, pedido, usuarioInterno, cliente) {
       } catch (e) { logger.warn(`[PEDIDOS-SISTEMA] pedido ${noDoc}: no se pudo recotizar con la cantidad de prendas: ${e.message}`); }
     });
   } catch (e) {
-    logger.warn(`[PEDIDOS-SISTEMA] pedido ${noDoc}: no se pudieron poner las cantidades de Corte / Costura / TPU: ${e.message}`);
+    logger.warn(`[PEDIDOS-SISTEMA] pedido ${noDoc}: no se pudieron poner las cantidades: ${e.message}`);
   }
 }
+
+// Auto-reparar órdenes de Solicitudes previas que hayan quedado con Magnitud 0
+setImmediate(async () => {
+  try {
+    const { getPool } = require('../../config/db');
+    const pool = await getPool();
+    await pool.request().query(`
+      UPDATE o SET Magnitud = CAST(ISNULL(pa.CantidadTotal, p.Cantidad) AS VARCHAR)
+      FROM dbo.Ordenes o
+      JOIN dbo.SolicitudesVendedorProductos p ON CAST(p.PedidoNoDocERP AS varchar(50)) = LTRIM(RTRIM(CAST(o.NoDocERP AS varchar(50))))
+      LEFT JOIN dbo.SolicitudesVendedorPartes pa ON pa.ProductoSolID = p.ProductoSolID AND pa.Tipo = 'BORDADO' AND pa.Activo = 1
+      WHERE o.AreaID = 'EMB' AND ISNULL(TRY_CAST(o.Magnitud AS float), 0) = 0 AND p.Cantidad > 0;
+
+      UPDATE o SET Magnitud = CAST(ISNULL(pa.CantidadTotal, p.Cantidad) * ISNULL(pa.PorPrenda, 1) AS VARCHAR)
+      FROM dbo.Ordenes o
+      JOIN dbo.SolicitudesVendedorProductos p ON CAST(p.PedidoNoDocERP AS varchar(50)) = LTRIM(RTRIM(CAST(o.NoDocERP AS varchar(50))))
+      LEFT JOIN dbo.SolicitudesVendedorPartes pa ON pa.ProductoSolID = p.ProductoSolID AND pa.Tipo = 'DTF' AND pa.Activo = 1
+      WHERE o.AreaID = 'EST' AND (o.Variante LIKE '%DTF%' OR o.Nota LIKE '%DTF%' OR o.CodigoOrden LIKE '%(1/%') AND ISNULL(TRY_CAST(o.Magnitud AS float), 0) = 0;
+
+      UPDATE o SET Magnitud = CAST(ISNULL(pa.CantidadTotal, p.Cantidad) * ISNULL(pa.PorPrenda, 1) AS VARCHAR)
+      FROM dbo.Ordenes o
+      JOIN dbo.SolicitudesVendedorProductos p ON CAST(p.PedidoNoDocERP AS varchar(50)) = LTRIM(RTRIM(CAST(o.NoDocERP AS varchar(50))))
+      LEFT JOIN dbo.SolicitudesVendedorPartes pa ON pa.ProductoSolID = p.ProductoSolID AND pa.Tipo = 'TPU' AND pa.Activo = 1
+      WHERE o.AreaID = 'EST' AND (o.Variante LIKE '%TPU%' OR o.Nota LIKE '%TPU%' OR o.CodigoOrden LIKE '%(2/%') AND ISNULL(TRY_CAST(o.Magnitud AS float), 0) = 0;
+
+      UPDATE o SET Magnitud = CAST(p.Cantidad AS VARCHAR)
+      FROM dbo.Ordenes o
+      JOIN dbo.SolicitudesVendedorProductos p ON CAST(p.PedidoNoDocERP AS varchar(50)) = LTRIM(RTRIM(CAST(o.NoDocERP AS varchar(50))))
+      WHERE o.AreaID = 'EST' AND ISNULL(TRY_CAST(o.Magnitud AS float), 0) = 0 AND p.Cantidad > 0;
+    `);
+    logger.info('[REPARAR-MAGNITUD] Órdenes previas de Solicitud verificadas/reparadas en EMB y EST.');
+  } catch (e) {
+    logger.warn('[REPARAR-MAGNITUD] ' + e.message);
+  }
+});
 
 // El arte de la producción principal y el de DTF tienen que llegar con su medida. Si el origen no la
 // mandó, se mide acá. (Bordado y TPU no llevan medida.)
@@ -292,10 +361,12 @@ async function pasarArchivos(pool, integracionId, usuarioInterno, app) {
         if (destino.yaSubido) { m.subido = true; m.error = null; await guardar(pool, integracionId, { ArchivosJson: json(manifiesto) }); continue; }
         if (!destino.ok) throw new Error(destino.motivo);
         if (!bajados[m.url]) {
+          m.paso = 'bajando de Drive'; await guardar(pool, integracionId, { ArchivosJson: json(manifiesto) });
           const ruta = path.join(dir, `origen-${Object.keys(bajados).length}`);
           bajados[m.url] = { ruta, mime: (await bajar(m.url, ruta)).mime };
         }
         // uploadOrderFile borra su temporal al terminar: se le da una copia.
+        m.paso = 'subiendo a producción'; await guardar(pool, integracionId, { ArchivosJson: json(manifiesto) });
         const copia = path.join(dir, `subida-${i}`);
         fs.copyFileSync(bajados[m.url].ruta, copia);
         const out = await invocar(uploadOrderFile, {
@@ -306,9 +377,10 @@ async function pasarArchivos(pool, integracionId, usuarioInterno, app) {
         if (!out.body?.success) throw new Error(out.body?.error || `La subida respondió ${out.status}.`);
         m.subido = true; m.error = null;
       } catch (e) {
-        m.error = e.message;
+        m.error = m.paso ? `${e.message} (al ${m.paso === 'bajando de Drive' ? 'bajarlo de Drive' : 'subirlo a producción'})` : e.message;
         logger.warn(`[PEDIDOS-SISTEMA] ${integracionId}: "${m.originalName}" no pasó a producción: ${e.message}`);
       }
+      delete m.paso;
       await guardar(pool, integracionId, { ArchivosJson: json(manifiesto) });
     }
   } finally {

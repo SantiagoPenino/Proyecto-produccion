@@ -757,6 +757,22 @@ async function marcarEntregado(transactionOrReq, OReIdOrdenRetiro, fecha, usuari
  * @param {number} params.nuevoEstado — estado nuevo del retiro (3=Abonado, 8=Empaquetado y abonado)
  * @returns {{ pagoId: number }} — ID del pago creado
  */
+/**
+ * Corre `fn` recién cuando la transacción de mssql se confirma (evento 'commit'); si se
+ * deshace (rollback propio o del servidor por timeout/deadlock, evento 'rollback') no corre
+ * nunca. Si `transaction` no es una transacción (un pool), corre enseguida.
+ */
+function alConfirmar(transaction, fn) {
+    if (!transaction || typeof transaction.commit !== 'function' || typeof transaction.once !== 'function') {
+        fn();
+        return;
+    }
+    const onCommit = () => { transaction.removeListener('rollback', onRollback); fn(); };
+    const onRollback = () => { transaction.removeListener('commit', onCommit); };
+    transaction.once('commit', onCommit);
+    transaction.once('rollback', onRollback);
+}
+
 async function registrarPago(transaction, { ordenRetiroId, metodoPagoId, monedaId, monto, orderNumbers, usuarioId, nuevoEstado }) {
     // 1. INSERT Pagos
     const createReq = typeof transaction.request === 'function'
@@ -837,8 +853,15 @@ async function registrarPago(transaction, { ordenRetiroId, metodoPagoId, monedaI
             FROM @cambios WHERE EstadoViejo <> EstadoNuevo;
         `);
 
-        // Sincronizar la vista de cobranza (Caja/portal/tótem la leen por EstadoCobro)
-        await marcarCobranzaPagada(transaction, orderNumbers);
+        // Sincronizar la vista de cobranza de forma desacoplada (no retiene locks), pero recién
+        // cuando el pago queda confirmado: si la transacción se deshace, la cobranza no se toca
+        // (antes se disparaba con el pago todavía abierto y quedaba "Pagado" aunque el pago se
+        // revirtiera; 08/10/2026). Es el mismo criterio que caja, que la sincroniza post-commit.
+        alConfirmar(transaction, () => {
+            marcarCobranzaPagada(null, orderNumbers).catch(e =>
+                logger.warn(`[RETIRO] Sincronización de cobranza falló: ${e.message}`)
+            );
+        });
     }
 
     // 5. AUTO-CIERRE: si todas las órdenes hijas están pagas → estado 4 (Abonado)

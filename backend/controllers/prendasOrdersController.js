@@ -952,14 +952,23 @@ exports.createWebOrder = async (req, res) => {
                     // unidad del WMS externo en vez de la cantidad real comprada).
                     // [UNA ORDEN POR ARCHIVO] Bordado partido por archivo: cada orden lleva SUS prendas (editable
                     // por archivo en la página). Con Magnitud 0 tomaría las de la PRO madre (todas).
-                    magnitudInicial: (srv.porArchivo && areaID === 'EMB' && parseInt(srv.metadata?.prendas) > 0)
-                        ? parseInt(srv.metadata.prendas)
-                        : ((serviceId === 'tpu' && srv.esPrincipal) || srv.esProductoComprado || srv.esProductoFabricado)
-                        ? (srv.items || []).reduce((s, it) => s + (parseInt(it.cantidad) || 0), 0)
-                        // [CORTE/COSTURA] Hermanas de un producto fabricado: nacían con Magnitud 0 y el listado
-                        // mostraba "0 prend". Llevan las prendas del pedido (las de la orden madre PRO), igual
-                        // que hace el procesador de solicitudes (ponerCantidades).
-                        : (['TWC', 'TWT'].includes(areaID) ? prendasPedido : 0),
+                    magnitudInicial: (() => {
+                        if (areaID === 'EMB') {
+                            const p = parseInt(srv.metadata?.prendas, 10);
+                            return Number.isFinite(p) && p > 0 ? p : (prendasPedido || 0);
+                        }
+                        if (areaID === 'EST') {
+                            const p = parseInt(srv.metadata?.prendas, 10) || prendasPedido || 0;
+                            const estPorPrenda = parseInt(srv.metadata?.estampadosPorPrenda, 10) || 1;
+                            return p * estPorPrenda;
+                        }
+                        if (srv.porArchivo && parseInt(srv.metadata?.prendas) > 0) return parseInt(srv.metadata.prendas);
+                        if ((serviceId === 'tpu' && srv.esPrincipal) || srv.esProductoComprado || srv.esProductoFabricado) {
+                            return (srv.items || []).reduce((s, it) => s + (parseInt(it.cantidad) || 0), 0);
+                        }
+                        if (['TWC', 'TWT'].includes(areaID)) return prendasPedido || 0;
+                        return 0;
+                    })(),
                     notaAdicional: serviceNote, // Nota completa para la Orden
                     techInfo: techInfo, // Info técnica limpia para ServiciosExtraOrden
                     metadata: srv.metadata || {},   // [TPU COMO PORTAL] prendas × bajadas para la cantidad del TPU sin archivo
@@ -2236,6 +2245,24 @@ exports.createWebOrder = async (req, res) => {
                     // [CORTE/COSTURA] sin archivo de impresión: la cantidad es la de prendas del pedido (ver magnitudInicial)
                     await new sql.Request(transaction).input('OID', sql.Int, newOID).input('Mag', sql.VarChar(50), String(parseInt(exec.magnitudInicial)))
                         .query("UPDATE Ordenes SET Magnitud = @Mag WHERE OrdenID = @OID AND ISNULL(TRY_CAST(Magnitud AS FLOAT), 0) = 0");
+                } else if (String(exec.areaID || '').toUpperCase() === 'EMB') {
+                    // [BORDADO] sin archivo de impresión: prendas a bordar
+                    const cantEmb = parseInt(exec.metadata?.prendas, 10)
+                        || parseInt(exec.magnitudInicial, 10)
+                        || prendasPedido || 0;
+                    if (cantEmb > 0) {
+                        await new sql.Request(transaction).input('OID', sql.Int, newOID).input('Mag', sql.VarChar(50), String(Math.round(cantEmb)))
+                            .query("UPDATE Ordenes SET Magnitud = @Mag WHERE OrdenID = @OID");
+                    }
+                } else if (String(exec.areaID || '').toUpperCase() === 'EST') {
+                    // [ESTAMPADO] servicio de planchado/estampa: prendas × bajadas por prenda
+                    const prendasEst = parseInt(exec.metadata?.prendas, 10) || prendasPedido || 0;
+                    const porPrenda = parseInt(exec.metadata?.estampadosPorPrenda, 10) || 1;
+                    const cantEst = (prendasEst * porPrenda) || parseInt(exec.magnitudInicial, 10) || 0;
+                    if (cantEst > 0) {
+                        await new sql.Request(transaction).input('OID', sql.Int, newOID).input('Mag', sql.VarChar(50), String(Math.round(cantEst)))
+                            .query("UPDATE Ordenes SET Magnitud = @Mag WHERE OrdenID = @OID");
+                    }
                 } else if (String(exec.areaID || '').toUpperCase() === 'TPU') {
                     // TPU (boceto): el cliente sube un boceto, no arte, así que no hay ArchivosOrden que
                     // lleven la cantidad. La Magnitud (unidades de TPU a producir) sale de la suma de
