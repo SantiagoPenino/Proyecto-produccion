@@ -40,6 +40,7 @@ router.get('/:id/plazo', ctrl.estimarPlazo);
 router.get('/:id/ficha-pdf', ctrl.fichaPdf);
 // TIZADA PRO por API: diseños + lista de talles del producto, mandar, y actualizar un envío
 router.get('/:id/productos/:productoSolId/tizadapro', ctrl.tizadaProVer);
+router.post('/:id/productos/:productoSolId/tizadapro/editables', ctrl.tizadaProEditables);   // leer los editables de un arte (con el proceso sugerido)
 router.put('/:id/productos/:productoSolId/tizadapro', ctrl.tizadaProGuardar);
 router.post('/:id/productos/:productoSolId/tizadapro/enviar', ctrl.tizadaProEnviar);
 router.post('/:id/tizadapro/envios/:envioId/actualizar', ctrl.tizadaProActualizar);   // ficha del pedido en PDF (la misma que se adjunta al pedido al convertir)   // ¿se llega a la fecha de entrega? (sobre la cola real de cada sector)

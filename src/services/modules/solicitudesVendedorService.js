@@ -45,6 +45,7 @@ export const solicitudesVendedorService = {
     guardarTalles: (id, productoSolId, payload) => dato(api.put(`${BASE}/${id}/productos/${productoSolId}/talles`, payload)),
     /** TIZADA PRO por API: estructura de la planilla del molde, diseños, lista de talles, artes y envíos del producto. */
     tizadaProVer: (id, productoSolId) => dato(api.get(`${BASE}/${id}/productos/${productoSolId}/tizadapro`)),
+    tizadaProEditables: (id, productoSolId, arteArchivoId) => dato(api.post(`${BASE}/${id}/productos/${productoSolId}/tizadapro/editables`, { arteArchivoId })),
     /** payload: { disenos: [{ nombre, variable, variableNombre, tela, telasPorPieza, arteArchivoId }], planilla: [{ diseno, <columna>: valor }] } */
     tizadaProGuardar: (id, productoSolId, payload) => dato(api.put(`${BASE}/${id}/productos/${productoSolId}/tizadapro`, payload)),
     /** Arma el .zip y lo manda a TIZADA PRO. soloRevisar = solo POST /pedidos/validar (no genera nada). */

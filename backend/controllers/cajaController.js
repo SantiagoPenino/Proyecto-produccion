@@ -23,14 +23,16 @@ const io = (req) => req.app.get('socketio');
  * lectura/escritura, no los escritura/escritura como los de Caja (varias operaciones tocando
  * las mismas filas de cuenta corriente en distinto orden).
  */
-const conReintentoDeadlock = async (nombre, fn, maxIntentos = 3) => {
+const conReintentoDeadlock = async (nombre, fn, maxIntentos = 4) => {
   for (let intento = 1; intento <= maxIntentos; intento++) {
     try {
-      return await fn();
+      return await fn(intento);
     } catch (err) {
-      if (err?.number === 1205 && intento < maxIntentos) {
-        logger.warn(`[CAJA] Deadlock en ${nombre} — intento ${intento}/${maxIntentos}, reintentando en ${intento * 300}ms...`);
-        await new Promise(r => setTimeout(r, intento * 300));
+      if (esDeadlock(err) && intento < maxIntentos) {
+        // Backoff exponencial con jitter aleatorio para romper la sincronía de bloqueos concurrentes
+        const espera = (intento * 150) + Math.floor(Math.random() * 250);
+        logger.warn(`[CAJA] ⚠️ Deadlock (1205) en ${nombre} — intento ${intento}/${maxIntentos}, reintentando en ${espera}ms con estado limpio...`);
+        await new Promise(r => setTimeout(r, espera));
         continue;
       }
       throw err;
@@ -112,11 +114,28 @@ const procesarTransaccion = async (req, res) => {
 
     // Multiempresa: empresa elegida por el cajero (null => la BD aplica el DEFAULT)
     const empresaId = req.body?.empresaId || req.user?.empresaId || null;
-    const resultado = await conReintentoDeadlock('procesarTransaccion',
-      () => cajaService.procesarTransaccion({ header, aplicaciones, pagos: pagos || [], usuarioId, empresaId }));
+    const resultado = await conReintentoDeadlock('procesarTransaccion', () => {
+      // Deep-clone para que cada intento empiece con un estado limpio si el anterior hizo rollback
+      const payloadLimpio = {
+        header: JSON.parse(JSON.stringify(header)),
+        aplicaciones: JSON.parse(JSON.stringify(aplicaciones)),
+        pagos: JSON.parse(JSON.stringify(pagos || [])),
+        usuarioId,
+        empresaId
+      };
+      return cajaService.procesarTransaccion(payloadLimpio);
+    });
     const s = io(req); if (s) { s.emit('actualizado',{type:'actualizacion'}); s.emit('retiros:update',{type:'pago'}); }
     return res.status(201).json(resultado);
   } catch (err) {
+    if (esDeadlock(err)) {
+      logger.error(`[CAJA] ❌ procesarTransaccion agotó reintentos por Deadlock (1205): ${err.message}`);
+      return res.status(409).json({
+        success: false,
+        deadlock: true,
+        error: 'La transacción de caja colisionó con otra operación concurrente en la base de datos. Se revirtió de forma segura. Por favor, reintente en unos instantes.'
+      });
+    }
     // Un rechazo de los controles (ej. orden ya facturada: statusCode 409) no es una falla:
     // va como aviso y con su código, no como error 500.
     const status = err.statusCode || 500;
@@ -140,11 +159,21 @@ const procesarVentaDirecta = async (req, res) => {
 
     // Multiempresa: empresa elegida por el cajero (null => la BD aplica el DEFAULT)
     const empresaId = req.body?.empresaId || req.user?.empresaId || null;
-    const resultado = await conReintentoDeadlock('procesarVentaDirecta',
-      () => cajaService.procesarVentaDirecta({ ...data, usuarioId, empresaId }));
+    const resultado = await conReintentoDeadlock('procesarVentaDirecta', () => {
+      const payloadLimpio = JSON.parse(JSON.stringify({ ...data, usuarioId, empresaId }));
+      return cajaService.procesarVentaDirecta(payloadLimpio);
+    });
     const s = io(req); if (s) { s.emit('actualizado',{type:'actualizacion'}); s.emit('retiros:update',{type:'venta'}); }
     return res.status(201).json(resultado);
   } catch (err) {
+    if (esDeadlock(err)) {
+      logger.error(`[CAJA] ❌ procesarVentaDirecta agotó reintentos por Deadlock (1205): ${err.message}`);
+      return res.status(409).json({
+        success: false,
+        deadlock: true,
+        error: 'La venta directa colisionó con otra operación concurrente en la base de datos. Se revirtió de forma segura. Por favor, reintente en unos instantes.'
+      });
+    }
     logger.error('[CAJA] procesarVentaDirecta:', err.message);
     logger.error('[CAJA] procesarVentaDirecta STACK:', err.stack);
     return res.status(500).json({ success:false, error:err.message });
@@ -2528,7 +2557,7 @@ const procesarPagoDeudaInterno = async (req, res) => {
     }
   } catch (err) {
     // Deadlock: se re-lanza para que el wrapper reintente (SQL ya revirtió la transacción entera).
-    if (err?.number === 1205) throw err;
+    if (esDeadlock(err)) throw err;
     logger.error('[PAGO-DEUDA]', err.message);
     return res.status(500).json({ error: err.message });
   }
@@ -2538,8 +2567,19 @@ const procesarPagoDeudaInterno = async (req, res) => {
 // toda la operación. Al reintentar no se puede duplicar el pago: el deadlock revierte todo.
 const procesarPagoDeuda = async (req, res) => {
   try {
-    return await conReintentoDeadlock('procesarPagoDeuda', () => procesarPagoDeudaInterno(req, res));
+    return await conReintentoDeadlock('procesarPagoDeuda', () => {
+      const reqClonado = { ...req, body: JSON.parse(JSON.stringify(req.body)) };
+      return procesarPagoDeudaInterno(reqClonado, res);
+    });
   } catch (err) {
+    if (esDeadlock(err)) {
+      logger.error(`[PAGO-DEUDA] ❌ Agotó reintentos por Deadlock (1205): ${err.message}`);
+      return res.status(409).json({
+        success: false,
+        deadlock: true,
+        error: 'El cobro de deuda colisionó con otra operación concurrente en la base de datos. Se revirtió de forma segura. Por favor, reintente en unos instantes.'
+      });
+    }
     logger.error('[PAGO-DEUDA]', err.message);
     return res.status(500).json({ error: err.message });
   }

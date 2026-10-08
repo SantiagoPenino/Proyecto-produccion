@@ -27,6 +27,19 @@ const ESTADO_ENVIO = {
     CANCELADO: { txt: 'Cancelado', cls: 'bg-slate-100 text-slate-600 border-slate-200' },
 };
 const sinTilde = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+// Achica la imagen de un editable a una miniatura (máx. 100 px) para guardarla con lo leído y verla al volver a entrar.
+const miniatura = (src, max = 100) => new Promise((ok) => {
+    const img = new Image();
+    img.onload = () => {
+        const k = Math.min(1, max / Math.max(img.width, img.height));
+        const c = document.createElement('canvas');
+        c.width = Math.max(1, Math.round(img.width * k)); c.height = Math.max(1, Math.round(img.height * k));
+        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+        ok(c.toDataURL('image/png'));
+    };
+    img.onerror = () => ok(null);
+    img.src = src;
+});
 const filaVacia = (columnas, diseno) => ({ diseno: diseno || '', ...Object.fromEntries(columnas.map(c => [c.id, ''])) });
 
 // Qué le falta a una fila (lo mismo que revisa el servidor)
@@ -78,6 +91,8 @@ export default function TizadaProBloque({ id, p, puede, onCargado, numero = null
     const [abiertos, setAbiertos] = useState(() => new Set());   // envíos con el detalle abierto (arrancan cerrados)
     const [verAnteriores, setVerAnteriores] = useState(false);    // los envíos viejos, ocultos detrás del último
     const alternar = (envioId) => setAbiertos(s => { const n = new Set(s); if (n.has(envioId)) n.delete(envioId); else n.add(envioId); return n; });
+    const [vistas, setVistas] = useState({});        // miniaturas de los editables leídos: { "<diseño>|<objeto>": dataURL } (no se guardan)
+    const [leyendo, setLeyendo] = useState(null);    // índice del diseño cuyo arte se está leyendo
 
     const cargar = useCallback(async () => {
         try {
@@ -124,9 +139,28 @@ export default function TizadaProBloque({ id, p, puede, onCargado, numero = null
             if (k !== i) return d;
             const n = { ...d, ...cambios };
             if ('nombre' in cambios && !d.arteArchivoId) n.arteArchivoId = arteDe(n.nombre);
+            if ('arteArchivoId' in cambios && cambios.arteArchivoId !== d.arteArchivoId) { n.editables = {}; n.editablesDetalle = []; }   // otro arte: hay que volver a leerlo
             return n;
         }));
         setSucio(true);
+    };
+    // Editables del arte (capas "Editable …"): se leen del PDF y se elige el proceso de cada objeto. Queda SOLO de
+    // nuestro lado (DTF → pliego; TPU y Bordado → referencia del servicio); a TIZADA no se le manda nada extra.
+    const serviciosDelProducto = (p.Partes || []).map(x => x.Tipo);
+    const leerEditables = async (i) => {
+        const d = disenos[i];
+        if (!d?.arteArchivoId) return;
+        setLeyendo(i);
+        try {
+            const r = await svc.tizadaProEditables(id, p.ProductoSolID, d.arteArchivoId);
+            setVistas(v => ({ ...v, ...Object.fromEntries(r.objetos.map(o => [`${d.nombre}|${o.objeto}`, o.vista])) }));
+            const minis = await Promise.all(r.objetos.map(o => (o.vista ? miniatura(o.vista) : null)));
+            cambiarDiseno(i, {
+                editablesDetalle: r.objetos.map(({ vista, ...o }, k) => ({ ...o, vista: minis[k] })),
+                editables: Object.fromEntries(r.objetos.map(o => [o.objeto, (d.editables || {})[o.objeto] || o.sugerido])),
+            });
+            toast.success(r.objetos.length ? `${r.objetos.length} objeto(s) editable(s) en "${r.arte}". Revisá el proceso de cada uno y guardá.` : `"${r.arte}" no tiene capas "Editable …" con algo dibujado.`);
+        } catch (e) { toast.error(errorDe(e)); } finally { setLeyendo(null); }
     };
     const cambiarFila = (i, col, v) => { setFilas(fs => fs.map((f, k) => (k === i ? { ...f, [col]: v } : f))); setSucio(true); };
     const agregarFila = () => { setFilas(fs => [...fs, filaVacia(columnas, disenos.length === 1 ? disenos[0].nombre : '')]); setSucio(true); };
@@ -144,6 +178,8 @@ export default function TizadaProBloque({ id, p, puede, onCargado, numero = null
             const v = await svc.tizadaProGuardar(id, p.ProductoSolID, { disenos: disenos.map(d => ({ ...d, variableNombre: nombreModelo(d.variable) })), planilla: filas });
             setInfo(v); setDisenos(v.datos?.disenos || []); setFilas(v.datos?.planilla || []); setSucio(false);
             toast.success(v.errores?.length ? `Guardado. Para mandar a TIZADA falta: ${v.errores.length} cosa(s).` : 'Diseños y lista de talles guardados.');
+            if (v.avisoEditables) toast.error(v.avisoEditables);
+            onCargado?.();   // los editables en DTF / TPU / Bordado quedaron como arte del cliente de cada servicio: refresca los archivos
         } catch (e) { toast.error(errorDe(e)); } finally { setOcupado(''); }
     };
     const enviar = async (soloRevisar) => {
@@ -226,15 +262,62 @@ export default function TizadaProBloque({ id, p, puede, onCargado, numero = null
                         </tr></thead>
                         <tbody>
                             {disenos.map((d, i) => (
-                                <tr key={i} className="border-t border-slate-200 align-top">
+                                <React.Fragment key={i}>
+                                <tr className="border-t border-slate-200 align-top">
                                     <td className="px-2 py-1.5"><input value={d.nombre} disabled={!puede} onChange={e => cambiarDiseno(i, { nombre: e.target.value.toUpperCase() })} className={INPUT} placeholder="JUGADOR" /></td>
                                     <td className="px-2 py-1.5"><Selector value={d.arteArchivoId || ''} disabled={!puede} onChange={e => cambiarDiseno(i, { arteArchivoId: Number(e.target.value) || null })} claseBoton={claseSel(SEL_CAMPO)} anchoLista={280}>
                                         <option value="">— elegir el archivo —</option>{(info.artes || []).map(a => <option key={a.ArchivoID} value={a.ArchivoID}>{a.nombre}</option>)}
                                     </Selector>
                                         {!(info.artes || []).length && <div className="text-[10px] text-amber-700 mt-0.5">Subí el arte (.ai o .pdf armado sobre la base de TIZADA) en "Arte del cliente".</div>}
                                     </td>
-                                    <td className="px-2 py-1.5 text-right">{puede && disenos.length > 1 && <button type="button" title="Quitar este diseño" onClick={() => { setDisenos(ds => ds.filter((_, k) => k !== i)); setSucio(true); }} className="p-1 text-slate-400 hover:text-rose-600"><Trash2 size={14} /></button>}</td>
+                                    <td className="px-2 py-1.5 text-right">{puede && disenos.length > 1 && <button type="button" title="Quitar este diseño" onClick={() => {
+                                        // las filas de este diseño pasan al que queda (si queda uno solo) o quedan sin variante para elegir
+                                        const quitado = d.nombre, quedan = disenos.filter((_, k) => k !== i);
+                                        setDisenos(quedan);
+                                        setFilas(fs => fs.map(f => (quedan.length === 1 || sinTilde(f.diseno) === sinTilde(quitado) ? { ...f, diseno: quedan.length === 1 ? quedan[0].nombre : '' } : f)));
+                                        setSucio(true);
+                                    }} className="p-1 text-slate-400 hover:text-rose-600"><Trash2 size={14} /></button>}</td>
                                 </tr>
+                                {/* Editables del arte de este diseño: qué proceso lleva cada objeto (solo de nuestro lado) */}
+                                <tr><td colSpan={3} className="px-2 pb-2">
+                                    <div className="border border-dashed border-slate-200 rounded-lg p-2 text-[11px] space-y-1.5">
+                                        <div className="flex flex-wrap items-center justify-between gap-2">
+                                            <span className="font-bold text-slate-700">Editables del arte <span className="font-normal text-slate-500">· capas "Editable …" · DTF → se arma el pliego · TPU y Bordado → quedan como referencia del servicio · Sublimado → va en la tizada. A TIZADA no se le manda nada extra.</span></span>
+                                            {puede && <button type="button" disabled={!d.arteArchivoId || leyendo !== null} onClick={() => leerEditables(i)} className={BTN_SECUNDARIO}>
+                                                {leyendo === i ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />} {(d.editablesDetalle || []).length ? 'Volver a leer' : 'Leer los editables del arte'}
+                                            </button>}
+                                        </div>
+                                        {(d.editablesDetalle || []).length ? (
+                                            <table className="w-full">
+                                                <thead><tr className="text-[9px] font-black uppercase tracking-wide text-slate-500 text-left"><th className="py-1 w-16">Vista</th><th className="py-1">Objeto</th><th className="py-1">Pieza</th><th className="py-1">Medida</th><th className="py-1">Dónde</th><th className="py-1 w-40">Proceso</th></tr></thead>
+                                                <tbody>{d.editablesDetalle.map(o => {
+                                                    const proc = (d.editables || {})[o.objeto] || o.sugerido || 'sublimado';
+                                                    const sinServicio = proc !== 'sublimado' && !serviciosDelProducto.includes(proc.toUpperCase());
+                                                    const vista = vistas[`${d.nombre}|${o.objeto}`] || o.vista;
+                                                    return (
+                                                        <tr key={o.objeto} className="border-t border-slate-100 align-middle">
+                                                            <td className="py-1">{vista ? <img src={vista} alt="" className="h-10 max-w-[56px] object-contain" style={{ background: 'repeating-conic-gradient(#e5e7eb 0 25%, #fff 0 50%) 0/10px 10px' }} /> : <span className="text-slate-400">—</span>}</td>
+                                                            <td className="py-1 font-bold text-slate-800">{o.objeto}</td>
+                                                            <td className="py-1 text-slate-600">{o.pieza || '—'}</td>
+                                                            <td className="py-1 text-slate-600">{o.anchoCm && o.altoCm ? `${o.anchoCm} × ${o.altoCm} cm` : '—'}</td>
+                                                            <td className="py-1 text-slate-500">{o.posicion || '—'}</td>
+                                                            <td className="py-1">
+                                                                <Selector value={proc} disabled={!puede} onChange={e => cambiarDiseno(i, { editables: { ...(d.editables || {}), [o.objeto]: e.target.value } })} claseBoton={claseSel(SEL_CAMPO)} anchoLista={170}>
+                                                                    <option value="sublimado">Sublimado (en la tizada)</option><option value="dtf">DTF (pliego)</option><option value="tpu">TPU (referencia)</option><option value="bordado">Bordado (referencia)</option>
+                                                                </Selector>
+                                                                {o.sugerido && proc !== o.sugerido && <div className="text-[10px] text-slate-500">sugerido: {o.sugerido}</div>}
+                                                                {sinServicio && <div className="text-[10px] text-amber-700 font-bold">El producto no tiene {proc.toUpperCase()}: no se carga en ningún lado.</div>}
+                                                            </td>
+                                                        </tr>
+                                                    );
+                                                })}</tbody>
+                                            </table>
+                                        ) : (
+                                            <div className="text-slate-500">{d.arteArchivoId ? 'Todavía no se leyeron. Si no los leés, al mandar a TIZADA se usa la sugerencia automática (por el nombre de la capa y los extras de la solicitud).' : 'Elegí el arte de este diseño primero.'}</div>
+                                        )}
+                                    </div>
+                                </td></tr>
+                                </React.Fragment>
                             ))}
                             {!disenos.length && <tr><td colSpan={3} className="px-3 py-3 text-slate-500">Sin diseños. {puede && <button type="button" onClick={agregarDiseno} className="font-bold text-brand-cyan hover:underline">Agregar el primero</button>}</td></tr>}
                         </tbody>

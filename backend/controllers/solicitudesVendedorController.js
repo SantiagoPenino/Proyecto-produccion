@@ -64,6 +64,7 @@ exports.fichaPdf = async (req, res) => {
 };
 // TIZADA PRO por API (diseños + lista de talles → tizada automática)
 exports.tizadaProVer        = accion('tizadaProVer',        (pool, req) => svc.tizadaProVer(pool, req.user, id(req.params.id), id(req.params.productoSolId)));
+exports.tizadaProEditables = accion('tizadaProEditables', (pool, req) => svc.tizadaProEditables(pool, req.user, id(req.params.id), id(req.params.productoSolId), req.body || {}));
 exports.tizadaProGuardar    = accion('tizadaProGuardar',    (pool, req) => svc.tizadaProGuardar(pool, req.user, id(req.params.id), id(req.params.productoSolId), req.body || {}));
 exports.tizadaProEnviar     = accion('tizadaProEnviar',     (pool, req) => svc.tizadaProEnviar(pool, req.user, id(req.params.id), id(req.params.productoSolId), req.body || {}));
 exports.tizadaProActualizar = accion('tizadaProActualizar', (pool, req) => svc.tizadaProActualizar(pool, req.user, id(req.params.id), id(req.params.envioId), req.body || {}));

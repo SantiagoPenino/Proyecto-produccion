@@ -837,8 +837,10 @@ async function registrarPago(transaction, { ordenRetiroId, metodoPagoId, monedaI
             FROM @cambios WHERE EstadoViejo <> EstadoNuevo;
         `);
 
-        // Sincronizar la vista de cobranza (Caja/portal/tótem la leen por EstadoCobro)
-        await marcarCobranzaPagada(transaction, orderNumbers);
+        // Sincronizar la vista de cobranza de forma desacoplada (no retiene locks)
+        marcarCobranzaPagada(null, orderNumbers).catch(e =>
+            logger.warn(`[RETIRO] Sincronización de cobranza falló: ${e.message}`)
+        );
     }
 
     // 5. AUTO-CIERRE: si todas las órdenes hijas están pagas → estado 4 (Abonado)
