@@ -6,6 +6,7 @@ const { marcarEntregado, registrarPago } = require('../services/retiroService');
 // Importar funciones del controller de órdenes de retiro local
 const ordenesRetiroController = require('./ordenesRetiroController');
 const logger = require('../utils/logger');
+const { rollbackSeguro } = require('../utils/rollbackSeguro');
 
 /**
  * Endpoint nativo para recibir y registrar directamente un retiro web.
@@ -628,7 +629,10 @@ exports.asignarRetiroAEstante = async (req, res) => {
             res.json({ success: true, message: 'Ubicación asignada y notificada a central', pagadoReal });
 
         } catch (err) {
-            await transaction.rollback();
+            // rollbackSeguro y no rollback(): si un timeout ya abortó la transacción, el
+            // rollback tiraba "Transaction has been aborted" y ese error tapaba al real
+            // en el log (incidente 07/10/2026: se veía "aborted" en vez del timeout).
+            await rollbackSeguro(transaction, `asignar estante ${ordenRetiro}`);
             throw err;
         }
 

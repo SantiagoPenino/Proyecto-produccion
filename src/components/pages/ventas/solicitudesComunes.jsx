@@ -28,6 +28,9 @@ export const MONEDA = { 1: '$', 2: 'US$' };
 export const errorDe = (e) => e?.response?.data?.error || e?.message || 'Error inesperado';
 export const plata = (monto, mon) => (monto == null ? '—' : `${MONEDA[mon] || ''} ${Number(monto).toLocaleString('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`.trim());
 
+// SIN USO (06/10): ninguna pantalla importa Pill ni PillModificada desde que Solicitudes pasó a claro con pastillas
+// propias (Pastilla en el detalle, PastillaEstado en la lista y la Bandeja). Se dejaron por si Yoania las va a usar:
+// confirmar con ella si se usan o se borran.
 export const Pill = ({ e, mapa }) => {
     const s = mapa[e] || { txt: e, cls: 'bg-slate-100 text-slate-600 border-slate-200' };
     return <span className={`inline-block px-2 py-0.5 rounded-full border text-[10px] font-black uppercase tracking-wide whitespace-nowrap ${s.cls}`}>{s.txt}</span>;
@@ -47,9 +50,8 @@ export const Campo = ({ label, children, ayuda }) => (
     </label>
 );
 
-// 06/10: brand-cyan (antes índigo). BTN_PRIMARIO lo usan el detalle, Diseño y TIZADA PRO, que pasaron al tema claro;
-// el formulario de la solicitud (que sigue oscuro) no lo usa. INPUT sí llega al formulario por BuscadorCliente, pero
-// ahí fichaPedido.css le pone su propio foco (.fp input:focus), así que no cambia.
+// 06/10: brand-cyan (antes índigo). BTN_PRIMARIO lo usan el detalle, Diseño y TIZADA PRO, que pasaron al tema claro.
+// El formulario de la solicitud (también claro desde el 06/10) usa INPUT a través de BuscadorCliente.
 export const INPUT = 'block w-full border border-slate-200 rounded-lg px-2.5 py-1.5 text-sm text-slate-800 outline-none focus:border-brand-cyan bg-white disabled:bg-slate-50 disabled:text-slate-400';
 export const BTN_PRIMARIO = 'px-3 py-1.5 rounded-lg bg-brand-cyan hover:bg-brand-cyan/90 text-white text-xs font-bold inline-flex items-center gap-1 disabled:opacity-50';
 export const BTN_SECUNDARIO = 'px-3 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-600 text-xs font-bold inline-flex items-center gap-1 disabled:opacity-50';
@@ -76,9 +78,9 @@ export function BuscadorCliente({ cliente, onPick, disabled }) {
 
     if (cliente) {
         return (
-            <div className="flex items-center justify-between gap-2 border border-indigo-200 bg-indigo-50/60 rounded-lg px-3 py-2">
+            <div className="flex items-center justify-between gap-2 border border-brand-cyan/30 bg-cyan-50/60 rounded-lg px-3 py-2">
                 <div className="text-sm"><b className="text-slate-800">{cliente.Nombre}</b>{cliente.Codigo ? <span className="text-slate-500 font-mono text-xs"> · {cliente.Codigo}</span> : null}</div>
-                {!disabled && <button type="button" onClick={() => onPick(null)} className="text-xs font-bold text-indigo-600 hover:underline">Cambiar cliente</button>}
+                {!disabled && <button type="button" onClick={() => onPick(null)} className="text-xs font-bold text-brand-cyan hover:underline">Cambiar cliente</button>}
             </div>
         );
     }
@@ -94,7 +96,7 @@ export function BuscadorCliente({ cliente, onPick, disabled }) {
                     {rows.map(c => (
                         <li key={c.CodCliente}>
                             <button type="button" onClick={() => { onPick({ CodCliente: c.CodCliente, Nombre: String(c.Nombre || '').trim(), Codigo: String(c.IDCliente || '').trim() }); setQ(''); setRows([]); }}
-                                className="w-full text-left px-3 py-2 hover:bg-indigo-50">
+                                className="w-full text-left px-3 py-2 hover:bg-cyan-50">
                                 <b className="text-slate-800">{String(c.Nombre || '').trim()}</b>
                                 <span className="text-xs text-slate-500"> · {String(c.IDCliente || '').trim()}{c.NombreFantasia ? ` · ${String(c.NombreFantasia).trim()}` : ''}</span>
                             </button>
@@ -107,6 +109,9 @@ export function BuscadorCliente({ cliente, onPick, disabled }) {
     );
 }
 
+// SIN USO (06/10): no está en ninguna pantalla. El formulario de la solicitud conserva el presupuesto que ya tenía al
+// editar (PreId), pero no tiene dónde elegirlo: este buscador sería esa pieza. Se dejó por si Yoania lo va a usar:
+// confirmar con ella si se usa o se borra.
 /**
  * Presupuesto del que salió la solicitud (opcional). Usa el listado de la pantalla Ventas → Presupuestos:
  * cada vendedor encuentra los suyos; un administrador, todos.
@@ -210,6 +215,9 @@ export function MotivoModal({ titulo, descripcion, etiquetaBoton, busy, onConfir
 }
 
 // ── Checklist de ingreso a producción (misma lectura que la maqueta: rojo frena, verde listo, ámbar después) ──
+// SIN USO (06/10): Checklist no se dibuja en ninguna pantalla (el detalle lo importa, pero en su lugar muestra
+// EstadoProduccionPanel) y Sello solo lo usa Checklist. Se dejaron por si Yoania los va a usar: confirmar con ella
+// si se usan o se borran.
 export const Sello = ({ listo, chico }) => (
     <span className={`inline-block font-black uppercase tracking-wider border-2 rounded-sm ${chico ? 'text-[10px] px-1.5 py-0.5' : 'text-sm px-2.5 py-1 -rotate-3'} ${listo ? 'text-emerald-700 border-emerald-600 bg-emerald-50' : 'text-rose-700 border-rose-600 bg-rose-50'}`}>
         {listo ? 'Listo para ingresar' : 'Falta info'}

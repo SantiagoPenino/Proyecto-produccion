@@ -33,9 +33,8 @@ const sinAcentos = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '
 const capitalizar = (v) => String(v || '').trim().toLowerCase().replace(/\S+/g, w => w.charAt(0).toUpperCase() + w.slice(1));
 
 // ── Fichas y tabla (06/10) ──
-// El estado escrito normal, sin mayúsculas, con su color, como en la Bandeja de Diseño. Las pastillas de
-// solicitudesComunes (Pill, PillModificada y el Sello torcido de la maqueta) van en mayúsculas y las usan las pantallas
-// oscuras de Solicitudes, así que acá van propias.
+// El estado escrito normal, sin mayúsculas, con su color, como en la Bandeja de Diseño. Antes eran las pastillas en
+// mayúsculas de solicitudesComunes (Pill y PillModificada, que quedaron sin uso) y el sello torcido de la maqueta.
 const ROTULO = 'text-[10px] font-black uppercase tracking-wider text-slate-400';
 const TH = `px-3 py-2 first:pl-4 last:pr-4 text-left ${ROTULO}`;
 const TD = 'px-3 py-3 first:pl-4 last:pr-4 align-top';
@@ -99,7 +98,7 @@ export default function SolicitudesVendedorPage() {
     const visibles = rows.filter(s => sello === 'LISTOS' ? s.Listo === true : sello === 'FALTA' ? s.Listo === false : true);
 
     // Tema claro, como el resto del sistema y la Bandeja de Diseño (06/10). Antes iba dentro de .fp-oscuro, el tema
-    // oscuro de las pantallas de Solicitudes (fichaPedido.css), que pasa las clases claras de Tailwind a azul y amarillo.
+    // oscuro de las pantallas de Solicitudes (fichaPedido.css, borrado el 06/10), que pasaba las clases claras a azul y amarillo.
     return (
         <div className="p-3 md:p-6 space-y-4">
             {/* Encabezado como el de Configurar Productos: ícono de Lucide en brand-cyan y sin fondo */}

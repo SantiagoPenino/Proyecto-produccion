@@ -4,7 +4,7 @@ const fs = require('fs');
 
 // PDF del molde de TizadaPro, subido una vez por molde para dibujar las siluetas de sus piezas.
 // Se guarda por la clave del molde (legacy_id) para poder reprocesarlo.
-const uploadFolder = path.join(__dirname, '../uploads/moldes-tizadapro');
+const uploadFolder = require('../utils/rutasUploads').rutaUploads('moldes-tizadapro'); // UPLOADS_PATH
 if (!fs.existsSync(uploadFolder)) fs.mkdirSync(uploadFolder, { recursive: true });
 
 const storage = multer.diskStorage({

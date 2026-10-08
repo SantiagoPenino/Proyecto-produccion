@@ -4,6 +4,7 @@ const express = require('express');
 const router = express.Router();
 const { verifyToken } = require('../middleware/authMiddleware');
 const ctrl = require('../controllers/wmsInternoController');
+const { webpEnSubida } = require('../utils/imagenWebp');
 
 router.get('/depositos', verifyToken, ctrl.getDepositos);
 router.get('/panel', verifyToken, ctrl.getPanel);
@@ -76,7 +77,8 @@ router.get('/compras/:id/archivos', verifyToken, ctrl.getCompraArchivos);
 router.post('/compras/:id/archivos', verifyToken, (req, res) => {
     ctrl.uploadCompraArchivo(req, res, (err) => {
         if (err) return res.status(400).json({ error: err.message });
-        ctrl.subirCompraArchivo(req, res);
+        // Fotos → WebP 80 ≤ 1080 px (07/10/2026); PDF, Office, XML y ZIP quedan igual.
+        webpEnSubida(req, res, () => ctrl.subirCompraArchivo(req, res));
     });
 });
 router.delete('/compras/archivos/:carId', verifyToken, ctrl.borrarCompraArchivo);

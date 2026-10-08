@@ -8,6 +8,7 @@ const router = express.Router();
 const ctrl = require('../controllers/consultasClienteController');
 const { verifyToken } = require('../middleware/authMiddleware');
 const { uploadConsultas } = require('../middleware/multerConsultasConfig');
+const { webpEnSubida } = require('../utils/imagenWebp'); // fotos → WebP 80 ≤ 1080 px
 
 router.use(verifyToken);
 
@@ -19,7 +20,7 @@ router.get('/orden/:ordenId/elegibilidad', ctrl.getElegibilidad);
 router.get('/foto/:consultaId/:fotoId', ctrl.getFoto);
 
 // multipart: campos + fotos[] (hasta 5, solo imágenes, 5 MB c/u)
-router.post('/', uploadConsultas.array('fotos', 5), ctrl.crear);
+router.post('/', uploadConsultas.array('fotos', 5), webpEnSubida, ctrl.crear);
 router.post('/:id/retirar', ctrl.retirar);
 
 module.exports = router;

@@ -2694,6 +2694,10 @@ exports.createWebOrder = async (req, res) => {
 };
 
 // --- SUBIDA DE ARCHIVOS POR STREAMING (UNO A UNO) ---
+// SIN USO (07/10/2026): ninguna ruta llama a esta función (prendasOrdersRoutes.js no tiene
+// multer ni la referencia). El portal sube por /web-orders/upload-stream y los pedidos externos
+// (services/pedidosExternos/procesador.js:281) usan webOrdersController.uploadOrderFile.
+// Se deja para consultar antes de decidir si se borra.
 exports.uploadOrderFile = async (req, res) => {
     const { dbId, type, finalName, area, codigoOrden } = req.body;
     const file = req.file;

@@ -2,7 +2,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 
-const uploadFolder = path.join(__dirname, '../uploads/fichas-diseno');
+const uploadFolder = require('../utils/rutasUploads').rutaUploads('fichas-diseno'); // UPLOADS_PATH
 
 if (!fs.existsSync(uploadFolder)) {
   fs.mkdirSync(uploadFolder, { recursive: true });

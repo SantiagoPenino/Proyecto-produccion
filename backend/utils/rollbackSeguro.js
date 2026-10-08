@@ -72,4 +72,29 @@ async function rollbackSeguro(transaction, contexto = 'sin contexto') {
     }
 }
 
-module.exports = { rollbackSeguro };
+// Errores que dejan la transacción muerta del lado del servidor: timeout de la
+// request (mssql cancela y SQL Server revierte), deadlock víctima (1205), o la
+// librería avisando que ya no hay transacción (EABORT / ENOTBEGUN).
+const CODIGOS_TX_MUERTA = new Set(['ETIMEOUT', 'EABORT', 'ENOTBEGUN', 'ECANCEL']);
+
+/**
+ * Para los catch "de mejor esfuerzo" DENTRO de una transacción (loguean y siguen).
+ * Si el error mató la transacción, seguir solo produce "Transaction has not begun"
+ * más abajo y un cobro a medias: acá se relanza para que falle entero y con el error
+ * real. Si la transacción sigue viva no hace nada y el catch sigue como siempre.
+ * Nació del incidente del 07/10/2026 (PAGO-DEUDA 12:09:47).
+ *
+ * @param {Error} err
+ * @param {object|null} transaction  Transacción de mssql.
+ */
+function relanzarSiTxMuerta(err, transaction) {
+    const numero = err?.number ?? err?.originalError?.info?.number;
+    const muerta =
+        transaction?._aborted === true ||            // la marca mssql cuando el servidor revierte
+        (transaction && !transaction._acquiredConnection) || // sin conexión = lo que da ENOTBEGUN después
+        CODIGOS_TX_MUERTA.has(err?.code) ||
+        numero === 1205;
+    if (muerta) throw err;
+}
+
+module.exports = { rollbackSeguro, relanzarSiTxMuerta };

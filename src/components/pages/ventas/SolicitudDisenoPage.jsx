@@ -8,7 +8,6 @@ import { fmtFecha, fmtFechaHora } from '../../../utils/fechas';
 import OrderDetailModal from '../../production/components/OrderDetailModal';
 import { BTN_PRIMARIO, BTN_SECUNDARIO, ESTADO_SOLICITUD, VisorPdf, errorDe } from './solicitudesComunes';
 import { DisenoTab, Pastilla, ProductoTab, medirDisenoPronto } from './SolicitudVendedorDetalle';
-import './fichaPedido.css';
 
 /**
  * Spec 41 — Trabajo de Diseño sobre una solicitud (/ventas/solicitudes/:id/diseno).

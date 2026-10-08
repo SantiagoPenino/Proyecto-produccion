@@ -1,27 +1,55 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { fileControlService } from '../../../services/modules/fileControlService';
 import { useAuth } from '../../../context/AuthContext';
 import Toast from '../../ui/Toast';
 
+// ── Borrador (08/10/2026) ────────────────────────────────────────────────────
+// Lo que se va armando (búsqueda, orden, archivos marcados, metros, copias,
+// observaciones) se guarda en el navegador, por usuario. Si la página se recarga
+// (p. ej. el reinicio del servidor en un deploy recarga todas las pantallas abiertas)
+// o se va a otra pantalla y se vuelve, la reposición sigue donde estaba.
+// Se borra al generarla o al cerrar la orden con la X. Vence a las 12 h.
+const VIDA_BORRADOR_MS = 12 * 60 * 60 * 1000;
+const claveBorrador = (uid) => `reposicion-borrador:${uid ?? 'anon'}`;
+const leerBorrador = (uid) => {
+    try {
+        const b = JSON.parse(localStorage.getItem(claveBorrador(uid)) || 'null');
+        if (!b || b.v !== 1 || !(Date.now() - b.ts < VIDA_BORRADOR_MS)) return null;
+        return b;
+    } catch { return null; }
+};
+const guardarBorrador = (uid, datos) => {
+    try { localStorage.setItem(claveBorrador(uid), JSON.stringify({ v: 1, ts: Date.now(), ...datos })); } catch { /* sin storage: sigue sin borrador */ }
+};
+const borrarBorrador = (uid) => {
+    try { localStorage.removeItem(claveBorrador(uid)); } catch { /* idem */ }
+};
+
 const CustomerReplacementPage = () => {
     const { user } = useAuth();
+    const uid = user?.id;
+    // Se lee una sola vez, al montar: el estado arranca desde el borrador (si hay),
+    // así nunca hay un render "vacío" que lo pise antes de restaurarlo.
+    const borradorInicial = useRef(undefined);
+    if (borradorInicial.current === undefined) borradorInicial.current = leerBorrador(uid);
+    const bi = borradorInicial.current;
 
     // Search & Results
-    const [query, setQuery] = useState('');
-    const [orders, setOrders] = useState([]);
+    const [query, setQuery] = useState(() => bi?.query || '');
+    const [orders, setOrders] = useState(() => bi?.orders || []);
     const [loadingSearch, setLoadingSearch] = useState(false);
 
     // Selection
-    const [selectedOrder, setSelectedOrder] = useState(null);
+    const [selectedOrder, setSelectedOrder] = useState(() => bi?.selectedOrder || null);
     const [files, setFiles] = useState([]);
     const [relatedOrders, setRelatedOrders] = useState([]); // Services
-    const [loadingFiles, setLoadingFiles] = useState(false);
+    const [loadingFiles, setLoadingFiles] = useState(() => !!bi?.selectedOrder);
 
     // Replacement Form
-    const [selectedFileIds, setSelectedFileIds] = useState([]);
-    const [selectedRelatedOrderIds, setSelectedRelatedOrderIds] = useState([]);
-    const [replacementDetails, setReplacementDetails] = useState({}); // { fileId: { meters: '', obs: '' } }
-    const [globalObs, setGlobalObs] = useState('');
+    const [selectedFileIds, setSelectedFileIds] = useState(() => bi?.selectedFileIds || []);
+    const [selectedRelatedOrderIds, setSelectedRelatedOrderIds] = useState(() => bi?.selectedRelatedOrderIds || []);
+    const [replacementDetails, setReplacementDetails] = useState(() => bi?.replacementDetails || {}); // { fileId: { meters: '', obs: '' } }
+    const [globalObs, setGlobalObs] = useState(() => bi?.globalObs || '');
     const [submitting, setSubmitting] = useState(false);
 
     // UI
@@ -52,29 +80,71 @@ const CustomerReplacementPage = () => {
     // cerraba la orden abierta y borraba lo cargado.)
 
     // --- Select Order ---
-    const handleSelectOrder = async (order) => {
-        setSelectedOrder(order);
+    // Trae archivos y servicios relacionados de la orden. Devuelve lo cargado, o null si falló.
+    const cargarDetalleOrden = async (order) => {
         setLoadingFiles(true);
-        setSelectedFileIds([]);
-        setSelectedRelatedOrderIds([]);
-        setReplacementDetails({});
         setRelatedOrders([]);
         try {
             const [data, related] = await Promise.all([
                 fileControlService.getArchivosPorOrden(order.OrdenID),
                 fileControlService.getRelatedOrders(order.OrdenID)
             ]);
-            setFiles(data || []);
+            const archivos = data || [];
             // Las órdenes de FALLA (-F) son internas/efímeras: no se reponen, así que no se ofrecen
             // como "orden relacionada" para reponer (evita generar una -R de la falla).
-            setRelatedOrders((related || []).filter(o => !(o.CodigoOrden || '').includes('-F')));
+            const relacionadas = (related || []).filter(o => !(o.CodigoOrden || '').includes('-F'));
+            setFiles(archivos);
+            setRelatedOrders(relacionadas);
+            return { archivos, relacionadas };
         } catch (error) {
             console.error(error);
             setToast({ visible: true, message: 'Error cargando archivos', type: 'error' });
+            return null;
         } finally {
             setLoadingFiles(false);
         }
     };
+
+    const handleSelectOrder = async (order) => {
+        setSelectedOrder(order);
+        setSelectedFileIds([]);
+        setSelectedRelatedOrderIds([]);
+        setReplacementDetails({});
+        await cargarDetalleOrden(order);
+    };
+
+    // Cerrar la orden (X): se descarta lo marcado para ella, y con eso el borrador de la reposición.
+    const cerrarOrden = () => {
+        setSelectedOrder(null);
+        setSelectedFileIds([]);
+        setSelectedRelatedOrderIds([]);
+        setReplacementDetails({});
+        setGlobalObs('');
+    };
+
+    // Al volver con un borrador: recargar la orden del servidor y quedarse solo con lo marcado
+    // que sigue existiendo (un archivo o servicio pudo cambiar mientras tanto).
+    useEffect(() => {
+        if (!bi?.selectedOrder) return;
+        let vivo = true;
+        cargarDetalleOrden(bi.selectedOrder).then((r) => {
+            if (!vivo || !r) return;
+            const idsArchivos = new Set(r.archivos.map(f => f.ArchivoID));
+            const idsRelacionadas = new Set(r.relacionadas.map(o => o.OrdenID));
+            setSelectedFileIds(prev => prev.filter(id => idsArchivos.has(id)));
+            setReplacementDetails(prev => Object.fromEntries(Object.entries(prev).filter(([id]) => idsArchivos.has(Number(id)))));
+            setSelectedRelatedOrderIds(prev => prev.filter(id => idsRelacionadas.has(id)));
+            setToast({ visible: true, message: 'Se recuperó la reposición que estabas armando', type: 'info' });
+        });
+        return () => { vivo = false; };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    // Guardar el borrador con cada cambio. Sin nada cargado, no queda borrador.
+    useEffect(() => {
+        if (!selectedOrder && orders.length === 0 && !query) { borrarBorrador(uid); return; }
+        guardarBorrador(uid, { query, orders, selectedOrder, selectedFileIds, selectedRelatedOrderIds, replacementDetails, globalObs });
+    }, [uid, query, orders, selectedOrder, selectedFileIds, selectedRelatedOrderIds, replacementDetails, globalObs]);
 
     // --- Handle Form Inputs ---
     const toggleRelatedOrderSelection = (orderId) => {
@@ -195,8 +265,9 @@ const CustomerReplacementPage = () => {
                 setSelectedOrder(null);
                 setFiles([]);
                 setSelectedFileIds([]);
+                setSelectedRelatedOrderIds([]);
                 setReplacementDetails({});
-                setGlobalObs('');
+                setGlobalObs(''); // con todo vacío, el efecto de guardado borra el borrador
             } else {
                 setToast({ visible: true, message: 'Error al crear reposición', type: 'error' });
             }
@@ -299,7 +370,7 @@ const CustomerReplacementPage = () => {
                                     <p className="text-sm text-slate-500 mt-1 max-w-xl">{selectedOrder.DescripcionTrabajo}</p>
                                 </div>
                                 <button
-                                    onClick={() => setSelectedOrder(null)}
+                                    onClick={cerrarOrden}
                                     className="w-8 h-8 rounded-full bg-white border border-slate-200 text-slate-400 hover:text-red-500 flex items-center justify-center transition-colors"
                                 >
                                     <i className="fa-solid fa-times"></i>

@@ -5,6 +5,7 @@ const configuradorController = require('../controllers/configuradorController');
 const { verifyToken } = require('../middleware/authMiddleware');
 const uploadFichaDiseno = require('../middleware/multerFichaDisenoConfig');
 const uploadMoldeTizada = require('../middleware/multerMoldeTizadaConfig');
+const { webpEnSubida } = require('../utils/imagenWebp'); // imágenes de ficha/costura → WebP 80 ≤ 1080 px
 
 // Configurador de Productos — /api/configurador
 // Camino aislado: no toca web-orders / prendas-orders / stockart.
@@ -51,8 +52,8 @@ router.get('/costuras-iso', configuradorController.getCosturasIso);          // 
 router.post('/costuras-iso', configuradorController.crearCosturaIso);
 router.put('/costuras-iso/:id', configuradorController.updateCosturaIso);
 // [PASO A PASO] imagen de la costura, foto de un paso y catálogo de máquinas de costura
-router.post('/costuras-iso/:id/imagen', uploadFichaDiseno.single('imagen'), configuradorController.subirImagenCosturaIso);
-router.post('/ficha-diseno/imagen-paso', uploadFichaDiseno.single('imagen'), configuradorController.subirImagenPasoCostura);
+router.post('/costuras-iso/:id/imagen', uploadFichaDiseno.single('imagen'), webpEnSubida, configuradorController.subirImagenCosturaIso);
+router.post('/ficha-diseno/imagen-paso', uploadFichaDiseno.single('imagen'), webpEnSubida, configuradorController.subirImagenPasoCostura);
 router.get('/maquinas-costura', configuradorController.getMaquinasCostura);  // ?all=1 incluye inactivas
 router.post('/maquinas-costura', configuradorController.crearMaquinaCostura);
 router.put('/maquinas-costura/:id', configuradorController.updateMaquinaCostura);
@@ -61,6 +62,6 @@ router.put('/maquinas-costura/:id', configuradorController.updateMaquinaCostura)
 router.get('/avios', configuradorController.getAvios);                     // ?all=1 incluye inactivos
 router.post('/avios', configuradorController.crearAvio);
 router.put('/avios/:id', configuradorController.updateAvio);
-router.post('/productos/:proId/ficha-diseno/dibujo', uploadFichaDiseno.single('dibujo'), configuradorController.subirDibujoFicha);
+router.post('/productos/:proId/ficha-diseno/dibujo', uploadFichaDiseno.single('dibujo'), webpEnSubida, configuradorController.subirDibujoFicha);
 
 module.exports = router;

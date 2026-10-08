@@ -80,7 +80,8 @@ const requestLogger = require('./middleware/requestLogger');
 app.use(requestLogger);
 
 // --- STATIC FILES ---
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+// Carpeta en disco configurable por UPLOADS_PATH (utils/rutasUploads.js); la URL sigue siendo /uploads.
+app.use('/uploads', express.static(require('./utils/rutasUploads').UPLOADS_DIR));
 // Thumbnails generados localmente de PDFs/archivos de pedidos.
 // Ruta en disco configurable por THUMBNAILS_PATH (debe coincidir con thumbnailGenerator.js).
 app.use('/thumbnails', express.static(process.env.THUMBNAILS_PATH || path.join(__dirname, 'thumbnails')));

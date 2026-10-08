@@ -4,6 +4,7 @@ const sharp = require('sharp');
 const path = require('path');
 const fs = require('fs');
 const logger = require('./logger');
+const { bufferAWebp } = require('./imagenWebp');
 
 const execFileAsync = promisify(execFile);
 
@@ -174,8 +175,9 @@ exports.getThumbnailUrl = (codigoOrden, archivoId) => {
 
 /**
  * Guarda una imagen de falla ANOTADA (data URL base64, con el recuadro dibujado)
- * en {FALLAS_DIR}/{codigoOrden}/{archivoId}_{ts}.jpg.
- * @returns {Promise<string|null>} Ruta pública "/fallas/{codigoOrden}/{archivo}.jpg" o null si falla.
+ * en {FALLAS_DIR}/{codigoOrden}/{archivoId}_{ts}.webp (hasta el 07/10/2026 era .jpg:
+ * las viejas siguen andando porque la URL completa queda en FallasProduccion.ImagenFalla).
+ * @returns {Promise<string|null>} Ruta pública "/fallas/{codigoOrden}/{archivo}.webp" o null si falla.
  */
 exports.saveFallaImage = async (dataUrl, codigoOrden, archivoId) => {
     try {
@@ -185,10 +187,11 @@ exports.saveFallaImage = async (dataUrl, codigoOrden, archivoId) => {
         const buffer = Buffer.from(m[1], 'base64');
         const orderDir = path.join(FALLAS_DIR, String(codigoOrden));
         fs.mkdirSync(orderDir, { recursive: true });
-        const fileName = `${archivoId}_${Date.now()}.jpg`;
+        const fileName = `${archivoId}_${Date.now()}.webp`;
         const outPath = path.join(orderDir, fileName);
-        // Normalizar a JPG (por si viene PNG); conserva el recuadro dibujado.
-        await sharp(buffer).jpeg({ quality: 85 }).toFile(outPath);
+        // WebP 80, lado mayor ≤ 1080 (criterio común de fotos, utils/imagenWebp.js); conserva el recuadro dibujado.
+        const webp = await bufferAWebp(buffer, 'image/png');
+        await fs.promises.writeFile(outPath, webp);
         logger.info(`🖼️  [FallaImg] Guardada: ${outPath}`);
         return `/fallas/${codigoOrden}/${fileName}`;
     } catch (err) {

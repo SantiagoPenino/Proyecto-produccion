@@ -32,7 +32,7 @@ const { sql, getPool } = require('../config/db');
 const logger = require('../utils/logger');
 
 const SCRIPT = path.join(__dirname, '..', 'python', 'tpu_matriz.py');
-const DIR_FUENTES = path.join(__dirname, '..', 'uploads', 'tpu-matriz');
+const DIR_FUENTES = require('../utils/rutasUploads').rutaUploads('tpu-matriz'); // UPLOADS_PATH
 const DIR_SALIDA = path.join(os.tmpdir(), 'tpu-matriz-out');
 const TTL_FUENTE_MS = 24 * 60 * 60 * 1000;
 const MAX_PDF_BYTES = 50 * 1024 * 1024;

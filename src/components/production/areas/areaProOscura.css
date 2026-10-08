@@ -1,6 +1,6 @@
 /* ============================================================================
    Área Producción (PRO = producto terminado) en oscuro, para diferenciarla del resto.
-   Mismos colores que la ficha de Solicitudes (fichaPedido.css).
+   Mismos colores que tenía la ficha de Solicitudes en oscuro (fichaPedido.css, que se borró el 06/10).
    Solo aplica dentro de .area-pro-oscura (lo pone AreaView cuando el área es PRO).
    Los modales que se abren encima (.fixed: ficha de la orden, etc.) NO se tocan.
    ============================================================================ */

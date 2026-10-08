@@ -263,12 +263,12 @@ async function procesarPdfMolde(pool, ref, rutaPdf, nombreArchivo) {
     return { molde: molde.nombre, talleGuia: molde.variante_guia, contornos: filas.length, piezas: piezas.size, cajas: cajas.recordset.length, sinContorno };
 }
 
-// Recorre la CARPETA de PDFs de moldes (TIZADAPRO_MOLDES_DIR, o backend/uploads/moldes-tizadapro) y,
+// Recorre la CARPETA de PDFs de moldes (TIZADAPRO_MOLDES_DIR, o <uploads>/moldes-tizadapro) y,
 // para cada PDF, prueba contra cada molde de TizadaPro que todavía no tiene siluetas. El nombre
 // del archivo no importa: lo que decide es que sus contornos coincidan con las cajas del molde.
 async function procesarCarpetaMoldes(pool) {
     const fs = require('fs'); const path = require('path');
-    const dir = process.env.TIZADAPRO_MOLDES_DIR || path.join(__dirname, '../uploads/moldes-tizadapro');
+    const dir = process.env.TIZADAPRO_MOLDES_DIR || require('../utils/rutasUploads').rutaUploads('moldes-tizadapro');
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     const pdfs = fs.readdirSync(dir).filter(f => /\.pdf$/i.test(f));
     const todos = await moldes(pool, { soloActivos: true });

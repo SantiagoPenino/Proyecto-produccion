@@ -5,7 +5,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 
-const uploadFolder = path.join(__dirname, '../uploads/tmp');
+const uploadFolder = require('../utils/rutasUploads').rutaUploads('tmp'); // UPLOADS_PATH
 if (!fs.existsSync(uploadFolder)) fs.mkdirSync(uploadFolder, { recursive: true });
 
 const storage = multer.diskStorage({

@@ -5,6 +5,7 @@ const ctrl = require('../controllers/contabilidadController');
 const logger = require('../utils/logger');
 const { verifyToken, soloInternoConRol } = require('../middleware/authMiddleware');
 const upload = require('../middleware/multerConfig');
+const { webpEnSubida } = require('../utils/imagenWebp'); // fotos del comprobante → WebP 80 ≤ 1080 px (PDF queda igual)
 
 router.use(verifyToken);
 
@@ -177,7 +178,7 @@ router.get('/erp/libro-mayor/:asiId/lineas', erp.getLibroMayorLineas);   // deta
 // Transacciones
 router.post('/caja/transaccion',              caja.procesarTransaccion);
 router.post('/caja/guardar-comprobante',      caja.guardarComprobante);
-router.post('/caja/upload-comprobante-transferencia', upload.single('comprobante'), caja.subirComprobanteTransferencia);
+router.post('/caja/upload-comprobante-transferencia', upload.single('comprobante'), webpEnSubida, caja.subirComprobanteTransferencia);
 router.post('/caja/venta-directa',            caja.procesarVentaDirecta); // NUEVO
 router.post('/caja/pago-deuda',               caja.procesarPagoDeuda);    // Pago de deudas por cuenta corriente
 router.get('/caja/productos-venta',           caja.getProductosVenta); // NUEVO

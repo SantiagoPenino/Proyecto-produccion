@@ -1,13 +1,14 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { toast } from 'sonner';
-import { ArrowLeft, Loader2, Lock, Plus, Save } from 'lucide-react';
+import { ArrowLeft, ArrowLeftRight, ArrowRight, Check, Circle, ClipboardPen, ClipboardPlus, Loader2, Lock, Plus, Save, Shirt, Trash2, Upload, X } from 'lucide-react';
 import { BLOQUE_DEL_REQUISITO, RESPUESTA_MUESTRA, datosProductoVacios, evaluarProducto, fichaVacia } from './checklistSolicitud';
 import api from '../../../services/apiClient';
 import { useAuth } from '../../../context/AuthContext';
 import { solicitudesVendedorService as svc } from '../../../services/modules/solicitudesVendedorService';
-import { BuscadorCliente, ESTADO_PARTE, MONEDA, NOMBRE_PARTE, ROL_ARCHIVO, errorDe } from './solicitudesComunes';
-import './fichaPedido.css';
+import { BTN_SECUNDARIO, BuscadorCliente, ESTADO_PARTE, MONEDA, NOMBRE_PARTE, ROL_ARCHIVO, claseSel, errorDe, useConfirmar } from './solicitudesComunes';
+import Selector from '../../ui/Selector';
+import SelectorFecha from '../../ui/SelectorFecha';
 
 /**
  * Spec 41 — Alta y edición de una Solicitud (RN-SOL.05 a RN-SOL.11), con la forma de la maqueta
@@ -73,33 +74,75 @@ const diasHasta = (s) => {
     return Math.round((Date.UTC(+s.slice(0, 4), +s.slice(5, 7) - 1, +s.slice(8, 10)) - Date.UTC(h.getFullYear(), h.getMonth(), h.getDate())) / 86400000);
 };
 
+// ── Estilo claro, como el detalle y la lista de solicitudes (06/10). Antes era el tema oscuro de la maqueta
+// (.fp de fichaPedido.css, que se borró el 06/10 cuando todo Solicitudes quedó en claro). ──
+const BLOQUE = 'scroll-mt-4 rounded-xl border border-slate-200 bg-white p-4 md:p-5';   // sin clases de display: el bloque cerrado usa hidden
+const TIT_BLOQUE = 'text-lg font-black text-slate-800 [&_small]:ml-2 [&_small]:text-sm [&_small]:font-semibold [&_small]:text-slate-400';
+const AYUDA = 'text-xs font-normal text-slate-500';
+// Campos: 16 px en el celular (con menos, el iPhone hace zoom al tocarlos) y 14 px desde sm
+const CAMPO = 'w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-base font-normal text-slate-800 outline-none transition-colors placeholder:text-slate-400 hover:border-slate-300 focus:border-brand-cyan focus:ring-2 focus:ring-brand-cyan/15 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-400 sm:text-sm';
+// Desplegables y fechas propios (los del navegador no se pueden estilizar y la fecha salía en el formato del sistema,
+// mm/dd/yyyy en un Chrome en inglés), con la altura y el borde de los otros campos
+const SEL = claseSel('w-full rounded-lg border border-slate-200 px-3 py-2 text-base sm:text-sm');
+const FECHA = '!rounded-lg !py-2 text-base sm:text-sm';
+const TEXTO = `${CAMPO} min-h-[84px] resize-y`;
+const TEXTO_CORTO = `${CAMPO} min-h-[60px] resize-y`;
+const NUMERO = `${CAMPO} tabular-nums`;
+// Recuadro dentro de un bloque (fechas, seña, especificaciones, cada extra); ámbar si la fecha ya pasó
+const CAJA = 'rounded-xl border border-slate-200 bg-slate-50 p-4';
+const CAJA_TARDE = 'rounded-xl border border-amber-300 bg-amber-50/60 p-4';
+const CAJA_TIT = 'mb-3 flex flex-wrap items-center justify-between gap-2.5 [&_h3]:text-base [&_h3]:font-black [&_h3]:text-slate-800 [&_small]:text-xs [&_small]:font-medium [&_small]:text-slate-500';
+const DOS = 'grid grid-cols-1 gap-3 sm:grid-cols-2';
+const TRES = 'grid grid-cols-1 gap-3 sm:grid-cols-3';
+const NOTA = 'rounded-r-lg border-l-4 border-brand-cyan bg-slate-50 px-3.5 py-2.5 text-sm text-slate-700';
+const NOTA_AVISO = 'rounded-r-lg border-l-4 border-amber-400 bg-amber-50 px-3.5 py-2.5 text-sm text-amber-900';
+const LINEA_OK = 'm-0 text-sm font-semibold text-emerald-700';
+const LINEA_AVISO = 'm-0 text-sm font-semibold text-amber-700';
+const LINK = 'self-start text-left text-sm font-semibold text-brand-cyan hover:underline';
+// Opciones en botones (cómo se cobra, familia, seña…): el control segmentado de la lista de solicitudes
+const SEG = 'flex w-fit max-w-full flex-wrap gap-0.5 self-start rounded-lg border border-slate-200 bg-white p-0.5';
+const segBtn = (on) => `rounded-md px-3 py-1.5 text-left text-sm font-bold transition-colors disabled:cursor-not-allowed sm:whitespace-nowrap ${on ? 'bg-brand-cyan text-white' : 'text-slate-600 hover:bg-slate-100 disabled:text-slate-400 disabled:hover:bg-transparent'}`;
+// Pestañas de productos y de extras: subrayadas, como las del detalle
+const PESTANAS = 'flex flex-wrap items-end gap-x-1 border-b border-slate-200';
+const pestana = (on) => `-mb-px inline-flex items-center gap-1.5 border-b-2 px-3 py-2 text-left text-sm font-bold transition-colors ${on ? 'border-brand-cyan text-brand-cyan' : 'border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-700'}`;
+const BTN_QUITAR = 'rounded p-1 text-slate-400 transition-colors hover:bg-rose-50 hover:text-rose-600';
+// Botones de abajo: Anterior (neutro), Siguiente (contorno) e Ingresar (el principal; antes amarillo)
+const BTN_ANTERIOR = 'inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-bold text-slate-700 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 sm:py-2';
+const BTN_SIGUIENTE = 'inline-flex items-center gap-1.5 rounded-lg border border-brand-cyan bg-white px-4 py-2.5 text-sm font-bold text-brand-cyan transition-colors hover:bg-cyan-50 disabled:cursor-not-allowed disabled:opacity-50 sm:py-2';
+const BTN_INGRESAR = 'inline-flex items-center justify-center gap-2 rounded-lg bg-brand-cyan px-5 py-2.5 text-sm font-bold text-white transition-colors hover:bg-brand-cyan/90 disabled:cursor-not-allowed disabled:opacity-50 sm:py-2';
+const ARCHIVOS = 'flex flex-wrap gap-1.5';
+const ARCHIVO = 'inline-flex items-center rounded-md border border-slate-200 bg-white px-2 py-0.5 text-xs text-slate-700 [&_small]:ml-1 [&_small]:text-slate-400';
+const capitalizar = (v) => String(v || '').trim().toLowerCase().replace(/\S+/g, w => w.charAt(0).toUpperCase() + w.slice(1));
+
 // Piezas de layout (fuera del componente: si se definieran adentro, React las recrearía en cada tecla y los inputs perderían el foco)
-const Bloque = ({ n, num, id, titulo, sub, why, done, activo, children }) => (
-    <section id={id} hidden={!activo} className={`fp-blk${done ? ' done' : ''}`}>
-        <span className="fp-num" aria-hidden="true">{num || n}</span>
-        <h2>{titulo}{sub ? <small>{sub}</small> : null}</h2>
-        {why && <p className="fp-why">{why}</p>}
+// El número grande de cada bloque se sacó: repetía el del paso.
+const Bloque = ({ id, titulo, sub, why, activo, children }) => (
+    <section id={id} hidden={!activo} className={BLOQUE}>
+        <h2 className={`${TIT_BLOQUE} ${why ? 'mb-1' : 'mb-4'}`}>{titulo}{sub ? <small>{sub}</small> : null}</h2>
+        {why && <p className="mb-4 max-w-[62ch] text-sm text-slate-500">{why}</p>}
         {children}
     </section>
 );
 // <label> para un solo campo; <div> cuando adentro hay botones (buscadores, opciones), así un clic en el texto no dispara un botón.
 const Campo = ({ label, ayuda, children, div }) => {
     const Tag = div ? 'div' : 'label';
-    return <Tag className="fp-f">{label}{children}{ayuda && <span className="fp-hint">{ayuda}</span>}</Tag>;
+    return <Tag className="flex min-w-0 flex-col gap-1 text-sm font-semibold text-slate-600">{label}{children}{ayuda && <span className={AYUDA}>{ayuda}</span>}</Tag>;
 };
 const Tilde = ({ checked, onChange, children, disabled }) => (
-    <label className={`fp-chk${disabled ? ' off' : ''}`}><input type="checkbox" checked={!!checked} disabled={disabled} onChange={e => onChange(e.target.checked)} /><span>{children}</span></label>
+    <label className={`flex items-start gap-2 text-sm font-medium ${disabled ? 'cursor-default text-slate-400' : 'cursor-pointer text-slate-700'}`}><input type="checkbox" className="mt-0.5 h-4 w-4 shrink-0 accent-brand-cyan" checked={!!checked} disabled={disabled} onChange={e => onChange(e.target.checked)} /><span>{children}</span></label>
 );
 const Seg = ({ valor, onChange, opciones: ops, disabled }) => (
-    <div className="fp-seg" role="group">
-        {ops.map(([v, t, off]) => <button type="button" key={v} aria-pressed={valor === v} disabled={disabled || off} onClick={() => onChange(v)}>{t}</button>)}
+    <div className={SEG} role="group">
+        {ops.map(([v, t, off]) => <button type="button" key={v} aria-pressed={valor === v} disabled={disabled || off} onClick={() => onChange(v)} className={segBtn(valor === v)}>{t}</button>)}
     </div>
 );
-const EstadoParte = ({ e }) => <span className={`fp-pill${e && e !== 'INGRESADO' ? ' dis' : ''}`}>{ESTADO_PARTE[e]?.txt || e}</span>;
+const EstadoParte = ({ e }) => <span className={`inline-block whitespace-nowrap rounded-xl px-2 py-0.5 text-xs font-semibold leading-snug ${ESTADO_PARTE[e]?.cls || 'bg-slate-100 text-slate-600'}`}>{ESTADO_PARTE[e]?.txt || e}</span>;
+// SIN USO (06/10): el formulario no muestra archivos (se ven en el detalle de la solicitud). Se dejó por si Yoania la
+// va a usar: confirmar con ella si se usa o se borra.
 const ListaArchivos = ({ archivos, vacio }) => (
     archivos.length
-        ? <div className="fp-files">{archivos.map(a => <span key={a.ArchivoID} className="fp-file">{a.NombreOriginal}<small>{ROL_ARCHIVO[a.Rol] || a.Rol}</small></span>)}</div>
-        : <p className="fp-hint">{vacio}</p>
+        ? <div className={ARCHIVOS}>{archivos.map(a => <span key={a.ArchivoID} className={ARCHIVO}>{a.NombreOriginal}<small>{ROL_ARCHIVO[a.Rol] || a.Rol}</small></span>)}</div>
+        : <p className={AYUDA}>{vacio}</p>
 );
 
 
@@ -125,6 +168,7 @@ export default function SolicitudVendedorForm() {
     const [extraSel, setExtraSel] = useState('');                     // pestaña de extra que se ve (BORDADO | DTF | TPU)
     const [paso, setPaso] = useState(1);                              // pestaña (bloque) que se ve                                // producto que se ve en los bloques 3 a 7
     const [vendedores, setVendedores] = useState([]);
+    const [dialogo, preguntar] = useConfirmar();   // confirmaciones con el estilo del sistema (06/10; antes window.confirm)
     const [catalogo, setCatalogo] = useState([]);
     const [nomen, setNomen] = useState({ embVariantes: [], tpuVariantes: [], dtfMateriales: [], materiales: {} });
 
@@ -243,10 +287,13 @@ export default function SolicitudVendedorForm() {
         setComprobantes(cs => [...cs, ...files.filter(esComprobanteValido)]);
     };
 
-    const alternarServicio = (p, tipo) => {
+    const alternarServicio = async (p, tipo) => {
         if (p.Partes[tipo]) {
             if (p.obligatorios.includes(tipo)) return toast.warning('Este servicio viene incluido en el producto elegido — no se puede quitar.');
-            if (p.Partes[tipo].Estado !== 'INGRESADO' && !window.confirm(`${NOMBRE_PARTE[tipo]} ya está en Diseño (${ESTADO_PARTE[p.Partes[tipo].Estado]?.txt}). Si lo quitás, sale de la bandeja de Diseño. ¿Quitarlo igual?`)) return undefined;
+            if (p.Partes[tipo].Estado !== 'INGRESADO' && !(await preguntar({
+                Icono: Trash2, titulo: `Quitar ${NOMBRE_PARTE[tipo]}`, peligro: true, boton: 'Quitarlo igual',
+                texto: `Ya está en Diseño (${ESTADO_PARTE[p.Partes[tipo].Estado]?.txt}). Si lo quitás, sale de la bandeja de Diseño.`,
+            }))) return undefined;
             return setProductos(ps => ps.map(x => { if (x._k !== p._k) return x; const partes = { ...x.Partes }; delete partes[tipo]; return { ...x, Partes: partes }; }));
         }
         const nueva = parteVacia();
@@ -257,11 +304,14 @@ export default function SolicitudVendedorForm() {
     };
 
     // La modalidad se elige una vez y pasa a todos los productos de la solicitud.
-    const cambiarModalidad = (tipo) => {
+    const cambiarModalidad = async (tipo) => {
         if (tipo === modalidadDe(productos).modalidad) return;
         if (productos.some(x => x.convertido)) { toast.warning('Esta solicitud ya tiene productos convertidos en pedido: la modalidad no se puede cambiar.'); return; }
         const conDatos = productos.some(x => x.TipoFabricacion && (x.ProIdProducto || String(x.Datos.tipoTrabajo || '').trim()));
-        if (conDatos && !window.confirm(`Pasar toda la solicitud a "${MODALIDAD[tipo]}". Se borra el producto o el tipo de trabajo que ya elegiste en cada producto. ¿Seguir?`)) return;
+        if (conDatos && !(await preguntar({
+            Icono: ArrowLeftRight, titulo: `Pasar a "${MODALIDAD[tipo]}"`, peligro: true, boton: 'Cambiar la modalidad',
+            texto: 'Toda la solicitud pasa a esta modalidad. Se borra el producto o el tipo de trabajo que ya elegiste en cada producto.',
+        }))) return;
         setProductos(ps => ps.map(x => ({ ...x, TipoFabricacion: tipo, ProIdProducto: '', ProductoNombre: '', permitidos: null, obligatorios: [], _familia: '', _otra: false, Datos: { ...x.Datos, tipoTrabajo: '', ...(tipo === 'PRODUCTO_TERMINADO' ? { productoNuevo: false } : {}), referencia: x._refAuto ? '' : x.Datos.referencia } })));
     };
     const elegirProducto = (p, proId) => {
@@ -274,8 +324,11 @@ export default function SolicitudVendedorForm() {
         cargarServiciosProducto(p._k, proId, true);
     };
     const agregarProducto = () => { setProductos(ps => [...ps, productoVacio(modalidadDe(ps).modalidad)]); setSel(productos.length); };
-    const quitarProducto = (p, i) => {
-        if (!window.confirm(`¿Quitar "${nombreProd(p, i)}" de la solicitud? Sus servicios salen de Diseño.`)) return;
+    const quitarProducto = async (p, i) => {
+        if (!(await preguntar({
+            Icono: Trash2, titulo: 'Quitar el producto', peligro: true, boton: 'Quitar',
+            texto: `"${nombreProd(p, i)}" sale de la solicitud. Sus servicios salen de Diseño.`,
+        }))) return;
         setProductos(ps => ps.filter(x => x._k !== p._k));
         setSel(s => (i < s ? s - 1 : i === s ? 0 : s));
     };
@@ -364,7 +417,6 @@ export default function SolicitudVendedorForm() {
     // especificaciones técnicas y la aprobación de la muestra se completan al EDITAR la solicitud.
     const SOLO_AL_EDITAR = [6];
     const bloquesVis = esEdicion ? BLOQUES : BLOQUES.filter(b => !SOLO_AL_EDITAR.includes(b.n));
-    const numDe = (n) => bloquesVis.findIndex(b => b.n === n) + 1;
 
     // ── Estado del pedido, en vivo (mismas reglas que el sello guardado) ──
     const cabChk = { NombreTrabajo: cab.NombreTrabajo, VendedorID: cab.VendedorID, FechaEntrega: cab.FechaEntrega, Ficha: cab.Ficha };
@@ -409,10 +461,8 @@ export default function SolicitudVendedorForm() {
     }));
     const luego = [...new Set(checks.flatMap(c => (c ? c.luego : [])))];
     const listos = bloquesVis.filter(b => faltan[b.n].length === 0).length;
-    const subDe = (b) => {
-        if (faltan[b.n].length === 0) return b.n === 2 ? 'Cargado (informativo)' : b.n === 7 && !productos.some(p => ADICIONALES.some(t => p.Partes[t])) ? 'No lleva extras' : 'Listo';
-        return `Falta: ${faltan[b.n].slice(0, 3).join(' · ')}${faltan[b.n].length > 3 ? ` · y ${faltan[b.n].length - 3} más` : ''}`;
-    };
+    // Texto de un paso completo en el panel. Lo que falta se lista entero, una cosa por renglón (antes se cortaba en 3).
+    const listoDe = (b) => (b.n === 2 ? 'Cargado (informativo)' : b.n === 7 && !productos.some(x => ADICIONALES.some(t => x.Partes[t])) ? 'No lleva extras' : 'Listo');
 
     // ── Producto que se muestra en los bloques 3 a 7 ──
     const iSel = Math.min(sel, productos.length - 1);
@@ -482,79 +532,96 @@ export default function SolicitudVendedorForm() {
 
     // Cargando (solo al editar): este return va DESPUÉS de todos los hooks. Si va antes, al terminar de cargar
     // React encuentra más hooks que en el primer dibujo y la pantalla se cae ("No se pudo cargar la aplicación").
-    if (cargando) return <div className="fp"><div className="fp-wrap" style={{ display: 'flex', justifyContent: 'center', paddingTop: 60 }}><Loader2 className="animate-spin" /></div></div>;
+    if (cargando) return <div className="flex justify-center p-3 pt-16 md:p-6 md:pt-16"><Loader2 className="animate-spin text-brand-cyan" /></div>;
 
     return (
-        <div className="fp">
-            <div className="fp-wrap">
-                <header className="fp-top">
-                    <div>
-                        <h1>{esEdicion ? `Editar solicitud #${id}` : 'Nueva solicitud'}</h1>
-                        <p>Completá con el cliente cada bloque. Se puede guardar incompleto: lo que falte queda marcado en el panel y se completa después.</p>
+        <div className="p-3 md:p-6">
+            <div className="space-y-4">
+                {/* Encabezado como el de las otras pantallas: ícono de Lucide en brand-cyan y sin fondo, título grande */}
+                <header className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="flex min-w-0 items-start gap-3">
+                        {esEdicion
+                            ? <ClipboardPen size={30} className="mt-1 shrink-0 text-brand-cyan" aria-hidden="true" />
+                            : <ClipboardPlus size={30} className="mt-1 shrink-0 text-brand-cyan" aria-hidden="true" />}
+                        <div className="min-w-0">
+                            <h1 className="text-2xl font-black uppercase tracking-tight text-slate-800">{esEdicion ? `Editar solicitud #${id}` : 'Nueva solicitud'}</h1>
+                            <p className="max-w-[60ch] text-sm text-slate-500">Completá con el cliente cada bloque. Se puede guardar incompleto: lo que falte queda marcado en el panel y se completa después.</p>
+                        </div>
                     </div>
-                    <button type="button" onClick={() => navigate(esEdicion ? `/ventas/solicitudes/${id}` : '/ventas/solicitudes')} className="fp-btn"><ArrowLeft size={16} /> Volver sin guardar</button>
+                    <button type="button" onClick={() => navigate(esEdicion ? `/ventas/solicitudes/${id}` : '/ventas/solicitudes')} className={BTN_SECUNDARIO}><ArrowLeft size={14} /> Volver sin guardar</button>
                 </header>
 
-                <div className="fp-grid">
-                    <main style={{ minWidth: 0 }}>
-                        <nav id="fp-pasos" className="fp-pasos" aria-label="Pasos de la solicitud">
+                <div className="grid grid-cols-1 items-start gap-6 min-[901px]:grid-cols-[minmax(0,1fr)_340px]">
+                    <main className="min-w-0 space-y-4">
+                        {/* Pasos: el número (o un tilde si está completo), el nombre y cuánto falta; el abierto, en brand-cyan */}
+                        <nav id="fp-pasos" className="grid scroll-mt-4 grid-cols-2 gap-2 sm:grid-cols-4" aria-label="Pasos de la solicitud">
                             {bloquesVis.map((b, bi) => {
                                 const n = faltan[b.n].length;
+                                const abierto = paso === b.n;
                                 return (
-                                    <button type="button" key={b.n} className={`fp-paso ${n ? 'falta' : 'ok'}`} aria-current={paso === b.n ? 'step' : undefined} onClick={() => irA(b.id)}
-                                        title={n ? `Falta: ${faltan[b.n].join(' · ')}` : 'Completo'}>
-                                        <span className="sig" aria-hidden="true">{n ? '!' : '✓'}</span>
-                                        <span className="n">{bi + 1}</span>
-                                        <span className="t">{b.corto}</span>
-                                        <span className="e">{n ? `Falta${n === 1 ? '' : 'n'} ${n}` : b.n === 2 ? 'Cargado' : 'Completo'}</span>
+                                    <button type="button" key={b.n} aria-current={abierto ? 'step' : undefined} onClick={() => irA(b.id)}
+                                        title={n ? `Falta: ${faltan[b.n].join(' · ')}` : 'Completo'}
+                                        className={`flex min-w-0 items-center gap-3 rounded-xl border bg-white px-3 py-2.5 text-left transition-colors ${abierto ? 'border-brand-cyan ring-1 ring-brand-cyan' : 'border-slate-200 hover:border-slate-300'}`}>
+                                        <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-black ${n ? 'bg-slate-100 text-slate-600' : 'bg-emerald-500 text-white'}`} aria-hidden="true">
+                                            {n ? bi + 1 : <Check size={16} strokeWidth={3} />}
+                                        </span>
+                                        <span className="min-w-0">
+                                            <span className={`block text-sm font-bold leading-tight ${abierto ? 'text-brand-cyan' : 'text-slate-800'}`}>{b.corto}</span>
+                                            <span className={`block text-xs font-semibold ${n ? 'text-rose-600' : 'text-emerald-600'}`}>{n ? `Falta${n === 1 ? '' : 'n'} ${n}` : b.n === 2 ? 'Cargado' : 'Completo'}</span>
+                                        </span>
                                     </button>
                                 );
                             })}
                         </nav>
 
                         {/* 1 · IDENTIFICACIÓN */}
-                        <Bloque n={1} num={numDe(1)} activo={paso === 1} id="b-ident" titulo="Identificación" done={!faltan[1].length}>
-                            <div className="fp-stack">
-                                <Campo div label="Cliente *"><BuscadorCliente cliente={cliente} onPick={setCliente} /></Campo>
-                                <div className="fp-fields two">
-                                    <Campo label="Nombre del trabajo *"><input type="text" value={cab.NombreTrabajo} onChange={e => setCab(c => ({ ...c, NombreTrabajo: e.target.value }))} placeholder="Ej: Buzos egresados 3ºB" /></Campo>
+                        <Bloque activo={paso === 1} id="b-ident" titulo="Identificación">
+                            <div className="grid gap-3.5">
+                                {/* El buscador es compartido (solicitudesComunes) y más bajo: acá toma la altura de los otros campos */}
+                                <Campo div label="Cliente *">
+                                    <div className="[&_input]:py-2 [&_input]:text-base sm:[&_input]:text-sm [&_svg]:top-3">
+                                        <BuscadorCliente cliente={cliente} onPick={setCliente} />
+                                    </div>
+                                </Campo>
+                                <div className={DOS}>
+                                    <Campo label="Nombre del trabajo *"><input type="text" className={CAMPO} value={cab.NombreTrabajo} onChange={e => setCab(c => ({ ...c, NombreTrabajo: e.target.value }))} placeholder="Ej: Buzos egresados 3ºB" /></Campo>
                                     <Campo label="Vendedor">
-                                        <input type="text" readOnly tabIndex={-1} className="fp-fijo" title="Se carga solo: es quien ingresó la solicitud"
-                                            value={vendedorNombre || vendedores.find(v => String(v.IdUsuario) === String(cab.VendedorID))?.Nombre || user?.nombre || user?.username || ''} />
+                                        <input type="text" readOnly tabIndex={-1} className={`${CAMPO} cursor-default border-dashed bg-slate-50 text-slate-700 hover:border-slate-200 focus:border-slate-200 focus:ring-0`} title="Se carga solo: es quien ingresó la solicitud"
+                                            value={capitalizar(vendedorNombre || vendedores.find(v => String(v.IdUsuario) === String(cab.VendedorID))?.Nombre || user?.nombre || user?.username || '')} />
                                     </Campo>
                                 </div>
-                                <Campo label="Detalle de la solicitud * (qué pide el cliente)"><textarea value={cab.Detalle} onChange={e => setCab(c => ({ ...c, Detalle: e.target.value }))} placeholder="Ej: 22 buzos canguro azul marino con escudo bordado y apodo en la espalda" /></Campo>
-                                <div className={`fp-cfg${cab.FechaEntrega && dias < 0 ? ' late' : ''}`}>
-                                    <div className="fp-stack">
-                                        <div className="fp-fields two">
-                                            <Campo label="Fecha que necesita el cliente *" ayuda="Una fecha concreta, no “para fin de mes”."><input type="date" value={cab.FechaEntrega} onChange={e => setCab(c => ({ ...c, FechaEntrega: e.target.value }))} /></Campo>
-                                            <Campo label="Hasta (si es un rango)" ayuda="Si hay un evento, viaje o torneo: el último día posible."><input type="date" value={cab.FechaEntregaHasta} min={cab.FechaEntrega || undefined} onChange={e => setCab(c => ({ ...c, FechaEntregaHasta: e.target.value }))} /></Campo>
+                                <Campo label="Detalle de la solicitud * (qué pide el cliente)"><textarea className={TEXTO} value={cab.Detalle} onChange={e => setCab(c => ({ ...c, Detalle: e.target.value }))} placeholder="Ej: 22 buzos canguro azul marino con escudo bordado y apodo en la espalda" /></Campo>
+                                <div className={cab.FechaEntrega && dias < 0 ? CAJA_TARDE : CAJA}>
+                                    <div className="grid gap-3.5">
+                                        <div className={DOS}>
+                                            <Campo div label="Fecha que necesita el cliente *" ayuda="Una fecha concreta, no “para fin de mes”."><SelectorFecha className={FECHA} vaciable aria-label="Fecha que necesita el cliente" value={cab.FechaEntrega} onChange={e => setCab(c => ({ ...c, FechaEntrega: e.target.value }))} /></Campo>
+                                            <Campo div label="Hasta (si es un rango)" ayuda="Si hay un evento, viaje o torneo: el último día posible."><SelectorFecha className={FECHA} vaciable aria-label="Hasta (si es un rango)" value={cab.FechaEntregaHasta} min={cab.FechaEntrega || undefined} onChange={e => setCab(c => ({ ...c, FechaEntregaHasta: e.target.value }))} /></Campo>
                                         </div>
                                         {cab.FechaEntrega && (dias < 0
-                                            ? <p className="fp-warnline">La fecha de entrega ({fmtDia(cab.FechaEntrega)}) ya pasó.</p>
-                                            : <p className="fp-hint">{dias === 0 ? 'La entrega es hoy.' : `Faltan ${dias} día${dias === 1 ? '' : 's'} para la entrega.`} Si la fecha se puede cumplir con la carga de cada sector se ve en la solicitud, después de guardar.</p>)}
+                                            ? <p className={LINEA_AVISO}>La fecha de entrega ({fmtDia(cab.FechaEntrega)}) ya pasó.</p>
+                                            : <p className={AYUDA}>{dias === 0 ? 'La entrega es hoy.' : `Faltan ${dias} día${dias === 1 ? '' : 's'} para la entrega.`} Si la fecha se puede cumplir con la carga de cada sector se ve en la solicitud, después de guardar.</p>)}
                                     </div>
                                 </div>
-                                <Campo label="Observaciones generales"><textarea className="short" value={cab.Observaciones} onChange={e => setCab(c => ({ ...c, Observaciones: e.target.value }))} /></Campo>
+                                <Campo label="Observaciones generales"><textarea className={TEXTO_CORTO} value={cab.Observaciones} onChange={e => setCab(c => ({ ...c, Observaciones: e.target.value }))} /></Campo>
                             </div>
                         </Bloque>
 
                         {/* 2 · PAGO Y SEÑA (informativo) */}
-                        <Bloque n={2} num={numDe(2)} activo={paso === 2} id="b-pago" titulo="Pago y seña" done={!faltan[2].length}>
-                            <div className="fp-stack">
+                        <Bloque activo={paso === 2} id="b-pago" titulo="Pago y seña">
+                            <div className="grid gap-3.5">
                                 <Campo div label="Cómo se cobra">
                                     <Seg valor={pago.ModoCobro} onChange={v => setP({ ModoCobro: v })} opciones={[['PRECIO_ESTABLECIDO', 'Precio establecido (un total, todo incluido)'], ['POR_AREA', 'Facturar por cada área']]} />
                                 </Campo>
                                 {pago.ModoCobro === 'PRECIO_ESTABLECIDO' && (
-                                    <div className="fp-fields two">
-                                        <Campo label="Moneda"><select value={pago.MonIdMoneda} onChange={e => setP({ MonIdMoneda: Number(e.target.value) })}>{Object.entries(MONEDA).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></Campo>
+                                    <div className={DOS}>
+                                        <Campo div label="Moneda"><Selector claseBoton={SEL} aria-label="Moneda" value={pago.MonIdMoneda} onChange={e => setP({ MonIdMoneda: Number(e.target.value) })}>{Object.entries(MONEDA).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</Selector></Campo>
                                         <Campo label="Total pactado *">
-                                            <input type="number" min="0" step="0.01" value={pago.PrecioPactado} onChange={e => setP({ PrecioPactado: e.target.value, _auto: false })} placeholder="0" />
+                                            <input type="number" className={NUMERO} min="0" step="0.01" value={pago.PrecioPactado} onChange={e => setP({ PrecioPactado: e.target.value, _auto: false })} placeholder="0" />
                                             {catalogoConPrecio && (
-                                                <p className="fp-hint">Referencia de catálogo: {productos.map(x => `${x.Cantidad} × ${fmtMoneda(x._precio, x._moneda)}`).join(' + ')} = <b>{fmtMoneda(sugeridoCatalogo, monedaCatalogo)}</b>{pago._auto ? ' (cargado por defecto; si lo cambiás, queda el tuyo)' : ''}</p>
+                                                <p className={AYUDA}>Referencia de catálogo: {productos.map(x => `${x.Cantidad} × ${fmtMoneda(x._precio, x._moneda)}`).join(' + ')} = <b>{fmtMoneda(sugeridoCatalogo, monedaCatalogo)}</b>{pago._auto ? ' (cargado por defecto; si lo cambiás, queda el tuyo)' : ''}</p>
                                             )}
                                             {sugeridoCatalogo != null && Number(pago.PrecioPactado || 0) !== sugeridoCatalogo && (
-                                                <button type="button" className="fp-link" onClick={() => setP({ PrecioPactado: String(sugeridoCatalogo), MonIdMoneda: (monedaCatalogo || '').toUpperCase() === 'USD' ? 2 : 1, _auto: true })}>Volver al precio de catálogo: {fmtMoneda(sugeridoCatalogo, monedaCatalogo)}</button>
+                                                <button type="button" className={LINK} onClick={() => setP({ PrecioPactado: String(sugeridoCatalogo), MonIdMoneda: (monedaCatalogo || '').toUpperCase() === 'USD' ? 2 : 1, _auto: true })}>Volver al precio de catálogo: {fmtMoneda(sugeridoCatalogo, monedaCatalogo)}</button>
                                             )}
                                         </Campo>
                                     </div>
@@ -563,133 +630,142 @@ export default function SolicitudVendedorForm() {
                                     <Seg valor={pago.RequiereSena ? 'SI' : 'NO'} onChange={v => setP({ RequiereSena: v === 'SI', pagoSena: v === 'SI' ? pago.pagoSena : false })} opciones={[['SI', 'Sí, se pide seña'], ['NO', 'No se pide seña', pago.SenaConfirmada]]} />
                                 </Campo>
                                 {pago.RequiereSena && (
-                                    <div className="fp-cfg">
-                                        <div className="fp-stack">
-                                            <div className={`fp-fields ${pago.ModoCobro === 'PRECIO_ESTABLECIDO' ? 'two' : 'three'}`}>
-                                                {pago.ModoCobro !== 'PRECIO_ESTABLECIDO' && <Campo label="Moneda"><select value={pago.MonIdMoneda} onChange={e => setP({ MonIdMoneda: Number(e.target.value) })}>{Object.entries(MONEDA).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></Campo>}
-                                                <Campo label="Seña que se pide *"><input type="number" min="0" step="0.01" value={pago.SenaMontoRequerido} onChange={e => setP({ SenaMontoRequerido: e.target.value })} placeholder="0" /></Campo>
+                                    <div className={CAJA}>
+                                        <div className="grid gap-3.5">
+                                            <div className={pago.ModoCobro === 'PRECIO_ESTABLECIDO' ? DOS : TRES}>
+                                                {pago.ModoCobro !== 'PRECIO_ESTABLECIDO' && <Campo div label="Moneda"><Selector claseBoton={SEL} aria-label="Moneda" value={pago.MonIdMoneda} onChange={e => setP({ MonIdMoneda: Number(e.target.value) })}>{Object.entries(MONEDA).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</Selector></Campo>}
+                                                <Campo label="Seña que se pide *"><input type="number" className={NUMERO} min="0" step="0.01" value={pago.SenaMontoRequerido} onChange={e => setP({ SenaMontoRequerido: e.target.value })} placeholder="0" /></Campo>
                                                 <Campo div label="¿Pagó la seña?">
                                                     <Seg valor={pago.pagoSena ? 'SI' : 'NO'} onChange={v => setP({ pagoSena: v === 'SI' })} opciones={[['SI', 'Sí, pagó'], ['NO', 'Todavía no', pago.SenaConfirmada]]} />
                                                 </Campo>
                                             </div>
                                             {pago.pagoSena && (
                                                 <>
-                                                    <div className="fp-fields two">
-                                                        <Campo label="Monto pagado *"><input type="number" min="0" step="0.01" value={pago.SenaMonto} onChange={e => setP({ SenaMonto: e.target.value })} placeholder="0" /></Campo>
-                                                        <Campo label="Fecha de la transferencia"><input type="date" value={pago.SenaFecha} onChange={e => setP({ SenaFecha: e.target.value })} /></Campo>
-                                                        <Campo label="Vía de entrada *"><input type="text" value={pago.SenaVia} onChange={e => setP({ SenaVia: e.target.value })} placeholder="Transferencia BROU, efectivo en caja…" /></Campo>
-                                                        <Campo label="Referencia del pago *"><input type="text" value={pago.SenaReferencia} onChange={e => setP({ SenaReferencia: e.target.value })} placeholder="Nº de transferencia o de recibo" /></Campo>
+                                                    <div className={DOS}>
+                                                        <Campo label="Monto pagado *"><input type="number" className={NUMERO} min="0" step="0.01" value={pago.SenaMonto} onChange={e => setP({ SenaMonto: e.target.value })} placeholder="0" /></Campo>
+                                                        <Campo div label="Fecha de la transferencia"><SelectorFecha className={FECHA} vaciable aria-label="Fecha de la transferencia" value={pago.SenaFecha} onChange={e => setP({ SenaFecha: e.target.value })} /></Campo>
+                                                        <Campo label="Vía de entrada *"><input type="text" className={CAMPO} value={pago.SenaVia} onChange={e => setP({ SenaVia: e.target.value })} placeholder="Transferencia BROU, efectivo en caja…" /></Campo>
+                                                        <Campo label="Referencia del pago *"><input type="text" className={CAMPO} value={pago.SenaReferencia} onChange={e => setP({ SenaReferencia: e.target.value })} placeholder="Nº de transferencia o de recibo" /></Campo>
                                                     </div>
-                                                    <label className={`fp-drop${arrastrando ? ' over' : ''}`}
+                                                    <label className={`flex cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border-2 border-dashed px-4 py-5 text-center text-sm font-semibold transition-colors ${arrastrando ? 'border-brand-cyan bg-cyan-50/60 text-slate-700' : 'border-slate-300 bg-white text-slate-600 hover:border-brand-cyan'}`}
                                                         onDragOver={e => { e.preventDefault(); setArrastrando(true); }} onDragLeave={() => setArrastrando(false)}
                                                         onDrop={e => { e.preventDefault(); setArrastrando(false); agregarComprobantes(e.dataTransfer.files); }}>
-                                                        <input type="file" accept={ACEPTA_COMPROBANTE} multiple onChange={e => { agregarComprobantes(e.target.files); e.target.value = ''; }} />
+                                                        <input type="file" className="hidden" accept={ACEPTA_COMPROBANTE} multiple onChange={e => { agregarComprobantes(e.target.files); e.target.value = ''; }} />
+                                                        <Upload size={20} className="text-brand-cyan" aria-hidden="true" />
                                                         Subí el comprobante de la transferencia *
-                                                        <small>Captura o PDF del banco. Tocá o arrastrá acá. Se sube al guardar.</small>
+                                                        <small className={AYUDA}>Captura o PDF del banco. Tocá o arrastrá acá. Se sube al guardar.</small>
                                                     </label>
                                                     {(comprobantes.length > 0 || comprobantesGuardados.length > 0) && (
-                                                        <div className="fp-files">
-                                                            {comprobantesGuardados.map(a => <span key={a.ArchivoID} className="fp-file">{a.NombreOriginal}<small>ya subido</small></span>)}
+                                                        <div className={ARCHIVOS}>
+                                                            {comprobantesGuardados.map(a => <span key={a.ArchivoID} className={ARCHIVO}>{a.NombreOriginal}<small>ya subido</small></span>)}
                                                             {comprobantes.map((f, i) => (
-                                                                <span key={`${f.name}-${i}`} className="fp-file">{f.name}<small>se sube al guardar</small>
-                                                                    <button type="button" className="fp-link danger" style={{ marginLeft: 8 }} title="Quitar este comprobante" onClick={() => setComprobantes(cs => cs.filter((_, j) => j !== i))}>✕</button>
+                                                                <span key={`${f.name}-${i}`} className={ARCHIVO}>{f.name}<small>se sube al guardar</small>
+                                                                    <button type="button" className="ml-1.5 rounded p-0.5 text-rose-500 transition-colors hover:bg-rose-50 hover:text-rose-700" title="Quitar este comprobante" aria-label="Quitar este comprobante" onClick={() => setComprobantes(cs => cs.filter((_, j) => j !== i))}><X size={12} /></button>
                                                                 </span>
                                                             ))}
                                                         </div>
                                                     )}
                                                 </>
                                             )}
-                                            {pago.SenaConfirmada && <p className="fp-hint">La seña ya está registrada: se puede corregir, no borrar.</p>}
+                                            {pago.SenaConfirmada && <p className={AYUDA}>La seña ya está registrada: se puede corregir, no borrar.</p>}
                                         </div>
                                     </div>
                                 )}
+                                {/* Los tres montos como los datos del detalle; "Resta cobrar" se destaca */}
                                 {pago.ModoCobro === 'PRECIO_ESTABLECIDO' && num(pago.PrecioPactado) > 0 && (
-                                    <div className="fp-saldo">
-                                        <div className="cel"><small>Total pactado</small><b>{fmtPlata(pago.PrecioPactado, pago.MonIdMoneda)}</b></div>
-                                        <div className="cel"><small>Seña pagada</small><b>{fmtPlata(pago.pagoSena ? pago.SenaMonto : 0, pago.MonIdMoneda)}</b></div>
-                                        <div className="cel resta"><small>Resta cobrar</small><b>{fmtPlata(restante, pago.MonIdMoneda)}</b></div>
+                                    <div className={TRES}>
+                                        <div className="rounded-xl border border-slate-200 bg-white px-3.5 py-2.5"><small className="block text-[10px] font-black uppercase tracking-wider text-slate-400">Total pactado</small><b className="text-xl font-black tabular-nums text-slate-800">{fmtPlata(pago.PrecioPactado, pago.MonIdMoneda)}</b></div>
+                                        <div className="rounded-xl border border-slate-200 bg-white px-3.5 py-2.5"><small className="block text-[10px] font-black uppercase tracking-wider text-slate-400">Seña pagada</small><b className="text-xl font-black tabular-nums text-slate-800">{fmtPlata(pago.pagoSena ? pago.SenaMonto : 0, pago.MonIdMoneda)}</b></div>
+                                        <div className="rounded-xl border border-brand-cyan/50 bg-cyan-50/50 px-3.5 py-2.5"><small className="block text-[10px] font-black uppercase tracking-wider text-brand-cyan">Resta cobrar</small><b className="text-xl font-black tabular-nums text-brand-cyan">{fmtPlata(restante, pago.MonIdMoneda)}</b></div>
                                     </div>
                                 )}
                             </div>
                         </Bloque>
 
                         {/* 3 · PRODUCTO */}
-                        <Bloque n={3} num={numDe(3)} activo={paso === 3} id="b-producto" titulo="Producto" sub={subProd} done={!faltan[3].length} why="Qué se fabrica y cuántas unidades. Cada producto termina en su propio pedido de producción.">
-                            <div className="fp-tabs" role="group" aria-label="Modalidad de la solicitud">
-                                {Object.entries(MODALIDAD).map(([v, t]) => <button type="button" key={v} className="fp-tab" aria-pressed={modalidad === v} onClick={() => cambiarModalidad(v)}>{t}</button>)}
+                        <Bloque activo={paso === 3} id="b-producto" titulo="Producto" sub={subProd} why="Qué se fabrica y cuántas unidades. Cada producto termina en su propio pedido de producción.">
+                            <div className={`${SEG} mb-3.5`} role="group" aria-label="Modalidad de la solicitud">
+                                {Object.entries(MODALIDAD).map(([v, t]) => <button type="button" key={v} className={segBtn(modalidad === v)} aria-pressed={modalidad === v} onClick={() => cambiarModalidad(v)}>{t}</button>)}
                             </div>
                             {!modalidad && (
-                                <p className="fp-note warn" style={{ marginBottom: 14 }}>{mezclada
+                                <p className={`${NOTA_AVISO} mb-3.5`}>{mezclada
                                     ? 'Esta solicitud se cargó antes de esta regla y tiene productos de las dos modalidades. Se puede guardar así. Si elegís una modalidad arriba, pasa a todos los productos.'
                                     : 'Elegí primero la modalidad. Todos los productos de la solicitud van a ser de la misma: no se mezclan productos del catálogo con productos del cliente.'}</p>
                             )}
-                            {modalidad && <p className="fp-hint" style={{ margin: '0 0 14px' }}>{modalidad === 'PRODUCTO_TERMINADO' ? 'Del catálogo: cada producto trae sus servicios incluidos.' : 'Del cliente: una prenda que no está en el catálogo. La sublimación y todos los servicios se eligen a mano.'} Todos los productos de la solicitud son de esta modalidad.</p>}
+                            {modalidad && <p className={`${AYUDA} mb-3.5`}>{modalidad === 'PRODUCTO_TERMINADO' ? 'Del catálogo: cada producto trae sus servicios incluidos.' : 'Del cliente: una prenda que no está en el catálogo. La sublimación y todos los servicios se eligen a mano.'} Todos los productos de la solicitud son de esta modalidad.</p>}
                             {(modalidad || mezclada) && (
-                                <div className="fp-tabs" role="group" aria-label="Productos de la solicitud">
+                                <div className={`${PESTANAS} mb-4`} role="group" aria-label="Productos de la solicitud">
                                     {productos.map((x, i) => (
-                                        <span key={x._k} className="fp-tabw">
-                                            <button type="button" className="fp-tab" aria-pressed={i === iSel} onClick={() => setSel(i)}>{x.convertido && <Lock size={12} />} {nombreProd(x, i)}</button>
-                                            {productos.length > 1 && !x.convertido && <button type="button" className={`fp-tabx${i === iSel ? ' on' : ''}`} title={`Quitar "${nombreProd(x, i)}" de la solicitud`} aria-label={`Quitar "${nombreProd(x, i)}" de la solicitud`} onClick={() => quitarProducto(x, i)}>✕</button>}
+                                        <span key={x._k} className="inline-flex items-center">
+                                            <button type="button" className={pestana(i === iSel)} aria-pressed={i === iSel} onClick={() => setSel(i)}>{x.convertido && <Lock size={12} />} {nombreProd(x, i)}</button>
+                                            {productos.length > 1 && !x.convertido && <button type="button" className={BTN_QUITAR} title={`Quitar "${nombreProd(x, i)}" de la solicitud`} aria-label={`Quitar "${nombreProd(x, i)}" de la solicitud`} onClick={() => quitarProducto(x, i)}><X size={14} /></button>}
                                         </span>
                                     ))}
-                                    <button type="button" className="fp-tab add" onClick={agregarProducto}><Plus size={14} style={{ display: 'inline', verticalAlign: '-2px' }} /> Agregar otro producto</button>
+                                    <button type="button" className="-mb-px inline-flex items-center gap-1 border-b-2 border-transparent px-3 py-2 text-sm font-bold text-brand-cyan hover:underline" onClick={agregarProducto}><Plus size={14} /> Agregar otro producto</button>
                                 </div>
                             )}
-                            {p.convertido && <p className="fp-note" style={{ marginBottom: 14 }}><Lock size={13} style={{ display: 'inline', verticalAlign: '-2px' }} /> Este producto ya es un pedido de producción: no se edita.</p>}
-                            <fieldset disabled={p.convertido || !(modalidad || mezclada)}>
-                                <div className="fp-stack">
+                            {p.convertido && <p className={`${NOTA} mb-3.5`}><Lock size={13} className="inline align-[-2px]" /> Este producto ya es un pedido de producción: no se edita.</p>}
+                            <fieldset className="m-0 min-w-0 border-0 p-0 disabled:opacity-60" disabled={p.convertido || !(modalidad || mezclada)}>
+                                <div className="grid gap-3.5">
                                     {p.TipoFabricacion === 'PRODUCTO_TERMINADO' && (
                                         <>
                                             <Campo div label="Familia *">
-                                                <div className="fp-seg" role="group">
-                                                    {familias.map(fa => <button type="button" key={fa} aria-pressed={famDe(p) === fa} onClick={() => cambiarProducto(p._k, { _familia: fa, _etiqueta: '' })}>{fa}</button>)}
+                                                <div className={SEG} role="group">
+                                                    {familias.map(fa => <button type="button" key={fa} className={segBtn(famDe(p) === fa)} aria-pressed={famDe(p) === fa} onClick={() => cambiarProducto(p._k, { _familia: fa, _etiqueta: '' })}>{fa}</button>)}
                                                 </div>
                                             </Campo>
-                                            {!catalogo.length && <p className="fp-warnline">No se pudo leer el catálogo de productos.</p>}
+                                            {!catalogo.length && <p className={LINEA_AVISO}>No se pudo leer el catálogo de productos.</p>}
                                             {famDe(p) && etiquetasDe(famDe(p)).hay && (
                                                 <Campo div label="Para qué es">
-                                                    <div className="fp-seg" role="group">
-                                                        <button type="button" aria-pressed={!etqDe(p)} onClick={() => cambiarProducto(p._k, { _etiqueta: '' })}>Todas</button>
-                                                        {etiquetasDe(famDe(p)).lista.map(et => <button type="button" key={et} aria-pressed={etqDe(p) === et} onClick={() => cambiarProducto(p._k, { _etiqueta: et })}>{et}</button>)}
-                                                        {etiquetasDe(famDe(p)).conSin && <button type="button" aria-pressed={etqDe(p) === SIN_ETQ} onClick={() => cambiarProducto(p._k, { _etiqueta: SIN_ETQ })}>Sin etiqueta</button>}
+                                                    <div className={SEG} role="group">
+                                                        <button type="button" className={segBtn(!etqDe(p))} aria-pressed={!etqDe(p)} onClick={() => cambiarProducto(p._k, { _etiqueta: '' })}>Todas</button>
+                                                        {etiquetasDe(famDe(p)).lista.map(et => <button type="button" key={et} className={segBtn(etqDe(p) === et)} aria-pressed={etqDe(p) === et} onClick={() => cambiarProducto(p._k, { _etiqueta: et })}>{et}</button>)}
+                                                        {etiquetasDe(famDe(p)).conSin && <button type="button" className={segBtn(etqDe(p) === SIN_ETQ)} aria-pressed={etqDe(p) === SIN_ETQ} onClick={() => cambiarProducto(p._k, { _etiqueta: SIN_ETQ })}>Sin etiqueta</button>}
                                                     </div>
                                                 </Campo>
                                             )}
                                             {famDe(p) && (
                                                 <Campo div label="Producto a fabricar *">
-                                                    <div className="fp-prods">
-                                                        {productosDe(famDe(p), etqDe(p)).map(x => (
-                                                            <button type="button" key={x.ProIdProducto} className="fp-prod" aria-pressed={String(p.ProIdProducto) === String(x.ProIdProducto)} onClick={() => elegirProducto(p, x.ProIdProducto)}>
-                                                                {imgSrc(x) ? <img className="fp-prod-img" src={imgSrc(x)} alt="" loading="lazy" onError={e => { e.currentTarget.style.display = 'none'; }} /> : <div className="fp-prod-noimg" aria-hidden="true">👕</div>}
-                                                                {x.Etiqueta && <span className="fp-prod-tag">{x.Etiqueta}</span>}
-                                                                {x.TecnicaPrincipal && x.TecnicaPrincipal !== 'SB' && <span className="fp-prod-tag" title="Área que produce este producto">{({ DIRECTA: 'Imp. directa', ECOUV: 'Gran formato' })[x.TecnicaPrincipal] || x.TecnicaPrincipal}</span>}
-                                                                <b>{x.Descripcion}</b><small>{x.CodArticulo}{x.Estado === 'PUBLICADO' ? ' · publicado' : ''}</small>
-                                                            </button>
-                                                        ))}
-                                                        {productosDe(famDe(p), etqDe(p)).length === 0 && <p className="fp-hint">No hay productos con ese filtro.</p>}
+                                                    {/* Tarjetas del catálogo: blancas, y la elegida con borde y aro en brand-cyan */}
+                                                    <div className="grid grid-cols-[repeat(auto-fill,minmax(13rem,1fr))] gap-2.5">
+                                                        {productosDe(famDe(p), etqDe(p)).map(x => {
+                                                            const elegido = String(p.ProIdProducto) === String(x.ProIdProducto);
+                                                            return (
+                                                                <button type="button" key={x.ProIdProducto} aria-pressed={elegido} onClick={() => elegirProducto(p, x.ProIdProducto)}
+                                                                    className={`flex flex-col gap-1 rounded-xl border bg-white p-2.5 text-left transition-colors ${elegido ? 'border-brand-cyan ring-2 ring-brand-cyan/25' : 'border-slate-200 hover:border-slate-300'}`}>
+                                                                    {imgSrc(x)
+                                                                        ? <img className="mb-1 block h-[150px] w-full rounded-lg bg-white object-contain" src={imgSrc(x)} alt="" loading="lazy" onError={e => { e.currentTarget.style.display = 'none'; }} />
+                                                                        : <div className="mb-1 flex h-[150px] w-full items-center justify-center rounded-lg bg-slate-100 text-slate-300" aria-hidden="true"><Shirt size={40} /></div>}
+                                                                    {x.Etiqueta && <span className={`text-[11px] font-bold uppercase tracking-wide ${elegido ? 'text-brand-cyan' : 'text-slate-400'}`}>{x.Etiqueta}</span>}
+                                                                    {x.TecnicaPrincipal && x.TecnicaPrincipal !== 'SB' && <span className="text-[11px] font-bold uppercase tracking-wide text-slate-400" title="Área que produce este producto">{({ DIRECTA: 'Imp. directa', ECOUV: 'Gran formato' })[x.TecnicaPrincipal] || x.TecnicaPrincipal}</span>}
+                                                                    <b className="block text-sm font-bold text-slate-800">{x.Descripcion}</b><small className="text-xs font-normal text-slate-500">{x.CodArticulo}{x.Estado === 'PUBLICADO' ? ' · publicado' : ''}</small>
+                                                                </button>
+                                                            );
+                                                        })}
+                                                        {productosDe(famDe(p), etqDe(p)).length === 0 && <p className={AYUDA}>No hay productos con ese filtro.</p>}
                                                     </div>
                                                 </Campo>
                                             )}
-                                            {p.ProIdProducto ? <p className="fp-okline">Elegido: {p.ProductoNombre}{famDe(p) ? ` (${famDe(p)}${etqDe(p) && etqDe(p) !== SIN_ETQ ? ' › ' + etqDe(p) : ''})` : ''}{p._precio != null ? ` · precio de catálogo ${fmtMoneda(p._precio, p._moneda)} por unidad` : ' · sin precio de catálogo'}</p> : famDe(p) && <p className="fp-hint">Tocá una tarjeta para elegir el producto.</p>}
+                                            {p.ProIdProducto ? <p className={LINEA_OK}>Elegido: {p.ProductoNombre}{famDe(p) ? ` (${famDe(p)}${etqDe(p) && etqDe(p) !== SIN_ETQ ? ' › ' + etqDe(p) : ''})` : ''}{p._precio != null ? ` · precio de catálogo ${fmtMoneda(p._precio, p._moneda)} por unidad` : ' · sin precio de catálogo'}</p> : famDe(p) && <p className={AYUDA}>Tocá una tarjeta para elegir el producto.</p>}
                                         </>
                                     )}
                                     {p.TipoFabricacion === 'PERSONALIZADO' && (
                                         <>
                                             <Campo div label="Familia *">
-                                                <div className="fp-seg" role="group">
-                                                    {familias.map(fa => <button type="button" key={fa} aria-pressed={!esOtra(p) && d.tipoTrabajo === fa} onClick={() => cambiarProducto(p._k, conReferencia(p, fa, { _otra: false }, { tipoTrabajo: fa }))}>{fa}</button>)}
-                                                    <button type="button" aria-pressed={esOtra(p)} onClick={() => { const t = familias.includes(d.tipoTrabajo) ? '' : (d.tipoTrabajo || ''); cambiarProducto(p._k, conReferencia(p, t, { _otra: true }, { tipoTrabajo: t })); }}>Otra</button>
+                                                <div className={SEG} role="group">
+                                                    {familias.map(fa => <button type="button" key={fa} className={segBtn(!esOtra(p) && d.tipoTrabajo === fa)} aria-pressed={!esOtra(p) && d.tipoTrabajo === fa} onClick={() => cambiarProducto(p._k, conReferencia(p, fa, { _otra: false }, { tipoTrabajo: fa }))}>{fa}</button>)}
+                                                    <button type="button" className={segBtn(esOtra(p))} aria-pressed={esOtra(p)} onClick={() => { const t = familias.includes(d.tipoTrabajo) ? '' : (d.tipoTrabajo || ''); cambiarProducto(p._k, conReferencia(p, t, { _otra: true }, { tipoTrabajo: t })); }}>Otra</button>
                                                 </div>
                                             </Campo>
-                                            {esOtra(p) && <Campo label="¿Cuál? *"><input type="text" value={d.tipoTrabajo || ''} onChange={e => cambiarProducto(p._k, conReferencia(p, e.target.value, {}, { tipoTrabajo: e.target.value }))} placeholder="Ej: Toalla, Mantel, Bolsa" /></Campo>}
+                                            {esOtra(p) && <Campo label="¿Cuál? *"><input type="text" className={CAMPO} value={d.tipoTrabajo || ''} onChange={e => cambiarProducto(p._k, conReferencia(p, e.target.value, {}, { tipoTrabajo: e.target.value }))} placeholder="Ej: Toalla, Mantel, Bolsa" /></Campo>}
                                         </>
                                     )}
-                                    <div className="fp-fields two">
-                                        {p.TipoFabricacion !== 'PRODUCTO_TERMINADO' && <Campo label="Referencia"><input type="text" value={d.referencia || ''} onChange={e => cambiarProducto(p._k, { _refAuto: false, Datos: { ...d, referencia: e.target.value } })} placeholder="Ej: Camiseta titular, Short suplente" /></Campo>}
+                                    <div className={DOS}>
+                                        {p.TipoFabricacion !== 'PRODUCTO_TERMINADO' && <Campo label="Referencia"><input type="text" className={CAMPO} value={d.referencia || ''} onChange={e => cambiarProducto(p._k, { _refAuto: false, Datos: { ...d, referencia: e.target.value } })} placeholder="Ej: Camiseta titular, Short suplente" /></Campo>}
                                         <Campo label="Cantidad total de unidades *">
-                                            <input type="number" min={p._fija || p._min || 1} step={p._fija || 1} value={p.Cantidad} onChange={e => cambiarProducto(p._k, { Cantidad: e.target.value })} />
-                                            {p._fija > 0 && <small className="fp-hint">Se vende en paquetes de {p._fija}: la cantidad tiene que ser múltiplo de {p._fija}.</small>}
-                                            {!p._fija && p._min > 0 && <small className="fp-hint">Mínimo {p._min} unidades.</small>}
+                                            <input type="number" className={NUMERO} min={p._fija || p._min || 1} step={p._fija || 1} value={p.Cantidad} onChange={e => cambiarProducto(p._k, { Cantidad: e.target.value })} />
+                                            {p._fija > 0 && <small className={AYUDA}>Se vende en paquetes de {p._fija}: la cantidad tiene que ser múltiplo de {p._fija}.</small>}
+                                            {!p._fija && p._min > 0 && <small className={AYUDA}>Mínimo {p._min} unidades.</small>}
                                         </Campo>
                                     </div>
                                     {/* [ACCESORIOS] artículos de stock que salen con el producto (configurador › Accesorios y estructura) */}
@@ -700,19 +776,19 @@ export default function SolicitudVendedorForm() {
                                                 const total = (Number(a.cantidadPorUnidad) || 1) * (Number(p.Cantidad) || 0);
                                                 const va = a.incluir !== false;
                                                 return (
-                                                    <div key={ai} className="fp-checkrow" style={{ alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                                                    <div key={ai} className="flex flex-wrap items-center gap-2.5">
                                                         {a.obligatorio
-                                                            ? <span><b>{a.nombre}</b> <small className="fp-hint">siempre va</small></span>
+                                                            ? <span className="text-sm text-slate-700"><b>{a.nombre}</b> <small className={AYUDA}>siempre va</small></span>
                                                             : <Tilde checked={va} onChange={v => setA({ incluir: v })}>{a.nombre}</Tilde>}
-                                                        <small className="fp-hint">{a.cantidadPorUnidad} por unidad → <b>{total}</b> en total · {a.cobro === 'APARTE' ? 'se cobra aparte' : 'incluido en el precio'}</small>
+                                                        <small className={AYUDA}>{a.cantidadPorUnidad} por unidad → <b>{total}</b> en total · {a.cobro === 'APARTE' ? 'se cobra aparte' : 'incluido en el precio'}</small>
                                                         {va && (a.fijo
-                                                            ? (a.unica ? null : <small className="fp-hint">· {a.varianteNombre}</small>)
+                                                            ? (a.unica ? null : <small className={AYUDA}>· {a.varianteNombre}</small>)
                                                             : (a.variantes || []).length
-                                                                ? <select value={a.wmsVarianteId || ''} onChange={e => { const v = (a.variantes || []).find(x => x.wms_variante_id === Number(e.target.value)); setA({ wmsVarianteId: e.target.value ? Number(e.target.value) : '', varianteNombre: v?.nombre_variante || '' }); }}>
+                                                                ? <Selector claseBoton={SEL} aria-label={`Talle o color de ${a.nombre}`} anchoLista={260} value={a.wmsVarianteId || ''} onChange={e => { const v = (a.variantes || []).find(x => x.wms_variante_id === Number(e.target.value)); setA({ wmsVarianteId: e.target.value ? Number(e.target.value) : '', varianteNombre: v?.nombre_variante || '' }); }}>
                                                                     <option value="">Elegí talle/color…</option>
                                                                     {a.variantes.map(v => <option key={v.wms_variante_id} value={v.wms_variante_id}>{v.nombre_variante}</option>)}
-                                                                </select>
-                                                                : <small className="fp-hint" style={{ color: '#b45309' }}>Sin variantes de WMS: vinculá el artículo al WMS en Marketing › Productos.</small>)}
+                                                                </Selector>
+                                                                : <small className="text-xs font-semibold text-amber-700">Sin variantes de WMS: vinculá el artículo al WMS en Marketing › Productos.</small>)}
                                                     </div>
                                                 );
                                             })}
@@ -721,7 +797,7 @@ export default function SolicitudVendedorForm() {
                                     <Campo div label="Se produce a partir de">
                                         <Seg valor={d.muestraFisica ? 'MUESTRA' : 'BOCETO'} onChange={v => cambiarDato(p._k, { muestraFisica: v === 'MUESTRA' })} opciones={[['BOCETO', 'Boceto digital'], ['MUESTRA', 'Muestra física']]} />
                                     </Campo>
-                                    <div className="fp-checkrow">
+                                    <div className="flex flex-wrap gap-x-6 gap-y-2.5">
                                         {p.TipoFabricacion !== 'PRODUCTO_TERMINADO' && <Tilde checked={d.productoNuevo} onChange={v => cambiarDato(p._k, { productoNuevo: v, ...(v ? { requiereMuestra: true } : {}) })}>Producto nuevo</Tilde>}
                                         <Tilde checked={d.produccionGrande} onChange={v => cambiarDato(p._k, { produccionGrande: v, ...(v ? { requiereMuestra: true } : {}) })}>Producción grande</Tilde>
                                         <Tilde checked={d.requiereMuestra} onChange={v => cambiarDato(p._k, { requiereMuestra: v, muestraAprobada: v ? d.muestraAprobada : false })}>Requiere confección de muestra</Tilde>
@@ -729,14 +805,14 @@ export default function SolicitudVendedorForm() {
                                     </div>
                                 {esEdicion && d.productoNuevo && (
                                     <>
-                                        <div className="fp-cfg">
-                                            <div className="fp-cfg-head"><h3>Especificaciones técnicas · {nombreProd(p, iSel)}</h3><small>Producto nuevo</small></div>
-                                            <div className="fp-stack">
-                                                <div className="fp-fields two">
-                                                    <Campo label="Costuras y en qué parte va cada una *"><textarea className="short" value={d.espec.costuras} onChange={e => cambiarDatos(p._k, 'espec', { costuras: e.target.value })} /></Campo>
-                                                    <Campo label="Terminaciones *"><textarea className="short" value={d.espec.terminaciones} onChange={e => cambiarDatos(p._k, 'espec', { terminaciones: e.target.value })} /></Campo>
-                                                    <Campo label="Avíos y accesorios (medida, color y cantidad) *"><textarea className="short" value={d.espec.avios} onChange={e => cambiarDatos(p._k, 'espec', { avios: e.target.value })} /></Campo>
-                                                    <Campo label="Tela e insumos (tipo, composición, gramaje y color) *"><textarea className="short" value={d.espec.tela} onChange={e => cambiarDatos(p._k, 'espec', { tela: e.target.value })} /></Campo>
+                                        <div className={CAJA}>
+                                            <div className={CAJA_TIT}><h3>Especificaciones técnicas · {nombreProd(p, iSel)}</h3><small>Producto nuevo</small></div>
+                                            <div className="grid gap-3.5">
+                                                <div className={DOS}>
+                                                    <Campo label="Costuras y en qué parte va cada una *"><textarea className={TEXTO_CORTO} value={d.espec.costuras} onChange={e => cambiarDatos(p._k, 'espec', { costuras: e.target.value })} /></Campo>
+                                                    <Campo label="Terminaciones *"><textarea className={TEXTO_CORTO} value={d.espec.terminaciones} onChange={e => cambiarDatos(p._k, 'espec', { terminaciones: e.target.value })} /></Campo>
+                                                    <Campo label="Avíos y accesorios (medida, color y cantidad) *"><textarea className={TEXTO_CORTO} value={d.espec.avios} onChange={e => cambiarDatos(p._k, 'espec', { avios: e.target.value })} /></Campo>
+                                                    <Campo label="Tela e insumos (tipo, composición, gramaje y color) *"><textarea className={TEXTO_CORTO} value={d.espec.tela} onChange={e => cambiarDatos(p._k, 'espec', { tela: e.target.value })} /></Campo>
                                                 </div>
                                                 <Campo div label="El material lo provee *">
                                                     <Seg valor={d.espec.provee} onChange={v => cambiarDatos(p._k, 'espec', { provee: v })} opciones={[['TALLER', 'El taller'], ['CLIENTE', 'El cliente']]} />
@@ -750,66 +826,73 @@ export default function SolicitudVendedorForm() {
                                     </Campo>
                                     {esEdicion && d.diseno.origen === 'CLIENTE' && <Tilde checked={d.diseno.verificado} onChange={v => cambiarDatos(p._k, 'diseno', { verificado: v })}>Archivo de diseño recibido y verificado</Tilde>}
                                     {esEdicion && d.diseno.origen === 'TALLER' && <Tilde checked={d.diseno.aprobado} onChange={v => cambiarDatos(p._k, 'diseno', { aprobado: v })}>Propuesta aprobada por escrito por el cliente</Tilde>}
-                                    <Campo label="Indicaciones para Diseño"><textarea className="short" value={p.Principal.Observaciones} onChange={e => cambiarProducto(p._k, { Principal: { ...p.Principal, Observaciones: e.target.value } })} /></Campo>
-                                    <Campo label="Observaciones del producto"><textarea className="short" value={p.Observaciones} onChange={e => cambiarProducto(p._k, { Observaciones: e.target.value })} /></Campo>
+                                    <Campo label="Indicaciones para Diseño"><textarea className={TEXTO_CORTO} value={p.Principal.Observaciones} onChange={e => cambiarProducto(p._k, { Principal: { ...p.Principal, Observaciones: e.target.value } })} /></Campo>
+                                    <Campo label="Observaciones del producto"><textarea className={TEXTO_CORTO} value={p.Observaciones} onChange={e => cambiarProducto(p._k, { Observaciones: e.target.value })} /></Campo>
                                 </div>
                             </fieldset>
                         </Bloque>
 
                         {/* 7 · EXTRAS */}
-                        <Bloque n={7} num={numDe(7)} activo={paso === 7} id="b-extras" titulo="Servicios y extras" sub={subProd} done={!faltan[7].length}>
-                            <fieldset disabled={p.convertido}>
-                                <div className="fp-stack">
-                                    {/* Extras en pestañas: los agregados (con ✕ para quitar; candado si vienen con el producto) y "+" para agregar */}
-                                    <div className="fp-tabs" role="group" aria-label="Extras del producto">
+                        <Bloque activo={paso === 7} id="b-extras" titulo="Servicios y extras" sub={subProd}>
+                            <fieldset className="m-0 min-w-0 border-0 p-0 disabled:opacity-60" disabled={p.convertido}>
+                                <div className="grid gap-3.5">
+                                    {/* Extras en pestañas subrayadas: los agregados (tilde verde, o candado si vienen con el producto; con ✕ para quitar)
+                                        y, en gris, los que se pueden agregar ("+") */}
+                                    <div className={PESTANAS} role="group" aria-label="Extras del producto">
                                         {ADICIONALES.filter(t => p.Partes[t]).map(t => (
-                                            <span key={t} className="fp-tabw">
-                                                <button type="button" className="fp-tab fp-extra si" aria-pressed={extraVis === t} onClick={() => setExtraSel(t)}><span className="marca">{p.obligatorios.includes(t) ? <Lock size={12} /> : '✓'}</span><span>{NOMBRE_PARTE[t]}<small>{p.obligatorios.includes(t) ? 'lleva' : 'agregado'}{p.cobros?.[AREA_DE[t]] === 'INCLUIDA' ? ' · incluido en el precio' : p.cobros?.[AREA_DE[t]] === 'APARTE' ? ' · se cobra aparte' : ''}</small></span></button>
-                                                {!p.obligatorios.includes(t) && <button type="button" className={`fp-tabx${extraVis === t ? ' on' : ''}`} title={`Quitar ${NOMBRE_PARTE[t]}`} aria-label={`Quitar ${NOMBRE_PARTE[t]}`} onClick={() => alternarServicio(p, t)}>✕</button>}
+                                            <span key={t} className="inline-flex items-center">
+                                                <button type="button" className={pestana(extraVis === t)} aria-pressed={extraVis === t} onClick={() => setExtraSel(t)}>
+                                                    <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-emerald-500 text-white" aria-hidden="true">{p.obligatorios.includes(t) ? <Lock size={11} /> : <Check size={12} strokeWidth={3} />}</span>
+                                                    <span className="leading-tight">{NOMBRE_PARTE[t]}<small className="block text-[11px] font-semibold text-emerald-600">{p.obligatorios.includes(t) ? 'lleva' : 'agregado'}{p.cobros?.[AREA_DE[t]] === 'INCLUIDA' ? ' · incluido en el precio' : p.cobros?.[AREA_DE[t]] === 'APARTE' ? ' · se cobra aparte' : ''}</small></span>
+                                                </button>
+                                                {!p.obligatorios.includes(t) && <button type="button" className={BTN_QUITAR} title={`Quitar ${NOMBRE_PARTE[t]}`} aria-label={`Quitar ${NOMBRE_PARTE[t]}`} onClick={() => alternarServicio(p, t)}><X size={14} /></button>}
                                             </span>
                                         ))}
                                         {ADICIONALES.filter(t => !p.Partes[t] && (!p.permitidos || p.permitidos.includes(t))).map(t => (
-                                            <button type="button" key={t} className="fp-tab fp-extra no" title={`Agregar ${NOMBRE_PARTE[t]}`} onClick={() => { alternarServicio(p, t); setExtraSel(t); }}><span className="marca"><Plus size={14} /></span><span>{NOMBRE_PARTE[t]}<small>no lleva</small></span></button>
+                                            <button type="button" key={t} className="-mb-px inline-flex items-center gap-1.5 border-b-2 border-transparent px-3 py-2 text-left text-sm font-bold text-slate-400 transition-colors hover:text-brand-cyan" title={`Agregar ${NOMBRE_PARTE[t]}`} onClick={() => { alternarServicio(p, t); setExtraSel(t); }}>
+                                                <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-[1.5px] border-dashed border-current" aria-hidden="true"><Plus size={12} /></span>
+                                                <span className="leading-tight">{NOMBRE_PARTE[t]}<small className="block text-[11px] font-semibold">no lleva</small></span>
+                                            </button>
                                         ))}
                                     </div>
-                                    {p.permitidos && p.permitidos.length === 0 && <p className="fp-hint">El producto elegido no admite extras.</p>}
-                                    {!hayExtras && <p className="fp-okline">No lleva extras.</p>}
+                                    {p.permitidos && p.permitidos.length === 0 && <p className={AYUDA}>El producto elegido no admite extras.</p>}
+                                    {!hayExtras && <p className={LINEA_OK}>No lleva extras.</p>}
 
                                     {ADICIONALES.filter(t => p.Partes[t] && t === extraVis).map(t => {
                                         const pa = p.Partes[t];
                                         const dd = pa.Datos || {};
                                         const materiales = t === 'DTF' ? nomen.dtfMateriales : (nomen.materiales[`${AREA_DE[t]}|${dd.variante}`] || []);
                                         return (
-                                            <div key={t} className="fp-cfg">
-                                                <div className="fp-cfg-head"><h3>{NOMBRE_PARTE[t]}{p.obligatorios.includes(t) ? <small> · incluido en el producto</small> : null}</h3><EstadoParte e={pa.Estado} /></div>
-                                                <div className="fp-stack">
-                                                    {pa.Estado !== 'INGRESADO' && <p className="fp-warnline">Ya está en Diseño: si cambiás algo, queda señalado como "Modificada" y el diseñador tiene que aceptar el cambio.</p>}
-                                                    <div className="fp-fields three">
-                                                        <Campo label="Cantidad total"><input type="number" min="1" value={pa.CantidadTotal} onChange={e => cambiarParte(p._k, t, { CantidadTotal: e.target.value })} /></Campo>
-                                                        <Campo label={t === 'BORDADO' ? 'Bordados por prenda' : 'Estampados por prenda'}><input type="number" min="1" value={pa.PorPrenda} onChange={e => cambiarParte(p._k, t, { PorPrenda: e.target.value })} /></Campo>
-                                                        <Campo label="Dónde va (ubicación en la prenda)"><input type="text" value={pa.Ubicacion} onChange={e => cambiarParte(p._k, t, { Ubicacion: e.target.value })} placeholder="Ej: pecho izquierdo 8 cm" /></Campo>
+                                            <div key={t} className={CAJA}>
+                                                <div className={CAJA_TIT}><h3>{NOMBRE_PARTE[t]}{p.obligatorios.includes(t) ? <small> · incluido en el producto</small> : null}</h3><EstadoParte e={pa.Estado} /></div>
+                                                <div className="grid gap-3.5">
+                                                    {pa.Estado !== 'INGRESADO' && <p className={LINEA_AVISO}>Ya está en Diseño: si cambiás algo, queda señalado como "Modificada" y el diseñador tiene que aceptar el cambio.</p>}
+                                                    <div className={TRES}>
+                                                        <Campo label="Cantidad total"><input type="number" className={NUMERO} min="1" value={pa.CantidadTotal} onChange={e => cambiarParte(p._k, t, { CantidadTotal: e.target.value })} /></Campo>
+                                                        <Campo label={t === 'BORDADO' ? 'Bordados por prenda' : 'Estampados por prenda'}><input type="number" className={NUMERO} min="1" value={pa.PorPrenda} onChange={e => cambiarParte(p._k, t, { PorPrenda: e.target.value })} /></Campo>
+                                                        <Campo label="Dónde va (ubicación en la prenda)"><input type="text" className={CAMPO} value={pa.Ubicacion} onChange={e => cambiarParte(p._k, t, { Ubicacion: e.target.value })} placeholder="Ej: pecho izquierdo 8 cm" /></Campo>
                                                     </div>
                                                     {t === 'DTF' && (<Campo div label="El arte">
                                                         <Seg valor={pa.ArteOrigen} onChange={v => cambiarParte(p._k, t, { ArteOrigen: v })} opciones={[['EMPRESA', 'Se diseña en la empresa (pasa por Diseño)'], ['CLIENTE', 'Viene listo del cliente']]} />
                                                     </Campo>)}
-                                                    <div className="fp-fields three">
+                                                    <div className={TRES}>
                                                         {t !== 'DTF' && (
-                                                            <Campo label={t === 'BORDADO' ? 'Dónde se borda (sobre la prenda / parche adhesivo)' : 'Tipo / variante'} ayuda="Se exige al convertir a pedido">
-                                                                <select value={dd.variante || ''} onChange={e => { cambiarDatosParte(p._k, t, { variante: e.target.value, material: '' }); cargarMateriales(AREA_DE[t], e.target.value); }}>
+                                                            <Campo div label={t === 'BORDADO' ? 'Dónde se borda (sobre la prenda / parche adhesivo)' : 'Tipo / variante'} ayuda="Se exige al convertir a pedido">
+                                                                <Selector claseBoton={SEL} aria-label={t === 'BORDADO' ? 'Dónde se borda' : 'Tipo / variante'} anchoLista={260} value={dd.variante || ''} onChange={e => { cambiarDatosParte(p._k, t, { variante: e.target.value, material: '' }); cargarMateriales(AREA_DE[t], e.target.value); }}>
                                                                     <option value="">Sin definir todavía</option>
                                                                     {(t === 'BORDADO' ? nomen.embVariantes : nomen.tpuVariantes).map(v => <option key={v}>{v}</option>)}
-                                                                </select>
+                                                                </Selector>
                                                             </Campo>
                                                         )}
-                                                        <Campo label={t === 'BORDADO' ? 'Tipo de bordado (100% hilo / con tafeta)' : t === 'DTF' ? 'Film / material' : 'Artículo de TPU (tipo y tamaño del parche)'} ayuda={t !== 'DTF' && !dd.variante ? 'Primero elegí el campo de la izquierda' : 'Se exige al convertir a pedido'}>
-                                                            <select value={dd.material || ''} onChange={e => cambiarDatosParte(p._k, t, { material: e.target.value })} disabled={t !== 'DTF' && !dd.variante}>
+                                                        <Campo div label={t === 'BORDADO' ? 'Tipo de bordado (100% hilo / con tafeta)' : t === 'DTF' ? 'Film / material' : 'Artículo de TPU (tipo y tamaño del parche)'} ayuda={t !== 'DTF' && !dd.variante ? 'Primero elegí el campo de la izquierda' : 'Se exige al convertir a pedido'}>
+                                                            <Selector claseBoton={SEL} aria-label={t === 'BORDADO' ? 'Tipo de bordado' : t === 'DTF' ? 'Film / material' : 'Artículo de TPU'} anchoLista={260} value={dd.material || ''} onChange={e => cambiarDatosParte(p._k, t, { material: e.target.value })} disabled={t !== 'DTF' && !dd.variante}>
                                                                 <option value="">Sin definir todavía</option>
                                                                 {dd.material && !materiales.includes(dd.material) && <option>{dd.material}</option>}
                                                                 {materiales.map(m => <option key={m}>{m}</option>)}
-                                                            </select>
+                                                            </Selector>
                                                         </Campo>
                                                     </div>
-                                                    <Campo label="Indicaciones para Diseño"><textarea className="short" value={pa.Observaciones} onChange={e => cambiarParte(p._k, t, { Observaciones: e.target.value })} /></Campo>
+                                                    <Campo label="Indicaciones para Diseño"><textarea className={TEXTO_CORTO} value={pa.Observaciones} onChange={e => cambiarParte(p._k, t, { Observaciones: e.target.value })} /></Campo>
                                                 </div>
                                             </div>
                                         );
@@ -818,51 +901,73 @@ export default function SolicitudVendedorForm() {
                             </fieldset>
                         </Bloque>
 
-                        <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
-                            <span style={{ display: 'flex', gap: 8 }}>
-                                <button type="button" className="fp-btn" disabled={iPaso === 0} onClick={() => irA(bloquesVis[iPaso - 1]?.id)}>← Anterior</button>
-                                <button type="button" className="fp-btn primary" disabled={iPaso === bloquesVis.length - 1} onClick={() => irA(bloquesVis[iPaso + 1]?.id)}>{iPaso < bloquesVis.length - 1 ? `Siguiente: ${bloquesVis[iPaso + 1].corto} →` : 'Siguiente →'}</button>
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                            <span className="flex flex-wrap gap-2">
+                                <button type="button" className={BTN_ANTERIOR} disabled={iPaso === 0} onClick={() => irA(bloquesVis[iPaso - 1]?.id)}><ArrowLeft size={16} /> Anterior</button>
+                                <button type="button" className={BTN_SIGUIENTE} disabled={iPaso === bloquesVis.length - 1} onClick={() => irA(bloquesVis[iPaso + 1]?.id)}>{iPaso < bloquesVis.length - 1 ? `Siguiente: ${bloquesVis[iPaso + 1].corto}` : 'Siguiente'} <ArrowRight size={16} /></button>
                             </span>
-                            <button type="button" onClick={guardar} disabled={guardando} className="fp-btn accent">{guardando ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />} {textoGuardar}</button>
+                            <button type="button" onClick={guardar} disabled={guardando} className={BTN_INGRESAR}>{guardando ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />} {textoGuardar}</button>
                         </div>
                     </main>
 
-                    {/* PANEL: Estado del pedido */}
-                    <aside id="fp-estado">
-                        <div className="fp-panel">
-                            <h3>Estado del pedido</h3>
-                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-                                <span>{listos === bloquesVis.length ? 'Todo completo' : `${listos} de ${bloquesVis.length} listos`}</span>
-                                <span className={`fp-sello ${sello ? 'si' : 'no'}`}>{sello ? 'Listo para ingresar' : 'Falta info'}</span>
+                    {/* PANEL: Estado del pedido, igual al "Estado para producción" del detalle (EstadoProduccionPanel): tarjeta blanca,
+                        pastilla en vez del sello torcido, barra en brand-cyan (antes amarilla), cada paso con un tilde verde o su
+                        número y lo que falta en rojo. Tocar un paso abre su bloque. */}
+                    <aside id="fp-estado" className="scroll-mt-4 min-[901px]:sticky min-[901px]:top-4 min-[901px]:max-h-[calc(100vh-2rem)] min-[901px]:overflow-y-auto">
+                        <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                            <div className="flex items-start justify-between gap-3">
+                                <div>
+                                    <h3 className="text-base font-black text-slate-800">Estado del pedido</h3>
+                                    <p className="text-xs text-slate-500">{listos === bloquesVis.length ? 'Todo completo' : `${listos} de ${bloquesVis.length} listos`}</p>
+                                </div>
+                                {sello
+                                    ? <span className="shrink-0 whitespace-nowrap rounded-xl bg-emerald-50 px-2 py-0.5 text-xs font-semibold text-emerald-700">Lista para ingresar</span>
+                                    : <span className="shrink-0 whitespace-nowrap rounded-xl bg-rose-50 px-2 py-0.5 text-xs font-semibold text-rose-700">Falta info</span>}
                             </div>
-                            <div className="fp-meter"><i style={{ width: `${(listos / bloquesVis.length) * 100}%` }} /></div>
-                            <ul className="fp-checks">
+                            <div className="mb-3 mt-3 h-2 overflow-hidden rounded-full bg-slate-100" role="progressbar" aria-valuemin={0} aria-valuemax={bloquesVis.length} aria-valuenow={listos} aria-label="Pasos listos">
+                                <div className="h-full rounded-full bg-brand-cyan transition-[width] duration-300" style={{ width: `${(listos / bloquesVis.length) * 100}%` }} />
+                            </div>
+                            <ul className="space-y-0.5">
                                 {bloquesVis.map((b, bi) => {
-                                    const ok = faltan[b.n].length === 0;
+                                    const f = faltan[b.n];
                                     return (
-                                        <li key={b.n} className={ok ? 'ok' : 'falta'}>
-                                            <button type="button" onClick={() => irA(b.id)}>
-                                                <span className="fp-dot">{ok ? '✓' : bi + 1}</span>
-                                                <span><b>{b.titulo}</b><small>{subDe(b)}</small></span>
+                                        <li key={b.n}>
+                                            <button type="button" onClick={() => irA(b.id)} className="flex w-full items-start gap-2.5 rounded-lg px-1.5 py-1.5 text-left transition-colors hover:bg-slate-50">
+                                                {f.length
+                                                    ? <span className="mt-px flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2 border-slate-300 text-[11px] font-black text-slate-500">{bi + 1}</span>
+                                                    : <span className="mt-px flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-emerald-500 text-white"><Check size={12} strokeWidth={3} aria-hidden="true" /></span>}
+                                                <span className="min-w-0">
+                                                    <span className="block text-sm font-semibold text-slate-800">{b.titulo}</span>
+                                                    {f.length
+                                                        ? f.map(x => <span key={x} className="mt-0.5 flex items-start gap-1 text-xs text-rose-600"><X size={12} className="mt-0.5 shrink-0" aria-hidden="true" />{x}</span>)
+                                                        : <span className="block text-xs text-emerald-600">{listoDe(b)}</span>}
+                                                </span>
                                             </button>
                                         </li>
                                     );
                                 })}
                             </ul>
+                            {/* Lo que en la solicitud nueva se cumple después de guardar: pendiente, no un error (antes en rojo) */}
                             {despues.length > 0 && (
-                                <div className="fp-despues">
-                                    <b>{esEdicion ? 'En la solicitud' : 'Después de guardar'}</b> <small>(se cumplen en la solicitud: archivos, piezas y telas, planilla de talles y nombres)</small>
-                                    <ul>{despues.map(x => <li key={x}>{x}</li>)}</ul>
+                                <div className="mt-3 border-t border-dashed border-slate-200 pt-3 text-xs">
+                                    <div className="font-semibold text-slate-700">{esEdicion ? 'En la solicitud' : 'Después de guardar'} <span className="font-normal text-slate-400">(se cumplen en la solicitud: archivos, piezas y telas, planilla de talles y nombres)</span></div>
+                                    <ul className="mt-1 space-y-0.5">{despues.map(x => <li key={x} className="flex items-start gap-1.5 text-slate-600"><Circle size={10} className="mt-[3px] shrink-0 text-slate-400" aria-hidden="true" />{x}</li>)}</ul>
                                 </div>
                             )}
-                            {luego.length > 0 && <div className="fp-luego">Se puede completar después, no frena: {luego.join(' · ')}</div>}
-                            <button type="button" onClick={guardar} disabled={guardando} className="fp-btn accent">{guardando ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />} {textoGuardar}</button>
+                            {luego.length > 0 && <div className="mt-3 border-t border-dashed border-slate-200 pt-3 text-xs text-amber-700">Se puede completar después, no frena: {luego.join(' · ')}</div>}
+                            <button type="button" onClick={guardar} disabled={guardando} className={`${BTN_INGRESAR} mt-4 w-full`}>{guardando ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />} {textoGuardar}</button>
                         </div>
-                        <p className="fp-saved">Se puede guardar incompleto. El sello "Falta info" queda en la solicitud hasta que esté todo lo necesario para producción; el pago y los extras se exigen recién al convertir a pedido.</p>
+                        <p className="mt-2 text-xs text-slate-500">Se puede guardar incompleto. La solicitud queda marcada con "Falta info" hasta que tenga todo lo necesario para producción; el pago y los extras se exigen recién al convertir a pedido.</p>
                     </aside>
                 </div>
             </div>
-            <div className="fp-mbar"><span>{listos === bloquesVis.length ? 'Todo completo' : `${listos} de ${bloquesVis.length} listos`}</span><a href="#fp-estado" onClick={e => { e.preventDefault(); irA('fp-estado'); }}>Ver qué falta</a></div>
+            {/* Barra del celular (hasta 900 px, cuando el panel queda abajo): cuántos pasos están listos y un atajo al panel.
+                Pegada abajo y de borde a borde: los márgenes negativos son el padding de la página. */}
+            <div className="sticky bottom-0 z-[5] -mx-3 -mb-3 mt-4 flex items-center justify-between gap-3 border-t border-slate-200 bg-white px-4 py-2 shadow-[0_-4px_12px_rgba(15,23,42,0.06)] md:-mx-6 md:-mb-6 min-[901px]:hidden">
+                <span className="text-sm font-semibold text-slate-700">{listos === bloquesVis.length ? 'Todo completo' : `${listos} de ${bloquesVis.length} listos`}</span>
+                <a href="#fp-estado" onClick={e => { e.preventDefault(); irA('fp-estado'); }} className="inline-flex min-h-[40px] items-center rounded-lg bg-brand-cyan px-3.5 text-sm font-bold text-white transition-colors hover:bg-brand-cyan/90">Ver qué falta</a>
+            </div>
+            {dialogo}
         </div>
     );
 }

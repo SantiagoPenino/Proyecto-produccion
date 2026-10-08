@@ -16,9 +16,8 @@ import {
 import Selector from '../../ui/Selector';
 import EstadoProduccionPanel from './EstadoProduccionPanel';
 import TizadaProBloque from './TizadaProBloque';
-// fichaPedido.css sigue solo por la grilla con el panel "Estado para producción" al costado (fp-det-grid /
-// fp-det-aside, que son solo de diseño de página). El tema oscuro (fp-oscuro) y el panel con fp-panel ya no se usan acá.
-import './fichaPedido.css';
+// La grilla con el panel "Estado para producción" al costado era lo último de fichaPedido.css (fp-det-grid /
+// fp-det-aside); pasó a Tailwind y la hoja de estilos se borró (06/10).
 
 // Tema claro (06/10): las zonas, sus títulos y los subtítulos con el estilo del resto del sistema. Antes eran clases
 // de fichaPedido.css (fp-zona, fp-zona-tit, fp-subtit), con el amarillo y la Barlow del tema oscuro.
@@ -28,9 +27,9 @@ const SUBTIT = 'mb-1.5 text-[10px] font-black uppercase tracking-wider text-slat
 // Mayúscula inicial en cada palabra ("admin" → "Admin"), como el vendedor en la lista de solicitudes
 const capitalizar = (v) => String(v || '').trim().toLowerCase().replace(/\S+/g, w => w.charAt(0).toUpperCase() + w.slice(1));
 
-// Estados escritos normal, sin mayúsculas, con su color (06/10), como en la lista de solicitudes y la Bandeja. Las
-// pastillas de solicitudesComunes (Pill, PillModificada y el Sello torcido de la maqueta) van en mayúsculas; acá van
-// propias, con los mismos textos y colores. Pastilla la usa también la pantalla de Diseño.
+// Estados escritos normal, sin mayúsculas, con su color (06/10), como en la lista de solicitudes y la Bandeja. Antes
+// eran las pastillas en mayúsculas de solicitudesComunes (Pill y PillModificada, que quedaron sin uso) y el sello torcido
+// de la maqueta. Pastilla la usa también la pantalla de Diseño.
 const PASTILLA = 'inline-block whitespace-nowrap rounded-xl px-2 py-0.5 text-xs font-semibold leading-snug';
 export const Pastilla = ({ e, mapa }) => {
     const st = mapa[e] || { txt: e, cls: 'bg-slate-100 text-slate-600' };
@@ -321,7 +320,8 @@ export function ProductoTab({ s, p, n, id, user, perfil, busy, abierta, puedeVen
     const principal = p.Partes.find(pa => pa.Tipo === 'PRINCIPAL');
 
     return (
-        <div className="fp-det-grid">
+        // Producto a la izquierda y "Estado para producción" a la derecha, pegado al bajar; hasta 1100 px, uno abajo del otro
+        <div className="grid grid-cols-1 items-start gap-5 min-[1101px]:grid-cols-[minmax(0,1fr)_340px]">
         <div className="space-y-4 min-w-0">
             <div className="flex flex-wrap items-center justify-between gap-2">
                 <h2 className="text-sm font-black text-slate-800">Producto {n}: {p.TipoFabricacion === 'PRODUCTO_TERMINADO' ? (p.ProductoNombre || `Producto ${p.ProIdProducto}`) : 'Producto personalizado del cliente'} <span className="font-bold text-slate-500">· {p.Cantidad} prendas</span></h2>
@@ -358,7 +358,7 @@ export function ProductoTab({ s, p, n, id, user, perfil, busy, abierta, puedeVen
             )}
 
         </div>
-            <aside className="fp-det-aside">
+            <aside className="min-[1101px]:sticky min-[1101px]:top-4 min-[1101px]:max-h-[calc(100vh-2rem)] min-[1101px]:overflow-y-auto">
                 <Conversion s={s} p={p} pedido={conv.pedido} faltantes={faltantes} avisos={conv.avisos || []} checklist={conv.checklist} puedeVender={perfil.esVendedor} busy={busy} hacer={hacer} id={id} />
             </aside>
         </div>

@@ -89,7 +89,7 @@ export default function BandejaDisenoPage() {
     const vista = pestana ?? 'produccion';
 
     // Tema claro, como el resto del sistema (06/10). Antes iba dentro de .fp-oscuro, el tema oscuro de las
-    // pantallas de Solicitudes (fichaPedido.css), que pasa las clases claras de Tailwind a azul y amarillo.
+    // pantallas de Solicitudes (fichaPedido.css, borrado el 06/10), que pasaba las clases claras a azul y amarillo.
     return (
         <>
         <div className="p-3 md:p-6 space-y-4">

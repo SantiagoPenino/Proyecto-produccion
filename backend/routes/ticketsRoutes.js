@@ -5,6 +5,7 @@ const fs = require('fs');
 const ticketsController = require('../controllers/ticketsController');
 const { verifyToken } = require('../middleware/authMiddleware');
 const { uploadTickets, getTicketFolder } = require('../middleware/multerTicketsConfig');
+const { webpEnSubida } = require('../utils/imagenWebp'); // fotos → WebP 80 ≤ 1080 px (PDF y otros quedan igual)
 
 // Todo el módulo de tickets es privado (ya sea web_client o admin)
 router.use(verifyToken);
@@ -40,7 +41,7 @@ router.get('/:id', ticketsController.getTicketDetails);
 
 // Responder a un ticket (enviar mensaje) -> req.files.evidencia opcional
 // Admins pueden enviar esNotaInterna en el body.
-router.post('/:id/responder', uploadTickets.array('evidencia', 5), ticketsController.replyToTicket);
+router.post('/:id/responder', uploadTickets.array('evidencia', 5), webpEnSubida, ticketsController.replyToTicket);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // RUTAS CLIENTES WEB 
@@ -49,7 +50,7 @@ router.post('/:id/responder', uploadTickets.array('evidencia', 5), ticketsContro
 router.get('/', ticketsController.getTickets);
 
 // Crear nuevo ticket
-router.post('/', uploadTickets.array('evidencia', 5), ticketsController.createTicket);
+router.post('/', uploadTickets.array('evidencia', 5), webpEnSubida, ticketsController.createTicket);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // RUTAS ADICIONALES ADMINS

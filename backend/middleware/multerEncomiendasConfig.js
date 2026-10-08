@@ -52,7 +52,9 @@ const uploadEncomiendas = {
         const filename = `${remitoCode}-${ordenSufijo}.webp`;
         const destPath = path.join(uploadFolder, filename);
 
-        // Convertir a WebP con calidad 82 y redimensionar si supera 1800px de ancho
+        // Convertir a WebP calidad 75 y achicar a 1200 px de ancho si es más grande.
+        // (Las demás fotos del sistema usan 80 / lado mayor 1080 — utils/imagenWebp.js —;
+        // encomiendas se queda en 75 por decisión del 07/10/2026.)
         await sharp(req.file.buffer)
           .rotate()                    // corregir orientación EXIF automáticamente
           .resize({ width: 1200, withoutEnlargement: true })

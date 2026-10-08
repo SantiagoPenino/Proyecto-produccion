@@ -10,6 +10,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const { webpEnSubida } = require('../utils/imagenWebp');
 
 const BASE_PATH = path.resolve(process.env.ST_ADJUNTOS_PATH || path.join(__dirname, '..', 'servicio-tecnico'));
 const TEMP_PATH = path.join(BASE_PATH, '_temp');
@@ -50,7 +51,9 @@ const upload = multer({
 // Middleware que responde 400 con un mensaje claro en vez de tirar el error de multer.
 const subirAdjuntos = (req, res, next) => {
     upload.array('adjuntos', MAX_ARCHIVOS)(req, res, (err) => {
-        if (!err) return next();
+        // Las fotos pasan a WebP 80 ≤ 1080 px (07/10/2026); PDF y videos quedan igual.
+        // Actualiza filename/mimetype/size, que es lo que guarda ST_Adjuntos.
+        if (!err) return webpEnSubida(req, res, next);
         const msg = err.code === 'LIMIT_FILE_SIZE' ? `Un archivo supera los ${MAX_BYTES / 1024 / 1024} MB.`
             : err.code === 'LIMIT_FILE_COUNT' ? `Máximo ${MAX_ARCHIVOS} archivos por vez.`
             : err.code === 'ST_TIPO_NO_PERMITIDO' ? err.message

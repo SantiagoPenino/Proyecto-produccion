@@ -56,6 +56,7 @@
  */
 
 const { getPool, sql } = require('../config/db');
+const { rollbackSeguro, relanzarSiTxMuerta } = require('../utils/rollbackSeguro');
 const logger           = require('../utils/logger');
 const { marcarCobranzaPagada, marcarCobranzaPendiente } = require('./cobranzaService');
 const contabilidadSvc  = require('./contabilidadService');
@@ -919,6 +920,7 @@ async function procesarTransaccion(payload) {
           header.numeroDoc = String(r.UltimoNumero).padStart(r.Digitos || 6, '0');
         }
       } catch (eSeq) {
+        relanzarSiTxMuerta(eSeq, transaction); // timeout/deadlock: que falle entero (07/10/2026)
         logger.warn(`[CAJA] No se pudo generar secuencia para ${header.tipoDocumento}:`, eSeq.message);
       }
     }
@@ -1617,6 +1619,7 @@ async function procesarTransaccion(payload) {
                  transaction
                ) || [];
              } catch (eLineas) {
+               relanzarSiTxMuerta(eLineas, transaction); // timeout/deadlock: que falle entero (07/10/2026)
                logger.warn(`[CAJA-ERP] Sin detalle de líneas para TcaId=${tcaIdTransaccion}: ${eLineas.message}`);
                lineasDocCFE = [];
              }
@@ -1762,6 +1765,7 @@ async function procesarTransaccion(payload) {
                     }
                   }
                 } catch (errMap) {
+                  relanzarSiTxMuerta(errMap, transaction); // timeout/deadlock: que falle entero (07/10/2026)
                   logger.warn(`[CAJA-CFE] Error mapping IDs: ${errMap.message}`);
                 }
               }
@@ -1959,7 +1963,7 @@ async function procesarTransaccion(payload) {
     };
 
   } catch (err) {
-    try { await transaction.rollback(); } catch (_) {}
+    await rollbackSeguro(transaction, 'procesarTransaccion');
     logger.error(`[CAJA] ❌ Error procesarTransaccion: ${err.message}`, err);
     throw err;
   }

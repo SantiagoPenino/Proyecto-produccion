@@ -62,7 +62,7 @@ router.post('/file/add', verifyToken, ordersController.addFile);
 const multerProd = require('multer');
 const pathProd = require('path');
 const fsProd = require('fs');
-const tmpDirProd = pathProd.join(__dirname, '../uploads/tmp');
+const tmpDirProd = require('../utils/rutasUploads').rutaUploads('tmp'); // UPLOADS_PATH
 if (!fsProd.existsSync(tmpDirProd)) fsProd.mkdirSync(tmpDirProd, { recursive: true });
 const uploadProdFile = multerProd({
     storage: multerProd.diskStorage({

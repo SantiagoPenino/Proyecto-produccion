@@ -2,7 +2,7 @@
 
 const cajaService = require('../services/cajaService');
 const logger      = require('../utils/logger');
-const { rollbackSeguro } = require('../utils/rollbackSeguro');
+const { rollbackSeguro, relanzarSiTxMuerta } = require('../utils/rollbackSeguro');
 const { esDeadlock }     = require('../utils/reintentarDeadlock');
 const contabilidadSvc = require('../services/contabilidadService');
 const contabilidadCore = require('../services/contabilidadCore'); // ERP Core
@@ -1702,6 +1702,7 @@ const procesarPagoDeudaInterno = async (req, res) => {
               `);
             logger.info(`[PAGO-DEUDA] OrdenesDeposito vinculadas a DeudaDoc #${ddeId} marcadas como Pagadas.`);
           } catch (eOrden) {
+            relanzarSiTxMuerta(eOrden, transaction); // timeout/deadlock: que falle entero (07/10/2026)
             logger.warn(`[PAGO-DEUDA] No se pudo marcar OrdenDeposito como pagada para DeudaDoc #${ddeId}: ${eOrden.message}`);
             // ─────────────────────────────────────────────
           }
@@ -1730,6 +1731,7 @@ const procesarPagoDeudaInterno = async (req, res) => {
               ordenesPagadasPorDeuda.push(ordPagadaPorDeuda);
               logger.info(`[PAGO-DEUDA] Orden #${ordPagadaPorDeuda} (deuda por orden #${ddeId}) marcada como PAGADA.`);
             } catch (eOrd) {
+              relanzarSiTxMuerta(eOrd, transaction); // timeout/deadlock: que falle entero (07/10/2026)
               logger.warn(`[PAGO-DEUDA] No se pudo marcar la orden #${ordPagadaPorDeuda} como pagada: ${eOrd.message}`);
             }
           }
@@ -1965,6 +1967,7 @@ const procesarPagoDeudaInterno = async (req, res) => {
                 logger.info(`[PAGO-DEUDA] Recibo RC-${String(numRecibo).padStart(6,'0')} (ID=${reciboId}) generado para Doc #${docId}`);
               }
             } catch (eRecibo) {
+              relanzarSiTxMuerta(eRecibo, transaction); // timeout/deadlock: que falle entero (07/10/2026)
               logger.warn(`[PAGO-DEUDA] Recibo no generado (no critico): ${eRecibo.message}`);
             }
           }
@@ -2095,6 +2098,7 @@ const procesarPagoDeudaInterno = async (req, res) => {
                 const nDz = await contabilidadCore.enriquecerLineasDocumento(docId, transaction);
                 if (nDz) logger.info(`[PAGO-DEUDA] Desglose completado en ${nDz} línea(s) del doc ${docId}`);
               } catch (eDz) {
+                relanzarSiTxMuerta(eDz, transaction); // timeout/deadlock: que falle entero (07/10/2026)
                 logger.warn(`[PAGO-DEUDA] Sin desglose en las líneas del doc ${docId}: ${eDz.message}`);
               }
             } else {
@@ -2157,11 +2161,13 @@ const procesarPagoDeudaInterno = async (req, res) => {
                   logger.info(`[PAGO-DEUDA] Movimiento VTA_CAJA insertado por ${docTotal} en cuenta ${cueIdCuenta}`);
                 }
               } catch (eMov) {
+                relanzarSiTxMuerta(eMov, transaction); // timeout/deadlock: que falle entero (07/10/2026)
                 logger.error(`[PAGO-DEUDA] Error al insertar VTA_CAJA: ${eMov.message}`);
               }
             }
           }
         } catch (eDoc) {
+          relanzarSiTxMuerta(eDoc, transaction); // timeout/deadlock: que falle entero (07/10/2026)
           logger.error(`[PAGO-DEUDA] Error al generar Documento Contable: ${eDoc.message}`);
         }
       }
@@ -2456,6 +2462,7 @@ const procesarPagoDeudaInterno = async (req, res) => {
             lineas: lineasAsiento,
           }, transaction);
         } catch (eAsiento) {
+          relanzarSiTxMuerta(eAsiento, transaction); // timeout/deadlock: que falle entero (07/10/2026)
           logger.warn(`[PAGO-DEUDA] Asiento contable parcial: ${eAsiento.message}`);
           // ─────────────────────────────────────────────
         }
@@ -2523,7 +2530,7 @@ const procesarPagoDeudaInterno = async (req, res) => {
       });
 
     } catch (errTx) {
-      await transaction.rollback();
+      await rollbackSeguro(transaction, 'pago-deuda');
       throw errTx;
     }
   } catch (err) {

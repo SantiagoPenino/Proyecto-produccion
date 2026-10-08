@@ -55,7 +55,7 @@ function dibujoDataUri(dibujoUrl) {
   try {
     if (!dibujoUrl) return null;
     let ruta = null;
-    if (dibujoUrl.startsWith('/uploads/')) ruta = path.join(__dirname, '..', dibujoUrl.replace(/^\//, ''));
+    if (dibujoUrl.startsWith('/uploads/')) ruta = require('../utils/rutasUploads').urlUploadsADisco(dibujoUrl); // UPLOADS_PATH
     // [PASO A PASO] esquemas de costura ISO: van con el frontend (build en backend/public; fuente en public/)
     else if (/^\/costuras-iso\/[\w.-]+$/.test(dibujoUrl)) {
       ruta = [path.join(__dirname, '..', 'public', dibujoUrl), path.join(__dirname, '..', '..', 'public', dibujoUrl)].find(r => fs.existsSync(r)) || null;

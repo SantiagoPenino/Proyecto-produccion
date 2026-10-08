@@ -206,7 +206,7 @@ router.get('/drive/save-token-get', async (req, res) => {
 
 // DiskStorage temporal: evita cargar 300MB en RAM
 const multer = require('multer');
-const uploadTmpDir = path.join(__dirname, '../uploads/tmp');
+const uploadTmpDir = require('../utils/rutasUploads').rutaUploads('tmp'); // UPLOADS_PATH
 if (!fs.existsSync(uploadTmpDir)) fs.mkdirSync(uploadTmpDir, { recursive: true });
 
 const upload = multer({
@@ -255,7 +255,7 @@ router.post('/reuse-matriz', verifyToken, impersonarCliente, webOrdersController
 // --- SUBIDA DE IMÁGENES DE CONFIGURACIÓN (CMS) ---
 const storageConfig = multer.diskStorage({
     destination: function (req, file, cb) {
-        const dir = path.join(__dirname, '../uploads/config_images');
+        const dir = require('../utils/rutasUploads').rutaUploads('config_images'); // UPLOADS_PATH
         if (!fs.existsSync(dir)) {
             fs.mkdirSync(dir, { recursive: true });
         }
@@ -268,13 +268,14 @@ const storageConfig = multer.diskStorage({
 });
 const uploadConfig = multer({ storage: storageConfig });
 
-router.post('/config-image-upload', verifyToken, uploadConfig.single('image'), (req, res) => {
+// Imágenes del CMS → WebP 80 ≤ 1080 px (GIF animado sigue animado). utils/imagenWebp.js
+router.post('/config-image-upload', verifyToken, uploadConfig.single('image'), require('../utils/imagenWebp').webpEnSubida, (req, res) => {
     if (!req.file) return res.status(400).json({ error: "No file uploaded" });
 
     // Construct public URL (assuming server runs on same host/port)
     // El frontend debe prepender la URL base si es necesario, pero devolveremos la ruta relativa.
-    // server.js sirve /uploads -> backend/uploads
-    // Archivo guardado en backend/uploads/config_images/xxx.jpg
+    // server.js sirve /uploads -> UPLOADS_PATH (o backend/uploads)
+    // Archivo guardado en <uploads>/config_images/xxx.webp
     // URL Pública: /uploads/config_images/xxx.jpg
 
     // IMPORTANTE: Multer path usa backslashes en Windows. Reemplazar por forward slashes.
