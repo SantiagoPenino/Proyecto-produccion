@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef, useCallback, Suspense, lazy } from 'react';
-import { LayoutDashboard, Warehouse, Printer, ClipboardList, Terminal, CircleUserRound, Tags, Headset, Calculator, Landmark, Shirt, Sun, Sparkles, Flame, Scissors, Pen, Shapes, PenLine, QrCode, ShieldBan, PrinterCheck, History, LayoutGrid, PackagePlus, PackageCheck, Truck, FileSearch, Boxes, Waypoints, Send, Package, Bus, ClipboardCheck, Menu, Users, Shield, Eye, Settings, Database, UserX, RefreshCw, BadgeDollarSign, Layers, BookOpen, Banknote, CreditCard, ShieldCheck, Calendar, CalendarCheck, MapPin, Store, LifeBuoy, Ticket, ScanLine, FileText, Cpu, FileDown, Inbox, Receipt, ShoppingCart, Palette, Megaphone, ScanEye, FileSignature, TrendingUp, Wrench, Gift, Handshake, ClipboardPen, PenTool, ChartGantt, UserPen, ListChecks, Target, Zap, ReceiptText, CalendarDays, Repeat, FolderKanban } from 'lucide-react';
+import { LayoutDashboard, Warehouse, Printer, ClipboardList, Terminal, CircleUserRound, Tags, Headset, Calculator, Landmark, Shirt, Sun, Sparkles, Flame, Scissors, Pen, Shapes, PenLine, QrCode, ShieldBan, PrinterCheck, History, LayoutGrid, PackagePlus, PackageCheck, Truck, FileSearch, Boxes, Waypoints, Send, Package, Bus, ClipboardCheck, Menu, Users, Shield, Eye, Settings, Database, UserX, RefreshCw, BadgeDollarSign, Layers, BookOpen, Banknote, CreditCard, ShieldCheck, Calendar, CalendarCheck, MapPin, BadgePercent, Contact, Store, LifeBuoy, Ticket, ScanLine, FileText, Cpu, FileDown, Inbox, Receipt, ShoppingCart, Palette, Megaphone, ScanEye, FileSignature, TrendingUp, Wrench, Gift, Handshake, ClipboardPen, PenTool, ChartGantt, UserPen, ListChecks, Target, Zap, ReceiptText, CalendarDays, Repeat, FolderKanban } from 'lucide-react';
 import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
 import { SECCIONES_STOCK } from '../pages/stockSecciones';
 import { SECCIONES_ST, destinoServicioTecnico } from '../pages/servicioTecnicoSecciones';
@@ -124,6 +124,7 @@ const ReportesPage                 = lazyWithRetry(() => import('../pages/Report
 const ContabilidadReportesPage     = lazyWithRetry(() => import('../pages/ContabilidadReportesPage'));
 const TareasPage                   = lazyWithRetry(() => import('../pages/TareasPage'));
 const ServicioTecnicoPage          = lazyWithRetry(() => import('../pages/ServicioTecnicoPage'));
+const DescuentoTrabajadoresPage    = lazyWithRetry(() => import('../pages/rrhh/DescuentoTrabajadoresPage')); // RRHH: perfil de precios de trabajadores
 
 // ============================================
 // 1. LUCIDE ICON MAP (override FA icons)
@@ -378,6 +379,11 @@ const lucideIconMapRaw = {
     'solicitudes de insumo': Scissors,
     'pagos online/web (handy)': CreditCard,
     'facturas': ReceiptText,
+    // Recursos Humanos (backend/scripts/menu_rrhh_descuento_trabajadores.sql)
+    'recursos humanos': Contact,
+    'rrhh': Contact,
+    'descuento trabajadores': BadgePercent,
+    'descuento a trabajadores': BadgePercent,
 };
 const getLucideIcon = (name) => lucideIconMapRaw[name?.toLowerCase?.()?.trim?.()?.replace(/\s+/g, ' ')];
 
@@ -1131,6 +1137,8 @@ const DynamicRouter = ({ menuItems }) => {
     if (menuItem.Ruta === '/logistica/precios') return <SpecialPrices />;
     if (menuItem.Ruta === '/admin/precios-base') return <BasePrices />;
     if (menuItem.Ruta === '/admin/perfiles-precio') return <PriceProfiles />;
+    // RRHH: solo por menú (sin <Route> fija), así respeta los permisos del rol.
+    if (menuItem.Ruta === '/rrhh/descuento-trabajadores') return <DescuentoTrabajadoresPage />;
     if (menuItem.Ruta === '/logistica/transporte') return <TransportControlPage />;
     if (menuItem.Ruta === '/logistica/buscar-ordenes') return <OrderSearchPage />;
     if (menuItem.Ruta === '/logistica/orden-integral') return <IntegralOrderView />;

@@ -837,6 +837,14 @@ const resolverLineasDetalle = async ({ tcaIdTransaccion, orderIds, monedaFactura
             AND ISNULL(od.OrdCostoFinal, 0) = 0
             AND ISNULL(pcd.Subtotal, 0)     = 0
           )
+          -- Excluir órdenes EXONERADAS en caja ("solo no cobrar ahora"): no se cobran en
+          -- esta transacción, así que no van en la factura. Antes salían igual y había que
+          -- editar el documento para que cuadrara con la plata (Odysseus FA-2191 / EUV-26412,
+          -- 30-09-2026). Sin orden (líneas legacy) el NOT EXISTS da verdadero y no cambia nada.
+          AND NOT EXISTS (
+                SELECT 1 FROM dbo.Pagos px WITH(NOLOCK)
+                WHERE px.PagIdPago = od.PagIdPago AND px.PagTipoMovimiento = 'EXONERACION'
+          )
       `);
 
     // Lo COBRADO por estas referencias, en la moneda del documento: es la base de la

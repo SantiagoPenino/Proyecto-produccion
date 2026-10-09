@@ -179,8 +179,23 @@ async function changeOrderState(transaction, opts) {
         const upd = new sql.Request(transaction).input('TID', tidType, tidVal);
         if (estadoGeneral) { setParts.push('Estado = @EG'); upd.input('EG', sql.VarChar(50), estadoGeneral); }
         setParts.push('EstadoenArea = @EA'); upd.input('EA', sql.VarChar(50), estado);
-        if (estado && estado.trim().toUpperCase() === 'PRONTO') {
+        // FechaPronto = "la orden terminó su trabajo en el área". Se graba al pasar a PRONTO
+        // (como siempre) Y TAMBIÉN cuando la orden se cierra como FINALIZADO sin haber pasado
+        // por Pronto — pasa en varios caminos reales: reposiciones -F que terminan control
+        // (productionFileController), hermanas TERMINAC al aprobar terminaciones
+        // (ecoUvFinishingController), entrega completa en logística (logisticsController),
+        // lote impreso (rollsController). Sin esto quedaban Finalizadas con FechaPronto NULL
+        // y el motor de capacidad (planificacionController: "terminada" = FechaPronto NOT NULL)
+        // las seguía contando como backlog — bug real 9-oct-2026: DTF mostraba 3335 órdenes /
+        // 5232 m pendientes cuando los reales eran ~150 / ~250 m. Se corrigieron los datos a
+        // mano ese día; esto evita que vuelva a pasar. ISNULL: si ya tenía FechaPronto (pasó
+        // por Pronto antes de Finalizar), se respeta la fecha original.
+        const estadoAreaUp    = (estado || '').trim().toUpperCase();
+        const estadoGeneralUp = (estadoGeneral || '').trim().toUpperCase();
+        if (estadoAreaUp === 'PRONTO') {
             setParts.push('FechaPronto = GETDATE()');
+        } else if (estadoAreaUp === 'FINALIZADO' || estadoGeneralUp === 'FINALIZADO') {
+            setParts.push('FechaPronto = ISNULL(FechaPronto, GETDATE())');
         }
         if (extraSet && typeof extraSet === 'object') {
             let i = 0;

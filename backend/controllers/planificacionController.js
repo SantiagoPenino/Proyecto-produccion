@@ -238,7 +238,11 @@ async function fetchDatosArea(pool, area, desde, hasta) {
                            -- fijo — RTRIM para no arrastrar el padding hasta la pantalla.
                            RTRIM(o.UM) AS UM
                     FROM dbo.Ordenes o
-                    WHERE AreaID = @area AND FechaPronto IS NULL AND ISNULL(Estado, '') <> 'Cancelado'
+                    WHERE AreaID = @area AND FechaPronto IS NULL AND ISNULL(Estado, '') NOT IN ('Cancelado', 'Finalizado')
+                      -- Estado 'Finalizado' excluido además de FechaPronto (9-oct-2026): defensa
+                      -- por si algún camino nuevo vuelve a cerrar una orden sin grabar FechaPronto
+                      -- (ver stateManagerService.changeOrderState, que hoy ya la graba al
+                      -- finalizar). Una orden finalizada nunca es backlog, tenga o no la fecha.
                       -- [REQUISITOS] No cuenta como capacidad consumible una orden bloqueada por
                       -- requisitos (matriz sin listar, prenda del cliente sin llegar, etc. — ver
                       -- ConfigRequisitosProduccion/OrdenCumplimientoRequisitos, mismo criterio que
@@ -304,7 +308,7 @@ async function fetchDatosArea(pool, area, desde, hasta) {
                     LEFT JOIN InventarioPrendasCliente pc ON pc.PrendaClienteID = o.PrendaClienteID
                         AND req.CodigoRequisito = 'PRENDA'
                     LEFT JOIN Recepciones rec ON rec.RecepcionID = pc.RecepcionID
-                    WHERE o.AreaID = @area AND o.FechaPronto IS NULL AND ISNULL(o.Estado, '') <> 'Cancelado'
+                    WHERE o.AreaID = @area AND o.FechaPronto IS NULL AND ISNULL(o.Estado, '') NOT IN ('Cancelado', 'Finalizado')
                       AND EXISTS (
                           SELECT 1 FROM ConfigRequisitosProduccion req2
                           WHERE req2.AreaID = @area AND req2.EsBloqueante = 1

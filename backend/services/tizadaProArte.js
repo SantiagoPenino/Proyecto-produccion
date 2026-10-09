@@ -42,7 +42,9 @@ const esCapa = (capa, ...nombres) => nombres.map(clave).includes(clave(capa));
 /** Lo que trae un arte: capas, mesas, letras por capa y los nombres de pieza escritos en "guias". */
 async function analizarArte(buffer) {
   const pdfjs = await cargarPdfjs();
-  const doc = await pdfjs.getDocument({ data: new Uint8Array(buffer), isEvalSupported: false, useSystemFonts: false, verbosity: 0 }).promise;
+  // pdfjs 6 sacó doc.destroy(): el que cierra y libera memoria es el loadingTask (anda igual en la 5)
+  const tarea = pdfjs.getDocument({ data: new Uint8Array(buffer), isEvalSupported: false, useSystemFonts: false, verbosity: 0 });
+  const doc = await tarea.promise;
   try {
     let oc = null; try { oc = await doc.getOptionalContentConfig(); } catch (_) { /* sin capas */ }
     const capas = oc ? [...oc].map(([, g]) => g.name) : [];
@@ -71,7 +73,7 @@ async function analizarArte(buffer) {
       pg.cleanup();
     }
     return { mesas: doc.numPages, capas, letras: [...letras.values()].map(e => ({ ...e, capas: [...e.capas] })), guias };
-  } finally { await doc.destroy(); }
+  } finally { await tarea.destroy(); }
 }
 
 /**

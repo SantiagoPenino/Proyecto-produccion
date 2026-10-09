@@ -1035,7 +1035,7 @@ export default function EmbBandeja({ area = 'EMB', fase = 'trabajo', onSelectOrd
                                                         <div key={i} className="flex items-start gap-3 px-3 py-2 text-xs border-t border-zinc-100 first:border-t-0">
                                                             <span className="w-5 h-5 rounded-full bg-zinc-800 text-white text-[10px] font-black flex items-center justify-center flex-shrink-0">{i + 1}</span>
                                                             <div className="flex-1 min-w-0">
-                                                                <div className="text-zinc-800 font-bold">{c.union}{c.piezas ? <span className="font-normal text-zinc-500"> · {c.piezas}</span> : null}</div>
+                                                                <div className="text-zinc-800 font-bold">{c.union}{c.piezas ? <span className="font-normal text-zinc-500"> · {c.piezas}</span> : null}{c.avio ? <span className="font-normal text-zinc-500"> · Avío: <b className="text-zinc-700">{c.avio}</b></span> : null}</div>
                                                                 <div className="text-zinc-500">
                                                                     {c.codigoISO ? <span className="font-mono font-bold text-zinc-700">{c.codigoISO}</span> : 'Sin costura'}{c.nombre ? ` · ${c.nombre}` : ''}
                                                                     {c.maquina ? <> · Máquina: <b className="text-zinc-700">{c.maquina}</b></> : null}
@@ -1056,7 +1056,7 @@ export default function EmbBandeja({ area = 'EMB', fase = 'trabajo', onSelectOrd
                                                     {f.avios.map((a, i) => (
                                                         <div key={i} className="grid grid-cols-[1fr_auto] gap-2 px-3 py-1 text-xs border-t border-zinc-100 first:border-t-0">
                                                             <span className="text-zinc-700">{a.nombre}{a.medida ? <span className="text-zinc-400"> · {a.medida}</span> : null}{a.nota ? <span className="text-zinc-400"> · {a.nota}</span> : null}</span>
-                                                            <span className="font-mono font-bold text-zinc-700">{a.cantidad} {a.unidad}</span>
+                                                            <span className="font-mono font-bold text-zinc-700">{(a.porTalle || []).length && ['u', 'par'].includes(a.unidad) ? 'según talle' : `${a.cantidad} ${a.unidad}`}</span>
                                                         </div>
                                                     ))}
                                                 </div>

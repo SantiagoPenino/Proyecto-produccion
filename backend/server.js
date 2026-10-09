@@ -248,6 +248,11 @@ try {
 } catch (e) { logger.error("❌ Error loading profiles routes:", e); }
 
 try {
+    // Recursos Humanos: descuento a trabajadores (perfil de precios)
+    app.use('/api/rrhh', require('./routes/rrhhRoutes'));
+} catch (e) { logger.error("❌ Error loading rrhh routes:", e); }
+
+try {
     // Vista 360 del Vendedor (solo lectura)
     app.use('/api/vendedor-360', require('./routes/vendedorVistaRoutes'));
 } catch (e) { logger.error("❌ Error loading vendedor 360 routes:", e); }

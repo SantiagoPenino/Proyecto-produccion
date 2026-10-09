@@ -56,7 +56,6 @@ async function asientoVentaOrdenBilletera(transaction, { importe, monedaId, clie
   }
 }
 const { aplicarRecargoUrgenciaRollo } = require('../services/urgenciaDescuentoRolloService');
-const { PDFDocument, StandardFonts, rgb } = require('pdf-lib');
 
 // ============================================================
 // SECCIÓN 1: CUENTAS DE CLIENTE
@@ -2475,6 +2474,372 @@ exports.getEstadoCuentaCliente = async (req, res) => {
   }
 };
 
+// ── RECIBO A4 (modelo único) ─────────────────────────────────────────────────
+// Un solo armador de datos para TODOS los recibos A4: el cobro de deudas (RC), el
+// anticipo / saldo a favor (RA) y los movimientos sueltos que no pasaron por caja.
+// El PDF lo dibuja el front (generarPdfReciboCobro), así el papel es siempre el mismo.
+// Si un día el recibo se emite como CFE, los datos de DGI del documento (CAE, QR,
+// código de seguridad, rango, vencimiento, resolución) ya viajan acá y el PDF los
+// imprime; mientras no, el papel aclara que es un recibo interno.
+
+const SERIES_RECIBO = ['RC', 'RA'];
+const _txt = (v) => (v != null && String(v).trim()) ? String(v).trim() : null; // columnas CHAR vienen con espacios
+const _ref = (serie, numero) => {
+  const s = _txt(serie) || '';
+  const n = numero != null ? String(numero).trim() : '';
+  return s && n ? `${s}-${n}` : (s || n || null);
+};
+const _cuenta = (c) => (c && c.CueIdCuenta ? {
+  codigo: `CTA-${String(c.CueTipo || '').includes('USD') ? 'USD' : 'UYU'}-${c.CueIdCuenta}`,
+  nombre: _txt(c.CueNombre)
+    || (c.CueEsPrincipal ? `Cuenta principal ${String(c.CueTipo || '').includes('USD') ? 'US$' : '$'}` : `Cuenta #${c.CueIdCuenta}`),
+} : null);
+const _cliente = (r) => ({
+  id: r.CliIdCliente,
+  codigo: _txt(r.CliCodigo),
+  nombre: _txt(r.CliNombre),
+  fantasia: _txt(r.CliNombreFantasia),
+  ruc: _txt(r.CliRuc),
+  telefono: _txt(r.CliTelefono),
+  direccion: _txt(r.CliDireccion),
+});
+// Datos fiscales del recibo, solo si se emitió como CFE (mismos campos que la factura).
+const _dgi = (d) => (d && (d.CfeUrlImpresion || d.CfeCAE || /ACEPTADO/i.test(String(d.CfeEstado || '')))) ? {
+  estado: d.CfeEstado || null,
+  tipoCFE: d.CfeTipoCFE || null,
+  numeroOficial: d.CfeNumeroOficial || null,
+  cae: d.CfeCAE || null,
+  urlImpresion: d.CfeUrlImpresion || null,
+  nroResolucion: _txt(d.SecNroResolucion),
+  rangoDesde: d.SecRangoDesde || null,
+  rangoHasta: d.SecRangoHasta || null,
+  vencimientoCAE: d.SecFechaVencimientoCAE || null,
+} : null;
+
+const SQL_CLIENTE_COLS = `c.CliIdCliente, c.Nombre AS CliNombre, c.NombreFantasia AS CliNombreFantasia, c.CioRuc AS CliRuc,
+               c.IDCliente AS CliCodigo, c.TelefonoTrabajo AS CliTelefono, c.DireccionTrabajo AS CliDireccion`;
+
+// Empresa emisora (la del documento o la por defecto) + textos de DGI configurados
+async function _empresaYConfigCfe(pool, empId) {
+  const r = await pool.request()
+    .input('emp', sql.Int, empId || null)
+    .query(`
+      SELECT TOP 1 EmpRuc, EmpRazonSocial, EmpNombreFantasia, EmpDireccion, EmpCiudad,
+             EmpTelefono, EmpEmail, EmpLogoUrl
+      FROM dbo.Empresas WITH(NOLOCK)
+      WHERE (@emp IS NOT NULL AND EmpIdEmpresa = @emp) OR (@emp IS NULL AND EmpPorDefecto = 1);
+      SELECT
+        (SELECT CfeCfgValor FROM dbo.Config_CFE WHERE CfeCfgClave = 'URL_VERIFICACION' AND CfeCfgActivo = 1) AS UrlVerificacion,
+        (SELECT CfeCfgValor FROM dbo.Config_CFE WHERE CfeCfgClave = 'TEXTO_IVA_AL_DIA' AND CfeCfgActivo = 1) AS TextoIvaDia;
+    `);
+  const cfg = r.recordsets[1][0] || {};
+  return {
+    empresa: r.recordsets[0][0] || null,
+    cfeConfig: { urlVerificacion: cfg.UrlVerificacion || null, textoIvaDia: cfg.TextoIvaDia || null },
+  };
+}
+
+/** Recibo de una transacción de caja (cobro de deudas, anticipo, venta cobrada). null si no existe. */
+async function armarReciboCobro(pool, tcaId) {
+  const r = await pool.request()
+    .input('tca', sql.Int, tcaId)
+    .query(`
+      SELECT t.TcaIdTransaccion, t.TcaFecha, t.TcaTipoDocumento, t.TcaSerieDoc, t.TcaNumeroDoc,
+             t.TcaEstado, t.TcaTotalNeto, t.TcaTotalCobrado, t.TcaMonedaBase, t.TcaObservaciones,
+             t.EsCajaAdmin, t.StuIdSesion,
+             ISNULL(ct.Detalle, t.TcaTipoDocumento) AS TipoComprobante,
+             COALESCE(u.Nombre, u.Usuario) AS Cajero,
+             ${SQL_CLIENTE_COLS}
+      FROM dbo.TransaccionesCaja t WITH(NOLOCK)
+      LEFT JOIN dbo.Config_TiposDocumento ct WITH(NOLOCK) ON ct.CodDocumento = t.TcaTipoDocumento
+      LEFT JOIN dbo.Usuarios u WITH(NOLOCK) ON u.IdUsuario = t.TcaUsuarioId
+      LEFT JOIN dbo.Clientes c WITH(NOLOCK) ON c.CliIdCliente = t.TcaClienteId
+      WHERE t.TcaIdTransaccion = @tca;
+
+      -- Documentos que generó la transacción: el RECIBO (RC cobro / RA anticipo) y el
+      -- comprobante del cobro (Pedido Caja, e-Ticket…), con sus datos de CFE.
+      SELECT d.DocIdDocumento, d.DocTipo, d.DocSerie, d.DocNumero, d.DocTotal, d.DocEstado,
+             d.CfeEstado, d.CfeNumeroOficial, d.CfeCAE, d.CfeUrlImpresion, d.CfeTipoCFE,
+             d.EmpIdEmpresa, mo.MonSimbolo,
+             sec.SecNroResolucion, sec.SecRangoDesde, sec.SecRangoHasta, sec.SecFechaVencimientoCAE
+      FROM dbo.DocumentosContables d WITH(NOLOCK)
+      LEFT JOIN dbo.Monedas mo WITH(NOLOCK) ON mo.MonIdMoneda = d.MonIdMoneda
+      OUTER APPLY (
+        SELECT TOP 1 s.SecNroResolucion, s.SecRangoDesde, s.SecRangoHasta, s.SecFechaVencimientoCAE
+        FROM dbo.SecuenciaDocumentos s WITH(NOLOCK)
+        WHERE s.SecSerie = d.DocSerie
+          AND s.SecIdSecuencia IN (SELECT ct2.SecIdSecuencia FROM dbo.Config_TiposDocumento ct2 WHERE ct2.Detalle = d.DocTipo)
+      ) sec
+      WHERE d.TcaIdTransaccion = @tca
+      ORDER BY d.DocIdDocumento;
+
+      -- Medios de pago, en su moneda original (y el cheque, si lo hubo)
+      SELECT p.PagIdPago, mp.MPaDescripcionMetodo AS Metodo, mo.MonSimbolo,
+             p.PagMontoPago, p.PagCotizacion,
+             ch.NumeroCheque, bco.NombreBanco, ch.FechaVencimiento AS ChequeVencimiento, ch.EmitidoPor
+      FROM dbo.Pagos p WITH(NOLOCK)
+      LEFT JOIN dbo.MetodosPagos mp WITH(NOLOCK) ON mp.MPaIdMetodoPago = p.MPaIdMetodoPago
+      LEFT JOIN dbo.Monedas mo WITH(NOLOCK) ON mo.MonIdMoneda = p.PagIdMonedaPago
+      LEFT JOIN dbo.TesoreriaCheques ch WITH(NOLOCK) ON ch.IdCheque = p.PagIdCheque
+      LEFT JOIN dbo.TesoreriaBancos bco WITH(NOLOCK) ON bco.IdBanco = ch.IdBanco
+      WHERE p.PagTcaIdTransaccion = @tca
+      ORDER BY p.PagIdPago;
+
+      -- A qué se aplicó: la plata ENTRANDO a las cuentas del cliente atada a los pagos
+      -- de esta transacción (o, sin ese vínculo — cobros viejos, el anticipo —, a un
+      -- documento de la transacción). Mismo cálculo de moneda que el estado de cuenta.
+      SELECT m.MovIdMovimiento, m.MovTipo, CAST(m.MovImporte AS DECIMAL(18,2)) AS Importe,
+             LTRIM(RTRIM(ISNULL(m.MovConcepto,''))) AS Concepto,
+             COALESCE(mo.MonSimbolo, CASE WHEN cc.CueTipo = 'DINERO_USD' THEN 'US$' ELSE '$' END) AS MonSimbolo,
+             cc.CueIdCuenta, cc.CueNombre, cc.CueTipo, cc.CueEsPrincipal,
+             dc.DocTipo, dc.DocSerie, dc.DocNumero, dc.CfeEstado, dc.CfeNumeroOficial, dc.CfeTipoCFE, dc.CfeUrlImpresion,
+             LTRIM(RTRIM(ISNULL(od.OrdCodigoOrden,''))) AS OrdenRef
+      FROM dbo.MovimientosCuenta m WITH(NOLOCK)
+      JOIN dbo.CuentasCliente cc WITH(NOLOCK) ON cc.CueIdCuenta = m.CueIdCuenta
+      LEFT JOIN dbo.Monedas mo WITH(NOLOCK) ON mo.MonIdMoneda = cc.MonIdMoneda
+      LEFT JOIN dbo.DocumentosContables dc WITH(NOLOCK) ON dc.DocIdDocumento = m.DocIdDocumento
+      LEFT JOIN dbo.OrdenesDeposito od WITH(NOLOCK) ON od.OrdIdOrden = m.OrdIdOrden
+      WHERE cc.CueTipo LIKE 'DINERO%'
+        AND m.MovImporte > 0
+        AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)
+        AND (
+              m.PagIdPago IN (SELECT PagIdPago FROM dbo.Pagos WITH(NOLOCK) WHERE PagTcaIdTransaccion = @tca)
+           OR (m.PagIdPago IS NULL AND m.MovTipo IN ('PAGO','COBRO','ANTICIPO')
+               AND m.DocIdDocumento IN (SELECT DocIdDocumento FROM dbo.DocumentosContables WITH(NOLOCK) WHERE TcaIdTransaccion = @tca))
+        )
+      ORDER BY m.MovIdMovimiento;
+
+      -- Deudas que canceló un ANTICIPO al entrar (imputación automática): no generan
+      -- movimiento propio, quedan en ImputacionPago.
+      SELECT ip.ImpImporte, dc.DocTipo, dc.DocSerie, dc.DocNumero, dc.CfeEstado, dc.CfeNumeroOficial, dc.CfeTipoCFE, dc.CfeUrlImpresion,
+             LTRIM(RTRIM(ISNULL(od.OrdCodigoOrden,''))) AS OrdenRef,
+             COALESCE(mo.MonSimbolo, CASE WHEN cc.CueTipo = 'DINERO_USD' THEN 'US$' ELSE '$' END) AS MonSimbolo
+      FROM dbo.ImputacionPago ip WITH(NOLOCK)
+      JOIN dbo.Pagos p WITH(NOLOCK) ON p.PagIdPago = ip.PagIdPago
+      JOIN dbo.TransaccionesCaja t WITH(NOLOCK) ON t.TcaIdTransaccion = p.PagTcaIdTransaccion AND t.TcaTipoDocumento = 'ANTICIPO'
+      LEFT JOIN dbo.DeudaDocumento dd WITH(NOLOCK) ON dd.DDeIdDocumento = ip.DDeIdDocumento
+      LEFT JOIN dbo.DocumentosContables dc WITH(NOLOCK) ON dc.DocIdDocumento = dd.DocIdDocumento
+      LEFT JOIN dbo.OrdenesDeposito od WITH(NOLOCK) ON od.OrdIdOrden = dd.OrdIdOrden
+      LEFT JOIN dbo.CuentasCliente cc WITH(NOLOCK) ON cc.CueIdCuenta = ip.CueIdCuenta
+      LEFT JOIN dbo.Monedas mo WITH(NOLOCK) ON mo.MonIdMoneda = cc.MonIdMoneda
+      WHERE p.PagTcaIdTransaccion = @tca
+      ORDER BY ip.ImpIdImputacion;
+    `);
+
+  const [cab, docs, pagos, movs, imps] = r.recordsets;
+  const t = cab[0];
+  if (!t) return null;
+
+  const esAnticipo = String(t.TcaTipoDocumento || '').trim().toUpperCase() === 'ANTICIPO';
+  const MOV_LABEL = {
+    ANTICIPO: esAnticipo ? 'Anticipo / saldo a favor' : 'Saldo a favor (excedente)',
+    SALDO_A_FAVOR: 'Saldo a favor', PAGO_CRUZADO: 'Cobertura de otra moneda',
+    TRANSFERENCIA_ENTRADA: 'Transferencia recibida', CARGA_PREPAGO: 'Carga de saldo',
+  };
+  const recibo = docs.find(d => SERIES_RECIBO.includes(_txt(d.DocSerie))) || null;
+  const comprobante = docs.find(d => !SERIES_RECIBO.includes(_txt(d.DocSerie))) || null;
+  const empId = (recibo && recibo.EmpIdEmpresa) || ((docs.find(d => d.EmpIdEmpresa) || {}).EmpIdEmpresa) || null;
+  const { empresa, cfeConfig } = await _empresaYConfigCfe(pool, empId);
+
+  return {
+    tcaIdTransaccion: t.TcaIdTransaccion,
+    esAnticipo,
+    fecha: t.TcaFecha,
+    estado: t.TcaEstado,
+    anulado: /^ANULAD/i.test(String(t.TcaEstado || '')) || /^ANULAD/i.test(String((recibo && recibo.DocEstado) || '')),
+    tipoComprobante: _txt(t.TipoComprobante),
+    numeroTransaccion: _ref(t.TcaSerieDoc, t.TcaNumeroDoc),
+    totalAplicado: Number(t.TcaTotalNeto) || 0,
+    totalCobrado: Number(t.TcaTotalCobrado) || 0,
+    // Algunas transacciones viejas no guardan la moneda base: el front la deduce
+    // del recibo / de lo aplicado.
+    monedaBase: t.TcaMonedaBase ? (String(t.TcaMonedaBase).trim() === 'USD' ? 'US$' : '$') : null,
+    observaciones: _txt(t.TcaObservaciones),
+    caja: t.EsCajaAdmin ? 'Caja Administrativa' : (t.StuIdSesion ? `Caja Central · sesión #${t.StuIdSesion}` : 'Caja Central'),
+    cajero: _txt(t.Cajero),
+    recibo: recibo ? {
+      tipo: _txt(recibo.DocTipo),
+      numero: _ref(recibo.DocSerie, recibo.DocNumero),
+      total: Number(recibo.DocTotal) || 0,
+      moneda: recibo.MonSimbolo || null,
+      estado: recibo.DocEstado || null,
+      dgi: _dgi(recibo),
+    } : null,
+    comprobante: comprobante ? {
+      tipo: _txt(comprobante.DocTipo),
+      numero: _ref(comprobante.DocSerie, comprobante.DocNumero),
+      total: Number(comprobante.DocTotal) || 0,
+      moneda: comprobante.MonSimbolo || null,
+      cfeEstado: comprobante.CfeEstado || null,
+      cfeNumeroOficial: comprobante.CfeNumeroOficial || null,
+    } : null,
+    cliente: _cliente(t),
+    empresa,
+    cfeConfig,
+    pagos: pagos.map(p => ({
+      metodo: _txt(p.Metodo) || 'Pago',
+      moneda: p.MonSimbolo || '$',
+      monto: Number(p.PagMontoPago) || 0,
+      cotizacion: Number(p.PagCotizacion) || null,
+      cheque: p.NumeroCheque ? {
+        numero: String(p.NumeroCheque).trim(),
+        banco: _txt(p.NombreBanco),
+        vencimiento: p.ChequeVencimiento || null,
+        emitidoPor: _txt(p.EmitidoPor),
+      } : null,
+    })),
+    aplicaciones: movs.map(m => {
+      // El movimiento del anticipo apunta a su propio recibo (RA): no es un documento cancelado.
+      const propio = SERIES_RECIBO.includes(_txt(m.DocSerie));
+      const esFavor = !!MOV_LABEL[m.MovTipo];
+      return {
+        documento: propio ? null : (_ref(m.DocSerie, m.DocNumero) || _txt(m.OrdenRef)),
+        tipoDocumento: propio ? null : _txt(m.DocTipo),
+        cfeEstado: propio ? null : (m.CfeEstado || null),
+        cfeNumeroOficial: propio ? null : (m.CfeNumeroOficial || null),
+        // CFE oficial del documento pagado (tipo + URL del QR: de ahí salen serie y número de DGI)
+        cfeTipo: propio ? null : (m.CfeTipoCFE || null),
+        cfeUrlImpresion: propio ? null : (m.CfeUrlImpresion || null),
+        concepto: MOV_LABEL[m.MovTipo] || _txt(m.Concepto),
+        esFavor,
+        // A qué cuenta del cliente entra el saldo a favor (billetera: principal o secundaria)
+        cuenta: esFavor ? _cuenta(m) : null,
+        moneda: m.MonSimbolo,
+        importe: Number(m.Importe) || 0,
+      };
+    }),
+    imputaciones: imps.map(i => ({
+      documento: _ref(i.DocSerie, i.DocNumero) || _txt(i.OrdenRef),
+      tipoDocumento: _txt(i.DocTipo),
+      cfeEstado: i.CfeEstado || null,
+      cfeNumeroOficial: i.CfeNumeroOficial || null,
+      cfeTipo: i.CfeTipoCFE || null,
+      cfeUrlImpresion: i.CfeUrlImpresion || null,
+      moneda: i.MonSimbolo,
+      importe: Number(i.ImpImporte) || 0,
+    })),
+  };
+}
+
+/**
+ * Recibo de un movimiento de cuenta: si vino de un cobro de caja, es el recibo de esa
+ * transacción; si no (saldo inicial, pago del portal, movimiento manual), se arma con
+ * el movimiento solo. null si el movimiento no existe.
+ */
+async function armarReciboMovimiento(pool, movId) {
+  const r = await pool.request()
+    .input('mov', sql.Int, movId)
+    .query(`
+      SELECT m.MovIdMovimiento, m.MovFecha, m.MovTipo, m.MovConcepto, m.MovImporte, m.MovObservaciones,
+             m.MovUsuarioAlta, m.MovAnulado,
+             cc.CueIdCuenta, cc.CueNombre, cc.CueTipo, cc.CueEsPrincipal,
+             COALESCE(mo.MonSimbolo, CASE WHEN cc.CueTipo = 'DINERO_USD' THEN 'US$' ELSE '$' END) AS MonSimbolo,
+             COALESCE(u.Nombre, u.Usuario) AS UsuarioNombre,
+             dc.DocTipo, dc.DocSerie, dc.DocNumero, dc.EmpIdEmpresa,
+             ${SQL_CLIENTE_COLS},
+             tx.TcaId
+      FROM dbo.MovimientosCuenta m WITH(NOLOCK)
+      JOIN dbo.CuentasCliente cc WITH(NOLOCK) ON cc.CueIdCuenta = m.CueIdCuenta
+      JOIN dbo.Clientes c WITH(NOLOCK) ON c.CliIdCliente = cc.CliIdCliente
+      LEFT JOIN dbo.Monedas mo WITH(NOLOCK) ON mo.MonIdMoneda = cc.MonIdMoneda
+      LEFT JOIN dbo.Usuarios u WITH(NOLOCK) ON u.IdUsuario = m.MovUsuarioAlta
+      LEFT JOIN dbo.Pagos pg WITH(NOLOCK) ON pg.PagIdPago = m.PagIdPago
+      LEFT JOIN dbo.DocumentosContables dc WITH(NOLOCK) ON dc.DocIdDocumento = m.DocIdDocumento
+      -- Transacción de caja del movimiento: por su pago o por el documento (solo si esa
+      -- transacción cobró algo: un documento a crédito tiene transacción sin pagos).
+      OUTER APPLY (
+        SELECT TcaId = COALESCE(pg.PagTcaIdTransaccion,
+                 CASE WHEN dc.TcaIdTransaccion IS NOT NULL AND EXISTS (
+                        SELECT 1 FROM dbo.Pagos p5 WITH(NOLOCK) WHERE p5.PagTcaIdTransaccion = dc.TcaIdTransaccion)
+                      THEN dc.TcaIdTransaccion END)
+      ) tx
+      WHERE m.MovIdMovimiento = @mov
+    `);
+  const m = r.recordset[0];
+  if (!m) return null;
+  if (m.TcaId) {
+    const rec = await armarReciboCobro(pool, m.TcaId);
+    if (rec) return { ...rec, movIdMovimiento: m.MovIdMovimiento };
+  }
+
+  // Sin caja: el recibo se arma con el movimiento solo (mismo número que tenía antes).
+  const importe = Math.abs(Number(m.MovImporte) || 0);
+  const esPortal = Number(m.MovUsuarioAlta) === 999;
+  const propio = SERIES_RECIBO.includes(_txt(m.DocSerie));
+  // Las observaciones de los PAGO son un rastro técnico ("DeudaDoc #… | Pagado: …"), no van al papel.
+  const obs = _txt(m.MovObservaciones);
+  const { empresa, cfeConfig } = await _empresaYConfigCfe(pool, m.EmpIdEmpresa || null);
+  return {
+    tcaIdTransaccion: null,
+    movIdMovimiento: m.MovIdMovimiento,
+    esAnticipo: m.MovTipo === 'ANTICIPO',
+    fecha: m.MovFecha,
+    estado: m.MovAnulado ? 'ANULADO' : null,
+    anulado: !!m.MovAnulado,
+    tipoComprobante: null,
+    numeroTransaccion: `REC-${String(m.MovIdMovimiento).padStart(6, '0')}`,
+    totalAplicado: importe,
+    totalCobrado: importe,
+    monedaBase: m.MonSimbolo,
+    observaciones: obs && !/^DeudaDoc\s*#/i.test(obs) ? obs : null,
+    caja: esPortal ? 'Portal del cliente (pago electrónico)' : null,
+    cajero: esPortal ? 'Portal del cliente' : (_txt(m.UsuarioNombre) || (m.MovUsuarioAlta ? `Usuario #${m.MovUsuarioAlta}` : null)),
+    recibo: null,
+    comprobante: null,
+    cliente: _cliente(m),
+    empresa,
+    cfeConfig,
+    pagos: [],
+    aplicaciones: [{
+      documento: propio ? null : _ref(m.DocSerie, m.DocNumero),
+      tipoDocumento: propio ? null : _txt(m.DocTipo),
+      cfeEstado: null,
+      cfeNumeroOficial: null,
+      concepto: _txt(m.MovConcepto) || (m.MovTipo === 'ANTICIPO' ? 'Pago a cuenta / Anticipo' : 'Cancelación de saldos'),
+      esFavor: true,
+      cuenta: _cuenta(m),
+      moneda: m.MonSimbolo,
+      importe,
+    }],
+    imputaciones: [],
+  };
+}
+
+/**
+ * GET /api/contabilidad/cobros/:TcaIdTransaccion/recibo
+ * Datos del recibo de un cobro de caja (Panel 360 → Estado de cuenta). Solo lectura.
+ */
+exports.getReciboCobro = async (req, res) => {
+  try {
+    const tcaId = parseInt(req.params.TcaIdTransaccion, 10);
+    if (!tcaId) return res.status(400).json({ success: false, error: 'TcaIdTransaccion inválido.' });
+    const data = await armarReciboCobro(await getPool(), tcaId);
+    if (!data) return res.status(404).json({ success: false, error: 'No se encontró el cobro.' });
+    res.json({ success: true, data });
+  } catch (err) {
+    logger.error('[CONTABILIDAD] getReciboCobro:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+/**
+ * GET /api/contabilidad/movimientos/:MovIdMovimiento/recibo
+ * Datos del recibo de un movimiento (anticipo recién cargado en Caja, botón de imprimir
+ * de los movimientos de cuenta). Solo lectura.
+ */
+exports.getReciboMovimiento = async (req, res) => {
+  try {
+    const movId = parseInt(req.params.MovIdMovimiento, 10);
+    if (!movId) return res.status(400).json({ success: false, error: 'MovIdMovimiento inválido.' });
+    const data = await armarReciboMovimiento(await getPool(), movId);
+    if (!data) return res.status(404).json({ success: false, error: 'Movimiento no encontrado.' });
+    res.json({ success: true, data });
+  } catch (err) {
+    logger.error('[CONTABILIDAD] getReciboMovimiento:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
+
 // ============================================================
 // SECCIÓN 8: COLA DE ESTADOS DE CUENTA
 // ============================================================
@@ -3153,152 +3518,6 @@ exports.registrarPagoCruzado = async (req, res) => {
   } catch (err) {
     logger.error('[CONTABILIDAD] registrarPagoCruzado:', err.message);
     res.status(500).json({ success: false, error: err.message });
-  }
-};
-
-/**
- * GET /api/contabilidad/movimientos/:MovIdMovimiento/recibo/pdf
- * Genera un PDF de recibo de cobro formal.
- */
-exports.generarReciboPdf = async (req, res) => {
-  try {
-    const { MovIdMovimiento } = req.params;
-    const pool = await getPool();
-
-    // Consultar información del movimiento, cuenta, cliente y moneda
-    const query = `
-      SELECT
-        m.MovIdMovimiento, m.MovFecha, m.MovTipo, m.MovConcepto, m.MovImporte, m.MovObservaciones,
-        c.CliIdCliente, cli.Nombre, cli.IDCliente, cli.CioRuc, cli.DireccionTrabajo,
-        mon.MonSimbolo, ISNULL(mon.MonDescripcionMoneda, '') AS MonNombre,
-        -- Cuenta DESTINO del movimiento (a qué bolsillo entró/salió la plata)
-        c.CueIdCuenta, c.CueNombre, c.CueTipo, c.CueEsPrincipal,
-        -- Quién lo registró (usuario del movimiento; 999 = portal del cliente)
-        m.MovUsuarioAlta, RTRIM(u.Nombre) AS UsuarioNombre,
-        -- Caja y medio de pago, cuando el movimiento vino de un cobro de caja
-        tca.StuIdSesion, tca.EsCajaAdmin, RTRIM(mp.MPaDescripcionMetodo) AS MedioPago
-      FROM MovimientosCuenta m
-      JOIN CuentasCliente c ON m.CueIdCuenta = c.CueIdCuenta
-      JOIN Clientes cli ON c.CliIdCliente = cli.CliIdCliente
-      LEFT JOIN Monedas mon ON c.MonIdMoneda = mon.MonIdMoneda
-      LEFT JOIN Usuarios u ON u.IdUsuario = m.MovUsuarioAlta
-      LEFT JOIN Pagos p ON p.PagIdPago = m.PagIdPago
-      LEFT JOIN MetodosPagos mp ON mp.MPaIdMetodoPago = p.MPaIdMetodoPago
-      LEFT JOIN TransaccionesCaja tca ON tca.TcaIdTransaccion = p.PagTcaIdTransaccion
-      WHERE m.MovIdMovimiento = @MovIdMovimiento
-    `;
-    const result = await pool.request()
-      .input('MovIdMovimiento', sql.Int, MovIdMovimiento)
-      .query(query);
-
-    if (result.recordset.length === 0) {
-      return res.status(404).json({ success: false, error: 'Movimiento no encontrado' });
-    }
-
-    const mov = result.recordset[0];
-    const importe = Math.abs(parseFloat(mov.MovImporte));
-    const isPayment = (mov.MovTipo === 'PAGO' || mov.MovTipo === 'ANTICIPO' || mov.MovTipo === 'COBRO' || mov.MovTipo === 'SALDO_INICIAL' || mov.MovImporte > 0);
-
-    // Formateadores
-    const fmtNum = (n) => new Intl.NumberFormat('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n);
-    const dateStr = new Date(mov.MovFecha).toLocaleDateString('es-UY', { year: 'numeric', month: 'long', day: 'numeric' });
-    const receiptNum = `REC-${mov.MovIdMovimiento.toString().padStart(6, '0')}`;
-
-    // Generar PDF
-    const pdfDoc = await PDFDocument.create();
-    const page = pdfDoc.addPage([595.28, 420.94]); // Formato A5 apaisado (aproximadamente la mitad de A4)
-    const { width, height } = page.getSize();
-    const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-    const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
-    
-    const drawText = (text, x, y, size = 10, f = font, color = rgb(0, 0, 0)) => {
-      page.drawText(text, { x, y, size, font: f, color });
-    };
-
-    // Rectángulo del recibo
-    page.drawRectangle({ x: 20, y: 20, width: width - 40, height: height - 40, borderColor: rgb(0.3, 0.3, 0.3), borderWidth: 1 });
-    page.drawRectangle({ x: 20, y: height - 80, width: width - 40, height: 60, color: rgb(0.9, 0.9, 0.9), borderColor: rgb(0.3, 0.3, 0.3), borderWidth: 1 });
-
-    // Cabecera
-    drawText('RECIBO OFICIAL DE COBRO', 40, height - 50, 16, fontBold, rgb(0.1, 0.1, 0.4));
-    drawText(`N°: ${receiptNum}`, width - 150, height - 45, 14, fontBold, rgb(0.7, 0.1, 0.1));
-    drawText(`Fecha: ${dateStr}`, width - 150, height - 65, 10, font);
-
-    // Monto principal
-    drawText('POR LA SUMA DE:', 40, height - 110, 10, fontBold);
-    const montoText = `${mov.MonSimbolo || '$'} ${fmtNum(importe)}`;
-    drawText(montoText, 40, height - 140, 20, fontBold, rgb(0.1, 0.4, 0.1));
-
-    // Datos del Cliente
-    drawText('RECIBIMOS DE:', width / 2, height - 110, 10, fontBold);
-    drawText(mov.Nombre || 'Cliente Consumidor', width / 2, height - 130, 12, font);
-    drawText(`ID / RUC: ${mov.IDCliente || mov.CioRuc || '-'}`, width / 2, height - 145, 10, font);
-
-    // Línea separadora
-    page.drawLine({ start: { x: 40, y: height - 170 }, end: { x: width - 40, y: height - 170 }, thickness: 1, color: rgb(0.8, 0.8, 0.8) });
-
-    // Concepto
-    drawText('EN CONCEPTO DE:', 40, height - 195, 10, fontBold);
-    let concepto = mov.MovConcepto || (mov.MovTipo === 'ANTICIPO' ? 'Pago a cuenta / Anticipo' : 'Cancelación de saldos');
-    concepto = concepto.replace(/→/g, '->').replace(/[\u2013\u2014]/g, '-');
-    drawText(concepto, 40, height - 215, 11, font);
-
-    // Cuenta DESTINO: a que bolsillo del cliente entro (o de cual salio) la plata
-    const codCta = `CTA-${String(mov.CueTipo || '').includes('USD') ? 'USD' : 'UYU'}-${mov.CueIdCuenta}`;
-    const nomCta = (mov.CueNombre || '').trim()
-      || (mov.CueEsPrincipal ? `Cuenta principal ${String(mov.CueTipo || '').includes('USD') ? 'US$' : '$'}` : `Cuenta #${mov.CueIdCuenta}`);
-    drawText(mov.MovImporte > 0 ? 'EL SALDO SE CARGA EN LA CUENTA:' : 'LA PLATA SALE DE LA CUENTA:', 40, height - 245, 10, fontBold);
-    drawText(`${codCta} - "${nomCta}"`, 40, height - 262, 11, font, rgb(0.1, 0.1, 0.4));
-
-    if (mov.MovObservaciones) {
-      drawText('OBSERVACIONES:', 40, height - 287, 9, fontBold, rgb(0.4, 0.4, 0.4));
-      // Truncate observaciones if too long
-      let obs = mov.MovObservaciones.length > 80 ? mov.MovObservaciones.substring(0, 80) + '...' : mov.MovObservaciones;
-      obs = obs.replace(/→/g, '->').replace(/[\u2013\u2014]/g, '-');
-      drawText(obs, 40, height - 300, 9, font, rgb(0.4, 0.4, 0.4));
-    }
-
-    // Pie IZQUIERDO: caja, medio y usuario que recibio (trazabilidad del cobro)
-    const esPortal = Number(mov.MovUsuarioAlta) === 999;
-    const cajaTxt = mov.StuIdSesion
-      ? `Caja - sesion #${mov.StuIdSesion}`
-      : (esPortal ? 'Portal del cliente (pago electronico)' : 'Caja Administrativa');
-    const usuarioTxt = esPortal
-      ? 'Portal del cliente'
-      : ((mov.UsuarioNombre || '').trim() || `Usuario #${mov.MovUsuarioAlta || '-'}`);
-    drawText(`CAJA: ${cajaTxt}${mov.MedioPago ? `  |  MEDIO: ${mov.MedioPago}` : ''}`, 40, 85, 9, font, rgb(0.25, 0.25, 0.25));
-    drawText(`RECIBIDO POR: ${usuarioTxt}`, 40, 70, 9, font, rgb(0.25, 0.25, 0.25));
-    drawText('Recibo interno - no es comprobante fiscal (CFE).', 40, 55, 8, font, rgb(0.5, 0.5, 0.5));
-
-    // Pie (Firmas)
-    page.drawLine({ start: { x: width - 200, y: 70 }, end: { x: width - 40, y: 70 }, thickness: 1, color: rgb(0, 0, 0) });
-    drawText('Firma / Sello de la Empresa', width - 180, 55, 9, font);
-
-    const pdfBytes = await pdfDoc.save();
-
-    // Guardar copia del recibo en el servidor en la carpeta de comprobantes
-    try {
-      const fs = require('fs');
-      const path = require('path');
-      const baseDir = process.env.COMPROBANTES_PATH || path.join(__dirname, '..', 'comprobantesPagos');
-      if (!fs.existsSync(baseDir)) {
-        fs.mkdirSync(baseDir, { recursive: true });
-      }
-      const cleanName = receiptNum.replace(/[<>:"/\\|?*]/g, '_').trim();
-      const filePath = path.join(baseDir, `${cleanName}.pdf`);
-      fs.writeFileSync(filePath, Buffer.from(pdfBytes));
-      logger.info(`[CONTABILIDAD] Recibo PDF guardado en el servidor: ${filePath}`);
-    } catch (errDir) {
-      logger.error('[CONTABILIDAD] Error al guardar copia local del recibo:', errDir.message);
-    }
-
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename=Recibo-${receiptNum}.pdf`);
-    res.send(Buffer.from(pdfBytes));
-
-  } catch (err) {
-    logger.error('[CONTABILIDAD] generarReciboPdf:', err);
-    res.status(500).json({ success: false, error: 'Error generando PDF: ' + (err.message || err.toString()) });
   }
 };
 

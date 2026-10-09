@@ -1,8 +1,8 @@
 /**
  * Descripción corta de una línea de factura para el papel (PDF).
  *
- * Tiene un ESPEJO en backend/utils/descripcionLineaFactura.js (lo usa sisnetService para
- * mandar el mismo texto a DGI en descAdicional): si se cambia uno, cambiar el otro.
+ * ESPEJO de src/utils/descripcionLineaFactura.js (mismo texto que imprime el PDF): el backend
+ * lo usa para mandar el código de la orden a DGI en descAdicional (sisnetService).
  *
  * El texto guardado en DocumentosContablesDetalle.DcdDscItem lo arma el resolvedor de
  * líneas con etiquetas que en el papel solo ocupan lugar: "Orden: DTF-20703 (ck) - Retiro
@@ -26,7 +26,7 @@ const normalizar = (s) => String(s || '')
     .trim()
     .toLowerCase();
 
-export function descripcionLineaCorta(dscItem, nombresCliente = []) {
+function descripcionLineaCorta(dscItem, nombresCliente = []) {
     if (!dscItem) return '';
     const nombres = (Array.isArray(nombresCliente) ? nombresCliente : [nombresCliente])
         .map(normalizar)
@@ -43,3 +43,5 @@ export function descripcionLineaCorta(dscItem, nombresCliente = []) {
         .filter(l => !nombres.includes(normalizar(l)))
         .join('\n');
 }
+
+module.exports = { descripcionLineaCorta };

@@ -3,6 +3,8 @@ const logger = require('../utils/logger');
 const { getPool, sql } = require('../config/db');
 const crypto = require('./cryptoService');
 const { validarDocumentoUY } = require('../utils/documentoUY');
+const { descripcionLineaCorta } = require('../utils/descripcionLineaFactura');
+const { resolverDepartamento } = require('../utils/departamentoUY');
 
 // La URL de WSDL y las credenciales vienen del .env
 const WSDL_URL = process.env.SISNET_WSDL_URL || 'http://test.sisnet.com.uy:8062/EfacturaWeb/wsService?wsdl';
@@ -350,6 +352,11 @@ exports.prepararCFE = async (doc, lineas, cotDolar = 40.0, empresa = null) => {
     let mntNetoIvaTasaBasica = 0;
     let mntNoGrv = 0;
 
+    // Nombres del cliente que el PDF saca de la descripción de la línea (mismo criterio).
+    const nombresCliente = [
+        doc.DocCliNombre, doc.CliRazonSocial, doc.CliNombreFantasia, doc.DocCliNombreFantasia, doc.CliNombre, doc.Nombre
+    ];
+
     const listaWsItems = lineas.map((linea, index) => {
         let indFact = 3; // 3 = Gravado a Tasa Básica por defecto, 2 = Mínima, 1 = Exento
         if (linea.DcdImpuestos === 0) indFact = 1;
@@ -368,6 +375,14 @@ exports.prepararCFE = async (doc, lineas, cotDolar = 40.0, empresa = null) => {
         const cantidadItem = linea.DcdCantidad || 1;
         const precioUn = montoLinea / cantidadItem;
 
+        // Descripción adicional (DscItem de DGI, hasta 1000 caracteres): el código de la
+        // orden y el trabajo, el MISMO texto que imprime nuestro PDF debajo del artículo.
+        // Sin esto, en la versión DGI todas las líneas decían solo "DTF Textil - DTF textil
+        // COMUN" y el cliente no podía saber a qué orden era cada una (A 29314, 08-oct-2026).
+        const descAdicional = descripcionLineaCorta(linea.DcdDscItem, nombresCliente)
+            .replace(/\s*\n\s*/g, ' - ')
+            .substring(0, 1000);
+
         return {
             nroLinDet: index + 1,
             indFact: indFact,
@@ -375,7 +390,8 @@ exports.prepararCFE = async (doc, lineas, cotDolar = 40.0, empresa = null) => {
             cantidad: cantidadItem,
             uniMed: 'UN',
             precioUnitario: Number(precioUn.toFixed(4)),
-            montoItem: montoLinea
+            montoItem: montoLinea,
+            ...(descAdicional ? { descAdicional } : {})
         };
     });
 
@@ -418,6 +434,14 @@ exports.prepararCFE = async (doc, lineas, cotDolar = 40.0, empresa = null) => {
     // CI/RUT VÁLIDO (dígito verificador OK) — DGI exige identificar al comprador
     // en tickets sobre el umbral de UI, y así el dato realmente llega a DGI.
     const valReceptor = validarDocumentoUY(docReceptor);
+
+    // Ciudad y departamento del receptor. El cierre de ciclo guardaba en DocCliCiudad el ID
+    // del departamento ("10" = Montevideo) y a DGI viajaba "10"; además el departamento iba
+    // siempre "Montevideo", aunque el cliente fuera de Salto. Se traduce con dbo.Departamentos
+    // (acepta ID o nombre); si el texto no es un departamento se manda tal cual, como antes.
+    const ciudadGuardada = String(doc.DocCliCiudad || '').trim();
+    const departamento = await resolverDepartamento(ciudadGuardada);
+
     const wsReceptorData = {
         wsReceptor: {
             tipoDocRecep: valReceptor.tipo === 'RUT' ? 2 : 3, // 2=RUT, 3=CI
@@ -425,8 +449,8 @@ exports.prepararCFE = async (doc, lineas, cotDolar = 40.0, empresa = null) => {
             docRecep: valReceptor.normalizado || docReceptor,
             rznSocRecep: (doc.DocCliNombre || doc.CliRazonSocial || '').trim() || 'Sin Nombre',
             dirRecep: (doc.DocCliDireccion || doc.CliDireccion || '').trim() || 'Sin Direccion',
-            ciudadRecep: (doc.DocCliCiudad || '').trim() || 'Montevideo',
-            deptoRecep: 'Montevideo'
+            ciudadRecep: departamento || ciudadGuardada || 'Montevideo',
+            deptoRecep: departamento || 'Montevideo'
         }
     };
     if (esETicket && valReceptor.valido) {
@@ -436,6 +460,38 @@ exports.prepararCFE = async (doc, lineas, cotDolar = 40.0, empresa = null) => {
     // Una NC/ND de e-Factura sin receptor identificado no es emitible
     if ((isDocNC || isDocND) && !esETicket && !valReceptor.valido) {
         bloqueos.push(`Una Nota de Crédito/Débito de e-Factura necesita el RUT válido del cliente. ${valReceptor.motivo || ''}`.trim());
+    }
+
+    // Vencimiento. El campo de SISNET es "fchVenc" (verificado en su WSDL de producción el
+    // 08-oct-2026). Antes se mandaba "fhcVenc" —copiado de un ejemplo de SISNET que trae esa
+    // errata—, SISNET lo ignoraba y el CFE llegaba a DGI sin vencimiento.
+    // Se informa el vencimiento de la deuda del documento (DeudaDocumento.DDeFechaVencimiento =
+    // fecha del documento + días de la condición de pago de la cuenta). Sin deuda (contado),
+    // el día de emisión. Nunca anterior a la emisión.
+    const hoy = new Date();
+    const fchEmis = hoy.toLocaleDateString('en-GB'); // DD/MM/YYYY
+    let fchVenc = fchEmis;
+    if (doc.DocIdDocumento) {
+        try {
+            const pool = await getPool();
+            const vRes = await pool.request()
+                .input('DocId', sql.Int, doc.DocIdDocumento)
+                .query(`SELECT TOP 1 DDeFechaVencimiento FROM dbo.DeudaDocumento
+                        WHERE DocIdDocumento = @DocId AND DDeFechaVencimiento IS NOT NULL
+                          AND DDeEstado <> 'ANULADO'
+                        ORDER BY DDeIdDocumento`);
+            const v = vRes.recordset[0]?.DDeFechaVencimiento;
+            if (v) {
+                // Columna DATE: el driver la entrega como medianoche UTC. Se arma con los
+                // getters UTC para que el huso horario no la corra al día anterior.
+                const d = new Date(v);
+                const venc = new Date(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+                const hoy0 = new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate());
+                if (venc > hoy0) fchVenc = venc.toLocaleDateString('en-GB');
+            }
+        } catch (eVenc) {
+            logger.warn(`[SISNET-Service] No se pudo leer el vencimiento de la deuda del doc ${doc.DocIdDocumento}: ${eVenc.message}`);
+        }
     }
 
     const cfeData = {
@@ -458,8 +514,8 @@ exports.prepararCFE = async (doc, lineas, cotDolar = 40.0, empresa = null) => {
         listaWsItems: listaWsItems,
         listaWsReferencias: listaWsReferencias,
         wsVarios: {
-            fchEmis: new Date().toLocaleDateString('en-GB'), // DD/MM/YYYY
-            fhcVenc: new Date().toLocaleDateString('en-GB'), // Podría sumarle DocDiasVencimiento
+            fchEmis,
+            fchVenc,
             // 1 Contado, 2 Credito. El tipo "CONTADO" del documento manda aunque
             // todavía no esté cobrado (DocPagado se estampa recién al saldar la deuda).
             fmaPago: (doc.DocPagado || /CONTADO|CAJA/i.test(doc.DocTipo || '')) ? 1 : 2,

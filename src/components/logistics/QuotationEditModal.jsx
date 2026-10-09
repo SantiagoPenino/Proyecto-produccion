@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { toast } from 'sonner';
 import api from '../../services/apiClient';
+import { recargoDesdePct, pctRecargoDesdeImporte } from '../../utils/desglosePrecio';
 
 // Convierte un monto entre monedas usando la cotización del día — mismo criterio que ya
 // usa el resto del modal (USD→UYU multiplica, UYU→USD divide).
@@ -452,22 +453,28 @@ function LineRow({ line, userArea, isAdmin, areaFilter, modoFacturacion, cotizac
                 }
                 const fmt2 = n => (Number(n) || 0).toFixed(2);
                 const editable = puedoEditarValores && lista > 0;
-                // Edición del desglose: la lista queda fija; se cambia descuento y/o recargo (en %
-                // sobre la lista o en importe por unidad) y el precio unitario se recalcula:
-                // precio = lista − descuento + recargo. El importe del descuento absorbe el redondeo.
+                // Edición del desglose: la lista queda fija; se cambia descuento y/o recargo (en % o
+                // en importe por unidad) y el precio unitario se recalcula:
+                // precio = lista − descuento + recargo. El descuento % va sobre la lista y el
+                // recargo % sobre lista − descuento: si cambia el descuento, un recargo en % se
+                // recalcula. El importe del descuento absorbe el redondeo.
                 const editarDesglose = (cambios) => {
                     const L = lista;
                     let dPct = cambios.descPct !== undefined ? cambios.descPct : (cambios.descImp !== undefined ? null : descPct);
                     let dImp = cambios.descImp !== undefined ? cambios.descImp : (cambios.descPct !== undefined ? r4v(L * cambios.descPct / 100) : descImp);
+                    dImp = Math.max(0, r4v(dImp));
                     let rPct = cambios.recPct !== undefined ? cambios.recPct : (cambios.recImp !== undefined ? null : recPct);
-                    let rImp = cambios.recImp !== undefined ? cambios.recImp : (cambios.recPct !== undefined ? r4v(L * cambios.recPct / 100) : recImp);
-                    dImp = Math.max(0, r4v(dImp)); rImp = Math.max(0, r4v(rImp));
+                    let rImp = cambios.recImp !== undefined ? cambios.recImp : (rPct != null && rPct > 0 ? r4v(recargoDesdePct(L, dImp, rPct)) : (cambios.recPct !== undefined ? 0 : recImp));
+                    rImp = Math.max(0, r4v(rImp));
                     if (dPct == null && dImp > 0) dPct = r4v(dImp / L * 100);
-                    if (rPct == null && rImp > 0) rPct = r4v(rImp / L * 100);
+                    if (rPct == null && rImp > 0) rPct = r4v(pctRecargoDesdeImporte(L, dImp, rImp));
                     const nuevoPU = Math.max(0, r2v(L - dImp + rImp));
+                    // Lo que se pidió, antes de que el redondeo del unitario lo ajuste: absorber
+                    // medio centavo no cuenta como cambio (si no, el origen pasaba a "Ajuste manual").
+                    const dImpPedido = dImp, rImpPedido = rImp;
                     if (dImp > 0) dImp = Math.max(0, r4v(L + rImp - nuevoPU)); else rImp = Math.max(0, r4v(nuevoPU - L));
-                    const cambioDesc = Math.abs(dImp - descImp) > 0.00005 || (dPct != null && descPct != null && Math.abs(dPct - descPct) > 0.00005);
-                    const cambioRec = Math.abs(rImp - recImp) > 0.00005 || (rPct != null && recPct != null && Math.abs(rPct - recPct) > 0.00005);
+                    const cambioDesc = Math.abs(dImpPedido - descImp) > 0.00005 || (dPct != null && descPct != null && Math.abs(dPct - descPct) > 0.00005);
+                    const cambioRec = Math.abs(rImpPedido - recImp) > 0.00005 || (rPct != null && recPct != null && Math.abs(rPct - recPct) > 0.00005);
                     const qty = parseFloat(line.Cantidad) || 0;
                     onChange({
                         ...line,
@@ -493,7 +500,7 @@ function LineRow({ line, userArea, isAdmin, areaFilter, modoFacturacion, cotizac
                 // perfil/regla va en Origen; el texto que verá el cliente, al pasar el mouse).
                 const celda = (imp, pct, txt, color, k) => (editable
                     ? (
-                        <div className="flex flex-col items-end gap-0.5" title={txt ? `En la factura: ${txt}` : (k === 'desc' ? 'Descuento sobre la lista: % o importe por unidad' : 'Recargo sobre la lista: % o importe por unidad')}>
+                        <div className="flex flex-col items-end gap-0.5" title={txt ? `En la factura: ${txt}` : (k === 'desc' ? 'Descuento sobre la lista: % o importe por unidad' : 'Recargo sobre el precio con descuento: % o importe por unidad')}>
                             <div className="flex items-center gap-0.5">
                                 <input type="number" min="0" step="any" placeholder="0" value={pct != null && imp > 0.00005 ? fmtPctUI(pct) : ''}
                                     onChange={e => editarDesglose(k === 'desc' ? { descPct: Math.min(100, Math.max(0, parseFloat(e.target.value) || 0)) } : { recPct: Math.max(0, parseFloat(e.target.value) || 0) })}

@@ -600,13 +600,13 @@ function FichaProductoBloque({ f }) {
               <div>
                 <div className="text-[9px] font-black uppercase tracking-wide text-slate-400 mb-1">Avíos</div>
                 {f.avios.length ? (
-                  <table className="w-full"><tbody>{f.avios.map((a, i) => <tr key={i} className="border-t border-slate-100"><td className="py-1 pr-2 font-bold text-slate-800">{a.nombre}</td><td className="py-1 pr-2 text-slate-600 whitespace-nowrap">{a.cantidad ?? ''} {a.unidad}/prenda</td><td className="py-1 pr-2 text-slate-600">{a.medida || ''}</td><td className="py-1 text-slate-500">{a.nota || ''}</td></tr>)}</tbody></table>
+                  <table className="w-full"><tbody>{f.avios.map((a, i) => <tr key={i} className="border-t border-slate-100"><td className="py-1 pr-2 font-bold text-slate-800">{a.nombre}</td><td className="py-1 pr-2 text-slate-600 whitespace-nowrap">{(a.porTalle || []).length && ['u', 'par'].includes(a.unidad) ? 'según talle' : `${a.cantidad ?? ''} ${a.unidad}/prenda`}</td><td className="py-1 pr-2 text-slate-600">{a.medida || ''}</td><td className="py-1 text-slate-500">{a.nota || ''}</td></tr>)}</tbody></table>
                 ) : <div className="text-slate-400">Sin avíos cargados en el configurador.</div>}
               </div>
               <div>
                 <div className="text-[9px] font-black uppercase tracking-wide text-slate-400 mb-1">Costuras (ISO 4915)</div>
                 {f.costuras.length ? (
-                  <table className="w-full"><tbody>{f.costuras.map((c, i) => <tr key={i} className="border-t border-slate-100"><td className="py-1 pr-2 font-bold text-slate-800">{i + 1}. {c.union}{c.piezas ? <span className="font-normal text-slate-500"> · {c.piezas}</span> : null}</td><td className="py-1 text-slate-600">{c.codigoISO || 'Sin costura'}{c.nombre ? ` · ${c.nombre}` : ''}{c.maquina ? ` · ${c.maquina}` : ''}{c.tiempoMin != null ? ` · ${c.tiempoMin} min` : ''}</td></tr>)}</tbody></table>
+                  <table className="w-full"><tbody>{f.costuras.map((c, i) => <tr key={i} className="border-t border-slate-100"><td className="py-1 pr-2 font-bold text-slate-800">{i + 1}. {c.union}{c.piezas ? <span className="font-normal text-slate-500"> · {c.piezas}</span> : null}{c.avio ? <span className="font-normal text-slate-500"> · avío: {c.avio}</span> : null}</td><td className="py-1 text-slate-600">{c.codigoISO || 'Sin costura'}{c.nombre ? ` · ${c.nombre}` : ''}{c.maquina ? ` · ${c.maquina}` : ''}{c.tiempoMin != null ? ` · ${c.tiempoMin} min` : ''}</td></tr>)}</tbody></table>
                 ) : <div className="text-slate-400">Sin costuras cargadas en el configurador.</div>}
               </div>
             </div>

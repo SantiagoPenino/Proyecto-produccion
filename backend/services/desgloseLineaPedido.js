@@ -15,6 +15,16 @@
 const r4 = n => Math.round((Number(n || 0) + Number.EPSILON) * 10000) / 10000;
 const r2 = n => Math.round((Number(n || 0) + Number.EPSILON) * 100) / 100;
 
+// Regla del recargo (specs/09 INV-PRE.03): el descuento va sobre la lista y cada recargo %
+// sobre lo que queda después del descuento (lista − descuento); los recargos se suman.
+// Lista 10, descuento 25 % → 7,50; recargo 25 % → +1,875. ESPEJO en src/utils/desglosePrecio.js.
+const baseRecargo = (lista, descImp) => Math.max(0, (Number(lista) || 0) - (Number(descImp) || 0));
+const recargoDesdePct = (lista, descImp, recPct) => baseRecargo(lista, descImp) * (Number(recPct) || 0) / 100;
+const pctRecargoDesdeImporte = (lista, descImp, recImp) => {
+  const b = baseRecargo(lista, descImp);
+  return b > 0 ? (Number(recImp) || 0) / b * 100 : 0;
+};
+
 /**
  * @param {object} actual  fila actual: { PrecioLista, DescuentoTipo, DescuentoPct, DescuentoImporte, DescuentoOrigen, RecargoPct, RecargoImporte, RecargoOrigen }
  * @param {number} nuevoNeto  PrecioUnitario nuevo (unitario, moneda de la línea)
@@ -49,14 +59,19 @@ function desgloseTrasEdicionManual(actual, nuevoNeto, edit = {}, origenTexto = '
   let rOrig = actual.RecargoOrigen || null;
 
   if (vino('descUnit') || vino('recUnit') || vino('descPct') || vino('recPct')) {
-    // La pantalla mandó el desglose editado.
-    const nuevoRec = vino('recUnit') ? r4(edit.recUnit) : (vino('recPct') ? r4(lista * Number(edit.recPct) / 100) : (rImp || 0));
+    // La pantalla mandó el desglose editado. Un recargo en % se calcula sobre lista − descuento
+    // (el descuento editado si vino, si no el que ya tenía la línea).
+    const descBase = vino('descUnit') ? r4(edit.descUnit) : (vino('descPct') ? r4(lista * Number(edit.descPct) / 100) : (dImp || 0));
+    const nuevoRec = vino('recUnit') ? r4(edit.recUnit) : (vino('recPct') ? r4(recargoDesdePct(lista, descBase, edit.recPct)) : (rImp || 0));
     const cambioRec = Math.abs(nuevoRec - (rImp || 0)) > 0.00005;
     rImp = nuevoRec > 0 ? nuevoRec : null;
     rPct = rImp ? (vino('recPct') ? r4(edit.recPct) : (cambioRec ? null : rPct)) : null;
     rOrig = rImp ? (cambioRec ? origenTexto : rOrig) : null;
     const nuevoDesc = r4(lista + (rImp || 0) - neto);      // absorbe el redondeo
-    const cambioDesc = Math.abs(nuevoDesc - (dImp || 0)) > 0.00005;
+    // Cambio = el descuento pedido difiere del que había; lo que absorbe el redondeo del neto
+    // (medio centavo) no cuenta, así no se pierde el origen ("Precio especial" → "Ajuste manual").
+    const cambioDesc = Math.abs(descBase - (dImp || 0)) > 0.00005 || (vino('descPct') && dPct != null && Math.abs(r4(edit.descPct) - dPct) > 0.00005)
+      || Math.abs(nuevoDesc - descBase) > 0.0051;
     if (nuevoDesc > 0) {
       dImp = nuevoDesc;
       dPct = vino('descPct') ? r4(edit.descPct) : (cambioDesc ? null : dPct);
@@ -98,4 +113,4 @@ function desgloseTrasEdicionManual(actual, nuevoNeto, edit = {}, origenTexto = '
   };
 }
 
-module.exports = { desgloseTrasEdicionManual, r2, r4 };
+module.exports = { desgloseTrasEdicionManual, baseRecargo, recargoDesdePct, pctRecargoDesdeImporte, r2, r4 };

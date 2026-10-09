@@ -6,7 +6,8 @@ import TerminacionesEcouvModal from '../modals/config/TerminacionesEcouvModal';
 import NuevoProductoTerminadoModal from '../modals/config/NuevoProductoTerminadoModal';
 import Selector from '../ui/Selector';
 import { PasosCosturaEditor, TablaPasosCostura } from './ConfiguradorPasosCostura';   // [PASO A PASO]
-import { PaintBucket, Flag, Image as IconoImagen, Scissors, Shirt, Spool, Sticker, Palette, Factory, Check, ChevronDown, Pencil, Save, Star, Store, Handshake, Shuffle, TriangleAlert, X, RefreshCw, FolderOpen, CircleCheck, Lock, Upload, Printer, RotateCcw, Package, Boxes, SlidersHorizontal, Tag, ChevronRight, Box, Info } from 'lucide-react';
+import { GrillaAvioTalles, TablaAviosTalle, resumenPorTalle, esMedida } from './ConfiguradorAviosTalle';   // [AVÍOS POR TALLE]
+import { PaintBucket, Flag, Image as IconoImagen, Scissors, Shirt, Spool, Sticker, Palette, Factory, Check, ChevronDown, Pencil, Save, Star, Store, Handshake, Shuffle, TriangleAlert, X, RefreshCw, FolderOpen, CircleCheck, Lock, Upload, Printer, RotateCcw, Package, Boxes, SlidersHorizontal, Tag, ChevronRight, Box, Info, Copy } from 'lucide-react';
 
 /*
  * CONFIGURAR PRODUCTOS — /configurar-productos (F3 del configurador)
@@ -428,8 +429,18 @@ const fichaToForm = (d) => ({
         union: c.UnionNombre || '', iso: c.CodigoISO || '', etapa: c.Etapa || '', descripcion: c.Descripcion || '',
         maquinaId: c.MaquinaCosturaID ? String(c.MaquinaCosturaID) : '', tiempoMin: c.TiempoMin != null ? String(Number(c.TiempoMin)) : '',
         observaciones: c.Observaciones || '', imagenUrl: c.ImagenUrl || '',
+        avioId: c.AvioID ? String(c.AvioID) : '',   // [AVÍOS POR TALLE] avío que usa el paso
     })),
-    avios: (d.avios || []).map(a => ({ avioId: a.AvioID || '', nombre: a.Nombre || '', cantidad: a.Cantidad ?? 1, unidad: a.Unidad || 'u', medida: a.Medida || '', nota: a.Nota || '' })),
+    avios: (d.avios || []).map(a => {
+        // [AVÍOS POR TALLE] valor de cada talle, en el orden del molde
+        const talles = (a.talles || []).map(t => ({ talle: t.Talle, valor: t.Valor != null ? String(Number(t.Valor)) : '', avioId: t.AvioID ? String(t.AvioID) : '' }));
+        return {
+            avioId: a.AvioID || '', nombre: a.Nombre || '', cantidad: a.Cantidad ?? 1, unidad: a.Unidad || 'u', medida: a.Medida || '', nota: a.Nota || '',
+            porTalle: !!a.VariaPorTalle, talles,
+            articuloPorTalle: talles.some(t => t.avioId && String(t.avioId) !== String(a.AvioID || '')),   // solo de pantalla
+        };
+    }),
+    aviosPorTalleOk: d.aviosPorTalle === true,   // ¿se corrió configurador_ficha_avios_talle.sql?
 });
 
 const formToPayload = (f) => ({
@@ -491,8 +502,14 @@ const formToPayload = (f) => ({
             union: c.union.trim(), iso: c.iso || null, etapa: c.etapa || null, descripcion: (c.descripcion || '').trim() || null,
             maquinaId: c.maquinaId ? Number(c.maquinaId) : null, tiempoMin: c.tiempoMin === '' || c.tiempoMin == null ? null : Number(c.tiempoMin),
             observaciones: (c.observaciones || '').trim() || null, imagenUrl: c.imagenUrl || null,
+            avioId: c.avioId ? Number(c.avioId) : null,
         })),
-        avios: f.avios.filter(a => (a.nombre || '').trim()).map(a => ({ avioId: a.avioId || null, nombre: a.nombre.trim(), cantidad: Number(a.cantidad) || 1, unidad: a.unidad || null, medida: a.medida || null, nota: a.nota || null })),
+        avios: f.avios.filter(a => (a.nombre || '').trim()).map(a => ({
+            avioId: a.avioId || null, nombre: a.nombre.trim(), cantidad: Number(a.cantidad) || 1, unidad: a.unidad || null, medida: a.medida || null, nota: a.nota || null,
+            variaPorTalle: !!a.porTalle,
+            talles: a.porTalle ? (a.talles || []).filter(t => (t.valor !== '' && t.valor != null) || t.avioId)
+                .map(t => ({ talle: t.talle, valor: t.valor === '' || t.valor == null ? null : Number(t.valor), avioId: t.avioId ? Number(t.avioId) : null })) : [],
+        })),
     }),
 });
 
@@ -503,6 +520,110 @@ const firmaForm = (f) => {
     const ordenar = (arr, clave) => [...(arr || [])].sort((a, b) => String(clave ? a[clave] : a).localeCompare(String(clave ? b[clave] : b)));
     return JSON.stringify({ ...p, opcionesPermitidas: ordenar(p.opcionesPermitidas), surtido: ordenar(p.surtido), modelos: ordenar(p.modelos, 'clave'), telas: ordenar(p.telas, 'telaProIdProducto') });
 };
+
+// Código sugerido para una copia (09-oct): si el original sigue un patrón con número al final
+// ("PR-002"), el siguiente libre de ese prefijo entre los productos de la lista ("PR-058"). Vacío =
+// lo decide el backend, que además revisa que no lo use ningún artículo ni precio.
+const sugerirCodigoCopia = (cod, productos) => {
+    const m = /^(.*\D)(\d+)$/.exec((cod || '').trim());
+    if (!m) return '';
+    const [, prefijo, numero] = m;
+    const patron = new RegExp(`^${prefijo.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(\\d+)$`);
+    const max = productos.reduce((mx, p) => { const k = patron.exec((p.CodArticulo || '').trim()); return k ? Math.max(mx, Number(k[1])) : mx; }, 0);
+    return `${prefijo}${String(max + 1).padStart(numero.length, '0')}`;
+};
+
+// Ventana "Copiar producto": pide el nombre (y deja ajustar el código). La copia nace igual al
+// original pero sin precio y en borrador (backend: configuradorController.copiarProducto).
+function CopiarProductoModal({ form, productos, hayCambios, onClose, onCopiado }) {
+    const [nombre, setNombre] = useState(`${form.descripcion} (copia)`.slice(0, 100));
+    const [codigo, setCodigo] = useState(() => sugerirCodigoCopia(form.codArticulo, productos));
+    const [copiando, setCopiando] = useState(false);
+    const [error, setError] = useState(null);
+    const nombreRef = useRef(null);
+    useEffect(() => { nombreRef.current?.focus(); nombreRef.current?.select(); }, []);
+    useEffect(() => {
+        const alTeclear = (e) => { if (e.key === 'Escape' && !copiando) onClose(); };
+        window.addEventListener('keydown', alTeclear);
+        return () => window.removeEventListener('keydown', alTeclear);
+    }, [onClose, copiando]);
+
+    const copiar = async () => {
+        if (!nombre.trim()) return setError('Poné el nombre de la copia.');
+        setCopiando(true);
+        setError(null);
+        try {
+            const { data } = await api.post(`${API}/productos/${form.proId}/copiar`, { descripcion: nombre.trim(), codArticulo: codigo.trim() || undefined });
+            onCopiado(data);
+        } catch (e) {
+            setError(e.response?.data?.error || e.message);
+        } finally { setCopiando(false); }
+    };
+
+    const seCopia = form.esCombo
+        ? ['Los productos del combo y sus servicios', 'Las cantidades', 'La foto y la categoría']
+        : ['Producción principal, molde y medidas', 'Técnicas y sus opciones', 'Cantidad y accesorios', 'Molde, telas, avíos y apliques', 'Ficha de diseño y pasos de costura', 'La foto, la familia y la etiqueta'];
+
+    return (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={() => !copiando && onClose()}>
+            <div role="dialog" aria-modal="true" aria-labelledby="copiar-producto-titulo"
+                className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+                <div className="px-6 pt-6 flex items-start gap-4">
+                    <div className="w-11 h-11 rounded-full bg-brand-cyan/10 text-brand-cyan flex items-center justify-center shrink-0"><Copy size={20} /></div>
+                    <div className="min-w-0 flex-1">
+                        <h3 id="copiar-producto-titulo" className="text-lg font-black text-slate-800">Copiar {form.esCombo ? 'combo' : 'producto'}</h3>
+                        <p className="text-sm text-slate-500 truncate">De <b className="text-slate-700">{form.descripcion}</b> <span className="font-mono text-xs">[{form.codArticulo}]</span></p>
+                    </div>
+                    <button type="button" onClick={onClose} disabled={copiando} title="Cerrar" className="p-1.5 rounded-lg text-slate-400 hover:bg-slate-100"><X size={18} /></button>
+                </div>
+
+                <div className="px-6 pt-5 space-y-4">
+                    <div>
+                        <label className="block text-[11px] font-black uppercase tracking-wider text-slate-400 mb-1">Nombre de la copia</label>
+                        <input ref={nombreRef} value={nombre} maxLength={100} onChange={e => { setNombre(e.target.value); setError(null); }}
+                            onKeyDown={e => { if (e.key === 'Enter') copiar(); }}
+                            className="w-full border border-slate-300 rounded-xl px-3.5 py-2.5 text-sm font-bold text-slate-800 outline-none focus:border-brand-cyan focus:ring-2 focus:ring-brand-cyan/15" />
+                    </div>
+                    <div>
+                        <label className="block text-[11px] font-black uppercase tracking-wider text-slate-400 mb-1">Código</label>
+                        <input value={codigo} maxLength={20} placeholder="Automático" onChange={e => { setCodigo(e.target.value); setError(null); }}
+                            onKeyDown={e => { if (e.key === 'Enter') copiar(); }}
+                            className="w-40 border border-slate-300 rounded-xl px-3.5 py-2.5 text-sm font-mono outline-none focus:border-brand-cyan focus:ring-2 focus:ring-brand-cyan/15" />
+                        <p className="text-[11px] text-slate-400 mt-1">El siguiente libre. Si lo dejás vacío, se asigna solo.</p>
+                    </div>
+
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-xs text-slate-600">
+                        <p className="font-bold text-slate-700 mb-1.5">Se copia igual:</p>
+                        <ul className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1">
+                            {seCopia.map(t => <li key={t} className="flex items-start gap-1.5"><Check size={13} className="text-emerald-600 mt-px shrink-0" />{t}</li>)}
+                        </ul>
+                        <p className="mt-3 flex items-start gap-1.5 text-slate-700">
+                            <Info size={13} className="text-brand-cyan mt-px shrink-0" />
+                            <span>Queda <b>sin precio</b> y en <b>borrador</b>: cargale el precio y publicala cuando esté lista.</span>
+                        </p>
+                    </div>
+
+                    {hayCambios && (
+                        <div className="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs font-semibold text-amber-800">
+                            <TriangleAlert size={14} className="shrink-0 mt-px" />
+                            Este producto tiene cambios sin guardar: la copia se hace con lo último guardado, y al abrirla esos cambios se pierden. Guardá primero si los querés.
+                        </div>
+                    )}
+                    {error && <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">{error}</div>}
+                </div>
+
+                <div className="px-6 py-4 mt-5 border-t border-slate-100 flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
+                    <button type="button" onClick={onClose} disabled={copiando}
+                        className="px-4 py-2.5 rounded-xl font-bold text-sm text-slate-600 border border-slate-200 hover:bg-slate-50 disabled:opacity-50">Cancelar</button>
+                    <button type="button" onClick={copiar} disabled={copiando || !nombre.trim()}
+                        className="px-4 py-2.5 rounded-xl font-bold text-sm text-white bg-brand-cyan hover:bg-brand-cyan/90 disabled:opacity-50 inline-flex items-center justify-center gap-2">
+                        <Copy size={16} /> {copiando ? 'Copiando…' : 'Crear copia'}
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+}
 
 // ═════════════════════════════════════════════════════════════════════════
 export default function ConfigurarProductosPage() {
@@ -547,6 +668,7 @@ export default function ConfigurarProductosPage() {
     const [filtroEstado, setFiltroEstado] = useState('');
     const [nuevoNombre, setNuevoNombre] = useState('');
     const [creando, setCreando] = useState(false);
+    const [copiando, setCopiando] = useState(false);   // ventana "Copiar producto" abierta
     const [showNuevo, setShowNuevo] = useState(false);
     const [moviendoFamilia, setMoviendoFamilia] = useState(false);
     const [showNuevaFamilia, setShowNuevaFamilia] = useState(false);
@@ -1216,6 +1338,8 @@ export default function ConfigurarProductosPage() {
         const det = (moldeSel.piezasDetalle || []).filter(d => !vendidos.length || ids.has(d.idEnMolde));
         return [...new Set(det.map(d => d.generico || d.nombre))];
     }, [moldeSel, form?.modelos]);
+    // [AVÍOS POR TALLE] talles del molde por curva y en orden real: las columnas de la grilla de avíos
+    const gruposTalles = useMemo(() => agruparTalles(moldeSel?.talles), [moldeSel]);
     // Técnicas que admiten aplique: las de decoración activas en el paso Técnicas, más Etiqueta (siempre)
     const tecnicasApliqueActivas = useMemo(() => [...AREAS_DECORACION.filter(x => form?.tecnicas?.[x.id]?.on), AREA_APLIQUE_EXTRA], [form?.tecnicas]);
 
@@ -1673,7 +1797,22 @@ export default function ConfigurarProductosPage() {
                                             <span className={`px-3 py-1 rounded-full text-[11px] font-black ${form.estado === 'PUBLICADO' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
                                                 {form.estado === 'PUBLICADO' ? '● PUBLICADO' : '○ BORRADOR'}
                                             </span>
+                                            <button type="button" onClick={() => setCopiando(true)}
+                                                title={`Crear una copia de este ${form.esCombo ? 'combo' : 'producto'} con otro nombre (sin precio y en borrador)`}
+                                                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-bold text-slate-500 transition-colors hover:border-brand-cyan hover:text-brand-cyan">
+                                                <Copy size={15} aria-hidden="true" /> Copiar
+                                            </button>
                                             {botonGuardar()}
+                                            {copiando && (
+                                                <CopiarProductoModal form={form} productos={productos} hayCambios={hayCambios}
+                                                    onClose={() => setCopiando(false)}
+                                                    onCopiado={async (data) => {
+                                                        setCopiando(false);
+                                                        toast.success(`✅ Copia creada: "${data.descripcion}" [${data.codArticulo}] — sin precio, en borrador`);
+                                                        await loadProductos();
+                                                        abrirProducto(data.proIdProducto);
+                                                    }} />
+                                            )}
                                         </div>
 
                                         {/* Producto del local (02/10, antes en el paso Origen): solo si sale del local o lo elige el
@@ -2365,6 +2504,18 @@ export default function ConfigurarProductosPage() {
                                                                     onChange={e => setF({ fichaDiseno: { ...form.fichaDiseno, marca: e.target.value } })}
                                                                     className={`block w-full mt-1 ${claseCampo}`} />
                                                             </label>
+                                                            {/* Modelo de la ficha impresa: el mismo que se mira en "Piezas y talles". Por ahora los pasos y
+                                                                avíos son los mismos para todos los modelos; el modelo sale en el encabezado. */}
+                                                            {(moldeSel?.modelos || []).length > 0 && (
+                                                                <div className={`lg:col-span-2 ${claseEtiquetaCampo}`}>
+                                                                    Modelo (sale en la ficha impresa)
+                                                                    <Selector value={modeloVista} onChange={e => setModeloVista(e.target.value)} anchoLista={280}
+                                                                        claseBoton={claseSel(`mt-1 w-full ${claseCampo}`)}>
+                                                                        <option value="" descripcion="La ficha no nombra ningún modelo">Sin modelo</option>
+                                                                        {moldeSel.modelos.map(m => <option key={m.clave} value={m.clave} descripcion={form.modelos.has(m.clave) ? 'Se vende' : 'No se vende en este producto'}>{m.nombre}</option>)}
+                                                                    </Selector>
+                                                                </div>
+                                                            )}
                                                         </div>
                                                     </div>
 
@@ -2472,10 +2623,19 @@ export default function ConfigurarProductosPage() {
                                                     </div>
 
                                                     <div className="border border-slate-200 rounded-xl p-4">
-                                                        {tituloSeccion('Avíos', 'Todo lo que lleva la prenda y no es tela. Se eligen del "Catálogo de avíos"; acá va la cantidad por prenda y la medida, que puede variar por talle.')}
+                                                        {tituloSeccion('Avíos', 'Todo lo que lleva la prenda y no es tela. Se eligen del "Catálogo de avíos". Si la medida o la cantidad cambian según el talle, marcá "Varía por talle" y cargá cada talle del molde.')}
+                                                        {!form.aviosPorTalleOk && (
+                                                            <div className="mb-3 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-800">
+                                                                <TriangleAlert size={14} className="mt-0.5 shrink-0" aria-hidden="true" />
+                                                                <span>Falta correr <b>docs/migrations/configurador_ficha_avios_talle.sql</b> en esta base. Hasta entonces la medida va como texto y los pasos de costura no guardan el avío que usan.</span>
+                                                            </div>
+                                                        )}
                                                         <div className="space-y-2">
                                                             {form.avios.map((av, i) => {
                                                                 const set = (patch) => { const next = [...form.avios]; next[i] = { ...av, ...patch }; setF({ avios: next }); };
+                                                                // Por talle: solo con la base al día y si el molde tiene talles (o el avío ya traía valores por talle)
+                                                                const puedePorTalle = form.aviosPorTalleOk && (gruposTalles.length > 0 || av.porTalle);
+                                                                const cantidadPorTalle = av.porTalle && !esMedida(av.unidad);
                                                                 return (
                                                                     <div key={i} className="border border-slate-200 rounded-xl bg-white px-3 py-2.5 flex flex-wrap items-center gap-x-3 gap-y-2">
                                                                         <Selector value={av.avioId || ''} title="Avío del catálogo"
@@ -2484,20 +2644,39 @@ export default function ConfigurarProductosPage() {
                                                                             <option value="">{aviosCat.filter(x => x.Activo).length ? 'Elegí el avío…' : 'Cargá avíos en "Catálogo de avíos"'}</option>
                                                                             {aviosCat.filter(x => x.Activo || x.AvioID === av.avioId).map(x => <option key={x.AvioID} value={x.AvioID}>{x.Nombre}{x.Activo ? '' : ' (inactivo)'}</option>)}
                                                                         </Selector>
-                                                                        <label className="inline-flex items-center gap-1.5 text-xs text-slate-500">
-                                                                            <input type="number" min="0.01" step="0.01" value={av.cantidad} title="Cantidad por prenda" onChange={e => set({ cantidad: e.target.value })}
-                                                                                className={`w-20 text-center font-bold ${claseCampoFila}`} />
-                                                                            {av.unidad || 'u'} por prenda
-                                                                        </label>
-                                                                        <input value={av.medida} placeholder="Medida por talle (ej. S–M 55 cm · L–XXL 60 cm)" onChange={e => set({ medida: e.target.value })}
-                                                                            className={`min-w-[220px] flex-1 ${claseCampoFila}`} />
+                                                                        {cantidadPorTalle ? (
+                                                                            <span className="text-xs text-slate-500">Cantidad según el talle ({av.unidad || 'u'})</span>
+                                                                        ) : (
+                                                                            <label className="inline-flex items-center gap-1.5 text-xs text-slate-500">
+                                                                                <input type="number" min="0.01" step="0.01" value={av.cantidad} title="Cantidad por prenda" onChange={e => set({ cantidad: e.target.value })}
+                                                                                    className={`w-20 text-center font-bold ${claseCampoFila}`} />
+                                                                                {av.unidad || 'u'} por prenda
+                                                                            </label>
+                                                                        )}
+                                                                        {!av.porTalle && (
+                                                                            <input value={av.medida} placeholder={puedePorTalle ? 'Medida (si es la misma en todos los talles)' : 'Medida por talle (ej. S–M 55 cm · L–XXL 60 cm)'} onChange={e => set({ medida: e.target.value })}
+                                                                                className={`min-w-[220px] flex-1 ${claseCampoFila}`} />
+                                                                        )}
                                                                         <input value={av.nota} placeholder="Nota" onChange={e => set({ nota: e.target.value })}
-                                                                            className={`min-w-[120px] ${claseCampoFila}`} />
+                                                                            className={`min-w-[120px] ${av.porTalle ? 'flex-1' : ''} ${claseCampoFila}`} />
+                                                                        {puedePorTalle && (
+                                                                            <label className="inline-flex cursor-pointer items-center gap-1.5 text-xs font-bold text-slate-600" title="La medida o la cantidad cambian según el talle">
+                                                                                <input type="checkbox" checked={!!av.porTalle} onChange={e => set({ porTalle: e.target.checked })}
+                                                                                    className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-400" />
+                                                                                Varía por talle
+                                                                            </label>
+                                                                        )}
                                                                         <button type="button" title="Quitar" onClick={() => setF({ avios: form.avios.filter((_, j) => j !== i) })} className="text-red-400 hover:text-red-600 font-black px-1.5">×</button>
+                                                                        {av.porTalle && form.aviosPorTalleOk && (
+                                                                            <GrillaAvioTalles av={av} grupos={gruposTalles} aviosCat={aviosCat} onChange={set} />
+                                                                        )}
                                                                     </div>
                                                                 );
                                                             })}
-                                                            <button type="button" onClick={() => { const c = aviosCat.find(x => x.Activo); setF({ avios: [...form.avios, { avioId: c ? c.AvioID : '', nombre: c ? c.Nombre : '', cantidad: 1, unidad: c ? (c.Unidad || 'u') : 'u', medida: '', nota: '' }] }); }}
+                                                            {form.aviosPorTalleOk && gruposTalles.length === 0 && form.avios.length > 0 && (
+                                                                <p className="text-[11px] text-slate-400">Para cargar avíos por talle, vinculá el molde en "Molde, telas y apliques": los talles salen de ahí.</p>
+                                                            )}
+                                                            <button type="button" onClick={() => { const c = aviosCat.find(x => x.Activo); setF({ avios: [...form.avios, { avioId: c ? c.AvioID : '', nombre: c ? c.Nombre : '', cantidad: 1, unidad: c ? (c.Unidad || 'u') : 'u', medida: '', nota: '', porTalle: false, talles: [], articuloPorTalle: false }] }); }}
                                                                 className={claseAgregar}>
                                                                 + Agregar avío
                                                             </button>
@@ -2508,7 +2687,9 @@ export default function ConfigurarProductosPage() {
                                                         {/* [PASO A PASO] la secuencia de costura de la prenda, de la preparación al planchado */}
                                                         {tituloSeccion('Costura paso a paso', 'Cómo se cose la prenda, en orden: en cada paso, qué operación es, qué costura lleva (ISO 4915), en qué máquina, qué piezas une, cuánto tarda y qué cuidar. La imagen sale del catálogo de costuras, o subí una foto del paso.')}
                                                         <PasosCosturaEditor pasos={form.fichaDisenoCosturas} onChange={pasos => setF({ fichaDisenoCosturas: pasos })}
-                                                            costurasIso={costurasIsoCat} maquinas={maquinasCosturaCat} pasoAPaso={costurasPasoAPaso} />
+                                                            costurasIso={costurasIsoCat} maquinas={maquinasCosturaCat} pasoAPaso={costurasPasoAPaso}
+                                                            piezas={piezasParaApliques} conAvio={form.aviosPorTalleOk && costurasPasoAPaso}
+                                                            avios={[...new Map(form.avios.filter(a => a.avioId).map(a => [String(a.avioId), { avioId: a.avioId, nombre: a.nombre }])).values()]} />
                                                     </div>
 
                                                     <div className="flex items-center gap-3">
@@ -2542,7 +2723,10 @@ export default function ConfigurarProductosPage() {
                                                                         <span className="font-black text-lg">FICHA TÉCNICA DE DISEÑO</span>
                                                                         <span className="text-sm font-bold">MARCA: {form.fichaDiseno.marca || ''}</span>
                                                                     </div>
-                                                                    <div className="text-sm font-bold mb-3">REF. {form.fichaDiseno.ref || form.codArticulo} — {form.descripcion}</div>
+                                                                    <div className="text-sm font-bold mb-3">
+                                                                        REF. {form.fichaDiseno.ref || form.codArticulo} — {form.descripcion}
+                                                                        {(() => { const m = (moldeSel?.modelos || []).find(x => x.clave === modeloVista); return m ? <span className="font-normal"> · Modelo: <b>{m.nombre}</b></span> : null; })()}
+                                                                    </div>
 
                                                                     {form.fichaDiseno.dibujoUrl ? (
                                                                         <div className="relative bg-slate-50 border border-slate-200 rounded-lg mb-3" style={{ minHeight: 220 }}>
@@ -2561,7 +2745,7 @@ export default function ConfigurarProductosPage() {
                                                                     {form.fichaDisenoCosturas.length > 0 && (
                                                                         <>
                                                                             <div className="text-xs font-black uppercase mb-1">Costura paso a paso</div>
-                                                                            <TablaPasosCostura pasos={form.fichaDisenoCosturas} costurasIso={costurasIsoCat} maquinas={maquinasCosturaCat} />
+                                                                            <TablaPasosCostura pasos={form.fichaDisenoCosturas} costurasIso={costurasIsoCat} maquinas={maquinasCosturaCat} avios={aviosCat} />
                                                                         </>
                                                                     )}
 
@@ -2594,14 +2778,20 @@ export default function ConfigurarProductosPage() {
                                                                         <table className="w-full text-xs mt-3">
                                                                             <thead><tr className="border-b-2 border-slate-800 text-left"><th className="py-1 pr-2">Avío</th><th className="py-1 pr-2">Cant./prenda</th><th className="py-1 pr-2">Medida por talle</th><th className="py-1">Nota</th></tr></thead>
                                                                             <tbody>
-                                                                                {form.avios.filter(a => a.nombre.trim()).map((a, i) => (
-                                                                                    <tr key={i} className="border-b border-slate-100">
-                                                                                        <td className="py-1 pr-2 font-bold">{a.nombre}</td><td className="py-1 pr-2">{a.cantidad} {a.unidad}</td><td className="py-1 pr-2">{a.medida}</td><td className="py-1">{a.nota}</td>
-                                                                                    </tr>
-                                                                                ))}
+                                                                                {form.avios.filter(a => a.nombre.trim()).map((a, i) => {
+                                                                                    const resumen = a.porTalle ? resumenPorTalle(a, aviosCat) : '';
+                                                                                    return (
+                                                                                        <tr key={i} className="border-b border-slate-100">
+                                                                                            <td className="py-1 pr-2 font-bold">{a.nombre}</td>
+                                                                                            <td className="py-1 pr-2">{resumen && !esMedida(a.unidad) ? 'según talle' : `${a.cantidad} ${a.unidad}`}</td>
+                                                                                            <td className="py-1 pr-2">{resumen || a.medida}</td><td className="py-1">{a.nota}</td>
+                                                                                        </tr>
+                                                                                    );
+                                                                                })}
                                                                             </tbody>
                                                                         </table>
                                                                     )}
+                                                                    <TablaAviosTalle avios={form.avios} aviosCat={aviosCat} />
                                                                 </div>
 
                                                                 <div className="fdp-noprint flex items-center gap-2 mt-4">

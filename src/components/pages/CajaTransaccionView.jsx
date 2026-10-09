@@ -30,6 +30,7 @@ import { CustomSelect } from '../../client-portal/pautas/CustomSelect';
 import { Listbox } from '@headlessui/react';
 import { ChevronDown, Check } from 'lucide-react';
 import VoucherEgresoModal from './VoucherEgresoModal';
+import { recargoDesdePct, pctRecargoDesdeImporte } from '../../utils/desglosePrecio';
 
 function LightSelect({ value, onChange, options = [], placeholder = 'Seleccionar...' }) {
   const selected = options.find(o => String(o.value) === String(value));
@@ -1082,6 +1083,11 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
   useEffect(() => { if (activeTab === 'OPERACIONES') cargarResumenCierre(); }, [activeTab]);
 
   const getOrdenes = r => r?.orders || [];
+  // Órdenes del retiro que ESTE cobro paga. Siempre del retiro ACTUAL: antes quedaba la foto
+  // del momento de seleccionar y, si en el medio se exoneraba o se pagaba una orden desde
+  // "Editar órdenes", el importe ya no la incluía pero el back la recibía igual como cobrada
+  // y la daba por paga sin cobrarla (Odysseus EUV-26412 / FA-2191, 30-09-2026).
+  const ordenesPendientesIds = r => getOrdenes(r).filter(o => !o.orderIdMetodoPago && !o.orderPago).map(o => o.orderId);
 
   const calcularMontoPorMoneda = useCallback((r, target) => {
     let t = 0;
@@ -1109,7 +1115,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
         }
       }
       
-      return [...prev, { retiroId: id, retiro: r, ordenesIds: getOrdenes(r).filter(o => !o.orderIdMetodoPago && !o.orderPago).map(o => o.orderId), codigoRef: r.ordenDeRetiro, descripcion: r.CliNombre || '' }];
+      return [...prev, { retiroId: id, retiro: r, ordenesIds: ordenesPendientesIds(r), codigoRef: r.ordenDeRetiro, descripcion: r.CliNombre || '' }];
     });
   };
 
@@ -1170,7 +1176,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
             return {
               ...r, conDesglose: true, lista, descU, recU,
               descPct: dz.descuentoPct != null ? Number(dz.descuentoPct) : (lista > 0 ? Math.round(descU / lista * 10000) / 100 : 0),
-              recPct: dz.recargoPct != null ? Number(dz.recargoPct) : (lista > 0 ? Math.round(recU / lista * 10000) / 100 : 0),
+              recPct: dz.recargoPct != null ? Number(dz.recargoPct) : Math.round(pctRecargoDesdeImporte(lista, descU, recU) * 100) / 100,
               // texto que ve el cliente: vacío = automático (el guardado, o 'Ajuste en caja' si se edita el %); '-' = sin texto
               descOrigen: '', recOrigen: '', origDescOrigen: dz.descuentoOrigen || '', origRecOrigen: dz.recargoOrigen || '',
               origDescU: descU, origRecU: recU
@@ -1191,15 +1197,18 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
       const next = { ...row, [campo]: valor };
       const cant   = parseFloat(next.cantidad) || 0;
       if (next.conDesglose && ['cantidad', 'descPct', 'descImp', 'recPct', 'recImp'].includes(campo)) {
-        // Con desglose: la LISTA es fija; se editan descuento y recargo (en % sobre la lista
-        // o en importe por unidad) y el unitario y el total se recalculan:
+        // Con desglose: la LISTA es fija; se editan descuento y recargo (en % o en importe por
+        // unidad) y el unitario y el total se recalculan:
         // unitario = lista − descuento + recargo; total = unitario × cantidad.
+        // El descuento % va sobre la lista y el recargo % sobre lista − descuento: si cambia el
+        // descuento, un recargo con % se recalcula.
         const lista = Number(next.lista) || 0;
         const r4 = n => Math.round((Number(n || 0) + Number.EPSILON) * 10000) / 10000;
         if (campo === 'descPct') { const p = Math.min(100, Math.max(0, parseFloat(valor) || 0)); next.descPct = p; next.descU = r4(lista * p / 100); }
         if (campo === 'descImp') { const u = Math.max(0, parseFloat(valor) || 0); next.descU = u; next.descPct = lista > 0 ? r4(u / lista * 100) : 0; }
-        if (campo === 'recPct')  { const p = Math.max(0, parseFloat(valor) || 0); next.recPct = p; next.recU = r4(lista * p / 100); }
-        if (campo === 'recImp')  { const u = Math.max(0, parseFloat(valor) || 0); next.recU = u; next.recPct = lista > 0 ? r4(u / lista * 100) : 0; }
+        if (campo === 'recPct')  { const p = Math.max(0, parseFloat(valor) || 0); next.recPct = p; next.recU = r4(recargoDesdePct(lista, next.descU, p)); }
+        if (campo === 'recImp')  { const u = Math.max(0, parseFloat(valor) || 0); next.recU = u; next.recPct = r4(pctRecargoDesdeImporte(lista, next.descU, u)); }
+        if ((campo === 'descPct' || campo === 'descImp') && Number(next.recPct) > 0) next.recU = r4(recargoDesdePct(lista, next.descU, next.recPct));
         const precio = Math.max(0, r4(lista - (next.descU || 0) + (next.recU || 0)));
         next.precio = precio.toFixed(2);
         next.total = (cant * precio).toFixed(2);
@@ -1351,7 +1360,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
       setRetiros(data);
       setSeleccionados(prev => prev.map(s => {
         const fresco = data.find(r => (r.OReIdOrdenRetiro || r.ordenDeRetiro) === s.retiroId);
-        return fresco ? { ...s, retiro: fresco } : s;
+        return fresco ? { ...s, retiro: fresco, ordenesIds: ordenesPendientesIds(fresco) } : s;
       }));
     } catch { }
   }, []);
@@ -1494,7 +1503,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
         return {
           tipo: 'ORDEN_RETIRO', referenciaId: s.retiroId, codigoRef: s.codigoRef, descripcion: s.descripcion, montoOriginal: montoEnMonedaSeleccionada,
           ajuste: parseFloat(ajustes[s.retiroId]?.ajuste || 0) || 0,
-          tipoAjuste: ajustes[s.retiroId]?.tipoAjuste || null, orderNumbers: s.ordenesIds
+          tipoAjuste: ajustes[s.retiroId]?.tipoAjuste || null, orderNumbers: ordenesPendientesIds(s.retiro)
         };
       });
       // idCheque: lo devuelve ChequeRecibirModal al dar de alta el cheque. Sin enviarlo,
@@ -3637,7 +3646,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                 <span className="text-center">Cantidad</span>
                 <span className="text-center" title="Precio de lista del pedido (antes de descuento y recargo)">P. Lista</span>
                 <span className="text-center" title="Descuento: % sobre la lista o importe por unidad">Descuento</span>
-                <span className="text-center" title="Recargo (urgencia, tinta, manual): % sobre la lista o importe por unidad">Recargo</span>
+                <span className="text-center" title="Recargo (urgencia, tinta, manual): % sobre el precio con descuento o importe por unidad">Recargo</span>
                 <span className="text-center" title="Unitario neto = lista − descuento + recargo">Precio Unit.</span>
                 <span className="text-center">Total</span>
               </div>

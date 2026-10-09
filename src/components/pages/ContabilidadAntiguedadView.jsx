@@ -145,17 +145,18 @@ export default function ContabilidadAntiguedadView({ embebido = false }) {
   const [datos, setDatos] = useState([]);
   const [loading, setLoading] = useState(false);
   const [filtro, setFiltro] = useState('');
-  const [modo, setModo] = useState('TODO'); // 'TODO' | 'OFICIAL' | 'WIP'
+  // Solo deuda de DOCUMENTOS emitidos (e-Ticket, e-Factura, Pedido Caja): las órdenes sueltas
+  // sin documento no entran. Antes había un selector Consolidado / Solo Facturas / Solo Órdenes;
+  // se sacó a pedido (08-oct-2026) y la página quedó fija en 'OFICIAL' (backend: DocIdDocumento IS NOT NULL).
+  const modo = 'OFICIAL';
   const [ordenCol, setOrdenCol] = useState('TotalDeuda');
   const [ordenDir, setOrdenDir] = useState('desc');
   const [expanded, setExpanded] = useState({}); // { 'CliIdCliente-CueTipo': boolean }
   const [detallesDeuda, setDetallesDeuda] = useState({}); // { 'CliIdCliente': [documents] }
   const [loadingDetalles, setLoadingDetalles] = useState({});
-  // Control de crédito: compara contra el límite LO MISMO que muestra la página según el
-  // selector de arriba (Consolidado = todo lo pendiente · Solo Facturas · Solo Órdenes sin
-  // facturar). Un único selector: tener otro propio acá se pisaba con ese (ej. "Solo Órdenes"
-  // + "Solo facturado" daba utilizado 0 y escondía a los excedidos).
+  // Control de crédito: compara contra el límite LO MISMO que muestra la página (solo documentos).
   const [fVendedor, setFVendedor] = useState('');
+  const [fTipoCliente, setFTipoCliente] = useState(''); // '' = todos · texto de TiposClientes · SIN_TIPO
   const [soloCredito, setSoloCredito] = useState(false);   // solo clientes cerca / al límite / excedidos
   // Tipo de cambio para comparar la deuda de las dos monedas contra el único límite del
   // cliente: viene la cotización del día con el reporte y se puede pisar a mano.
@@ -200,7 +201,7 @@ export default function ContabilidadAntiguedadView({ embebido = false }) {
 
   const tcNum   = Number(String(tc).replace(',', '.')) || 0;
   const montoDe = (d) => Number(d.TotalDeuda ?? 0); // el backend ya filtró por el modo elegido
-  const MODO_TXT = { TODO: 'todo lo pendiente (facturas + órdenes sin facturar)', OFICIAL: 'solo las facturas pendientes', WIP: 'solo las órdenes sin facturar' };
+  const MODO_TXT = { OFICIAL: 'solo documentos emitidos (e-Ticket, e-Factura, Pedido Caja)' };
   const esUSDrow = (d) => String(d.Moneda || '').includes('USD');
   // Crédito por CLIENTE (no por fila): un límite en una moneda vs. la deuda de las dos
   // monedas convertida al TC. Las filas $ y US$ del mismo cliente muestran el mismo resultado.
@@ -217,10 +218,15 @@ export default function ContabilidadAntiguedadView({ embebido = false }) {
   }
   const creditoDe   = (d) => creditoPorCliente[d.CliIdCliente]?.estado || estadoCredito(0, 0);
   const vendedores  = [...new Set(datos.map(d => d.Vendedor).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'es'));
+  // Tipo de cliente tal cual está en TiposClientes; los clientes sin tipo cargado van a "Sin tipo"
+  const tipoDe = (d) => d.TipoCliente || 'SIN_TIPO';
+  const tiposCliente = [...new Map(datos.map(d => [tipoDe(d), d.TipoClienteId ?? 99])).entries()]
+    .sort((a, b) => a[1] - b[1]).map(([t]) => t);
 
   const filtrados = datos
     .filter(d => !filtro || d.NombreCliente?.toLowerCase().includes(filtro.toLowerCase()))
     .filter(d => !fVendedor || d.Vendedor === fVendedor)
+    .filter(d => !fTipoCliente || tipoDe(d) === fTipoCliente)
     .filter(d => !soloCredito || creditoDe(d).nivel >= 2)
     .sort((a, b) => {
       const va = Number(a[ordenCol] ?? 0);
@@ -255,13 +261,13 @@ export default function ContabilidadAntiguedadView({ embebido = false }) {
   }, { sinLimite: 0, conLimite: 0, excedidos: 0, cerca: 0 });
 
   const exportarCSV = () => {
-    const cols = ['Cliente', 'Vendedor', 'Condición', 'Alerta', 'Al Día', 'Vence hoy', 'Vence 1-7d', 'Vence 8-15d', 'Vence 16-30d', 'Vence +30d',
-      '1-30d', '31-60d', '61-90d', '+90d', 'Total', 'Facturado', 'Sin facturar', 'Límite crédito', 'Moneda límite', 'Utilizado (moneda del límite)', '% límite', 'Estado crédito'];
+    const cols = ['Cliente', 'Tipo de cliente', 'Vendedor', 'Condición', 'Moneda', 'Alerta', 'Al Día', 'Vence hoy', 'Vence 1-7d', 'Vence 8-15d', 'Vence 16-30d', 'Vence +30d',
+      '1-30d', '31-60d', '61-90d', '+90d', 'Total documentos', 'Límite crédito', 'Moneda límite', 'Utilizado (moneda del límite)', '% límite', 'Estado crédito'];
     const q = (s) => `"${String(s ?? '').replace(/"/g, '""')}"`;
     const rows = filtrados.map(d => {
       const c = creditoPorCliente[d.CliIdCliente] || {}, e = c.estado || estadoCredito(0, 0);
-      return [q(d.NombreCliente), q(d.Vendedor), q(d.CondicionPago), q(alertaVenc(d).txt), d.AlDia, d.VenceHoy, d.Vence1_7, d.Vence8_15, d.Vence16_30, d.VenceMas30,
-        d.Dias1_30, d.Dias31_60, d.Dias61_90, d.Mas90, d.TotalDeuda, d.DeudaFacturas ?? 0, d.DeudaOrdenes ?? 0,
+      return [q(d.NombreCliente), q(d.TipoCliente || 'Sin tipo'), q(d.Vendedor), q(d.CondicionPago), q(d.Moneda), q(alertaVenc(d).txt), d.AlDia, d.VenceHoy, d.Vence1_7, d.Vence8_15, d.Vence16_30, d.VenceMas30,
+        d.Dias1_30, d.Dias31_60, d.Dias61_90, d.Mas90, d.TotalDeuda,
         c.limite > 0 ? c.limite : '', c.limite > 0 ? c.moneda : '', c.limite > 0 ? (c.utilizado ?? 0).toFixed(2) : '',
         e.pct != null ? e.pct.toFixed(1) : '', q(e.txt)].join(',');
     });
@@ -290,38 +296,18 @@ export default function ContabilidadAntiguedadView({ embebido = false }) {
       {/* Encabezado (embebido: la página contenedora ya muestra el título) */}
       <div className={`flex flex-col sm:flex-row justify-between sm:items-center gap-4 ${embebido ? '' : 'mb-2'}`}>
         {embebido ? (
-          <p className="text-slate-500 text-xs max-w-2xl">Deuda pendiente por cliente y moneda, en tramos de vencimiento. El selector de la derecha define qué deuda entra en toda la página (tarjetas, tabla y control de crédito).</p>
+          <p className="text-slate-500 text-xs max-w-2xl">Deuda pendiente por cliente y moneda, en tramos de vencimiento. <b className="text-slate-600">Solo documentos emitidos</b> (e-Ticket, e-Factura, Pedido Caja): las órdenes que todavía no tienen documento no entran en las tarjetas, la tabla ni el control de crédito.</p>
         ) : (
         <div>
           <h1 className="text-3xl sm:text-4xl font-black text-slate-800 flex items-center gap-3">
              <Calendar className="text-indigo-400" size={36} /> Antigüedad de Deuda
           </h1>
           <p className="text-slate-500 text-sm mt-2 max-w-2xl">
-              Distribución interactiva de deuda pendiente segregada por tramos de vencimiento y clientes.
+              Deuda pendiente de documentos emitidos (e-Ticket, e-Factura, Pedido Caja) por tramos de vencimiento y clientes. Las órdenes sin documento no entran.
           </p>
         </div>
         )}
         <div className="flex items-center gap-3">
-          <div className="flex bg-slate-200 p-1 rounded-xl shadow-inner mr-2">
-            <button 
-                onClick={() => setModo('TODO')} 
-                className={`px-4 py-1.5 text-xs font-bold rounded-lg transition-all ${modo === 'TODO' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-            >
-                Consolidado
-            </button>
-            <button 
-                onClick={() => setModo('OFICIAL')} 
-                className={`px-4 py-1.5 text-xs font-bold rounded-lg transition-all ${modo === 'OFICIAL' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-            >
-                Solo Facturas
-            </button>
-            <button 
-                onClick={() => setModo('WIP')} 
-                className={`px-4 py-1.5 text-xs font-bold rounded-lg transition-all ${modo === 'WIP' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-            >
-                Solo Órdenes (WIP)
-            </button>
-          </div>
           <button onClick={exportarCSV} className="flex items-center gap-2 px-4 py-2.5 text-sm bg-slate-50 hover:bg-slate-700 hover:text-white border border-slate-100 rounded-xl font-bold transition-all shadow-lg text-slate-600 w-fit group">
             <Download size={16} className="text-emerald-600 group-hover:text-emerald-400" /> Exportar a CSV
           </button>
@@ -391,7 +377,7 @@ export default function ContabilidadAntiguedadView({ embebido = false }) {
             className="w-24 text-xs border border-slate-300 rounded-lg px-2 py-1.5 focus:ring-2 focus:ring-indigo-400/30 outline-none tabular-nums" />
           <span className="text-[10px] text-slate-400">$ por US$</span>
         </div>
-        <div className="text-[11px] text-slate-600 bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5" title="Se cambia con el selector Consolidado / Solo Facturas / Solo Órdenes de arriba">
+        <div className="text-[11px] text-slate-600 bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5" title="Las órdenes que todavía no tienen documento no suman al utilizado">
           Comparando contra el límite: <b>{MODO_TXT[modo]}</b>
         </div>
         {[
@@ -425,17 +411,31 @@ export default function ContabilidadAntiguedadView({ embebido = false }) {
               />
           </div>
           <span className="text-xs font-bold font-mono text-slate-400 bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-100">{filtrados.length} RESULTADOS</span>
-          {vendedores.length > 0 && (
-            <div className="flex items-center gap-1.5 flex-wrap sm:ml-auto">
-              <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 mr-1">Vendedor</span>
-              {['', ...vendedores].map(v => (
-                <button key={v || 'todos'} onClick={() => setFVendedor(v)}
-                  className={`px-2.5 py-1 rounded-full text-[11px] font-bold transition-all ${fVendedor === v ? 'bg-indigo-600 text-white shadow-sm' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>
-                  {v || 'Todos'}
-                </button>
-              ))}
-            </div>
-          )}
+          <div className="flex flex-col gap-2 sm:ml-auto sm:items-end">
+            {vendedores.length > 0 && (
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 mr-1">Vendedor</span>
+                {['', ...vendedores].map(v => (
+                  <button key={v || 'todos'} onClick={() => setFVendedor(v)}
+                    className={`px-2.5 py-1 rounded-full text-[11px] font-bold transition-all ${fVendedor === v ? 'bg-indigo-600 text-white shadow-sm' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>
+                    {v || 'Todos'}
+                  </button>
+                ))}
+              </div>
+            )}
+            {tiposCliente.length > 0 && (
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 mr-1">Tipo de cliente</span>
+                {['', ...tiposCliente].map(t => (
+                  <button key={t || 'todos'} onClick={() => setFTipoCliente(t)}
+                    title={t ? `Mostrar solo clientes de tipo "${t === 'SIN_TIPO' ? 'sin tipo cargado' : t}" (afecta tarjetas, tabla y control de crédito)` : 'Mostrar todos los tipos de cliente'}
+                    className={`px-2.5 py-1 rounded-full text-[11px] font-bold transition-all ${fTipoCliente === t ? 'bg-indigo-600 text-white shadow-sm' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>
+                    {!t ? 'Todos' : t === 'SIN_TIPO' ? 'Sin tipo' : t}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
 
         {loading ? (
@@ -476,9 +476,9 @@ export default function ContabilidadAntiguedadView({ embebido = false }) {
                             {d.NombreCliente}
                           </p>
                           <p className="text-[10px] font-mono font-bold text-slate-400 mt-1 uppercase bg-slate-100 inline-block px-1.5 rounded ml-6">{d.Moneda}</p>
-                          {(d.Vendedor || d.CondicionPago) && (
-                            <p className="text-[10px] text-slate-400 mt-1 ml-6">{d.Vendedor ? `Vendedor: ${d.Vendedor}` : ''}{d.Vendedor && d.CondicionPago ? ' · ' : ''}{d.CondicionPago ? `Condición: ${d.CondicionPago}` : ''}</p>
-                          )}
+                          <p className="text-[10px] text-slate-400 mt-1 ml-6">
+                            {[`Tipo: ${d.TipoCliente || 'sin tipo'}`, d.Vendedor && `Vendedor: ${d.Vendedor}`, d.CondicionPago && `Condición: ${d.CondicionPago}`].filter(Boolean).join(' · ')}
+                          </p>
                         </td>
                         <td className="px-4 py-4">
                           {(() => { const a = alertaVenc(d); return <span className={`text-[10px] font-bold uppercase px-2 py-1 rounded-md border whitespace-nowrap ${a.cls}`} title={`${d.DocsVencidos || 0} vencido(s) de ${d.DocsPendientes || 0} documento(s) pendiente(s)`}>{a.txt}</span>; })()}

@@ -644,8 +644,10 @@ const WmsReceiveSalesView = () => {
                                         </div>
                                     </div>
 
-                                    {/* Expanded Detail View */}
-                                    <div className={`overflow-hidden transition-all duration-300 border-t border-slate-100 ${isExpanded ? 'max-h-[2000px] opacity-100' : 'max-h-0 opacity-0'}`}>
+                                    {/* Expanded Detail View — abierta SIN tope de alto: con max-h-[2000px] un
+                                        pedido de ~23+ líneas (VEN-2451) recortaba el pie y el botón
+                                        "Iniciar Preparación" quedaba invisible. */}
+                                    <div className={`overflow-hidden transition-all duration-300 border-t border-slate-100 ${isExpanded ? 'max-h-none opacity-100' : 'max-h-0 opacity-0'}`}>
                                         <div className="p-6 bg-slate-50/50">
 
                                             {/* Stepper visible en mobile */}

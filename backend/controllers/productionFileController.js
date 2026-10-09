@@ -49,6 +49,7 @@ const logger = require('../utils/logger');
 const { changeOrderState } = require('../services/stateManagerService');
 const { saveFallaImage } = require('../utils/thumbnailGenerator');
 const { devolverMetrosTelaCliente } = require('../utils/telaClienteDevolucion');
+const { heredarRequisitosCumplidos } = require('../utils/requisitosAutoCumplimiento');
 
 // Asegura la columna para la imagen anotada de falla (una sola vez por proceso).
 let _fallaColEnsured = false;
@@ -882,6 +883,18 @@ const postControlArchivo = async (req, res) => {
                 // Obtener el ID de la nueva orden recién insertada
                 const newOrderRes = await new sql.Request(transaction).query("SELECT TOP 1 OrdenID FROM dbo.Ordenes ORDER BY OrdenID DESC");
                 newOrderId = newOrderRes.recordset[0]?.OrdenID;
+
+                // [REQUISITOS] La -F se produce con la misma tela/prenda/matriz que la madre: hereda
+                // lo que la madre ya tiene CUMPLIDO (ej. TELA "Asignado: bobina X" en SB). Sin esto
+                // nacía con todo pendiente y quedaba para siempre en "Esperando requisitos" de
+                // Planificación (bug real 9-oct-2026). Mismo criterio que cadenaReposicionService.
+                if (newOrderId) {
+                    try {
+                        await heredarRequisitosCumplidos(transaction, ordenId, newOrderId, 'orden de falla');
+                    } catch (eReq) {
+                        logger.warn(`[postControlArchivo] No se pudieron heredar requisitos a la falla ${nuevoCodigo}: ${eReq.message}`);
+                    }
+                }
             }
 
             try {
@@ -2098,6 +2111,15 @@ const createCustomerReplacementOrder = async (req, res) => {
 
         const newOrderId = insertOrderResult.recordset[0].NewID;
 
+        // [REQUISITOS] La -R es la misma orden vuelta a hacer: hereda los requisitos que la madre
+        // ya tiene CUMPLIDOS (TELA asignada / "material propio" en SB, matriz, aprobación, etc.).
+        // Sin esto quedaba para siempre en "Esperando requisitos" de Planificación (9-oct-2026).
+        try {
+            await heredarRequisitosCumplidos(transaction, originalOrderId, newOrderId, 'reposición');
+        } catch (eReq) {
+            logger.warn(`[Reposición] No se pudieron heredar requisitos a ${newCode}: ${eReq.message}`);
+        }
+
         let totalFiles = 0;
         // Miniaturas a copiar del archivo original al clon (se hace DESPUÉS del commit: es I/O de
         // disco, no debe alargar ni poder tumbar la transacción).
@@ -2221,7 +2243,7 @@ const createCustomerReplacementOrder = async (req, res) => {
                     }
                     const relNewCode = `${stripRepoSuffix(relOrder.CodigoOrden)}${suffix}`; // Mismo sufijo, sobre la raíz (evita apilar -R)
 
-                    await new sql.Request(transaction)
+                    const relIns = await new sql.Request(transaction)
                         .input('RelNewCode', sql.NVarChar, relNewCode)
                         .input('RelOldID', sql.Int, relId)
                         .input('GlobalObs', sql.NVarChar, globalObservation || 'Reposición Cliente (Servicio)')
@@ -2242,8 +2264,19 @@ const createCustomerReplacementOrder = async (req, res) => {
                                 GETDATE(), 0, Variante, UM,
                                 IdClienteReact, IdProductoReact, CodCliente, CodArticulo, 0
                             FROM dbo.Ordenes
-                            WHERE OrdenID = @RelOldID
+                            WHERE OrdenID = @RelOldID;
+
+                            SELECT SCOPE_IDENTITY() AS NewID;
                         `);
+                    // [REQUISITOS] Misma herencia que la -R principal (ver arriba).
+                    const relNewId = relIns.recordset?.[0]?.NewID;
+                    if (relNewId) {
+                        try {
+                            await heredarRequisitosCumplidos(transaction, relId, relNewId, 'reposición');
+                        } catch (eReq) {
+                            logger.warn(`[Reposición] No se pudieron heredar requisitos a ${relNewCode}: ${eReq.message}`);
+                        }
+                    }
                 }
             }
         }

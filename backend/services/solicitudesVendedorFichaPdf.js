@@ -124,11 +124,29 @@ function pasosCostura(costuras, dataUri) {
   const conTiempo = costuras.some(c => c.tiempoMin != null);
   return `<table><thead><tr><th>#</th><th>Etapa</th><th>Operación · piezas que une</th><th>Costura (ISO 4915)</th><th>Máquina</th><th>Min</th><th>Observaciones</th><th></th></tr></thead><tbody>${costuras.map((c, i) => {
     const img = dataUri(c.imagenUrl);
-    return `<tr><td>${i + 1}</td><td>${esc(c.etapa || '')}</td><td><b>${esc(c.union)}</b>${c.piezas ? '<br>' + esc(c.piezas) : ''}</td>
+    return `<tr><td>${i + 1}</td><td>${esc(c.etapa || '')}</td><td><b>${esc(c.union)}</b>${c.piezas ? '<br>' + esc(c.piezas) : ''}${c.avio ? `<br><small>Avío: ${esc(c.avio)}</small>` : ''}</td>
       <td>${esc(c.codigoISO || '—')}${c.nombre ? ' · ' + esc(c.nombre) : ''}</td><td>${esc(c.maquina || '')}</td>
       <td>${c.tiempoMin != null ? esc(String(c.tiempoMin)) : ''}</td><td>${esc(c.observaciones || '')}</td>
       <td>${img ? `<img src="${img}" alt="" style="width:90px;max-height:56px;object-fit:contain">` : ''}</td></tr>`;
   }).join('')}${conTiempo ? `<tr><td colspan="5" style="text-align:right"><b>Tiempo total por prenda</b></td><td><b>${total.toFixed(2)}</b></td><td colspan="2">min</td></tr>` : ''}</tbody></table>`;
+}
+
+// [AVÍOS POR TALLE] tabla avío × talle: una fila por avío que varía por talle, una columna por talle (en el
+// orden del molde). En cada celda, el valor y, si en ese talle cambia, el artículo.
+function aviosPorTalle(avios) {
+  const conTalle = avios.filter(a => (a.porTalle || []).length);
+  if (!conTalle.length) return '';
+  const talles = [];
+  conTalle.forEach(a => a.porTalle.forEach(x => { if (!talles.includes(x.talle)) talles.push(x.talle); }));
+  const celda = (a, talle) => {
+    const x = a.porTalle.find(y => y.talle === talle);
+    if (!x) return '';
+    const valor = x.valor != null ? `${String(x.valor).replace('.', ',')}` : '';
+    return x.articulo && x.articulo !== a.nombre ? `${esc(x.articulo)}${valor ? `<br>${esc(valor)}` : ''}` : esc(valor);
+  };
+  return `<table><thead><tr><th>Avío por talle</th>${talles.map(tl => `<th style="text-align:center">${esc(tl)}</th>`).join('')}</tr></thead><tbody>
+    ${conTalle.map(a => `<tr><td><b>${esc(a.nombre)}</b><br><small>${esc(a.unidad)}</small></td>${talles.map(tl => `<td style="text-align:center">${celda(a, tl)}</td>`).join('')}</tr>`).join('')}
+  </tbody></table>`;
 }
 
 // Ficha técnica del producto del catálogo (Configurar productos → Ficha de diseño): avíos, costuras, material, tallas, notas, dibujo
@@ -142,7 +160,7 @@ function fichaTecnica(p) {
       ${F('Referencia', f.ref)}${F('Marca', f.marca)}${F('Material', f.material)}${F('Tallas', f.tallas)}${F('Marcación', f.marcacion)}
     </div>
     ${dib ? `<figure style="margin:6px 0"><div class="img" style="max-width:260px"><img src="${dib}" alt="" style="max-width:100%;max-height:220px"></div><figcaption>Dibujo de la ficha</figcaption></figure>` : ''}
-    ${f.avios.length ? `<table><thead><tr><th>Avío</th><th>Por prenda</th><th>Medida</th><th>Nota</th></tr></thead><tbody>${f.avios.map(a => `<tr><td><b>${esc(a.nombre)}</b></td><td>${esc(a.cantidad ?? '')} ${esc(a.unidad)}</td><td>${esc(a.medida || '')}</td><td>${esc(a.nota || '')}</td></tr>`).join('')}</tbody></table>` : '<p class="nota">Sin avíos cargados en el configurador.</p>'}
+    ${f.avios.length ? `<table><thead><tr><th>Avío</th><th>Por prenda</th><th>Medida</th><th>Nota</th></tr></thead><tbody>${f.avios.map(a => `<tr><td><b>${esc(a.nombre)}</b></td><td>${(a.porTalle || []).length && ['u', 'par'].includes(a.unidad) ? 'según talle' : `${esc(a.cantidad ?? '')} ${esc(a.unidad)}`}</td><td>${esc(a.medida || '')}</td><td>${esc(a.nota || '')}</td></tr>`).join('')}</tbody></table>${aviosPorTalle(f.avios)}` : '<p class="nota">Sin avíos cargados en el configurador.</p>'}
     ${f.costuras.length ? pasosCostura(f.costuras, dibujoDataUri) : '<p class="nota">Sin costuras cargadas en el configurador.</p>'}
     ${f.notas.length ? `<ul class="lista">${f.notas.map(n => `<li>${n.etiqueta ? '<b>' + esc(n.etiqueta) + ':</b> ' : ''}${esc(n.valor)}</li>`).join('')}</ul>` : ''}`;
 }
