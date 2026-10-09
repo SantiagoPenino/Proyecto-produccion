@@ -8,6 +8,7 @@ import ConfirmationModal from '../modals/ConfirmationModal';
 import { useEmpresas } from '../../hooks/useEmpresas';
 import { validarDocumentoUY } from '../../utils/documentoUY';
 import { getTipoDocName } from '../../utils/tiposDocumento';
+import { factorDescRec, redondear2 } from '../../utils/desglosePrecio';
 
 
 // ID del Consumidor Final genérico (sin cuenta corriente)
@@ -65,15 +66,14 @@ function resolverDescPct(linea, totalLinea) {
 }
 
 // % de recargo de una línea guardada (urgencia, tinta, manual): el guardado o, si no está,
-// deducido del importe sobre el bruto de lista.
+// deducido del importe sobre lo que queda después del descuento (bruto de lista − descuento).
 function resolverRecPct(linea, totalLinea) {
   const guardado = linea?.DcdRecargoPct != null ? Number(linea.DcdRecargoPct) : null;
   if (guardado != null && guardado > 0) return guardado;
   const rec = Number(linea?.DcdTotalRecargos) || 0;
-  const desc = Number(linea?.DcdTotalDescuentos) || 0;
-  const bruto = (Number(totalLinea) || 0) + desc - rec;
-  if (rec <= 0.01 || bruto <= 0) return 0;
-  return parseFloat(((rec / bruto) * 100).toFixed(4));
+  const base = (Number(totalLinea) || 0) - rec;
+  if (rec <= 0.01 || base <= 0) return 0;
+  return parseFloat(((rec / base) * 100).toFixed(4));
 }
 
 // Mapea (tipoCliente, formaPago) => valor de CodDocumento en tiposDocs
@@ -127,6 +127,11 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
   const [confirmActualizarCliente, setConfirmActualizarCliente] = useState(null); // { mensaje, payload }
   const [editDocInfo, setEditDocInfo] = useState(null);
   const esEditar = mode === 'editar' && !!editDocId;
+  // REFACTURAR (NC de 3 opciones, 09-10-2026): factura corregida que se paga con el crédito que
+  // dejó la NC del original. No se cobra de nuevo — antes se cobraba otra vez y quedaba un
+  // saldo a favor falso (Fundación Corazoncitos $ 18.000…). Viene de la Bandeja CFE.
+  const refacturar = (!esEditar && initialData?.refacturar && Number(initialData.refacturar.credito) > 0.009)
+    ? initialData.refacturar : null;
   const { empresas, empresaSeleccionada, setEmpresaSeleccionada } = useEmpresas();
   // Guarda si el documento ORIGINAL era contado (para mostrar alerta de anulación de pago)
   const originalPagadoRef = useRef(null);
@@ -594,8 +599,9 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
       const ivaRate = (l.iva !== undefined && l.iva !== null) ? parseFloat(l.iva) : 22;
       const descPct = Math.min(100, Math.max(0, parseFloat(l.descPct) || 0));
       const recPct = Math.max(0, parseFloat(l.recPct) || 0);
-      // lista × cant − descuento + recargo (los dos % sobre la lista)
-      const lineTotal = qty * price * (1 - descPct / 100 + recPct / 100);
+      // lista × cant − descuento + recargo (descuento sobre la lista, recargo sobre lista − descuento)
+      // redondeada por línea igual que al guardar, así el total de pantalla es el que se emite
+      const lineTotal = redondear2(qty * price * factorDescRec(descPct, recPct));
       const lineNeto = lineTotal / (1 + ivaRate / 100);
 
       total += lineTotal;
@@ -1132,10 +1138,10 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
     if (formData.DocTipo.includes('FACTURA') && !formData.CliIdCliente) {
       return toast.error('Las e-Facturas requieren un cliente con RUT seleccionado. Solución: buscá y seleccioná el cliente en "1. Seleccionar Cliente".');
     }
-    if (formData.DocPagado && pagos.length === 0) {
+    if (!refacturar && formData.DocPagado && pagos.length === 0) {
       return toast.error('Debe seleccionar al menos un método de pago si el documento está pagado.');
     }
-    if (formData.DocPagado && !balanceOK && !pagosUntouched) {
+    if (!refacturar && formData.DocPagado && !balanceOK && !pagosUntouched) {
       const monedaDoc = formData.MonIdMoneda === 2 ? 'U$S' : '$';
       return toast.error(
         `La suma de los pagos no coincide con el total de la factura. Total: ${monedaDoc} ${formatMoney(totales.total)} — Pagos ingresados (convertidos): ${monedaDoc} ${formatMoney(totalPagado)} — Diferencia: ${monedaDoc} ${formatMoney(Math.abs(diferenciaPago))}. Ojo: los pagos en otra moneda se convierten con la cotización del día ($ ${cotizacion}). Solución: revisá la moneda ($/U$S) de cada pago, ajustá el monto, o usá "Completar Saldo".`,
@@ -1179,8 +1185,9 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
             const descPct = Math.min(100, Math.max(0, parseFloat(l.descPct) || 0));
             const recPct = Math.max(0, parseFloat(l.recPct) || 0);
             const bruto = qty * price;
-            const recMonto = bruto * (recPct / 100);
-            const lineTotal = parseFloat((bruto * (1 - descPct / 100 + recPct / 100)).toFixed(2));
+            // El recargo se calcula sobre lo que queda después del descuento
+            const recMonto = redondear2(bruto * (1 - descPct / 100) * (recPct / 100));
+            const lineTotal = redondear2(bruto * factorDescRec(descPct, recPct));
             // El importe del descuento absorbe el redondeo: bruto − desc + rec = total (al centavo)
             const descMonto = descPct > 0 ? parseFloat((parseFloat(bruto.toFixed(2)) + parseFloat(recMonto.toFixed(2)) - lineTotal).toFixed(2)) : 0;
             const lineNeto = lineTotal / (1 + ivaRate / 100);
@@ -1223,13 +1230,15 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
           DocCliDireccion: formData.DocCliDireccion,
           DocCliCiudad: formData.DocCliCiudad,
           DocCliNombreFantasia: (formData.DocCliNombreFantasia || '').trim(),
-          DocPagado: formData.DocPagado,
-          MetodoPagoId: formData.DocPagado ? parseInt(pagos[0]?.metodoPagoId) : null,
-          Pagos: formData.DocPagado ? pagos.map(p => ({
+          DocPagado: refacturar ? true : formData.DocPagado,
+          MetodoPagoId: (!refacturar && formData.DocPagado) ? parseInt(pagos[0]?.metodoPagoId) : null,
+          // Refacturar: no entra plata — la paga el crédito de la NC (el backend no crea cobro).
+          Pagos: (!refacturar && formData.DocPagado) ? pagos.map(p => ({
             metodoPagoId: parseInt(p.metodoPagoId),
             monto: parseFloat(p.monto),
             monedaId: p.moneda ? (p.moneda === 'USD' ? 2 : 1) : (parseInt(p.monedaId) || 1)
           })) : null,
+          pagarConSaldoAFavor: !!refacturar,
           Lineas: lineasValidas.map(l => ({
             concepto: l.concepto,
             DcdDscItem: l.DcdDscItem || '',
@@ -1246,7 +1255,7 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
           empresaId: empresaSeleccionada?.EmpIdEmpresa ?? null,
           DocFechaEmision: formData.DocFechaEmision || null
         });
-        toast.success('Documento generado exitosamente');
+        toast.success(refacturar ? (respNuevo?.data?.message || 'Documento generado exitosamente') : 'Documento generado exitosamente', { duration: refacturar ? 9000 : undefined });
         // Quien abre el modal puede necesitar el docId (ej. vincular la factura a consumos de una cuenta)
         onSuccess(respNuevo?.data || null);
         return;
@@ -1398,6 +1407,26 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
               </ul>
               <p className="text-amber-700 text-xs mt-2 font-semibold">
                 Solo confirmá si esto es intencional. Esta acción no se puede deshacer desde aquí.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* Refacturación: se paga con el crédito de la NC del original, no se cobra de nuevo */}
+        {refacturar && (
+          <div className="flex items-start gap-3 bg-emerald-50 border-2 border-emerald-400 rounded-2xl px-5 py-3.5 shadow-sm">
+            <div className="shrink-0 bg-emerald-500 text-white rounded-xl p-2 mt-0.5"><AlertTriangle size={22} strokeWidth={2.5} /></div>
+            <div className="text-sm">
+              <p className="text-emerald-900 font-black leading-snug">
+                Factura corregida: se paga con el crédito de la NC {refacturar.ncNumero} ({Number(refacturar.monedaId) === 2 ? 'U$S' : '$'} {formatMoney(refacturar.credito)}).
+              </p>
+              <p className="text-emerald-800 font-medium mt-1 leading-relaxed">
+                No se cobra de nuevo: los medios de pago de abajo se ignoran.
+                {totales.total > Number(refacturar.credito) + 0.01
+                  ? ` Ojo: esta factura (${formatMoney(totales.total)}) supera el crédito; la diferencia (${formatMoney(totales.total - Number(refacturar.credito))}) queda como deuda del cliente.`
+                  : (Number(refacturar.credito) - totales.total > 0.01
+                      ? ` Sobran ${formatMoney(Number(refacturar.credito) - totales.total)}: quedan a favor del cliente.`
+                      : '')}
               </p>
             </div>
           </div>
@@ -1829,7 +1858,7 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
                           </span>
                         </th>
                         <th className="p-2.5 w-[10%] min-w-[80px] text-right" title="Descuento por línea: en % sobre la lista o en importe por unidad. Se imprime en la factura.">Descuento</th>
-                        <th className="p-2.5 w-[10%] min-w-[80px] text-right" title="Recargo por línea (urgencia, tinta, manual): en % sobre la lista o en importe por unidad. Se imprime en la factura.">Recargo</th>
+                        <th className="p-2.5 w-[10%] min-w-[80px] text-right" title="Recargo por línea (urgencia, tinta, manual): en % sobre el precio con descuento o en importe por unidad. Se imprime en la factura.">Recargo</th>
                         <th className="p-2.5 w-[10%] min-w-[84px] text-right" title="Precio unitario final con IVA = lista − descuento + recargo. Es el que va al CFE.">P. Unitario</th>
                         <th className="p-2.5 w-[8%] min-w-[76px] text-center">IVA %</th>
                         <th className="p-2.5 w-[10%] min-w-[88px] text-right">Subtotal Neto</th>
@@ -1844,7 +1873,9 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
                         const ivaRate = (line.iva !== undefined && line.iva !== null) ? parseFloat(line.iva) : 22;
                         const descPctLinea = Math.min(100, Math.max(0, parseFloat(line.descPct) || 0));
                         const recPctLinea = Math.max(0, parseFloat(line.recPct) || 0);
-                        const subtotalConIva = qty * price * (1 - descPctLinea / 100 + recPctLinea / 100);
+                        const subtotalConIva = qty * price * factorDescRec(descPctLinea, recPctLinea);
+                        // Base del recargo por unidad: la lista con el descuento ya aplicado
+                        const baseRecUnit = price * (1 - descPctLinea / 100);
                         const bloqueadoPorOrden = !!line.desdeOrden;
                         const subtotalNeto = subtotalConIva / (1 + ivaRate / 100);
                         const searchTerm = articuloSearch[line.id] !== undefined ? articuloSearch[line.id] : line.concepto;
@@ -1992,29 +2023,29 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
                                   type="number"
                                   min="0" step="any"
                                   placeholder="0"
-                                  title="Recargo de esta línea en % sobre la lista (urgencia, tinta, manual). Se imprime en la factura."
+                                  title="Recargo de esta línea en % sobre el precio con descuento (urgencia, tinta, manual). Se imprime en la factura."
                                   className="w-full bg-zinc-50 border border-zinc-200 rounded-lg pl-2 pr-5 py-1 text-xs text-right font-bold outline-none focus:border-indigo-500 focus:bg-white"
                                   value={pct2(line.recPct)}
                                   onChange={e => updateLinea(line.id, 'recPct', e.target.value)}
                                 />
                                 <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[9px] font-black text-zinc-400 select-none pointer-events-none">%</span>
                               </div>
-                              {/* Importe por unidad (misma moneda de la factura): se convierte a % sobre la lista */}
+                              {/* Importe por unidad (misma moneda de la factura): se convierte a % sobre el precio con descuento */}
                               <div className="relative mt-0.5">
                                 <input
                                   type="number"
                                   min="0" step="any"
                                   placeholder="0"
-                                  title="Recargo por unidad, en importe. Equivale al % de arriba (se calcula sobre la lista)."
+                                  title="Recargo por unidad, en importe. Equivale al % de arriba (se calcula sobre el precio con descuento)."
                                   className="w-full bg-zinc-50 border border-zinc-200 rounded-lg pl-2 pr-6 py-1 text-xs text-right font-bold outline-none focus:border-indigo-500 focus:bg-white"
-                                  value={recPctLinea > 0 && price > 0 ? Math.round(price * recPctLinea) / 100 : ''}
-                                  onChange={e => { const u = Math.max(0, parseFloat(e.target.value) || 0); updateLinea(line.id, 'recPct', price > 0 ? Math.round(u / price * 1000000) / 10000 : 0); }}
+                                  value={recPctLinea > 0 && baseRecUnit > 0 ? Math.round(baseRecUnit * recPctLinea) / 100 : ''}
+                                  onChange={e => { const u = Math.max(0, parseFloat(e.target.value) || 0); updateLinea(line.id, 'recPct', baseRecUnit > 0 ? Math.round(u / baseRecUnit * 1000000) / 10000 : 0); }}
                                 />
                                 <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[9px] font-black text-zinc-400 select-none pointer-events-none">{monedaOp === 'USD' ? 'U$S' : '$'}</span>
                               </div>
                               {recPctLinea > 0 && (
                                 <span className="text-[8px] text-amber-600 font-semibold block text-right mt-0.5 whitespace-nowrap" title="Recargo total de la línea (cantidad × recargo por unidad)">
-                                  +{formatMoney(qty * price * (recPctLinea / 100))} en la línea
+                                  +{formatMoney(qty * baseRecUnit * (recPctLinea / 100))} en la línea
                                 </span>
                               )}
                               {recPctLinea > 0 && (
@@ -2031,7 +2062,7 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
                             {/* P. Unitario final con IVA = lista − descuento + recargo (el que va al CFE) */}
                             <td className="p-1.5 text-right font-mono text-xs font-black whitespace-nowrap align-top pt-2.5" title="Precio unitario final con IVA = lista − descuento + recargo">
                               <span className={`text-[10px] mr-0.5 ${monedaOp === 'USD' ? 'text-amber-500' : 'text-blue-400'}`}>{monedaOp === 'USD' ? 'U$S' : '$'}</span>
-                              <span className={descPctLinea > 0 ? 'text-emerald-700' : (recPctLinea > 0 ? 'text-amber-700' : 'text-zinc-800')}>{formatMoney(price * (1 - descPctLinea / 100 + recPctLinea / 100))}</span>
+                              <span className={descPctLinea > 0 ? 'text-emerald-700' : (recPctLinea > 0 ? 'text-amber-700' : 'text-zinc-800')}>{formatMoney(price * factorDescRec(descPctLinea, recPctLinea))}</span>
                             </td>
                             <td className="p-1.5">
                               <select

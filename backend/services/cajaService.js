@@ -1123,30 +1123,115 @@ async function procesarTransaccion(payload) {
         }
       }
 
-      const isOrdenUSD_deuda = (header.moneda === 'USD');
-      const cueTipoDeuda     = isOrdenUSD_deuda ? 'DINERO_USD' : 'DINERO_UYU';
+      // Órdenes EXONERADAS en caja ("solo no cobrar ahora": la deuda sigue) NO entran en
+      // este cobro aunque vengan en la lista. La caja la armaba al SELECCIONAR el retiro y no
+      // la refrescaba al exonerar desde "Editar órdenes": el cobro pisaba la exoneración, la
+      // daba por paga, le estampaba la factura y le cerraba la deuda sin cobrarla (Odysseus
+      // EUV-26412 en FA-2191, 30-09-2026; SUB-20413 en ET-8162, 03-09). Se sacan también de
+      // ap.orderNumbers, que es lo que usan el PASO 4 (pagada) y el enganche del CFE.
+      if (allOrdIdsParaDeuda.length > 0) {
+        const exRes = await new sql.Request(transaction).query(`
+          SELECT od.OrdIdOrden
+          FROM dbo.OrdenesDeposito od WITH(NOLOCK)
+          JOIN dbo.Pagos px WITH(NOLOCK) ON px.PagIdPago = od.PagIdPago
+          WHERE od.OrdIdOrden IN (${allOrdIdsParaDeuda.join(',')})
+            AND px.PagTipoMovimiento = 'EXONERACION'`);
+        const exoneradas = new Set(exRes.recordset.map(r => Number(r.OrdIdOrden)));
+        if (exoneradas.size > 0) {
+          for (const ap of aplicaciones) {
+            if (ap.tipo === 'ORDEN_RETIRO' && Array.isArray(ap.orderNumbers)) {
+              ap.orderNumbers = ap.orderNumbers.filter(id => !exoneradas.has(parseInt(id, 10)));
+            }
+          }
+          for (let i = allOrdIdsParaDeuda.length - 1; i >= 0; i--) {
+            if (exoneradas.has(parseInt(allOrdIdsParaDeuda[i], 10))) allOrdIdsParaDeuda.splice(i, 1);
+          }
+          logger.warn(`[CAJA] Órdenes exoneradas fuera del cobro (siguen debiéndose): ${[...exoneradas].join(',')}`);
+        }
+      }
+
       let pagoRestanteDeuda  = totalNeto;
       let totalImputadoDeuda = 0;
 
-      // 1º – Cruce exacto por OrdIdOrden
+      // La deuda de la orden se guarda con el id de PRODUCCIÓN (Ordenes.OrdenID, lo que
+      // pasan los hooks de ingreso/entrega) y la caja trae el de DEPÓSITO
+      // (OrdenesDeposito.OrdIdOrden): sin traducir, el cruce no encontraba la deuda y el
+      // pago se iba al fallback PEPS — a la deuda más vieja del cliente (caso Naza
+      // creaciones SUB-30081, 07-10-2026: su deuda quedó VENCIDO y el pago bajó SUB-6220
+      // de julio). Mismo mapeo por código que el enganche del CFE más abajo.
+      // Solo se imputa a órdenes CON COSTO en depósito: es lo que la caja cobra. Una orden en
+      // 0 (cubierta por plan en la cotización) no recibe plata de este cobro aunque tenga
+      // deuda — si no, el PEPS por fecha le daba a ella la plata de su hermana (Palla
+      // DTF-29519 / DTF-29731, ET-10705).
+      const idsCruce = [];
       if (allOrdIdsParaDeuda.length > 0) {
-        const inListDeuda = allOrdIdsParaDeuda.join(',');
-        const ddRes = await new sql.Request(transaction).query(`
-          SELECT dd.DDeIdDocumento, dd.DDeImportePendiente, dd.DDeEstado, dd.CueIdCuenta
+        try {
+          const mapRes = await new sql.Request(transaction)
+            .query(`
+              SELECT od.OrdIdOrden, e.OrdenID
+              FROM dbo.OrdenesDeposito od WITH(NOLOCK)
+              LEFT JOIN dbo.Ordenes e WITH(NOLOCK) ON e.CodigoOrden = od.OrdCodigoOrden
+              WHERE od.OrdIdOrden IN (${allOrdIdsParaDeuda.join(',')})
+                AND ISNULL(od.OrdCostoFinal, 0) > 0
+            `);
+          for (const r of mapRes.recordset) {
+            for (const id of [r.OrdIdOrden, r.OrdenID]) {
+              if (id != null && !idsCruce.includes(id)) idsCruce.push(id);
+            }
+          }
+        } catch (errMap) {
+          relanzarSiTxMuerta(errMap, transaction);
+          logger.warn(`[CAJA-DEUDA] Error mapping IDs: ${errMap.message}`);
+        }
+      }
+
+      // Moneda: totalNeto está en la moneda del cobro (header.moneda) y cada deuda en la de su
+      // cuenta. Entre el 15-09 y el 07-10 hubo 1.173 cobros en pesos de órdenes con deuda en
+      // dólares: sin convertir, $ 207 se aplicaban como US$ 207. Cotización: la que usó la caja
+      // para pasar las órdenes a la moneda del cobro (header.cotizacion); si no vino, la de los
+      // pagos o la del día.
+      const monCobro = header.moneda === 'USD' ? 'USD' : 'UYU';
+      let cotCruce = (header.cotizacion && header.cotizacion > 1 ? Number(header.cotizacion) : null)
+                  || pagosNorm.find(p => p.cotizacion > 1)?.cotizacion
+                  || null;
+      if (!cotCruce && idsCruce.length > 0) {
+        const cotRes = await new sql.Request(transaction)
+          .query('SELECT TOP 1 CotDolar FROM dbo.Cotizaciones WITH(NOLOCK) ORDER BY CotFecha DESC');
+        cotCruce = parseFloat(cotRes.recordset[0]?.CotDolar) || 40;
+      }
+      // factor: moneda del cobro → moneda de la deuda
+      const factorDeuda = (cueTipo) => {
+        const monDeuda = cueTipo === 'DINERO_USD' ? 'USD' : 'UYU';
+        if (monDeuda === monCobro) return 1;
+        return monCobro === 'UYU' ? 1 / cotCruce : cotCruce;
+      };
+
+      // 1º – Cruce exacto por OrdIdOrden (solo cuentas del cliente: en DeudaDocumento.OrdIdOrden
+      //      conviven ids de producción y de depósito). VENCIDO también: la deuda de orden vence
+      //      el mismo día que nace, y sin él el cruce la salteaba igual.
+      if (idsCruce.length > 0) {
+        const inListDeuda = idsCruce.join(',');
+        const ddRes = await new sql.Request(transaction)
+          .input('Cli', sql.Int, header.clienteId)
+          .query(`
+          SELECT dd.DDeIdDocumento, dd.DDeImportePendiente, dd.DDeEstado, dd.CueIdCuenta, cc.CueTipo
           FROM   dbo.DeudaDocumento dd WITH (UPDLOCK, ROWLOCK)
+          JOIN   dbo.CuentasCliente cc WITH(NOLOCK) ON cc.CueIdCuenta = dd.CueIdCuenta
           WHERE  dd.OrdIdOrden IN (${inListDeuda})
-            AND  dd.DDeEstado IN ('PENDIENTE','PARCIAL')
+            AND  dd.DDeEstado IN ('PENDIENTE','PARCIAL','VENCIDO')
+            AND  cc.CliIdCliente = @Cli
           ORDER  BY dd.DDeFechaEmision ASC, dd.DDeIdDocumento ASC
         `);
 
         for (const dd of ddRes.recordset) {
-          if (pagoRestanteDeuda <= 0) break;
+          if (pagoRestanteDeuda <= 0.001) break;
+          const f              = factorDeuda(dd.CueTipo);
           const pendiente      = Number(dd.DDeImportePendiente);
-          const aplicar        = Math.min(pagoRestanteDeuda, pendiente);
+          const aplicar        = Math.round(Math.min(pagoRestanteDeuda * f, pendiente) * 10000) / 10000;  // en la moneda de la deuda
           const nuevoPendiente = Math.max(0, pendiente - aplicar);
           const nuevoEstado    = nuevoPendiente < 0.01 ? 'COBRADO' : 'PARCIAL';
-          pagoRestanteDeuda   -= aplicar;
-          totalImputadoDeuda  += aplicar;
+          pagoRestanteDeuda   -= aplicar / f;   // en la moneda del cobro
+          totalImputadoDeuda  += aplicar / f;
 
           await new sql.Request(transaction)
             .input('ID',     sql.Int,           dd.DDeIdDocumento)
@@ -1181,74 +1266,21 @@ async function procesarTransaccion(payload) {
         }
       }
 
-      // 2º – Fallback PEPS: aplicar el saldo restante (si queda) contra las deudas del cliente
-      //    por CueIdCuenta (orden cronológico – PEPS).
-      //    Esto cubre:
-      //      a) Órdenes sin OrdIdOrden registrado en DeudaDocumento (datos históricos)
-      //      b) El remanente cuando el match exacto cubrió solo PARTE del pago
-      if (pagoRestanteDeuda > 0.01 && header.clienteId) {
-        const cueFallback = await new sql.Request(transaction)
-          .input('Cli', sql.Int,         header.clienteId)
-          .input('T',   sql.VarChar(20), cueTipoDeuda)
-          .query('SELECT CueIdCuenta FROM dbo.CuentasCliente WITH(NOLOCK) WHERE CliIdCliente=@Cli AND CueTipo=@T AND CueActiva=1');
-
-        if (cueFallback.recordset.length) {
-          const cueIdFb = cueFallback.recordset[0].CueIdCuenta;
-          logger.info(`[CAJA-DEUDA] Fallback PEPS: buscando deudas por CueIdCuenta=${cueIdFb} (OrdIdOrden no matcheó)`);
-
-          const ddFb = await new sql.Request(transaction)
-            .input('CueId', sql.Int, cueIdFb)
-            .query(`
-              SELECT dd.DDeIdDocumento, dd.DDeImportePendiente, dd.DDeEstado, dd.CueIdCuenta
-              FROM   dbo.DeudaDocumento dd WITH (UPDLOCK, ROWLOCK)
-              WHERE  dd.CueIdCuenta = @CueId
-                AND  dd.DDeEstado IN ('PENDIENTE','PARCIAL')
-              ORDER  BY dd.DDeFechaEmision ASC, dd.DDeIdDocumento ASC
-            `);
-
-          for (const dd of ddFb.recordset) {
-            if (pagoRestanteDeuda <= 0) break;
-            const pendiente      = Number(dd.DDeImportePendiente);
-            const aplicar        = Math.min(pagoRestanteDeuda, pendiente);
-            const nuevoPendiente = Math.max(0, pendiente - aplicar);
-            const nuevoEstado    = nuevoPendiente < 0.01 ? 'COBRADO' : 'PARCIAL';
-            pagoRestanteDeuda   -= aplicar;
-            totalImputadoDeuda  += aplicar;
-
-            await new sql.Request(transaction)
-              .input('ID',     sql.Int,           dd.DDeIdDocumento)
-              .input('pend',   sql.Decimal(18,4),  nuevoPendiente)
-              .input('estado', sql.VarChar(20),    nuevoEstado)
-              .query(`
-                UPDATE dbo.DeudaDocumento
-                SET    DDeImportePendiente = @pend,
-                       DDeEstado           = @estado,
-                       DDeFechaCobro       = CASE WHEN @estado = 'COBRADO' THEN GETDATE() ELSE DDeFechaCobro END
-                WHERE  DDeIdDocumento = @ID
-              `);
-
-            // Rastro pago→deuda, ídem cruce exacto de arriba.
-            if (primerPagIdPago && aplicar > 0.001) {
-              await new sql.Request(transaction)
-                .input('pagId', sql.Int,           primerPagIdPago)
-                .input('ddeId', sql.Int,           dd.DDeIdDocumento)
-                .input('cueId', sql.Int,           dd.CueIdCuenta)
-                .input('monto', sql.Decimal(18,4), aplicar)
-                .input('usr',   sql.Int,           usuarioId)
-                .query(`
-                  INSERT INTO dbo.ImputacionPago
-                    (PagIdPago, DDeIdDocumento, CueIdCuenta, ImpImporte, ImpFecha, ImpUsuarioAlta)
-                  VALUES (@pagId, @ddeId, @cueId, @monto, GETDATE(), @usr)
-                `);
-            }
-
-            logger.info(`[CAJA-DEUDA] Fallback CueId DeudaDoc #${dd.DDeIdDocumento}: aplicado=${aplicar.toFixed(2)} estado=${nuevoEstado}`);
-          }
-        }
+      // 2º – SIN fallback PEPS. Antes el remanente se aplicaba a las deudas más viejas de la
+      //    cuenta, pero totalNeto es el valor de las órdenes de ESTE cobro, no plata extra: lo
+      //    que no cruza con la deuda de esas órdenes ya está saldado en el libro (VTA_CAJA +
+      //    PAGO del mismo cobro) o en la deuda del documento, que nace neta de lo cobrado.
+      //    Aplicarlo a otras deudas las cancelaba sin plata: 381 imputaciones a deudas de OTRAS
+      //    órdenes y 8 a otros documentos entre el 15-09 y el 07-10-2026 (Upaquiero FA-1252).
+      if (pagoRestanteDeuda > 0.01) {
+        logger.info(`[CAJA-DEUDA] Remanente ${pagoRestanteDeuda.toFixed(2)} sin deuda de las órdenes del cobro — no se imputa a otras deudas.`);
       }
 
-      // Propagamos si imputamos algo, para que _lanzarHooksContables no duplique el débito
+      // Lo imputado viaja a _lanzarHooksContables: el hook del PAGO NO vuelve a imputar (antes
+      // hookPagoRegistrado corría SP_ImputarPagoPEPS por el pago entero después del commit y
+      // el mismo pago quedaba aplicado dos veces a la misma deuda: 187 casos en sep-2026).
       header._imputadoDeuda = totalImputadoDeuda;
+      header._imputacionCajaHecha = true;
     }
 
 
@@ -2307,6 +2339,9 @@ async function _lanzarHooksContables({ aplicaciones, pagosNorm, pagosCreados, he
     // El importe a debitar vía VTA_CAJA será siempre el totalNeto de la orden,
     // ya que el movimiento previo ORDEN no debita el CueSaldoActual (se cambió para que no afecte saldo).
     let importeADebitarVtaCaja = totalNeto;
+    // Monedas (1/2) de las cuentas donde ESTE hook cargó la venta por "deuda pura" (moneda de
+    // cada orden). El pago tiene que ir a esas mismas cuentas — ver más abajo.
+    const monedasCargoHook = [];
 
     if (!header._creoDeuda && importeADebitarVtaCaja > 0.01) {
 
@@ -2333,14 +2368,16 @@ async function _lanzarHooksContables({ aplicaciones, pagosNorm, pagosCreados, he
              CueIdCuenta: cueIdUsd, MovTipo: 'VTA_CAJA', MovConcepto: conceptoContado,
              MovImporte: -(header.deudaPuraUSD), MovUsuarioAlta: usuarioId || 1, DocIdDocumento: header.docIdDocumento || null
           });
+          monedasCargoHook.push(2);
        }
-       
+
        if (header.deudaPuraUYU > 0) {
           const cueIdUyu = await contabilidadSvc.obtenerOCrearCuenta(header.clienteId, 'DINERO_UYU', { UsuarioAlta: usuarioId });
           await contabilidadSvc.registrarMovimiento({
              CueIdCuenta: cueIdUyu, MovTipo: 'VTA_CAJA', MovConcepto: conceptoContado,
              MovImporte: -(header.deudaPuraUYU), MovUsuarioAlta: usuarioId || 1, DocIdDocumento: header.docIdDocumento || null
           });
+          monedasCargoHook.push(1);
        }
        
        if (!(header.deudaPuraUSD > 0 || header.deudaPuraUYU > 0)) {
@@ -2373,7 +2410,28 @@ async function _lanzarHooksContables({ aplicaciones, pagosNorm, pagosCreados, he
       }
     }
 
-    if (monedaDocCobrado != null && totalNeto > 0) {
+    // El PASO 3.5 ya imputó el cobro a la deuda de sus órdenes: el hook solo registra el
+    // PAGO (SinImputar). Lo imputado (en la moneda de las órdenes) se descuenta una sola vez
+    // para que el excedente del ciclo se calcule igual que cuando el hook imputaba.
+    const sinImputar = !!header._imputacionCajaHecha;
+    const monOrdenes = header.moneda === 'USD' ? 2 : 1;
+    let yaImputadoRestante = Number(header._imputadoDeuda) || 0;
+    const yaImputadoPara = (monId, monto) => {
+      if (!sinImputar || monId !== monOrdenes) return 0;
+      const ya = Math.min(yaImputadoRestante, Math.abs(monto));
+      yaImputadoRestante -= ya;
+      return ya;
+    };
+
+    // Si este hook cargó la venta (arriba) en alguna cuenta que NO es la de la moneda del
+    // documento —retiro con órdenes en $ y en US$, o órdenes en una moneda y documento en la
+    // otra— el pago no puede ir entero a la moneda del documento: la otra cuenta quedaba con
+    // el cargo y sin su pago (Hemely ET-10192: US$ 4,62 "debidos" de una factura pagada
+    // entera; 6 de 6 cobros mezclados sin editar desde el 15-09 descuadraban). En ese caso
+    // va por la rama de "deuda pura", que anota el pago partido igual que el cargo.
+    const cargoFueraDeLaMonedaDelDoc = monedaDocCobrado != null && monedasCargoHook.some(m => m !== Number(monedaDocCobrado));
+
+    if (monedaDocCobrado != null && totalNeto > 0 && !cargoFueraDeLaMonedaDelDoc) {
       await contabilidadSvc.hookPagoRegistrado({
         PagIdPago:   pagId,
         CliIdCliente: header.clienteId,
@@ -2381,6 +2439,8 @@ async function _lanzarHooksContables({ aplicaciones, pagosNorm, pagosCreados, he
         MonIdMoneda: monedaDocCobrado,
         UsuarioAlta: usuarioId,
         DocIdDocumento: header.docIdDocumento,
+        SinImputar: sinImputar,
+        MontoYaImputado: yaImputadoPara(monedaDocCobrado, totalNeto),
       });
     // Si pasaron la deuda pura desde el Frontend (para cobros de órdenes exactas)
     } else if ((header.deudaPuraUSD > 0 || header.deudaPuraUYU > 0)) {
@@ -2392,6 +2452,8 @@ async function _lanzarHooksContables({ aplicaciones, pagosNorm, pagosCreados, he
           MonIdMoneda: 2, // USD
           UsuarioAlta: usuarioId,
           DocIdDocumento: header.docIdDocumento || null,
+          SinImputar: sinImputar,
+          MontoYaImputado: yaImputadoPara(2, header.deudaPuraUSD),
         });
       }
       if (header.deudaPuraUYU > 0) {
@@ -2402,6 +2464,8 @@ async function _lanzarHooksContables({ aplicaciones, pagosNorm, pagosCreados, he
           MonIdMoneda: 1, // UYU
           UsuarioAlta: usuarioId,
           DocIdDocumento: header.docIdDocumento || null,
+          SinImputar: sinImputar,
+          MontoYaImputado: yaImputadoPara(1, header.deudaPuraUYU),
         });
       }
     } else if (totalNeto > 0) {
@@ -2415,6 +2479,8 @@ async function _lanzarHooksContables({ aplicaciones, pagosNorm, pagosCreados, he
         MonIdMoneda: isOrdenUSD ? 2 : 1,
         UsuarioAlta: usuarioId,
         DocIdDocumento: header.docIdDocumento || null,
+        SinImputar: sinImputar,
+        MontoYaImputado: yaImputadoPara(isOrdenUSD ? 2 : 1, totalNeto),
       });
     }
   }
@@ -2693,6 +2759,88 @@ async function generarCFEDesdeOrdenesDirectas({ orderIds, clienteId, monto, mone
 
 // ─────────────────────────────────────────────────────────────────────────
 /**
+ * reponerDeudasDeTransaccion
+ * Al anular un cobro de caja, le devuelve la deuda a lo que ese cobro había pagado y borra
+ * sus imputaciones. Hasta el 2-sep-2026 esto NO se hacía: se anulaba la transacción, los
+ * pagos y el movimiento de la cuenta, pero `DeudaDocumento` e `ImputacionPago` quedaban
+ * intactos. Resultado: la plata desaparecía del libro y la factura SEGUÍA diciendo COBRADO —
+ * quedaba impaga sin que nadie se enterara, y encima invisible para cobranzas.
+ * Se agrupa por deuda (un mismo cobro puede imputarse a varias) y se repone lo imputado, sin
+ * pasarse nunca del importe original de la deuda.
+ * Usada por anularReciboInterno (paso 5.b) y por la anulación / edición a crédito de un
+ * documento de caja (cfeController): la deuda de la orden que el cobro dejó COBRADO vuelve a
+ * deberse (09-10-2026).
+ * @param {{ tcaId:number, motivo?:string }} p
+ * @param {object} transaction  Transacción mssql activa (obligatoria)
+ */
+async function reponerDeudasDeTransaccion({ tcaId, motivo }, transaction) {
+  const impRes = await new sql.Request(transaction)
+    .input('TcaId', sql.Int, tcaId)
+    .query(`
+      SELECT ip.DDeIdDocumento, dd.DocIdDocumento, Repone = SUM(ip.ImpImporte)
+      FROM dbo.ImputacionPago ip
+      JOIN dbo.DeudaDocumento dd ON dd.DDeIdDocumento = ip.DDeIdDocumento
+      WHERE ip.PagIdPago IN (SELECT PagIdPago FROM dbo.Pagos WHERE PagTcaIdTransaccion = @TcaId)
+      GROUP BY ip.DDeIdDocumento, dd.DocIdDocumento`);
+
+  for (const imp of impRes.recordset) {
+    await new sql.Request(transaction)
+      .input('DDe',    sql.Int,           imp.DDeIdDocumento)
+      .input('Repone', sql.Decimal(18,4), imp.Repone)
+      .input('Motivo', sql.NVarChar(200), motivo || 'sin motivo')
+      .input('TcaId',  sql.Int,           tcaId)
+      .query(`
+        UPDATE dbo.DeudaDocumento
+        SET DDeImportePendiente = CASE
+              WHEN DDeImportePendiente + @Repone > DDeImporteOriginal THEN DDeImporteOriginal
+              ELSE DDeImportePendiente + @Repone END,
+            DDeEstado = CASE
+              WHEN (CASE WHEN DDeImportePendiente + @Repone > DDeImporteOriginal THEN DDeImporteOriginal
+                         ELSE DDeImportePendiente + @Repone END) <= 0.01 THEN 'COBRADO'
+              WHEN (CASE WHEN DDeImportePendiente + @Repone > DDeImporteOriginal THEN DDeImporteOriginal
+                         ELSE DDeImportePendiente + @Repone END) >= DDeImporteOriginal - 0.01 THEN 'PENDIENTE'
+              ELSE 'PARCIAL' END,
+            -- si vuelve a deber, la fecha de cobro deja de tener sentido
+            DDeFechaCobro = CASE
+              WHEN (CASE WHEN DDeImportePendiente + @Repone > DDeImporteOriginal THEN DDeImporteOriginal
+                         ELSE DDeImportePendiente + @Repone END) > 0.01 THEN NULL
+              ELSE DDeFechaCobro END,
+            DDeObservaciones = LEFT(LTRIM(ISNULL(DDeObservaciones,'') +
+              ' | Deuda repuesta al anular el cobro (transaccion de caja ' +
+              CONVERT(VARCHAR(20), @TcaId) + '): ' + @Motivo), 500)
+        WHERE DDeIdDocumento = @DDe`);
+  }
+
+  // La imputación deja de existir: el pago que la respaldaba está anulado. Si se
+  // dejara viva, cualquier consulta que sume ImputacionPago seguiría creyendo que
+  // la deuda está cubierta. El rastro queda en TransaccionesCaja/Pagos ANULADO.
+  if (impRes.recordset.length) {
+    await new sql.Request(transaction)
+      .input('TcaId', sql.Int, tcaId)
+      .query(`
+        DELETE FROM dbo.ImputacionPago
+        WHERE PagIdPago IN (SELECT PagIdPago FROM dbo.Pagos WHERE PagTcaIdTransaccion = @TcaId)`);
+
+    // El documento de la DEUDA vuelve a estar impago. OJO: es el documento que se
+    // estaba pagando, NO el recibo de esta transacción (ese se anula en el paso 7).
+    // Se usan los ids capturados arriba, porque las imputaciones ya no existen.
+    for (const imp of impRes.recordset) {
+      if (!imp.DocIdDocumento) continue;
+      await new sql.Request(transaction)
+        .input('Doc', sql.Int, imp.DocIdDocumento)
+        .query(`
+          UPDATE dbo.DocumentosContables
+          SET DocPagado = 0
+          WHERE DocIdDocumento = @Doc
+            AND EXISTS (SELECT 1 FROM dbo.DeudaDocumento dd
+                        WHERE dd.DocIdDocumento = @Doc
+                          AND dd.DDeEstado IN ('PENDIENTE','PARCIAL','VENCIDO')
+                          AND dd.DDeImportePendiente > 0.01)`);
+    }
+  }
+}
+
+/**
  * anularReciboInterno
  * Anula un recibo / ingreso interno (sin CFE) de la Bandeja de Documentos Internos.
  * Revierte, dentro de UNA transacción SQL:
@@ -2803,77 +2951,7 @@ async function anularReciboInterno({ tcaId, usuarioId, motivo, transaction: txEx
     }
 
     // 5.b DEVOLVERLE LA DEUDA A LOS DOCUMENTOS QUE ESTE COBRO HABÍA PAGADO.
-    //     Hasta el 2-sep-2026 esto NO se hacía: se anulaba la transacción, los pagos y
-    //     el movimiento de la cuenta, pero `DeudaDocumento` e `ImputacionPago` quedaban
-    //     intactos. Resultado: la plata desaparecía del libro y la factura SEGUÍA
-    //     diciendo COBRADO — quedaba impaga sin que nadie se enterara, y encima
-    //     invisible para cobranzas.
-    //     Se agrupa por deuda (un mismo cobro puede imputarse a varias) y se repone lo
-    //     imputado, sin pasarse nunca del importe original de la deuda.
-    const impRes = await new sql.Request(transaction)
-      .input('TcaId', sql.Int, tcaId)
-      .query(`
-        SELECT ip.DDeIdDocumento, dd.DocIdDocumento, Repone = SUM(ip.ImpImporte)
-        FROM dbo.ImputacionPago ip
-        JOIN dbo.DeudaDocumento dd ON dd.DDeIdDocumento = ip.DDeIdDocumento
-        WHERE ip.PagIdPago IN (SELECT PagIdPago FROM dbo.Pagos WHERE PagTcaIdTransaccion = @TcaId)
-        GROUP BY ip.DDeIdDocumento, dd.DocIdDocumento`);
-
-    for (const imp of impRes.recordset) {
-      await new sql.Request(transaction)
-        .input('DDe',    sql.Int,           imp.DDeIdDocumento)
-        .input('Repone', sql.Decimal(18,4), imp.Repone)
-        .input('Motivo', sql.NVarChar(200), motivo || 'sin motivo')
-        .input('TcaId',  sql.Int,           tcaId)
-        .query(`
-          UPDATE dbo.DeudaDocumento
-          SET DDeImportePendiente = CASE
-                WHEN DDeImportePendiente + @Repone > DDeImporteOriginal THEN DDeImporteOriginal
-                ELSE DDeImportePendiente + @Repone END,
-              DDeEstado = CASE
-                WHEN (CASE WHEN DDeImportePendiente + @Repone > DDeImporteOriginal THEN DDeImporteOriginal
-                           ELSE DDeImportePendiente + @Repone END) <= 0.01 THEN 'COBRADO'
-                WHEN (CASE WHEN DDeImportePendiente + @Repone > DDeImporteOriginal THEN DDeImporteOriginal
-                           ELSE DDeImportePendiente + @Repone END) >= DDeImporteOriginal - 0.01 THEN 'PENDIENTE'
-                ELSE 'PARCIAL' END,
-              -- si vuelve a deber, la fecha de cobro deja de tener sentido
-              DDeFechaCobro = CASE
-                WHEN (CASE WHEN DDeImportePendiente + @Repone > DDeImporteOriginal THEN DDeImporteOriginal
-                           ELSE DDeImportePendiente + @Repone END) > 0.01 THEN NULL
-                ELSE DDeFechaCobro END,
-              DDeObservaciones = LEFT(LTRIM(ISNULL(DDeObservaciones,'') +
-                ' | Deuda repuesta al anular el cobro (transaccion de caja ' +
-                CONVERT(VARCHAR(20), @TcaId) + '): ' + @Motivo), 500)
-          WHERE DDeIdDocumento = @DDe`);
-    }
-
-    // La imputación deja de existir: el pago que la respaldaba está anulado. Si se
-    // dejara viva, cualquier consulta que sume ImputacionPago seguiría creyendo que
-    // la deuda está cubierta. El rastro queda en TransaccionesCaja/Pagos ANULADO.
-    if (impRes.recordset.length) {
-      await new sql.Request(transaction)
-        .input('TcaId', sql.Int, tcaId)
-        .query(`
-          DELETE FROM dbo.ImputacionPago
-          WHERE PagIdPago IN (SELECT PagIdPago FROM dbo.Pagos WHERE PagTcaIdTransaccion = @TcaId)`);
-
-      // El documento de la DEUDA vuelve a estar impago. OJO: es el documento que se
-      // estaba pagando, NO el recibo de esta transacción (ese se anula en el paso 7).
-      // Se usan los ids capturados arriba, porque las imputaciones ya no existen.
-      for (const imp of impRes.recordset) {
-        if (!imp.DocIdDocumento) continue;
-        await new sql.Request(transaction)
-          .input('Doc', sql.Int, imp.DocIdDocumento)
-          .query(`
-            UPDATE dbo.DocumentosContables
-            SET DocPagado = 0
-            WHERE DocIdDocumento = @Doc
-              AND EXISTS (SELECT 1 FROM dbo.DeudaDocumento dd
-                          WHERE dd.DocIdDocumento = @Doc
-                            AND dd.DDeEstado IN ('PENDIENTE','PARCIAL','VENCIDO')
-                            AND dd.DDeImportePendiente > 0.01)`);
-      }
-    }
+    await reponerDeudasDeTransaccion({ tcaId, motivo }, transaction);
 
     // 6. Anular el asiento contable del ingreso (excluye el asiento de egresos por seguridad)
     await new sql.Request(transaction)
@@ -2993,6 +3071,7 @@ module.exports = {
   getProductosVenta,
   anularTransaccion,
   anularReciboInterno,
+  reponerDeudasDeTransaccion,
   anularEgreso,
   getTransaccion,
   getTransaccionesByCliente,

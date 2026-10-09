@@ -106,7 +106,7 @@ exports.testEnviarCFE = async (req, res) => {
       ],
       wsVarios: {
         fchEmis: new Date().toLocaleDateString('en-GB'), // Formato DD/MM/YYYY
-        fhcVenc: new Date().toLocaleDateString('en-GB'),
+        fchVenc: new Date().toLocaleDateString('en-GB'), // así se llama en el WSDL (no "fhcVenc")
         fmaPago: 1, // 1 contado, 2 credito
         comprobanteTipo: 111, // e-Factura
         mntBruto: 0,

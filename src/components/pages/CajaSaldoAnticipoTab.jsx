@@ -4,8 +4,10 @@ import api from '../../services/apiClient';
 import { toast } from 'sonner';
 import ClienteBilletera from '../common/ClienteBilletera';
 import CajaPanelPago from './CajaPanelPago';
+import AnticipoDeudasAbiertas from './AnticipoDeudasAbiertas';
 import { hoyInput } from '../../utils/fechas';
 import { codigoCuenta } from '../../utils/cuentaCodigo';
+import { generarPdfReciboCobro } from '../../utils/pdfGenerator';
 
 /* ── Pill switch de moneda ────────────────────────────────────────────────── */
 function MonedaSwitch({ value, onChange }) {
@@ -77,6 +79,8 @@ export default function CajaSaldoAnticipoTab({ sesion, metodosPago, cotizacion, 
 
   /* ── formulario ──────────────────────────────────────────────────────────── */
   const [importe, setImporte]       = useState('');
+  // ¿El anticipo paga las deudas abiertas de la cuenta o queda entero a favor? (lo elige el operador)
+  const [imputarDeudas, setImputarDeudas] = useState(true);
   const [moneda, setMoneda]         = useState('UYU');
   const [concepto, setConcepto]     = useState('');
   const [numDocFmt, setNumDocFmt]   = useState(''); // número del recibo (cabecera del 360)
@@ -196,26 +200,23 @@ export default function CajaSaldoAnticipoTab({ sesion, metodosPago, cotizacion, 
         cotizacion:   moneda === 'USD' ? (Number(cotizacion) > 0 ? Number(cotizacion) : 1) : 1,
         concepto:     observaciones || concepto || 'Ingreso de saldo anticipado',
         fecha:        fechaRegistro, // fecha de registro (el backend debe honrarla; si no, usa hoy)
+        imputarDeudas,                // true: paga las deudas abiertas de la cuenta · false: todo a favor
       });
 
       toast.success(res.data?.message || '✅ Anticipo registrado como saldo a favor.');
 
-      // ── Generar y abrir el recibo en PDF automáticamente (solo si eligieron "Recibo") ───
-      if (res.data?.movId && tipoComprobante === 'RECIBO_ANTICIPO') {
+      // ── Recibo A4 (modelo único, mismo que el Panel 360) — solo si eligieron "Recibo" ───
+      if ((res.data?.tcaId || res.data?.movId) && tipoComprobante === 'RECIBO_ANTICIPO') {
         try {
-          const pdfRes = await api.get(`/contabilidad/movimientos/${res.data.movId}/recibo/pdf`, {
-            responseType: 'blob'
-          });
-          const blob = new Blob([pdfRes.data], { type: 'application/pdf' });
-          const url  = URL.createObjectURL(blob);
-          const link = document.createElement('a');
-          link.href = url;
-          link.download = `Recibo-Anticipo-${res.data.movId}.pdf`;
-          document.body.appendChild(link);
-          link.click();
-          document.body.removeChild(link);
-          setTimeout(() => URL.revokeObjectURL(url), 10000);
-          toast.success('📄 Recibo descargado correctamente.');
+          const recRes = await api.get(res.data.tcaId
+            ? `/contabilidad/cobros/${res.data.tcaId}/recibo`
+            : `/contabilidad/movimientos/${res.data.movId}/recibo`);
+          const rec = recRes.data?.data;
+          const { base64 } = await generarPdfReciboCobro(rec);
+          // Copia en el servidor (carpeta de recibos), como el ticket de caja
+          api.post('/contabilidad/caja/guardar-comprobante', {
+            nombreDocumento: rec.recibo?.numero || rec.numeroTransaccion, pdfBase64: base64,
+          }).catch(() => {});
         } catch {
           // Si falla el PDF, solo avisamos — el anticipo ya se registró OK
           toast.warning('Anticipo registrado. No se pudo generar el PDF del recibo.');
@@ -223,6 +224,7 @@ export default function CajaSaldoAnticipoTab({ sesion, metodosPago, cotizacion, 
       }
 
       setImporte('');
+      setImputarDeudas(true);
       setConcepto('');
       setObservaciones('');
       setPaso('operacion');
@@ -276,6 +278,12 @@ export default function CajaSaldoAnticipoTab({ sesion, metodosPago, cotizacion, 
         <p className="text-xs text-amber-600 font-semibold">⚠ Se creará la cuenta principal {moneda} automáticamente</p>
       )}
     </div>
+  ) : null;
+
+  // Deudas abiertas de la cuenta destino: el operador elige si el anticipo las paga.
+  const avisoDeudasAnticipo = clienteSel ? (
+    <AnticipoDeudasAbiertas clienteId={clienteSel.CliIdCliente} monedaId={moneda === 'USD' ? 2 : 1} cuentaId={cuentaId}
+      importe={importeNum} value={imputarDeudas} onChange={setImputarDeudas} />
   ) : null;
 
   // ─── Panel 360 (cliente fijo): flujo en 2 pasos, homogéneo con el cobro ───
@@ -349,6 +357,7 @@ export default function CajaSaldoAnticipoTab({ sesion, metodosPago, cotizacion, 
                   className="w-full border-2 border-zinc-200 bg-white rounded-2xl px-5 py-4 focus:border-blue-400 focus:ring-4 focus:ring-blue-400/5 outline-none font-black text-2xl text-zinc-800 transition-all placeholder-zinc-300" />
               </div>
               {selectorCuentaDestino}
+              {avisoDeudasAnticipo}
             </div>
           </div>
           <div className="shrink-0 border-t border-slate-200 bg-white px-4 py-3 flex flex-col gap-2.5">
@@ -608,6 +617,7 @@ export default function CajaSaldoAnticipoTab({ sesion, metodosPago, cotizacion, 
             </div>
           </div>
           {selectorCuentaDestino}
+          {avisoDeudasAnticipo}
         </div>
       </div>
     </div>

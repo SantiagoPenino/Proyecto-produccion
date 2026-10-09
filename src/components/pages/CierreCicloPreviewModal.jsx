@@ -11,8 +11,20 @@ import { fmtFecha, porFechaDesc } from '../../utils/fechas';
 // Paso 2 CONTADO: mismo panel de medios de pago que usa toda la caja
 import CajaPanelPago from './CajaPanelPago';
 import { codigoCuenta } from '../../utils/cuentaCodigo';
+import { recargoDesdePct, pctRecargoDesdeImporte } from '../../utils/desglosePrecio';
 
 // Input simple para precios — sin flechas, sin formateo automático
+// Departamentos (IDs de dbo.Departamentos). El select guarda el ID —es lo que va a la ficha
+// del cliente (DepartamentoID)—, pero en el comprobante y su vista previa va el NOMBRE:
+// antes salía "CIUDAD: 10" en el PDF y "10" en la ciudad que viajaba a DGI.
+const DEPARTAMENTOS_UY = [
+  [1, 'Artigas'], [2, 'Canelones'], [3, 'Cerro Largo'], [4, 'Colonia'], [5, 'Durazno'],
+  [6, 'Flores'], [7, 'Florida'], [8, 'Lavalleja'], [9, 'Maldonado'], [10, 'Montevideo'],
+  [11, 'Paysandú'], [12, 'Río Negro'], [13, 'Rivera'], [14, 'Rocha'], [15, 'Salto'],
+  [16, 'San José'], [17, 'Soriano'], [18, 'Tacuarembó'], [19, 'Treinta y Tres'],
+];
+const nombreDepartamento = (id) => (DEPARTAMENTOS_UY.find(([i]) => String(i) === String(id)) || [])[1] || '';
+
 const SimpleInput = ({ value, onChange, placeholder = '0' }) => {
   const [local, setLocal] = React.useState(String(value ?? ''));
 
@@ -310,9 +322,12 @@ export default function CierreCicloPreviewModal({
     const lista = Number(cambios.Lista ?? (prevEd ? prevEd.Lista : listaDetalle(d)));
     const c = Number(cambios.Cantidad ?? (prevEd ? prevEd.Cantidad : d.Cantidad)) || 0;
     const descU = Math.max(0, Number(cambios.DescUnit ?? (prevEd ? prevEd.DescUnit : descUnitDetalle(d))) || 0);
-    const recU = Math.max(0, Number(cambios.RecUnit ?? (prevEd ? prevEd.RecUnit : recUnitDetalle(d))) || 0);
+    let recU = Math.max(0, Number(cambios.RecUnit ?? (prevEd ? prevEd.RecUnit : recUnitDetalle(d))) || 0);
     const descPct = cambios.DescPct !== undefined ? Number(cambios.DescPct) || 0 : (prevEd ? prevEd.DescPct : (lista > 0 ? r4c(descU / lista * 100) : 0));
-    const recPct = cambios.RecPct !== undefined ? Number(cambios.RecPct) || 0 : (prevEd ? prevEd.RecPct : (lista > 0 ? r4c(recU / lista * 100) : 0));
+    const recPct = cambios.RecPct !== undefined ? Number(cambios.RecPct) || 0
+      : (prevEd ? prevEd.RecPct : (Number(d.PrecioLista) > 0 && d.RecargoPct != null ? Number(d.RecargoPct) : r4c(pctRecargoDesdeImporte(lista, descU, recU))));
+    // El recargo % va sobre lista − descuento: si cambió el descuento, se recalcula
+    if (cambios.DescUnit !== undefined && cambios.RecUnit === undefined && recPct > 0) recU = r4c(recargoDesdePct(lista, descU, recPct));
     const neto = Math.max(0, r4c(lista - descU + recU));
 
     setDetallesEditados(prev => ({
@@ -981,7 +996,7 @@ export default function CierreCicloPreviewModal({
         ['PRE-FACTURA'],
         [`Cliente: ${cliDgiNombre || cliente?.Nombre || 'Cliente'}`],
         [`Documento: ${cliDgiDocumento || cliente?.CodCliente || '-'}`],
-        [`Dirección: ${cliDgiDireccion || ''}${cliDgiCiudad ? ', ' + cliDgiCiudad : ''}`],
+        [`Dirección: ${cliDgiDireccion || ''}${nombreDepartamento(cliDgiCiudad) ? ', ' + nombreDepartamento(cliDgiCiudad) : ''}`],
         [`Tipo Comprobante: ${tipoDocumento}`],
         [`Moneda: ${monedaFactura}`],
         [`Período: ${periodoStr}`],
@@ -1078,7 +1093,7 @@ export default function CierreCicloPreviewModal({
       StringIDCliente: cliDgiDocumento || cliente?.CodCliente || String(cliente?.CliIdCliente || ''),
       CliRUT: cliDgiDocumento || cliente?.CioRuc || '',
       CliDireccion: cliDgiDireccion || cliente?.Direccion || 'Montevideo',
-      DocCliCiudad: cliDgiCiudad || cliente?.Ciudad || 'Montevideo',
+      DocCliCiudad: nombreDepartamento(cliDgiCiudad) || cliente?.Ciudad || 'Montevideo',
       DocSubtotal: docSubtotal,
       DocImpuestos: docImpuestos,
       DocTotal: docTotal,
@@ -1295,25 +1310,9 @@ export default function CierreCicloPreviewModal({
                 <label className="text-[10px] uppercase font-bold text-slate-400">Ciudad / Depto</label>
                 <select value={cliDgiCiudad} onChange={e => setCliDgiCiudad(e.target.value)}
                   className="bg-white border border-slate-200 text-slate-700 px-3 py-1.5 rounded-lg text-sm focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 font-medium">
-                  <option value="1">Artigas</option>
-                  <option value="2">Canelones</option>
-                  <option value="3">Cerro Largo</option>
-                  <option value="4">Colonia</option>
-                  <option value="5">Durazno</option>
-                  <option value="6">Flores</option>
-                  <option value="7">Florida</option>
-                  <option value="8">Lavalleja</option>
-                  <option value="9">Maldonado</option>
-                  <option value="10">Montevideo</option>
-                  <option value="11">Paysandú</option>
-                  <option value="12">Río Negro</option>
-                  <option value="13">Rivera</option>
-                  <option value="14">Rocha</option>
-                  <option value="15">Salto</option>
-                  <option value="16">San José</option>
-                  <option value="17">Soriano</option>
-                  <option value="18">Tacuarembó</option>
-                  <option value="19">Treinta y Tres</option>
+                  {DEPARTAMENTOS_UY.map(([id, nombre]) => (
+                    <option key={id} value={String(id)}>{nombre}</option>
+                  ))}
                 </select>
               </div>
             </div>
@@ -1340,7 +1339,7 @@ export default function CierreCicloPreviewModal({
                   <th className="px-4 py-3 text-center">Cant.</th>
                   <th className="px-4 py-3 text-right" title="Precio de lista congelado en el pedido (antes de descuento y recargo)">P. Lista</th>
                   <th className="px-4 py-3 text-right" title="Descuento: % sobre la lista e importe por unidad. Editable.">Descuento</th>
-                  <th className="px-4 py-3 text-right" title="Recargo (urgencia, tinta, manual): % sobre la lista e importe por unidad. Editable.">Recargo</th>
+                  <th className="px-4 py-3 text-right" title="Recargo (urgencia, tinta, manual): % sobre el precio con descuento e importe por unidad. Editable.">Recargo</th>
                   <th className="px-4 py-3 text-right" title="Neto por unidad = lista − descuento + recargo">P. Unitario</th>
                   <th className="px-4 py-3 text-right">Subtotal</th>
                 </tr>
@@ -1416,7 +1415,7 @@ export default function CierreCicloPreviewModal({
                         const descU = ed ? ed.DescUnit : descUnitDetalle(d);
                         const recU  = ed ? ed.RecUnit  : recUnitDetalle(d);
                         const descPct = ed ? ed.DescPct : (!sinLista && d.DescuentoPct != null ? Number(d.DescuentoPct) : (lista > 0 && descU > 0 ? r4c(descU / lista * 100) : 0));
-                        const recPct  = ed ? ed.RecPct  : (!sinLista && d.RecargoPct  != null ? Number(d.RecargoPct)  : (lista > 0 && recU  > 0 ? r4c(recU  / lista * 100) : 0));
+                        const recPct  = ed ? ed.RecPct  : (!sinLista && d.RecargoPct  != null ? Number(d.RecargoPct)  : (lista > 0 && recU  > 0 ? r4c(pctRecargoDesdeImporte(lista, descU, recU)) : 0));
                         const neto = ed ? ed.PrecioUnitario : (sinLista ? (Number(d.PrecioUnitario) || 0) : r4c(lista - descU + recU));
                         const subt  = ed ? ed.Subtotal : d.Subtotal;
 
@@ -1427,8 +1426,9 @@ export default function CierreCicloPreviewModal({
                         // % → importe por unidad; importe (en la moneda de la factura) → por unidad en la moneda del pedido
                         const onDescPct = v => { const p = Math.min(100, Math.max(0, Number(v) || 0)); handleEditDetalle(d, { DescUnit: r4c(lista * p / 100), DescPct: p }); };
                         const onDescImp = v => { const u = Math.max(0, (Number(v) || 0) / (rate || 1)); handleEditDetalle(d, { DescUnit: u, DescPct: lista > 0 ? r4c(u / lista * 100) : 0 }); };
-                        const onRecPct  = v => { const p = Math.max(0, Number(v) || 0); handleEditDetalle(d, { RecUnit: r4c(lista * p / 100), RecPct: p }); };
-                        const onRecImp  = v => { const u = Math.max(0, (Number(v) || 0) / (rate || 1)); handleEditDetalle(d, { RecUnit: u, RecPct: lista > 0 ? r4c(u / lista * 100) : 0 }); };
+                        // el recargo % va sobre lista − descuento
+                        const onRecPct  = v => { const p = Math.max(0, Number(v) || 0); handleEditDetalle(d, { RecUnit: r4c(recargoDesdePct(lista, descU, p)), RecPct: p }); };
+                        const onRecImp  = v => { const u = Math.max(0, (Number(v) || 0) / (rate || 1)); handleEditDetalle(d, { RecUnit: u, RecPct: r4c(pctRecargoDesdeImporte(lista, descU, u)) }); };
 
                         return (
                           <tr key={d.DetalleID} className="group hover:bg-slate-50 text-[13px]">

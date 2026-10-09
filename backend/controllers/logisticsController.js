@@ -2400,10 +2400,20 @@ if (asentar) {
 
                                               const hayPlanCtb = planIdCtb !== null && planMetrosDisp > 0;
 
+                                              // El plan cubre SOLO lo que la cotización asignó al plan (línea $0 con
+                                              // perfil "Prepago..."). Una línea cotizada A PAGAR se cobra a su precio y
+                                              // no toca el plan: antes, al ingresar, el plan se repartía por orden de
+                                              // llegada y una línea a pagar se comía los metros que la cotización le había
+                                              // reservado a otra orden (Palla y Palla, plan #112: DTF-29731 se llevó lo de
+                                              // DTF-29519, que terminó con un cargo de US$ 12,10 que la caja nunca cobró).
+                                              // Decisión del usuario 09-10-2026: se respeta la cotización.
+                                              // ROLLO/SEMANAL no cambia: su plan cubre siempre (regla de abajo).
+                                              const lineaUsaPlan = esClienteRollo || esLineaPrepagoCero;
+
                                               // ROLLO/SEMANAL: con plan activo (aunque esté en 0 o negativo) la línea entra
                                               // ENTERA como ENTREGA a $0 — el hook deja el plan en rojo y la próxima
                                               // recarga lo absorbe. Nunca genera deuda en dinero por el producto.
-                                              if ((esClienteRollo && planIdCtb !== null) || (hayPlanCtb && lineQty <= planMetrosDisp)) {
+                                              if ((esClienteRollo && planIdCtb !== null) || (lineaUsaPlan && hayPlanCtb && lineQty <= planMetrosDisp)) {
                                                   // CASO A: Plan cubre todo — 1 evento ENTREGA a $0
                                                   console.log(`${logPrefix} -> ENTREGA TOTAL por prepago (${lineQty}m, $0, Plan #${planIdCtb}${esClienteRollo ? ', rollo: puede quedar en negativo' : ''})`);
                                                   await contabilidadService.procesarEventoContable('ENTREGA', {
@@ -2418,7 +2428,7 @@ if (asentar) {
                                                       MonIdMoneda: finalMonId
                                                   });
 
-                                              } else if (hayPlanCtb && planMetrosDisp > 0 && lineQty > planMetrosDisp) {
+                                              } else if (lineaUsaPlan && hayPlanCtb && planMetrosDisp > 0 && lineQty > planMetrosDisp) {
                                                   // CASO B: Plan cubre PARCIALMENTE — 2 eventos
                                                   const metrosRestCtb = lineQty - planMetrosDisp;
                                                   const proporcionCtb = lineQty > 0 ? metrosRestCtb / lineQty : 1;

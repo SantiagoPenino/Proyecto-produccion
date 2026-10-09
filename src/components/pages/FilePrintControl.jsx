@@ -107,6 +107,8 @@ const FilePrintControl = ({ areaCode }) => {
   const [controlAction, setControlAction] = useState(null);
   const [selectedFileForAction, setSelectedFileForAction] = useState(null);
   const [completedOrderData, setCompletedOrderData] = useState(null);
+  // Bultos a generar/imprimir desde el modal "¡Orden Pronta!" (por defecto 1)
+  const [cantidadBultos, setCantidadBultos] = useState(1);
   // Órdenes que se cerraron pero NO generaron etiqueta: sin bulto no se pueden despachar.
   const [etiquetasFallidas, setEtiquetasFallidas] = useState(null);
   const [fallaTypes, setFallaTypes] = useState([]);
@@ -420,6 +422,11 @@ const FilePrintControl = ({ areaCode }) => {
       if (autoAdvanceTimerRef.current) clearTimeout(autoAdvanceTimerRef.current);
     };
   }, [completedOrderData, autoAdvance, sortOrder]);
+
+  // Cada vez que se abre el modal de orden pronta, la cantidad de bultos arranca en 1
+  useEffect(() => {
+    if (completedOrderData) setCantidadBultos(1);
+  }, [completedOrderData?.ordenId]);
 
 
   // --- HELPERS ---
@@ -829,6 +836,50 @@ const FilePrintControl = ({ areaCode }) => {
       }
     } catch (e) {
       setToast({ visible: true, message: e?.response?.data?.error || e?.message || 'Error al agregar bulto extra.', type: 'error' });
+    }
+  };
+
+  const cancelarAutoAvance = () => {
+    if (autoAdvanceTimerRef.current) {
+      clearTimeout(autoAdvanceTimerRef.current);
+      autoAdvanceTimerRef.current = null;
+    }
+  };
+
+  // IMPRIMIR ETIQUETAS del modal "¡Orden Pronta!": completarOrden ya generó las etiquetas (por
+  // metros/bulto). Si el operario pidió otra cantidad de bultos, se regeneran con esa cantidad
+  // antes de imprimir; si coincide, se imprimen las existentes sin tocar sus códigos.
+  const handleImprimirOrdenPronta = async () => {
+    // Cancelar el timer de auto-avance para que el modal no se cierre antes de que la impresión arranque
+    cancelarAutoAvance();
+    const id = completedOrderData?.ordenId;
+    const wasLast = completedOrderData?.isLastInRoll;
+    const cantidad = Math.min(99, Math.max(1, parseInt(cantidadBultos, 10) || 1));
+    setCompletedOrderData(null);
+    if (wasLast) setActiveRoll(null);
+    if (!id) return;
+
+    try {
+      const data = await fileControlService.getEtiquetas(id);
+      const actuales = (Array.isArray(data) ? data : (data?.etiquetas || [])).length;
+
+      if (actuales !== cantidad) {
+        setToast({ visible: true, message: `Generando ${cantidad} etiqueta(s)...`, type: 'info' });
+        const regenRes = await fileControlService.regenerateLabels(id, cantidad);
+        if (!regenRes?.success) {
+          setToast({ visible: true, message: `Error al generar etiquetas: ${regenRes?.error || 'desconocido'}`, type: 'error' });
+          return;
+        }
+        setOrders(prev => prev.map(o => o.id === id ? { ...o, hasLabels: cantidad } : o));
+      }
+
+      // Usar printLabelsHelper directamente, NO handlePrintLabels (con selectedOrder null
+      // no tiene el estado de la orden para decidir).
+      printLabelsHelper(null, { id });
+      setToast({ visible: true, message: `${cantidad} etiqueta(s) listas para imprimir`, type: 'success' });
+    } catch (e) {
+      console.error(e);
+      setToast({ visible: true, message: e?.response?.data?.error || `Error de conexión: ${e.message}`, type: 'error' });
     }
   };
 
@@ -1804,25 +1855,46 @@ const FilePrintControl = ({ areaCode }) => {
                 </div>
               </div>
 
-              <div className="space-y-3 w-full">
-                <button onClick={() => { 
-                  // Cancelar el timer de auto-avance para que el operador pueda imprimir
-                  // sin que el modal se cierre antes de que la impresión arranque
-                  if (autoAdvanceTimerRef.current) {
-                    clearTimeout(autoAdvanceTimerRef.current);
-                    autoAdvanceTimerRef.current = null;
-                  }
-                  const id = completedOrderData?.ordenId; 
+              {/* Cantidad de bultos: tocar el campo frena el auto-avance para que el modal no se cierre mientras se carga */}
+              <div className="w-full flex items-center justify-between gap-3 bg-slate-50 rounded-2xl border-2 border-slate-100 p-3 pl-4 mb-6">
+                <div className="text-left">
+                  <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest">CANTIDAD DE BULTOS</div>
+                  <div className="text-xs font-bold text-slate-500 leading-tight">Etiquetas a generar e imprimir</div>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => { cancelarAutoAvance(); setCantidadBultos(c => Math.max(1, (parseInt(c, 10) || 1) - 1)); }}
+                    disabled={(parseInt(cantidadBultos, 10) || 1) <= 1}
+                    className="w-10 h-10 rounded-xl bg-white border-2 border-slate-200 text-slate-600 font-black text-xl hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    <i className="fa-solid fa-minus text-sm"></i>
+                  </button>
+                  <input
+                    type="number"
+                    min={1}
+                    max={99}
+                    value={cantidadBultos}
+                    onFocus={(e) => { cancelarAutoAvance(); e.target.select(); }}
+                    onChange={(e) => setCantidadBultos(e.target.value)}
+                    onBlur={() => setCantidadBultos(c => Math.min(99, Math.max(1, parseInt(c, 10) || 1)))}
+                    onKeyDown={(e) => { if (e.key === 'Enter') handleImprimirOrdenPronta(); }}
+                    className="w-16 h-10 text-center text-2xl font-black text-slate-700 bg-white border-2 border-slate-200 rounded-xl focus:outline-none focus:border-brand-cyan [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => { cancelarAutoAvance(); setCantidadBultos(c => Math.min(99, (parseInt(c, 10) || 1) + 1)); }}
+                    disabled={(parseInt(cantidadBultos, 10) || 1) >= 99}
+                    className="w-10 h-10 rounded-xl bg-white border-2 border-slate-200 text-slate-600 font-black text-xl hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    <i className="fa-solid fa-plus text-sm"></i>
+                  </button>
+                </div>
+              </div>
 
-                  const wasLast = completedOrderData?.isLastInRoll;
-                  setCompletedOrderData(null);
-                  if (wasLast) setActiveRoll(null);
-                  // Usar printLabelsHelper directamente: las etiquetas acaban de generarse
-                  // por completarOrden, NO llamar handlePrintLabels (con selectedOrder null
-                  // no tiene el estado de la orden para decidir).
-                  printLabelsHelper(null, { id });
-                }} className="w-full py-3 rounded-xl bg-brand-cyan text-white font-black text-lg shadow-lg shadow-brand-cyan/30 hover:bg-brand-cyan hover:scale-[1.02] transition-all active:scale-95">
-                  <i className="fa-solid fa-print mr-2"></i> IMPRIMIR ETIQUETAS
+              <div className="space-y-3 w-full">
+                <button onClick={handleImprimirOrdenPronta} className="w-full py-3 rounded-xl bg-brand-cyan text-white font-black text-lg shadow-lg shadow-brand-cyan/30 hover:bg-brand-cyan hover:scale-[1.02] transition-all active:scale-95">
+                  <i className="fa-solid fa-print mr-2"></i> IMPRIMIR {(parseInt(cantidadBultos, 10) || 1) === 1 ? 'ETIQUETA' : `${parseInt(cantidadBultos, 10)} ETIQUETAS`}
                 </button>
                 <div className="flex gap-2">
                   <button onClick={() => {

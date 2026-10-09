@@ -3,6 +3,7 @@ const moment = require('moment-timezone');
 const { crearRetiro, marcarEntregado } = require('../services/retiroService');
 const logger = require('../utils/logger');
 const { SQL_RECALC_MONTO_TOTAL } = require('../utils/montoTotalPedido');
+const { recargoDesdePct } = require('../services/desgloseLineaPedido');
 
 const createOrdenRetiro = async (req, res) => {
   const { orders, totalCost, lugarRetiro, direccion, departamento, localidad, agenciaId } = req.body;
@@ -1377,8 +1378,10 @@ const editarCostoOrden = async (req, res) => {
           if (lista != null) {
             if (editoDesglose) {
               // La caja editó descuento y/o recargo: el importe del descuento cierra la cuenta.
+              // Un recargo en % va sobre lista − descuento (el editado si vino, si no el guardado).
               rPct = vino('recargoPct') ? r4(dz.recargoPct) : null;
-              rImp = vino('recargoImporte') ? r4(dz.recargoImporte) : (rPct != null ? r4(lista * rPct / 100) : null);
+              const descBase = vino('descuentoImporte') ? r4(dz.descuentoImporte) : (vino('descuentoPct') ? r4(lista * Number(dz.descuentoPct) / 100) : (Number(ln.DescuentoImporte) || 0));
+              rImp = vino('recargoImporte') ? r4(dz.recargoImporte) : (rPct != null ? r4(recargoDesdePct(lista, descBase, rPct)) : null);
               if (!(rImp > 0)) { rImp = null; rPct = null; } else { rOrig = origenCaja; }
               dPct = vino('descuentoPct') ? r4(dz.descuentoPct) : null;
               dImp = r4(lista + (rImp || 0) - pu2);

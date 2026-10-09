@@ -4,6 +4,7 @@ const { rollbackSeguro } = require('../utils/rollbackSeguro');
 const { esDeadlock } = require('../utils/reintentarDeadlock');
 const { estamparAreaLineas } = require('../services/areaLineaService');
 const { resolverCuentaDineroCliente } = require('../services/cuentaDineroCliente');
+const { recargoDesdePct } = require('../services/desgloseLineaPedido');
 
 // ID del cliente genérico "Consumidor Final" — no tiene cuenta corriente propia
 const CONSUMIDOR_FINAL_ID = 2089;
@@ -689,7 +690,13 @@ exports.previewDGI = async (req, res) => {
 };
 
 exports.crearFacturaManual = async (req, res) => {
-    const { DocTipo, CliIdCliente, Lineas, Totales, DocCliNombre, DocCliDocumento, DocCliDireccion, DocCliCiudad, DocCliNombreFantasia, DocPagado, MetodoPagoId, Pagos, empresaId, DocFechaEmision } = req.body;
+    const { DocTipo, CliIdCliente, Lineas, Totales, DocCliNombre, DocCliDocumento, DocCliDireccion, DocCliCiudad, DocCliNombreFantasia, DocPagado, MetodoPagoId, Pagos, empresaId, DocFechaEmision, pagarConSaldoAFavor } = req.body;
+    // REFACTURAR (NC de 3 opciones, 09-10-2026): la factura corregida se paga con el saldo a favor
+    // que dejó la NC de la original. NO entra plata a caja (sin transacción ni pago): la deuda nace
+    // y crearDeudaDocumento la cubre con ese saldo. Sin esto se cobraba otra vez y quedaba un saldo
+    // a favor falso (Fundación Corazoncitos $ 18.000, Viola Marinsek US$ 1.540…).
+    const conSaldoAFavor = pagarConSaldoAFavor === true || pagarConSaldoAFavor === 'true';
+    let saldoAFavorFaltante = 0;   // si el saldo a favor no alcanzó, lo que quedó debiendo
     // Moneda SIEMPRE numérica: viene del body y acá abajo se compara con === 2 en seis
     // lugares (cuenta genérica, cuenta del cliente, cotización...). Un "2" string mandaba
     // el débito a la cuenta de PESOS mientras el documento se guardaba en USD — la deuda
@@ -740,7 +747,7 @@ exports.crearFacturaManual = async (req, res) => {
         }
 
         // 1.5 Registrar Transacción de Caja y Pago si es Contado
-        const isPaid = DocPagado === true || DocPagado === 1 || DocPagado === 'true';
+        const isPaid = !conSaldoAFavor && (DocPagado === true || DocPagado === 1 || DocPagado === 'true');
         let tcaId = null;
 
         if (isPaid) {
@@ -831,11 +838,12 @@ exports.crearFacturaManual = async (req, res) => {
             // para poder imprimirlo tal cual se tipeó.
             const descPct = Math.min(100, Math.max(0, parseFloat(linea.descPct) || 0));
             const bruto = cant * precio;
-            // Descuento y recargo por línea: en % (sobre el bruto) o por importe (de la
-            // línea, con IVA). Si vienen los dos, manda el importe.
+            // Descuento y recargo por línea: en % o por importe (de la línea, con IVA). Si
+            // vienen los dos, manda el importe. El descuento % va sobre el bruto y el recargo %
+            // sobre lo que queda después del descuento (bruto − descuento).
             const descMonto = linea.descMonto != null && linea.descMonto !== '' ? Math.max(0, parseFloat(linea.descMonto) || 0) : bruto * (descPct / 100);
             const recPct = Math.max(0, parseFloat(linea.recPct) || 0);
-            const recMonto = linea.recMonto != null && linea.recMonto !== '' ? Math.max(0, parseFloat(linea.recMonto) || 0) : bruto * (recPct / 100);
+            const recMonto = linea.recMonto != null && linea.recMonto !== '' ? Math.max(0, parseFloat(linea.recMonto) || 0) : recargoDesdePct(bruto, descMonto, recPct);
             const lineTotal = bruto - descMonto + recMonto;
             const lineNeto = lineTotal / (1 + ivaRate / 100);
             const lineIva = lineTotal - lineNeto;
@@ -930,11 +938,23 @@ exports.crearFacturaManual = async (req, res) => {
                 }, transaction);
             } else {
                 // 2.7.3 Si es Crédito → crear deuda centralizada
+                // (también con conSaldoAFavor: la deuda nace y el auto-consumo la paga con el saldo a favor)
                 await contabilidadService.crearDeudaDocumento({
                     CueIdCuenta:    ctaMonedaId,
                     DocIdDocumento: docId,
                     Importe:        Totales.total,
                 }, transaction);
+                if (conSaldoAFavor) {
+                    const pendR = await new sql.Request(transaction).input('Doc', sql.Int, docId)
+                        .query(`SELECT Pend = ISNULL(SUM(DDeImportePendiente), 0) FROM dbo.DeudaDocumento
+                                WHERE DocIdDocumento = @Doc AND DDeEstado NOT IN ('CANCELADA','COBRADO')`);
+                    saldoAFavorFaltante = Math.round((Number(pendR.recordset[0]?.Pend) || 0) * 100) / 100;
+                    if (saldoAFavorFaltante <= 0.009) {
+                        await new sql.Request(transaction).input('Doc', sql.Int, docId)
+                            .query('UPDATE dbo.DocumentosContables SET DocPagado = 1 WHERE DocIdDocumento = @Doc');
+                    }
+                    logger.info(`[FACT-MANUAL] Doc #${docId} pagado con saldo a favor (refacturación)${saldoAFavorFaltante > 0.009 ? ' — no alcanzó: queda debiendo ' + saldoAFavorFaltante : ''}.`);
+                }
             }
         }
 
@@ -979,6 +999,19 @@ exports.crearFacturaManual = async (req, res) => {
         } catch (eSaldo) {
             logger.warn(`[FACT-MANUAL] No se pudo ajustar el asiento por Saldo de cuenta: ${eSaldo.message}`);
         }
+        // Refacturación pagada con el saldo a favor de la NC: la NC acreditó CLIENTES, así que la
+        // factura corregida debita Clientes (no Caja: no entró plata). Si el tipo es contado el
+        // motor trae Caja en el DEBE; se cambia a la cuenta de clientes de la moneda.
+        if (conSaldoAFavor) {
+            const CAJAS = ['1.1.1', '1.1.2'];
+            for (const lin of lineasContables) {
+                if (CAJAS.includes(lin.codigoCuenta) && Number(lin.debeBase) > 0) {
+                    lin.codigoCuenta = MonIdMoneda === 2 ? '1.2.2' : '1.2.1';   // Deudores por ventas (Clientes)
+                    lin.entidadId = CliIdCliente || null;
+                    lin.entidadTipo = 'CLIENTE';
+                }
+            }
+        }
 
         if (lineasContables.length > 0) {
             const asiId = await generarAsientoCompleto({
@@ -998,7 +1031,7 @@ exports.crearFacturaManual = async (req, res) => {
         }
 
         await transaction.commit();
-        res.json({ success: true, message: 'Documento CFE generado exitosamente', docId });
+        res.json({ success: true, message: 'Documento CFE generado exitosamente' + (conSaldoAFavor ? (saldoAFavorFaltante > 0.009 ? ` — pagado con el saldo a favor; no alcanzó: quedan ${saldoAFavorFaltante.toFixed(2)} pendientes` : ' — pagado con el saldo a favor de la nota de crédito') : ''), docId, saldoAFavorFaltante });
 
     } catch (err) {
         logger.error('Error en crearFacturaManual:', err);
@@ -1130,6 +1163,12 @@ exports.anularFactura = async (req, res) => {
                     WHERE PagTcaIdTransaccion = @tcaId
                 `);
 
+            // 3.b Lo que esos pagos habían imputado vuelve a deberse (misma rutina que la
+            // bandeja interna). Desde el 09-10-2026 el cobro de caja imputa la deuda de SU
+            // orden; sin esto, anular el ticket dejaba la orden COBRADO sin plata.
+            const { reponerDeudasDeTransaccion } = require('../services/cajaService');
+            await reponerDeudasDeTransaccion({ tcaId, motivo: `Anulación del documento #${id}` }, transaction);
+
             // 4. Revertir OrdenesRetiro
             // 3/4 (Abonado) → 1 (Ingresado); 8 (Empaquetado y abonado) → 7 (Empaquetado SIN abonar).
             // OJO: 8 nunca va a 5 (Entregado) — anular un pago no puede "entregar" un retiro que el
@@ -1217,6 +1256,10 @@ exports.anularFactura = async (req, res) => {
                        )
             `);
 
+        // Y las que cerró la caja al facturar (CANCELADA con la marca de este documento):
+        // antes quedaban cerradas y la orden, ya sin factura, no figuraba en ninguna deuda.
+        await contabilidadService.reabrirDeudasPorOrdenDelDocumento({ DocIdDocumento: parseInt(id) }, transaction);
+
         // Liberar los movimientos de tipo ORDEN y ENTREGA quitándoles la vinculación al documento y al ciclo
         await transaction.request()
             .input('id', sql.Int, id)
@@ -1238,7 +1281,24 @@ exports.anularFactura = async (req, res) => {
                 JOIN dbo.DeudaDocumento dd ON dd.DDeIdDocumento = ip.DDeIdDocumento
                 JOIN dbo.TransaccionesCaja t ON t.TcaIdTransaccion = p.PagTcaIdTransaccion
                 WHERE dd.DocIdDocumento = @id AND p.PagTcaIdTransaccion IS NOT NULL
-                  AND p.PagTipoMovimiento <> 'ANULADO' AND t.TcaEstado <> 'ANULADO'`);
+                  AND p.PagTipoMovimiento <> 'ANULADO' AND t.TcaEstado <> 'ANULADO'
+                  -- Un ANTICIPO (RA) que pagó esta factura NO se anula: la plata la trajo el
+                  -- cliente y vuelve a su saldo a favor (abajo se le saca la imputación). Desde
+                  -- el 09-10-2026 el anticipo deja rastro en ImputacionPago y sin este filtro
+                  -- anular la factura anulaba también el recibo de anticipo.
+                  AND ISNULL(t.TcaTipoDocumento, '') <> 'ANTICIPO'`);
+        // Imputaciones de ANTICIPOS a las deudas de este documento: dejan de existir (la deuda
+        // se cancela abajo) y la plata queda otra vez libre en la cuenta. El libro no se toca:
+        // el anticipo sigue vivo y el cargo de la factura se anula arriba.
+        await transaction.request()
+            .input('id', sql.Int, id)
+            .query(`
+                DELETE ip
+                FROM dbo.ImputacionPago ip
+                JOIN dbo.Pagos p ON p.PagIdPago = ip.PagIdPago
+                JOIN dbo.TransaccionesCaja t ON t.TcaIdTransaccion = p.PagTcaIdTransaccion
+                JOIN dbo.DeudaDocumento dd ON dd.DDeIdDocumento = ip.DDeIdDocumento
+                WHERE dd.DocIdDocumento = @id AND t.TcaTipoDocumento = 'ANTICIPO'`);
         for (const { TcaId } of cobrosRes.recordset) {
             if (tcaId && Number(TcaId) === Number(tcaId)) continue;   // la venta propia ya se revirtió arriba
             const otrosRes = await transaction.request()
@@ -1983,7 +2043,24 @@ exports.editarFactura = async (req, res) => {
                             SET PagTipoMovimiento = 'ANULADO'
                             WHERE PagTcaIdTransaccion = @tcaId;
                         `);
-                    
+
+                    // Lo que imputó el cobro anulado vuelve a deberse, y la deuda de cada orden
+                    // pasa a ser la de este documento a crédito (CANCELADA con su marca, igual
+                    // que al facturar en caja). Sin esto la orden quedaba COBRADO por un pago
+                    // anulado, o viva además de la factura (FA-2087, 30-09-2026: cliente
+                    // debiendo dos veces lo mismo).
+                    const { reponerDeudasDeTransaccion } = require('../services/cajaService');
+                    await reponerDeudasDeTransaccion({ tcaId: currentTcaId, motivo: `Documento #${id} pasado a crédito` }, transaction);
+                    const ordDocRes = await transaction.request()
+                        .input('id', sql.Int, id)
+                        .query(`SELECT DISTINCT OrdIdOrden FROM dbo.MovimientosCuenta
+                                WHERE DocIdDocumento = @id AND MovTipo IN ('ORDEN','ORDEN_ANTICIPO')
+                                  AND OrdIdOrden IS NOT NULL AND (MovAnulado IS NULL OR MovAnulado = 0)`);
+                    await contabilidadService.cerrarDeudasPorOrdenFacturada({
+                        DocIdDocumento: parseInt(id),
+                        OrdIds: ordDocRes.recordset.map(r => r.OrdIdOrden),
+                    }, transaction);
+
                     await transaction.request()
                         .input('id', sql.Int, id)
                         .query("UPDATE DocumentosContables SET TcaIdTransaccion = NULL WHERE DocIdDocumento = @id");

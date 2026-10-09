@@ -59,7 +59,7 @@ router.post('/movimientos/ajuste', ctrl.registrarAjusteManual);
 router.post('/movimientos/pago-anticipado', ctrl.registrarPagoAnticipado);
 router.post('/movimientos/saldo-inicial', ctrl.registrarSaldoInicial);
 router.post('/movimientos/pago-cruzado', ctrl.registrarPagoCruzado);
-router.get('/movimientos/:MovIdMovimiento/recibo/pdf', ctrl.generarReciboPdf);
+router.get('/movimientos/:MovIdMovimiento/recibo', ctrl.getReciboMovimiento); // datos del recibo A4 (lo dibuja el front)
 router.post('/movimientos/:MovIdMovimiento/anular-orden', ctrl.anularOrdenPendiente);
 router.post('/movimientos/:MovIdMovimiento/consumir-recurso-adelantado', ctrl.consumirRecursoAdelantado);
 // Billetera: pagar una ORDEN pendiente con el saldo de una cuenta de dinero (elección explícita) + reversa
@@ -102,6 +102,8 @@ router.get('/planes/:PlaIdPlan/materiales', ctrl.getMaterialesPlan);
 router.put('/planes/:PlaIdPlan/materiales', ctrl.setMaterialesPlan);
 router.get('/reportes/antiguedad-deuda', ctrl.getAntiguedadDeuda);
 router.get('/reportes/estado-cuenta/:CliIdCliente', ctrl.getEstadoCuentaCliente);
+// Panel 360 → Estado de cuenta: reimprimir el recibo A4 de un cobro (mismo modelo que el de movimientos)
+router.get('/cobros/:TcaIdTransaccion/recibo', ctrl.getReciboCobro);
 router.get('/reportes/deuda-consolidada', ctrl.getDeudaConsolidada);
 // Menú ☰ del Panel 360: clientes con recursos (rollo / dinero), todos o solo en negativo
 router.get('/reportes/clientes-recursos', ctrl.getReporteClientesRecursos);
@@ -119,6 +121,10 @@ const cobranzasCtrl = require('../controllers/cobranzasReportesController');
 router.get('/reportes/cobranzas-vencimientos', cobranzasCtrl.getCobranzasVencimientos);
 router.get('/reportes/cobranzas-periodos',     cobranzasCtrl.getCobranzasPeriodos);
 router.get('/reportes/cobranzas-clientes',     cobranzasCtrl.getCobranzasClientes);
+// Órdenes (08-oct-2026): entregadas sin pago (rango de fechas) y pendientes de facturar (foto del momento)
+const reportesOrdenesCtrl = require('../controllers/reportesOrdenesController');
+router.get('/reportes/ordenes-retiradas-sin-pago',  reportesOrdenesCtrl.getOrdenesRetiradasSinPago);
+router.get('/reportes/ordenes-pendientes-facturar', reportesOrdenesCtrl.getOrdenesPendientesFacturar);
 router.get('/reportes/top-clientes',          reportesVentasCtrl.getTopClientes);
 router.get('/reportes/top-clientes-detalle',  reportesVentasCtrl.getTopClientesDetalle);
 router.get('/reportes/top-productos',         reportesVentasCtrl.getTopProductos);
@@ -235,10 +241,12 @@ const { conReintentoDeadlock } = require('../utils/reintentarDeadlock');
 
 // ── OPERACIONES DESDE ESTADO DE CUENTA (Caja Administrativa) ──────────────────
 router.post('/caja/nota-credito',      conReintentoDeadlock(caja.generarNotaCredito));      // Nota de crédito sobre doc existente
+router.get('/caja/nota-credito/preview', caja.previewNotaCredito);   // Modal NC: disponible, deuda viva, turno abierto (solo lee)
 router.post('/caja/nota-credito-externa', caja.generarNotaCreditoExterna); // Nota de crédito sobre factura del sistema anterior (solo CFE, sin impacto contable)
 router.post('/caja/nota-debito',       caja.generarNotaDebito);       // Nota de débito sobre doc existente (NUEVO)
 router.post('/caja/reversar-doc',      conReintentoDeadlock(caja.reversarDocumento));       // Reverso: contado→egreso/crédito→NC
 router.post('/caja/pago-anticipo',     conReintentoDeadlock(caja.registrarPagoAnticipo));   // Anticipo directo a cuenta (nuevo dinero)
+router.get('/caja/anticipo/deudas',     caja.deudasParaAnticipo);                            // Vista previa: deudas abiertas que pagaría el anticipo
 router.post('/caja/anular-factura',    conReintentoDeadlock(caja.anularFactura));           // Anular factura no enviada a DGI → reabre ciclo
 router.post('/caja/imputar-anticipo-deuda', caja.imputarAnticipoADeuda); // Imputar saldo existente a una deuda específica
 // ¿La factura fue una compra de recurso (rollo por adelantado)? Se consulta antes de
@@ -503,6 +511,33 @@ router.post('/ordenes/eliminar-metros', async (req, res) => {
       }
     }
 
+    // Recargos de urgencia de ESTA entrega. Cuando una orden urgente se paga con el rollo,
+    // aplicarRecargoUrgenciaRollo graba aparte un RECARGO_URGENCIA justo después de su
+    // ENTREGA (misma cuenta y misma orden). Borrar la entrega dejaba el recargo vivo: metros
+    // descontados por una orden que ya no consumía nada (DTF-29731, Palla, 08-oct-2026).
+    // Vínculo: RECARGO_URGENCIA de la misma cuenta y orden, posteriores a esta ENTREGA y
+    // anteriores a la siguiente ENTREGA de la orden (una orden puede tener varias líneas,
+    // cada una con su recargo). Con esa regla cuadran 1.193 de los 1.197 recargos de la base.
+    let recargosLigados = [];
+    if (tipoMov === 'ENTREGA' && OrdIdOrden) {
+      const recRes = await pool.request()
+        .input('Mid', sqlOrd.Int, MovIdMovimiento)
+        .input('Cue', sqlOrd.Int, CueIdCuenta)
+        .input('Ord', sqlOrd.Int, OrdIdOrden)
+        .query(`
+          SELECT r.MovIdMovimiento, r.MovImporte, r.MovConcepto, r.MovObservaciones
+          FROM dbo.MovimientosCuenta r
+          WHERE r.CueIdCuenta = @Cue AND r.OrdIdOrden = @Ord
+            AND r.MovTipo = 'RECARGO_URGENCIA' AND r.MovImporte < 0
+            AND ISNULL(r.MovAnulado, 0) = 0
+            AND r.MovIdMovimiento > @Mid
+            AND r.MovIdMovimiento < ISNULL((
+                  SELECT MIN(e.MovIdMovimiento) FROM dbo.MovimientosCuenta e
+                  WHERE e.CueIdCuenta = @Cue AND e.OrdIdOrden = @Ord AND e.MovTipo = 'ENTREGA'
+                    AND ISNULL(e.MovAnulado, 0) = 0 AND e.MovIdMovimiento > @Mid), 2147483647)`);
+      recargosLigados = recRes.recordset;
+    }
+
     transaction = pool.transaction();
     await transaction.begin();
 
@@ -535,15 +570,15 @@ router.post('/ordenes/eliminar-metros', async (req, res) => {
       }
     }
 
-    if (targetPlanId) {
-      await transaction.request()
-        .input('PlanId', sqlOrd.Int,          targetPlanId)
-        .input('Metros', sqlOrd.Decimal(18,4), importeAbs)
+    // Devuelve metros a un plan (PlaCantidadUsada, sin bajar de 0) y recalcula si queda activo.
+    const devolverAlPlan = (planId, metros) => transaction.request()
+        .input('PlanId', sqlOrd.Int,          planId)
+        .input('Metros', sqlOrd.Decimal(18,4), metros)
         .query(`
-          UPDATE dbo.PlanesMetros 
+          UPDATE dbo.PlanesMetros
           SET PlaCantidadUsada = CASE WHEN PlaCantidadUsada - @Metros < 0 THEN 0 ELSE PlaCantidadUsada - @Metros END
           WHERE PlaIdPlan = @PlanId;
-          
+
           UPDATE pm
           SET pm.PlaActivo = CASE WHEN pm.PlaCantidadUsada < pm.PlaCantidadTotal THEN 1
                                   -- ROLLO POR ADELANTADO y SEMANAL: el plan nunca se cierra por consumo
@@ -557,7 +592,32 @@ router.post('/ordenes/eliminar-metros', async (req, res) => {
           FROM dbo.PlanesMetros pm
           WHERE pm.PlaIdPlan = @PlanId;
         `);
+
+    if (targetPlanId) {
+      await devolverAlPlan(targetPlanId, importeAbs);
     }
+
+    // Los recargos de urgencia de la entrega se van con ella: mismo tratamiento (se borran,
+    // vuelven sus metros a la cuenta y a SU plan, el que dice su observación).
+    let metrosRecargo = 0;
+    for (const r of recargosLigados) {
+      const metrosR = Math.abs(Number(r.MovImporte));
+      await transaction.request()
+        .input('Mid', sqlOrd.Int, r.MovIdMovimiento)
+        .query('DELETE FROM dbo.MovimientosCuenta WHERE MovIdMovimiento = @Mid');
+      await transaction.request()
+        .input('CueId', sqlOrd.Int,          CueIdCuenta)
+        .input('Imp',   sqlOrd.Decimal(18,4), metrosR)
+        .query('UPDATE dbo.CuentasCliente SET CueSaldoActual = CueSaldoActual + @Imp WHERE CueIdCuenta = @CueId');
+      const mPlanR = (r.MovObservaciones || '').match(/Plan\s*#?\s*(\d+)/i) || (r.MovConcepto || '').match(/Plan\s*#?\s*(\d+)/i);
+      const planR  = mPlanR ? parseInt(mPlanR[1]) : targetPlanId;
+      if (planR) await devolverAlPlan(planR, metrosR);
+      metrosRecargo += metrosR;
+      logger.info(`[REVERTIR] + RECARGO_URGENCIA Mov=${r.MovIdMovimiento} metros=${metrosR} plan=${planR || 'NULL'} (ligado a la entrega Mov=${MovIdMovimiento})`);
+    }
+    const txtRecargo = recargosLigados.length
+      ? ` También se eliminó su recargo de urgencia (${Number(metrosRecargo.toFixed(4))} metros devueltos).`
+      : '';
 
     // Solo "Revertir consumo" (reactivarOrden=true) toca la orden. "Eliminar movimiento"
     // deja la orden como está. Si era una COBERTURA, la deja de nuevo PENDIENTE DE FACTURAR:
@@ -678,12 +738,12 @@ router.post('/ordenes/eliminar-metros', async (req, res) => {
       }
     }
 
-    logger.info(`[REVERTIR] FIN Mov=${MovIdMovimiento} metrosDevueltos=${importeAbs} plan=${targetPlanId || 'NULL'} ordenReactivada=${ordenReactivada}`);
+    logger.info(`[REVERTIR] FIN Mov=${MovIdMovimiento} metrosDevueltos=${importeAbs} recargos=${recargosLigados.length} (${metrosRecargo}) plan=${targetPlanId || 'NULL'} ordenReactivada=${ordenReactivada}`);
     await transaction.commit();
-    const msg = reactivarOrden
+    const msg = (reactivarOrden
       ? 'Consumo revertido. Metros devueltos al plan' + (ordenReactivada ? ' y la orden vuelve a pendiente de facturar.' : '.')
-      : 'Movimiento eliminado y saldo restaurado.';
-    res.json({ success: true, message: msg });
+      : 'Movimiento eliminado y saldo restaurado.') + txtRecargo;
+    res.json({ success: true, message: msg, recargosEliminados: recargosLigados.length, metrosRecargo });
   } catch (err) {
     if (transaction) try { await transaction.rollback(); } catch(_){}
     res.status(500).json({ error: err.message });

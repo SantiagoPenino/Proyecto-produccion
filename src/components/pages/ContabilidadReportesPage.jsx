@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback, useRef, Fragment } from 'react';
 import api from '../../services/apiClient';
-import { fmtFecha } from '../../utils/fechas';
+import { fmtFecha, fmtFechaHora } from '../../utils/fechas';
 import {
     Landmark, ChevronRight, Search, RefreshCw, Download,
     PieChart as PieChartIcon, FileCheck2, CheckCircle2, XCircle, Wallet, BookText, Eye,
     Users, Package, BarChart3, Settings2, FolderTree, ChevronDown, Check, CalendarClock, Scale, BellRing,
+    Truck, FileWarning,
 } from 'lucide-react';
 // Reportes que ya existían como pantallas propias: se muestran acá tal cual (siguen
 // teniendo su ruta directa /contabilidad/antiguedad y /caja/central-admin).
@@ -42,6 +43,20 @@ const REPORTS = [
         icon: CalendarClock,
         desc: 'Deuda por vencer y vencida por cliente, alertas, límite de crédito y vendedor',
         color: 'text-indigo-500',
+    },
+    {
+        id: 'retiradas-sin-pago',
+        label: 'Retiradas sin Pago',
+        icon: Truck,
+        desc: 'Órdenes entregadas en un rango de fechas que no están pagas (facturadas sin cobrar, con cargo sin facturar o sin cargo), por tipo de cliente',
+        color: 'text-rose-500',
+    },
+    {
+        id: 'pendientes-facturar',
+        label: 'Pendientes de Facturar',
+        icon: FileWarning,
+        desc: 'Foto del momento: órdenes con cargo en cuenta sin documento y que no se pagaron con un recurso (plan de metros o saldo)',
+        color: 'text-amber-500',
     },
     {
         id: 'caja-central-admin',
@@ -90,7 +105,8 @@ const REPORTS = [
 
 // Reportes que manejan sus propios filtros y carga (no usan los filtros genéricos
 // del encabezado ni el fetch automático de la página).
-const REPORTES_AUTONOMOS = ['libro-contador', 'top-clientes', 'top-productos', 'resumen-mensual', 'catalogo', 'antiguedad', 'caja-central-admin', 'cobranzas'];
+const REPORTES_AUTONOMOS = ['libro-contador', 'top-clientes', 'top-productos', 'resumen-mensual', 'catalogo', 'antiguedad', 'caja-central-admin', 'cobranzas',
+    'retiradas-sin-pago', 'pendientes-facturar'];
 
 // ─── Utilidades de fecha (mismo patrón que ReportesPage.jsx) ─────────────────
 const FECHA_PRESETS = [
@@ -2236,6 +2252,416 @@ function LibroContadorSection() {
     );
 }
 
+// ─── Reportes de órdenes (08-oct-2026): retiradas sin pago / pendientes de facturar ──
+// Backend: controllers/reportesOrdenesController.js (ahí está el criterio de "paga",
+// "consumida en un recurso" y "pendiente de facturar"). El filtro por tipo de cliente,
+// situación y texto se hace acá, sobre lo que trae el backend.
+
+// Chips de tipo de cliente con los tipos que vienen en los datos (orden de TiposClientes)
+const tiposClienteDe = (rows) => [...new Map(rows.map(r => [r.TipoCliente || 'SIN_TIPO', r.TipoClienteId ?? 99])).entries()]
+    .sort((a, b) => a[1] - b[1]).map(([t]) => t);
+
+const FilaTipoCliente = ({ tipos, valor, onChange }) => (
+    <div className="flex items-center gap-2 flex-wrap">
+        <span className="text-[11px] font-bold text-slate-500 w-14 shrink-0 tracking-wide" title="Tipo de cliente">TIPO</span>
+        <Chip active={!valor} onClick={() => onChange('')}>Todos</Chip>
+        {tipos.map(t => (
+            <Chip key={t} active={valor === t} onClick={() => onChange(t)}>{t === 'SIN_TIPO' ? 'Sin tipo' : t}</Chip>
+        ))}
+    </div>
+);
+
+const InputBuscar = ({ value, onChange, placeholder }) => (
+    <div className="relative">
+        <Search size={11} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+        <input type="text" value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder}
+            className="text-xs border border-slate-300 rounded-lg pl-7 pr-2 py-1.5 focus:ring-2 focus:ring-brand-cyan/30 outline-none w-64" />
+    </div>
+);
+
+const totalesPorMoneda = (rows) => rows.reduce((acc, r) => {
+    acc[r.MonSimbolo] = (acc[r.MonSimbolo] || 0) + Number(r.Importe || 0);
+    return acc;
+}, {});
+
+const SITUACION_RETIRADA = {
+    FACTURADO_IMPAGO: {
+        txt: 'Facturado, sin cobrar', cls: 'bg-rose-100 text-rose-700',
+        title: 'El cargo de la orden ya está en un documento (e-Ticket, e-Factura o Pedido Caja) que todavía tiene saldo pendiente.',
+    },
+    CARGO_SIN_FACTURAR: {
+        txt: 'Cargo en cuenta, sin facturar', cls: 'bg-amber-100 text-amber-700',
+        title: 'La orden tiene su cargo en la cuenta corriente del cliente, pero todavía no está en ningún documento.',
+    },
+    SIN_CARGO: {
+        txt: 'Sin cargo en cuenta', cls: 'bg-slate-200 text-slate-700',
+        title: 'Se entregó sin cobrar y la orden no tiene cargo en la cuenta corriente: si no se le carga, no va a salir en ninguna factura.',
+    },
+};
+
+function OrdenesRetiradasSinPagoSection() {
+    const [f, setFRaw] = useState({ preset: '30d', desde: '', hasta: '' });
+    const setF = patch => setFRaw(x => ({ ...x, ...patch }));
+    const [rows, setRows] = useState([]);
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState(null);
+    const [tipo, setTipo] = useState('');
+    const [situacion, setSituacion] = useState('');
+    const [buscar, setBuscar] = useState('');
+
+    const { desde, hasta } = rangoDeFiltros(f);
+    const cargar = useCallback(async () => {
+        if (!desde || !hasta) { setRows([]); return; }
+        setLoading(true); setError(null);
+        try {
+            const r = await api.get('/contabilidad/reportes/ordenes-retiradas-sin-pago', { params: { desde, hasta } });
+            setRows(r.data.data || []);
+        } catch (e) {
+            setError(e.response?.data?.error || e.message);
+            setRows([]);
+        } finally { setLoading(false); }
+    }, [desde, hasta]);
+    useEffect(() => { cargar(); }, [cargar]);
+
+    const tipos = tiposClienteDe(rows);
+    const q = buscar.trim().toLowerCase();
+    const porTipo = rows.filter(r => !tipo || (r.TipoCliente || 'SIN_TIPO') === tipo);
+    const vis = porTipo
+        .filter(r => !situacion || r.Situacion === situacion)
+        .filter(r => !q || `${r.Cliente} ${r.IDCliente || ''} ${r.CodigoOrden} ${r.Vendedor || ''}`.toLowerCase().includes(q));
+    const tot = totalesPorMoneda(vis);
+    const clientes = new Set(vis.map(r => r.CliIdCliente)).size;
+    const autorizadas = vis.filter(r => r.AutorizadoCaja).length;
+    const cuentaSit = (s) => porTipo.filter(r => r.Situacion === s).length;
+
+    const exportar = () => descargarCSV(
+        `ordenes_retiradas_sin_pago_${desde}_${hasta}.csv`,
+        ['Fecha entrega', 'Orden', 'Trabajo', 'Cliente', 'ID cliente', 'Tipo de cliente', 'Vendedor', 'Retiro', 'Estado del retiro',
+            'Autorizado en caja', 'Situación', 'Documento', 'Pendiente del documento', 'Moneda', 'Importe de la orden'],
+        vis.map(r => [fmtFechaHora(r.FechaEntrega, ''), r.CodigoOrden, r.Trabajo, r.Cliente, r.IDCliente, r.TipoCliente || 'Sin tipo', r.Vendedor,
+            r.OReIdOrdenRetiro || '', r.RetiroEstado, r.AutorizadoCaja ? 'Sí' : 'No', SITUACION_RETIRADA[r.Situacion]?.txt || r.Situacion,
+            r.DocRef ? `${r.DocTipo || ''} ${r.DocRef}`.trim() : '', r.PendienteDoc != null ? r.PendienteDoc.toFixed(2) : '',
+            r.MonSimbolo, r.Importe.toFixed(2)]));
+
+    return (
+        <div className="space-y-4">
+            <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-4 space-y-2.5">
+                <p className="text-[11px] text-slate-500">
+                    Órdenes <b>entregadas</b> (estado Entregado en depósito) en el rango de fechas que <b>no están pagas</b>.
+                    No entran: las cobradas en caja o por pasarela, las pagadas con un recurso (plan de metros o saldo),
+                    las que están en un documento ya cobrado, ni las de importe 0.
+                </p>
+                <FilaFecha f={f} setF={setF} />
+                <FilaTipoCliente tipos={tipos} valor={tipo} onChange={setTipo} />
+                <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-[11px] font-bold text-slate-500 w-14 shrink-0 tracking-wide">ESTADO</span>
+                    <Chip active={!situacion} onClick={() => setSituacion('')}>Todas</Chip>
+                    {Object.entries(SITUACION_RETIRADA).map(([k, s]) => (
+                        <Chip key={k} active={situacion === k} onClick={() => setSituacion(k)}>
+                            <span title={s.title}>{s.txt} ({cuentaSit(k)})</span>
+                        </Chip>
+                    ))}
+                </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                    <InputBuscar value={buscar} onChange={setBuscar} placeholder="Buscar cliente, orden o vendedor..." />
+                    <button onClick={cargar} disabled={loading} title="Volver a consultar"
+                        className="ml-auto flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs font-medium rounded-lg transition-all">
+                        <RefreshCw size={13} className={loading ? 'animate-spin' : ''} /> Recargar
+                    </button>
+                    <button onClick={exportar} disabled={!vis.length}
+                        className="flex items-center gap-2 px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 text-white text-xs font-semibold rounded-lg transition-all shadow-sm">
+                        <Download size={13} /> Exportar CSV
+                    </button>
+                </div>
+            </div>
+
+            {error && <div className="bg-red-50 border border-red-200 text-red-600 text-xs rounded-xl px-4 py-3">{error}</div>}
+            {f.preset === 'custom' && (!desde || !hasta) && (
+                <div className="bg-amber-50 border border-amber-200 text-amber-700 text-xs rounded-xl px-4 py-3">Elegí las dos fechas (desde y hasta).</div>
+            )}
+
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                <KpiCard label="Órdenes entregadas sin pago" value={fmtInt(vis.length)} sub={`${fmtInt(clientes)} cliente${clientes === 1 ? '' : 's'}`} color="#e11d48" />
+                <KpiCard label="Importe en pesos" value={`$ ${fmtMoney(tot['$'])}`} sub="suma del importe de cada orden" color="#0d9488" />
+                <KpiCard label="Importe en dólares" value={`US$ ${fmtMoney(tot['US$'])}`} sub="suma del importe de cada orden" color="#0891b2" />
+                <KpiCard label="Salieron autorizadas por caja" value={fmtInt(autorizadas)} sub="el retiro pasó por Autorizado" color="#f59e0b" />
+            </div>
+
+            <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+                <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
+                    <span className="font-bold text-xs text-slate-700">Órdenes entregadas del {fmtFecha(desde)} al {fmtFecha(hasta)} sin pago</span>
+                    <span className="text-[11px] text-slate-400">{fmtInt(vis.length)} órdenes · más reciente primero</span>
+                </div>
+                {loading ? (
+                    <div className="flex items-center justify-center py-14"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-brand-cyan" /></div>
+                ) : (
+                    <div className="overflow-x-auto">
+                        <table className="w-full text-xs">
+                            <thead className="bg-slate-50/50 border-b border-slate-100">
+                                <tr>
+                                    <th className="px-3 py-2 text-left text-slate-500 font-semibold">Entregada</th>
+                                    <th className="px-3 py-2 text-left text-slate-500 font-semibold">Orden</th>
+                                    <th className="px-3 py-2 text-left text-slate-500 font-semibold">Cliente</th>
+                                    <th className="px-3 py-2 text-left text-slate-500 font-semibold">Retiro</th>
+                                    <th className="px-3 py-2 text-left text-slate-500 font-semibold">Situación</th>
+                                    <th className="px-3 py-2 text-right text-slate-500 font-semibold">Importe de la orden</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-50">
+                                {vis.map(r => {
+                                    const s = SITUACION_RETIRADA[r.Situacion] || { txt: r.Situacion, cls: 'bg-slate-100 text-slate-600' };
+                                    return (
+                                        <tr key={r.OrdIdOrden} className="hover:bg-slate-50/70 transition-colors align-top">
+                                            <td className="px-3 py-2 whitespace-nowrap text-slate-600">{fmtFechaHora(r.FechaEntrega)}</td>
+                                            <td className="px-3 py-2">
+                                                <div className="font-mono font-semibold text-slate-700 whitespace-nowrap">{r.CodigoOrden}</div>
+                                                {r.Trabajo && <div className="text-[10px] text-slate-400 truncate max-w-[220px]" title={r.Trabajo}>{r.Trabajo}</div>}
+                                            </td>
+                                            <td className="px-3 py-2">
+                                                <div className="font-semibold text-slate-700">{r.Cliente}</div>
+                                                <div className="text-[10px] text-slate-400">
+                                                    {[r.TipoCliente || 'Sin tipo', r.Vendedor && `Vendedor: ${r.Vendedor}`].filter(Boolean).join(' · ')}
+                                                </div>
+                                            </td>
+                                            <td className="px-3 py-2 whitespace-nowrap">
+                                                <div className="text-slate-600">{r.OReIdOrdenRetiro ? `Retiro #${r.OReIdOrdenRetiro}` : 'Sin retiro'}
+                                                    {r.FormaRetiro ? <span className="text-slate-400"> · {r.FormaRetiro}</span> : null}</div>
+                                                <div className="flex items-center gap-1 mt-0.5">
+                                                    {r.RetiroEstado && <span className="text-[10px] text-slate-400">{r.RetiroEstado}</span>}
+                                                    {r.AutorizadoCaja && (
+                                                        <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-700"
+                                                            title="El retiro pasó por el estado Autorizado: caja dejó salir el pedido sin cobrarlo">Autorizado en caja</span>
+                                                    )}
+                                                </div>
+                                            </td>
+                                            <td className="px-3 py-2">
+                                                <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold whitespace-nowrap ${s.cls}`} title={s.title}>{s.txt}</span>
+                                                {r.DocRef && (
+                                                    <div className="text-[10px] text-slate-500 mt-1 whitespace-nowrap">
+                                                        {r.DocTipo} <span className="font-mono">{r.DocRef}</span>
+                                                        {r.PendienteDoc != null && <> · pendiente del documento <b>{r.DocMonSimbolo} {fmtMoney(r.PendienteDoc)}</b></>}
+                                                    </div>
+                                                )}
+                                            </td>
+                                            <td className="px-3 py-2 text-right font-mono tabular-nums font-bold whitespace-nowrap">{r.MonSimbolo} {fmtMoney(r.Importe)}</td>
+                                        </tr>
+                                    );
+                                })}
+                                {!vis.length && <tr><td colSpan={6} className="px-3 py-10 text-center text-slate-400">No hay órdenes entregadas sin pago con estos filtros.</td></tr>}
+                            </tbody>
+                        </table>
+                    </div>
+                )}
+            </div>
+            <p className="text-[11px] text-slate-400">
+                Importe de la orden = lo que cobra caja por esa orden (si la orden no tiene costo en depósito, se usa su cargo en la cuenta corriente).
+                En "Facturado, sin cobrar" el pendiente del documento puede ser mayor porque el documento junta varias órdenes.
+            </p>
+        </div>
+    );
+}
+
+const UBICACION_ORDEN = {
+    EN_DEPOSITO:       { txt: 'En depósito',            cls: 'bg-sky-100 text-sky-700' },
+    ENTREGADA:         { txt: 'Entregada',              cls: 'bg-emerald-100 text-emerald-700' },
+    SIN_DEPOSITO:      { txt: 'Sin ingreso a depósito', cls: 'bg-slate-200 text-slate-700' },
+    CANCELADA_PERDIDA: { txt: 'Cancelada / perdida',    cls: 'bg-rose-100 text-rose-700' },
+};
+
+const colorDias = (d) => d > 30 ? 'text-rose-600 font-bold' : d > 7 ? 'text-amber-600 font-semibold' : 'text-slate-500';
+
+function OrdenesPendientesFacturarSection() {
+    const [rows, setRows] = useState([]);
+    const [generado, setGenerado] = useState(null);
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState(null);
+    const [tipo, setTipo] = useState('');
+    const [ubicacion, setUbicacion] = useState('');
+    const [buscar, setBuscar] = useState('');
+    const [vista, setVista] = useState('orden'); // 'orden' | 'cliente'
+
+    const cargar = useCallback(async () => {
+        setLoading(true); setError(null);
+        try {
+            const r = await api.get('/contabilidad/reportes/ordenes-pendientes-facturar');
+            setRows(r.data.data || []);
+            setGenerado(r.data.generado || new Date().toISOString());
+        } catch (e) {
+            setError(e.response?.data?.error || e.message);
+            setRows([]);
+        } finally { setLoading(false); }
+    }, []);
+    useEffect(() => { cargar(); }, [cargar]);
+
+    const tipos = tiposClienteDe(rows);
+    const q = buscar.trim().toLowerCase();
+    const porTipo = rows.filter(r => !tipo || (r.TipoCliente || 'SIN_TIPO') === tipo);
+    const vis = porTipo
+        .filter(r => !ubicacion || r.Ubicacion === ubicacion)
+        .filter(r => !q || `${r.Cliente} ${r.IDCliente || ''} ${r.CodigoOrden || ''} ${r.Vendedor || ''}`.toLowerCase().includes(q));
+    const tot = totalesPorMoneda(vis);
+    const masViejo = vis.reduce((m, r) => Math.max(m, Number(r.DiasSinFacturar || 0)), 0);
+    const cuentaUbic = (u) => porTipo.filter(r => r.Ubicacion === u).length;
+
+    // Vista por cliente: quién tiene órdenes sin facturar, la más vieja primero
+    const porCliente = Object.values(vis.reduce((acc, r) => {
+        const c = acc[r.CliIdCliente] = acc[r.CliIdCliente] || {
+            CliIdCliente: r.CliIdCliente, Cliente: r.Cliente, IDCliente: r.IDCliente, TipoCliente: r.TipoCliente, Vendedor: r.Vendedor,
+            cargos: 0, entregadas: 0, pesos: 0, dolares: 0, maxDias: 0,
+        };
+        c.cargos++;
+        if (r.Ubicacion === 'ENTREGADA') c.entregadas++;
+        if (r.MonSimbolo === 'US$') c.dolares += Number(r.Importe || 0); else c.pesos += Number(r.Importe || 0);
+        c.maxDias = Math.max(c.maxDias, Number(r.DiasSinFacturar || 0));
+        return acc;
+    }, {})).sort((a, b) => b.maxDias - a.maxDias || b.cargos - a.cargos);
+
+    const exportar = () => descargarCSV(
+        `ordenes_pendientes_de_facturar_${new Date().toISOString().slice(0, 10)}.csv`,
+        ['Fecha del cargo', 'Días sin facturar', 'Orden', 'Trabajo', 'Cliente', 'ID cliente', 'Tipo de cliente', 'Vendedor',
+            'Dónde está la orden', 'Estado de la orden', 'Moneda', 'Importe'],
+        vis.map(r => [fmtFecha(r.FechaCargo, ''), r.DiasSinFacturar, r.CodigoOrden, r.Trabajo, r.Cliente, r.IDCliente, r.TipoCliente || 'Sin tipo',
+            r.Vendedor, UBICACION_ORDEN[r.Ubicacion]?.txt || r.Ubicacion, r.EstadoOrden, r.MonSimbolo, r.Importe.toFixed(2)]));
+
+    return (
+        <div className="space-y-4">
+            <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-4 space-y-2.5">
+                <p className="text-[11px] text-slate-500">
+                    <b>Foto del momento</b>{generado ? ` (${new Date(generado).toLocaleString('es-UY')})` : ''}: cargos de órdenes en la cuenta corriente
+                    que <b>no tienen documento</b> (e-Ticket, e-Factura o Pedido Caja) y que <b>no se pagaron con un recurso</b> (plan de metros o saldo).
+                    Es lo que la pre-factura del Panel 360 muestra como "Sin facturar", de todos los clientes juntos.
+                </p>
+                <FilaTipoCliente tipos={tipos} valor={tipo} onChange={setTipo} />
+                <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-[11px] font-bold text-slate-500 w-14 shrink-0 tracking-wide" title="Dónde está la orden hoy">ORDEN</span>
+                    <Chip active={!ubicacion} onClick={() => setUbicacion('')}>Todas</Chip>
+                    {Object.entries(UBICACION_ORDEN).filter(([k]) => cuentaUbic(k) > 0 || ubicacion === k).map(([k, u]) => (
+                        <Chip key={k} active={ubicacion === k} onClick={() => setUbicacion(k)}>{u.txt} ({cuentaUbic(k)})</Chip>
+                    ))}
+                </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-[11px] font-bold text-slate-500 w-14 shrink-0 tracking-wide">VER</span>
+                    <Chip active={vista === 'orden'} onClick={() => setVista('orden')}>Por orden</Chip>
+                    <Chip active={vista === 'cliente'} onClick={() => setVista('cliente')}>Por cliente</Chip>
+                    <div className="h-4 w-px bg-slate-200 hidden sm:block mx-1" />
+                    <InputBuscar value={buscar} onChange={setBuscar} placeholder="Buscar cliente, orden o vendedor..." />
+                    <button onClick={cargar} disabled={loading} title="Sacar la foto de nuevo con los datos de este momento"
+                        className="ml-auto flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs font-medium rounded-lg transition-all">
+                        <RefreshCw size={13} className={loading ? 'animate-spin' : ''} /> Actualizar foto
+                    </button>
+                    <button onClick={exportar} disabled={!vis.length}
+                        className="flex items-center gap-2 px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 text-white text-xs font-semibold rounded-lg transition-all shadow-sm">
+                        <Download size={13} /> Exportar CSV
+                    </button>
+                </div>
+            </div>
+
+            {error && <div className="bg-red-50 border border-red-200 text-red-600 text-xs rounded-xl px-4 py-3">{error}</div>}
+
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                <KpiCard label="Cargos sin facturar" value={fmtInt(vis.length)} sub={`${fmtInt(porCliente.length)} cliente${porCliente.length === 1 ? '' : 's'}`} color="#d97706" />
+                <KpiCard label="Importe en pesos" value={`$ ${fmtMoney(tot['$'])}`} sub="cuentas en pesos" color="#0d9488" />
+                <KpiCard label="Importe en dólares" value={`US$ ${fmtMoney(tot['US$'])}`} sub="cuentas en dólares" color="#0891b2" />
+                <KpiCard label="El más viejo" value={vis.length ? `${fmtInt(masViejo)} días` : '—'} sub="desde la fecha del cargo" color="#e11d48" />
+            </div>
+
+            <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+                <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
+                    <span className="font-bold text-xs text-slate-700">{vista === 'orden' ? 'Órdenes pendientes de facturar' : 'Clientes con órdenes pendientes de facturar'}</span>
+                    <span className="text-[11px] text-slate-400">{vista === 'orden' ? `${fmtInt(vis.length)} cargos · el más viejo primero` : `${fmtInt(porCliente.length)} clientes · el que tiene el cargo más viejo primero`}</span>
+                </div>
+                {loading ? (
+                    <div className="flex items-center justify-center py-14"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-brand-cyan" /></div>
+                ) : vista === 'orden' ? (
+                    <div className="overflow-x-auto">
+                        <table className="w-full text-xs">
+                            <thead className="bg-slate-50/50 border-b border-slate-100">
+                                <tr>
+                                    <th className="px-3 py-2 text-left text-slate-500 font-semibold">Fecha del cargo</th>
+                                    <th className="px-3 py-2 text-left text-slate-500 font-semibold">Orden</th>
+                                    <th className="px-3 py-2 text-left text-slate-500 font-semibold">Cliente</th>
+                                    <th className="px-3 py-2 text-left text-slate-500 font-semibold">Dónde está la orden</th>
+                                    <th className="px-3 py-2 text-right text-slate-500 font-semibold">Importe</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-50">
+                                {vis.map(r => {
+                                    const u = UBICACION_ORDEN[r.Ubicacion] || { txt: r.Ubicacion, cls: 'bg-slate-100 text-slate-600' };
+                                    return (
+                                        <tr key={r.MovIdMovimiento} className="hover:bg-slate-50/70 transition-colors align-top">
+                                            <td className="px-3 py-2 whitespace-nowrap">
+                                                <div className="text-slate-600">{fmtFecha(r.FechaCargo)}</div>
+                                                <div className={`text-[10px] ${colorDias(r.DiasSinFacturar)}`}>hace {fmtInt(r.DiasSinFacturar)} día{r.DiasSinFacturar === 1 ? '' : 's'}</div>
+                                            </td>
+                                            <td className="px-3 py-2">
+                                                <div className="font-mono font-semibold text-slate-700 whitespace-nowrap">{r.CodigoOrden || `#${r.OrdIdOrden || r.MovIdMovimiento}`}</div>
+                                                {r.Trabajo && <div className="text-[10px] text-slate-400 truncate max-w-[240px]" title={r.Trabajo}>{r.Trabajo}</div>}
+                                            </td>
+                                            <td className="px-3 py-2">
+                                                <div className="font-semibold text-slate-700">{r.Cliente}</div>
+                                                <div className="text-[10px] text-slate-400">
+                                                    {[r.TipoCliente || 'Sin tipo', r.Vendedor && `Vendedor: ${r.Vendedor}`].filter(Boolean).join(' · ')}
+                                                </div>
+                                            </td>
+                                            <td className="px-3 py-2 whitespace-nowrap">
+                                                <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${u.cls}`}>{u.txt}</span>
+                                                {r.EstadoOrden && r.Ubicacion !== 'ENTREGADA' && <span className="text-[10px] text-slate-400 ml-1.5">{r.EstadoOrden}</span>}
+                                                {r.Ubicacion === 'ENTREGADA' && r.FechaEstadoOrden && <span className="text-[10px] text-slate-400 ml-1.5">el {fmtFecha(r.FechaEstadoOrden)}</span>}
+                                            </td>
+                                            <td className="px-3 py-2 text-right font-mono tabular-nums font-bold whitespace-nowrap">{r.MonSimbolo} {fmtMoney(r.Importe)}</td>
+                                        </tr>
+                                    );
+                                })}
+                                {!vis.length && <tr><td colSpan={5} className="px-3 py-10 text-center text-slate-400">No hay órdenes pendientes de facturar con estos filtros.</td></tr>}
+                            </tbody>
+                        </table>
+                    </div>
+                ) : (
+                    <div className="overflow-x-auto">
+                        <table className="w-full text-xs">
+                            <thead className="bg-slate-50/50 border-b border-slate-100">
+                                <tr>
+                                    <th className="px-3 py-2 text-left text-slate-500 font-semibold">Cliente</th>
+                                    <th className="px-3 py-2 text-right text-slate-500 font-semibold">Cargos</th>
+                                    <th className="px-3 py-2 text-right text-slate-500 font-semibold" title="De esos cargos, cuántas órdenes ya se entregaron">Ya entregadas</th>
+                                    <th className="px-3 py-2 text-right text-slate-500 font-semibold">Pesos</th>
+                                    <th className="px-3 py-2 text-right text-slate-500 font-semibold">Dólares</th>
+                                    <th className="px-3 py-2 text-right text-slate-500 font-semibold">El más viejo</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-50">
+                                {porCliente.map(c => (
+                                    <tr key={c.CliIdCliente} className="hover:bg-cyan-50/40 cursor-pointer transition-colors"
+                                        title="Ver solo las órdenes de este cliente"
+                                        onClick={() => { setBuscar(c.Cliente); setVista('orden'); }}>
+                                        <td className="px-3 py-2">
+                                            <div className="font-semibold text-teal-700">{c.Cliente}</div>
+                                            <div className="text-[10px] text-slate-400">
+                                                {[c.TipoCliente || 'Sin tipo', c.Vendedor && `Vendedor: ${c.Vendedor}`].filter(Boolean).join(' · ')}
+                                            </div>
+                                        </td>
+                                        <td className="px-3 py-2 text-right font-mono tabular-nums">{fmtInt(c.cargos)}</td>
+                                        <td className="px-3 py-2 text-right font-mono tabular-nums text-slate-500">{fmtInt(c.entregadas)}</td>
+                                        <td className="px-3 py-2 text-right font-mono tabular-nums font-semibold">{c.pesos ? `$ ${fmtMoney(c.pesos)}` : '—'}</td>
+                                        <td className="px-3 py-2 text-right font-mono tabular-nums font-semibold">{c.dolares ? `US$ ${fmtMoney(c.dolares)}` : '—'}</td>
+                                        <td className={`px-3 py-2 text-right whitespace-nowrap ${colorDias(c.maxDias)}`}>{fmtInt(c.maxDias)} días</td>
+                                    </tr>
+                                ))}
+                                {!porCliente.length && <tr><td colSpan={6} className="px-3 py-10 text-center text-slate-400">No hay órdenes pendientes de facturar con estos filtros.</td></tr>}
+                            </tbody>
+                        </table>
+                    </div>
+                )}
+            </div>
+            <p className="text-[11px] text-slate-400">
+                No entran: los cargos ya incluidos en un documento, los pagados con un plan de metros o con saldo de otra cuenta
+                (aunque el cargo no tenga la marca de cubierto, si la orden gastó metros del plan no entra), ni las órdenes que ya tienen otro cargo facturado.
+                Importe = el cargo en la moneda de la cuenta del cliente.
+            </p>
+        </div>
+    );
+}
+
 // ─── Componente principal ─────────────────────────────────────────────────────
 export default function ContabilidadReportesPage() {
     const [activeReport, setActiveReport] = useState('ventas-area');
@@ -2614,6 +3040,10 @@ export default function ContabilidadReportesPage() {
                         <CobranzasSection />
                     ) : activeReport === 'antiguedad' ? (
                         <ContabilidadAntiguedadView embebido />
+                    ) : activeReport === 'retiradas-sin-pago' ? (
+                        <OrdenesRetiradasSinPagoSection />
+                    ) : activeReport === 'pendientes-facturar' ? (
+                        <OrdenesPendientesFacturarSection />
                     ) : activeReport === 'caja-central-admin' ? (
                         <ReporteCajaCentralAdminView embebido />
                     ) : activeReport === 'catalogo' ? (

@@ -526,7 +526,8 @@ const WmsLogisticsPage = () => {
                                     </div>
 
                                     {/* Expanded Detail View */}
-                                    <div className={`overflow-hidden transition-all duration-300 border-t border-slate-100 ${isExpanded ? 'max-h-[1000px] opacity-100' : 'max-h-0 opacity-0'}`}>
+                                    {/* Sin tope de alto al abrir: con max-h-[1000px] los pedidos largos recortaban los botones del pie */}
+                                    <div className={`overflow-hidden transition-all duration-300 border-t border-slate-100 ${isExpanded ? 'max-h-none opacity-100' : 'max-h-0 opacity-0'}`}>
                                         <div className="p-6 bg-slate-50/50">
                                             
                                             <div className="flex items-center justify-between mb-4">

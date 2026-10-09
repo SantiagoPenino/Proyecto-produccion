@@ -53,9 +53,11 @@ async function crearOrdenFalla(tx, { madre, codigo, magnitud, proximoServicio, l
 /**
  * [FALLA EST/PRO] Lo que la orden de falla hereda de su madre para no trabarse en lo que ya se
  * resolvió una vez (02-oct-2026):
- *  - Bordado / Estampado: los requisitos ya cumplidos (matriz, aprobación del cliente, "no aplica"
- *    de DTF/TPU/prenda). Sin esto la -F nacía con todo pendiente y caía en "Bloqueadas". La espera
- *    real de la prenda/transfer nuevos la maneja EstadoDependencia (ESPERANDO_REPOSICION).
+ *  - TODAS las áreas (9-oct-2026, antes solo EMB/EST): los requisitos ya cumplidos (matriz,
+ *    aprobación del cliente, "no aplica" de DTF/TPU/prenda, TELA asignada o "material propio" en
+ *    Sublimación). Sin esto la -F nacía con todo pendiente y caía para siempre en "Esperando
+ *    requisitos" de Planificación — en SB eran el 100% de esa lista. La espera real de la
+ *    prenda/transfer nuevos la maneja EstadoDependencia (ESPERANDO_REPOSICION), no el requisito.
  *  - TPU: la aprobación del boceto y las texturas elegidas. Es la MISMA matriz: no vuelve a pedir
  *    aprobación al cliente ni se cobra matriz (la -F nace con CostoTotal 0 y sin servicios extra).
  * Todo protegido por COL_LENGTH / OBJECT_ID: si una columna o tabla no existe, se saltea.
@@ -65,7 +67,7 @@ async function heredarDeLaMadre(tx, madreId, nuevaId) {
         DECLARE @Area VARCHAR(20) = (SELECT UPPER(LTRIM(RTRIM(AreaID))) FROM dbo.Ordenes WHERE OrdenID = @Old);
         DECLARE @Cod NVARCHAR(100) = (SELECT LTRIM(RTRIM(CodigoOrden)) FROM dbo.Ordenes WHERE OrdenID = @Old);
 
-        IF @Area IN ('EMB', 'EST') AND OBJECT_ID('dbo.OrdenCumplimientoRequisitos', 'U') IS NOT NULL
+        IF OBJECT_ID('dbo.OrdenCumplimientoRequisitos', 'U') IS NOT NULL
             INSERT INTO dbo.OrdenCumplimientoRequisitos (OrdenID, AreaID, RequisitoID, Estado, FechaCumplimiento, Observaciones)
             SELECT @New, c.AreaID, c.RequisitoID, 'CUMPLIDO', GETDATE(), LEFT(N'Heredado de ' + ISNULL(@Cod, '') + N' (orden de falla)', 300)
             FROM dbo.OrdenCumplimientoRequisitos c

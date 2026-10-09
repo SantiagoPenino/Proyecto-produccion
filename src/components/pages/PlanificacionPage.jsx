@@ -45,7 +45,19 @@ const REQUISITO_ICONO = {
     PRENDA: 'fa-shirt',
     MATRIZ: 'fa-table-cells',
     APROBACION: 'fa-stamp',
+    TELA: 'fa-scroll',          // tela del cliente (Sublimación / Corte) — antes caía al "?" genérico
+    CORTES: 'fa-scissors',      // piezas cortadas que espera Costura (TWT)
+    DTF: 'fa-print',            // transfer DTF que espera Estampado
+    TPU: 'fa-layer-group',      // transfer TPU que espera Estampado
 };
+// Match exacto primero; si no, por inclusión (el backend busca el requisito de tela con
+// LIKE '%TELA%', así que el código real puede ser 'TELA_CLIENTE' o similar). Fallback genérico.
+function iconoRequisito(codigo) {
+    const cod = String(codigo || '').toUpperCase();
+    if (REQUISITO_ICONO[cod]) return REQUISITO_ICONO[cod];
+    const clave = Object.keys(REQUISITO_ICONO).find(k => cod.includes(k));
+    return clave ? REQUISITO_ICONO[clave] : 'fa-circle-question';
+}
 
 // La Agenda agrupa cada orden bajo su FechaCompromiso (la promesa fija al cliente) — pero una
 // orden que ya cumplió sus requisitos puede quedar como la única (o la primera) compitiendo
@@ -362,8 +374,14 @@ const PlanificacionPage = () => {
         if (vista === 'planilla') cargarPlanilla();
     }, [vista, cargarPlanilla]);
 
+    // Raíz con h-full + overflow-y-auto (no min-h-screen): dentro de AreaView (/area/:id/agenda)
+    // el <main> contenedor es overflow-hidden y h-full, así que cada pantalla scrollea por su
+    // cuenta — con min-h-screen la agenda quedaba cortada sin poder bajar a las semanas
+    // siguientes (bug real visto 9-oct-2026 en DTF). En /produccion/planificacion el contenedor
+    // de MainAppContent ya es absolute inset-0 + overflow-y-auto, así que h-full ahí también es
+    // una altura definida y el scroll queda igual que antes.
     return (
-        <div className="min-h-screen bg-slate-50 p-8 font-sans text-slate-800">
+        <div className="h-full overflow-y-auto bg-slate-50 p-8 font-sans text-slate-800">
         <div className="flex gap-6 items-start">
         <div className="flex-1 min-w-0">
             <div className="flex items-center justify-between mb-6 flex-wrap gap-4">
@@ -697,7 +715,7 @@ const PlanificacionPage = () => {
                                                     ${r.cumplido ? 'bg-emerald-50 border-emerald-300 text-emerald-600' : 'bg-white border-amber-300 text-amber-600'}
                                                     ${tieneOrdenes ? 'pl-1.5 pr-2' : 'w-6 justify-center'}`}
                                             >
-                                                <i className={`fa-solid ${REQUISITO_ICONO[r.codigo] || 'fa-circle-question'}`}></i>
+                                                <i className={`fa-solid ${iconoRequisito(r.codigo)}`}></i>
                                                 {/* Orden PRO hermana / recepción PRE- de mostrador
                                                     que traen la prenda física — solo para PRENDA,
                                                     cuando existen (un combo con varias prendas

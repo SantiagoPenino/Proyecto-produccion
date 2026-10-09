@@ -503,7 +503,8 @@ const ContabilidadBandejaCFE = ({ initialCliente = null, embedded = false, autoN
 
         try {
             const toastId = toast.loading('Reversando documento...');
-            
+            let refacturarInfo = null;   // crédito de la NC para pagar la factura corregida
+
             if (doc.CfeEstado === 'ACEPTADO_DGI') {
                 const respNc = await api.post('/contabilidad/caja/nota-credito', {
                     docIdOrigen: doc.DocIdDocumento,
@@ -511,8 +512,12 @@ const ContabilidadBandejaCFE = ({ initialCliente = null, embedded = false, autoN
                     motivo: 'Reverso para regeneración',
                     clienteId: doc.CliIdCliente || 1,
                     monedaId: doc.MonIdMoneda || 1,
-                    cuentaId: doc.CueIdCuenta || (doc.MonIdMoneda === 2 ? 119 : 118)
+                    cuentaId: doc.CueIdCuenta || (doc.MonIdMoneda === 2 ? 119 : 118),
+                    // La plata que el cliente ya pagó queda para pagar la factura corregida
+                    // (antes se la volvía a cobrar y quedaba un saldo a favor falso).
+                    destinoPlata: 'REFACTURAR',
                 });
+                refacturarInfo = respNc?.data?.refacturar || null;
                 // Si la factura era una compra de recurso, decir qué pasó con los metros
                 if (respNc?.data?.avisoRecurso) {
                     toast.info(respNc.data.avisoRecurso, { duration: 12000 });
@@ -533,11 +538,30 @@ const ContabilidadBandejaCFE = ({ initialCliente = null, embedded = false, autoN
                 DocTipo: doc.DocTipo,
                 MonIdMoneda: doc.MonIdMoneda,
                 CliIdCliente: doc.CliIdCliente,
-                lineas: lineas
+                lineas: lineas,
+                // Solo si la NC dejó plata libre: la factura corregida se paga con ese crédito.
+                refacturar: refacturarInfo && Number(refacturarInfo.credito) > 0.009 ? refacturarInfo : null,
             });
         } catch (error) {
             toast.dismiss();
             toast.error('Error durante el reverso/copia: ' + (error.response?.data?.error || error.message));
+        }
+    };
+
+    // NC emitida con destino "Es para refacturar": abre la factura corregida (copia del original)
+    // que se paga con el crédito que dejó la NC.
+    const abrirRefacturacion = async (docOri, refacturar) => {
+        try {
+            const response = await api.get(`/contabilidad/cfe/documentos/${docOri.DocIdDocumento}/detalle`);
+            setCopyData({
+                DocTipo: docOri.DocTipo,
+                MonIdMoneda: docOri.MonIdMoneda,
+                CliIdCliente: docOri.CliIdCliente,
+                lineas: response.data?.detalles || [],
+                refacturar: Number(refacturar?.credito) > 0.009 ? refacturar : null,
+            });
+        } catch (error) {
+            toast.error('La NC se emitió, pero no se pudo abrir la factura corregida: ' + (error.response?.data?.error || error.message));
         }
     };
 
@@ -1159,11 +1183,15 @@ const ContabilidadBandejaCFE = ({ initialCliente = null, embedded = false, autoN
                         setNcDoc(null);
                         setNcLineas([]);
                     }}
-                    onSuccess={() => {
+                    onSuccess={(data) => {
+                        const docOri = ncDoc;
                         setShowNcModal(false);
                         setNcDoc(null);
                         setNcLineas([]);
                         fetchDocumentos();
+                        // NC con destino "Es para refacturar": se abre la factura corregida (copia del
+                        // original) pagada con el crédito que dejó la NC — no se cobra de nuevo.
+                        if (data?.refacturar && docOri) abrirRefacturacion(docOri, data.refacturar);
                     }}
                 />
             )}

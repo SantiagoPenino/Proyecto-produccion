@@ -145,6 +145,17 @@ async function tieneCosturasPaso(poolOrTx) {
 }
 const FALTA_SQL_PASOS = 'Falta correr docs/migrations/configurador_costuras_paso_a_paso.sql en esta base.';
 
+// [AVÍOS POR TALLE] ¿Ya se corrió docs/migrations/configurador_ficha_avios_talle.sql? (ProductoAvios.VariaPorTalle,
+// tabla ProductoAviosTalle y el avío de cada paso de costura). Sin el script, los avíos siguen con medida única.
+let _tieneAviosTalle = false;
+async function tieneAviosTalle(poolOrTx) {
+    if (_tieneAviosTalle) return true;
+    const r = await new sql.Request(poolOrTx).query(`SELECT COL_LENGTH('dbo.ProductoAvios', 'VariaPorTalle') AS v, OBJECT_ID('dbo.ProductoAviosTalle', 'U') AS t, COL_LENGTH('dbo.ProductoFichaDisenoCosturas', 'AvioID') AS c`);
+    const x = r.recordset[0];
+    _tieneAviosTalle = x.v != null && x.t != null && x.c != null;
+    return _tieneAviosTalle;
+}
+
 // Áreas que pueden ser producción principal de un producto: las áreas de producción de ConfigMapeoERP
 // (sin PRO, que es la orden madre, ni las que no producen nada).
 async function areasPrincipales(pool) {
@@ -280,6 +291,7 @@ exports.getProductoFicha = async (req, res) => {
         const conAcc = await tieneAccesorios(pool);   // [ACCESORIOS]
         const conF1 = await tieneF1(pool);
         const conPaso = await tieneCosturasPaso(pool);   // [PASO A PASO]
+        const conTalle = conTizada && await tieneAviosTalle(pool);   // [AVÍOS POR TALLE]
         const rq = () => pool.request().input('PID', sql.Int, proId);
 
         const datos = await rq().query(`
@@ -301,7 +313,7 @@ exports.getProductoFicha = async (req, res) => {
             WHERE a.ProIdProducto = @PID AND ISNULL(a.borrar, 0) = 0`);
         if (!datos.recordset.length) return res.status(404).json({ error: 'Producto no encontrado.' });
 
-        const [config, tecnicas, opciones, surtido, modelos, telas, avios, apliques, comboItems, comboSrv, fichaDiseno, fdAnot, fdExtra, fdCost, accesorios] = await Promise.all([
+        const [config, tecnicas, opciones, surtido, modelos, telas, avios, apliques, comboItems, comboSrv, fichaDiseno, fdAnot, fdExtra, fdCost, accesorios, aviosTalle] = await Promise.all([
             rq().query(`SELECT OrigenTipo, OrigenProIdProducto, CantidadMinima, CantidadFija,
                                ValidarStock, Estado, EsCombo, FechaRegistro, FechaModif,
                                ${conTizada ? 'TizadaProMoldeRef' : 'CAST(NULL AS NVARCHAR(128)) AS TizadaProMoldeRef'}
@@ -328,6 +340,7 @@ exports.getProductoFicha = async (req, res) => {
             // Avíos (insumos que no son tela) para la ficha de producción
             conTizada ? rq().query(`SELECT ID, Nombre, ArtProIdProducto, Cantidad, Unidad, Medida, Nota, Orden,
                                            CASE WHEN COL_LENGTH('dbo.ProductoAvios', 'AvioID') IS NULL THEN NULL ELSE AvioID END AS AvioID
+                                           ${conTalle ? ', VariaPorTalle' : ''}
                                     FROM dbo.ProductoAvios WHERE ProIdProducto = @PID ORDER BY ISNULL(Orden, 999), ID`) : { recordset: [] },
             rq().query(`SELECT ApliqueID, Posicion, AreaID, TecnicaOpcionID, Cantidad, Incluido, Orden
                         FROM dbo.ProductoApliques WHERE ProIdProducto = @PID ORDER BY ISNULL(Orden, 999), ApliqueID`),
@@ -350,7 +363,7 @@ exports.getProductoFicha = async (req, res) => {
                         WHERE ProIdProducto = @PID ORDER BY ISNULL(Orden, 999), AnotacionID`),
             rq().query(`SELECT ExtraID, Etiqueta, Valor FROM dbo.ProductoFichaDisenoExtra
                         WHERE ProIdProducto = @PID ORDER BY ISNULL(Orden, 999), ExtraID`),
-            rq().query(`SELECT ID, UnionNombre, CodigoISO${conPaso ? ', Etapa, Descripcion, MaquinaCosturaID, TiempoMin, Observaciones, ImagenUrl' : ''}
+            rq().query(`SELECT ID, UnionNombre, CodigoISO${conPaso ? ', Etapa, Descripcion, MaquinaCosturaID, TiempoMin, Observaciones, ImagenUrl' : ''}${conTalle ? ', AvioID' : ''}
                         FROM dbo.ProductoFichaDisenoCosturas
                         WHERE ProIdProducto = @PID ORDER BY ISNULL(Orden, 999), ID`),
             conAcc ? rq().query(`SELECT ac.ID, ac.ItemProIdProducto, ac.WmsVarianteId, ac.Cantidad, ac.Obligatorio, ac.Cobro, ac.Orden, ac.WmsDepositoId,
@@ -358,7 +371,10 @@ exports.getProductoFicha = async (req, res) => {
                                  FROM dbo.ProductoAccesorios ac
                                  LEFT JOIN dbo.Articulos a ON a.ProIdProducto = ac.ItemProIdProducto
                                  LEFT JOIN dbo.Articulos_WMS_Variantes v ON v.wms_variante_id = ac.WmsVarianteId
-                                 WHERE ac.ProIdProducto = @PID ORDER BY ISNULL(ac.Orden, 999), ac.ID`) : { recordset: [] }
+                                 WHERE ac.ProIdProducto = @PID ORDER BY ISNULL(ac.Orden, 999), ac.ID`) : { recordset: [] },
+            // [AVÍOS POR TALLE] valor de cada talle, por el Orden de la línea del avío
+            conTalle ? rq().query(`SELECT AvioOrden, Talle, Valor, AvioID FROM dbo.ProductoAviosTalle
+                                   WHERE ProIdProducto = @PID ORDER BY AvioOrden, ISNULL(Orden, 999), ID`) : { recordset: [] }
         ]);
 
         // Nombre del producto de origen (si hay)
@@ -382,7 +398,8 @@ exports.getProductoFicha = async (req, res) => {
                 surtido: surtido.recordset,
                 modelos: modelos.recordset,
                 telas: telas.recordset,
-                avios: avios.recordset,
+                avios: avios.recordset.map(a => ({ ...a, talles: aviosTalle.recordset.filter(t => t.AvioOrden === a.Orden) })),
+                aviosPorTalle: conTalle,   // false = falta el SQL de avíos por talle (la pantalla avisa)
                 apliques: apliques.recordset,
                 accesorios: accesorios.recordset,   // [ACCESORIOS]
                 comboItems: comboItems.recordset.map(ci => ({
@@ -515,26 +532,44 @@ async function aplicarSetsHijos(transaction, proId, body, conTizada = false, con
     // Avíos: nombre libre + cantidad por prenda (+ artículo del insumo si existe, medida por talle y nota)
     if (body.avios !== undefined && conTizada) {
         const conAvioId = (await new sql.Request(transaction).query(`SELECT COL_LENGTH('dbo.ProductoAvios', 'AvioID') AS c`)).recordset[0].c != null;
+        const conTalle = conAvioId && await tieneAviosTalle(transaction);   // [AVÍOS POR TALLE]
+        const idOk = (v) => (Number.isInteger(Number(v)) && Number(v) > 0 ? Number(v) : null);
+        if (conTalle) await del('ProductoAviosTalle');
         await del('ProductoAvios');
         let orden = 1;
         for (const av of (body.avios || [])) {
             const nombre = String(av.nombre || '').trim().slice(0, 200);
             if (!nombre) continue;
             const cant = Number(av.cantidad);
-            const avioId = Number.isInteger(Number(av.avioId)) && Number(av.avioId) > 0 ? Number(av.avioId) : null;
+            const avioId = idOk(av.avioId);
+            // Valores por talle: solo los que tienen algo (valor o artículo), sin talles repetidos
+            const vistos = new Set();
+            const talles = conTalle && av.variaPorTalle ? (Array.isArray(av.talles) ? av.talles : [])
+                .map(t => ({ talle: String(t.talle || '').trim().slice(0, 96), valor: t.valor === '' || t.valor == null ? null : Number(t.valor), avioId: idOk(t.avioId) }))
+                .filter(t => t.talle && !vistos.has(t.talle.toLowerCase()) && vistos.add(t.talle.toLowerCase())
+                    && ((Number.isFinite(t.valor) && t.valor >= 0) || t.avioId)) : [];
             await new sql.Request(transaction)
                 .input('PID', sql.Int, proId).input('Nom', sql.NVarChar(200), nombre).input('AvioID', sql.Int, avioId)
-                .input('Art', sql.Int, Number.isInteger(Number(av.artProIdProducto)) && Number(av.artProIdProducto) > 0 ? Number(av.artProIdProducto) : null)
+                .input('Art', sql.Int, idOk(av.artProIdProducto))
                 .input('Cant', sql.Decimal(10, 2), Number.isFinite(cant) && cant > 0 ? cant : 1)
                 .input('Uni', sql.NVarChar(20), av.unidad ? String(av.unidad).trim().slice(0, 20) : null)
                 .input('Med', sql.NVarChar(200), av.medida ? String(av.medida).trim().slice(0, 200) : null)
                 .input('Nota', sql.NVarChar(400), av.nota ? String(av.nota).trim().slice(0, 400) : null)
                 .input('Ord', sql.Int, orden)
+                .input('PorTalle', sql.Bit, talles.length ? 1 : 0)
                 .query(conAvioId
-                    ? `INSERT INTO dbo.ProductoAvios (ProIdProducto, Nombre, ArtProIdProducto, Cantidad, Unidad, Medida, Nota, Orden, AvioID)
-                        VALUES (@PID, @Nom, @Art, @Cant, @Uni, @Med, @Nota, @Ord, @AvioID)`
+                    ? `INSERT INTO dbo.ProductoAvios (ProIdProducto, Nombre, ArtProIdProducto, Cantidad, Unidad, Medida, Nota, Orden, AvioID${conTalle ? ', VariaPorTalle' : ''})
+                        VALUES (@PID, @Nom, @Art, @Cant, @Uni, @Med, @Nota, @Ord, @AvioID${conTalle ? ', @PorTalle' : ''})`
                     : `INSERT INTO dbo.ProductoAvios (ProIdProducto, Nombre, ArtProIdProducto, Cantidad, Unidad, Medida, Nota, Orden)
                         VALUES (@PID, @Nom, @Art, @Cant, @Uni, @Med, @Nota, @Ord)`);
+            for (const [i, t] of talles.entries()) {
+                await new sql.Request(transaction)
+                    .input('PID', sql.Int, proId).input('AvOrd', sql.Int, orden).input('Talle', sql.NVarChar(96), t.talle)
+                    .input('Val', sql.Decimal(10, 2), Number.isFinite(t.valor) && t.valor >= 0 ? t.valor : null)
+                    .input('AvioID', sql.Int, t.avioId).input('Ord', sql.Int, i + 1)
+                    .query(`INSERT INTO dbo.ProductoAviosTalle (ProIdProducto, AvioOrden, Talle, Valor, AvioID, Orden)
+                            VALUES (@PID, @AvOrd, @Talle, @Val, @AvioID, @Ord)`);
+            }
             orden++;
         }
     }
@@ -648,6 +683,7 @@ async function aplicarSetsHijos(transaction, proId, body, conTizada = false, con
             const e = new Error(`Hay pasos sin costura ISO (planchado, control…). ${FALTA_SQL_PASOS}`); e.status = 400; throw e;
         }
         await del('ProductoFichaDisenoCosturas');
+        const conAvioPaso = conPaso && await tieneAviosTalle(transaction);   // [AVÍOS POR TALLE] avío que usa el paso
         let orden = 1;
         for (const c of (body.fichaDisenoCosturas || [])) {
             if (!c.union || !String(c.union).trim()) continue;
@@ -658,16 +694,18 @@ async function aplicarSetsHijos(transaction, proId, body, conTizada = false, con
                 .input('Ord', sql.Int, orden);
             if (conPaso) {
                 const maq = Number(c.maquinaId);
+                const avio = Number(c.avioId);
                 const tmin = c.tiempoMin === '' || c.tiempoMin == null ? null : Number(c.tiempoMin);
                 rqC.input('Eta', sql.VarChar(60), txt(c.etapa, 60))   // etapa: texto libre
                     .input('Des', sql.VarChar(500), txt(c.descripcion, 500))
                     .input('Maq', sql.Int, Number.isInteger(maq) && maq > 0 ? maq : null)
                     .input('Tmin', sql.Decimal(7, 2), Number.isFinite(tmin) && tmin >= 0 ? tmin : null)
                     .input('Obs', sql.VarChar(500), txt(c.observaciones, 500))
-                    .input('Img', sql.VarChar(500), txt(c.imagenUrl, 500));
+                    .input('Img', sql.VarChar(500), txt(c.imagenUrl, 500))
+                    .input('Avio', sql.Int, Number.isInteger(avio) && avio > 0 ? avio : null);
                 await rqC.query(`INSERT INTO dbo.ProductoFichaDisenoCosturas
-                                    (ProIdProducto, UnionNombre, CodigoISO, Orden, Etapa, Descripcion, MaquinaCosturaID, TiempoMin, Observaciones, ImagenUrl)
-                                 VALUES (@PID, @Un, @Iso, @Ord, @Eta, @Des, @Maq, @Tmin, @Obs, @Img)`);
+                                    (ProIdProducto, UnionNombre, CodigoISO, Orden, Etapa, Descripcion, MaquinaCosturaID, TiempoMin, Observaciones, ImagenUrl${conAvioPaso ? ', AvioID' : ''})
+                                 VALUES (@PID, @Un, @Iso, @Ord, @Eta, @Des, @Maq, @Tmin, @Obs, @Img${conAvioPaso ? ', @Avio' : ''})`);
             } else {
                 await rqC.query(`INSERT INTO dbo.ProductoFichaDisenoCosturas (ProIdProducto, UnionNombre, CodigoISO, Orden)
                                  VALUES (@PID, @Un, @Iso, @Ord)`);
@@ -921,6 +959,178 @@ exports.crearProducto = async (req, res) => {
         res.json({ success: true, codArticulo: String(proId), proIdProducto: proId });
     } catch (e) {
         logger.error('[Configurador] crearProducto:', e);
+        res.status(500).json({ error: e.message });
+    }
+};
+
+// ─────────────────────────────────────────────────────────────────────────
+// COPIAR PRODUCTO (09-oct): un artículo nuevo igual al original, con otro nombre y código.
+// Se copia toda la configuración (producción principal, técnicas, cantidades, accesorios,
+// molde/modelos/telas/avíos, apliques, combo, ficha de diseño con sus pasos, foto y etiqueta del
+// árbol). A pedido del usuario la copia nace SIN PRECIO y en BORRADOR. Tampoco se copian el código
+// de Odoo (es otro producto del ERP), el stock/variantes del WMS, la vitrina de la tienda ni las
+// reglas de perfiles de precio. Los archivos (foto, dibujo, fotos de pasos) se comparten: ningún
+// reemplazo borra el archivo anterior, así que cambiarlos en la copia no toca el original.
+// ─────────────────────────────────────────────────────────────────────────
+
+// Columnas que se copian de una tabla: todas menos la identidad, las calculadas y rowversion, así
+// las que se agreguen después también viajan. Vacío si la tabla no existe en esta base.
+async function columnasCopiables(tx, tabla) {
+    const r = await new sql.Request(tx).input('T', sql.NVarChar(256), `dbo.${tabla}`).query(`
+        SELECT c.name, c.is_identity FROM sys.columns c
+        WHERE c.object_id = OBJECT_ID(@T) AND c.is_computed = 0
+          AND TYPE_NAME(c.user_type_id) NOT IN ('timestamp', 'rowversion')
+        ORDER BY c.column_id`);
+    return {
+        cols: r.recordset.filter(c => !c.is_identity).map(c => c.name),
+        identidad: r.recordset.find(c => c.is_identity)?.name || null
+    };
+}
+
+// Copia las filas de `tabla` con `clave` = origen, poniendo destino en la clave. `pisar` cambia
+// columnas por una expresión SQL (las que no existen en la tabla se ignoran). Mantiene el orden
+// original (los ID nuevos salen en el mismo orden). Los nombres de tabla son siempre constantes.
+async function copiarFilas(tx, tabla, clave, origen, destino, pisar = {}, entradas = []) {
+    const { cols, identidad } = await columnasCopiables(tx, tabla);
+    if (!cols.includes(clave)) return 0;
+    const lista = cols.map(c => `[${c}]`).join(', ');
+    const valores = cols.map(c => (c === clave ? '@Destino' : (pisar[c] || `[${c}]`))).join(', ');
+    const rq = new sql.Request(tx).input('Origen', sql.Int, origen).input('Destino', sql.Int, destino);
+    entradas.forEach(([nombre, tipo, valor]) => rq.input(nombre, tipo, valor));
+    const r = await rq.query(`INSERT INTO dbo.[${tabla}] (${lista})
+                              SELECT ${valores} FROM dbo.[${tabla}] WHERE [${clave}] = @Origen
+                              ${identidad ? `ORDER BY [${identidad}]` : ''}`);
+    return r.rowsAffected[0] || 0;
+}
+
+// Tablas de la configuración que cuelgan de ProIdProducto y se copian tal cual (ProductoVentaConfig,
+// la ficha, los combos y las fotos van aparte). Las de migraciones sin correr se saltean solas.
+const TABLAS_COPIA = [
+    'ProductoTerminadoServicios', 'ProductoTecnicaOpciones', 'ProductoOrigenVariantes',
+    'ProductoModelos', 'ProductoTelas', 'ProductoAvios', 'ProductoAviosTalle', 'ProductoApliques', 'ProductoAccesorios',
+    'ProductoComponentes', 'ProductoFichaDisenoAnotaciones', 'ProductoFichaDisenoExtra', 'ProductoFichaDisenoCosturas'
+];
+// Del artículo se copian solo estas columnas (si existen). El resto se arma acá o queda vacío:
+// CodArticulo, IDProdReact, Descripcion, borrar; ProCodigoOdooProducto y DescripcionLista no.
+// EnListaPrecios/EnListaPublica toman el valor por defecto, como un producto nuevo.
+const COLS_ARTICULO_COPIA = ['SupFlia', 'Grupo', 'CodStock', 'Mostrar', 'anchoimprimible', 'LLEVAPAPEL', 'MonIdMoneda', 'UniIdUnidad', 'largoimprimible'];
+
+const escaparLike = (s) => s.replace(/[[%_]/g, (c) => `[${c}]`);
+
+// Código de la copia: si el original sigue un patrón con número al final ("PR-002"), el siguiente
+// libre de ese prefijo ("PR-030"); si no, el número interno del artículo (como un alta nueva →
+// null). Libre = ningún artículo ni precio lo usa: PreciosBase es único por código y moneda.
+async function siguienteCodigo(tx, codOriginal) {
+    const m = /^(.*\D)(\d+)$/.exec(codOriginal || '');
+    if (!m) return null;
+    const [, prefijo, numero] = m;
+    const r = await new sql.Request(tx).input('Pref', sql.VarChar(30), `${escaparLike(prefijo)}%`).query(`
+        SELECT LTRIM(RTRIM(CodArticulo)) AS Cod FROM dbo.Articulos WHERE CodArticulo LIKE @Pref
+        UNION
+        SELECT LTRIM(RTRIM(CodArticulo)) FROM dbo.PreciosBase WHERE CodArticulo LIKE @Pref`);
+    const patron = new RegExp(`^${prefijo.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(\\d+)$`);
+    const max = r.recordset.reduce((mx, x) => { const k = patron.exec(x.Cod || ''); return k ? Math.max(mx, Number(k[1])) : mx; }, 0);
+    const cod = `${prefijo}${String(max + 1).padStart(numero.length, '0')}`;
+    return cod.length <= 20 ? cod : null;
+}
+
+async function codigoEnUso(tx, cod) {
+    const r = await new sql.Request(tx).input('Cod', sql.VarChar(20), cod).query(`
+        SELECT TOP 1 LTRIM(RTRIM(Descripcion)) AS d FROM dbo.Articulos WHERE LTRIM(RTRIM(CodArticulo)) = @Cod
+        UNION ALL
+        SELECT TOP 1 CONCAT('un precio cargado con el código ', @Cod) FROM dbo.PreciosBase WHERE LTRIM(RTRIM(CodArticulo)) = @Cod`);
+    return r.recordset[0]?.d || null;
+}
+
+// POST /api/configurador/productos/:proId/copiar { descripcion, codArticulo? }
+exports.copiarProducto = async (req, res) => {
+    const origenId = parseInt(req.params.proId, 10);
+    if (!Number.isInteger(origenId)) return res.status(400).json({ error: 'ProIdProducto inválido.' });
+    const descripcion = String(req.body?.descripcion || '').trim();
+    const codPedido = String(req.body?.codArticulo || '').trim();
+    if (!descripcion) return res.status(400).json({ error: 'Poné el nombre de la copia.' });
+    if (descripcion.length > 100) return res.status(400).json({ error: 'El nombre no puede pasar de 100 caracteres.' });
+    if (codPedido.length > 20) return res.status(400).json({ error: 'El código no puede pasar de 20 caracteres.' });
+
+    let pool;
+    let transaction;
+    try {
+        pool = await getPool();
+        transaction = new sql.Transaction(pool);
+        await transaction.begin();
+
+        const orig = (await new sql.Request(transaction).input('PID', sql.Int, origenId).query(`
+            SELECT LTRIM(RTRIM(CodArticulo)) AS Cod, LTRIM(RTRIM(Descripcion)) AS Descripcion
+            FROM dbo.Articulos WHERE ProIdProducto = @PID AND ISNULL(borrar, 0) = 0`)).recordset[0];
+        if (!orig) { await transaction.rollback(); return res.status(404).json({ error: 'Producto no encontrado.' }); }
+
+        const repetido = await new sql.Request(transaction).input('Desc', sql.VarChar(100), descripcion).input('PID', sql.Int, origenId).query(`
+            SELECT TOP 1 1 AS x FROM dbo.Articulos a
+            WHERE LTRIM(RTRIM(a.Descripcion)) = @Desc AND ISNULL(a.borrar, 0) = 0
+              AND LTRIM(RTRIM(a.CodStock)) = (SELECT LTRIM(RTRIM(CodStock)) FROM dbo.Articulos WHERE ProIdProducto = @PID)`);
+        if (repetido.recordset.length) { await transaction.rollback(); return res.status(409).json({ error: `Ya hay un producto llamado "${descripcion}" en la misma familia.` }); }
+
+        // Código: el pedido (tiene que estar libre) o el siguiente del patrón del original
+        const cod = codPedido || await siguienteCodigo(transaction, orig.Cod);
+        if (cod) {
+            const usado = await codigoEnUso(transaction, cod);
+            if (usado) { await transaction.rollback(); return res.status(409).json({ error: `El código ${cod} ya lo usa ${usado.startsWith('un precio') ? usado : `"${usado}"`}.` }); }
+        }
+
+        // 1. Artículo
+        const { cols: colsArt } = await columnasCopiables(transaction, 'Articulos');
+        const copiar = COLS_ARTICULO_COPIA.filter(c => colsArt.includes(c));
+        const ins = await new sql.Request(transaction).input('PID', sql.Int, origenId).input('Desc', sql.VarChar(100), descripcion).query(`
+            INSERT INTO dbo.Articulos (CodArticulo, IDProdReact, Descripcion, borrar${copiar.map(c => `, [${c}]`).join('')})
+            OUTPUT INSERTED.ProIdProducto
+            SELECT 'CFG-TMP', NULL, @Desc, 0${copiar.map(c => `, [${c}]`).join('')}
+            FROM dbo.Articulos WHERE ProIdProducto = @PID`);
+        const nuevoId = ins.recordset[0].ProIdProducto;
+        // Mismo patrón que crearProducto: IDProdReact = ProIdProducto; sin código pedido ni patrón, el código también
+        await new sql.Request(transaction).input('PID', sql.Int, nuevoId).input('Cod', sql.VarChar(20), cod).query(`
+            UPDATE dbo.Articulos SET CodArticulo = ISNULL(@Cod, CAST(ProIdProducto AS VARCHAR(50))), IDProdReact = ProIdProducto
+            WHERE ProIdProducto = @PID`);
+        const codFinal = cod || String(nuevoId);
+
+        // 2. Configuración de venta: igual, pero en BORRADOR y con fechas nuevas
+        await copiarFilas(transaction, 'ProductoVentaConfig', 'ProIdProducto', origenId, nuevoId,
+            { Estado: "'BORRADOR'", FechaRegistro: 'GETDATE()', FechaModif: 'GETDATE()' });
+
+        // 3. Ficha de diseño: si su Ref era el código del original, pasa a ser el de la copia
+        await copiarFilas(transaction, 'ProductoFichaDiseno', 'ProIdProducto', origenId, nuevoId,
+            { Ref: 'CASE WHEN LTRIM(RTRIM([Ref])) = @CodOrig THEN @CodNuevo ELSE [Ref] END', FechaRegistro: 'GETDATE()', FechaModif: 'GETDATE()' },
+            [['CodOrig', sql.VarChar(50), orig.Cod], ['CodNuevo', sql.VarChar(50), codFinal]]);
+
+        // 4. Listas de la configuración
+        for (const tabla of TABLAS_COPIA) await copiarFilas(transaction, tabla, 'ProIdProducto', origenId, nuevoId);
+        // Variantes viejas del configurador: sin precio, como el resto de la copia
+        await copiarFilas(transaction, 'ProductoVariantes', 'ProIdProducto', origenId, nuevoId,
+            { PrecioCalculado: 'NULL', PrecioManual: 'NULL', FechaCreacion: 'GETDATE()' });
+
+        // 5. Combo: cada ítem con sus servicios (cuelgan del ID del ítem, que cambia)
+        const { cols: colsCI } = await columnasCopiables(transaction, 'ProductoComboItems');
+        if (colsCI.length) {
+            const items = await new sql.Request(transaction).input('PID', sql.Int, origenId)
+                .query(`SELECT ID FROM dbo.ProductoComboItems WHERE ProIdProducto = @PID ORDER BY ID`);
+            const valoresCI = colsCI.map(c => (c === 'ProIdProducto' ? '@Destino' : `[${c}]`)).join(', ');
+            for (const it of items.recordset) {
+                const n = await new sql.Request(transaction).input('Item', sql.Int, it.ID).input('Destino', sql.Int, nuevoId).query(`
+                    INSERT INTO dbo.ProductoComboItems (${colsCI.map(c => `[${c}]`).join(', ')})
+                    OUTPUT INSERTED.ID
+                    SELECT ${valoresCI} FROM dbo.ProductoComboItems WHERE ID = @Item`);
+                await copiarFilas(transaction, 'ProductoComboItemServicios', 'ComboItemID', it.ID, n.recordset[0].ID);
+            }
+        }
+
+        // 6. Fotos (mismos archivos)
+        await copiarFilas(transaction, 'Articulos_Imagenes', 'Idproid', origenId, nuevoId);
+
+        await transaction.commit();
+        logger.info(`[Configurador] Producto ${origenId} "${orig.Descripcion}" [${orig.Cod}] copiado como ${nuevoId} "${descripcion}" [${codFinal}] (sin precio, borrador) por ${req.user?.username || 'N/A'}`);
+        res.json({ success: true, proIdProducto: nuevoId, codArticulo: codFinal, descripcion });
+    } catch (e) {
+        try { await transaction?.rollback(); } catch (_) { /* no había empezado o ya estaba cerrada */ }
+        logger.error('[Configurador] copiarProducto:', e);
         res.status(500).json({ error: e.message });
     }
 };

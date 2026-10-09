@@ -21,6 +21,7 @@ const { getPool, sql } = require('../config/db');
 const logger           = require('../utils/logger');
 const { aplicarRecargoUrgenciaRollo } = require('./urgenciaDescuentoRolloService');
 const { SQL_RECALC_MONTO_TOTAL, sqlMonedaLinea } = require('../utils/montoTotalPedido');
+const { resolverDepartamento } = require('../utils/departamentoUY');
 
 // ============================================================
 // SECCIÓN 1: GESTIÓN DE CUENTAS
@@ -819,7 +820,7 @@ async function hookReposicion(params) {
  *   @param {number} UsuarioAlta
  */
 async function hookPagoRegistrado(params) {
-  const { PagIdPago, CliIdCliente, MontoPago, MonIdMoneda, UsuarioAlta, DocIdDocumento } = params;
+  const { PagIdPago, CliIdCliente, MontoPago, MonIdMoneda, UsuarioAlta, DocIdDocumento, SinImputar, MontoYaImputado } = params;
 
   try {
     const CueTipo = MonIdMoneda === 2 ? 'DINERO_USD' : 'DINERO_UYU';
@@ -851,13 +852,18 @@ async function hookPagoRegistrado(params) {
     const cicloActivo = await obtenerCicloActivo(CueIdCuenta);
 
     // 1. Imputar PRIMERO a deudas pendientes (PEPS)
-    // Así sabemos cuánto cubre deudas previas vs. cuánto es excedente real del ciclo
-    const { MontoExcedente } = await imputarPago({
-      PagIdPago,
-      MontoDisponible: Math.abs(MontoPago),
-      CueIdCuenta,
-      UsuarioAlta,
-    });
+    // Así sabemos cuánto cubre deudas previas vs. cuánto es excedente real del ciclo.
+    // SinImputar: el llamador ya imputó este pago dentro de su transacción (caja, PASO 3.5)
+    // y pasa cuánto (MontoYaImputado). Volver a correr el PEPS aplicaba el mismo pago dos
+    // veces a la misma deuda, o a la más vieja del cliente (187 casos en sep-2026).
+    const { MontoExcedente } = SinImputar
+      ? { MontoExcedente: Math.max(0, Math.abs(MontoPago) - (Number(MontoYaImputado) || 0)) }
+      : await imputarPago({
+          PagIdPago,
+          MontoDisponible: Math.abs(MontoPago),
+          CueIdCuenta,
+          UsuarioAlta,
+        });
 
     const montoCubreDeudaPrevias = Math.abs(MontoPago) - MontoExcedente;
     const hayExcedente = MontoExcedente > 0.01;
@@ -2417,7 +2423,10 @@ async function getResumenDocumentos(CliIdCliente, desde = null, hasta = null) {
         -- ese cobro generó (mismo cliente, fecha e importe), cuya transacción sí trae el medio.
         COALESCE(med.Medios,  medRC.Medios)  AS Medios,
         COALESCE(med.Cheques, medRC.Cheques) AS Cheques,
-        medRC.Recibo,
+        COALESCE(rcTca.Recibo, medRC.Recibo) AS Recibo,
+        -- Transacción de caja del cobro: es la llave para reimprimir su recibo desde el
+        -- Panel 360 (GET /contabilidad/cobros/:TcaIdTransaccion/recibo).
+        COALESCE(tx.TcaId, medRC.TcaId) AS TcaIdTransaccion,
         -- Moneda/monto REAL del pago cuando se cobró en una moneda distinta a la de la cuenta
         -- (ej. deuda en US$ pagada en UYU). El dato solo vive en Pagos; acá se expone para
         -- mostrarlo junto al importe de la cuenta, SIN alterar el importe contable (MovImporte).
@@ -2429,21 +2438,43 @@ async function getResumenDocumentos(CliIdCliente, desde = null, hasta = null) {
       LEFT JOIN dbo.OrdenesDeposito od WITH(NOLOCK) ON od.OrdIdOrden = m.OrdIdOrden
       LEFT JOIN dbo.Pagos pg WITH(NOLOCK) ON pg.PagIdPago = m.PagIdPago
       OUTER APPLY (
+        -- Transacción de caja del movimiento, por vínculo directo: su pago o, si no lo
+        -- estampó (anticipo, ventas de caja), el documento — solo si esa transacción
+        -- cobró algo (un documento a crédito tiene transacción pero sin pagos).
+        SELECT TcaId = COALESCE(pg.PagTcaIdTransaccion,
+                 CASE WHEN dc.TcaIdTransaccion IS NOT NULL AND EXISTS (
+                        SELECT 1 FROM dbo.Pagos p5 WITH(NOLOCK) WHERE p5.PagTcaIdTransaccion = dc.TcaIdTransaccion)
+                      THEN dc.TcaIdTransaccion END)
+      ) tx
+      OUTER APPLY (
         SELECT
           Medios  = STRING_AGG(CAST(LTRIM(RTRIM(mp.MPaDescripcionMetodo)) AS NVARCHAR(MAX)), ' + '),
           Cheques = STRING_AGG(CAST(LTRIM(RTRIM(ch.NumeroCheque)) AS NVARCHAR(MAX)), ', ')
         FROM dbo.Pagos p2 WITH(NOLOCK)
         LEFT JOIN dbo.MetodosPagos mp WITH(NOLOCK) ON mp.MPaIdMetodoPago = p2.MPaIdMetodoPago
         LEFT JOIN dbo.TesoreriaCheques ch WITH(NOLOCK) ON ch.IdCheque = p2.PagIdCheque
-        WHERE pg.PagTcaIdTransaccion IS NOT NULL
-          AND p2.PagTcaIdTransaccion = pg.PagTcaIdTransaccion
+        WHERE tx.TcaId IS NOT NULL
+          AND p2.PagTcaIdTransaccion = tx.TcaId
       ) med
+      OUTER APPLY (
+        -- Recibo de la transacción (RC cobro / RA anticipo), por el vínculo directo. El
+        -- fallback de abajo (misma fecha e importe) no lo encuentra cuando un cobro
+        -- canceló 2+ documentos: el RC es por el total y cada movimiento por su parte.
+        SELECT TOP 1
+          Recibo = LTRIM(RTRIM(rc2.DocSerie)) + '-' + LTRIM(RTRIM(CAST(rc2.DocNumero AS VARCHAR(50))))
+        FROM dbo.DocumentosContables rc2 WITH(NOLOCK)
+        WHERE tx.TcaId IS NOT NULL
+          AND rc2.TcaIdTransaccion = tx.TcaId
+          AND rc2.DocSerie IN ('RC', 'RA')
+        ORDER BY rc2.DocIdDocumento
+      ) rcTca
       OUTER APPLY (
         -- Fallback por el recibo: el cobro generó un RC con la misma fecha e importe;
         -- su transacción tiene el medio (y el cheque, si aplica). Best-effort por si el
         -- movimiento viejo no guardó el PagIdPago.
         SELECT TOP 1
           Recibo  = LTRIM(RTRIM(rc.DocSerie)) + '-' + LTRIM(RTRIM(CAST(rc.DocNumero AS VARCHAR(50)))),
+          TcaId   = rc.TcaIdTransaccion,
           Medios  = (SELECT STRING_AGG(CAST(LTRIM(RTRIM(mp2.MPaDescripcionMetodo)) AS NVARCHAR(MAX)), ' + ')
                      FROM dbo.Pagos p3 WITH(NOLOCK)
                      JOIN dbo.MetodosPagos mp2 WITH(NOLOCK) ON mp2.MPaIdMetodoPago = p3.MPaIdMetodoPago
@@ -2568,6 +2599,9 @@ async function getResumenDocumentos(CliIdCliente, desde = null, hasta = null) {
       tipo: (/^pago\b/i.test(p.Concepto || '') && p.MovTipo === 'TRANSFERENCIA_SALIDA') ? 'Pago con saldo de cuenta'
           : (/^pago\b/i.test(p.Concepto || '') && p.MovTipo === 'TRANSFERENCIA_ENTRADA') ? 'Pago recibido de otra cuenta'
           : (esConsumo && p.MovTipo === 'CONSUMO_CUENTA') ? etiquetaConsumoCuenta(p)
+          // Devolución de la plata de una NC (opción "Devolver"): es un AJUSTE_NEG ligado al
+          // egreso de caja, pero en pantalla tiene que decir lo que es.
+          : (esConsumo && p.MovTipo === 'AJUSTE_NEG' && /^Devoluci[oó]n de dinero/i.test(p.Concepto || '')) ? 'Devolución de dinero'
           : esConsumo ? (TIPO_CONSUMO_LABEL[p.MovTipo] || TIPO_PAGO_LABEL[p.MovTipo] || p.MovTipo)
                       : (TIPO_PAGO_LABEL[p.MovTipo] || p.MovTipo),
       esFavor,
@@ -2593,6 +2627,7 @@ async function getResumenDocumentos(CliIdCliente, desde = null, hasta = null) {
       medioPago: p.Medios || null,   // 'Contado', 'Transferencia + Cheque', …
       cheques:   p.Cheques || null,  // números de cheque, cuando el medio es cheque
       recibo:    p.Recibo || null,   // RC-xx que generó el cobro
+      tcaIdTransaccion: p.TcaIdTransaccion || null, // para reimprimir el recibo del cobro
       // Moneda/monto reales del pago cuando difieren de la moneda de la cuenta (ej. deuda US$
       // cobrada en UYU). Null cuando el cobro fue en la misma moneda de la cuenta corriente.
       pagoMoneda: p.PagoMonto != null ? p.PagoSimbolo : null,
@@ -2992,9 +3027,13 @@ async function getAntiguedadDeuda(modo = 'TODO') {
       ISNULL(SUM(CASE WHEN d.DocIdDocumento IS NULL     THEN d.DDeImportePendiente ELSE 0 END), 0) AS DeudaOrdenes,
       -- Vendedor: Clientes.VendedorID guarda la CÉDULA del usuario (Usuarios.Cedula)
       (SELECT TOP 1 ISNULL(NULLIF(RTRIM(u.Nombre), ''), u.Usuario) FROM dbo.Usuarios u WITH(NOLOCK)
-        WHERE CAST(u.Cedula AS NVARCHAR(20)) = LTRIM(RTRIM(cli.VendedorID)))          AS Vendedor
+        WHERE CAST(u.Cedula AS NVARCHAR(20)) = LTRIM(RTRIM(cli.VendedorID)))          AS Vendedor,
+      -- Tipo de cliente (Común / Semanal / Rollo por adelantado / DEUDOR) para filtrar en pantalla
+      cli.TClIdTipoCliente                                                          AS TipoClienteId,
+      LTRIM(RTRIM(tcl.TClDescripcion))                                              AS TipoCliente
     FROM      dbo.CuentasCliente c
     JOIN      dbo.Clientes       cli ON cli.CliIdCliente = c.CliIdCliente
+    LEFT JOIN dbo.TiposClientes  tcl ON tcl.TClIdTipoCliente = cli.TClIdTipoCliente
     LEFT JOIN dbo.Monedas        mon ON mon.MonIdMoneda  = c.MonIdMoneda
     JOIN      dbo.DeudaDocumento d   ON d.CueIdCuenta   = c.CueIdCuenta
                                     AND d.DDeEstado IN ('PENDIENTE', 'VENCIDO', 'PARCIAL')
@@ -3003,7 +3042,7 @@ async function getAntiguedadDeuda(modo = 'TODO') {
                                     AND ${SQL_EXCLUIR_ORDEN_YA_FACTURADA('d')}
     WHERE c.CueActiva = 1
       AND c.CueTipo IN ('DINERO_UYU', 'DINERO_USD', 'CORRIENTE', 'CREDITO')
-    GROUP BY c.CliIdCliente, cli.Nombre, c.CueTipo, mon.MonSimbolo, cli.VendedorID
+    GROUP BY c.CliIdCliente, cli.Nombre, c.CueTipo, mon.MonSimbolo, cli.VendedorID, cli.TClIdTipoCliente, tcl.TClDescripcion
     HAVING SUM(d.DDeImportePendiente) > 0
     ORDER BY TotalDeuda DESC
   `);
@@ -3708,7 +3747,9 @@ async function cerrarCicloCompleto({
           docCliNombre: cliDgiNombre,
           docCliDocumento: cliDgiDocumento,
           docCliDireccion: cliDgiDireccion,
-          docCliCiudad: cliDgiCiudad,
+          // La pantalla manda el ID del departamento ("10"), que sirve para la ficha del
+          // cliente (Clientes.DepartamentoID) pero no para el comprobante: se guarda el nombre.
+          docCliCiudad: (await resolverDepartamento(cliDgiCiudad)) || cliDgiCiudad,
           // Tipo de cambio con el que se armó ESTE comprobante: el de la pre-factura.
           // Es el que hay que poder mostrar después (factura mixta / cross-moneda).
           docCotizacion: Number(cotDolar) || null
@@ -5792,9 +5833,11 @@ async function vincularPagosPorOrdenAlDocumento({ DocIdDocumento, CliIdCliente, 
  * siempre y Antigüedad / Cobranzas la mostraban como "orden sin facturar" (caso
  * Micaela Tripicchio SUB-20323, 28-sep-2026: facturada en ET-8100 y cobrada por
  * Mercado Pago, seguía vencida; en local había 1.701 así por US$ 48.868 + $ 50.344).
- * Se marca CANCELADA (mismo estado que usa cancelarDeuda) y no COBRADO, porque
- * anular el documento vuelve a abrir las deudas CANCELADA de la orden
- * (contabilidadController ~4729) — con COBRADO no se reabrirían.
+ * Se marca CANCELADA (mismo estado que usa cancelarDeuda) y no COBRADO, con la marca
+ * "Orden facturada en documento #<id> (" en la observación: anular el documento las
+ * reabre por esa marca (reabrirDeudasPorOrdenDelDocumento). Hasta el 09-10-2026 este
+ * comentario decía que la anulación ya las reabría, pero anularFactura solo reabría
+ * las 'PAGADO' (las que absorbe el cierre de ciclo): las CANCELADA quedaban cerradas.
  * @param {object} p
  * @param {number}   p.DocIdDocumento
  * @param {number[]} p.OrdIds  OrdIdOrden de las órdenes que entran al documento
@@ -5822,6 +5865,52 @@ async function cerrarDeudasPorOrdenFacturada({ DocIdDocumento, OrdIds }, transac
 }
 
 /**
+ * reabrirDeudasPorOrdenDelDocumento
+ * ----------------------------------------------------------------------------
+ * Contraparte de cerrarDeudasPorOrdenFacturada: al anular el documento, la deuda
+ * POR ORDEN que él cerró vuelve a existir (la orden queda otra vez sin facturar y
+ * sin cobrar). Se busca por la marca que dejó el cierre, así no se toca ninguna
+ * CANCELADA por otro motivo. El pendiente se recalcula con lo que de verdad la
+ * pagó: original − imputaciones de pagos vivos (las del cobro anulado ya las borró
+ * reponerDeudasDeTransaccion), nunca por debajo de 0.
+ * @param {object} p
+ * @param {number} p.DocIdDocumento  documento que se está anulando
+ * @returns {Promise<number>} filas reabiertas
+ */
+async function reabrirDeudasPorOrdenDelDocumento({ DocIdDocumento }, transaction = null) {
+  if (!DocIdDocumento) return 0;
+  const pool = await getPool();
+  const req = transaction ? new sql.Request(transaction) : pool.request();
+  req.input('Doc', sql.Int, DocIdDocumento)
+     .input('Marca', sql.NVarChar(80), `%Orden facturada en documento #${parseInt(DocIdDocumento, 10)} (%`);
+  const res = await req.query(`
+    UPDATE dd
+    SET    dd.DDeImportePendiente = v.Pend,
+           dd.DDeEstado = CASE WHEN v.Pend <= 0.01 THEN 'COBRADO'
+                               WHEN v.Pend >= dd.DDeImporteOriginal - 0.01 THEN 'PENDIENTE'
+                               ELSE 'PARCIAL' END,
+           dd.DDeFechaCobro = CASE WHEN v.Pend > 0.01 THEN NULL ELSE dd.DDeFechaCobro END,
+           dd.DDeObservaciones = LEFT(CONCAT(ISNULL(dd.DDeObservaciones + ' | ', ''), 'Reabierta: documento #', @Doc, ' anulado (', CONVERT(CHAR(10), GETDATE(), 120), ')'), 500)
+    FROM   dbo.DeudaDocumento dd
+    CROSS APPLY (
+      SELECT Pend = CASE WHEN dd.DDeImporteOriginal - ISNULL(SUM(ip.ImpImporte), 0) < 0 THEN 0
+                         ELSE dd.DDeImporteOriginal - ISNULL(SUM(ip.ImpImporte), 0) END
+      FROM   dbo.ImputacionPago ip
+      JOIN   dbo.Pagos p ON p.PagIdPago = ip.PagIdPago
+      WHERE  ip.DDeIdDocumento = dd.DDeIdDocumento
+        AND  ISNULL(p.PagTipoMovimiento, '') <> 'ANULADO'
+    ) v
+    WHERE  dd.DocIdDocumento IS NULL
+      AND  dd.OrdIdOrden IS NOT NULL
+      AND  dd.DDeEstado = 'CANCELADA'
+      AND  dd.DDeObservaciones LIKE @Marca
+  `);
+  const n = res.rowsAffected?.[0] || 0;
+  if (n > 0) logger.info(`[CONTABILIDAD] Doc #${DocIdDocumento} anulado: ${n} deuda(s) por orden reabiertas.`);
+  return n;
+}
+
+/**
  * Fragmento SQL para los REPORTES de deuda: excluye las deudas por orden (sin
  * documento) cuya orden ya fue facturada — el movimiento ORDEN de la cuenta tiene
  * DocIdDocumento estampado y ese documento no está anulado. Es la red de seguridad
@@ -5841,6 +5930,7 @@ const SQL_EXCLUIR_ORDEN_YA_FACTURADA = (d = 'd') => `NOT (
 
 module.exports = {
   cerrarDeudasPorOrdenFacturada,
+  reabrirDeudasPorOrdenDelDocumento,
   SQL_EXCLUIR_ORDEN_YA_FACTURADA,
   // Cuentas
   obtenerOCrearCuenta,

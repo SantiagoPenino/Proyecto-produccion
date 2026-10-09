@@ -13,7 +13,13 @@ import { ArrowUp, ArrowDown, X, Upload, TriangleAlert } from 'lucide-react';
 const API = '/configurador';
 
 // La etapa es texto libre (la escribe quien arma la ficha); los pasos seguidos con la misma etapa se agrupan.
-export const pasoVacio = () => ({ etapa: '', union: '', iso: '', maquinaId: '', descripcion: '', tiempoMin: '', observaciones: '', imagenUrl: '' });
+export const pasoVacio = () => ({ etapa: '', union: '', iso: '', maquinaId: '', descripcion: '', tiempoMin: '', observaciones: '', imagenUrl: '', avioId: '' });
+
+// "Qué piezas une" sigue siendo texto ("Frente + Espalda, por los hombros"); las piezas del molde se
+// suman o se sacan tocándolas. Una pieza está si aparece como palabra en el texto.
+const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const tienePieza = (texto, pieza) => new RegExp(`(^|[^\\p{L}])${escRe(pieza)}([^\\p{L}]|$)`, 'iu').test(texto || '');
+const partes = (texto) => String(texto || '').split('+').map(s => s.trim()).filter(Boolean);
 
 // Pasos de ejemplo para arrancar. Los tiempos son de referencia (minutos por prenda): ajustarlos al taller.
 // La máquina va por nombre (dbo.MaquinasCostura) y se traduce al ID al cargar la plantilla.
@@ -90,11 +96,20 @@ const claseEtiqueta = 'block text-[10px] font-bold uppercase tracking-wide text-
 
 export const totalMinutos = (pasos) => pasos.reduce((s, p) => s + (Number(p.tiempoMin) || 0), 0);
 
-// Editor de la lista de pasos (va dentro de la ficha de diseño del producto)
-export function PasosCosturaEditor({ pasos, onChange, costurasIso, maquinas, pasoAPaso }) {
+// Editor de la lista de pasos (va dentro de la ficha de diseño del producto).
+// piezas: las del molde de TizadaPro (de los modelos que se venden); avios: los del producto ({ avioId, nombre }),
+// conAvio: si la base ya tiene la columna del avío del paso (configurador_ficha_avios_talle.sql).
+export function PasosCosturaEditor({ pasos, onChange, costurasIso, maquinas, pasoAPaso, piezas = [], avios = [], conAvio = false }) {
     const [subiendo, setSubiendo] = useState(null);   // índice del paso que está subiendo foto
     const isoDe = (cod) => costurasIso.find(o => o.CodigoISO === cod);
     const set = (i, patch) => onChange(pasos.map((x, j) => (j === i ? { ...x, ...patch } : x)));
+    const togglePieza = (i, pieza) => {
+        const texto = pasos[i].descripcion || '';
+        if (!tienePieza(texto, pieza)) return set(i, { descripcion: texto.trim() ? `${texto.trim()} + ${pieza}` : pieza });
+        const quedan = partes(texto).filter(p => p.toLowerCase() !== pieza.toLowerCase());
+        if (quedan.length !== partes(texto).length) set(i, { descripcion: quedan.join(' + ') });
+        else toast.info(`"${pieza}" está dentro del texto: sacala a mano.`);
+    };
     const mover = (i, d) => { const n = [...pasos]; const k = i + d; if (k < 0 || k >= n.length) return; [n[i], n[k]] = [n[k], n[i]]; onChange(n); };
     // Al elegir la costura se propone su máquina típica, salvo que el paso ya tenga otra elegida a mano
     const elegirIso = (i, cod) => {
@@ -199,10 +214,37 @@ export function PasosCosturaEditor({ pasos, onChange, costurasIso, maquinas, pas
                                                 onChange={e => set(i, { tiempoMin: e.target.value })} className={`w-full text-center font-bold ${claseCampoFila}`} />
                                         </label>
                                     </div>
-                                    <label className="block">
-                                        <span className={claseEtiqueta}>Qué piezas une</span>
-                                        <input value={p.descripcion} placeholder="Ej. Delantero + espalda, por los hombros" onChange={e => set(i, { descripcion: e.target.value })} className={`w-full ${claseCampoFila}`} />
-                                    </label>
+                                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_14rem]">
+                                        <div>
+                                            <label className="block">
+                                                <span className={claseEtiqueta}>Qué piezas une</span>
+                                                <input value={p.descripcion} placeholder="Ej. Delantero + espalda, por los hombros" onChange={e => set(i, { descripcion: e.target.value })} className={`w-full ${claseCampoFila}`} />
+                                            </label>
+                                            {piezas.length > 0 && (
+                                                <div className="mt-1 flex flex-wrap items-center gap-1" role="group" aria-label={`Piezas del molde para el paso ${i + 1}`}>
+                                                    <span className="text-[10px] text-slate-400">Piezas del molde:</span>
+                                                    {piezas.map(pz => {
+                                                        const esta = tienePieza(p.descripcion, pz);
+                                                        return (
+                                                            <button key={pz} type="button" onClick={() => togglePieza(i, pz)} aria-pressed={esta}
+                                                                title={esta ? `Sacar "${pz}"` : `Agregar "${pz}"`}
+                                                                className={`rounded-full border px-2 py-0.5 text-[10.5px] font-bold transition-colors ${esta ? 'border-indigo-300 bg-indigo-50 text-indigo-700' : 'border-slate-200 bg-white text-slate-500 hover:border-slate-300'}`}>
+                                                                {esta ? '✓ ' : '+ '}{pz}
+                                                            </button>
+                                                        );
+                                                    })}
+                                                </div>
+                                            )}
+                                        </div>
+                                        <label title={conAvio ? 'El avío del producto que se usa en este paso (cierre, elástico, etiqueta…)' : 'Falta correr docs/migrations/configurador_ficha_avios_talle.sql'}>
+                                            <span className={claseEtiqueta}>Avío que usa</span>
+                                            <Selector value={p.avioId ? String(p.avioId) : ''} onChange={e => set(i, { avioId: e.target.value })} disabled={!conAvio}
+                                                claseBoton={`w-full ${claseSel}`} anchoLista={260}>
+                                                <option value="">{avios.length ? 'Ninguno' : 'El producto no tiene avíos'}</option>
+                                                {avios.map(a => <option key={a.avioId} value={String(a.avioId)}>{a.nombre}</option>)}
+                                            </Selector>
+                                        </label>
+                                    </div>
                                     <label className="block">
                                         <span className={claseEtiqueta}>Observaciones</span>
                                         <input value={p.observaciones} placeholder="Ej. Hacer coincidir el piquete de la manga con el hombro" onChange={e => set(i, { observaciones: e.target.value })} className={`w-full ${claseCampoFila}`} />
@@ -246,8 +288,8 @@ export function PasosCosturaEditor({ pasos, onChange, costurasIso, maquinas, pas
     );
 }
 
-// Tabla de pasos para la vista imprimible de la ficha técnica
-export function TablaPasosCostura({ pasos, costurasIso, maquinas }) {
+// Tabla de pasos para la vista imprimible de la ficha técnica (avios: el catálogo, para el nombre del avío del paso)
+export function TablaPasosCostura({ pasos, costurasIso, maquinas, avios = [] }) {
     const lista = pasos.filter(p => (p.union || '').trim());
     if (!lista.length) return null;
     const total = totalMinutos(lista);
@@ -260,6 +302,7 @@ export function TablaPasosCostura({ pasos, costurasIso, maquinas }) {
                 {lista.map((p, i) => {
                     const iso = costurasIso.find(o => o.CodigoISO === p.iso);
                     const maq = maquinas.find(m => String(m.MaquinaCosturaID) === String(p.maquinaId));
+                    const avio = p.avioId ? avios.find(a => String(a.AvioID) === String(p.avioId)) : null;
                     const img = p.imagenUrl || iso?.ImagenUrl;
                     const etapaNueva = p.etapa && (i === 0 || lista[i - 1].etapa !== p.etapa);
                     return (
@@ -267,7 +310,7 @@ export function TablaPasosCostura({ pasos, costurasIso, maquinas }) {
                             {etapaNueva && <tr><td colSpan={7} className="pt-2 pb-0.5 text-[10px] font-black uppercase text-slate-500">{p.etapa}</td></tr>}
                             <tr className="border-b border-slate-100 align-top">
                                 <td className="py-1 pr-1 font-bold">{i + 1}</td>
-                                <td className="py-1 pr-2"><b>{p.union}</b>{p.descripcion ? <div className="text-slate-500">{p.descripcion}</div> : null}</td>
+                                <td className="py-1 pr-2"><b>{p.union}</b>{p.descripcion ? <div className="text-slate-500">{p.descripcion}</div> : null}{avio ? <div className="text-slate-500">Avío: {avio.Nombre}</div> : null}</td>
                                 <td className="py-1 pr-2">{p.iso || '—'}{iso ? <div className="text-slate-500">{iso.Nombre}</div> : null}</td>
                                 <td className="py-1 pr-2">{maq?.Nombre || ''}</td>
                                 <td className="py-1 pr-2 text-right">{p.tiempoMin !== '' && p.tiempoMin != null ? p.tiempoMin : ''}</td>

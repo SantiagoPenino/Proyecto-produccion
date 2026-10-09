@@ -185,7 +185,10 @@ export default function CfePreviewDgiModal({ doc, onClose, onConfirmarEnvio, env
                                             {data.lineas.map(l => (
                                                 <tr key={l.nroLinDet} className="border-b border-gray-50">
                                                     <td className="py-1 pr-2 text-gray-400">{l.nroLinDet}</td>
-                                                    <td className="py-1 pr-2">{l.nomItem}</td>
+                                                    <td className="py-1 pr-2">
+                                                        {l.nomItem}
+                                                        {l.descAdicional && <div className="text-xs text-gray-500">{l.descAdicional}</div>}
+                                                    </td>
                                                     <td className="py-1 pr-2 text-right">{l.cantidad}</td>
                                                     <td className="py-1 pr-2 text-right">{fmt(l.precioUnitario)}</td>
                                                     <td className="py-1 pr-2 text-right font-medium">{fmt(l.montoItem)}</td>
@@ -216,6 +219,7 @@ export default function CfePreviewDgiModal({ doc, onClose, onConfirmarEnvio, env
                                     )}
                                 </Fila>
                                 <Fila label="Fecha de emisión">{data.varios.fchEmis}</Fila>
+                                <Fila label="Vencimiento">{data.varios.fchVenc}</Fila>
                                 <Fila label="Forma de pago">{data.varios.fmaPago === 1 ? 'Contado' : 'Crédito'}</Fila>
                             </Seccion>
                         </>

@@ -24,6 +24,33 @@ export default function CfeNotaCreditoModal({ doc, lineas, onClose, onSuccess, m
     return () => { vivo = false; };
   }, [doc?.DocIdDocumento, isND]);
 
+  // ── Qué pasa con la PLATA que deja la NC (09-10-2026) ──────────────────────
+  // A_FAVOR: queda a favor (lo de antes) · DEVOLVER: se le devuelve, sale de la caja ·
+  // REFACTURAR: queda para pagar la factura corregida, que se abre después (sin cobrarla
+  // otra vez: así nacían los saldos a favor falsos). La vista previa trae además cuánto se
+  // puede acreditar todavía (NC anteriores) y la deuda viva (esa parte no es plata libre).
+  const [preview, setPreview]         = useState(null);
+  const [destino, setDestino]         = useState('A_FAVOR');
+  const [metodosPago, setMetodosPago] = useState([]);
+  const [metodoDev, setMetodoDev]     = useState('');
+  const [cajaAdmin, setCajaAdmin]     = useState(false);
+  useEffect(() => {
+    if (isND || !doc?.DocIdDocumento) return;
+    let vivo = true;
+    api.get(`/contabilidad/caja/nota-credito/preview?docId=${doc.DocIdDocumento}`)
+      .then(r => { if (!vivo) return; setPreview(r.data); if (!r.data?.sesionAbierta) setCajaAdmin(true); })
+      .catch(() => { /* sin vista previa el modal funciona igual: el backend valida */ });
+    api.get('/contabilidad/metodos-pago').then(r => {
+      if (!vivo) return;
+      // Medios con los que se puede DEVOLVER plata (no tiene sentido "a crédito" ni con saldo de cuenta)
+      const l = (r.data?.data || r.data || []).filter(m => !/saldo de cuenta|cr[eé]dito|rollo|cuponera|sueldo/i.test(m.MPaDescripcionMetodo || ''));
+      setMetodosPago(l);
+      const ef = l.find(m => /contado|efectivo/i.test(m.MPaDescripcionMetodo || '')) || l[0];
+      if (ef) setMetodoDev(String(ef.MPaIdMetodoPago));
+    }).catch(() => {});
+    return () => { vivo = false; };
+  }, [doc?.DocIdDocumento, isND]);
+
   const esCompraRecurso = !!compraRecurso?.esCompraRecurso;
   const recursoConsumido = !!compraRecurso?.tieneConsumo;
 
@@ -152,6 +179,11 @@ export default function CfeNotaCreditoModal({ doc, lineas, onClose, onSuccess, m
     toast.info('Líneas originales restauradas');
   };
 
+  // Plata que la NC deja LIBRE (lo que no baja deuda viva del documento) y tope acumulado.
+  const plataLibre = (!isND && preview) ? Math.max(0, Math.round((totales.total - (Number(preview.deudaViva) || 0)) * 100) / 100) : 0;
+  const excedeDisponible = !isND && !!preview && Number(preview.ncPrevias) > 0 && totales.total > Number(preview.disponible) + 0.01;
+  const esConsumidorFinal = !!preview?.consumidorFinal;
+
   // Enviar formulario
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -162,6 +194,19 @@ export default function CfeNotaCreditoModal({ doc, lineas, onClose, onSuccess, m
     if (formData.Lineas.length === 0) {
       return toast.error(`Debe ${isND ? 'debitar' : 'acreditar'} al menos una línea`);
     }
+
+    if (excedeDisponible) {
+      return toast.error(`Este documento ya tiene NC por ${fmt(preview.ncPrevias)} (${preview.ncDocs}). Solo se pueden acreditar ${fmt(preview.disponible)} más.`);
+    }
+    if (!isND && destino === 'DEVOLVER' && plataLibre > 0.009 && !metodoDev) {
+      return toast.error('Elegí con qué medio se le devuelve la plata al cliente.');
+    }
+    const simC = doc.MonIdMoneda === 2 ? 'U$S' : '$';
+    const nomMetodo = metodosPago.find(m => String(m.MPaIdMetodoPago) === String(metodoDev))?.MPaDescripcionMetodo || '';
+    const textoDestino = (isND || plataLibre <= 0.009) ? ''
+      : destino === 'DEVOLVER'   ? `\n\nSe le DEVUELVEN ${simC} ${fmt(plataLibre)} al cliente (${nomMetodo}): sale de la ${cajaAdmin ? 'caja administrativa' : 'caja del turno'}.`
+      : destino === 'REFACTURAR' ? `\n\nLos ${simC} ${fmt(plataLibre)} quedan para PAGAR la factura corregida, que se abre a continuación (no se cobra de nuevo).`
+      : `\n\nQuedan ${simC} ${fmt(plataLibre)} A FAVOR del cliente.`;
 
     const originalTotal = Number(doc.DocTotal) || 0;
     const isPartial = totales.total < originalTotal - 0.01;
@@ -185,7 +230,7 @@ export default function CfeNotaCreditoModal({ doc, lineas, onClose, onSuccess, m
         ? `\n\nOJO: esta factura fue una COMPRA DE RECURSO (rollo por adelantado). Al ser PARCIAL, los metros NO se dan de baja:\n${detalleRecurso}\nEl cliente sigue con ese rollo disponible para consumir.`
         : '';
       const confirm = window.confirm(
-        `${docName} PARCIAL\n\nEl total a ${isND ? 'debitar' : 'acreditar'} (${fmt(totales.total)}) es menor al total del documento original (${fmt(originalTotal)}).${avisoParcialRecurso}\n\n¿Desea guardar esta ${docName} Parcial?`
+        `${docName} PARCIAL\n\nEl total a ${isND ? 'debitar' : 'acreditar'} (${fmt(totales.total)}) es menor al total del documento original (${fmt(originalTotal)}).${avisoParcialRecurso}${textoDestino}\n\n¿Desea guardar esta ${docName} Parcial?`
       );
       if (!confirm) return;
     } else {
@@ -193,7 +238,7 @@ export default function CfeNotaCreditoModal({ doc, lineas, onClose, onSuccess, m
         ? `\n\nAdemás se DARÁ DE BAJA el rollo por adelantado que se compró con esta factura:\n${detalleRecurso}\nEl cliente dejará de tener esos metros para consumir.${avisoConsumo}`
         : '';
       const confirm = window.confirm(
-        `${docName} Total\n\nSe emitirá una ${docName} por el 100% del total (${fmt(totales.total)}).${avisoTotalRecurso}\n\n¿Desea continuar?`
+        `${docName} Total\n\nSe emitirá una ${docName} por el 100% del total (${fmt(totales.total)}).${avisoTotalRecurso}${textoDestino}\n\n¿Desea continuar?`
       );
       if (!confirm) return;
     }
@@ -214,17 +259,24 @@ export default function CfeNotaCreditoModal({ doc, lineas, onClose, onSuccess, m
           precioUnitario: l.precioUnitario,
           iva: l.iva
         })),
-        Totales: totales
+        Totales: totales,
+        // Qué pasa con la plata libre (solo NC): A_FAVOR / DEVOLVER / REFACTURAR
+        ...(isND ? {} : {
+          destinoPlata: destino,
+          metodoPagoDevolucion: destino === 'DEVOLVER' ? parseInt(metodoDev) : null,
+          admin: destino === 'DEVOLVER' ? cajaAdmin : undefined,
+        }),
       };
 
       const endpoint = isND ? '/contabilidad/caja/nota-debito' : '/contabilidad/caja/nota-credito';
       const resp = await api.post(endpoint, payload);
-      toast.success(`${docName} generada correctamente`);
+      toast.success(resp?.data?.message || `${docName} generada correctamente`, { duration: 8000 });
       // Qué pasó con el rollo por adelantado (se dio de baja / quedó vivo por ser parcial)
       if (resp?.data?.avisoRecurso) {
         toast.info(resp.data.avisoRecurso, { duration: 12000 });
       }
-      onSuccess();
+      // Se pasa la respuesta: si es REFACTURAR, quien abrió el modal abre la factura corregida.
+      onSuccess(resp?.data || null);
     } catch (error) {
       toast.error(`Error al generar la ${docName}: ` + (error.response?.data?.error || error.message));
     } finally {
@@ -507,6 +559,70 @@ export default function CfeNotaCreditoModal({ doc, lineas, onClose, onSuccess, m
             </div>
           </div>
         </div>
+
+        {/* ¿QUÉ PASA CON LA PLATA? (solo NC) */}
+        {!isND && preview && (
+          <div className="bg-white border border-zinc-200 rounded-2xl p-4 shrink-0 shadow-sm space-y-3">
+            {Number(preview.ncPrevias) > 0 && (
+              <p className={`text-xs font-semibold rounded-xl px-3 py-2 border ${excedeDisponible ? 'bg-red-50 border-red-200 text-red-700' : 'bg-amber-50 border-amber-200 text-amber-800'}`}>
+                Este comprobante ya tiene {preview.ncDocs} por {currencySymbol} {fmt(preview.ncPrevias)}.
+                {Number(preview.disponible) > 0.009
+                  ? ` Se puede acreditar hasta ${currencySymbol} ${fmt(preview.disponible)} más.`
+                  : ' Ya está acreditado entero: no se puede emitir otra nota de crédito.'}
+              </p>
+            )}
+            {plataLibre <= 0.009 ? (
+              <p className="text-xs text-zinc-500">
+                Esta nota de crédito solo baja la deuda pendiente del comprobante ({currencySymbol} {fmt(preview.deudaViva)}): no deja plata para devolver ni a favor.
+              </p>
+            ) : (
+              <>
+                <p className="text-xs font-black text-zinc-700 uppercase tracking-wider">
+                  ¿Qué pasa con los {currencySymbol} {fmt(plataLibre)} que el cliente ya pagó?
+                </p>
+                {Number(preview.deudaViva) > 0.009 && (
+                  <p className="text-[11px] text-zinc-500">
+                    ({currencySymbol} {fmt(Math.min(Number(preview.deudaViva), totales.total))} de esta nota de crédito bajan la deuda pendiente del comprobante.)
+                  </p>
+                )}
+                <div className="grid sm:grid-cols-3 gap-2">
+                  {[
+                    { id: 'DEVOLVER', t: 'Se le devuelve', d: 'La plata sale de la caja y se descuenta de su cuenta.' },
+                    { id: 'A_FAVOR',  t: 'Queda a favor',  d: 'Para usar en una próxima compra.' },
+                    ...(!esConsumidorFinal ? [{ id: 'REFACTURAR', t: 'Es para refacturar', d: 'Después se abre la factura corregida y se paga con este crédito. No se cobra de nuevo.' }] : []),
+                  ].map(o => (
+                    <label key={o.id} className={`cursor-pointer rounded-xl border-2 px-3 py-2.5 text-xs transition-colors ${destino === o.id ? 'border-red-400 bg-red-50/40' : 'border-zinc-200 hover:border-zinc-300'}`}>
+                      <span className="flex items-center gap-2 font-black text-zinc-800">
+                        <input type="radio" name="destinoPlata" checked={destino === o.id} onChange={() => setDestino(o.id)} />
+                        {o.t}
+                      </span>
+                      <span className="block mt-1 text-[11px] text-zinc-500 font-medium">{o.d}</span>
+                    </label>
+                  ))}
+                </div>
+                {destino === 'DEVOLVER' && (
+                  <div className="flex flex-wrap items-center gap-4 text-xs">
+                    <label className="font-semibold text-zinc-600">
+                      Se devuelve por
+                      <select value={metodoDev} onChange={e => setMetodoDev(e.target.value)}
+                        className="ml-2 border border-zinc-200 rounded-lg px-2 py-1.5 font-bold text-zinc-800">
+                        {metodosPago.map(m => <option key={m.MPaIdMetodoPago} value={m.MPaIdMetodoPago}>{m.MPaDescripcionMetodo}</option>)}
+                      </select>
+                    </label>
+                    <label className="font-semibold text-zinc-600">
+                      Sale de
+                      <select value={cajaAdmin ? 'ADMIN' : 'TURNO'} onChange={e => setCajaAdmin(e.target.value === 'ADMIN')}
+                        className="ml-2 border border-zinc-200 rounded-lg px-2 py-1.5 font-bold text-zinc-800">
+                        <option value="TURNO" disabled={!preview.sesionAbierta}>Caja del turno{preview.sesionAbierta ? '' : ' (no hay turno abierto)'}</option>
+                        <option value="ADMIN">Caja administrativa</option>
+                      </select>
+                    </label>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        )}
 
         {/* ACCIONES DEL FORMULARIO */}
         <div className="bg-white border border-zinc-200 rounded-2xl p-4 shrink-0 flex items-center justify-between shadow-sm">

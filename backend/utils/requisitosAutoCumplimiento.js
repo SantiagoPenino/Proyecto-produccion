@@ -40,4 +40,46 @@ async function marcarRequisitoNoAplica(transaction, { ordenId, areaId, codigoReq
     return true;
 }
 
-module.exports = { marcarRequisitoNoAplica };
+/**
+ * Copia a una orden hija (reposición -F / -R) los requisitos que su madre ya tiene CUMPLIDOS.
+ *
+ * Una reposición se produce con la MISMA tela / prenda / matriz / aprobación que la madre: lo que
+ * ya se resolvió una vez no vuelve a esperarse. Sin esto la hija nacía con todos los requisitos
+ * bloqueantes pendientes y caía para siempre en "Esperando requisitos" de Planificación
+ * (bug real 9-oct-2026: en Sublimación la lista eran 15 órdenes, TODAS -F/-R, por el requisito
+ * TELA que la madre ya tenía "Asignado: bobina X" o "No aplica — material propio").
+ *
+ * Idempotente (NOT EXISTS por OrdenID+RequisitoID) y protegida por OBJECT_ID: en un entorno sin
+ * la tabla no hace nada. Debe llamarse DENTRO de la transacción que crea la hija.
+ *
+ * @param {sql.Transaction} transaction
+ * @param {number} madreId
+ * @param {number} hijaId
+ * @param {string} [etiqueta='orden de reposición'] - texto para la observación ("Heredado de X (etiqueta)")
+ * @returns {Promise<number>} cantidad de requisitos copiados
+ */
+async function heredarRequisitosCumplidos(transaction, madreId, hijaId, etiqueta = 'orden de reposición') {
+    if (!madreId || !hijaId || madreId === hijaId) return 0;
+    const r = await new sql.Request(transaction)
+        .input('Old', sql.Int, madreId)
+        .input('New', sql.Int, hijaId)
+        .input('Etq', sql.NVarChar(60), etiqueta)
+        .query(`
+            IF OBJECT_ID('dbo.OrdenCumplimientoRequisitos', 'U') IS NOT NULL
+            BEGIN
+                DECLARE @Cod NVARCHAR(100) = (SELECT LTRIM(RTRIM(CodigoOrden)) FROM dbo.Ordenes WHERE OrdenID = @Old);
+                INSERT INTO dbo.OrdenCumplimientoRequisitos (OrdenID, AreaID, RequisitoID, Estado, FechaCumplimiento, Observaciones)
+                SELECT @New, c.AreaID, c.RequisitoID, 'CUMPLIDO', GETDATE(),
+                       LEFT(N'Heredado de ' + ISNULL(@Cod, '') + N' (' + @Etq + N')', 300)
+                FROM dbo.OrdenCumplimientoRequisitos c
+                WHERE c.OrdenID = @Old AND c.Estado = 'CUMPLIDO'
+                  AND NOT EXISTS (SELECT 1 FROM dbo.OrdenCumplimientoRequisitos x
+                                  WHERE x.OrdenID = @New AND x.RequisitoID = c.RequisitoID);
+                SELECT @@ROWCOUNT AS Copiados;
+            END
+            ELSE SELECT 0 AS Copiados;
+        `);
+    return r.recordset?.[0]?.Copiados || 0;
+}
+
+module.exports = { marcarRequisitoNoAplica, heredarRequisitosCumplidos };

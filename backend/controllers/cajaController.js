@@ -12,7 +12,9 @@ const { estamparAreaLineas } = require('../services/areaLineaService');
 const { resolverCuentaDineroCliente } = require('../services/cuentaDineroCliente');
 
 // ─────────────────────────────────────────────
-const io = (req) => req.app.get('socketio');
+// Null-safe: el aviso en vivo es accesorio; nunca puede tirar una respuesta cuyo cambio
+// ya se guardó en la base.
+const io = (req) => req?.app?.get?.('socketio');
 
 /**
  * Reintenta una operación de Caja ante un DEADLOCK de SQL Server (error 1205).
@@ -1767,9 +1769,9 @@ const procesarPagoDeudaInterno = async (req, res) => {
         }
 
         totalImputado += montoAplicar;
-        if (montoAplicar > 0.001) {
-          imputacionesPend.push({ ddeId, cueIdCuenta: dde.CueIdCuenta, monto: montoAplicar });
-        }
+        // (La imputación ya se anotó arriba, junto a reducirDeuda. Había un segundo push
+        // acá —quedó de un merge del 01-09-2026— que duplicaba las filas de ImputacionPago:
+        // deudas con más imputado que su importe original.)
         logger.info(`[PAGO-DEUDA] Deuda #${ddeId}: aplicado=${montoAplicar.toFixed(2)} nuevo_pendiente=${nuevoPendiente.toFixed(2)} estado=${nuevoEstado}`);
       }
 
@@ -1953,7 +1955,12 @@ const procesarPagoDeudaInterno = async (req, res) => {
           
 
           // ── RECIBO de caja (correlativo RC-) ──────────────────────────────
-          if (docId && totalImputado > 0) {
+          // Solo cuando el comprobante del cobro NO es ya un recibo (ej. Pedido Caja). Si
+          // el comprobante es el Recibo (05), crear otro RC lo duplicaba: dos recibos por
+          // el mismo cobro, del mismo correlativo (la numeración saltaba de a 2) y el
+          // segundo invisible en las bandejas (151 cobros en 30 días, 09-10-2026).
+          const comprobanteEsRecibo = /recibo/i.test(String(tipoDocVal));
+          if (docId && totalImputado > 0 && !comprobanteEsRecibo) {
             try {
               const recSeq = await new sql.Request(transaction)
                 .query(`UPDATE dbo.SecuenciaDocumentos SET SecUltimoNumero = SecUltimoNumero + 1
@@ -2555,7 +2562,8 @@ const procesarPagoDeudaInterno = async (req, res) => {
           + (Math.abs(difCambio) > 0.005 ? ` Diferencia de cambio ${monedaBaseStr} ${difCambio.toFixed(2)}.` : ''),
         docId,
         docNumero,
-        docTipoStr
+        docTipoStr,
+        tcaIdTransaccion: tcaIdPago, // para abrir el recibo A4 del cobro (Panel 360)
       });
 
     } catch (errTx) {
@@ -2575,7 +2583,12 @@ const procesarPagoDeudaInterno = async (req, res) => {
 const procesarPagoDeuda = async (req, res) => {
   try {
     return await conReintentoDeadlock('procesarPagoDeuda', () => {
-      const reqClonado = { ...req, body: JSON.parse(JSON.stringify(req.body)) };
+      // La copia conserva el prototipo de Express: con `{ ...req }` se perdían req.app,
+      // req.get(), req.ip… (viven en el prototipo) y, CON EL COBRO YA GUARDADO, fallaba el
+      // aviso por socket (req.app.get) → la caja veía "error", reintentaba y el cobro
+      // entraba dos veces (RC-001093 / RC-001094, 09-10-2026).
+      const reqClonado = Object.assign(Object.create(Object.getPrototypeOf(req)), req,
+        { body: JSON.parse(JSON.stringify(req.body)) });
       return procesarPagoDeudaInterno(reqClonado, res);
     });
   } catch (err) {
@@ -2642,15 +2655,188 @@ const consultarCompraRecursoDocumento = async (req, res) => {
   }
 };
 
+/**
+ * Devolución de la plata que una NC deja a favor del cliente (opción "Devolver" de la NC).
+ * Es un egreso de caja como cualquier otro (mismo registro que "Registrar egreso", tipo
+ * DEVOLUCION_CLIENTE → entra en el arqueo y tiene su voucher EGRESO_CAJA) más el descuento
+ * en la cuenta del cliente. Ese descuento queda LIGADO al voucher: anular el egreso desde la
+ * bandeja (cajaService.anularEgreso) lo revierte junto con todo lo demás.
+ * Asiento: DEBE Clientes / HABER Caja. La NC acreditó Clientes (no 2.3.1, que es lo que
+ * trae configurado DEVOLUCION_CLIENTE): debitar 2.3.1 dejaría las dos cuentas descuadradas.
+ * @returns {{ egresoId, voucher, importe, moneda, metodo }}
+ */
+async function _registrarDevolucionNC({ transaction, usuarioId, cliId, cueId, monId, importe, metodoPagoId, admin, ncNumero, empresaId }) {
+  const moneda = monId === 2 ? 'USD' : 'UYU';
+  let cot = null;
+  if (monId === 2) {
+    const rc = await new sql.Request(transaction).query('SELECT TOP 1 CotDolar FROM dbo.Cotizaciones WITH(NOLOCK) ORDER BY CotFecha DESC');
+    cot = parseFloat(rc.recordset[0]?.CotDolar) || null;
+  }
+  const convertido = (monId === 2 && cot) ? importe * cot : importe;
+
+  // De qué caja sale: la del turno abierto (caja central), salvo caja administrativa.
+  let stuIdSesion = null;
+  if (!admin) {
+    const rs = await new sql.Request(transaction)
+      .query(`SELECT TOP 1 StuIdSesion FROM dbo.SesionesTurno WHERE StuEstado='ABIERTA' ORDER BY StuFechaApertura DESC`);
+    stuIdSesion = rs.recordset[0]?.StuIdSesion || null;
+  }
+  const cliNom = (await new sql.Request(transaction).input('Cli', sql.Int, cliId)
+    .query('SELECT LTRIM(RTRIM(Nombre)) AS N FROM dbo.Clientes WITH(NOLOCK) WHERE CliIdCliente=@Cli')).recordset[0]?.N || `Cliente #${cliId}`;
+  const metNom = (await new sql.Request(transaction).input('Met', sql.Int, parseInt(metodoPagoId))
+    .query('SELECT MPaDescripcionMetodo AS N FROM dbo.MetodosPagos WITH(NOLOCK) WHERE MPaIdMetodoPago=@Met')).recordset[0]?.N || 'medio s/d';
+  const concepto = `Devolución de dinero - NC ${ncNumero}`;
+
+  // 1. Egreso de caja
+  const egrR = await new sql.Request(transaction)
+    .input('StuIdSesion',      sql.Int,           stuIdSesion)
+    .input('EgrUsuarioId',     sql.Int,           usuarioId)
+    .input('EgrConcepto',      sql.NVarChar(200),  concepto)
+    .input('EgrProveedor',     sql.NVarChar(150),  cliNom.substring(0, 150))
+    .input('EgrMonto',         sql.Decimal(18,4),  importe)
+    .input('EgrMoneda',        sql.VarChar(10),    moneda)
+    .input('EgrCotizacion',    sql.Decimal(18,4),  cot)
+    .input('EgrConvertido',    sql.Decimal(18,4),  convertido)
+    .input('MPaIdMetodoPago',  sql.Int,            parseInt(metodoPagoId))
+    .input('EgrObservaciones', sql.NVarChar(300),  `Devolución al cliente ${cliNom} (${metNom}) por la NC ${ncNumero}`.substring(0, 300))
+    .input('EsAdmin',          sql.Bit,            admin ? 1 : 0)
+    .query(`
+      INSERT INTO dbo.EgresosCaja
+        (StuIdSesion, EgrFecha, EgrUsuarioId, EgrConcepto, EgrProveedor,
+         EgrMonto, EgrMoneda, EgrCotizacion, EgrMontoConvertido,
+         MPaIdMetodoPago, EgrTipoDocumento, EgrSerieDoc, EgrNumeroDoc,
+         EgrTipoEgreso, EgrEstado, EgrObservaciones, EsCajaAdmin)
+      OUTPUT INSERTED.EgrIdEgreso
+      VALUES
+        (@StuIdSesion, GETDATE(), @EgrUsuarioId, @EgrConcepto, @EgrProveedor,
+         @EgrMonto, @EgrMoneda, @EgrCotizacion, @EgrConvertido,
+         @MPaIdMetodoPago, NULL, NULL, NULL,
+         'DEVOLUCION_CLIENTE', 'REGISTRADO', @EgrObservaciones, @EsAdmin)`);
+  const egresoId = egrR.recordset[0].EgrIdEgreso;
+
+  // 2. Asiento (origen CAJA_EGRESOS + tca = egreso: así lo encuentra anularEgreso)
+  const asientoRes = await contabilidadCore.generarAsientoCompleto({
+    concepto: `${concepto} (${cliNom})`.substring(0, 200),
+    usuarioId, tcaIdTransaccion: egresoId, origen: 'CAJA_EGRESOS',
+    lineas: [
+      { codigoCuenta: monId === 2 ? contabilidadCore.CUENTAS.CLIENTE_USD : contabilidadCore.CUENTAS.CLIENTE_UYU,
+        debeBase: importe, haberBase: 0, monedaId: monId, cotizacion: cot || 1, entidadId: cliId, entidadTipo: 'CLIENTE' },
+      { codigoCuenta: monId === 2 ? contabilidadCore.CUENTAS.CAJA_USD : contabilidadCore.CUENTAS.CAJA_UYU,
+        debeBase: 0, haberBase: importe, monedaId: monId, cotizacion: cot || 1 },
+    ],
+  }, transaction);
+  const asiId = asientoRes?.asiId || null;
+
+  // 3. Voucher EGRESO_CAJA (igual que registrarEgreso: cliente genérico, para que el
+  //    voucher no aparezca como otro cargo en el estado de cuenta del cliente).
+  const vcSeq = await new sql.Request(transaction).query(`
+    UPDATE SecuenciaDocumentos
+    SET SecUltimoNumero = SecUltimoNumero + 1
+    OUTPUT ISNULL(INSERTED.SecPrefijo,'') +
+           RIGHT(REPLICATE('0', INSERTED.SecDigitos) + CAST(INSERTED.SecUltimoNumero AS VARCHAR(10)), INSERTED.SecDigitos)
+           AS VoucherNumero
+    WHERE SecTipoDoc = 'VOUCHER_CAJA' AND SecSerie = 'A' AND SecActivo = 1`);
+  const voucher = vcSeq.recordset[0]?.VoucherNumero || `VC-${egresoId}`;
+  const cajaCueId = (await new sql.Request(transaction)
+    .input('CodCta', sql.VarChar(20), monId === 2 ? contabilidadCore.CUENTAS.CAJA_USD : contabilidadCore.CUENTAS.CAJA_UYU)
+    .query('SELECT CueId FROM Cont_PlanCuentas WHERE CueCodigo = @CodCta')).recordset[0]?.CueId || 1;
+  const cliGen = (await new sql.Request(transaction).query(`
+    SELECT TOP 1 CliIdCliente FROM Clientes
+    WHERE Nombre LIKE '%Consumidor%' OR Nombre LIKE '%Final%' OR Nombre LIKE '%Gen%rico%' OR CliIdCliente = 0
+    ORDER BY CliIdCliente ASC`)).recordset[0]?.CliIdCliente || 1;
+  const egDocId = await contabilidadCore.crearDocumentoContable({
+    header: {
+      cueIdCuenta: cajaCueId, clienteId: cliGen, monedaId: monId,
+      tipo: 'EGRESO_CAJA', numero: voucher, serie: 'EG',
+      subtotal: importe, impuestos: 0, total: convertido,
+      estado: 'PAGADO', cfeEstado: null, usuarioId,
+      tcaIdTransaccion: egresoId, asiIdAsiento: asiId,
+      observaciones: `Devolución a Cliente | ${cliNom} | NC ${ncNumero} (${metNom})`.substring(0, 200),
+      docPagado: true, empresaId: empresaId || null,
+    },
+    lineas: [{ nomItem: `Egreso: Devolución a Cliente`, dscItem: `${cliNom} - NC ${ncNumero}`.substring(0, 500),
+               cantidad: 1, precioUnitario: importe, subtotal: importe, impuestos: 0, total: importe }],
+  }, transaction);
+  await new sql.Request(transaction).input('EgrId', sql.Int, egresoId).input('DocId', sql.Int, egDocId)
+    .query('UPDATE dbo.EgresosCaja SET DocIdDocumento = @DocId WHERE EgrIdEgreso = @EgrId');
+
+  // 4. Descuento en la cuenta del cliente (la plata a favor se va), ligado al voucher.
+  if (cueId) {
+    await contabilidadSvc.registrarMovimiento({
+      CueIdCuenta:      cueId,
+      MovTipo:          'AJUSTE_NEG',
+      MovConcepto:      `${concepto} (${metNom})`,
+      MovImporte:       -importe,
+      MovUsuarioAlta:   usuarioId,
+      DocIdDocumento:   egDocId,
+      MovObservaciones: `DEVOLUCION_NC ${ncNumero} · egreso #${egresoId} · voucher ${voucher}`,
+    }, transaction);
+  }
+  logger.info(`[NOTA-CREDITO] Devolución ${moneda} ${importe} al cliente ${cliId} por NC ${ncNumero}: egreso #${egresoId} (${voucher}), ${metNom}.`);
+  return { egresoId, voucher, importe, moneda, metodo: metNom };
+}
+
+// ─────────────────────────────────────────────
+// GET /contabilidad/caja/nota-credito/preview?docId=
+// Para el modal de la NC: cuánto se puede acreditar todavía (descontando NC anteriores),
+// cuánta deuda viva tiene el documento (esa parte de la NC baja deuda, no es plata libre)
+// y si hay turno de caja abierto (para devolver plata). Solo lee.
+const previewNotaCredito = async (req, res) => {
+  try {
+    const docId = parseInt(req.query.docId);
+    if (!docId) return res.status(400).json({ success: false, error: 'Falta docId' });
+    const pool = await getPool();
+    const r = await pool.request().input('Doc', sql.Int, docId).query(`
+      SELECT d.DocTotal, d.MonIdMoneda, d.CliIdCliente, d.DocPagado,
+             NcPrevias = ISNULL((SELECT SUM(n.DocTotal) FROM dbo.DocumentosContables n
+                                 WHERE n.DocIdDocumentoRef = d.DocIdDocumento AND ISNULL(n.DocEstado, '') <> 'ANULADO'
+                                   AND n.DocTipo LIKE '%Nota De Cr%'), 0),
+             NcDocs = (SELECT STRING_AGG(RTRIM(n.DocSerie) + '-' + RTRIM(n.DocNumero), ', ') FROM dbo.DocumentosContables n
+                       WHERE n.DocIdDocumentoRef = d.DocIdDocumento AND ISNULL(n.DocEstado, '') <> 'ANULADO'
+                         AND n.DocTipo LIKE '%Nota De Cr%'),
+             DeudaViva = ISNULL((SELECT SUM(dd.DDeImportePendiente) FROM dbo.DeudaDocumento dd
+                                 WHERE dd.DocIdDocumento = d.DocIdDocumento AND dd.DDeEstado NOT IN ('CANCELADA','COBRADO')), 0),
+             SesionAbierta = CASE WHEN EXISTS (SELECT 1 FROM dbo.SesionesTurno WHERE StuEstado = 'ABIERTA') THEN 1 ELSE 0 END
+      FROM dbo.DocumentosContables d WHERE d.DocIdDocumento = @Doc`);
+    const x = r.recordset[0];
+    if (!x) return res.status(404).json({ success: false, error: 'Documento no encontrado' });
+    const total = Number(x.DocTotal) || 0;
+    const ncPrevias = Number(x.NcPrevias) || 0;
+    return res.json({
+      success: true,
+      total, monedaId: x.MonIdMoneda, ncPrevias, ncDocs: x.NcDocs || null,
+      disponible: Math.max(0, Math.round((total - ncPrevias) * 100) / 100),
+      deudaViva: Math.round((Number(x.DeudaViva) || 0) * 100) / 100,
+      consumidorFinal: Number(x.CliIdCliente) === 2089,
+      sesionAbierta: !!x.SesionAbierta,
+    });
+  } catch (err) {
+    logger.error('[NOTA-CREDITO] preview:', err.message);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+};
+
 // ─────────────────────────────────────────────
 // POST /contabilidad/caja/nota-credito
-// Body: { docIdOrigen, monto, motivo, clienteId, cuentaId, monedaId }
+// Body: { docIdOrigen, monto, motivo, clienteId, cuentaId, monedaId, destinoPlata, metodoPagoDevolucion, admin }
 const generarNotaCredito = async (req, res) => {
   const usuarioId = req.user.id;
   try {
-    const { docIdOrigen, monto, motivo, clienteId, cuentaId, monedaId, Lineas, Totales } = req.body;
+    const { docIdOrigen, monto, motivo, clienteId, cuentaId, monedaId, Lineas, Totales,
+            destinoPlata: destinoBody, metodoPagoDevolucion, admin } = req.body;
+    // Qué pasa con la plata que la NC deja a favor del cliente (09-10-2026):
+    //   A_FAVOR    (por defecto, lo de siempre) queda como saldo a favor para otra compra;
+    //   DEVOLVER   se le devuelve: sale de la caja (egreso "Devolución a Cliente") y se
+    //              descuenta de la cuenta — antes había que hacerlo con un ajuste a mano;
+    //   REFACTURAR queda a favor y el front abre la factura corregida PAGADA con ese crédito
+    //              (sin esto se cobraba otra vez y quedaba un saldo a favor falso:
+    //              Fundación Corazoncitos $ 18.000, Viola Marinsek US$ 1.540…).
+    const destinoPlata = ['DEVOLVER', 'REFACTURAR'].includes(String(destinoBody || '').toUpperCase())
+      ? String(destinoBody).toUpperCase() : 'A_FAVOR';
     if (!docIdOrigen || !clienteId || !cuentaId)
       return res.status(400).json({ error: 'Faltan parámetros: docIdOrigen, clienteId, cuentaId' });
+    if (destinoPlata === 'DEVOLVER' && !metodoPagoDevolucion)
+      return res.status(400).json({ error: 'Para devolver la plata hay que indicar el medio (efectivo, transferencia…).' });
 
     const pool = await getPool();
     const transaction = pool.transaction();
@@ -2672,6 +2858,24 @@ const generarNotaCredito = async (req, res) => {
 
       if (montoNum > Number(docOrigen.DocTotal)) {
         throw new Error(`El total de la Nota de Crédito (${montoNum}) no puede superar al total del documento original (${docOrigen.DocTotal})`);
+      }
+
+      // Tope ACUMULADO: las NC vivas que ya tiene este documento + esta no pueden pasar su
+      // total. El control de arriba era por NC sola y dejaba acreditar dos veces lo mismo
+      // (María Moreno ET-3282 US$ 24: NC-000014 y NC-17 → US$ 48 a favor). El DocTipo de la
+      // NC se guarda truncado a 20 ("E-Factura Nota De Cr"): por eso el LIKE.
+      const ncPreviasR = await new sql.Request(transaction)
+        .input('DocId', sql.Int, parseInt(docIdOrigen))
+        .query(`SELECT Total = ISNULL(SUM(DocTotal), 0), N = COUNT(*),
+                       Docs = STRING_AGG(RTRIM(DocSerie) + '-' + RTRIM(DocNumero), ', ')
+                FROM dbo.DocumentosContables
+                WHERE DocIdDocumentoRef = @DocId AND ISNULL(DocEstado, '') <> 'ANULADO'
+                  AND DocTipo LIKE '%Nota De Cr%'`);
+      const ncPrevias = Number(ncPreviasR.recordset[0]?.Total) || 0;
+      const disponibleNc = Math.round((Number(docOrigen.DocTotal) - ncPrevias) * 100) / 100;
+      if (ncPrevias > 0 && montoNum > disponibleNc + 0.01) {
+        throw new Error(`Este documento ya tiene ${ncPreviasR.recordset[0].N === 1 ? 'la Nota de Crédito' : 'las Notas de Crédito'} ${ncPreviasR.recordset[0].Docs} por ${ncPrevias.toFixed(2)}: ` +
+          (disponibleNc > 0.009 ? `solo se pueden acreditar ${disponibleNc.toFixed(2)} más.` : 'ya está acreditado entero.'));
       }
 
       // La NC es TOTAL si acredita el 100% del documento. Solo en ese caso se
@@ -2720,6 +2924,34 @@ const generarNotaCredito = async (req, res) => {
         }, transaction);
         if (!cueIdReal) {
           throw new Error('El cliente no tiene una cuenta corriente activa para esta moneda.');
+        }
+      }
+
+      // Moneda de la CUENTA: si el cargo de la factura original quedó entero en una cuenta de
+      // OTRA moneda (venta en $ cargada en la cuenta US$, o al revés), el crédito va a ESA
+      // cuenta, convertido con la misma proporción del cargo (cargo ÷ total del documento).
+      // Antes iba siempre a la principal de la moneda de la NC: el crédito quedaba en una
+      // billetera y la venta en la otra (Jolega NC-000021: $ 925 contra US$ 22,66).
+      let montoCta = montoNum;   // importe del crédito en la moneda de cueIdReal
+      let monCta   = monId;
+      if (!esConsumidorFinalGenerico) {
+        const cargoR = await new sql.Request(transaction)
+          .input('DocId', sql.Int, parseInt(docIdOrigen))
+          .query(`SELECT m.CueIdCuenta, cc.CueTipo, Cargo = -SUM(m.MovImporte)
+                  FROM dbo.MovimientosCuenta m
+                  JOIN dbo.CuentasCliente cc ON cc.CueIdCuenta = m.CueIdCuenta AND cc.CueTipo LIKE 'DINERO%'
+                  WHERE m.DocIdDocumento = @DocId AND ISNULL(m.MovAnulado, 0) = 0 AND m.MovImporte < 0
+                    AND m.MovTipo IN ('VTA_CAJA','CIERRE_CICLO','VENTA','CARGO')
+                  GROUP BY m.CueIdCuenta, cc.CueTipo`);
+        if (cargoR.recordset.length === 1) {
+          const c = cargoR.recordset[0];
+          const monCargo = c.CueTipo === 'DINERO_USD' ? 2 : 1;
+          if (monCargo !== monId && Number(c.Cargo) > 0 && Number(docOrigen.DocTotal) > 0) {
+            cueIdReal = c.CueIdCuenta;
+            monCta    = monCargo;
+            montoCta  = Math.round(montoNum * Number(c.Cargo) / Number(docOrigen.DocTotal) * 100) / 100;
+            logger.info(`[NOTA-CREDITO] Doc #${docIdOrigen}: el cargo está en la cuenta ${c.CueTipo} #${c.CueIdCuenta} → el crédito va ahí: ${montoNum} → ${montoCta}.`);
+          }
         }
       }
 
@@ -2795,19 +3027,52 @@ const generarNotaCredito = async (req, res) => {
       const fullNcNumero = `${ncSerie}-${ncNumero}`;
 
       // ─────────────────────────────────────────────
+      // aFavorCta: lo que la NC deja LIBRE en la cuenta (moneda monCta). La parte que baja
+      // deuda viva del documento original no es plata del cliente: no se devuelve.
+      let aFavorCta = 0;
       if (!esConsumidorFinalGenerico) {
         // Registro centralizado: saldo calculado por SP, no a mano
         await contabilidadSvc.registrarMovimiento({
           CueIdCuenta:    cueIdReal,
           MovTipo:        'NOTA_CREDITO',
           MovConcepto:    motivo || `NC ${fullNcNumero}`,
-          MovImporte:     montoNum,
+          MovImporte:     montoCta,
           MovUsuarioAlta: usuarioId,
           DocIdDocumento: ncId,
         }, transaction);
 
-        // NC reduce la deuda del documento al que hace referencia
-        await contabilidadSvc.reducirDeuda({ docId: parseInt(docIdOrigen), monto: montoNum }, transaction);
+        // Deuda viva del original ANTES de bajarla, y en qué moneda está.
+        const deudaR = await new sql.Request(transaction)
+          .input('DocId', sql.Int, parseInt(docIdOrigen))
+          .query(`SELECT Pend = ISNULL(SUM(dd.DDeImportePendiente), 0),
+                         MonDeuda = MAX(CASE cc.CueTipo WHEN 'DINERO_USD' THEN 2 ELSE 1 END)
+                  FROM dbo.DeudaDocumento dd JOIN dbo.CuentasCliente cc ON cc.CueIdCuenta = dd.CueIdCuenta
+                  WHERE dd.DocIdDocumento = @DocId AND dd.DDeEstado NOT IN ('CANCELADA','COBRADO')`);
+        const pendAntes = Number(deudaR.recordset[0]?.Pend) || 0;
+        const monDeuda  = Number(deudaR.recordset[0]?.MonDeuda) || monCta;
+        // NC reduce la deuda del documento al que hace referencia — en la moneda de la DEUDA
+        // (antes restaba el número de la NC sin convertir aunque la deuda fuera de otra moneda).
+        const montoDeuda = monDeuda === monCta ? montoCta : (monDeuda === monId ? montoNum : montoCta);
+        await contabilidadSvc.reducirDeuda({ docId: parseInt(docIdOrigen), monto: montoDeuda }, transaction);
+        const reducido    = Math.min(montoDeuda, pendAntes);
+        const reducidoCta = monDeuda === monCta ? reducido : (montoDeuda > 0 ? reducido * montoCta / montoDeuda : 0);
+        aFavorCta = Math.max(0, Math.round((montoCta - reducidoCta) * 100) / 100);
+      } else {
+        aFavorCta = montoNum;   // consumidor final: venta contado, la plata es toda devolvible
+      }
+
+      // DEVOLVER: la plata libre sale de la caja y se descuenta de la cuenta (ligado al voucher).
+      let devolucion = null;
+      if (destinoPlata === 'DEVOLVER') {
+        if (aFavorCta > 0.009) {
+          devolucion = await _registrarDevolucionNC({
+            transaction, usuarioId, cliId: cliIdNum, cueId: esConsumidorFinalGenerico ? null : cueIdReal,
+            monId: monCta, importe: aFavorCta, metodoPagoId: metodoPagoDevolucion, admin: !!admin,
+            ncNumero: fullNcNumero, empresaId: docOrigen.EmpIdEmpresa || null,
+          });
+        } else {
+          logger.info(`[NOTA-CREDITO] ${fullNcNumero}: se pidió devolver pero la NC solo bajó deuda (no deja plata libre).`);
+        }
       }
 
       // ─────────────────────────────────────────────
@@ -2883,10 +3148,21 @@ const generarNotaCredito = async (req, res) => {
       await transaction.commit();
       logger.info(`[NOTA-CREDITO] Doc #${docIdOrigen} -> NC #${ncId} (${fullNcNumero}) Monto:${montoNum}`);
       const s = io(req); if (s) s.emit('actualizado', { type: 'nota-credito' });
+      const simCta = monCta === 2 ? 'US$' : '$';
+      const msgDestino = devolucion
+        ? ` Se devolvieron ${simCta} ${devolucion.importe.toFixed(2)} (${devolucion.metodo}) — egreso de caja ${devolucion.voucher}.`
+        : (aFavorCta > 0.009
+            ? (destinoPlata === 'REFACTURAR'
+                ? ` Quedan ${simCta} ${aFavorCta.toFixed(2)} a favor para pagar la factura corregida.`
+                : ` Quedan ${simCta} ${aFavorCta.toFixed(2)} a favor del cliente.`)
+            : '');
       return res.status(201).json({
         success: true, ncId, ncNumero: fullNcNumero, ncTipo,
-        message: `Nota de Crédito ${fullNcNumero} generada`,
-        avisoContable, avisoRecurso
+        message: `Nota de Crédito ${fullNcNumero} generada.${msgDestino}`,
+        avisoContable, avisoRecurso,
+        destinoPlata, aFavor: aFavorCta, monedaAFavor: monCta, cuentaAFavor: cueIdReal, devolucion,
+        // REFACTURAR: el front abre la factura corregida y la paga con este crédito.
+        refacturar: destinoPlata === 'REFACTURAR' ? { docIdOrigen: parseInt(docIdOrigen), credito: aFavorCta, monedaId: monCta, ncNumero: fullNcNumero } : null,
       });
     } catch (errTx) { await rollbackSeguro(transaction, 'caja'); throw errTx; }
   } catch (err) {
@@ -3350,15 +3626,92 @@ async function _metodosChequeIds(transaction = null) {
   }
 }
 
+/**
+ * Deudas a las que se aplicaría un anticipo que entra a la cuenta `cueId`, más viejas
+ * primero. MISMO criterio en la vista previa (GET .../anticipo/deudas) y en el alta:
+ *   · PENDIENTE / PARCIAL / VENCIDO — antes se salteaban las VENCIDO (y la deuda de una
+ *     orden vence el mismo día que nace), así que el anticipo quedaba a favor con la
+ *     deuda viva al lado;
+ *   · sin las deudas POR ORDEN cuya orden ya está facturada: son filas viejas que
+ *     quedaron abiertas (ver cerrarDeudasPorOrdenFacturada) y el anticipo no tiene que
+ *     gastarse ahí.
+ */
+async function _deudasParaAnticipo(cueId, transaction = null) {
+  const req = transaction ? new sql.Request(transaction) : (await getPool()).request();
+  const r = await req.input('Cue', sql.Int, cueId).query(`
+    SELECT d.DDeIdDocumento, d.DDeImportePendiente, d.DocIdDocumento, d.OrdIdOrden, d.DDeEstado,
+           d.DDeFechaEmision, d.DDeFechaVencimiento,
+           Documento = COALESCE(
+             RTRIM(dc.DocSerie) + '-' + RTRIM(dc.DocNumero),
+             'Orden ' + (SELECT TOP 1 RTRIM(o.CodigoOrden) FROM dbo.Ordenes o WITH(NOLOCK) WHERE o.OrdenID = d.OrdIdOrden),
+             'Orden #' + CAST(d.OrdIdOrden AS VARCHAR(20)))
+    FROM dbo.DeudaDocumento d WITH(NOLOCK)
+    LEFT JOIN dbo.DocumentosContables dc WITH(NOLOCK) ON dc.DocIdDocumento = d.DocIdDocumento
+    WHERE d.CueIdCuenta = @Cue
+      AND d.DDeEstado IN ('PENDIENTE','PARCIAL','VENCIDO')
+      AND d.DDeImportePendiente > 0.009
+      AND ${contabilidadSvc.SQL_EXCLUIR_ORDEN_YA_FACTURADA('d')}
+    ORDER BY d.DDeFechaEmision ASC, d.DDeIdDocumento ASC`);
+  return r.recordset;
+}
+
+/** Cuenta a la que entraría el anticipo: la elegida (si es del cliente y de la moneda) o la principal. Solo lee. */
+async function _cuentaDestinoAnticipo(cliId, monId, cuentaId) {
+  const tipo = monId === 2 ? 'DINERO_USD' : 'DINERO_UYU';
+  const pool = await getPool();
+  if (cuentaId) {
+    const r = await pool.request().input('Cue', sql.Int, cuentaId).input('Cli', sql.Int, cliId).input('T', sql.VarChar(20), tipo)
+      .query('SELECT CueIdCuenta FROM dbo.CuentasCliente WITH(NOLOCK) WHERE CueIdCuenta=@Cue AND CliIdCliente=@Cli AND CueTipo=@T AND CueActiva=1');
+    return r.recordset[0]?.CueIdCuenta || null;
+  }
+  const r = await pool.request().input('Cli', sql.Int, cliId).input('T', sql.VarChar(20), tipo)
+    .query('SELECT TOP 1 CueIdCuenta FROM dbo.CuentasCliente WITH(NOLOCK) WHERE CliIdCliente=@Cli AND CueTipo=@T AND CueActiva=1 ORDER BY CueEsPrincipal DESC, CueIdCuenta ASC');
+  return r.recordset[0]?.CueIdCuenta || null;
+}
+
+// ─────────────────────────────────────────────
+// GET /contabilidad/caja/anticipo/deudas?clienteId=&monedaId=&cuentaId=
+// Vista previa para la pantalla del anticipo: qué deudas abiertas tiene la cuenta destino,
+// así el operador elige si el anticipo las paga o queda todo como saldo a favor. Solo lee.
+const deudasParaAnticipo = async (req, res) => {
+  try {
+    const cliId = parseInt(req.query.clienteId);
+    const monId = parseInt(req.query.monedaId) === 2 ? 2 : 1;
+    const cuentaId = req.query.cuentaId ? parseInt(req.query.cuentaId) : null;
+    if (!cliId) return res.status(400).json({ success: false, error: 'Falta clienteId' });
+    const cueId = await _cuentaDestinoAnticipo(cliId, monId, cuentaId);
+    if (!cueId) return res.json({ success: true, cueId: null, deudas: [], total: 0 });
+    const deudas = (await _deudasParaAnticipo(cueId)).map(d => ({
+      id:          d.DDeIdDocumento,
+      documento:   d.Documento,
+      pendiente:   Math.round(Number(d.DDeImportePendiente) * 100) / 100,
+      estado:      d.DDeEstado,
+      emision:     d.DDeFechaEmision,
+      vencimiento: d.DDeFechaVencimiento,
+    }));
+    const total = Math.round(deudas.reduce((s, d) => s + d.pendiente, 0) * 100) / 100;
+    return res.json({ success: true, cueId, deudas, total });
+  } catch (err) {
+    logger.error('[ANTICIPO] deudasParaAnticipo:', err.message);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+};
+
 // ─────────────────────────────────────────────
 // POST /contabilidad/caja/pago-anticipo
-// Body: { clienteId, cuentaId, importe, metodoPagoId, monedaId, concepto }
+// Body: { clienteId, cuentaId, importe, metodoPagoId, monedaId, concepto, imputarDeudas }
+//   imputarDeudas: true (por defecto) aplica el anticipo a las deudas abiertas de la cuenta
+//   (más viejas primero); false lo deja ENTERO como saldo a favor. Lo elige el operador en
+//   la pantalla, que antes no avisaba que el anticipo iba a pagar deudas.
 const registrarPagoAnticipo = async (req, res) => {
   const usuarioId = req.user.id;
   // Multiempresa: empresa a la que se atribuye el anticipo (null => la BD aplica el DEFAULT)
   const empresaId = req.body?.empresaId || req.user?.empresaId || null;
   try {
-    const { clienteId, cuentaId, importe, metodoPagoId, monedaId, concepto, admin, fecha, cotizacion } = req.body;
+    const { clienteId, cuentaId, importe, metodoPagoId, monedaId, concepto, admin, fecha, cotizacion, imputarDeudas } = req.body;
+    // Por defecto SÍ se aplica a deudas (lo de siempre, para cualquier llamador viejo); solo un
+    // false explícito de la pantalla lo deja entero a favor.
+    const aplicarADeudas = !(imputarDeudas === false || imputarDeudas === 'false' || imputarDeudas === 0);
     if (!clienteId || !importe)
       return res.status(400).json({ error: 'Faltan parámetros: clienteId, importe' });
     const montoNum = Number(importe);
@@ -3470,8 +3823,9 @@ const registrarPagoAnticipo = async (req, res) => {
       const tcaId = tcaR.recordset[0].TcaIdTransaccion;
 
       // ─────────────────────────────────────────────
+      let pagIdAnticipo = null;   // rastro pago→deuda en ImputacionPago (ver imputación más abajo)
       if (metodoPagoId) {
-        await new sql.Request(transaction)
+        const pagR = await new sql.Request(transaction)
           .input('Tca',  sql.Int,          tcaId)
           .input('Met',  sql.Int,          parseInt(metodoPagoId))
           .input('MonId',sql.Int,          monId)
@@ -3481,7 +3835,9 @@ const registrarPagoAnticipo = async (req, res) => {
           .input('Cotiz',sql.Decimal(18,4),cotizNum)
           .input('Conv', sql.Decimal(18,4),montoNum * cotizNum)
           .query(`INSERT INTO dbo.Pagos(PagTcaIdTransaccion,MPaIdMetodoPago,PagIdMonedaPago,PagMontoPago,PagFechaPago,PagUsuarioAlta,PagCotizacion,PagMontoConvertido,PagTipoMovimiento)
+                  OUTPUT INSERTED.PagIdPago
                   VALUES(@Tca,@Met,@MonId,@Monto,ISNULL(@FEmis,GETDATE()),@Usr,@Cotiz,@Conv,'INGRESO')`);
+        pagIdAnticipo = pagR.recordset[0]?.PagIdPago || null;
       }
 
       // ─────────────────────────────────────────────
@@ -3581,16 +3937,16 @@ const registrarPagoAnticipo = async (req, res) => {
       // queda como saldo a favor, y así separar las patas del HABER.
       let deudasImputadas = 0;
       let montoImputado = 0;
+      let deudasDejadas = 0;   // deudas abiertas que el operador eligió NO pagar con este anticipo
       try {
-        const deudasR = await new sql.Request(transaction)
-          .input('Cue', sql.Int, cueId)
-          .query(`SELECT DDeIdDocumento, DDeImportePendiente, DocIdDocumento
-                  FROM dbo.DeudaDocumento WITH(NOLOCK)
-                  WHERE CueIdCuenta=@Cue AND DDeEstado IN ('PENDIENTE','PARCIAL') AND DDeImportePendiente > 0
-                  ORDER BY DDeFechaEmision ASC`);
+        const deudasCuenta = await _deudasParaAnticipo(cueId, transaction);
+        if (!aplicarADeudas) {
+          deudasDejadas = deudasCuenta.length;
+          if (deudasDejadas) logger.info(`[ANTICIPO] Cli=${cliId}: el operador eligió dejarlo a favor (${deudasDejadas} deuda(s) abiertas sin tocar).`);
+        }
 
         let saldoDisponible = montoNum;
-        for (const d of deudasR.recordset) {
+        for (const d of (aplicarADeudas ? deudasCuenta : [])) {
           if (saldoDisponible <= 0) break;
           const pendiente = Number(d.DDeImportePendiente);
           const aplicar = Math.min(saldoDisponible, pendiente);
@@ -3603,6 +3959,23 @@ const registrarPagoAnticipo = async (req, res) => {
           // factura está paga. (Distinto del botón manual "Imputar anticipo", que sí
           // resta: ahí la plata YA estaba contada como disponible antes de gastarla).
           await contabilidadSvc.reducirDeuda({ ddeId: d.DDeIdDocumento, monto: aplicar }, transaction);
+
+          // Rastro pago→deuda: sin esto, anular el RA (anularReciboInterno → reponerDeudasDeTransaccion)
+          // no sabía qué deudas había pagado y las dejaba cobradas sin plata.
+          if (pagIdAnticipo && aplicar > 0.001) {
+            await new sql.Request(transaction)
+              .input('pagId', sql.Int,           pagIdAnticipo)
+              .input('ddeId', sql.Int,           d.DDeIdDocumento)
+              .input('cueId', sql.Int,           cueId)
+              .input('monto', sql.Decimal(18,4), aplicar)
+              .input('usr',   sql.Int,           usuarioId)
+              .input('FEmis', sql.DateTime,      fechaAnticipo)
+              .query(`
+                INSERT INTO dbo.ImputacionPago
+                  (PagIdPago, DDeIdDocumento, CueIdCuenta, ImpImporte, ImpFecha, ImpUsuarioAlta)
+                VALUES (@pagId, @ddeId, @cueId, @monto, ISNULL(@FEmis, GETDATE()), @usr)
+              `);
+          }
 
           saldoDisponible -= aplicar;
           montoImputado += aplicar;
@@ -3665,7 +4038,7 @@ const registrarPagoAnticipo = async (req, res) => {
       await transaction.commit();
       const msgImputado = deudasImputadas > 0
         ? ` Se imputó ${monStr} ${montoImputado.toFixed(2)} contra ${deudasImputadas} deuda(s) pendiente(s).`
-        : '';
+        : (deudasDejadas > 0 ? ` Quedó entero como saldo a favor; las ${deudasDejadas} deuda(s) abiertas siguen pendientes.` : '');
       logger.info(`[ANTICIPO] Cli=${cliId} Cue=${cueId} Monto=${montoNum} DocId=${docId} TcaId=${tcaId}${msgImputado}`);
       const s = io(req); if (s) s.emit('actualizado', { type: 'anticipo' });
       return res.status(201).json({
@@ -3843,7 +4216,7 @@ const guardarComprobante = async (req, res) => {
     let subcarpeta = 'facturas';
     const nom = nombreDocumento.toUpperCase();
     if (nom.startsWith('EG-') || nom.startsWith('VC-'))      subcarpeta = 'egresos';
-    else if (nom.startsWith('RC-') || nom.startsWith('REC-')) subcarpeta = 'recibos';
+    else if (nom.startsWith('RC-') || nom.startsWith('RA-') || nom.startsWith('REC-')) subcarpeta = 'recibos';
     else if (nom.startsWith('IG-'))                           subcarpeta = 'ingresos';
     else if (nom.startsWith('CIERRE-') || nom.startsWith('CC-')) subcarpeta = 'cierres';
     const filePath = pdfService.guardarDesdeBase64(nombreDocumento, pdfBase64, subcarpeta);
@@ -4149,7 +4522,7 @@ module.exports = {
   // ─────────────────────────────────────────────
   registrarOperacionManual,
   // Operaciones desde Estado de Cuenta (Caja Administrativa)
-  generarNotaCredito, generarNotaCreditoExterna, generarNotaDebito, reversarDocumento, registrarPagoAnticipo, anularFactura,
+  generarNotaCredito, previewNotaCredito, generarNotaCreditoExterna, generarNotaDebito, reversarDocumento, registrarPagoAnticipo, deudasParaAnticipo, anularFactura,
   // ¿la factura fue una compra de recurso? (aviso antes de NC / anulación)
   consultarCompraRecursoDocumento,
   // Guardar Comprobantes en Servidor

@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import api from '../../services/apiClient';
 import { toast } from 'sonner';
+import { generarPdfReciboCobro } from '../../utils/pdfGenerator';
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -40,6 +41,8 @@ const TIPO_LABELS = {
   'NINGUNO': 'Sin Doc.',
 };
 const getTipoLabel = (tipo) => TIPO_LABELS[String(tipo||'').trim()] || String(tipo||'').trim() || '—';
+// Botón de icono de la columna Acciones (el color del hover lo pone cada uno)
+const btnAccion = 'inline-flex items-center justify-center w-7 h-7 rounded-lg border border-zinc-200 bg-white text-zinc-400 transition-all shadow-sm';
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Componente principal
@@ -154,6 +157,21 @@ export default function BandejaDocumentosInternos() {
     win.document.close();
     win.focus();
     setTimeout(() => { win.print(); win.addEventListener('afterprint', () => win.close()); }, 600);
+  };
+
+  // Recibo A4 de un ingreso (modelo único: mismo papel que Caja y el Panel 360)
+  const [imprimiendoA4, setImprimiendoA4] = useState(null); // DocId en curso
+  const handleReciboA4 = async (doc) => {
+    if (imprimiendoA4) return;
+    setImprimiendoA4(doc.DocId);
+    try {
+      const res = await api.get(`/contabilidad/cobros/${doc.DocId}/recibo`);
+      await generarPdfReciboCobro(res.data?.data);
+    } catch (err) {
+      toast.error('No se pudo generar el recibo: ' + (err.response?.data?.error || err.message));
+    } finally {
+      setImprimiendoA4(null);
+    }
   };
 
   // ── Acciones: anular / editar monto ──────────────────────────────────────────
@@ -305,26 +323,26 @@ export default function BandejaDocumentosInternos() {
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="bg-zinc-50 border-b border-zinc-200">
-                  <th className="px-4 py-3 text-left text-[10px] font-black text-zinc-400 uppercase tracking-widest">Fecha</th>
-                  <th className="px-4 py-3 text-left text-[10px] font-black text-zinc-400 uppercase tracking-widest">Tipo</th>
-                  <th className="px-4 py-3 text-left text-[10px] font-black text-zinc-400 uppercase tracking-widest">N° Documento</th>
-                  <th className="px-4 py-3 text-left text-[10px] font-black text-zinc-400 uppercase tracking-widest">Cliente / Proveedor</th>
-                  <th className="px-4 py-3 text-left text-[10px] font-black text-zinc-400 uppercase tracking-widest">Concepto</th>
-                  <th className="px-4 py-3 text-left text-[10px] font-black text-zinc-400 uppercase tracking-widest">Medio Pago</th>
-                  <th className="px-4 py-3 text-right text-[10px] font-black text-zinc-400 uppercase tracking-widest">Total</th>
-                  <th className="px-4 py-3 text-left text-[10px] font-black text-zinc-400 uppercase tracking-widest">Usuario</th>
-                  <th className="px-4 py-3 text-center text-[10px] font-black text-zinc-400 uppercase tracking-widest">Acciones</th>
+                <tr className="bg-zinc-50 border-b border-zinc-200 text-[10px] font-black text-zinc-400 uppercase tracking-widest">
+                  <th className="px-3 py-3 text-left">Fecha</th>
+                  <th className="px-3 py-3 text-left">Tipo</th>
+                  <th className="px-3 py-3 text-left">N° Doc.</th>
+                  <th className="px-3 py-3 text-left">Cliente / Proveedor</th>
+                  <th className="px-3 py-3 text-left">Concepto</th>
+                  <th className="px-3 py-3 text-left">Medio pago</th>
+                  <th className="px-3 py-3 text-right">Total</th>
+                  {/* Fija a la derecha: las opciones se ven siempre, aunque la tabla scrollee */}
+                  <th className="px-3 py-3 text-center sticky right-0 bg-zinc-50 shadow-[-6px_0_8px_-6px_rgba(0,0,0,0.12)]">Acciones</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-zinc-100">
                 {loading && (
-                  <tr><td colSpan={9} className="text-center py-16 text-zinc-400 font-bold text-sm">
+                  <tr><td colSpan={8} className="text-center py-16 text-zinc-400 font-bold text-sm">
                     <RefreshCw size={24} className="animate-spin inline mr-2" />Cargando...
                   </td></tr>
                 )}
                 {!loading && docs.length === 0 && (
-                  <tr><td colSpan={9} className="text-center py-16 text-zinc-400">
+                  <tr><td colSpan={8} className="text-center py-16 text-zinc-400">
                     <FileText size={40} className="mx-auto mb-3 opacity-30" />
                     <p className="font-bold">Sin documentos para el período seleccionado</p>
                   </td></tr>
@@ -332,28 +350,33 @@ export default function BandejaDocumentosInternos() {
                 {!loading && docs.map((doc, i) => {
                   const isIngreso = doc.TipoOperacion === 'INGRESO';
                   const simb = doc.Moneda === 'USD' ? 'U$S' : '$';
+                  // Anulado viene como 0/1: con `&&` directo React pintaba el "0"
+                  const anulado = Number(doc.Anulado) === 1;
+                  // Fondo sólido para la columna fija de acciones (si no, se transparenta al scrollear)
+                  const fondoFila = anulado ? 'bg-rose-50' : 'bg-white group-hover:bg-zinc-50';
                   return (
                     <tr key={`${doc.TipoOperacion}-${doc.DocId}-${i}`}
-                      className={`transition-colors group ${doc.Anulado ? 'bg-rose-50/40' : 'hover:bg-zinc-50/50'}`}>
-                      {/* Fecha */}
-                      <td className="px-4 py-3 whitespace-nowrap">
-                        <div className={`font-bold text-zinc-800 text-xs ${doc.Anulado ? 'line-through opacity-60' : ''}`}>{fmtDate(doc.Fecha)}</div>
+                      className={`transition-colors group ${anulado ? 'bg-rose-50' : 'hover:bg-zinc-50'}`}>
+                      {/* Fecha + usuario */}
+                      <td className="px-3 py-3 whitespace-nowrap">
+                        <div className={`font-bold text-zinc-800 text-xs ${anulado ? 'line-through opacity-60' : ''}`}>{fmtDate(doc.Fecha)}</div>
                         <div className="text-[10px] text-zinc-400">{fmtTime(doc.Fecha)}</div>
+                        <div className="text-[10px] text-zinc-400 font-bold max-w-[110px] truncate" title={doc.Usuario || ''}>{doc.Usuario || '—'}</div>
                       </td>
                       {/* Tipo */}
-                      <td className="px-4 py-3 whitespace-nowrap">
+                      <td className="px-3 py-3 whitespace-nowrap">
                         <div className="flex flex-col gap-1 items-start">
                           <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-wide ${
                             isIngreso
                               ? 'bg-emerald-100 text-emerald-700'
                               : 'bg-rose-100 text-rose-700'
-                          } ${doc.Anulado ? 'opacity-50' : ''}`}>
+                          } ${anulado ? 'opacity-50' : ''}`}>
                             {isIngreso
                               ? <ArrowDownCircle size={11}/>
                               : <ArrowUpCircle size={11}/>}
                             {getTipoLabel(doc.TipoDoc || doc.CodTipoDoc)}
                           </span>
-                          {doc.Anulado && (
+                          {anulado && (
                             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider bg-zinc-800 text-white">
                               <Ban size={9}/> Anulado
                             </span>
@@ -366,65 +389,70 @@ export default function BandejaDocumentosInternos() {
                         </div>
                       </td>
                       {/* Nro */}
-                      <td className="px-4 py-3 whitespace-nowrap font-black text-xs text-zinc-800">
+                      <td className="px-3 py-3 whitespace-nowrap font-black text-xs text-zinc-800">
                         {nroDoc(doc.Serie, doc.Numero)}
                       </td>
                       {/* Cliente */}
-                      <td className="px-4 py-3">
-                        <div className="font-bold text-zinc-800 text-xs max-w-[160px] truncate">{doc.ClienteNombre || '—'}</div>
+                      <td className="px-3 py-3">
+                        <div className="font-bold text-zinc-800 text-xs max-w-[170px] truncate" title={doc.ClienteNombre || ''}>{doc.ClienteNombre || '—'}</div>
                         {doc.ClienteId != null && (
                           <div className="text-[10px] text-zinc-400 font-mono mt-0.5">ID #{doc.ClienteId}</div>
                         )}
                       </td>
-                      {/* Concepto */}
-                      <td className="px-4 py-3">
-                        <div className="text-xs text-zinc-500 max-w-[200px] truncate" title={doc.Observaciones}>
+                      {/* Concepto (hasta 2 renglones; el texto completo en el tooltip) */}
+                      <td className="px-3 py-3">
+                        <div className="text-xs text-zinc-500 max-w-[220px] line-clamp-2" title={doc.Observaciones}>
                           {doc.Observaciones || '—'}
                         </div>
                       </td>
                       {/* Medio pago */}
-                      <td className="px-4 py-3 whitespace-nowrap">
+                      <td className="px-3 py-3">
                         <span className="text-xs text-zinc-500 font-bold">{doc.MetodoPago || '—'}</span>
                       </td>
                       {/* Total */}
-                      <td className="px-4 py-3 whitespace-nowrap text-right">
-                        <span className={`font-black text-sm ${isIngreso ? 'text-emerald-700' : 'text-rose-700'} ${doc.Anulado ? 'line-through opacity-60' : ''}`}>
+                      <td className="px-3 py-3 whitespace-nowrap text-right">
+                        <span className={`font-black text-sm ${isIngreso ? 'text-emerald-700' : 'text-rose-700'} ${anulado ? 'line-through opacity-60' : ''}`}>
                           {simb} {fmt(doc.Total)}
                         </span>
                       </td>
-                      {/* Usuario */}
-                      <td className="px-4 py-3 whitespace-nowrap">
-                        <span className="text-[10px] text-zinc-400 font-bold">{doc.Usuario || '—'}</span>
-                      </td>
-                      {/* Acciones */}
-                      <td className="px-4 py-3 text-center">
-                        <div className="inline-flex items-center gap-1">
+                      {/* Acciones (columna fija a la derecha) */}
+                      <td className={`px-3 py-3 sticky right-0 transition-colors shadow-[-6px_0_8px_-6px_rgba(0,0,0,0.12)] ${fondoFila}`}>
+                        <div className="flex items-center justify-center gap-1">
                           <button
                             onClick={() => handleImprimir(doc)}
-                            title="Imprimir / Ver documento"
-                            className="inline-flex items-center justify-center w-8 h-8 rounded-lg border border-zinc-200 bg-white hover:bg-indigo-50 hover:border-indigo-400 hover:text-indigo-600 text-zinc-400 transition-all shadow-sm"
+                            title="Ticket (impresora térmica)"
+                            className={`${btnAccion} hover:bg-indigo-50 hover:border-indigo-400 hover:text-indigo-600`}
                           >
-                            <Printer size={15} />
+                            <Printer size={14} />
                           </button>
-                          {!doc.Anulado && (
-                            <>
-                              {doc.CodTipoDoc !== 'ANTICIPO' && (
-                                <button
-                                  onClick={() => abrirEditar(doc)}
-                                  title="Editar monto"
-                                  className="inline-flex items-center justify-center w-8 h-8 rounded-lg border border-zinc-200 bg-white hover:bg-amber-50 hover:border-amber-400 hover:text-amber-600 text-zinc-400 transition-all shadow-sm"
-                                >
-                                  <Pencil size={15} />
-                                </button>
-                              )}
-                              <button
-                                onClick={() => abrirAnular(doc)}
-                                title="Anular documento"
-                                className="inline-flex items-center justify-center w-8 h-8 rounded-lg border border-zinc-200 bg-white hover:bg-rose-50 hover:border-rose-400 hover:text-rose-600 text-zinc-400 transition-all shadow-sm"
-                              >
-                                <Ban size={15} />
-                              </button>
-                            </>
+                          {/* Recibo A4: mismo modelo que Caja y el Panel 360 (DocId = transacción de caja) */}
+                          {isIngreso && (
+                            <button
+                              onClick={() => handleReciboA4(doc)}
+                              disabled={imprimiendoA4 === doc.DocId}
+                              title="Recibo A4"
+                              className={`${btnAccion} hover:bg-cyan-50 hover:border-cyan-400 hover:text-cyan-700 disabled:opacity-50`}
+                            >
+                              {imprimiendoA4 === doc.DocId ? <RefreshCw size={14} className="animate-spin" /> : <FileText size={14} />}
+                            </button>
+                          )}
+                          {!anulado && doc.CodTipoDoc !== 'ANTICIPO' && (
+                            <button
+                              onClick={() => abrirEditar(doc)}
+                              title="Editar monto"
+                              className={`${btnAccion} hover:bg-amber-50 hover:border-amber-400 hover:text-amber-600`}
+                            >
+                              <Pencil size={14} />
+                            </button>
+                          )}
+                          {!anulado && (
+                            <button
+                              onClick={() => abrirAnular(doc)}
+                              title="Anular documento"
+                              className={`${btnAccion} hover:bg-rose-50 hover:border-rose-400 hover:text-rose-600`}
+                            >
+                              <Ban size={14} />
+                            </button>
                           )}
                         </div>
                       </td>

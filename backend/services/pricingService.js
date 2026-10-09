@@ -721,8 +721,10 @@ class PricingService {
         if (precioFinalBase <= 0) {
             traceDecision += `  Recargos omitidos: precio ya es 0 (descuento total aplicado).\n`;
         } else {
+            // Cada recargo % se calcula sobre el precio CON el descuento ya aplicado (neto
+            // antes de recargos) y se SUMA: lista 10, desc 25 % → 7,50; tinta 25 % → +1,875.
             surchargeRules.forEach(r => {
-                let val = r.TipoRegla.includes('percentage') ? nuevoPrecioBase * (parseFloat(r.Valor) / 100) : toTarget(r.Valor, r.Moneda);
+                let val = r.TipoRegla.includes('percentage') ? precioFinalBase * (parseFloat(r.Valor) / 100) : toTarget(r.Valor, r.Moneda);
                 traceDecision += `  - SUMA RECARGO [${r.NombrePerfil}]: +${val.toFixed(2)}\n`;
                 totalRecargos += val;
                 breakdown.push({ tipo: 'SURCHARGE', valor: val, desc: `Recargo ${r.TipoRegla.includes('percentage') ? r.Valor + '%' : ''} [${r.NombrePerfil}]`, profileId: r.PerfilID });
@@ -863,8 +865,9 @@ class PricingService {
 
         // ---- DESGLOSE ESTRUCTURADO (specs/09 RN-PRE.12): lo que se congela con la línea ----
         // lista (después del override técnico) − descuento ganador + Σ recargos = neto.
-        // Cada recargo se calcula sobre la lista y se SUMA (25 % + 25 % = 50 %). El % del
-        // descuento es el de la regla (informativo); el importe es el que cierra la cuenta.
+        // Cada recargo se calcula sobre lista − descuento y se SUMA (25 % + 25 % = 50 % de ese
+        // neto). El % del descuento es el de la regla (informativo); el importe es el que cierra
+        // la cuenta.
         const etiquetas = await PricingService.getEtiquetasPerfiles(pool);
         const origenRegla = (r) => {
             const esExc = r.NombrePerfil === 'Excepción Cliente';

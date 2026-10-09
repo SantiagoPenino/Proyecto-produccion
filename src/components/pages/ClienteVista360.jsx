@@ -29,7 +29,7 @@ import { toast } from 'sonner';
 import { useLocation, useNavigate } from 'react-router-dom';
 
 import api from '../../services/api';
-import { generarPdfEstadoCuenta, generarPdfEstadoCuentaResumen } from '../../utils/pdfGenerator';
+import { generarPdfEstadoCuenta, generarPdfEstadoCuentaResumen, generarPdfReciboCobro } from '../../utils/pdfGenerator';
 import { exportarExcelEstadoCuenta, exportarExcelClientesRecursos } from '../../utils/excelGenerator';
 import ClienteBilletera from '../common/ClienteBilletera';
 import { fechaOrden, fmtFechaHora, hoyInput, aInputLocal } from '../../utils/fechas';
@@ -521,6 +521,7 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
         cfeEstado: p.cfeEstado || null, cfeNumeroOficial: p.cfeNumeroOficial || null,
         esFavor: !!p.esFavor, esConsumo: !!p.esConsumo, medioPago: p.medioPago, cheques: p.cheques, recibo: p.recibo,
         pagIdPago: p.pagIdPago || null,
+        tcaId: p.tcaIdTransaccion || null, // transacción de caja del cobro → reimprimir su recibo
         pagoMoneda: p.pagoMoneda, pagoMonto: p.pagoMonto, pagoCotiz: p.pagoCotiz,
         // esConsumo: el lado débito de un cruce de moneda (plata SALIENDO de esta
         // cuenta para financiar la otra moneda) — va como CARGO, no abono, o un
@@ -643,6 +644,24 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
     return map;
   }, [pagos]);
   const [detallePago, setDetallePago] = useState(null); // fila de pago cuyo detalle se muestra
+
+  // Reimprimir el recibo de un cobro: se arma con los datos de SU transacción de caja
+  // (recibo RC, medios de pago, cheques y documentos a los que se aplicó).
+  const [imprimiendoRecibo, setImprimiendoRecibo] = useState(null); // tcaId en curso
+  const imprimirRecibo = async (m) => {
+    if (!m?.tcaId || imprimiendoRecibo) return;
+    setImprimiendoRecibo(m.tcaId);
+    const toastId = toast.loading('Generando recibo...');
+    try {
+      const res = await api.get(`/contabilidad/cobros/${m.tcaId}/recibo`);
+      await generarPdfReciboCobro(res.data?.data);
+      toast.success('Recibo listo para imprimir.', { id: toastId });
+    } catch (e) {
+      toast.error(e.response?.data?.error || e.message || 'No se pudo generar el recibo.', { id: toastId });
+    } finally {
+      setImprimiendoRecibo(null);
+    }
+  };
 
   // Órdenes filtradas (pestaña Órdenes) — filtros por orden, documento, facturación, moneda y situación de pago
   const ordenesFiltradas = ordenesMov.filter(o => {
@@ -918,7 +937,7 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
                               </span>
                             )}
                             {/* Cobro: recibo · forma de pago · N° cheque, en la misma línea */}
-                            {!esDoc && m.recibo && m.etiqueta && (
+                            {!esDoc && m.recibo && m.etiqueta && m.recibo !== m.etiqueta && (
                               <span className="text-[11px] font-bold text-slate-500">{m.recibo}</span>
                             )}
                             {!esDoc && m.medioPago && (
@@ -943,6 +962,16 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
                               <button type="button" onClick={() => setDetallePago(m)}
                                 className="text-[11px] font-bold text-cyan-600 hover:text-cyan-800 hover:underline">
                                 Ver detalle
+                              </button>
+                            )}
+                            {/* Reimprimir el recibo del cobro (cobros y anticipos con transacción
+                                de caja; no el lado "Aplicado" de un cruce ni ajustes sin caja). */}
+                            {!esDoc && !m.esConsumo && m.tcaId && (
+                              <button type="button" onClick={() => imprimirRecibo(m)} disabled={!!imprimiendoRecibo}
+                                title={`Imprimir el recibo de este cobro${m.recibo ? ` (${m.recibo})` : ''}`}
+                                className="inline-flex items-center gap-1 text-[11px] font-bold text-slate-500 hover:text-cyan-700 disabled:opacity-50">
+                                {imprimiendoRecibo === m.tcaId ? <RefreshCw size={12} className="animate-spin" /> : <Printer size={12} />}
+                                Recibo
                               </button>
                             )}
                           </div>
@@ -1248,9 +1277,16 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
                   </ul>
                 </div>
               </div>
-              <div className="px-6 pb-5">
+              <div className="px-6 pb-5 flex gap-2">
+                {detallePago.tcaId && !detallePago.esConsumo && (
+                  <button onClick={() => imprimirRecibo(detallePago)} disabled={!!imprimiendoRecibo}
+                    className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-semibold text-white bg-cyan-600 hover:bg-cyan-700 disabled:opacity-60 rounded-xl transition-colors">
+                    {imprimiendoRecibo === detallePago.tcaId ? <RefreshCw size={15} className="animate-spin" /> : <Printer size={15} />}
+                    Imprimir recibo
+                  </button>
+                )}
                 <button onClick={() => setDetallePago(null)}
-                  className="w-full px-4 py-2.5 text-sm font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors">
+                  className="flex-1 px-4 py-2.5 text-sm font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors">
                   Cerrar
                 </button>
               </div>
@@ -1570,6 +1606,30 @@ export default function ClienteVista360() {
 
   const onOperacionOk = () => recargarCuentas();
   const cerrarOp = () => { setOpModal(null); recargarCuentas(); };
+
+  // Cobro de deudas confirmado → se abre su recibo A4 para imprimir y se guarda la copia
+  // en el servidor (como el anticipo). A crédito no hubo cobro: no hay recibo.
+  const onCobroDeudaOk = async (data) => {
+    recargarCuentas();
+    const tca = data?.tcaIdTransaccion;
+    if (!tca || !(Number(data?.totalPagado) > 0.005)) return;
+    try {
+      const res = await api.get(`/contabilidad/cobros/${tca}/recibo`);
+      const rec = res.data?.data;
+      const { base64, numero, url, abierto } = await generarPdfReciboCobro(rec);
+      api.post('/contabilidad/caja/guardar-comprobante', { nombreDocumento: numero, pdfBase64: base64 }).catch(() => {});
+      // El navegador bloqueó la ventana (tardó el servidor): botón para abrirlo a mano
+      if (!abierto) {
+        toast(`Recibo ${numero} listo`, {
+          duration: 20000,
+          action: { label: 'Imprimir recibo', onClick: () => window.open(url, '_blank') },
+        });
+      }
+    } catch (e) {
+      toast.error('El cobro se registró, pero no se pudo abrir el recibo: ' + (e.response?.data?.error || e.message)
+        + '. Podés imprimirlo desde el Estado de cuenta.');
+    }
+  };
 
   // Facturar órdenes pendientes → reusa la página de pre-factura (mismo flujo que la vista de cuentas)
   // Al volver de la pre-factura tras emitir → aviso (el auto-select por selectedClienteId ya recarga los datos)
@@ -2287,7 +2347,7 @@ export default function ClienteVista360() {
                   metodosPago={metodosPago}
                   cotizacion={cotizacion || 1}
                   initialCliente={clienteSel}
-                  onPagoCompletado={onOperacionOk}
+                  onPagoCompletado={onCobroDeudaOk}
                 />
               ) : opModal === 'VENTA' ? (
                 <CajaVentaDirectaTab

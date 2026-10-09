@@ -43,8 +43,8 @@ const esCapa = (capa, ...nombres) => nombres.map(clave).includes(clave(capa));
 /** Lo que trae un arte: capas, mesas, letras por capa y los nombres de pieza escritos en "guias". */
 async function analizarArte(buffer) {
   const pdfjs = await cargarPdfjs();
-  // pdfjs 6 sacó doc.destroy(): se cierra (y libera memoria) con el loadingTask. Con doc.destroy() el finally tiraba
-  // TypeError aunque la lectura hubiera salido bien, y TODO arte quedaba como "No se pudo leer".
+  // pdfjs 6 sacó doc.destroy(): se cierra (y libera memoria) con el loadingTask, que anda igual en la 5. Con
+  // doc.destroy() el finally tiraba TypeError aunque la lectura hubiera salido bien, y TODO arte quedaba como "No se pudo leer".
   const tarea = pdfjs.getDocument({ data: new Uint8Array(buffer), isEvalSupported: false, useSystemFonts: false, verbosity: 0 });
   const doc = await tarea.promise;
   try {

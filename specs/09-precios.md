@@ -121,8 +121,13 @@ combo, y líneas 100% cubiertas por plan prepago.
   técnica), **descuento** (tipo % / importe / precio pactado / manual, %, importe unitario,
   origen y regla) y **recargos** (suma de % e importe, y el detalle de cada uno), y cumple
   `lista − descuento + Σ recargos = precio unitario` a 2 decimales. El **importe del
-  descuento absorbe el redondeo**; el % es el de la regla y nunca se recalcula. Varios
-  recargos (urgencia + tinta) se calculan cada uno sobre la lista y **se suman**. Un
+  descuento absorbe el redondeo**; el % es el de la regla y nunca se recalcula. (9-oct-2026)
+  Cada recargo % (urgencia, tinta, manual) se calcula sobre **lista − descuento** y varios
+  recargos **se suman** entre sí (no se encadenan): lista 10, descuento 25 % → 7,50; tinta
+  25 % → +1,875; unitario 9,375. Hasta esa fecha se calculaban sobre la lista; las líneas
+  congeladas con la regla vieja no se recalculan solas, solo si alguien edita su descuento
+  o su recargo. La regla vive en `src/utils/desglosePrecio.js` y su espejo en
+  `backend/services/desgloseLineaPedido.js`. Un
   precio tipeado a mano conserva la lista y deja la diferencia como descuento o recargo
   **manual**; una reposición sin cargo es lista + descuento 100 % con origen
   "Reposición". El perfil que aplicó y las reglas que compitieron y perdieron quedan

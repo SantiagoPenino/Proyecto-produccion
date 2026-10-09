@@ -7,6 +7,7 @@ import { getTipoDocName } from './tiposDocumento';
 import { codigoCuenta } from './cuentaCodigo';
 import { descripcionLineaCorta } from './descripcionLineaFactura';
 import { lineasConceptoPdf } from './detalleMovimientoCuenta';
+import { fmtFecha, fmtFechaHora } from './fechas';
 
 /** Escribe un texto centrado achicando la fuente si no entra en el ancho dado. */
 function textoAjustado(pdf, texto, x, y, anchoMax, tamBase = 10) {
@@ -45,6 +46,7 @@ function _centenas(n) {
     if (resto === 0) return cStr;
     if (n < 100) {
         const d = Math.floor(n / 10), u = n % 10;
+        if (d === 2 && u > 0) return `VEINTI${UNIDADES[u]}`; // 21-29 van en una palabra: VEINTISIETE
         return (u === 0 ? DECENAS[d] : `${DECENAS[d]} Y ${UNIDADES[u]}`);
     }
     return `${cStr} ${_centenas(resto)}`.trim();
@@ -92,29 +94,31 @@ const cargarImagenBase64 = (src) => new Promise((resolve) => {
 // descargar el archivo. Se usa para adjuntar la factura a un email: el PDF lo dibuja
 // el navegador, así el cliente recibe exactamente el mismo comprobante que ve el
 // operador y no hay que mantener una segunda maquetación en el backend.
-export const generarPdfFacturaDGI = async (doc, detalles, opciones = {}) => {
-    // Parse SISNET DGI fields from our DB fields if they exist
+// Datos de DGI que SISNET deja embebidos en los campos del CFE (URL del QR, texto del
+// N° oficial, texto del CAE). Misma lectura para la factura y el recibo.
+const parsearDatosCfe = (doc) => {
+    const out = {};
     if (doc.CfeUrlImpresion && doc.CfeUrlImpresion.includes('?')) {
         try {
             const qrParts = doc.CfeUrlImpresion.split('?')[1].split(',');
             if (qrParts.length >= 7) {
-                doc.DocSerie = qrParts[2];
-                doc.DocNumero = qrParts[3];
-                doc.DocCodSeguridad = decodeURIComponent(qrParts[6]).substring(0, 6);
+                out.DocSerie = qrParts[2];
+                out.DocNumero = qrParts[3];
+                out.DocCodSeguridad = decodeURIComponent(qrParts[6]).substring(0, 6);
             }
         } catch(e) {}
     }
-    
+
     if (doc.CfeNumeroOficial && doc.CfeNumeroOficial.includes('CAE')) {
         const matches = doc.CfeNumeroOficial.match(/CAE\s*(\d+)/i);
-        if (matches && matches[1]) doc.DocCaeNumero = matches[1];
-        
+        if (matches && matches[1]) out.DocCaeNumero = matches[1];
+
         const rangoMatches = doc.CfeNumeroOficial.match(/Serie.*$/i);
         if (rangoMatches) {
             const parts = rangoMatches[0].split('/');
             if (parts.length === 2) {
-                doc.SecRangoDesde = parts[0].replace(/\D/g, '');
-                doc.SecRangoHasta = parts[1].replace(/\D/g, '');
+                out.SecRangoDesde = parts[0].replace(/\D/g, '');
+                out.SecRangoHasta = parts[1].replace(/\D/g, '');
             }
         }
     }
@@ -125,10 +129,102 @@ export const generarPdfFacturaDGI = async (doc, detalles, opciones = {}) => {
             // Convert DD/MM/YYYY to MM/DD/YYYY for Date parsing
             const parts = vtoMatch[1].split('/');
             if (parts.length === 3) {
-                doc.SecFechaVencimientoCAE = `${parts[1]}/${parts[0]}/${parts[2]}`;
+                out.SecFechaVencimientoCAE = `${parts[1]}/${parts[0]}/${parts[2]}`;
             }
         }
     }
+    return out;
+};
+
+// Bloque fiscal al pie de un CFE: QR, resolución, URL de verificación, IVA al día, CAE,
+// rango, vencimiento del CAE y código de seguridad. Lo comparten la factura y el recibo
+// para que el papel fiscal sea uno solo. `doc` ya pasó por parsearDatosCfe.
+const dibujarBloqueFiscalDgi = async (pdf, qrY, doc) => {
+    // --- Bloque izquierdo: QR (placeholder hasta integración DGI) ---
+    if (doc.CfeUrlImpresion) {
+        try {
+            const qrDataUrl = await QRCode.toDataURL(doc.CfeUrlImpresion, { errorCorrectionLevel: 'M', margin: 0 });
+            pdf.addImage(qrDataUrl, 'PNG', 15, qrY, 28, 28);
+        } catch(e) {
+            console.error("Error generating QR", e);
+        }
+    } else if (doc.DocCaeNumero) {
+        // Cuando haya CAE real pero no URL (fallback)
+        pdf.setFillColor(240, 240, 240);
+        pdf.rect(15, qrY, 28, 28, 'F');
+        pdf.setFontSize(5);
+        pdf.setTextColor(100, 100, 100);
+        pdf.text('QR', 29, qrY + 14, { align: 'center' });
+    } else {
+        pdf.setFillColor(245, 245, 245);
+        pdf.rect(15, qrY, 28, 28, 'F');
+        pdf.setFontSize(5);
+        pdf.setTextColor(150, 150, 150);
+        pdf.text('PENDIENTE DGI', 29, qrY + 14, { align: 'center' });
+    }
+
+    // --- Bloque central: datos DGI ---
+    const dgiX = 47;
+    pdf.setFontSize(8);
+    pdf.setFont('helvetica', 'normal');
+    pdf.setTextColor(180, 0, 0); // rojo DGI
+
+    let dgiY = qrY + 4;
+
+    const resNro = doc.SecNroResolucion || '06/08/2023';
+    pdf.text(`Res. Nro.  ${resNro}`, dgiX, dgiY);
+    dgiY += 5;
+
+    const urlVerif = doc.CfeUrlVerificacion || 'https://www.efactura.dgi.gub.uy/principal/verificacioncfe';
+    pdf.text(`Puede verificar el comprobante en  ${urlVerif}`, dgiX, dgiY);
+    dgiY += 5;
+
+    const ivaDia = doc.CfeTextoIvaDia || 'Iva al día';
+    pdf.text(ivaDia, dgiX, dgiY);
+    dgiY += 5;
+
+    if (doc.DocCaeNumero) {
+        pdf.text(`Nro. CAE:  ${doc.DocCaeNumero}`, dgiX, dgiY);
+        dgiY += 5;
+    } else {
+        pdf.setTextColor(200, 100, 0);
+        pdf.text('Nro. CAE:  PENDIENTE - No enviado a DGI', dgiX, dgiY);
+        dgiY += 5;
+    }
+
+    pdf.setTextColor(180, 0, 0);
+    if (doc.SecRangoDesde && doc.SecRangoHasta) {
+        pdf.text(`Rango:  Serie ${doc.DocSerie || 'A'} del N° ${doc.SecRangoDesde} al ${doc.SecRangoHasta}`, dgiX, dgiY);
+        dgiY += 5;
+    }
+
+    // --- Bloque derecho: Fecha Vencimiento CAE ---
+    if (doc.SecFechaVencimientoCAE) {
+        let fmtFechaVenc = doc.SecFechaVencimientoCAE;
+        try {
+            const parsed = new Date(doc.SecFechaVencimientoCAE);
+            if (!isNaN(parsed.getTime())) {
+                fmtFechaVenc = parsed.toLocaleDateString('es-UY', { timeZone: 'UTC' });
+            }
+        } catch(e) {}
+        pdf.setDrawColor(0, 0, 0);
+        pdf.setLineWidth(0.3);
+        pdf.rect(148, qrY, 47, 10);
+        pdf.setFontSize(8);
+        pdf.setTextColor(0, 0, 0);
+        pdf.text(`Fecha de Vencimiento: ${fmtFechaVenc}`, 171, qrY + 6, { align: 'center' });
+    }
+
+    // Código de seguridad
+    pdf.setFontSize(7);
+    pdf.setTextColor(60, 60, 60);
+    const codSeg = doc.DocCodSeguridad ? `Código de Seguridad: ${doc.DocCodSeguridad}` : '';
+    if (codSeg) pdf.text(codSeg, 15, qrY + 33);
+};
+
+export const generarPdfFacturaDGI = async (doc, detalles, opciones = {}) => {
+    // Parse SISNET DGI fields from our DB fields if they exist
+    Object.assign(doc, parsearDatosCfe(doc));
     const pdf = new jsPDF({ format: 'a4' });
     const esUYU = doc.MonIdMoneda === 1;
     const monedaStr = esUYU ? 'Peso Uruguayo' : 'Dólar estadounidense';
@@ -530,87 +626,10 @@ export const generarPdfFacturaDGI = async (doc, detalles, opciones = {}) => {
     pdf.setDrawColor(180, 180, 180);
     pdf.line(15, footerY, 195, footerY);
 
-    // --- Bloque izquierdo: QR (placeholder hasta integración DGI) ---
+    // QR + datos DGI + vencimiento + código de seguridad (compartido con el recibo)
     const qrY = footerY + 4;
-    if (doc.CfeUrlImpresion) {
-        try {
-            const qrDataUrl = await QRCode.toDataURL(doc.CfeUrlImpresion, { errorCorrectionLevel: 'M', margin: 0 });
-            pdf.addImage(qrDataUrl, 'PNG', 15, qrY, 28, 28);
-        } catch(e) {
-            console.error("Error generating QR", e);
-        }
-    } else if (doc.DocCaeNumero) {
-        // Cuando haya CAE real pero no URL (fallback)
-        pdf.setFillColor(240, 240, 240);
-        pdf.rect(15, qrY, 28, 28, 'F');
-        pdf.setFontSize(5);
-        pdf.setTextColor(100, 100, 100);
-        pdf.text('QR', 29, qrY + 14, { align: 'center' });
-    } else {
-        pdf.setFillColor(245, 245, 245);
-        pdf.rect(15, qrY, 28, 28, 'F');
-        pdf.setFontSize(5);
-        pdf.setTextColor(150, 150, 150);
-        pdf.text('PENDIENTE DGI', 29, qrY + 14, { align: 'center' });
-    }
-
-    // --- Bloque central: datos DGI ---
-    const dgiX = 47;
-    pdf.setFontSize(8);
-    pdf.setFont('helvetica', 'normal');
-    pdf.setTextColor(180, 0, 0); // rojo DGI
-
-    let dgiY = qrY + 4;
-
-    const resNro = doc.SecNroResolucion || '06/08/2023';
-    pdf.text(`Res. Nro.  ${resNro}`, dgiX, dgiY);
-    dgiY += 5;
-
-    const urlVerif = doc.CfeUrlVerificacion || 'https://www.efactura.dgi.gub.uy/principal/verificacioncfe';
-    pdf.text(`Puede verificar el comprobante en  ${urlVerif}`, dgiX, dgiY);
-    dgiY += 5;
-
-    const ivaDia = doc.CfeTextoIvaDia || 'Iva al día';
-    pdf.text(ivaDia, dgiX, dgiY);
-    dgiY += 5;
-
-    if (doc.DocCaeNumero) {
-        pdf.text(`Nro. CAE:  ${doc.DocCaeNumero}`, dgiX, dgiY);
-        dgiY += 5;
-    } else {
-        pdf.setTextColor(200, 100, 0);
-        pdf.text('Nro. CAE:  PENDIENTE - No enviado a DGI', dgiX, dgiY);
-        dgiY += 5;
-    }
-
-    pdf.setTextColor(180, 0, 0);
-    if (doc.SecRangoDesde && doc.SecRangoHasta) {
-        pdf.text(`Rango:  Serie ${doc.DocSerie || 'A'} del N° ${doc.SecRangoDesde} al ${doc.SecRangoHasta}`, dgiX, dgiY);
-        dgiY += 5;
-    }
-
-    // --- Bloque derecho: Fecha Vencimiento CAE ---
-    if (doc.SecFechaVencimientoCAE) {
-        let fmtFechaVenc = doc.SecFechaVencimientoCAE;
-        try {
-            const parsed = new Date(doc.SecFechaVencimientoCAE);
-            if (!isNaN(parsed.getTime())) {
-                fmtFechaVenc = parsed.toLocaleDateString('es-UY', { timeZone: 'UTC' });
-            }
-        } catch(e) {}
-        pdf.setDrawColor(0, 0, 0);
-        pdf.setLineWidth(0.3);
-        pdf.rect(148, qrY, 47, 10);
-        pdf.setFontSize(8);
-        pdf.setTextColor(0, 0, 0);
-        pdf.text(`Fecha de Vencimiento: ${fmtFechaVenc}`, 171, qrY + 6, { align: 'center' });
-    }
-
-    // Código de seguridad y página
-    pdf.setFontSize(7);
-    pdf.setTextColor(60, 60, 60);
-    const codSeg = doc.DocCodSeguridad ? `Código de Seguridad: ${doc.DocCodSeguridad}` : '';
-    if (codSeg) pdf.text(codSeg, 15, qrY + 33);
+    await dibujarBloqueFiscalDgi(pdf, qrY, doc);
+    // Página (mismo cuerpo y color que el código de seguridad)
     const totalPages = pdf.internal.getNumberOfPages();
     pdf.text(`Página ${currentPage} de ${totalPages}`, 195, qrY + 33, { align: 'right' });
 
@@ -1518,5 +1537,403 @@ export const generarPdfPrefactura = (ciclo, movs, excluidos, cuenta, cliente, es
     const blob = pdf.output('blob');
     const url = URL.createObjectURL(blob);
     window.open(url, '_blank');
+};
+
+// CFE oficial de un documento aceptado por DGI: { nombre, serie, numero } leídos de la
+// URL del QR (o del texto del N° oficial). null si el documento no es un CFE aceptado.
+const NOMBRES_CFE = {
+    101: 'e-Ticket', 102: 'NC e-Ticket', 103: 'ND e-Ticket',
+    111: 'e-Factura', 112: 'NC e-Factura', 113: 'ND e-Factura',
+};
+const cfeOficialDoc = (d) => {
+    if (!d || d.cfeEstado !== 'ACEPTADO_DGI') return null;
+    const q = parsearDatosCfe({ CfeUrlImpresion: d.cfeUrlImpresion || '' });
+    let serie = q.DocSerie, numero = q.DocNumero;
+    if (!numero) {
+        const m = String(d.cfeNumeroOficial || '').match(/Serie\s+([A-Za-z]+)\s+(\d+)/i);
+        if (m) { serie = m[1]; numero = m[2]; }
+    }
+    if (!numero) return null;
+    const tipo = Number(d.cfeTipo) || Number(String(d.cfeUrlImpresion || '').split('?')[1]?.split(',')[1]) || null;
+    return { nombre: NOMBRES_CFE[tipo] || 'CFE', serie: serie || '', numero };
+};
+
+// ─── Recibo A4 (modelo único) ───────────────────────────────────────────────
+// Todos los recibos en hoja: cobro de deudas (RC), anticipo / saldo a favor (RA) y
+// movimientos sueltos. `r` = data de GET /contabilidad/cobros/:TcaIdTransaccion/recibo
+// o de GET /contabilidad/movimientos/:MovIdMovimiento/recibo (mismo formato).
+// Si el recibo se emitió como CFE trae `recibo.dgi` y se imprime con el bloque fiscal
+// de la factura (QR, CAE, rango, vencimiento, código de seguridad); si no, aclara que
+// es un recibo interno. Lo abre con el diálogo de impresión (opciones.abrir = false
+// para no abrirlo) y devuelve { base64, nombreArchivo } para guardar la copia.
+export const generarPdfReciboCobro = async (r, opciones = {}) => {
+    const { abrir = true } = opciones;
+    const pdf = new jsPDF({ format: 'a4' });
+    const fmt = (n) => new Intl.NumberFormat('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Number(n) || 0);
+    const aplicaciones = r.aplicaciones || [];
+    const pagos = r.pagos || [];
+    // Moneda del recibo: la de la transacción; si no se guardó, la del recibo o de lo aplicado.
+    const sym = r.monedaBase || r.recibo?.moneda || aplicaciones[0]?.moneda || pagos[0]?.moneda || '$';
+    const totalAplicado = aplicaciones.reduce((s, a) => s + (a.moneda === sym ? a.importe : 0), 0);
+    // Total recibido: se suma desde los pagos, convertidos a la moneda del recibo con su
+    // cotización. TcaTotalCobrado no es confiable para esto (las ventas de caja lo guardan
+    // en pesos aunque la moneda base sea US$); solo se usa cuando algún pago en la otra
+    // moneda no trae cotización (cobro de deuda: ahí sí está en la moneda base).
+    const aBase = (p) => (p.moneda === sym ? p.monto
+        : (p.cotizacion > 1 ? (sym === 'US$' ? p.monto / p.cotizacion : p.monto * p.cotizacion) : null));
+    const pagosEnBase = pagos.map(aBase);
+    const total = (pagos.length && pagosEnBase.every(v => v != null))
+        ? pagosEnBase.reduce((s, v) => s + v, 0)
+        : (Number(r.totalCobrado) > 0.005 ? Number(r.totalCobrado)
+            : (totalAplicado > 0.005 ? totalAplicado : (Number(r.totalAplicado) || Number(r.recibo?.total) || 0)));
+    const nroRecibo = r.recibo?.numero || r.numeroTransaccion || `TCA-${r.tcaIdTransaccion}`;
+
+    // Recibo emitido como CFE: los mismos campos que lee la factura.
+    const dgiRec = r.recibo?.dgi;
+    const dgi = dgiRec ? {
+        CfeUrlImpresion: dgiRec.urlImpresion, CfeNumeroOficial: dgiRec.numeroOficial, CfeCAE: dgiRec.cae,
+        SecNroResolucion: dgiRec.nroResolucion, SecRangoDesde: dgiRec.rangoDesde, SecRangoHasta: dgiRec.rangoHasta,
+        SecFechaVencimientoCAE: dgiRec.vencimientoCAE,
+        CfeUrlVerificacion: r.cfeConfig?.urlVerificacion, CfeTextoIvaDia: r.cfeConfig?.textoIvaDia,
+    } : null;
+    if (dgi) Object.assign(dgi, parsearDatosCfe(dgi));
+    const nombreCfe = dgiRec ? ({ 101: 'e-Ticket', 111: 'e-Factura' }[Number(dgiRec.tipoCFE)] || 'CFE') : null;
+
+    const emp = r.empresa || {};
+    const emisor = {
+        ruc:      emp.EmpRuc || '',
+        fantasia: emp.EmpNombreFantasia || emp.EmpRazonSocial || 'USER',
+        razon:    emp.EmpRazonSocial && emp.EmpRazonSocial !== emp.EmpNombreFantasia ? emp.EmpRazonSocial : '',
+        dir:      [emp.EmpDireccion, emp.EmpCiudad].filter(Boolean).join(' - '),
+        tel:      emp.EmpTelefono || '',
+        logoUrl:  emp.EmpLogoUrl || '',
+    };
+
+    // ── Cabecera: emisor (izquierda) ────────────────────────────────────────
+    let logoDibujado = false;
+    if (emisor.logoUrl) {
+        const logoData = await cargarImagenBase64(emisor.logoUrl);
+        if (logoData && logoData.dataUrl) {
+            const hMM = 14;
+            const ratio = (logoData.width && logoData.height) ? (logoData.width / logoData.height) : 2.5;
+            pdf.addImage(logoData.dataUrl, 'PNG', 14, 14, Math.min(60, hMM * ratio), hMM);
+            logoDibujado = true;
+        }
+    }
+    if (!logoDibujado) {
+        pdf.setFont('helvetica', 'bold');
+        pdf.setFontSize(32);
+        pdf.setTextColor(0, 0, 0);
+        pdf.text('user', 14, 25);
+        pdf.setFillColor(0, 174, 239); pdf.rect(14, 28, 8, 2.5, 'F');
+        pdf.setFillColor(236, 0, 140); pdf.rect(23.5, 28, 8, 2.5, 'F');
+        pdf.setFillColor(255, 242, 0); pdf.rect(33, 28, 8, 2.5, 'F');
+        pdf.setFillColor(0, 0, 0);     pdf.rect(42.5, 28, 8, 2.5, 'F');
+    }
+    pdf.setTextColor(0, 0, 0);
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(11);
+    pdf.text(emisor.fantasia, 14, 38);
+    pdf.setFont('helvetica', 'normal');
+    pdf.setFontSize(8);
+    pdf.setTextColor(...COLOR_SECONDARY);
+    let ey = 42;
+    if (emisor.razon) pdf.splitTextToSize(emisor.razon, 100).slice(0, 2).forEach(l => { pdf.text(l, 14, ey); ey += 3.8; });
+    if (emisor.ruc)   { pdf.text(`RUT: ${emisor.ruc}`, 14, ey); ey += 3.8; }
+    if (emisor.dir)   { pdf.text(emisor.dir, 14, ey); ey += 3.8; }
+    if (emisor.tel)   { pdf.text(`Tel: ${emisor.tel}`, 14, ey); ey += 3.8; }
+
+    // ── Cabecera: caja del recibo (derecha) ─────────────────────────────────
+    const bx = 124, bw = 72;
+    pdf.setDrawColor(...COLOR_PRIMARY);
+    pdf.setLineWidth(0.5);
+    pdf.roundedRect(bx, 14, bw, 34, 2, 2, 'S');
+    pdf.setFillColor(...COLOR_PRIMARY);
+    pdf.roundedRect(bx, 14, bw, 10, 2, 2, 'F');
+    pdf.rect(bx, 20, bw, 4, 'F'); // esquinas de abajo rectas
+    pdf.setTextColor(255, 255, 255);
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(13);
+    pdf.text('RECIBO', bx + bw / 2, 21, { align: 'center' });
+    pdf.setTextColor(...COLOR_PRIMARY);
+    // Con CFE manda la serie y el número oficiales; el interno queda como referencia.
+    const nroOficialCfe = dgi && dgi.DocSerie && dgi.DocNumero ? `Serie ${dgi.DocSerie} N° ${dgi.DocNumero}` : null;
+    textoAjustado(pdf, nroOficialCfe || `N° ${nroRecibo}`, bx + bw / 2, 32, bw - 6, 14);
+    pdf.setFont('helvetica', 'normal');
+    pdf.setFontSize(9);
+    pdf.setTextColor(0, 0, 0);
+    pdf.text(`Fecha: ${fmtFechaHora(r.fecha)}`, bx + bw / 2, 39, { align: 'center' });
+    const subCabecera = nroOficialCfe ? `${nombreCfe} · interno ${nroRecibo}`
+        : (r.comprobante?.numero && r.comprobante.numero !== nroRecibo) ? `${r.comprobante.tipo || 'Comprobante'} ${r.comprobante.numero}`
+        : (r.esAnticipo ? 'Anticipo / saldo a favor' : null);
+    if (subCabecera) {
+        pdf.setTextColor(...COLOR_SECONDARY);
+        textoAjustado(pdf, subCabecera, bx + bw / 2, 44, bw - 6, 7.5);
+    }
+
+    let y = Math.max(ey, 52) + 4;
+
+    // ── Recibimos de ────────────────────────────────────────────────────────
+    const cli = { ...(r.cliente || {}) };
+    if (/^[\s\-.]*$/.test(cli.direccion || '')) cli.direccion = null; // "-" de relleno en la ficha
+    const detCli = [
+        cli.ruc ? `RUT/CI: ${cli.ruc}` : null,
+        cli.codigo ? `Cliente: ${cli.codigo}` : null,
+        cli.telefono ? `Tel: ${cli.telefono}` : null,
+    ].filter(Boolean).join('   ·   ');
+    const boxCliH = cli.direccion ? 24 : 20;
+    pdf.setFillColor(248, 250, 252);
+    pdf.setDrawColor(...COLOR_BORDER);
+    pdf.setLineWidth(0.3);
+    pdf.roundedRect(14, y, 182, boxCliH, 2, 2, 'FD');
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(7.5);
+    pdf.setTextColor(...COLOR_SECONDARY);
+    pdf.text('RECIBIMOS DE', 18, y + 5.5);
+    pdf.setFontSize(11.5);
+    pdf.setTextColor(0, 0, 0);
+    const nomCli = cli.nombre || cli.fantasia || 'Cliente';
+    pdf.text(pdf.splitTextToSize(nomCli + (cli.fantasia && cli.fantasia !== cli.nombre ? ` (${cli.fantasia})` : ''), 174)[0], 18, y + 11.5);
+    pdf.setFont('helvetica', 'normal');
+    pdf.setFontSize(8.5);
+    pdf.setTextColor(...COLOR_SECONDARY);
+    if (detCli) pdf.text(detCli, 18, y + 16.5);
+    if (cli.direccion) pdf.text(pdf.splitTextToSize(`Dirección: ${cli.direccion}`, 174)[0], 18, y + 20.5);
+    y += boxCliH + 5;
+
+    // ── La suma de ──────────────────────────────────────────────────────────
+    const monedaLetras = sym === 'US$' ? 'DÓLARES AMERICANOS' : 'PESOS URUGUAYOS';
+    pdf.setFont('helvetica', 'normal');
+    pdf.setFontSize(8.5);
+    const sonLines = pdf.splitTextToSize(`Son: ${monedaLetras} ${numeroALetras(total)}`, 120);
+    const boxSumaH = Math.max(18, 10 + sonLines.length * 4);
+    pdf.setFillColor(239, 246, 255);
+    pdf.setDrawColor(191, 219, 254);
+    pdf.roundedRect(14, y, 182, boxSumaH, 2, 2, 'FD');
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(7.5);
+    pdf.setTextColor(...COLOR_SECONDARY);
+    pdf.text('LA SUMA DE', 18, y + 5.5);
+    pdf.setFont('helvetica', 'normal');
+    pdf.setFontSize(8.5);
+    pdf.setTextColor(0, 0, 0);
+    pdf.text(sonLines, 18, y + 10.5);
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(17);
+    pdf.setTextColor(...COLOR_PRIMARY);
+    pdf.text(`${sym} ${fmt(total)}`, 192, y + boxSumaH / 2 + 2.5, { align: 'right' });
+    y += boxSumaH + 8;
+
+    // ── En concepto de (documentos cancelados / saldo a favor) ──────────────
+    // Documento pagado aceptado por DGI: manda el CFE oficial (tipo + serie-número, ej.
+    // "e-Factura A-29449") y el número interno queda como referencia.
+    const docConNro = (d) => {
+        const of = cfeOficialDoc(d);
+        return of ? `${of.nombre} ${of.serie}-${of.numero}` : d.documento;
+    };
+    const filasAplic = aplicaciones.length ? aplicaciones.map(a => {
+        const of = a.documento ? cfeOficialDoc(a) : null;
+        const docTxt = a.documento ? (of ? `${docConNro(a)}\nInterno ${a.documento}` : a.documento) : (a.concepto || '—');
+        // Saldo a favor: a qué cuenta del cliente entra la plata (billetera)
+        const detalle = a.cuenta ? `Se carga en la cuenta ${a.cuenta.codigo} · ${a.cuenta.nombre}`
+            : a.esFavor ? a.concepto
+            : [a.tipoDocumento || a.concepto || 'Pago',
+               of ? 'CFE aceptado por DGI' : (a.cfeEstado === 'PENDIENTE' ? 'pendiente de envío a DGI' : null)]
+                .filter(Boolean).join(' · ');
+        return [docTxt, detalle || '', `${a.moneda} ${fmt(a.importe)}`];
+    }) : (r.comprobante ? [[r.comprobante.numero, r.comprobante.tipo || '', `${r.comprobante.moneda || sym} ${fmt(r.totalAplicado || r.comprobante.total)}`]] : []);
+    if (filasAplic.length) {
+        pdf.setFont('helvetica', 'bold');
+        pdf.setFontSize(10);
+        pdf.setTextColor(0, 0, 0);
+        pdf.text('En concepto de', 14, y);
+        // Total por moneda (un cobro puede tocar las dos cuentas del cliente)
+        const totPorMon = {};
+        aplicaciones.forEach(a => { totPorMon[a.moneda] = (totPorMon[a.moneda] || 0) + a.importe; });
+        const foot = Object.entries(totPorMon).map(([m, v]) => [
+            { content: 'Total aplicado', colSpan: 2, styles: { halign: 'right' } },
+            { content: `${m} ${fmt(v)}`, styles: { halign: 'right' } },
+        ]);
+        autoTable(pdf, {
+            startY: y + 2,
+            head: [['Documento / concepto', 'Detalle', 'Importe']],
+            body: filasAplic,
+            // El pie solo aporta si hay más de una línea o más de una moneda
+            foot: (foot.length > 1 || (foot.length === 1 && filasAplic.length > 1)) ? foot : undefined,
+            theme: 'grid',
+            headStyles: { fillColor: COLOR_PRIMARY, textColor: [255, 255, 255], fontStyle: 'bold', fontSize: 8.5 },
+            footStyles: { fillColor: [241, 245, 249], textColor: [15, 23, 42], fontStyle: 'bold', fontSize: 8.5 },
+            styles: { font: 'helvetica', fontSize: 8.5, cellPadding: 2.5, valign: 'middle' },
+            columnStyles: { 0: { cellWidth: 55, fontStyle: 'bold' }, 1: { cellWidth: 'auto' }, 2: { cellWidth: 38, halign: 'right' } },
+            margin: { left: 14, right: 14 },
+        });
+        y = pdf.lastAutoTable.finalY + 8;
+    }
+
+    // Anticipo que al entrar canceló deudas (imputación automática): cuáles y cuánto queda a favor.
+    const imputaciones = r.imputaciones || [];
+    if (imputaciones.length) {
+        const totImp = imputaciones.reduce((s, i) => s + (i.moneda === sym ? i.importe : 0), 0);
+        const lista = imputaciones.map(i => `${i.documento ? docConNro(i) : 'deuda'} (${i.moneda} ${fmt(i.importe)})`).join(', ');
+        pdf.setFont('helvetica', 'normal');
+        pdf.setFontSize(8.5);
+        pdf.setTextColor(...COLOR_SECONDARY);
+        const lineas = pdf.splitTextToSize(
+            `Con este anticipo se cancelaron: ${lista}. Queda a favor: ${sym} ${fmt(Math.max(0, total - totImp))}.`, 182);
+        pdf.text(lineas, 14, y - 3);
+        y += lineas.length * 4 + 3;
+    }
+
+    // ── Forma de pago ───────────────────────────────────────────────────────
+    if (pagos.length) {
+        if (y > 240) { pdf.addPage(); y = 20; }
+        pdf.setFont('helvetica', 'bold');
+        pdf.setFontSize(10);
+        pdf.setTextColor(0, 0, 0);
+        pdf.text('Forma de pago', 14, y);
+        const filasPago = pagos.map(p => {
+            const det = [];
+            if (p.cheque) {
+                det.push(`Cheque N° ${p.cheque.numero}`);
+                if (p.cheque.banco) det.push(p.cheque.banco);
+                if (p.cheque.vencimiento) det.push(`Vto. ${fmtFecha(p.cheque.vencimiento)}`);
+                if (p.cheque.emitidoPor) det.push(`Emite: ${p.cheque.emitidoPor}`);
+            }
+            if (p.moneda !== sym && p.cotizacion > 1) det.push(`T/C ${fmt(p.cotizacion)}`);
+            return [p.metodo, det.join(' · '), `${p.moneda} ${fmt(p.monto)}`];
+        });
+        const pagadoPorMon = {};
+        pagos.forEach(p => { pagadoPorMon[p.moneda] = (pagadoPorMon[p.moneda] || 0) + p.monto; });
+        const footPago = pagos.length > 1 ? Object.entries(pagadoPorMon).map(([m, v]) => [
+            { content: 'Total pagado', colSpan: 2, styles: { halign: 'right' } },
+            { content: `${m} ${fmt(v)}`, styles: { halign: 'right' } },
+        ]) : undefined;
+        autoTable(pdf, {
+            startY: y + 2,
+            head: [['Medio de pago', 'Detalle', 'Importe']],
+            body: filasPago,
+            foot: footPago,
+            theme: 'grid',
+            headStyles: { fillColor: [71, 85, 105], textColor: [255, 255, 255], fontStyle: 'bold', fontSize: 8.5 },
+            footStyles: { fillColor: [241, 245, 249], textColor: [15, 23, 42], fontStyle: 'bold', fontSize: 8.5 },
+            styles: { font: 'helvetica', fontSize: 8.5, cellPadding: 2.5, valign: 'middle' },
+            columnStyles: { 0: { cellWidth: 45, fontStyle: 'bold' }, 1: { cellWidth: 'auto' }, 2: { cellWidth: 38, halign: 'right' } },
+            margin: { left: 14, right: 14 },
+        });
+        y = pdf.lastAutoTable.finalY + 6;
+
+        // Pagado en la otra moneda sin cotización por pago (la caja guarda 1): el tipo de
+        // cambio se deduce del total recibido, para que el papel explique la conversión.
+        const otra = pagos.filter(p => p.moneda !== sym);
+        if (otra.length && !otra.some(p => p.cotizacion > 1)) {
+            const sumOtra = otra.reduce((s, p) => s + p.monto, 0);
+            const restoBase = total - pagos.filter(p => p.moneda === sym).reduce((s, p) => s + p.monto, 0);
+            if (sumOtra > 0.005 && restoBase > 0.005) {
+                const tc = sym === 'US$' ? sumOtra / restoBase : restoBase / sumOtra;
+                pdf.setFont('helvetica', 'normal');
+                pdf.setFontSize(8);
+                pdf.setTextColor(...COLOR_SECONDARY);
+                pdf.text(`Tipo de cambio aplicado: ${fmt(tc)}  (${otra[0].moneda} ${fmt(sumOtra)} = ${sym} ${fmt(restoBase)})`, 196, y, { align: 'right' });
+                y += 6;
+            }
+        }
+    }
+
+    // ── Total + observaciones ───────────────────────────────────────────────
+    if (y > 250) { pdf.addPage(); y = 20; }
+    pdf.setDrawColor(...COLOR_PRIMARY);
+    pdf.setLineWidth(0.4);
+    pdf.line(124, y, 196, y);
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(11);
+    pdf.setTextColor(...COLOR_PRIMARY);
+    pdf.text('TOTAL RECIBIDO:', 124, y + 6);
+    pdf.text(`${sym} ${fmt(total)}`, 196, y + 6, { align: 'right' });
+    y += 14;
+
+    // La observación por defecto del cobro no aporta nada en el papel
+    const obs = (r.observaciones || '').trim();
+    if (obs && !/^pago de deuda cuenta corriente$/i.test(obs)) {
+        pdf.setFont('helvetica', 'normal');
+        pdf.setFontSize(8.5);
+        pdf.setTextColor(...COLOR_SECONDARY);
+        const obsLines = pdf.splitTextToSize(`Observaciones: ${obs}`, 182);
+        pdf.text(obsLines, 14, y);
+        y += obsLines.length * 4 + 4;
+    }
+
+    const recibidoPor = [r.caja, r.cajero ? `Recibido por: ${r.cajero}` : null].filter(Boolean).join('  ·  ');
+    if (dgi) {
+        // ── CFE: bloque fiscal DGI (el de la factura) con la firma a su derecha ──
+        if (y + 42 > 284) { pdf.addPage(); y = 20; }
+        pdf.setDrawColor(180, 180, 180);
+        pdf.setLineWidth(0.3);
+        pdf.line(15, y, 195, y);
+        const qrY = y + 4;
+        await dibujarBloqueFiscalDgi(pdf, qrY, dgi);
+        pdf.setDrawColor(148, 163, 184);
+        pdf.line(150, qrY + 26, 195, qrY + 26);
+        pdf.setFont('helvetica', 'normal');
+        pdf.setFontSize(8);
+        pdf.setTextColor(...COLOR_SECONDARY);
+        pdf.text('Firma y aclaración', 172.5, qrY + 30, { align: 'center' });
+        pdf.text(recibidoPor, 15, qrY + 37.5);
+    } else {
+        // ── Firma ───────────────────────────────────────────────────────────
+        // Muchos cheques pueden empujarla fuera de la hoja: entonces va arriba de una nueva.
+        let firmaY = Math.max(y + 18, 200);
+        if (firmaY > 268) { pdf.addPage(); firmaY = 40; }
+        pdf.setDrawColor(148, 163, 184);
+        pdf.setLineWidth(0.3);
+        pdf.line(124, firmaY, 196, firmaY);
+        pdf.setFont('helvetica', 'normal');
+        pdf.setFontSize(8);
+        pdf.setTextColor(...COLOR_SECONDARY);
+        pdf.text('Firma y aclaración', 160, firmaY + 4, { align: 'center' });
+        pdf.text(recibidoPor, 14, firmaY + 4);
+        pdf.setFontSize(7.5);
+        pdf.text('Recibo interno - no es comprobante fiscal (CFE).', 14, firmaY + 8.5);
+    }
+
+    // ── Anulado: marca de agua ──────────────────────────────────────────────
+    if (r.anulado) {
+        const pages = pdf.internal.getNumberOfPages();
+        for (let i = 1; i <= pages; i++) {
+            pdf.setPage(i);
+            try { pdf.setGState(new pdf.GState({ opacity: 0.18 })); } catch (e) { /* sin transparencia: igual se marca */ }
+            pdf.setFont('helvetica', 'bold');
+            pdf.setFontSize(90);
+            pdf.setTextColor(220, 38, 38);
+            pdf.text('ANULADO', 105, 175, { align: 'center', angle: 30 });
+            try { pdf.setGState(new pdf.GState({ opacity: 1 })); } catch (e) { /* idem */ }
+        }
+    }
+
+    // ── Pie ─────────────────────────────────────────────────────────────────
+    const pageCount = pdf.internal.getNumberOfPages();
+    const ahora = new Date();
+    const p2 = (n) => String(n).padStart(2, '0');
+    const impreso = `${p2(ahora.getDate())}/${p2(ahora.getMonth() + 1)}/${ahora.getFullYear()} ${p2(ahora.getHours())}:${p2(ahora.getMinutes())}`;
+    for (let i = 1; i <= pageCount; i++) {
+        pdf.setPage(i);
+        pdf.setFont('helvetica', 'normal');
+        pdf.setFontSize(7.5);
+        pdf.setTextColor(...COLOR_SECONDARY);
+        const origen = r.tcaIdTransaccion ? `Transacción de caja #${r.tcaIdTransaccion}` : `Movimiento #${r.movIdMovimiento}`;
+        pdf.text(`${origen} · Impreso el ${impreso} · Documento generado por USER Sistema`, 105, 289, { align: 'center' });
+    }
+
+    pdf.setProperties({ title: `Recibo_${nroRecibo}` });
+    // La copia para guardar sale antes del autoPrint (si no, abre la impresión al abrirla).
+    const base64 = pdf.output('datauristring').split(',')[1];
+    let url = null, abierto = false;
+    if (abrir) {
+        pdf.autoPrint();
+        url = URL.createObjectURL(pdf.output('blob'));
+        // Si se abre después de esperar al servidor, el navegador puede bloquear la ventana:
+        // `abierto` le avisa al que llama para que ofrezca un botón (url ya está lista).
+        abierto = !!window.open(url, '_blank');
+    }
+    return { base64, nombreArchivo: `Recibo_${nroRecibo}.pdf`, numero: nroRecibo, url, abierto };
 };
 

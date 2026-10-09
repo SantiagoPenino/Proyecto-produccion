@@ -18,6 +18,7 @@ router.post('/productos', configuradorController.crearProducto);
 router.get('/productos/:proId', configuradorController.getProductoFicha);
 router.put('/productos/:proId', configuradorController.guardarProductoConfig);
 router.put('/productos/:proId/identidad', configuradorController.actualizarIdentidad);   // nombre y código del artículo
+router.post('/productos/:proId/copiar', configuradorController.copiarProducto);          // copia igual, sin precio y en borrador
 
 // Etiquetas (árbol: Familia → Etiqueta → Producto)
 router.get('/etiquetas', configuradorController.getEtiquetas);

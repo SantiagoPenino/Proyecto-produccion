@@ -16,7 +16,7 @@ import { toast } from 'sonner';
 import { useLocation, useNavigate } from 'react-router-dom';
 
 import api from '../../services/api';
-import { generarPdfEstadoCuenta, generarPdfPrefactura, generarPdfFacturaDGI } from '../../utils/pdfGenerator';
+import { generarPdfEstadoCuenta, generarPdfPrefactura, generarPdfFacturaDGI, generarPdfReciboCobro } from '../../utils/pdfGenerator';
 import { codigoCuenta } from '../../utils/cuentaCodigo';
 // La fecha de la cotización viene del backend como DATE en UTC: se formatea con el
 // helper que lee en UTC (el fmtFecha local de este archivo la retrocede un día).
@@ -25,6 +25,7 @@ import { textoCalculo, tituloCalculo } from '../../utils/detalleMovimientoCuenta
 import { exportarExcelEstadoCuenta } from '../../utils/excelGenerator';
 import CierreCicloPreviewModal from './CierreCicloPreviewModal';
 import FacturacionManualModal from './FacturacionManualModal';
+import AnticipoDeudasAbiertas from './AnticipoDeudasAbiertas';
 
 const ORDEN_TYPES = ['ORDEN', 'ENTREGA', 'ORDEN_ANTICIPO'];
 import ClienteBilletera from '../common/ClienteBilletera';
@@ -96,23 +97,15 @@ const handleDescargarRecibo = async (e, m) => {
     }
   }
 
-  // ── Fallback: recibo interno (solo para pagos sin documento fiscal) ─────────
+  // ── Fallback: recibo A4 (modelo único) para pagos sin documento fiscal ──────
   if (isPayment && m.MovIdMovimiento) {
+    const toastId = toast.loading('Generando recibo...');
     try {
-      const toastId = toast.loading('Generando recibo...');
-      const res = await api.get(`/contabilidad/movimientos/${m.MovIdMovimiento}/recibo/pdf`, { responseType: 'blob' });
-      const blob = new Blob([res.data], { type: 'application/pdf' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `Recibo-${m.MovIdMovimiento}.pdf`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      setTimeout(() => URL.revokeObjectURL(url), 10000);
+      const res = await api.get(`/contabilidad/movimientos/${m.MovIdMovimiento}/recibo`);
+      await generarPdfReciboCobro(res.data?.data);
       toast.dismiss(toastId);
     } catch (err) {
-      toast.error('Error al descargar el recibo.');
+      toast.error('Error al generar el recibo.', { id: toastId });
     }
     return;
   }
@@ -392,6 +385,7 @@ const ModalAnticipo = ({ cuenta, cliente, onClose, onSuccess }) => {
   const [metodoId, setMetodoId] = useState('');
   const [monedaId, setMonedaId] = useState(cuenta?.MonIdMoneda||1);
   const [concepto, setConcepto] = useState('');
+  const [imputarDeudas, setImputarDeudas] = useState(true); // ¿paga las deudas abiertas o queda todo a favor?
   const [saving, setSaving] = useState(false);
   useEffect(()=>{api.get('/contabilidad/metodos-pago').then(r=>{const l=r.data?.data||r.data||[];setMetodos(l);if(l.length)setMetodoId(String(l[0].MPaIdMetodoPago));}).catch(()=>{});},[]);
   const submit = async (e) => {
@@ -400,7 +394,7 @@ const ModalAnticipo = ({ cuenta, cliente, onClose, onSuccess }) => {
     setSaving(true);
     try {
       const r = await fetchAPI('/api/contabilidad/caja/pago-anticipo',{method:'POST',body:JSON.stringify({
-        clienteId:cliente?.CliIdCliente, cuentaId:cuenta?.CueIdCuenta, importe:Number(importe), metodoPagoId:metodoId, monedaId, concepto,
+        clienteId:cliente?.CliIdCliente, cuentaId:cuenta?.CueIdCuenta, importe:Number(importe), metodoPagoId:metodoId, monedaId, concepto, imputarDeudas,
       })});
       toast.success(r.message||'Anticipo registrado'); onSuccess?.(); onClose();
     }catch(err){toast.error(err.message);}finally{setSaving(false);}
@@ -432,6 +426,9 @@ const ModalAnticipo = ({ cuenta, cliente, onClose, onSuccess }) => {
           <div><label className="block text-xs font-semibold text-slate-600 mb-1">Concepto (opcional)</label>
             <input type="text" value={concepto} onChange={e=>setConcepto(e.target.value)} placeholder="Ej: Anticipo cuota marzo..." className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-sm"/>
           </div>
+          <AnticipoDeudasAbiertas clienteId={cliente?.CliIdCliente} monedaId={monedaId}
+            cuentaId={Number(cuenta?.MonIdMoneda||1)===Number(monedaId) ? cuenta?.CueIdCuenta : null}
+            importe={Number(importe)||0} value={imputarDeudas} onChange={setImputarDeudas}/>
           <div className="flex gap-3 pt-1">
             <button type="button" onClick={onClose} className="flex-1 py-2.5 border border-slate-200 rounded-lg text-sm text-slate-600">Cancelar</button>
             <button type="submit" disabled={saving} className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-bold disabled:opacity-50 flex items-center justify-center gap-2">
@@ -3643,6 +3640,22 @@ export const PlanesPanel = ({ cuenta, CliIdCliente, cliente, desde, hasta, onClo
 
   const unidadLabel = cuenta.UnidadLabel || cuenta.CueTipo || '';
 
+  // Recargos de urgencia que se borran junto con una ENTREGA: los RECARGO_URGENCIA de la
+  // misma orden posteriores a ella y anteriores a la siguiente ENTREGA de esa orden.
+  // Es la misma regla que aplica el backend (POST /ordenes/eliminar-metros); acá solo
+  // sirve para avisarlo en la confirmación.
+  const recargosDeEntrega = (m) => {
+    if (m.MovTipo !== 'ENTREGA' || !m.OrdIdOrden) return [];
+    const id = Number(m.MovIdMovimiento);
+    const deLaOrden = todosMovsCta.filter(x => String(x.OrdIdOrden) === String(m.OrdIdOrden) && !x.MovAnulado);
+    const sigEntrega = Math.min(Infinity, ...deLaOrden
+      .filter(x => x.MovTipo === 'ENTREGA' && Number(x.MovIdMovimiento) > id)
+      .map(x => Number(x.MovIdMovimiento)));
+    return deLaOrden.filter(x => x.MovTipo === 'RECARGO_URGENCIA' && Number(x.MovImporte) < 0
+      && Number(x.MovIdMovimiento) > id && Number(x.MovIdMovimiento) < sigEntrega);
+  };
+  const metrosRecargos = (recs) => recs.reduce((a, r) => a + Math.abs(Number(r.MovImporte)), 0);
+
   const cargar = useCallback(async () => {
     setLoading(true);
     try {
@@ -4014,7 +4027,29 @@ export const PlanesPanel = ({ cuenta, CliIdCliente, cliente, desde, hasta, onClo
                                 <td className="px-3 py-2">
                                   <div className="flex items-center justify-end gap-1">
                                     {m._tipo === 'RECARGO_URGENCIA' ? (
-                                      <span className="text-slate-300 text-[10px]" title="Recargo automático — no editable manualmente">—</span>
+                                      /* El recargo se crea solo y se borra solo junto con su ENTREGA.
+                                         Este tacho es para los que quedaron sueltos (su ENTREGA ya se
+                                         borró antes de que existiera esa regla, ej. DTF-29731). */
+                                      <button
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          const planDeEste = planesDelMat.find(p =>
+                                            (movsPlan[p.PlaIdPlan] || []).some(x => x.MovIdMovimiento === m.MovIdMovimiento)
+                                          );
+                                          setModalConfirmar({
+                                            movId:     m.MovIdMovimiento,
+                                            concepto:  m.MovConcepto,
+                                            consumo:   Math.abs(Number(m.MovImporte)),
+                                            unidad:    planDeEste?.PlaUnidad || unidadMat,
+                                            esRecargo: true,
+                                            recargos:  [],
+                                          });
+                                        }}
+                                        className="p-1 hover:bg-slate-200 rounded text-slate-400 hover:text-rose-600 transition-colors"
+                                        title="Eliminar este recargo de urgencia: devuelve sus metros al plan (la orden NO cambia)"
+                                      >
+                                        <Trash2 size={12} />
+                                      </button>
                                     ) : m._tipo === 'ENTRADA' ? (
                                       /* Una ENTRADA es la COMPRA del rollo por adelantado, no un consumo.
                                          Borrarla desde acá le SUMABA los metros al saldo, dejaba el plan
@@ -4051,6 +4086,7 @@ export const PlanesPanel = ({ cuenta, CliIdCliente, cliente, desde, hasta, onClo
                                             concepto: m.MovConcepto,
                                             consumo:  Math.abs(Number(m.MovImporte)),
                                             unidad:   planDeEste?.PlaUnidad || unidadMat,
+                                            recargos: recargosDeEntrega(m),
                                           });
                                         }}
                                         className="p-1 hover:bg-violet-100 rounded text-slate-400 hover:text-violet-600 transition-colors"
@@ -4070,10 +4106,11 @@ export const PlanesPanel = ({ cuenta, CliIdCliente, cliente, desde, hasta, onClo
                                           concepto: m.MovConcepto,
                                           consumo:  Math.abs(Number(m.MovImporte)),
                                           unidad:   planDeEste?.PlaUnidad || unidadMat,
+                                          recargos: recargosDeEntrega(m),
                                         });
                                       }}
                                       className="p-1 hover:bg-slate-200 rounded text-slate-400 hover:text-rose-600 transition-colors"
-                                      title="Eliminar movimiento: solo restaura los metros al plan (la orden NO cambia)"
+                                      title="Eliminar movimiento: solo restaura los metros al plan (la orden NO cambia). Si la entrega tiene recargo de urgencia, se elimina con ella."
                                     >
                                       <Trash2 size={12} />
                                     </button>
@@ -4364,7 +4401,7 @@ export const PlanesPanel = ({ cuenta, CliIdCliente, cliente, desde, hasta, onClo
               <Trash2 size={18} className="text-rose-600" />
             </div>
             <div>
-              <p className="font-bold text-rose-700 text-sm">Eliminar movimiento</p>
+              <p className="font-bold text-rose-700 text-sm">{modalConfirmar.esRecargo ? 'Eliminar recargo de urgencia' : 'Eliminar movimiento'}</p>
               <p className="text-[11px] text-rose-500">Restaura los metros al plan (la orden NO cambia)</p>
             </div>
           </div>
@@ -4376,11 +4413,19 @@ export const PlanesPanel = ({ cuenta, CliIdCliente, cliente, desde, hasta, onClo
             <div className="bg-rose-50 rounded-xl p-3 border border-rose-100 flex items-center gap-3">
               <div className="text-center flex-1">
                 <p className="text-[10px] text-rose-400 font-semibold uppercase">Metros a restaurar</p>
-                <p className="text-lg font-black text-rose-600">+{fmtNum(modalConfirmar.consumo)} <span className="text-xs font-normal">{modalConfirmar.unidad}</span></p>
+                <p className="text-lg font-black text-rose-600">+{fmtNum(modalConfirmar.consumo + metrosRecargos(modalConfirmar.recargos || []))} <span className="text-xs font-normal">{modalConfirmar.unidad}</span></p>
+                {(modalConfirmar.recargos || []).length > 0 && (
+                  <p className="text-[10px] text-rose-500">
+                    Entrega {fmtNum(modalConfirmar.consumo)} + recargo de urgencia {fmtNum(metrosRecargos(modalConfirmar.recargos))}
+                  </p>
+                )}
               </div>
             </div>
             <p className="text-[11px] text-slate-400 text-center leading-relaxed">
               El saldo del plan vuelve a aumentar por esta cantidad.<br/>
+              {(modalConfirmar.recargos || []).length > 0 && (
+                <><span className="text-slate-500">También se elimina el <strong>recargo de urgencia</strong> de esta entrega.</span><br/></>
+              )}
               <span className="text-slate-400">La orden NO cambia de estado. Para eso usá <strong>Revertir consumo</strong>.</span>
             </p>
           </div>
@@ -4395,11 +4440,11 @@ export const PlanesPanel = ({ cuenta, CliIdCliente, cliente, desde, hasta, onClo
               onClick={async () => {
                 setConfirmWorking(true);
                 try {
-                  await fetchAPI(`/api/contabilidad/ordenes/eliminar-metros`, {
+                  const r = await fetchAPI(`/api/contabilidad/ordenes/eliminar-metros`, {
                     method: 'POST',
                     body: JSON.stringify({ MovIdMovimiento: modalConfirmar.movId })
                   });
-                  toast.success('Movimiento eliminado. Saldo restaurado.');
+                  toast.success(r?.message || 'Movimiento eliminado. Saldo restaurado.');
                   setModalConfirmar(null);
                   cargar();
                   if (onChanged) onChanged();
@@ -4437,10 +4482,18 @@ export const PlanesPanel = ({ cuenta, CliIdCliente, cliente, desde, hasta, onClo
             </div>
             <div className="bg-violet-50 rounded-xl p-3 border border-violet-100 text-center">
               <p className="text-[10px] text-violet-400 font-semibold uppercase">Metros que vuelven al plan</p>
-              <p className="text-lg font-black text-violet-600">+{fmtNum(modalRevertir.consumo)} <span className="text-xs font-normal">{modalRevertir.unidad}</span></p>
+              <p className="text-lg font-black text-violet-600">+{fmtNum(modalRevertir.consumo + metrosRecargos(modalRevertir.recargos || []))} <span className="text-xs font-normal">{modalRevertir.unidad}</span></p>
+              {(modalRevertir.recargos || []).length > 0 && (
+                <p className="text-[10px] text-violet-500">
+                  Entrega {fmtNum(modalRevertir.consumo)} + recargo de urgencia {fmtNum(metrosRecargos(modalRevertir.recargos))}
+                </p>
+              )}
             </div>
             <p className="text-[11px] text-slate-500 text-center leading-relaxed">
               Devuelve los metros al plan <strong>y</strong> deja la orden de nuevo <strong>pendiente de facturar</strong>.<br/>
+              {(modalRevertir.recargos || []).length > 0 && (
+                <>También se elimina el <strong>recargo de urgencia</strong> de esta entrega.<br/></>
+              )}
               <span className="text-slate-400">
                 Si la orden estaba cubierta 100% por el plan (sin precio), vuelve con <strong>importe 0</strong>:
                 le ponés el precio al facturar.
