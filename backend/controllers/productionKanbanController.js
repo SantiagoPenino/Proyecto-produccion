@@ -3,6 +3,8 @@ const { changeOrderState, GUARD_ORDENES_RESUELTAS } = require('../services/state
 const { registrarAuditoria } = require('../services/trackingService');
 const { validarMetrosFalla } = require('../services/fallaValidationService');
 const { fueraDeServicio, mensajeFueraDeServicio } = require('../utils/estadoEquipo');
+const { rollbackSeguro } = require('../utils/rollbackSeguro');
+const { esDeadlock } = require('../utils/reintentarDeadlock');
 const logger = require('../utils/logger');
 
 exports.getBoard = async (req, res) => {
@@ -116,8 +118,45 @@ exports.getBoard = async (req, res) => {
             return Number(a.id) - Number(b.id);
         });
 
+        // Lotes PAUSADOS: cuántas órdenes les faltan marcar (impreso / calandrado), contando TODAS las
+        // órdenes del lote como el bloqueo de "Finalizar" (toggleRollStatus), no solo las que el tablero
+        // muestra. Con 0 la tarjeta avisa "falta finalizar": el lote 4156 quedó pausado en la Calandra 1
+        // desde el 30/09 con todo calandrado y nadie lo notó (09/10/2026). Si esta consulta falla, el
+        // tablero sigue andando sin el aviso.
+        // También van los lotes de la MESA DE ARMADO: arrastrar uno a una calandra solo vale si tiene todo
+        // impreso (sinImpresoCalandra, mismo criterio que assignRoll: sin contar las canceladas); si no,
+        // Planeación lo deja en la mesa y avisa por qué, sin esperar el rechazo del backend.
+        try {
+            const marcasRes = await POOL.request()
+                .input('Area', sql.VarChar, area)
+                .query(`
+                    SELECT o.RolloID AS id,
+                           COUNT(*) AS total,
+                           SUM(CASE WHEN ISNULL(o.Impreso, 0) = 0 THEN 1 ELSE 0 END) AS sinImpreso,
+                           SUM(CASE WHEN ISNULL(o.Calandrado, 0) = 0 THEN 1 ELSE 0 END) AS sinCalandrar,
+                           SUM(CASE WHEN ISNULL(o.Impreso, 0) = 0 AND o.Estado NOT IN ('Cancelado','Cancelada') THEN 1 ELSE 0 END) AS sinImpresoCalandra
+                    FROM dbo.Ordenes o
+                    JOIN dbo.Rollos r ON r.RolloID = o.RolloID
+                    WHERE r.AreaID = @Area
+                      AND (r.Estado = 'Pausado'
+                           OR (ISNULL(r.MaquinaID, 0) = 0 AND r.Estado NOT IN ('Cerrado', 'Finalizado', 'Cancelado')))
+                    GROUP BY o.RolloID
+                `);
+            marcasRes.recordset.forEach(m => {
+                const roll = allRolls.find(r => String(r.id) === String(m.id));
+                if (roll) roll.marcas = { total: m.total, sinImpreso: m.sinImpreso, sinCalandrar: m.sinCalandrar, sinImpresoCalandra: m.sinImpresoCalandra };
+            });
+        } catch (errMarcas) {
+            logger.warn(`[getBoard] No se pudieron calcular las marcas de los lotes pausados (${area}): ${errMarcas.message}`);
+        }
+
         const finalMachines = machines.map(m => {
-            const assignedRolls = allRolls.filter(r => String(r.machineId) === String(m.id));
+            // El lote 'En maquina' va SIEMPRE primero en su columna; el resto, por Secuencia. Antes salía
+            // donde le tocaba por Secuencia: en la Calandra 1 el lote en marcha quedaba 5º (09/10/2026).
+            // filter conserva el orden de allRolls, así que dentro de cada grupo se respeta la Secuencia.
+            const enMaquina = r => String(r.status || '').includes('En maquina');
+            const delEquipo = allRolls.filter(r => String(r.machineId) === String(m.id));
+            const assignedRolls = [...delEquipo.filter(enMaquina), ...delEquipo.filter(r => !enMaquina(r))];
             return {
                 ...m,
                 rolls: assignedRolls,
@@ -233,6 +272,13 @@ exports.assignRoll = async (req, res) => {
         }
 
         for (const currentRollId of targets) {
+            // Si el lote venía en marcha, su tramo de la bitácora se cierra acá, como al pausar: el lote
+            // queda 'En cola'. Sin esto, la máquina de antes seguía sumando horas hasta que el lote se
+            // pausara o finalizara en otro lado, o para siempre (08/10, docs/servicio-tecnico/horas-uso-y-rendimiento.md).
+            await new sql.Request(transaction)
+                .input('RID', sql.VarChar(50), String(currentRollId))
+                .query('UPDATE dbo.BitacoraProduccion SET FechaFin = GETDATE() WHERE RolloID = @RID AND FechaFin IS NULL');
+
             // Actualizar Rollo (gestión de equipo, no de estado)
             await new sql.Request(transaction)
                 .input('RID', sql.Int, currentRollId)
@@ -266,7 +312,12 @@ exports.assignRoll = async (req, res) => {
         await transaction.commit();
         res.json({ success: true });
     } catch (err) {
-        if (transaction) await transaction.rollback();
+        // Deadlock (08/10/2026, lote 4540 contra un "sacar del lote"): SQL ya revirtió todo y dejó
+        // la transacción abortada, así que rollback() tiraba de nuevo, el catch moría y el pedido
+        // quedaba sin respuesta. rollbackSeguro no tira nunca; el 1205 se relanza para que la ruta
+        // lo reintente (conReintentoDeadlock) en vez de contestar 500.
+        await rollbackSeguro(transaction, `assignRoll-Kanban lotes [${targets.join(', ')}] → máquina ${mid}`);
+        if (esDeadlock(err)) throw err;
         logger.error("❌ ERROR AL ASIGNAR (Kanban):", err.message);
         res.status(500).json({ error: err.message });
     }
@@ -284,6 +335,12 @@ exports.unassignRoll = async (req, res) => {
         const pool = await getPool();
         transaction = new sql.Transaction(pool);
         await transaction.begin();
+
+        // 0. Si el lote venía en marcha, su tramo de la bitácora se cierra (como al pausar): vuelve a la
+        // mesa. Sin esto la máquina seguía sumando horas (08/10, ver assignRoll).
+        await new sql.Request(transaction)
+            .input('RID', sql.VarChar(50), String(rollId))
+            .query('UPDATE dbo.BitacoraProduccion SET FechaFin = GETDATE() WHERE RolloID = @RID AND FechaFin IS NULL');
 
         // 1. Desmontar Rollo (gestión de equipo)
         await new sql.Request(transaction)
@@ -314,7 +371,9 @@ exports.unassignRoll = async (req, res) => {
         await transaction.commit();
         res.json({ success: true });
     } catch (err) {
-        if (transaction) await transaction.rollback();
+        // Misma receta que assignRoll: rollback que no tira y reintento del deadlock desde la ruta.
+        await rollbackSeguro(transaction, `unassignRoll-Kanban lote ${rollId}`);
+        if (esDeadlock(err)) throw err;
         logger.error("❌ ERROR AL DESASIGNAR:", err.message);
         res.status(500).json({ error: err.message });
     }

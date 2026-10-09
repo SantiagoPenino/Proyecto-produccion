@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, useNavigate, useLocation } from 'react-router-dom';
 import { toast } from 'sonner';
 import {
     Wrench, Users, Loader2, ClipboardList, ListChecks, CalendarDays, Printer, Repeat, FolderKanban, Package, ChartColumn,
@@ -31,6 +31,8 @@ import { SECCIONES_ST } from './servicioTecnicoSecciones';
 // pestañas. Lo que se hace adentro (tomar, programar, crear, editar) sigue siendo de los técnicos
 // (área SERVICIO) y Admin, como en el backend. Sin `seccion` (menú viejo, con /servicio-tecnico):
 // los técnicos y Admin ven las ocho con pestañas; el resto, solo sus solicitudes.
+// Desde el 08/10 cada máquina tiene su página: /servicio-tecnico/maquinas/:id (cae en la entrada de menú
+// "Máquinas" porque el router busca por prefijo). Antes era un panel lateral.
 
 const SECCIONES_TECNICO = [
     { key: 'solicitudes', label: 'Solicitudes', Icono: ClipboardList },
@@ -156,7 +158,10 @@ const ServicioTecnicoPage = ({ seccion: seccionFija = null, rutasPermitidas = nu
     const [meta, setMeta] = useState(null);
     const [seccion, setSeccion] = useState(seccionFija || 'solicitudes');
     const [abierta, setAbierta] = useState(null);            // SolId del detalle
-    const [maquinaAbierta, setMaquinaAbierta] = useState(null); // EquipoID de la ficha
+    const navigate = useNavigate();
+    const location = useLocation();
+    // Página de una máquina: /servicio-tecnico/maquinas/:id
+    const maquinaAbierta = parseInt((location.pathname.match(/\/servicio-tecnico\/maquinas\/(\d+)/) || [])[1], 10) || null;
     const [trabajoAbierto, setTrabajoAbierto] = useState(null); // TrabId del detalle de trabajo
     const [proyectoAbierto, setProyectoAbierto] = useState(null); // ProyId del detalle de proyecto
     const [versionProyecto, setVersionProyecto] = useState(0);
@@ -187,6 +192,13 @@ const ServicioTecnicoPage = ({ seccion: seccionFija = null, rutasPermitidas = nu
     // tenga Máquinas en el menú (leerla no pide ser técnico).
     const rutaMaquinas = SECCIONES_ST.find(s => s.id === 'maquinas').ruta;
     const puedeVerMaquinas = esTecnico || (unaSola && (rutasPermitidas || []).includes(rutaMaquinas));
+    // Abrir una máquina = ir a su página (se cierran los paneles de detalle que hubiera abiertos).
+    const abrirMaquina = (id) => {
+        setAbierta(null); setTrabajoAbierto(null); setProyectoAbierto(null);
+        navigate(`${rutaMaquinas}/${id}`);
+    };
+    // Con el menú viejo (/servicio-tecnico con pestañas) la lista de máquinas es ?seccion=maquinas.
+    const volverAMaquinas = () => navigate(unaSola ? rutaMaquinas : '/servicio-tecnico?seccion=maquinas');
 
     const cargarMeta = useCallback(async () => {
         try { setMeta(await servicioTecnicoService.meta()); }
@@ -240,6 +252,10 @@ const ServicioTecnicoPage = ({ seccion: seccionFija = null, rutasPermitidas = nu
 
     return (
         <div className="p-3 md:p-6">
+            {maquinaAbierta ? (
+                meta && <MaquinaFicha equipoId={maquinaAbierta} meta={meta} version={versionMaquina}
+                    onVolver={volverAMaquinas} onAbrirMaquina={abrirMaquina} onAbrirSolicitud={setAbierta} onAbrirTrabajo={setTrabajoAbierto} onCambio={alCambiarAlgo} />
+            ) : (<>
             {/* Encabezado. En celular, para los técnicos, la sección elegida hace de título (tocándola se
                 cambia de sección): "Servicio Técnico" + un desplegable aparte eran dos filas para lo mismo. */}
             <div className="flex flex-wrap items-center gap-3 mb-5">
@@ -305,28 +321,24 @@ const ServicioTecnicoPage = ({ seccion: seccionFija = null, rutasPermitidas = nu
                 : seccionActual === 'solicitudes' ? <SolicitudesVista meta={meta} onAbrir={setAbierta} version={versionLista} />
                 : seccionActual === 'semana' ? <MiSemanaVista meta={meta} onAbrirTrabajo={setTrabajoAbierto} onAbrirSolicitud={setAbierta} version={versionLista} />
                 : seccionActual === 'calendario' ? <CalendarioVista meta={meta} onAbrirTrabajo={setTrabajoAbierto} onAbrirSolicitud={setAbierta} version={versionLista} />
-                : seccionActual === 'maquinas' ? <MaquinasVista onAbrirMaquina={setMaquinaAbierta} />
+                : seccionActual === 'maquinas' ? <MaquinasVista meta={meta} onAbrirMaquina={abrirMaquina} />
                 : seccionActual === 'planes' ? <PlanesVista meta={meta} onAbrirTrabajo={setTrabajoAbierto} />
                 : seccionActual === 'proyectos' ? <ProyectosVista meta={meta} onAbrir={setProyectoAbierto} />
                 : seccionActual === 'insumos' ? <InsumosVista meta={meta} />
-                : seccionActual === 'reportes' ? <ReportesVista semanaInicial={searchParams.get('semana') || undefined} onAbrirMaquina={setMaquinaAbierta} />
+                : seccionActual === 'reportes' ? <ReportesVista semanaInicial={searchParams.get('semana') || undefined} onAbrirMaquina={abrirMaquina} />
                 : null}
-
-            {maquinaAbierta && (
-                <MaquinaFicha equipoId={maquinaAbierta} meta={meta} version={versionMaquina}
-                    onCerrar={() => setMaquinaAbierta(null)} onAbrirSolicitud={setAbierta} onCambio={alCambiarAlgo} />
-            )}
+            </>)}
             {proyectoAbierto && (
                 <ProyectoDetalle proyId={proyectoAbierto} meta={meta} version={versionProyecto} onCerrar={cerrarProyecto} onCambio={alCambiarAlgo} />
             )}
             {trabajoAbierto && (
                 <TrabajoDetalle trabId={trabajoAbierto} meta={meta} version={versionTrabajo}
-                    onCerrar={cerrarTrabajo} onCambio={alCambiarAlgo} onAbrirMaquina={puedeVerMaquinas ? setMaquinaAbierta : undefined} />
+                    onCerrar={cerrarTrabajo} onCambio={alCambiarAlgo} onAbrirMaquina={puedeVerMaquinas ? abrirMaquina : undefined} />
             )}
             {abierta && (
                 <SolicitudDetalle solId={abierta} meta={meta} version={versionDetalle}
                     onCerrar={cerrarDetalle} onCambio={alCambiarAlgo} onAbrir={setAbierta}
-                    onAbrirMaquina={puedeVerMaquinas ? setMaquinaAbierta : undefined} />
+                    onAbrirMaquina={puedeVerMaquinas ? abrirMaquina : undefined} />
             )}
         </div>
     );

@@ -378,11 +378,12 @@ export const ModalPlan = ({ plan = null, meta, procedimientos, onGuardado, onCer
 };
 
 // ── Trabajo puntual (mantenimiento suelto o tarea) ──────────────────────────
-export const ModalNuevoTrabajo = ({ meta, procedimientos, fechaInicial, onGuardado, onCerrar }) => {
+// equipoInicial / tipoInicial (08/10): desde el preventivo de una máquina se abre con esa máquina y en Mantenimiento.
+export const ModalNuevoTrabajo = ({ meta, procedimientos, fechaInicial, equipoInicial = null, tipoInicial = 'TAREA', onGuardado, onCerrar }) => {
     const fechaBase = fechaInicial && fechaInicial > hoyISO() ? fechaInicial : hoyISO();
     const [d, setD] = useState({
-        tipo: 'TAREA', titulo: '', descripcion: '', fecha: fechaBase, tecnicoId: meta?.esTecnico && meta?.usuario?.id ? String(meta.usuario.id) : '',
-        procId: '', equipoId: '', equipoTexto: '', paraMaquina: false, minutosEstimados: '',
+        tipo: tipoInicial, titulo: '', descripcion: '', fecha: fechaBase, tecnicoId: meta?.esTecnico && meta?.usuario?.id ? String(meta.usuario.id) : '',
+        procId: '', equipoId: equipoInicial ? String(equipoInicial) : '', equipoTexto: '', paraMaquina: false, minutosEstimados: '',
         horaDesde: '', horaHasta: '',
     });
     const [tareas, setTareas] = useState([]);

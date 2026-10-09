@@ -41,6 +41,23 @@ export const servicioTecnicoService = {
     // Máquinas (etapa 2)
     equipos: async (inactivas = false) => (await api.get('/servicio-tecnico/equipos', { params: inactivas ? { inactivas: 1 } : {} })).data,
     fichaEquipo: async (id) => (await api.get(`/servicio-tecnico/equipos/${id}`)).data,
+    // Alta de una máquina (08/10): { nombre, areaId, tipo, esImpresora } → { EquipoID }
+    crearEquipo: async (datos) => (await api.post('/servicio-tecnico/equipos', datos)).data,
+    // Ficha técnica (08/10): una sección { seccion, titulo, valores, resumen } o { copiarDe: equipoId }
+    guardarFicha: async (id, cuerpo) => (await api.put(`/servicio-tecnico/equipos/${id}/ficha`, cuerpo)).data,
+    copiarFicha: async (id, copiarDe) => (await api.put(`/servicio-tecnico/equipos/${id}/ficha`, { copiarDe })).data,
+    // Capacidad (columnas de ConfigEquipos que lee Planificación) + extra { horasTurno, condicion }
+    guardarCapacidad: async (id, cuerpo) => (await api.put(`/servicio-tecnico/equipos/${id}/capacidad`, cuerpo)).data,
+    // Parte 2 (08/10): preventivo y repuestos críticos de una máquina
+    preventivoEquipo: async (id) => (await api.get(`/servicio-tecnico/equipos/${id}/preventivo`)).data.data,
+    repuestosEquipo: async (id) => (await api.get(`/servicio-tecnico/equipos/${id}/repuestos`)).data,
+    agregarRepuesto: async (id, datos) => (await api.post(`/servicio-tecnico/equipos/${id}/repuestos`, datos)).data,
+    quitarRepuesto: async (id, repId) => (await api.delete(`/servicio-tecnico/equipos/${id}/repuestos/${repId}`)).data,
+    // Parte 3 (08/10): fotos, manuales y otros archivos de una máquina
+    adjuntarEquipo: async (id, archivos) =>
+        (await api.post(`/servicio-tecnico/equipos/${id}/adjuntos`, armarForm({}, archivos), multipart)).data.data,
+    renombrarAdjuntoEquipo: async (id, adjId, nombre) => (await api.put(`/servicio-tecnico/equipos/${id}/adjuntos/${adjId}`, { nombre })).data,
+    borrarAdjuntoEquipo: async (id, adjId) => (await api.delete(`/servicio-tecnico/equipos/${id}/adjuntos/${adjId}`)).data,
     crearCambio: async (equipoId, campos, archivos = []) =>
         (await api.post(`/servicio-tecnico/equipos/${equipoId}/cambios`, armarForm(campos, archivos), multipart)).data.data,
     editarCambio: async (camId, campos) => (await api.put(`/servicio-tecnico/cambios/${camId}`, campos)).data,

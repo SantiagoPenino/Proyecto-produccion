@@ -7,6 +7,167 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
 
 ---
 
+## [Sin deployar] — cambios desde el 08/10
+
+### Agregado
+- **TPU «Hago mi matriz»: canaleta de 1 pt entre texturas.** Entre dos zonas de relieve que se tocan queda 1 pt (0,35 mm) sin relieve ni barniz, donde solo cae el color del arte. Así no queda blanco y el borde entre texturas se hunde, lo que ayuda al relieve.
+  - **Quién la cede:** la zona más grande, la que más superficie se ve en el parche. Retrocede el punto entero y la más chica queda entera. Casi siempre la más grande es el fondo, así que las letras, las estrellas y el dibujo quedan enteros.
+    - Primero se probó "cede la de abajo", por orden de dibujo. En el escudo REF-13558 los agujeros de la O y la A son parches del fondo dibujados encima de la letra, y la letra cedía por dentro. Con "la más grande" no importa cómo dibujó el diseñador los agujeros.
+    - Si dos zonas empatan en superficie, cede la de número menor.
+  - **Manchitas:** una forma de menos de 0,5 mm de lado en el parche no hace ceder a nadie. Si no, la canaleta le haría un anillo más grande que ella. Pasaba con la forma 11 del escudo, de 0,1 × 0,3 mm.
+  - **Dónde no va:** entre formas de una misma zona, contra el borde de corte ni contra partes sin relieve (ahí ya no hay relieve). Entre zonas distintas va siempre, aunque tengan la misma textura.
+  - **Las tres capas de relieve** (Spot 1, 2 y 3) llevan la canaleta; el CMYK no cambia y la cubre.
+  - **Visor 3D:** muestra la misma canaleta, con la medida real del parche. Las órdenes generadas antes de este cambio se siguen viendo sin canaleta, como su archivo.
+  - **Medida:** `SEPARACION_ZONAS_PT = 1` en `tpuMatrizService.js`, `Tpu3DViewer.jsx` y `tpu_matriz.py` (en 0 se apaga). Cambiar los tres juntos.
+  - Las matrices ya generadas no cambian: la canaleta sale en las que se generen después del deploy.
+- **Servicio Técnico: cada máquina tiene su página, con ficha técnica según el tipo de máquina.** Antes la máquina se abría en un panel lateral. Ahora tiene página propia en `/servicio-tecnico/maquinas/:id`, que usa el permiso de "Máquinas" del menú (no hace falta SQL de menú). Se basa en el HTML de ficha técnica de Santiago. Plan: `docs/servicio-tecnico/ficha-tecnica-maquinas-plan.md`.
+  - **Pestañas:**
+    - **Resumen:** solicitudes, fallas, parada, capacidad, garantía y cuánto está completa la ficha.
+    - **Ficha técnica.**
+    - **Servicio:** solicitudes, cambios, historial e insumos, lo que tenía el panel.
+    - **Comercial y documentos:** garantía y soporte.
+  - En pantallas anchas, a la izquierda queda una columna con todas las máquinas para pasar de una a otra.
+  - **Tipos:** Impresora, Calandra / prensa térmica, Bordadora, Corte láser, Corte (el SAMURAI), Máquina de coser y Otra. Si una máquina no tiene tipo, la página lo sugiere por el área y el nombre, y el técnico lo confirma con un botón.
+  - **Secciones comunes:** identificación (con marca, modelo, n.º de serie, año y local de la tabla `Locales`), capacidad, dimensiones, consumo eléctrico, instalación, garantía y observaciones.
+  - **Secciones según el tipo:**
+    - Impresora: cabezales de impresión, con cada posición (color, n.º de serie, fecha y estado).
+    - Calandra / prensa: sus datos propios.
+    - Bordadora: estado de cada cabezal.
+    - Láser: tubo y chiller.
+    - Corte: tabla de herramientas (drag, hidráulica, cartón, acrílico…).
+    - Máquina de coser: el tipo sale del catálogo `MaquinasCostura` de Configurar Productos y muestra las puntadas ISO que hace.
+    - Software y conectividad: solo impresoras, bordadoras, láser y corte.
+  - **Cómo se carga:** cada sección se edita por separado y muestra cuánto tiene cargado ("3/5"). Las cuentas salen solas: superficie, corriente, producción por hora, turno y mes, y vencimiento de la garantía.
+  - **Animación al editar:** al tocar "Editar", la sección se estira hasta el formulario (0,3 s) y el contenido aparece con un fundido. Al guardar o cancelar se achica más rápido (0,2 s). Con "reducir movimiento" activado en el sistema, no se anima. La animación nueva es `animate-aparecer-suave`, en `src/index.css`.
+  - **Historial:** cada guardado queda en el historial de la máquina con lo que cambió (ej. "Firmware: 1.08 → 1.10").
+  - **Bordadoras:** si un técnico deja cabezales fuera de servicio, le pregunta si actualiza "Cabezales funcionando", que es lo que lee Planificación.
+  - **Copiar ficha de otra máquina:** copia todo menos lo que es de cada unidad: n.º de serie, ubicación, IP, licencia, fecha de instalación, factura, y n.º de serie, fecha y estado de cabezales y herramientas. La capacidad no se copia.
+  - **Lista de máquinas:** muestra la marca y el modelo, y la etiqueta "Sin capacidad" cuando la máquina no tiene velocidad.
+  - **Nueva máquina desde Servicio Técnico** (botón en la lista, para técnicos y Admin): pide nombre, área (de las productivas) y tipo, que arranca con el sugerido por el área y el nombre. También pide si "Pasa por otra máquina antes de Control" (el tilde que antes se llamaba "Es impresora").
+    - Ese tilde se elige solo al crearla. Después se cambia únicamente en Configuración → Equipos, como decidió Santiago, porque de eso dependen las áreas.
+    - Se crea con los mismos valores que en Configuración: activa, disponible, detenida y sin capacidad. El tipo queda confirmado en la ficha, el alta queda en el historial de la máquina, y después de crearla abre su página.
+    - No deja repetir el nombre de una máquina activa del área.
+    - Configuración → Equipos sigue pudiendo crear máquinas como antes.
+  - **Permisos:** la ficha la ve quien tenga Máquinas. La editan los técnicos y Admin.
+- **Servicio Técnico, máquinas, parte 2:** la pestaña Servicio de cada máquina suma **Preventivo** y **Repuestos**, y registrar un cambio puede actualizar la ficha.
+  - **Preventivo:** los planes de la máquina, con su próximo trabajo y la última vez que se hizo; todo lo que tiene programado, con lo vencido marcado; y los últimos 10 trabajos cerrados. Tocando uno se abre.
+    - "Programar" abre la ventana del calendario con la máquina ya elegida y en Mantenimiento.
+    - Los planes se editan desde ahí.
+  - **Repuestos críticos:** los artículos del /stock que conviene tener para la máquina, con su stock (global y en el depósito de Servicio Técnico) y un estado. Primero aparecen los que tienen problema.
+    - Los estados son: sin stock, crítico, alerta, OK o sin límites. Usan la misma regla y los mismos límites que las alertas del /stock (Stock → Gestión de Sistema → Alertas de stock), que es donde se cargan. A diferencia del panel del /stock, un repuesto en 0 se marca como "Sin stock".
+    - Se agregan con el buscador del stock y una nota opcional, y se quitan con confirmación. Quitar no toca el stock.
+  - **Cambio de cabezal:** al registrarlo se puede elegir qué cabezal se cambió (en impresoras, las posiciones de la ficha; en bordadoras, sus cabezales) y su número de serie nuevo. En la ficha queda "Operativo", y en impresoras, colocado en la fecha del cambio.
+    - En una bordadora, si cambia cuántos cabezales andan, pregunta si actualiza "Cabezales funcionando", como en la ficha.
+  - **Cambio de firmware/software:** muestra las versiones de la ficha ya cargadas y, si se cambian, las actualiza.
+  - Todo queda en el historial de la máquina. Si la ficha no se puede actualizar, el cambio queda registrado igual y avisa.
+- **Servicio Técnico, máquinas, parte 3:** la pestaña "Comercial y documentos" suma **Fotos y archivos** y **Manuales y enlaces**.
+  - **Fotos y archivos:** fotos de la máquina, la placa de datos y las conexiones, manuales en PDF y videos cortos (hasta 8 por vez y 25 MB cada uno). Las fotos se guardan en WebP, como todo Servicio Técnico.
+    - Se ven en miniatura y se abren tocándolas.
+    - Los técnicos y Admin las suben, les cambian el nombre (se conserva la extensión) y las borran con confirmación; borrar también las saca del servidor.
+    - Funciona aunque no esté corrido el script de la ficha.
+  - **Manuales y enlaces:** una lista de documentos con su dirección web. Solo se abren las direcciones que empiezan con http:// o https://, en otra pestaña. Si una no empieza así, la sección avisa.
+    - Los enlaces se copian con "Copiar ficha" (sirven para las máquinas iguales); los archivos no.
+  - Todo queda en el historial de la máquina. Ninguna de las dos secciones cuenta para el "% completa".
+- **Servicio Técnico, máquinas, parte 4: alertas e indicadores.**
+  - **Alertas en las tarjetas de la lista de máquinas** (primero las rojas):
+    - Mantenimiento vencido: trabajos de un plan o de tipo Mantenimiento, abiertos y con fecha pasada. Las tareas sueltas no cuentan.
+    - Repuesto sin stock o crítico, y repuesto en alerta, con la misma regla que la pestaña Repuestos.
+    - Cabezal para cambiar: en impresoras, los "Reemplazar"; en bordadoras, los "Fuera de servicio". Herramienta para cambiar, en las de corte.
+    - La garantía vence en los próximos 30 días.
+    - "Sin capacidad", que antes estaba en el encabezado de la tarjeta.
+  - **En la página de la máquina:**
+    - La columna de máquinas muestra cuántas alertas tiene cada una (en rojo si hay alguna roja).
+    - El Resumen las muestra arriba; tocando una se va a lo que hay que mirar (preventivo, repuestos, la sección de la ficha o la garantía).
+  - **Indicadores en el Resumen**, con las fallas del último año que no se cancelaron:
+    - **Entre fallas:** el tiempo promedio entre una falla y la siguiente. Hace falta más de una.
+    - **Reparación:** cuánto estuvo parada en promedio, contando las fallas que la pararon y ya se cerraron.
+    - **Disponibilidad:** de las horas que la máquina tenía que trabajar, qué porcentaje no estuvo parada por una falla. Ej.: 176 h de trabajo y 6 h parada dan 97 %.
+      - Las horas de trabajo salen del horario del área en Planificación (`ConfigHorarioLaboral`), sin los feriados (`CalendarioFeriados`). Hoy cuenta hasta la hora actual, y los turnos que pasan la medianoche siguen al día siguiente.
+      - Lo parado cuenta solo dentro de ese horario: una rotura del viernes a la tarde no suma el fin de semana. Si dos solicitudes la reportan parada a la vez, ese tramo cuenta una vez.
+      - Período: los últimos 90 días, o desde la primera solicitud del módulo si es más nueva. Antes no se anotaban las paradas, y los tickets viejos copiados no decían si la máquina estaba parada.
+      - Se marca en ámbar por debajo de 95 %. Si el área no tiene horario en Planificación, lo dice.
+      - Ojo: usa el horario de hoy también para los días pasados. Si se cambia el horario, el número de esos días cambia.
+
+### Cambiado
+- **Tienda del portal: vuelven a verse las solapas Todo / Terminados / Personalizados / Confeccionados.** Estaban ocultas desde el 21/08 (`TiendaView.jsx`).
+- **Los archivos del arte de TPU llevan el número de orden en el nombre.** Al subirlos desde el detalle de la orden, lo que va antes del primer « - » se reemplaza por el código: «TPU UV - CMYK.pdf» queda «TPU-31947 - CMYK.pdf», y lo mismo Corte y Spot 1, 2 y 3. Si el nombre no tiene « - », el código se agrega adelante. El boceto, la matriz y el archivo «… - Impresion.pdf» (que ya se renombra a `tpu<pedido>-cmyk-spots.pdf`) no cambian. Las palabras que el sistema busca en el nombre (cmyk, corte, spot, boceto) se mantienen. Vale para lo que se suba desde el deploy: los archivos ya cargados conservan su nombre.
+- **La capacidad de las máquinas se edita solo en Servicio Técnico.** Son cabezales, velocidad, unidad y preparación, estándar y real. Configuración → Equipos ahora la muestra sin poder cambiarla, y el backend (`areasController.updatePrinter`) dejó de escribirla.
+  - **Permisos:** los valores reales antes los podía cambiar cualquiera que entrara a Configuración. Ahora solo los técnicos y Admin.
+  - **Máquinas nuevas:** una máquina creada en Configuración nace sin capacidad, y Planificación no la cuenta hasta que Servicio Técnico le cargue la velocidad.
+  - **Unidad:** si se elige una unidad distinta a la de las otras máquinas del área, avisa, porque Planificación suma sus velocidades.
+  - **Cabezales de impresión:** nunca se escriben en la capacidad. Para Planificación la velocidad es por cabezal, así que una DTF con 2 cabezales de impresión duplicaría su capacidad.
+- **Registrar cambio en una máquina:** la lista de "Tipo de cambio" se ve entera, sin scroll, y la de "Moneda" tiene el ancho del campo (antes medía el doble).
+- **El tilde «Es impresora» ahora se llama «Pasa por otra máquina antes de Control»**, que es lo que hace: al finalizar un lote en esa máquina no se ofrece Control de Calidad, y el lote pasa a la calandra del área (en TPU, al samurai). El nombre viejo confundía: la MIMAKI es impresora y no lo tiene, a propósito.
+  - **Gestión de Equipos:** la columna «Impresora» ahora es «Sigue en». Dice «Calandra» o «Samurai» en las máquinas con el tilde y «Control» en las demás. Al editar, el tilde lleva al lado el nombre de la máquina que sigue.
+  - **Mismo texto** en el alta de Configuración, en «Nueva máquina» de Servicio Técnico y en el historial del alta. La ayuda nombra la calandra o el samurai según el área.
+  - **En producción** lo tienen FEDAR 1, FEDAR 2, TPU 1 y TPU 2 (consulta del 08/10).
+- **ECOUV: para finalizar la impresión hay que marcar impreso todo el lote, como en DTF.** Antes se podía finalizar sin marcar nada. Se sigue pudiendo marcar en cualquier orden. El botón «Finalizar» de la máquina queda bloqueado mientras falten órdenes, y el backend rechaza el finalizar con «faltan N orden(es) sin marcar como impreso», también desde Planeación.
+  - **Al deployar:** los lotes de ECOUV que estén en máquina y sin marcar no se van a poder finalizar hasta tildarlos en el detalle del lote.
+- **Lotes de Sublimación: las telas que llevan papel van primero.** El orden inicial del lote (el que se fija la primera vez que se abre el detalle) ahora pone primero las telas con "Lleva papel" marcado en Catálogo y WMS, y después las demás; dentro de cada mitad sigue el orden de siempre, por material A-Z. Hoy llevan papel Bandera (1,60), Bandera Confeccionada, Dry Poroso, Nagasaki y Tela Cliente.
+  - Las órdenes que entran al lote después de esa primera apertura siguen yendo al final, lleven papel o no; se acomodan arrastrando el bloque, como hasta ahora.
+  - Los lotes que ya estaban abiertos no cambian: conservan el orden que tienen.
+- **CRM de leads (`/leads`) rediseñado, en tema claro como Solicitudes.** Los leads pasaron de tarjetas grises altas a una lista en un solo panel (estado, contacto, origen, fecha, notas). Los estados son pestañas con su contador (en el celular, un desplegable), hay un buscador por email, teléfono o nota, y «Editar» abre el estado y las notas en la misma fila, con el `Selector` propio. Analíticas: tarjetas blancas e íconos en brand-cyan sin fondo. Al guardar o al llegar un lead nuevo ya no salta la página entera a «Cargando». Cambiar de pestaña es inmediato: la lista se dibuja de a 50 y el resto entra al bajar (IntersectionObserver); antes se dibujaban los ~1.000 leads de golpe, con un formateador de fecha nuevo por fila.
+  - **Arreglado de paso:** el link de WhatsApp mandaba el número tal cual (`wa.me/099108614`) y WhatsApp no lo encontraba; ahora va con el 598 adelante.
+- **Planeación: el lote en máquina va siempre primero en su columna, y el que se elige en el selector también.** Antes cada columna se ordenaba solo por la Secuencia guardada, sin mirar el estado: el 09/10, en la Calandra 1, el lote en marcha (4544) salía 5º. Ahora el lote en máquina va arriba de todo. Cuando no hay ninguno corriendo, el lote que se elige en el selector de la máquina, que es el que la tarjeta marca como «Actual», sube al primer lugar y queda guardado, igual que si se lo arrastrara; esto incluye los que se eligen desde la Mesa de Armado. Si se arrastra un lote por encima del que está en máquina, queda segundo.
+  - Ojo: elegir un lote en el selector para sacarlo de la máquina (el botón de desmontar) también lo sube primero.
+  - **Al terminar de imprimir, el lote entra último en la cola de la calandra, en orden de llegada** (en TPU, en la del samurai: es el mismo paso). Antes conservaba el número de orden de la lista donde se lo había ordenado (la de la impresora o la de Coordinación), que en la calandra no significa nada: el lote 4156, del 29/09, seguía primero el 09/10. Los lotes que ya están en la calandra no se tocan.
+  - **El selector de la calandra ya no ofrece los lotes de la Mesa de Armado:** a la calandra los lotes llegan desde la impresora.
+  - **Arrastrar un lote de la mesa a la calandra solo funciona si tiene todo impreso**, por ejemplo uno que volvió a la mesa porque la calandra estaba en mantenimiento. Si le falta imprimir, no se mueve: queda en la mesa y un aviso dice cuántas órdenes le faltan y que a la calandra solo entra lo impreso. El backend ya lo rechazaba desde julio, pero el lote aparecía un instante en la calandra antes de volver.
+- **Un lote pausado que ya tiene todo marcado lo avisa en la tarjeta: «Todo calandrado · falta finalizar»** («impreso» en las impresoras, «cortado» en el samurai de TPU). Vale para las áreas que exigen marcar para finalizar: SB, DTF, TPU y ECOUV. Caso real: el lote 4156 quedó pausado en la Calandra 1 desde el 30/09 con sus 13 órdenes calandradas; las órdenes siguieron su camino (se completaron a mano y 12 ya se entregaron), pero el lote seguía ocupando el primer lugar de la calandra. Cuenta todas las órdenes del lote, igual que el bloqueo de «Finalizar».
+
+### Arreglado
+- **La bitácora de producción se cierra cuando un lote en marcha deja la máquina.** Antes, al arrastrar un lote que estaba corriendo a otra máquina o a la mesa, al dividirlo o al desarmarlo, su registro quedaba abierto: la máquina seguía sumando horas hasta que el lote se pausara o finalizara en otro lado, o para siempre. En producción había tres abiertos desde hace 49 a 92 días (lotes 455, 1141 y 1621). Ahora se cierra en ese momento, como al pausar. Es la decisión 1 de `docs/servicio-tecnico/horas-uso-y-rendimiento.md`, base para contar las horas de uso de las máquinas. Los registros viejos que quedaron abiertos no se tocan.
+- **Gestión de Equipos ya no marca como «Impresora» máquinas que no lo son, ni las tilda solas al editarlas.** La columna `SeparacionImpresion` es texto («1», «0» o vacía) y la pantalla tomaba el «0» como «sí».
+  - **Qué se veía:** DTF-1, DTF-2 y las demás máquinas con «0» mostraban la pastilla. En producción eran 8: DTF-1, DTF-2, DIRECTA 1, ECOSOLVENTE, ECOSOLVENTE 2, UV, LASER 3 y LASER 4 (ya corregidas, ver «Datos corregidos»).
+  - **El riesgo:** al tocar «Editar», el tilde venía marcado. Si se guardaba así, por ejemplo para cambiar el nombre o el estado, quedaba marcado de verdad. Desde ahí, al finalizar un lote en esa máquina solo aparecía «Enviar a Calandra», y como DF no tiene calandra, el lote volvía a la Mesa de Armado.
+  - **Ahora:** se lee igual que en el panel de la máquina en producción, que ya lo hacía bien.
+  - **Historial de producción:** hubo 3 órdenes devueltas a la Mesa por falta de calandra, el 31/07 en TPU (antes de que existiera el pase al samurai) y el 04/08 en ECOUV. Después no volvió a pasar.
+- **Mover un lote a una máquina ya no queda colgado si choca con otra operación (08/10).** A las 11:46 el lote DF 4540 iba a la máquina 25 mientras se sacaban órdenes de un lote; SQL eligió la asignación como víctima del deadlock y, como la transacción ya estaba abortada, el `rollback` volvió a fallar: el pedido quedó sin respuesta y el operario tuvo que repetir el movimiento. Ahora, si la asignación o el desmontaje del lote son víctimas de un deadlock, se reintentan solos hasta 3 veces (la misma receta de caja y CFE) y el `rollback` ya no tira. Si pierde las 3 veces, avisa «chocó con otra operación, probá de nuevo» sin dejar nada a medias.
+- **Asignar a lote sin órdenes contesta «no llegó ninguna orden» (400)**, en vez de un error de servidor con stack. Queda un aviso en el log con el usuario y lo que mandó, para encontrar de dónde viene si se repite (06:32, SB).
+- **Push al cliente: el log dice qué contestó el servicio.** Antes solo decía «Received unexpected response code»; ahora el código HTTP, el servicio (Google o Apple) y la respuesta. Además, si Google contesta 403 porque la suscripción se hizo con otra clave VAPID, se elimina como las vencidas: no iba a andar nunca más. Un 401, o un 403 por nuestro token, no borra nada.
+- **Al cambiar de pantalla ya no hay un parpadeo.** Al abrir una solicitud desde la lista se veía un flash. Medido cuadro por cuadro: la transición del sistema (un fundido de salida y otro de entrada, con la librería de animación) tenía dos fallas de un solo cuadro: la pantalla que se iba reaparecía entera un instante antes de desaparecer, y la nueva se apagaba un instante al terminar de entrar. Ahora la pantalla anterior se va al instante y la nueva entra con un fundido de CSS de 0,2 s, parejo de principio a fin. Vale para todo el sistema interno, no solo Solicitudes. Con «reducir movimiento» activado en el sistema operativo no se anima. Además, la lista de solicitudes pide los datos de la solicitud al pasar el mouse por la ficha, así el detalle abre ya completo (antes abría vacío y se armaba de a partes), incluido el bloque de TIZADA PRO del primer producto, que antes aparecía después con un «Leyendo el molde…» girando; y el perfil del usuario se pide una vez por sesión, así los botones del encabezado aparecen junto con el resto. Si se entra al detalle por la dirección directa, mientras carga se ve un esqueleto gris con la forma de la pantalla en vez de un spinner solo.
+
+- **Un ítem del menú sin pantalla ya no hace fallar la planilla de órdenes.** RRHH → «Descuento Trabajadores» (`/rrhh/descuento-trabajadores`) no tiene pantalla en el sistema. El menú lo abría como si fuera un área de producción llamada `DESCUENTO-TRABAJADORES`, y la consulta de órdenes fallaba con el error 8016 de SQL (el código de área admite hasta 20 caracteres y ese tiene 22). El 09/10 dio 500 en cada refresco, para Ximena y Santiago. Ahora un código de área de más de 20 caracteres, que no puede ser un área, devuelve la planilla vacía, y el log lo avisa una vez: `[getOrdersByArea] '…' no puede ser un área`. El ítem del menú sigue ahí.
+
+### Datos corregidos (ya aplicados en producción)
+- **08/10, tilde «Pasa por otra máquina antes de Control»:** las 8 máquinas con «0» quedaron vacías. Son DTF-1, DTF-2, ECOSOLVENTE, UV, ECOSOLVENTE 2, DIRECTA 1, LASER 3 y LASER 4. Vacía se lee como «no» en todos lados, también en la pantalla vieja de Gestión de Equipos, así que la pastilla ya no aparece aunque el código nuevo no esté deployado. Quedan con «1» solo FEDAR 1, FEDAR 2, TPU 1 y TPU 2. Hasta el deploy, guardar una máquina en Gestión de Equipos la vuelve a dejar en «0».
+- **08/10, cuenta con id 0 (Mariana Cabrera, cliente 2340):** su cuenta en dólares tenía `CueIdCuenta = 0`, que el sistema toma como «sin cuenta». Desde el deploy del 07/10 la caja no le podía cobrar en dólares («Faltan parámetros obligatorios: cueIdCuenta»). Pasó a ser la cuenta 7835, con el mismo saldo (US$ −339,67), y se movieron a ella 32 movimientos, 16 deudas, 7 imputaciones y 12 filas de la cola de estados de cuenta. Script: `docs/fix-cuenta-cero-cliente-2340.sql`. Después se agregó `CK_CuentasCliente_IdPositivo` (`CueIdCuenta > 0`) para que no pueda volver a existir una cuenta 0.
+
+### Notas de deploy
+- **CRM de leads:** solo front, `pages/ventas/LeadsCRMView.jsx` (va en el build). Sin backend ni SQL.
+- **Planilla con un ítem del menú sin pantalla:** backend `controllers/ordersController.js` (`getOrdersByArea`, necesita reiniciar). Sin SQL ni build. Probado en la base local con el handler real: `DESCUENTO-TRABAJADORES` devuelve 200 y la lista vacía (el aviso sale solo la primera vez), y `DF` sigue trayendo sus 201 órdenes.
+- **Planeación (lote en máquina primero, «falta finalizar», cola de la calandra):** backend `controllers/productionKanbanController.js` (`getBoard`) y `controllers/productionController.js` (pase a calandra en `toggleRollStatus`), necesita reiniciar; front `pages/PlaneacionTrabajo.jsx`, `production/components/MachineControl.jsx` y `production/components/RollCard.jsx` (van en el build). Sin SQL. El backend puede ir antes: el orden nuevo sale del backend, y el front viejo ignora las marcas. Probado `getBoard` de SB contra la base local: en la FEDAR 2 el lote en máquina (Secuencia 1) queda arriba del que tiene Secuencia 2, y la Calandra 1 trae las marcas de sus 3 pausados (uno, el 4340, con todo calandrado); los 2 lotes de la mesa traen las suyas (1 y 19 órdenes sin imprimir). El pase a calandra, con el UPDATE real en una transacción revertida: dos lotes seguidos entran al final de la Calandra 1 (Secuencia 0 y −1) en el orden en que llegaron, aunque el segundo tenga número de lote menor. No se probó en el navegador.
+- **Bitácora cerrada al mover un lote en marcha:** backend `controllers/productionKanbanController.js` (`assignRoll`, `unassignRoll`) y `controllers/rollsController.js` (`splitRoll`, `dismantleRoll`); necesita reiniciar. Sin SQL ni front. Probado en local con los handlers reales y lotes de prueba que después se borraron, junto con sus registros y su auditoría (12 pruebas): mover en marcha a otra máquina, volver a la mesa y desarmar cierran el registro en ese momento; mover un lote que no estaba en marcha no toca sus registros cerrados. `splitRoll` no se probó con el handler porque necesita órdenes; lleva la misma línea.
+- **TPU, canaleta entre texturas:** backend `python/tpu_matriz.py` y `services/tpuMatrizService.js` (necesita reiniciar), front `client-portal/modulos/Tpu3DViewer.jsx` y `client-portal/modulos/OrderForm.jsx` (necesita build). Sin SQL ni librerías nuevas: usa las del venv del VPS (fitz, pikepdf, scipy, skimage). Probado en local:
+  - **Generador, 24 pruebas** con un PDF vectorial armado para la prueba y el generador real:
+    - La zona chica queda entera y la grande termina a 1 pt (±0,06 mm).
+    - Casos: el agujero de un anillo; dos zonas lado a lado; formas de la misma zona, sin canaleta; contra una forma sin relieve, sin canaleta; barniz con la misma canaleta; CMYK cubriendo la canaleta; y la imagen de 600 dpi del PDF del RIP con el hueco de 1 pt.
+    - Una letra con el agujero tapado por un parche del fondo: cede el parche y la letra queda entera.
+    - Una manchita de 0,3 mm, sin anillo. Con el filtro apagado la prueba falla: aparece el anillo de 0,34 mm.
+  - **Escudo REF-13558** a 60 mm, zonas por color, con y sin texturas:
+    - La generación tarda lo mismo con y sin canaleta.
+    - A 2400 dpi no quedan hilos de relieve pegados a la otra zona.
+    - Las letras quedan enteras, también la O y la A, y la manchita no tiene anillo.
+  - **Visor:** 16 pruebas de la función real con los mismos casos (19 ms), y el visor real en el navegador con el escudo, con y sin canaleta, sin errores.
+  - No se probó en máquina: la profundidad real de la canaleta se ve recién imprimiendo.
+- **«Pasa por otra máquina antes de Control» y el «0» de Gestión de Equipos:** front `modals/config/ConfigPrintersModal.jsx` y `servicio-tecnico/MaquinasVista.jsx`, backend `controllers/stEquiposController.js` (solo el texto del historial del alta; ya está en la lista de Servicio Técnico). Sin SQL: los datos ya se limpiaron el 08/10 (ver «Datos corregidos»). Probado en el navegador con copias de prueba, con valores como los de la base («1», «0» y vacía):
+  - **DF:** DTF-1 y DTF-2 dicen «Control»; al editar DTF-1 el tilde viene destildado y guardar manda «no».
+  - **SB:** las FEDAR dicen «Calandra», y al editarlas el tilde viene marcado; la CALANDRA 1 y la MIMAKI dicen «Control».
+  - **TPU:** TPU 1 y TPU 2 dicen «Samurai» y la ayuda nombra al samurai.
+  - **«Nueva máquina» de Servicio Técnico:** la ayuda cambia según el área.
+  - **Alta:** las 17 pruebas pasan, con el texto nuevo del historial.
+- **ECOUV marcado obligatorio:** backend `controllers/productionController.js` (necesita reiniciar) y front `production/components/MachineControl.jsx`. Sin SQL.
+- **Lotes SB con papel primero:** backend `controllers/rollsController.js` (necesita reiniciar). Sin SQL ni cambios en el front. Probado en la base local con el handler real sobre un lote finalizado puesto como abierto para la prueba (7 pruebas) y restaurado después.
+- **Arreglos del log del 08/10:** backend `controllers/productionKanbanController.js`, `routes/productionKanbanRoutes.js`, `controllers/ordersController.js` y `services/pushNotificationService.js` (necesita reiniciar). Sin SQL ni front. Probado en local: 18 pruebas con los handlers reales, un deadlock simulado (no se escribe nada en la base) y una suscripción push falsa que se borró al final.
+- **SQL (antes del código):** `docs/servicio-tecnico/st-ficha-tecnica.sql` crea `ST_FichaEquipo` y, desde la parte 2, `ST_EquipoRepuestos` (la parte 3 no necesita SQL: usa `ST_Adjuntos`). Se puede correr más de una vez. Sin el script, la página anda y la ficha avisa que falta; la capacidad se puede editar igual. En la base local ya está corrido (08/10).
+- **Backend:**
+  - Nuevo: `controllers/stFichaEquipoController.js`.
+  - Modificados: `controllers/stEquiposController.js` (incluye el alta, `POST /servicio-tecnico/equipos`, y el cambio que actualiza la ficha), `controllers/stMantenimientoController.js` (preventivo de la máquina), `controllers/stInsumosController.js` (repuestos críticos), `routes/servicioTecnicoRoutes.js` y `controllers/areasController.js`.
+- **Front:**
+  - Nuevos: `servicio-tecnico/FichaTecnica.jsx`, `servicio-tecnico/fichaTecnicaCampos.js` y `servicio-tecnico/MaquinaServicio.jsx` (preventivo y repuestos).
+  - Modificados: `servicio-tecnico/MaquinaFicha.jsx` (pasó de panel a página), `servicio-tecnico/ui.jsx` (`Adjunto` acepta `sinNombre`), `servicio-tecnico/MaquinasVista.jsx`, `pages/ServicioTecnicoPage.jsx`, `modals/config/ConfigPrintersModal.jsx`, `servicio-tecnico/FormulariosMantenimiento.jsx` ("Programar" con la máquina elegida) y `services/modules/servicioTecnicoService.js`.
+- **Probado:** disponibilidad, 14 pruebas: casos armados a mano (semana normal, parada de 2 h, rotura que pasa el fin de semana, solicitudes que se pisan, feriado, hoy a medias, turno de noche, área sin horario) y uno contra la base con una solicitud de prueba que después se borró. Parte 4, 15 pruebas con datos creados y borrados (trabajos vencidos y no vencidos, repuestos en cada estado, cabezales y herramientas, garantía a 10 días y en un mes más corto, indicadores con una falla cancelada y otra de hace más de un año); en el navegador, las alertas en la lista, la columna y el Resumen, y adónde lleva cada una. Parte 3, 15 pruebas con los handlers reales y un archivo de prueba: subir (con acentos), que se lean con la máquina, renombrar conservando la extensión, borrar de la base y del disco, permisos e historial; también en el navegador (subir, renombrar, borrar, enlaces válidos e inválidos, celular). Parte 2, 30 pruebas con los handlers reales: estado de un repuesto, agregar, repetido, quitar, permisos e historial, preventivo, y cambio de cabezal y de firmware que actualizan la ficha (incluida una bordadora sin ficha y un pedido mal armado). Más 5 pruebas del preventivo con un plan creado para la prueba y borrado después. También se probó en el navegador con datos de prueba. Además, 17 pruebas del alta de máquinas (permisos, validaciones, área no productiva, nombre repetido, que "Pasa por otra máquina antes de Control" se guarda igual que en Configuración y se lee igual en producción, sin capacidad, tipo e historial; las máquinas de prueba se borraron) y 39 pruebas del backend con los handlers reales en la base local (permisos, validaciones, secciones sin pisarse, capacidad e historial, copiar, lectura, y que Configuración ya no toca la capacidad); las máquinas quedaron como estaban. Además, la pantalla real con datos de prueba en el navegador, en escritorio y celular. No se probó logueado contra el backend.
+
 ## [2026-10-07] — segundo deploy del día (tarde)
 
 ### Arreglado

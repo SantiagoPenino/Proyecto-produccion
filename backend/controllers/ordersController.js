@@ -183,6 +183,14 @@ exports.uploadProductionFile = async (req, res) => {
             const ext = (finalName.match(/\.[a-z0-9]+$/i) || ['.pdf'])[0];
             const idBase = orden.NoDocERP ? `tpu${String(orden.NoDocERP).trim()}` : String(orden.CodigoOrden || '').trim();
             finalName = `${idBase}-cmyk-spots${ext}`;
+        } else if (String(orden.AreaID || '').toUpperCase() === 'TPU' && !esMatriz && !/boceto/i.test(finalName)) {
+            // [TPU 09/10] Las capas del arte llevan el número de orden adelante, en vez del nombre con que se
+            // exportaron: 'TPU UV - CMYK.pdf' → 'TPU-31947 - CMYK.pdf' (también Corte y Spot 1/2/3). Se cambia solo
+            // lo que va antes del primer ' - ', así quedan las palabras que el sistema busca en el nombre (cmyk,
+            // corte, spot). Sin ' - ', el número se antepone. El boceto y la matriz no se tocan.
+            const prefijo = String(orden.CodigoOrden || '').trim().replace(/[\\/:*?"<>|]/g, '-');
+            const resto = /\s-\s/.test(finalName) ? finalName.replace(/^.*?\s+-\s+/, '') : finalName;
+            if (prefijo) finalName = `${prefijo} - ${resto}`;
         }
 
         // TPU en dos fases. Antes de la aprobación del cliente solo existe UNA subida válida: el
@@ -1177,6 +1185,9 @@ exports.getTpuMatrizFuenteInterno = async (req, res) => {
 // =====================================================================
 // 1. OBTENER ÓRDENES (ACTUALIZADO: Lee Material, Variante y CodigoOrden)
 // =====================================================================
+// Áreas inválidas ya avisadas en el log (una vez por área mientras viva el proceso).
+const areasInexistentesAvisadas = new Set();
+
 exports.getOrdersByArea = async (req, res) => {
     // Soporte para params o query
     let area = req.query.area || req.params.area;
@@ -1207,6 +1218,20 @@ exports.getOrdersByArea = async (req, res) => {
             DIRECTA: ['DIRECTA', 'IMD', 'XMD'], IMD: ['IMD', 'XMD'],
         };
         const areas = EQUIVALENTES[area] || [area];
+
+        // AreaID es VARCHAR(20) en Areas y en Ordenes: un código más largo no puede ser un área. Llega
+        // cuando un ítem del menú apunta a una pantalla que no existe y el router dinámico toma el último
+        // tramo de la ruta como área. El 09/10/2026, RRHH → "Descuento Trabajadores"
+        // (/rrhh/descuento-trabajadores) mandaba 'DESCUENTO-TRABAJADORES' (22): el parámetro VarChar(20)
+        // de abajo hacía fallar la consulta (error 8016) y la planilla contestaba 500 en cada refresco.
+        // Se contesta vacío y el log lo avisa una sola vez por área (la planilla refresca seguido).
+        if (areas.some(a => a && a.length > 20)) {
+            if (!areasInexistentesAvisadas.has(area)) {
+                areasInexistentesAvisadas.add(area);
+                logger.warn(`[getOrdersByArea] '${area}' no puede ser un área (más de 20 caracteres): es un ítem del menú sin pantalla propia. Se devuelve la lista vacía.`);
+            }
+            return res.json([]);
+        }
 
         // [PAYLOAD 31/08] El detalle de archivos (files_data, un FOR JSON PATH por orden)
         // NO lo usa la grilla: la columna ARCHIVOS sale de `filesCount` (ArchivosCount), y el
@@ -1689,7 +1714,12 @@ exports.assignRoll = async (req, res) => {
         if (orderIds && Array.isArray(orderIds)) targetOrderIds = orderIds;
         else if (orderId) targetOrderIds.push(orderId);
 
-        if (targetOrderIds.length === 0) throw new Error("No se especificaron órdenes.");
+        if (targetOrderIds.length === 0) {
+            // Pedido sin órdenes: es un error de quien llama, no del servidor (08/10/2026: llegó uno
+            // de SB y quedaba como 500 con stack). El cuerpo va al log para saber de dónde vino.
+            logger.warn(`[assignRoll] Pedido sin órdenes (user ${req.user?.id ?? '?'}): ${JSON.stringify({ orderIds, orderId, rollId, isNew, rollName, areaCode })}`);
+            return res.status(400).json({ error: 'No llegó ninguna orden para asignar al lote. Marcá al menos una y volvé a intentar.' });
+        }
 
         // ----------------------------------------------------
         // CONSULTA AL CLIENTE: una orden frenada esperando respuesta NO entra a un lote.
@@ -3781,18 +3811,23 @@ exports.cancelFile = async (req, res) => {
                     WHERE ArchivoID = @ID
                 `);
 
-            // 2. Obtener OrdenID y NoDocERP
+            // 2. Obtener OrdenID y NoDocERP (y código, nombre del archivo y título del motivo para el
+            //    aviso al cliente: solo el título del catálogo, nunca lo que escribe el operario)
             const orderRes = await new sql.Request(transaction)
                 .input('ID', sql.Int, fileId)
                 .query(`
-                    SELECT A.OrdenID, O.NoDocERP 
-                    FROM ArchivosOrden A 
-                    INNER JOIN Ordenes O ON A.OrdenID = O.OrdenID 
+                    SELECT A.OrdenID, O.NoDocERP, O.CodigoOrden, A.NombreArchivo, MC.Titulo AS MotivoTitulo
+                    FROM ArchivosOrden A
+                    INNER JOIN Ordenes O ON A.OrdenID = O.OrdenID
+                    LEFT JOIN MotivosCancelacion MC ON MC.MotivoID = A.MotivoCancelacionID
                     WHERE A.ArchivoID = @ID
                 `);
 
             const ordenId = orderRes.recordset[0]?.OrdenID;
             const noDocERP = orderRes.recordset[0]?.NoDocERP;
+            const codigoOrden = orderRes.recordset[0]?.CodigoOrden || '';
+            const nombreArchivo = orderRes.recordset[0]?.NombreArchivo || '';
+            const motivoTitulo = String(orderRes.recordset[0]?.MotivoTitulo || '').trim();
             let orderCancelled = false;
             let encadenadas = [];    // órdenes que esperaban a ésta y cayeron con ella
             let hermanasVivas = [];  // las otras del pedido que siguen vivas (las decide el operador)
@@ -3883,6 +3918,32 @@ exports.cancelFile = async (req, res) => {
                     io.emit('server:order_updated', { orderId: ordenId });
                 }
             } catch (sockErr) { logger.error("Socket emit error:", sockErr); }
+
+            // Aviso push al cliente (09/10/2026). Antes no se enteraba de que le cancelaban un archivo.
+            // Best-effort y fuera de la transacción. No se avisa:
+            //  - si canceló el propio cliente desde una consulta (sinAvisoCliente), y
+            //  - en las -F, que son internas y el cliente no ve.
+            if (ordenId && !req.body?.sinAvisoCliente && !/-F\d/i.test(codigoOrden)) {
+                const motivoCli = motivoTitulo; // solo el motivo elegido en la lista ("Otros" = sin motivo)
+                const archivoCorto = nombreArchivo.length > 60 ? `${nombreArchivo.slice(0, 57)}…` : nombreArchivo;
+                const aviso = orderCancelled
+                    ? {
+                        title: 'Pedido cancelado',
+                        body : `Tu pedido {code} fue cancelado: se cancelaron todos sus archivos.${motivoCli ? ` Motivo: ${motivoCli}` : ''}`,
+                    }
+                    : {
+                        title: 'Se canceló un archivo de tu pedido',
+                        body : `{code}: se canceló «${archivoCorto}».${motivoCli ? ` Motivo: ${motivoCli}` : ''}`,
+                        // Un tag por archivo: si cancelan dos, el cliente ve los dos avisos
+                        tag  : `archivo-cancelado-${fileId}`,
+                    };
+                pushService.sendToOrderClient(ordenId, {
+                    ...aviso,
+                    url: '/portal/factory',
+                    actions: [{ action: 'pedido', title: 'Ver mi pedido' }],
+                    actionUrls: { pedido: '/portal/factory' },
+                }).catch(err => logger.error('[WebPush] Aviso de archivo cancelado:', err.message));
+            }
 
             res.json({ success: true, orderCancelled, encadenadas, hermanasVivas });
 

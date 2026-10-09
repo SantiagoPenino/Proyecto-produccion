@@ -922,6 +922,150 @@ def _contorno_a_path(contorno, H_px, ppmm):
             " ".join(f"{_f(x)} {_f(y)} l" for x, y in pts[1:]) + " h")
 
 
+# CANALETA ENTRE ZONAS (08/10, pedido de Santiago): entre dos zonas de relieve que se tocan queda una
+# separacion de SEPARACION_ZONAS_PT (1 pt = 0,35 mm) donde no cae relieve ni barniz: solo el color del
+# arte (CMYK). Asi no queda blanco y el borde entre texturas se hunde, lo que ayuda al relieve.
+# La CEDE LA ZONA MAS GRANDE (la que mas superficie se ve en el parche; si empatan, la de indice
+# menor): retrocede el punto entero y la mas chica queda entera. Casi siempre la mas grande es el
+# fondo, asi que las letras, las estrellas y el dibujo quedan enteros sin importar como dibujo el
+# disenador los agujeros. Primero cedia "la de abajo" (orden de pintado), pero en el escudo REF-13558
+# los agujeros de la O y la A son parches del fondo dibujados ENCIMA de la letra, y la letra cedia por
+# dentro (08/10). No se agrega nada entre formas de una misma zona, contra el corte ni contra partes sin
+# relieve (ahi ya no hay relieve). 0 = sin canaleta.
+# MANCHITAS: una forma de menos de CANALETA_MANCHA_MM de lado (en el parche) no hace ceder a nadie: la
+# canaleta a su alrededor seria un anillo mas grande que ella (la forma 11 del escudo: 0,1 x 0,3 mm).
+# El visor 3D dibuja la misma canaleta (SEPARACION_ZONAS_PT y CANALETA_MANCHA_MM en Tpu3DViewer.jsx) y el
+# service manda la medida en el job (tpuMatrizService.js): cambiar los tres juntos.
+SEPARACION_ZONAS_PT = 1.0
+CANALETA_MANCHA_MM = 0.5
+
+
+CANALETA_MAX_FORMAS = 32767  # codigos de 15 bits (5 por canal), ver canaleta_zonas
+
+
+def canaleta_zonas(utiles, pertenece, T, Wp, Hp, sep_pt, dpi=DPI_RASTER):
+    """Canaleta entre zonas: {indice de zona: recorte PDF} con el recorte de cada zona que CEDE.
+
+    Un pixel de una zona es canaleta si a menos de `sep_pt` hay un pixel de una zona MAS CHICA (que no
+    sea una manchita). Que zona se ve en cada pixel sale de un render del parche con cada forma
+    rellena pintada de un color unico (su orden de pintado) y SIN antialias: respeta la regla de
+    relleno (los agujeros) y el orden igual que el PDF. `rasterizar` no sirve para esto: pinta cada
+    subtrazado lleno y tapa los agujeros (para el corte da igual).
+    El recorte de cada zona es "todo el parche MENOS su canaleta" (par-impar: rectangulo + contornos).
+    Va SOLO en la zona que cede: la otra no se recorta, asi el redondeo del raster no le come el
+    borde. Devuelve (recortes, contornos, area_mm2)."""
+    import pikepdf
+    from pikepdf import Dictionary
+    from scipy import ndimage
+
+    rellenas = [f for f in utiles if f.fill is not None]
+    zona_de = [pertenece.get(f.seqno) for f in rellenas]
+    if not sep_pt or sep_pt <= 0 or len({z for z in zona_de if z is not None}) < 2:
+        return {}, 0, 0.0
+    if len(rellenas) > CANALETA_MAX_FORMAS:
+        raise ValueError(f"El arte tiene {len(rellenas)} trazados rellenos: demasiados para calcular la canaleta entre zonas.")
+    # misma resolucion que el resto del raster, con el mismo tope de pixeles
+    px_est = (Wp * dpi / 72.0) * (Hp * dpi / 72.0)
+    if px_est > MAX_PIXELES_RASTER:
+        dpi *= math.sqrt(MAX_PIXELES_RASTER / px_est)
+    s = dpi / 72.0                                    # px por pt
+
+    # 1) quien esta encima: codigo = orden de pintado (1..n) en RGB, 5 bits por canal, sin antialias.
+    # Cada nivel va en el CENTRO de un escalon de 8 (4, 12, ... 252) y se lee con // 8: el render
+    # puede correr el valor un poco (con 8 bits pelados el 2/255 salia como 1 y B se leia como el
+    # fondo, 08/10).
+    def nivel(v):
+        return f"{(v * 8 + 4) / 255:.6f}"
+    ops = []
+    for k, f in enumerate(rellenas, start=1):
+        ops.append(f"{nivel((k >> 10) & 31)} {nivel((k >> 5) & 31)} {nivel(k & 31)} rg")
+        ops.append(path_pdf(f, T))
+        ops.append("f*" if f.even_odd else "f")
+    tmp = pikepdf.new()
+    pg = tmp.add_blank_page(page_size=(Wp, Hp))
+    pg.Resources = Dictionary()
+    pg.Contents = tmp.make_stream("\n".join(ops).encode("latin-1"))
+    buf = io.BytesIO()
+    tmp.save(buf)
+    tmp.close()
+    doc = fitz.open("pdf", buf.getvalue())
+    aa_antes = fitz.TOOLS.show_aa_level()
+    try:
+        fitz.TOOLS.set_aa_level(0)                    # con antialias los bordes mezclan codigos
+        pix = doc[0].get_pixmap(matrix=fitz.Matrix(s, s), colorspace=fitz.csRGB, alpha=False)
+    finally:
+        fitz.TOOLS.set_aa_level(int(aa_antes.get("graphics", 8)))
+        doc.close()
+    rgb = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n).astype(np.int32) // 8
+    cod = (rgb[:, :, 0] << 10) | (rgb[:, :, 1] << 5) | rgb[:, :, 2]
+    cod[cod > len(rellenas)] = 0                      # el blanco del fondo (31,31,31) no es una forma
+    zona_cod = np.array([-1] + [-1 if z is None else z for z in zona_de], dtype=np.int32)
+    Z = zona_cod[cod]                                 # zona de cada pixel (-1 = sin relieve)
+
+    # 2) quien cede: la zona con mas superficie visible (si empatan, la de indice menor).
+    # Las manchitas (formas de menos de CANALETA_MANCHA_MM de lado en el parche) no hacen ceder a nadie.
+    n_z = int(Z.max()) + 1
+    area = np.bincount(Z[Z >= 0].ravel(), minlength=n_z)
+    mancha_cod = np.zeros(len(rellenas) + 1, dtype=bool)
+    for k, f in enumerate(rellenas, start=1):
+        if f.rect is not None:
+            (ax, ay), (bx, by) = T(f.rect.x0, f.rect.y0), T(f.rect.x1, f.rect.y1)
+            mancha_cod[k] = max(abs(bx - ax), abs(by - ay)) / PT_POR_MM < CANALETA_MANCHA_MM
+    hace_ceder = (Z >= 0) & ~mancha_cod[cod]
+
+    # 3) canaleta: pixeles de la zona a, a menos de sep_pt de una zona mas chica que ella.
+    # El EDT mide entre centros de pixel: "+ 0,5" lleva la medida al borde entre las dos formas.
+    radio = sep_pt * s + 0.5
+    m = int(math.ceil(radio)) + 1
+    canal = np.zeros(Z.shape, dtype=bool)
+    for a, sl in enumerate(ndimage.find_objects(Z + 1)):
+        if sl is None:
+            continue
+        mas_chicas = np.array([b != a and area[b] > 0 and (area[a] > area[b] or (area[a] == area[b] and a < b))
+                               for b in range(n_z)] + [False])          # el ultimo: indice -1 (sin zona)
+        if not mas_chicas.any():
+            continue
+        y0, y1 = max(0, sl[0].start - m), min(Z.shape[0], sl[0].stop + m)
+        x0, x1 = max(0, sl[1].start - m), min(Z.shape[1], sl[1].stop + m)
+        Zv = Z[y0:y1, x0:x1]
+        fuente = hace_ceder[y0:y1, x0:x1] & mas_chicas[Zv]
+        if not fuente.any():
+            continue
+        dist = ndimage.distance_transform_edt(~fuente)
+        canal[y0:y1, x0:x1] |= (Zv == a) & (dist <= radio)
+    if not canal.any():
+        return {}, 0, 0.0
+
+    # 4) contornos por zona -> recorte (el centro del pixel (r, c) esta en (c + 0,5, r + 0,5) del render).
+    # El recorte de cada zona se estira unos pixeles HACIA AFUERA de la zona (sobre la zona vecina):
+    # ahi esa zona no pinta nada, asi que no cambia el resultado, pero tapa el redondeo del raster y la
+    # simplificacion del contorno. Sin esto quedaban hilos de 0,02-0,05 mm del relieve de la zona que cede
+    # pegados al borde de la otra (vistos a 2400 dpi en el escudo REF-13558, 08/10).
+    tol_px = max(0.5, (TOL_SIMPLIFICACION_MM / 25.4) * dpi)
+    ext = int(math.ceil(tol_px)) + 2
+    rect = f"0 0 {_f(Wp)} {_f(Hp)} re"
+    por_zona = np.where(canal, Z + 1, 0)
+    recortes, n_contornos = {}, 0
+    for zi, sl in enumerate(ndimage.find_objects(por_zona)):
+        if sl is None:
+            continue
+        y0, y1 = max(0, sl[0].start - ext), min(Z.shape[0], sl[0].stop + ext)
+        x0, x1 = max(0, sl[1].start - ext), min(Z.shape[1], sl[1].stop + ext)
+        banda = por_zona[y0:y1, x0:x1] == zi + 1
+        cerca = ndimage.distance_transform_edt(~banda) <= ext
+        region = banda | (cerca & (Z[y0:y1, x0:x1] != zi))
+        paths = []
+        for c in contornos_de(region, tol_px):
+            pts = [((col + x0 + 0.5) / s, Hp - (row + y0 + 0.5) / s) for row, col in c]
+            paths.append(f"{_f(pts[0][0])} {_f(pts[0][1])} m " +
+                         " ".join(f"{_f(x)} {_f(y)} l" for x, y in pts[1:]) + " h")
+        if paths:
+            recortes[zi] = rect + "\n" + "\n".join(paths) + "\nW* n"
+            n_contornos += len(paths)
+    area_mm2 = float(canal.sum()) * (25.4 / dpi) ** 2
+    return recortes, n_contornos, round(area_mm2, 1)
+
+
 class Imposicion:
     """UNA plancha: ancho fijo, alto = lo que pidan las filas hasta max_alto_mm.
 
@@ -1192,6 +1336,11 @@ def generar(job, preview=None):
             pertenece[sq] = zi
     formas_con_relleno = [f for f in utiles if f.fill is not None]
 
+    # Canaleta entre zonas (ver SEPARACION_ZONAS_PT): el recorte de cada zona que cede se usa en las
+    # tres capas de relieve, asi en la canaleta no cae ni relieve ni barniz.
+    sep_zonas_pt = float(job.get("separacion_zonas_pt", SEPARACION_ZONAS_PT) or 0)
+    canaleta, canaleta_n, canaleta_mm2 = canaleta_zonas(utiles, pertenece, T, Wp, Hp, sep_zonas_pt)
+
     def tapan_a(forma, zona_idx):
         return [g for g in formas_con_relleno
                 if g.seqno > forma.seqno and pertenece.get(g.seqno) != zona_idx
@@ -1237,12 +1386,21 @@ def generar(job, preview=None):
                         emitir(path_pdf(g, T))
                     emitir("W* n")
 
+            # Canaleta (ver canaleta_zonas): si esta zona cede, todo su contenido va recortado MENOS su
+            # canaleta, con un solo recorte que envuelve sus formas. La zona de encima no lleva nada.
+            recorte_canaleta = canaleta.get(zona_idx)
+            if recorte_canaleta:
+                emitir("q")
+                emitir(recorte_canaleta)
+
             if not tex:
                 for f in formas_z:
                     emitir("q")
                     recortar(f)
                     emitir(path_pdf(f, T))
                     emitir("f*" if f.even_odd else "f")
+                    emitir("Q")
+                if recorte_canaleta:
                     emitir("Q")
                 continue
             xo, tw, th, texto_tile = xobj_textura(tex, tinta, z.get("invertida"))
@@ -1276,6 +1434,8 @@ def generar(job, preview=None):
                         partes.append(f"q {cm_tile} {nombre_xo} Do Q")
                         planas.append(f"q {cm_tile} {texto_tile} Q")
                         n_tex += 1
+                emitir("Q")
+            if recorte_canaleta:
                 emitir("Q")
         if len(xobjs.keys()):
             recursos[Name.XObject] = xobjs
@@ -1568,6 +1728,8 @@ def generar(job, preview=None):
         "islas": len(lista_islas),
         "zonas": len(zonas),
         "tiles_textura": tiles1,
+        "canaleta_zonas": {"pt": sep_zonas_pt, "zonas_que_ceden": len(canaleta), "contornos": canaleta_n,
+                           "area_mm2": canaleta_mm2},
         "arte_cmyk": usa_cmyk,
         "avisos": list(dict.fromkeys(avisos)),   # sin repetidos (una textura usada en Spot 1 y Spot 2 avisaba dos veces)
     }

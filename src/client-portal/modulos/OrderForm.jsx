@@ -2842,6 +2842,7 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                         codigo={jobName?.trim() || 'Tu matriz'}
                                         fuente={{ pdf: tpuMatrizFile, analisis: tpuMatriz.analisis }}
                                         inicial={{ zonas: tpuMatriz.zonas }}
+                                        medidaMm={medidaMatrizMm()}
                                         onListo={({ zonas }) => setTpuMatriz(m => ({ ...m, zonas }))}
                                         onClose={() => setTpuMatrizVisor(false)}
                                     />

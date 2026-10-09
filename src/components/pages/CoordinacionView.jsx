@@ -1,8 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { toast } from 'sonner';
-import Lottie from 'lottie-react';
-import loadingAnim from '../../assets/animations/Loading-CMYK.json';
-import { ArrowUp, ArrowDown, ChevronsUp, Lock, Layers, ListOrdered, RefreshCw, ChevronDown } from 'lucide-react';
+import { ArrowUp, ArrowDown, ChevronsUp, Lock, Layers, ListOrdered, RefreshCw, ChevronDown, Search, X, Loader2 } from 'lucide-react';
+import Selector from '../ui/Selector';
 import { rollsService } from '../../services/modules/rollsService';
 import { areasService } from '../../services/modules/areasService';
 import { socket } from '../../services/socketService';
@@ -31,6 +30,58 @@ function sortPendingOrders(orders) {
     });
 }
 
+// ─── Piezas comunes ──────────────────────────────────────────────────────────
+// Estilo de las pantallas rehechas en claro (Precios, Bandeja de Diseño, Solicitudes; 09/10): paneles blancos
+// con encabezado en mayúsculas, filas divididas, íconos Lucide en brand-cyan sin fondo y el color solo en los
+// estados (falla, urgente, reposición).
+
+const PRIO_ESTILO = {
+    falla:        { label: 'Falla',      punto: 'bg-red-500',   texto: 'text-red-600' },
+    urgente:      { label: 'Urgente',    punto: 'bg-[#BD0C7E]', texto: 'text-[#BD0C7E]' },
+    'reposición': { label: 'Reposición', punto: 'bg-amber-500', texto: 'text-amber-600' },
+    normal:       { label: 'Normal',     punto: 'bg-slate-400', texto: 'text-slate-500' },
+};
+
+function Panel({ icono: Icono, titulo, contador, extra, children }) {
+    return (
+        <section className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+            <div className="flex items-center gap-2.5 px-4 py-3.5 border-b border-slate-100">
+                <Icono size={16} className="text-brand-cyan shrink-0" />
+                <h2 className="text-sm font-black text-slate-700 uppercase tracking-wide flex-1">{titulo}</h2>
+                <span className="text-xs font-bold text-slate-400 bg-slate-100 rounded-full px-2.5 py-0.5 tabular-nums">{contador}</span>
+            </div>
+            {extra}
+            {children}
+        </section>
+    );
+}
+
+function Vacio({ icono: Icono, texto }) {
+    return (
+        <div className="text-center py-14 text-slate-400">
+            <Icono size={28} className="mx-auto mb-2 text-slate-300" />
+            <p className="text-sm">{texto}</p>
+        </div>
+    );
+}
+
+// Al tope / subir / bajar: el mismo grupo de botones en lotes y en órdenes.
+function BotonesMover({ item, onMove, isFirst, isLast }) {
+    const cls = 'w-7 h-7 rounded-lg flex items-center justify-center text-slate-400 hover:text-brand-cyan hover:bg-brand-cyan/10 disabled:opacity-25 disabled:pointer-events-none transition-colors';
+    return (
+        <div className="flex items-center shrink-0">
+            <button type="button" disabled={isFirst} onClick={() => onMove(item, 'top')} className={cls} title="Mover al tope"><ChevronsUp size={15} /></button>
+            <button type="button" disabled={isFirst} onClick={() => onMove(item, 'up')} className={cls} title="Subir"><ArrowUp size={15} /></button>
+            <button type="button" disabled={isLast} onClick={() => onMove(item, 'down')} className={cls} title="Bajar"><ArrowDown size={15} /></button>
+        </div>
+    );
+}
+
+// Mismo ancho que los 3 botones, para que las filas bloqueadas queden alineadas con las otras.
+const Bloqueado = ({ title }) => (
+    <div className="w-[84px] flex justify-center shrink-0 text-slate-300" title={title}><Lock size={14} /></div>
+);
+
 // ─── OrderRow ────────────────────────────────────────────────────────────────
 
 function OrderRow({ order, onMove, groupOrders, fullGroupOrders }) {
@@ -41,72 +92,21 @@ function OrderRow({ order, onMove, groupOrders, fullGroupOrders }) {
     const isFirst = idx === 0;
     const isLast = idx === posGroup.length - 1;
 
-    const prioColors = {
-        falla: 'bg-red-50 border-red-200 text-red-700',
-        urgente: 'bg-pink-50 border-pink-200 text-[#BD0C7E]',
-        'reposición': 'bg-yellow-50 border-yellow-200 text-yellow-700',
-        normal: 'bg-zinc-50 border-zinc-200 text-zinc-600',
-    };
-
-    const group = getPrioGroup(order);
-
     return (
-        <div className={`flex items-center gap-3 px-4 py-2.5 border rounded-lg mb-1.5 transition-all ${prioColors[group] || prioColors.normal}`}>
-            {/* Priority badge */}
-            <span className="text-[10px] font-black uppercase tracking-wider w-16 shrink-0 opacity-70">
-                {order.priority || 'Normal'}
-            </span>
-
-            {/* Order info */}
+        <div className="flex items-center gap-3 px-4 py-2.5 hover:bg-slate-50/60 transition-colors">
             <div className="flex-1 min-w-0">
-                <div className="font-bold text-sm truncate">{order.code}</div>
-                <div className="text-xs opacity-60 truncate">{order.client} · {order.material}</div>
+                <p className="text-sm font-bold text-slate-800 truncate">{order.code}</p>
+                <p className="text-xs text-slate-500 truncate">{order.client} · {order.material}</p>
             </div>
-
-            <div className="text-xs font-mono opacity-50 shrink-0">
-                {order.magnitude?.toFixed(2)}m
-            </div>
-
-            {/* Seq badge */}
+            <span className="text-xs font-bold text-slate-500 tabular-nums shrink-0">{order.magnitude?.toFixed(2)} m</span>
             {order.sequence != null && (
-                <span className="text-[10px] font-mono bg-white/60 border border-current/20 rounded px-1.5 py-0.5 shrink-0">
+                <span className="text-[10px] font-black text-slate-400 bg-slate-100 rounded-full px-2 py-0.5 tabular-nums shrink-0" title="Secuencia">
                     #{order.sequence}
                 </span>
             )}
-
-            {/* Move buttons */}
-            {isFalla ? (
-                <div className="flex items-center gap-1 opacity-30 shrink-0">
-                    <Lock size={14} />
-                </div>
-            ) : (
-                <div className="flex items-center gap-0.5 shrink-0">
-                    <button
-                        disabled={isFirst}
-                        onClick={() => onMove(order, 'top')}
-                        className="p-1 rounded hover:bg-white/60 disabled:opacity-20 transition-all"
-                        title="Mover al tope"
-                    >
-                        <ChevronsUp size={14} />
-                    </button>
-                    <button
-                        disabled={isFirst}
-                        onClick={() => onMove(order, 'up')}
-                        className="p-1 rounded hover:bg-white/60 disabled:opacity-20 transition-all"
-                        title="Subir"
-                    >
-                        <ArrowUp size={14} />
-                    </button>
-                    <button
-                        disabled={isLast}
-                        onClick={() => onMove(order, 'down')}
-                        className="p-1 rounded hover:bg-white/60 disabled:opacity-20 transition-all"
-                        title="Bajar"
-                    >
-                        <ArrowDown size={14} />
-                    </button>
-                </div>
-            )}
+            {isFalla
+                ? <Bloqueado title="Las fallas no se reordenan" />
+                : <BotonesMover item={order} onMove={onMove} isFirst={isFirst} isLast={isLast} />}
         </div>
     );
 }
@@ -118,74 +118,42 @@ const MOVABLE_STATES = ['abierto', 'en cola'];
 function RollCard({ roll, onMove, isFirst, isLast }) {
     const isLocked = !MOVABLE_STATES.includes((roll.status || '').toLowerCase());
     const [expanded, setExpanded] = useState(false);
+    const ordenes = roll.orders || [];
 
     return (
-        <div className={`border rounded-xl mb-2 overflow-hidden transition-all ${isLocked ? 'border-zinc-200 bg-zinc-50 opacity-70' : 'border-brand-cyan/30 bg-white shadow-sm'}`}>
+        <div className={isLocked ? 'bg-slate-50/60' : ''}>
             <div className="flex items-center gap-3 px-4 py-3">
-                {/* Lock icon or move buttons */}
-                {isLocked ? (
-                    <Lock size={16} className="text-zinc-400 shrink-0" />
-                ) : (
-                    <div className="flex flex-col items-center gap-0.5 shrink-0">
-                        <button
-                            disabled={isFirst}
-                            onClick={() => onMove(roll, 'top')}
-                            className="p-0.5 rounded hover:bg-brand-cyan/10 disabled:opacity-20 text-brand-cyan transition-all"
-                            title="Mover al tope"
-                        >
-                            <ChevronsUp size={13} />
-                        </button>
-                        <button
-                            disabled={isFirst}
-                            onClick={() => onMove(roll, 'up')}
-                            className="p-0.5 rounded hover:bg-brand-cyan/10 disabled:opacity-20 text-brand-cyan transition-all"
-                            title="Subir"
-                        >
-                            <ArrowUp size={13} />
-                        </button>
-                        <button
-                            disabled={isLast}
-                            onClick={() => onMove(roll, 'down')}
-                            className="p-0.5 rounded hover:bg-brand-cyan/10 disabled:opacity-20 text-brand-cyan transition-all"
-                            title="Bajar"
-                        >
-                            <ArrowDown size={13} />
-                        </button>
-                    </div>
-                )}
+                {isLocked
+                    ? <Bloqueado title="En máquina: no se puede mover" />
+                    : <BotonesMover item={roll} onMove={onMove} isFirst={isFirst} isLast={isLast} />}
 
-                {/* Roll info */}
                 <div className="flex-1 min-w-0">
-                    <div className="font-bold text-zinc-800 text-sm truncate">{roll.name}</div>
-                    <div className="text-xs text-zinc-400 mt-0.5">
-                        {roll.orders?.length || 0} órdenes · {(roll.currentUsage || 0).toFixed(2)}m
-                    </div>
+                    <p className={`text-sm font-bold truncate ${isLocked ? 'text-slate-500' : 'text-slate-800'}`}>{roll.name}</p>
+                    <p className="text-xs text-slate-400 mt-0.5 tabular-nums">
+                        {ordenes.length} órdenes · {(roll.currentUsage || 0).toFixed(2)} m
+                    </p>
                 </div>
 
-                {/* Status badge */}
-                <span className={`text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full shrink-0 ${isLocked ? 'bg-zinc-200 text-zinc-500' : 'bg-brand-cyan/10 text-brand-cyan'}`}>
+                <span className={`text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full border shrink-0 ${isLocked ? 'bg-slate-100 text-slate-500 border-slate-200' : 'bg-brand-cyan/10 text-brand-cyan border-brand-cyan/20'}`}>
                     {roll.status}
                 </span>
 
-                {/* Expand toggle */}
-                <button
-                    onClick={() => setExpanded(e => !e)}
-                    className="p-1 rounded hover:bg-zinc-100 text-zinc-400 transition-all shrink-0"
-                >
-                    <ChevronDown size={14} className={`transition-transform ${expanded ? 'rotate-180' : ''}`} />
+                <button type="button" onClick={() => setExpanded(e => !e)} title={expanded ? 'Ocultar órdenes' : 'Ver órdenes'}
+                    className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors shrink-0">
+                    <ChevronDown size={15} className={`transition-transform ${expanded ? 'rotate-180' : ''}`} />
                 </button>
             </div>
 
             {/* Orders list (collapsed by default) */}
             {expanded && (
-                <div className="border-t border-zinc-100 bg-zinc-50 px-4 py-2 space-y-1">
-                    {(roll.orders || []).length === 0 ? (
-                        <p className="text-xs text-zinc-400 italic py-1">Sin órdenes asignadas</p>
-                    ) : (roll.orders || []).map(o => (
-                        <div key={o.id} className="flex items-center gap-2 text-xs py-1 border-b border-zinc-100 last:border-0">
-                            <span className="font-bold text-zinc-700">{o.code}</span>
-                            <span className="text-zinc-400 truncate flex-1">{o.client}</span>
-                            <span className="text-zinc-400">{o.magnitude?.toFixed(2)}m</span>
+                <div className="mx-4 mb-3 rounded-xl border border-slate-100 bg-slate-50/80 divide-y divide-slate-100">
+                    {ordenes.length === 0 ? (
+                        <p className="text-xs text-slate-400 italic px-3 py-2">Sin órdenes asignadas</p>
+                    ) : ordenes.map(o => (
+                        <div key={o.id} className="flex items-center gap-2 text-xs px-3 py-1.5">
+                            <span className="font-bold text-slate-700">{o.code}</span>
+                            <span className="text-slate-400 truncate flex-1">{o.client}</span>
+                            <span className="text-slate-500 tabular-nums">{o.magnitude?.toFixed(2)} m</span>
                         </div>
                     ))}
                 </div>
@@ -362,82 +330,68 @@ export default function CoordinacionView() {
 
     // ─── Render ────────────────────────────────────────────────────────────
 
+    const prioFiltros = [
+        { key: 'todas', label: 'Todas', n: pendingOrders.length },
+        ...['urgente', 'normal', 'reposición', 'falla'].map(k => ({
+            key: k, label: PRIO_ESTILO[k].label, punto: PRIO_ESTILO[k].punto,
+            n: pendingOrders.filter(o => getPrioGroup(o) === k).length,
+        })),
+    ];
+
     return (
-        <div className="min-h-screen">
-            {/* Header */}
-            <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
-                <div>
-                    <h1 className="text-2xl font-black text-zinc-800 flex items-center gap-2">
-                        <ListOrdered size={22} className="text-brand-cyan" />
-                        Coordinación de Producción
-                    </h1>
-                    <p className="text-sm text-zinc-400 mt-0.5">
-                        Reordenar lotes y órdenes pendientes por área
-                    </p>
-                </div>
-
-                <div className="flex items-center gap-3">
-                    {/* Area selector */}
-                    <div className="flex flex-wrap gap-2">
-                        {areas.map(a => (
-                            <button
-                                key={a.code}
-                                onClick={() => setSelectedArea(a)}
-                                className={`px-3 py-1.5 rounded-lg text-sm font-bold transition-all border ${
-                                    selectedArea?.code === a.code
-                                        ? 'bg-brand-cyan text-white border-brand-cyan shadow-md shadow-brand-cyan/20'
-                                        : 'bg-white text-zinc-600 border-zinc-200 hover:border-brand-cyan/50'
-                                }`}
-                            >
-                                {a.name}
-                            </button>
-                        ))}
-                    </div>
-
-                    <button
-                        onClick={loadData}
-                        disabled={loading}
-                        className="p-2 rounded-lg bg-white border border-zinc-200 hover:border-brand-cyan/50 text-zinc-400 hover:text-brand-cyan transition-all"
-                        title="Recargar"
-                    >
-                        <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
-                    </button>
-                </div>
+        <div className="pb-6">
+            <div className="mb-5">
+                <h1 className="text-2xl font-black text-slate-800">Coordinación de Producción</h1>
+                <p className="text-sm text-slate-500 mt-1">Reordenar lotes y órdenes pendientes por área.</p>
             </div>
 
-            {saving && (
-                <div className="fixed top-4 right-4 z-50 bg-brand-cyan text-white text-xs font-bold px-3 py-1.5 rounded-lg shadow-lg animate-pulse">
-                    Guardando...
-                </div>
-            )}
-
-            <div className="pb-6">
-            {loading ? (
-                <div className="flex items-center justify-center min-h-[60vh]">
-                    <div className="w-80 h-80">
-                        <Lottie animationData={loadingAnim} loop={true} />
+            {/* Áreas: pestañas como en Bandeja de Diseño y Solicitudes (en el celular, un desplegable).
+                A la derecha, el aviso de guardado y recargar. */}
+            <div className="flex items-center gap-3 mb-5">
+                <div className="flex-1 min-w-0">
+                    <div className="sm:hidden">
+                        <Selector value={selectedArea?.code || ''} aria-label="Área" anchoLista={260}
+                            onChange={e => setSelectedArea(areas.find(a => a.code === e.target.value) || null)}>
+                            {areas.map(a => <option key={a.code} value={a.code}>{a.name}</option>)}
+                        </Selector>
+                    </div>
+                    <div className="hidden sm:flex items-center overflow-x-auto no-scrollbar shadow-[inset_0_-1px_0_0_#e2e8f0]">
+                        {areas.map(a => {
+                            const on = selectedArea?.code === a.code;
+                            return (
+                                <button key={a.code} type="button" onClick={() => setSelectedArea(a)} aria-current={on ? 'page' : undefined}
+                                    className={`shrink-0 px-4 py-2.5 text-sm font-bold whitespace-nowrap border-b-2 transition-colors ${on ? 'border-brand-cyan text-brand-cyan' : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300'}`}>
+                                    {a.name}
+                                </button>
+                            );
+                        })}
                     </div>
                 </div>
+
+                {saving && (
+                    <span className="inline-flex items-center gap-1.5 text-xs font-bold text-brand-cyan shrink-0">
+                        <Loader2 size={14} className="animate-spin" /> Guardando…
+                    </span>
+                )}
+                <button type="button" onClick={loadData} disabled={loading} title="Recargar"
+                    className="w-9 h-9 rounded-xl bg-white border border-slate-200 flex items-center justify-center text-slate-400 hover:text-brand-cyan hover:border-brand-cyan/40 disabled:opacity-50 transition-colors shrink-0">
+                    <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
+                </button>
+            </div>
+
+            {loading ? (
+                <div className="flex items-center gap-2 text-slate-400 text-sm py-16 justify-center">
+                    <Loader2 size={18} className="animate-spin" /> Cargando…
+                </div>
             ) : (
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 items-start">
 
                     {/* ── Cola de Lotes ── */}
-                    <div>
-                        <div className="flex items-center gap-2 mb-3">
-                            <Layers size={16} className="text-brand-cyan" />
-                            <h2 className="font-black text-zinc-700 text-sm uppercase tracking-wider">
-                                Cola de Lotes
-                            </h2>
-                            <span className="ml-auto text-xs text-zinc-400">{movableRolls.length} activos</span>
-                        </div>
-
+                    <Panel icono={Layers} titulo="Cola de lotes" contador={`${movableRolls.length} activos`}>
                         {movableRolls.length === 0 && lockedRolls.length === 0 ? (
-                            <div className="text-center py-12 text-zinc-400 bg-white border border-zinc-200 rounded-xl">
-                                <Layers size={32} className="mx-auto mb-2 opacity-30" />
-                                <p className="text-sm">No hay lotes para {selectedArea?.name}</p>
-                            </div>
+                            <Vacio icono={Layers} texto={`No hay lotes para ${selectedArea?.name}`} />
                         ) : (
-                            <>
+                            <div className="divide-y divide-slate-100">
                                 {movableRolls.map((roll, idx) => (
                                     <RollCard
                                         key={roll.id}
@@ -450,121 +404,77 @@ export default function CoordinacionView() {
 
                                 {lockedRolls.length > 0 && (
                                     <>
-                                        <div className="flex items-center gap-2 my-3">
-                                            <Lock size={12} className="text-zinc-400" />
-                                            <span className="text-xs text-zinc-400 font-bold uppercase tracking-wider">En máquina (bloqueados)</span>
+                                        <div className="flex items-center gap-2 px-4 py-2 bg-slate-50">
+                                            <Lock size={12} className="text-slate-400" />
+                                            <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">En máquina (bloqueados)</span>
                                         </div>
-                                        {lockedRolls.map((roll, idx) => (
-                                            <RollCard
-                                                key={roll.id}
-                                                roll={roll}
-                                                isFirst={true}
-                                                isLast={true}
-                                                onMove={() => {}}
-                                            />
+                                        {lockedRolls.map(roll => (
+                                            <RollCard key={roll.id} roll={roll} isFirst={true} isLast={true} onMove={() => {}} />
                                         ))}
                                     </>
                                 )}
-                            </>
+                            </div>
                         )}
-                    </div>
+                    </Panel>
 
                     {/* ── Órdenes Pendientes ── */}
-                    <div className="h-full flex flex-col overflow-hidden">
-                        {/* Header row */}
-                        <div className="flex items-center gap-2 mb-3">
-                            <ListOrdered size={16} className="text-brand-cyan" />
-                            <h2 className="font-black text-zinc-700 text-sm uppercase tracking-wider">
-                                Órdenes Pendientes
-                            </h2>
-                            <span className="ml-auto text-xs text-zinc-400">
-                                {filteredOrders.length} / {pendingOrders.length}
-                            </span>
-                        </div>
-
-                        {/* Search + priority filters */}
-                        <div className="mb-3 space-y-2 px-2">
-                            <div className="relative">
-                                <svg className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
-                                <input
-                                    type="text"
-                                    placeholder="Buscar por orden, cliente, material..."
-                                    value={search}
-                                    onChange={e => setSearch(e.target.value)}
-                                    className="w-full pl-8 pr-3 py-2 text-sm border border-zinc-200 rounded-lg bg-white focus:outline-none focus:border-brand-cyan transition-colors"
-                                />
-                                {search && (
-                                    <button onClick={() => setSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600">
-                                        ✕
-                                    </button>
-                                )}
+                    <Panel icono={ListOrdered} titulo="Órdenes pendientes" contador={`${filteredOrders.length} / ${pendingOrders.length}`}
+                        extra={(
+                            <div className="px-4 py-3 border-b border-slate-100 space-y-2.5">
+                                <div className="relative">
+                                    <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                                    <input
+                                        type="text"
+                                        placeholder="Buscar por orden, cliente, material..."
+                                        value={search}
+                                        onChange={e => setSearch(e.target.value)}
+                                        className="w-full pl-9 pr-9 py-2.5 rounded-xl border border-slate-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-sky-200"
+                                    />
+                                    {search && (
+                                        <button type="button" onClick={() => setSearch('')} title="Borrar búsqueda"
+                                            className="absolute right-2 top-1/2 -translate-y-1/2 w-6 h-6 rounded-md flex items-center justify-center text-slate-400 hover:text-slate-600 hover:bg-slate-100">
+                                            <X size={14} />
+                                        </button>
+                                    )}
+                                </div>
+                                <div className="flex gap-1.5 flex-wrap">
+                                    {prioFiltros.map(p => {
+                                        const on = prioFilter === p.key;
+                                        return (
+                                            <button key={p.key} type="button" onClick={() => setPrioFilter(p.key)}
+                                                className={`inline-flex items-center gap-1.5 h-7 px-3 rounded-full text-xs font-bold border transition-colors ${on ? 'bg-brand-cyan/10 text-brand-cyan border-brand-cyan/30' : 'bg-white text-slate-500 border-slate-200 hover:border-slate-300'}`}>
+                                                {p.punto && <span className={`w-1.5 h-1.5 rounded-full ${p.punto}`} />}
+                                                {p.label}
+                                                <span className={`text-[11px] font-black tabular-nums ${on ? 'text-brand-cyan' : p.n ? 'text-slate-600' : 'text-slate-300'}`}>{p.n}</span>
+                                            </button>
+                                        );
+                                    })}
+                                </div>
                             </div>
-                            <div className="flex gap-1.5 flex-wrap items-center">
-                                <button
-                                    onClick={() => setPrioFilter('todas')}
-                                    className={`inline-flex items-center h-6 px-2.5 rounded-full text-[11px] font-bold border transition-all ring-2 ring-offset-1 ${
-                                        prioFilter === 'todas'
-                                            ? 'bg-zinc-100 text-zinc-600 border-zinc-200 ring-brand-cyan/40 shadow-sm'
-                                            : 'bg-white text-zinc-400 border-zinc-200 ring-transparent hover:border-zinc-300'
-                                    }`}
-                                >
-                                    Todas
-                                </button>
-
-                                {[
-                                    { key: 'urgente',    label: 'Urgente',    color: 'bg-pink-50 text-[#BD0C7E] border-pink-200' },
-                                    { key: 'normal',     label: 'Normal',     color: 'bg-zinc-50 text-zinc-500 border-zinc-200' },
-                                    { key: 'reposición', label: 'Reposición', color: 'bg-yellow-50 text-yellow-700 border-yellow-200' },
-                                    { key: 'falla',      label: 'Falla',      color: 'bg-red-50 text-red-600 border-red-200' },
-                                ].map(p => (
-                                    <button
-                                        key={p.key}
-                                        onClick={() => setPrioFilter(p.key)}
-                                        className={`inline-flex items-center h-6 px-2.5 rounded-full text-[11px] font-bold border transition-all ring-2 ring-offset-1 ${
-                                            prioFilter === p.key
-                                                ? p.color + ' ring-brand-cyan/40 shadow-sm'
-                                                : 'bg-white text-zinc-400 border-zinc-200 ring-transparent hover:border-zinc-300'
-                                        }`}
-                                    >
-                                        {p.label}
-                                        <span className="ml-1 opacity-60">
-                                            ({pendingOrders.filter(o => getPrioGroup(o) === p.key).length})
-                                        </span>
-                                    </button>
-                                ))}
-                            </div>
-
-                        </div>
-
+                        )}>
                         {filteredOrders.length === 0 ? (
-                            <div className="text-center py-12 text-zinc-400 bg-white border border-zinc-200 rounded-xl">
-                                <ListOrdered size={32} className="mx-auto mb-2 opacity-30" />
-                                <p className="text-sm">
-                                    {pendingOrders.length === 0
-                                        ? `No hay órdenes pendientes para ${selectedArea?.name}`
-                                        : 'Ninguna orden coincide con los filtros'}
-                                </p>
-                            </div>
+                            <Vacio icono={ListOrdered} texto={pendingOrders.length === 0
+                                ? `No hay órdenes pendientes para ${selectedArea?.name}`
+                                : 'Ninguna orden coincide con los filtros'} />
                         ) : (
-                            <div className="bg-white border border-zinc-200 rounded-xl p-3 max-h-screen overflow-y-auto">
+                            <div className="lg:max-h-[calc(100vh-20rem)] overflow-y-auto">
                                 {fallas.length > 0 && (
-                                    <GroupSection label="Fallas" color="text-red-500" orders={fallas} allOrders={getFullGroup('falla')} onMove={moveOrder} />
+                                    <GroupSection prio="falla" orders={fallas} allOrders={getFullGroup('falla')} onMove={moveOrder} />
                                 )}
                                 {urgentes.length > 0 && (
-                                    <GroupSection label="Urgente" color="text-[#BD0C7E]" orders={urgentes} allOrders={getFullGroup('urgente')} onMove={moveOrder} />
+                                    <GroupSection prio="urgente" orders={urgentes} allOrders={getFullGroup('urgente')} onMove={moveOrder} />
                                 )}
                                 {reposiciones.length > 0 && (
-                                    <GroupSection label="Reposición" color="text-yellow-600" orders={reposiciones} allOrders={getFullGroup('reposición')} onMove={moveOrder} />
+                                    <GroupSection prio="reposición" orders={reposiciones} allOrders={getFullGroup('reposición')} onMove={moveOrder} />
                                 )}
                                 {normales.length > 0 && (
-                                    <GroupSection label="Normal" color="text-zinc-500" orders={normales} allOrders={getFullGroup('normal')} onMove={moveOrder} />
+                                    <GroupSection prio="normal" orders={normales} allOrders={getFullGroup('normal')} onMove={moveOrder} />
                                 )}
                             </div>
                         )}
-                    </div>
+                    </Panel>
                 </div>
             )}
-            </div>
         </div>
     );
 }
@@ -573,7 +483,7 @@ export default function CoordinacionView() {
 const INITIAL_SIZE = 10;
 const LOAD_MORE    = 20;
 
-function GroupSection({ label, color, orders, allOrders, onMove }) {
+function GroupSection({ prio, orders, allOrders, onMove }) {
     const [visible, setVisible] = useState(INITIAL_SIZE);
 
     // Reset when orders list changes (area change, filter change)
@@ -581,32 +491,33 @@ function GroupSection({ label, color, orders, allOrders, onMove }) {
 
     const shown = orders.slice(0, visible);
     const hasMore = visible < orders.length;
+    const est = PRIO_ESTILO[prio] || PRIO_ESTILO.normal;
 
     return (
-        <div className="mb-4 last:mb-0">
-            <div className={`text-[10px] font-black uppercase tracking-widest mb-2 ${color} flex items-center gap-1`}>
-                <span className="flex-1 border-t border-current opacity-20 ml-1" />
-                {label} ({orders.length})
-                <span className="flex-1 border-t border-current opacity-20 mr-1" />
+        <div className="border-t border-slate-100 first:border-t-0">
+            {/* Encabezado del grupo: queda fijo arriba mientras se recorre la lista */}
+            <div className="sticky top-0 z-[1] flex items-center gap-2 px-4 py-2 bg-slate-50 border-b border-slate-100">
+                <span className={`w-1.5 h-1.5 rounded-full ${est.punto}`} />
+                <span className={`text-[10px] font-black uppercase tracking-wider ${est.texto}`}>{est.label}</span>
+                <span className="text-[10px] font-black text-slate-400 tabular-nums">{orders.length}</span>
             </div>
-            {shown.map(order => (
-                <OrderRow
-                    key={order.id}
-                    order={order}
-                    groupOrders={orders}
-                    fullGroupOrders={allOrders}
-                    onMove={onMove}
-                />
-            ))}
+            <div className="divide-y divide-slate-100">
+                {shown.map(order => (
+                    <OrderRow
+                        key={order.id}
+                        order={order}
+                        groupOrders={orders}
+                        fullGroupOrders={allOrders}
+                        onMove={onMove}
+                    />
+                ))}
+            </div>
             {hasMore && (
-                <button
-                    onClick={() => setVisible(v => v + LOAD_MORE)}
-                    className={`w-full mt-1 py-1.5 text-[11px] font-bold rounded-lg border border-dashed transition-all opacity-60 hover:opacity-100 ${color} border-current`}
-                >
+                <button type="button" onClick={() => setVisible(v => v + LOAD_MORE)}
+                    className="w-full py-2.5 text-xs font-bold text-slate-500 hover:text-brand-cyan hover:bg-slate-50 border-t border-slate-100 transition-colors">
                     Ver {Math.min(LOAD_MORE, orders.length - visible)} más de {orders.length - visible} restantes
                 </button>
             )}
         </div>
     );
 }
-

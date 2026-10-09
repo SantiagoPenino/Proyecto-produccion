@@ -3751,9 +3751,18 @@ exports.getOrdersFiles = async (req, res) => {
                    o.OrdenID,
                    o.CodigoOrden,
                    o.Material,          -- la tela de esta hermana
-                   o.Estado
+                   o.Estado,
+                   -- Archivo cancelado y por qué (09/10/2026): antes el portal lo mostraba como uno más.
+                   -- Motivo = SOLO el título del catálogo (lo que se elige en la lista). Lo que escribe el
+                   -- operario (DetallesCancelacion) es interno y nunca va al cliente; sin motivo de catálogo
+                   -- ("Otros", o cancelado desde una consulta) no hay motivo.
+                   CAST(CASE WHEN UPPER(ISNULL(ao.EstadoArchivo, '')) = 'CANCELADO' THEN 1 ELSE 0 END AS BIT) AS Cancelado,
+                   CASE WHEN UPPER(ISNULL(ao.EstadoArchivo, '')) = 'CANCELADO'
+                        THEN NULLIF(LTRIM(RTRIM(mc.Titulo)), '')
+                   END AS MotivoCancelacion
             FROM dbo.ArchivosOrden ao WITH(NOLOCK)
             INNER JOIN dbo.Ordenes o WITH(NOLOCK) ON ao.OrdenID = o.OrdenID
+            LEFT JOIN dbo.MotivosCancelacion mc WITH(NOLOCK) ON mc.MotivoID = ao.MotivoCancelacionID
             WHERE ao.OrdenID IN (${inClause}) AND o.CodCliente = @cod
             ORDER BY o.CodigoOrden ASC, ao.ArchivoID ASC
         `);

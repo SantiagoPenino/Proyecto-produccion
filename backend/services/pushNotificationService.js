@@ -2,6 +2,24 @@ const webpush = require('web-push');
 const { getPool, sql } = require('../config/db');
 const logger = require('../utils/logger');
 
+// Detalle de un error de web-push para el log. El mensaje de la librería es siempre "Received
+// unexpected response code" y escondía el código y la respuesta del servicio (08/10/2026).
+const detalleErrorPush = (err, endpoint) => {
+    let servicio = '?';
+    try { servicio = new URL(endpoint).host; } catch { /* endpoint raro: queda '?' */ }
+    const cuerpo = String(err?.body || '').replace(/\s+/g, ' ').trim().slice(0, 200);
+    const codigo = err?.statusCode ? `HTTP ${err.statusCode}` : (err?.code || 'sin código');
+    return `${codigo} de ${servicio}${cuerpo ? ` · ${cuerpo}` : ''} (${err?.message || err})`;
+};
+// ¿La suscripción no va a funcionar nunca más? Vencida o borrada por el navegador (410, 404), o
+// hecha con OTRA clave VAPID (403 y el servicio dice que la clave no corresponde). Un 401, o un 403
+// sin ese texto, es problema nuestro (token firmado mal, reloj del servidor): la suscripción se deja.
+const suscripcionMuerta = (err) => {
+    const st = Number(err?.statusCode);
+    if (st === 410 || st === 404) return true;
+    return st === 403 && /vapid|sender ?id|does not (correspond|match)|mismatch/i.test(String(err?.body || ''));
+};
+
 // ── VAPID Config ─────────────────────────────────────────────────────────────
 const VAPID_PUBLIC = process.env.VAPID_PUBLIC_KEY;
 const VAPID_PRIVATE = process.env.VAPID_PRIVATE_KEY;
@@ -103,14 +121,14 @@ async function sendToClient(clientId, { title, body, icon, url, tag, actions, ac
             await webpush.sendNotification(pushSubscription, payload);
             logger.info(`[WebPush Debug] Notificación enviada con éxito a Endpoint: ${sub.Endpoint.substring(0, 30)}...`);
         } catch (err) {
-            if (err.statusCode === 410 || err.statusCode === 404) {
-                // Suscripción expirada, eliminar
+            if (suscripcionMuerta(err)) {
+                // Suscripción vencida o con otra clave: no va a andar nunca, se elimina
                 await pool.request()
                     .input('Endpoint', sql.NVarChar(500), sub.Endpoint)
                     .query(`DELETE FROM PushSubscriptions WHERE Endpoint = @Endpoint`);
-                logger.info(`[WebPush] Suscripción expirada eliminada: ${sub.Endpoint.substring(0, 50)}...`);
+                logger.info(`[WebPush] Suscripción eliminada (${detalleErrorPush(err, sub.Endpoint)}): ${sub.Endpoint.substring(0, 50)}...`);
             } else {
-                logger.error(`[WebPush] Error enviando push: ${err.message}`);
+                logger.error(`[WebPush] Error enviando push: ${detalleErrorPush(err, sub.Endpoint)}`);
             }
         }
     }
@@ -215,12 +233,12 @@ async function sendToUsuariosInternos(usuarioIds, { title, body, icon, url, tag 
             try {
                 await webpush.sendNotification({ endpoint: sub.Endpoint, keys: { p256dh: sub.KeysP256dh, auth: sub.KeysAuth } }, payload);
             } catch (err) {
-                if (err.statusCode === 410 || err.statusCode === 404) {
+                if (suscripcionMuerta(err)) {
                     await pool.request().input('Endpoint', sql.NVarChar(500), sub.Endpoint)
                         .query(`DELETE FROM dbo.PushSuscripcionesInternas WHERE Endpoint = @Endpoint`);
-                    logger.info(`[WebPush] Suscripción interna vencida eliminada: ${sub.Endpoint.substring(0, 50)}...`);
+                    logger.info(`[WebPush] Suscripción interna eliminada (${detalleErrorPush(err, sub.Endpoint)}): ${sub.Endpoint.substring(0, 50)}...`);
                 } else {
-                    logger.error(`[WebPush] Error enviando push interna: ${err.message}`);
+                    logger.error(`[WebPush] Error enviando push interna: ${detalleErrorPush(err, sub.Endpoint)}`);
                 }
             }
         }

@@ -16,6 +16,7 @@ import {
 import Selector from '../../ui/Selector';
 import EstadoProduccionPanel from './EstadoProduccionPanel';
 import TizadaProBloque from './TizadaProBloque';
+import { REFRESCAR_SI_MAS_DE_MS, cargarPerfil, perfilPrecargado, tomarPrecarga, verPrecarga } from './solicitudPrecarga';
 // La grilla con el panel "Estado para producción" al costado era lo último de fichaPedido.css (fp-det-grid /
 // fp-det-aside); pasó a Tailwind y la hoja de estilos se borró (06/10).
 
@@ -80,8 +81,13 @@ export default function SolicitudVendedorDetalle() {
     const { id } = useParams();
     const navigate = useNavigate();
     const { user } = useAuth() || {};
-    const [s, setS] = useState(null);
-    const [perfil, setPerfil] = useState({ esVendedor: false, esDisenador: false, esAdmin: false });
+    // Lo que la lista pidió al pasar el mouse (solicitudPrecarga.js): acá solo se LEE (el render de montaje puede
+    // repetirse); se consume en el efecto, una sola vez.
+    const [s, setS] = useState(verPrecarga(id)?.data ?? null);
+    const [perfil, setPerfil] = useState(() => perfilPrecargado() || { esVendedor: false, esDisenador: false, esAdmin: false });
+    // Si abrió sin datos (entrada directa por la URL), el contenido entra con un fundido después del esqueleto.
+    const conEsqueleto = useRef(!s);
+    const precargaUsada = useRef(false);
     const [busy, setBusy] = useState(false);
     const [subida, setSubida] = useState(null);           // { nombre, pct }
     const [cancelando, setCancelando] = useState(false);
@@ -109,10 +115,16 @@ export default function SolicitudVendedorDetalle() {
         catch (e) { toast.error(errorDe(e)); navigate(-1); }
     }, [id, navigate]);
     useEffect(() => {
-        cargar();
-        svc.miPerfil().then(setPerfil).catch(() => { });
+        if (!precargaUsada.current) {   // StrictMode repite el efecto: la carga inicial va una sola vez
+            precargaUsada.current = true;
+            const pre = tomarPrecarga(id);
+            if (pre?.data) { if (Date.now() - pre.at > REFRESCAR_SI_MAS_DE_MS) cargar(); }   // ya está en pantalla; si es vieja se refresca por detrás
+            else if (pre) pre.p.then(setS).catch(() => cargar());
+            else cargar();
+        }
+        cargarPerfil().then(setPerfil).catch(() => { });
         svc.materialesPrincipal().then(setTelas).catch(() => setTelas([]));
-    }, [cargar]);
+    }, [id, cargar]);
 
     // Mientras un pedido está pasando sus archivos a producción, se refresca solo.
     const pasando = !!s?.Conversion?.some(c => ['PROCESANDO', 'PASANDO_ARCHIVOS'].includes(c.pedido?.estado) && !c.pedido?.archivosColgados);
@@ -144,7 +156,7 @@ export default function SolicitudVendedorDetalle() {
         finally { setSubida(null); setBusy(false); await cargar(); }
     };
 
-    if (!s) return <div className="p-10 flex justify-center"><Loader2 className="animate-spin text-brand-cyan" /></div>;
+    if (!s) return <EsqueletoDetalle />;
 
     const abierta = s.Estado === 'INGRESADA' || s.Estado === 'EN_DISENO';
     const puedeVender = perfil.esVendedor && abierta;
@@ -165,7 +177,7 @@ export default function SolicitudVendedorDetalle() {
     // max-w-7xl centrado). Antes iba dentro de .fp-oscuro, el tema oscuro de Solicitudes (fichaPedido.css).
     return (
         <>
-        <div className="p-3 md:p-6 space-y-4">
+        <div className={`p-3 md:p-6 space-y-4 ${conEsqueleto.current ? 'animate-entrar-pagina' : ''}`}>
             {/* Encabezado como el de las otras pantallas: ícono de Lucide en brand-cyan y sin fondo, título grande */}
             <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="flex min-w-0 items-start gap-3">
@@ -305,6 +317,49 @@ const Dato = ({ l, v }) => (
         <div className="text-sm font-bold text-slate-800">{v}</div>
     </div>
 );
+
+// Mientras carga: la misma forma que la pantalla (encabezado, datos, pestañas), para que no quede en blanco y después
+// aparezca todo de golpe. Antes era un spinner solo en una pantalla vacía.
+const Hueso = ({ className = '' }) => <div className={`rounded-md bg-slate-200/70 ${className}`} />;
+function EsqueletoDetalle() {
+    return (
+        <div className="p-3 md:p-6 animate-aparecer-demorado" aria-busy="true" aria-label="Cargando la solicitud">
+            <div className="space-y-4 animate-pulse">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="flex items-start gap-3">
+                        <Hueso className="mt-1 h-[30px] w-[30px]" />
+                        <div className="space-y-2">
+                            <Hueso className="h-4 w-48" />
+                            <Hueso className="h-7 w-72" />
+                            <Hueso className="h-4 w-56" />
+                        </div>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                        {['w-20', 'w-10', 'w-36', 'w-44', 'w-32'].map((w, i) => <Hueso key={i} className={`h-9 ${w}`} />)}
+                    </div>
+                </div>
+                <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
+                    {[0, 1, 2, 3, 4].map(i => (
+                        <div key={i} className="rounded-xl border border-slate-200 bg-white px-3 py-2 space-y-1.5">
+                            <Hueso className="h-2.5 w-24" />
+                            <Hueso className="h-4 w-32" />
+                        </div>
+                    ))}
+                </div>
+                <div className="rounded-2xl border border-slate-200 bg-white">
+                    <div className="flex gap-4 border-b border-slate-200 px-5 py-3">
+                        {['w-20', 'w-36', 'w-24', 'w-28', 'w-20'].map((w, i) => <Hueso key={i} className={`h-4 ${w}`} />)}
+                    </div>
+                    <div className="space-y-3 p-4">
+                        <Hueso className="h-4 w-64" />
+                        <Hueso className="h-24 w-full" />
+                        <Hueso className="h-40 w-full" />
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+}
 
 // Una pestaña por producto: datos del producto + tabla de servicios (una fila por servicio) + conversión a pedido.
 export function ProductoTab({ s, p, n, id, user, perfil, busy, abierta, puedeVender, telas, archivosDe, hacer, subir, onAbrirFicha }) {

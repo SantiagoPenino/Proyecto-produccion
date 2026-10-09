@@ -998,11 +998,16 @@ exports.dismantleRoll = async (req, res) => {
             // Vuelven a pendientes: sin el grupo ni la marca de impreso del lote (utils/salidaDeLote).
             await limpiarMarcasDeLote(transaction, cambio.ordenesAfectadas, { vuelveAPendientes: true });
 
-            // 2. Eliminar el Rollo físicamente
+            // 2. Eliminar el Rollo físicamente. Si venía en marcha, antes se cierra su tramo de la
+            // bitácora: borrado el lote, la máquina seguía sumando horas para siempre (08/10, ver
+            // productionKanbanController.assignRoll).
+            await new sql.Request(transaction)
+                .input('RID', sql.VarChar(50), rollId.toString())
+                .query('UPDATE dbo.BitacoraProduccion SET FechaFin = GETDATE() WHERE RolloID = @RID AND FechaFin IS NULL');
             await new sql.Request(transaction)
                 .input('RID', sql.VarChar(50), rollId.toString())
                 .query(`
-                    DELETE FROM dbo.Rollos 
+                    DELETE FROM dbo.Rollos
                     WHERE CAST(RolloID AS VARCHAR(50)) = @RID
                 `);
 
@@ -1098,6 +1103,11 @@ exports.splitRoll = async (req, res) => {
             });
 
             // 4. ACTUALIZAR ROLLO VIEJO (FINALIZAR)
+            // Si venía en marcha, su tramo de la bitácora se cierra acá: queda Finalizado y sin máquina.
+            // Sin esto la máquina seguía sumando horas para siempre (08/10, ver productionKanbanController.assignRoll).
+            await new sql.Request(transaction)
+                .input('RID', sql.VarChar(50), String(rollId))
+                .query('UPDATE dbo.BitacoraProduccion SET FechaFin = GETDATE() WHERE RolloID = @RID AND FechaFin IS NULL');
             await new sql.Request(transaction)
                 .input('RID', sql.VarChar(20), rollId)
                 .query("UPDATE Rollos SET Estado = 'Finalizado', MaquinaID = NULL WHERE RolloID = @RID");
@@ -1375,8 +1385,12 @@ exports.getRollDetails = async (req, res) => {
         }
         const r = rollsRes.recordset[0];
 
-        // SB: la PRIMERA vez que se abre el lote, fijar la Secuencia por Material A-Z (default
-        // histórico) y marcarlo. Después se respeta el orden manual que guarde el usuario.
+        // SB: la PRIMERA vez que se abre el lote, fijar la Secuencia y marcarlo. Después se respeta
+        // el orden manual que guarde el usuario. El orden inicial (08/10/2026, pedido de Santiago):
+        //  1. las telas que LLEVAN PAPEL (Articulos.LLEVAPAPEL del artículo de la orden) van primero;
+        //  2. dentro de cada mitad, Material A-Z, Variante y código (el default histórico).
+        // Las órdenes que entran DESPUÉS de esta primera vez siguen yendo al final (moveOrder), lleven
+        // papel o no: el operario las acomoda arrastrando el bloque.
         // NO se toca un lote ya terminado (Finalizado/Cerrado): en el Historial la vista es de solo
         // lectura y no debe reescribir la secuencia de datos históricos.
         if (String(r.AreaID || '').toUpperCase() === 'SB' && !r.OrdenadoSB && !['Finalizado', 'Cerrado'].includes(r.Estado)) {
@@ -1384,10 +1398,13 @@ exports.getRollDetails = async (req, res) => {
                 .input('RID', sql.Int, r.RolloID)
                 .query(`
                     ;WITH O AS (
-                        SELECT OrdenID, ROW_NUMBER() OVER (
-                            ORDER BY LTRIM(RTRIM(ISNULL(Material,''))), LTRIM(RTRIM(ISNULL(Variante,''))), CodigoOrden
+                        SELECT o.OrdenID, ROW_NUMBER() OVER (
+                            ORDER BY CASE WHEN ISNULL(a.LLEVAPAPEL, 0) = 1 THEN 0 ELSE 1 END,
+                                     LTRIM(RTRIM(ISNULL(o.Material,''))), LTRIM(RTRIM(ISNULL(o.Variante,''))), o.CodigoOrden
                         ) AS rn
-                        FROM dbo.Ordenes WHERE RolloID = @RID
+                        FROM dbo.Ordenes o
+                        LEFT JOIN dbo.Articulos a ON a.ProIdProducto = o.ProIdProducto
+                        WHERE o.RolloID = @RID
                     )
                     UPDATE ord SET Secuencia = O.rn FROM dbo.Ordenes ord JOIN O ON ord.OrdenID = O.OrdenID;
                     UPDATE dbo.Rollos SET OrdenadoSB = 1 WHERE RolloID = @RID;

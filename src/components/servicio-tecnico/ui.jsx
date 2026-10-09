@@ -113,7 +113,8 @@ export const ModalEstadoMaquina = ({ nombre, estadoActual, estadosEquipo, onConf
 };
 
 // Miniatura de un adjunto: se baja con el token (un <img src> directo no lo manda).
-export const Adjunto = ({ a, chico = false }) => {
+// sinNombre: sin el nombre adentro (cuando el nombre ya se muestra abajo, como en los archivos de una máquina).
+export const Adjunto = ({ a, chico = false, sinNombre = false }) => {
     const [url, setUrl] = useState(null);
     const esImagen = String(a.Mime || '').startsWith('image/');
     const esVideo = String(a.Mime || '').startsWith('video/');
@@ -139,7 +140,7 @@ export const Adjunto = ({ a, chico = false }) => {
             {esImagen && url ? <img src={url} alt={a.NombreOriginal || ''} className="w-full h-full object-cover" />
                 : esImagen ? <Loader2 size={18} className="animate-spin text-zinc-300" />
                 : <>{esVideo ? <Video size={22} className="text-zinc-400" /> : <FileText size={22} className="text-zinc-400" />}
-                    <span className="px-1 text-[10px] text-zinc-500 truncate w-full">{a.NombreOriginal}</span></>}
+                    {!sinNombre && <span className="px-1 text-[10px] text-zinc-500 truncate w-full">{a.NombreOriginal}</span>}</>}
         </button>
     );
 };

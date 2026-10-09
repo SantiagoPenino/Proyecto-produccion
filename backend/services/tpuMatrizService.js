@@ -56,6 +56,12 @@ const SPOTS_RASTER = true;
 // y en la de dos cabezales. Cuando llegue el segundo cabezal: false acá y en RELIEVE_DOBLE_SIEMPRE
 // del visor (Tpu3DViewer.jsx), que por la misma razón muestra todo al relieve máximo.
 const RELIEVE_DOBLE_SIEMPRE = true;
+// Canaleta entre zonas (08/10, pedido de Santiago): entre dos zonas de relieve que se tocan queda 1 pt
+// (0,35 mm) sin relieve ni barniz, donde solo cae el color. La cede la zona MÁS GRANDE (casi siempre el
+// fondo): las letras y el dibujo quedan enteros. Las manchitas de menos de 0,5 mm no hacen ceder a nadie.
+// 0 la apaga. El visor muestra lo mismo con SEPARACION_ZONAS_PT de Tpu3DViewer.jsx: cambiar los dos
+// juntos (y el default de tpu_matriz.py).
+const SEPARACION_ZONAS_PT = 1;
 
 const habilitado = () => process.env.TPU_MATRIZ_ENABLED !== '0';
 
@@ -273,6 +279,7 @@ async function procesarOrden({ ordenId, codCliente, matriz, cantidad, io }) {
         capas: CAPAS_CONTROL,
         spots_raster: SPOTS_RASTER,
         relieve_doble_siempre: RELIEVE_DOBLE_SIEMPRE,
+        separacion_zonas_pt: SEPARACION_ZONAS_PT,
     };
     const jobPath = path.join(salidaDir, 'job.json');
     fs.writeFileSync(jobPath, JSON.stringify(job, null, 2));
@@ -433,7 +440,15 @@ async function leerMatrizDeOrden(pool, ordenId, codCliente = null) {
     fs.writeFileSync(tmp, pdfBuf.buffer);
     try {
         const analisis = await analizar(tmp);
-        return { job: { zonas: job.zonas || [], medida_mm: job.medida_mm || null, imposicion: job.imposicion || null }, analisis };
+        // separacion_zonas_pt: la canaleta con la que se generó ESTA orden. Las generadas antes del
+        // 08/10 no la tienen (0): el visor no les dibuja una canaleta que su archivo no lleva.
+        return {
+            job: {
+                zonas: job.zonas || [], medida_mm: job.medida_mm || null, imposicion: job.imposicion || null,
+                separacion_zonas_pt: Number(job.separacion_zonas_pt) || 0,
+            },
+            analisis,
+        };
     } finally {
         try { fs.unlinkSync(tmp); } catch (_) { }
     }

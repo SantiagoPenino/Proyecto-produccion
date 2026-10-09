@@ -267,9 +267,67 @@ const PlaneacionTrabajo = ({ AreaID }) => {
         }
     };
 
+    // El lote 'En maquina' va siempre primero en su columna (el backend ordena igual en getBoard).
+    // Se aplica también a la vista optimista para que lo que se guarda en la Secuencia coincida.
+    const enMaquinaPrimero = (rolls) => {
+        const enMaq = r => String(r.status || '').includes('En maquina');
+        return [...rolls.filter(enMaq), ...rolls.filter(r => !enMaq(r))];
+    };
+
+    // Lote elegido en el selector de una máquina = el "actual": pasa al primer lugar de la columna y
+    // queda guardado en la Secuencia (mismo endpoint que el arrastre). Con un lote 'En maquina' el
+    // selector está bloqueado, así que en la práctica el elegido queda primero de verdad.
+    const ponerPrimeroEnMaquina = async (machineId, rollId) => {
+        queryClient.cancelQueries({ queryKey: ['productionBoard', areaCode] });
+        const oldData = localBoardData;
+        if (!oldData) return;
+        const newData = { ...oldData, machines: oldData.machines.map(m => ({ ...m, rolls: [...m.rolls] })) };
+        const mach = newData.machines.find(m => String(m.id) === String(machineId));
+        const elegido = mach?.rolls.find(r => String(r.id) === String(rollId));
+        if (!mach || !elegido) return;
+        mach.rolls = enMaquinaPrimero([elegido, ...mach.rolls.filter(r => String(r.id) !== String(rollId))]);
+        flushSync(() => {
+            setLocalBoardData(newData);
+            queryClient.setQueryData(['productionBoard', areaCode], newData);
+        });
+        try {
+            const rollIds = mach.rolls.map(r => Number(r.id)).filter(n => !Number.isNaN(n));
+            await rollsService.reorderRolls(areaCode, rollIds, Number(rollId));
+            setTimeout(() => refreshBoard(), 1000);
+        } catch (error) {
+            refreshBoard();
+            const msg = error.response?.data?.error || error.message || 'Error desconocido';
+            toast.error(`No se pudo subir el lote al primer lugar: ${msg}`);
+        }
+    };
+
+    const esCalandraId = (machineId) => {
+        const m = (localBoardData?.machines || []).find(x => String(x.id) === String(machineId));
+        return /^\s*calandra/i.test(String(m?.name || ''));
+    };
+
     const handleDragEnd = (result) => {
         const { source, destination, draggableId } = result;
         if (!destination) return;
+
+        // De la Mesa de Armado a una CALANDRA solo pasa un lote con todo impreso (p. ej. uno que volvió a la
+        // mesa porque la calandra estaba en mantenimiento). Si le falta imprimir, no se mueve: queda en la mesa
+        // y se avisa por qué. roll.marcas lo manda getBoard; sin ese dato decide el backend (assignRoll
+        // rechaza con el mismo criterio y el lote vuelve a la mesa al refrescar).
+        if (source.droppableId === 'mesa-armado' && destination.droppableId !== 'mesa-armado' && esCalandraId(destination.droppableId)) {
+            const idArrastrado = draggableId.startsWith('assigned-') ? draggableId.replace('assigned-', '') : draggableId;
+            const lote = (localBoardData?.pendingRolls || []).find(r => String(r.id) === String(idArrastrado));
+            const faltan = lote?.marcas?.sinImpresoCalandra || 0;
+            if (faltan > 0) {
+                Swal.fire({
+                    toast: true, position: 'top-end', showConfirmButton: false, timer: 5000, timerProgressBar: true, icon: 'warning',
+                    title: 'No pasa a la calandra',
+                    text: `Al lote le falta${faltan === 1 ? '' : 'n'} imprimir ${faltan} orden${faltan === 1 ? '' : 'es'}: a la calandra solo entra lo impreso. Queda en la Mesa de Armado.`,
+                    customClass: { container: 'z-[9999]' },
+                });
+                return;
+            }
+        }
         if (source.droppableId === destination.droppableId && source.index === destination.index) return;
 
         const rollId = draggableId;
@@ -317,6 +375,8 @@ const PlaneacionTrabajo = ({ AreaID }) => {
             const destMachine = newData.machines.find(m => String(m.id) === String(destination.droppableId));
             if (destMachine) {
                 destMachine.rolls.splice(destination.index, 0, rollToMove);
+                // Nada se pone por encima del lote en marcha: si lo sueltan arriba, queda segundo.
+                destMachine.rolls = enMaquinaPrimero(destMachine.rolls);
             }
         }
 
@@ -719,8 +779,10 @@ const PlaneacionTrabajo = ({ AreaID }) => {
                                         areaCode={areaCode}
                                         pendingRolls={pendingRolls}
                                         onAssign={async (rollId) => {
-                                            // Optimistic update
+                                            // Optimistic update. Elegido desde el selector = el "actual": entra
+                                            // PRIMERO en la columna (detrás de uno en marcha, si lo hubiera).
                                             queryClient.cancelQueries({ queryKey: ['productionBoard', areaCode] });
+                                            let ordenNuevo = null;
                                             flushSync(() => {
                                                 const oldData = localBoardData;
                                                 if (!oldData) return;
@@ -729,7 +791,10 @@ const PlaneacionTrabajo = ({ AreaID }) => {
                                                 if(rIndex !== -1) {
                                                     const rollToMove = newData.pendingRolls.splice(rIndex, 1)[0];
                                                     const m = newData.machines.find(m => String(m.id) === String(machine.id));
-                                                    if (m) m.rolls.push(rollToMove);
+                                                    if (m) {
+                                                        m.rolls = enMaquinaPrimero([rollToMove, ...m.rolls]);
+                                                        ordenNuevo = m.rolls.map(r => Number(r.id)).filter(n => !Number.isNaN(n));
+                                                    }
                                                 }
                                                 setLocalBoardData(newData);
                                                 queryClient.setQueryData(['productionBoard', areaCode], newData);
@@ -737,6 +802,13 @@ const PlaneacionTrabajo = ({ AreaID }) => {
 
                                             try {
                                                 await productionService.assignRolls([rollId], machine.id);
+                                                // La posición se guarda en la Secuencia después de asignar, como el arrastre.
+                                                if (ordenNuevo?.length) {
+                                                    await rollsService.reorderRolls(areaCode, ordenNuevo, Number(rollId)).catch(err => {
+                                                        console.error('Error guardando la posición del lote asignado:', err);
+                                                        toast.error('Lote asignado, pero no se pudo subir al primer lugar');
+                                                    });
+                                                }
                                                 setTimeout(() => refreshBoard(), 1000);
                                                 Swal.fire({
                                                     toast: true,
@@ -762,6 +834,7 @@ const PlaneacionTrabajo = ({ AreaID }) => {
                                                 });
                                             }
                                         }}
+                                        onPromote={(rollId) => ponerPrimeroEnMaquina(machine.id, rollId)}
                                         onToggleStatus={handleToggleMachineStatus}
                                         onUnassign={(rollId, callback) => {
                                             setConfirmModal({

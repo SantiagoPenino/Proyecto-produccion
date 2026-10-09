@@ -65,7 +65,8 @@ const AREAS_IMPRESION_PARCIAL = ['DIRECTA'];
 
 // Áreas con BLOQUEO DURO al finalizar: el lote no se puede finalizar con órdenes sin marcar
 // (espeja el gate del front en MachineControl). 'DF'/'DTF' son la misma área según el entorno.
-const AREAS_GATE_MARCADO = ['SB', 'DF', 'DTF', 'TPU'];
+// ECOUV entró el 08/10/2026 (pedido de Santiago): como en DTF, se marca en cualquier orden.
+const AREAS_GATE_MARCADO = ['SB', 'DF', 'DTF', 'TPU', 'ECOUV'];
 
 exports.toggleRollStatus = async (req, res) => {
     try {
@@ -304,7 +305,7 @@ exports.toggleRollStatus = async (req, res) => {
                             return res.json({ success: true, message: 'Todas las órdenes volvieron a la Mesa de Armado con su avance; el lote quedó finalizado.' });
                         }
                     } else if (faltanMarca > 0 && AREAS_GATE_MARCADO.includes(areaRollUp)) {
-                        // Bloqueo duro (SB y DTF, espeja el gate del front en MachineControl):
+                        // Bloqueo duro (SB, DTF, TPU y ECOUV, espeja el gate del front en MachineControl):
                         // en el resto de las áreas el marcado no aplica y se finaliza sin exigirlo.
                         await transaction.rollback();
                         return res.status(400).json({ error: `No se puede finalizar: faltan ${faltanMarca} orden(es) sin marcar como ${palabraMarca}.` });
@@ -360,10 +361,22 @@ exports.toggleRollStatus = async (req, res) => {
 
                     if (calenderId) {
                         // Reasignar el rollo a la calandra: queda En Cola, listo para arrancar ahí.
+                        // Entra ÚLTIMO en la cola de la calandra, en orden de llegada: Secuencia = la más baja
+                        // de los lotes que ya tiene, menos 1 (el tablero ordena de mayor a menor; sin número
+                        // cuenta como 0, así que puede quedar negativa). Antes conservaba la Secuencia de la
+                        // lista donde se la había ordenado (la de la impresora o la de Coordinación), que no
+                        // dice nada en la cola de la calandra: el 09/10 un lote del 29/09 seguía primero.
                         await new sql.Request(transaction)
                             .input('RID', sql.VarChar(50), currentRoll.RolloID.toString())
                             .input('MID', sql.Int, calenderId)
-                            .query("UPDATE dbo.Rollos SET Estado = 'En Cola', MaquinaID = @MID WHERE CAST(RolloID AS VARCHAR(50)) = @RID");
+                            .query(`UPDATE dbo.Rollos
+                                    SET Estado = 'En Cola', MaquinaID = @MID,
+                                        Secuencia = (SELECT ISNULL(MIN(ISNULL(r2.Secuencia, 0)), 0) - 1
+                                                     FROM dbo.Rollos r2
+                                                     WHERE r2.MaquinaID = @MID
+                                                       AND r2.Estado NOT IN ('Cerrado', 'Finalizado', 'Cancelado')
+                                                       AND CAST(r2.RolloID AS VARCHAR(50)) <> @RID)
+                                    WHERE CAST(RolloID AS VARCHAR(50)) = @RID`);
                         await new sql.Request(transaction)
                             .input('RID', sql.VarChar(50), currentRoll.RolloID.toString())
                             .input('MID', sql.Int, calenderId)

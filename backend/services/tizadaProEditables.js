@@ -39,7 +39,8 @@ function procesoDe(objeto, tiposExtras) {
 
 const HTML = `<!doctype html><html><body><script type="module">
 import * as pdfjs from '/pdfjs/pdf.mjs'; pdfjs.GlobalWorkerOptions.workerSrc = '/pdfjs/pdf.worker.mjs';
-window.abrir = async (i) => { window.doc = await pdfjs.getDocument('/arte/' + i).promise; return window.doc.numPages; };
+// pdfjs 6 ya no acepta la URL suelta como string: hay que pasarla en { url } (si no: "expected either data, range, or url").
+window.abrir = async (i) => { window.doc = await pdfjs.getDocument({ url: '/arte/' + i }).promise; return window.doc.numPages; };
 window.analizar = async () => {
   const oc = await doc.getOptionalContentConfig(); const out = [];
   for (let i = 1; i <= doc.numPages; i++) { const pg = await doc.getPage(i); const ol = await pg.getOperatorList(); const pila = []; const capas = new Set(); let guia = '';

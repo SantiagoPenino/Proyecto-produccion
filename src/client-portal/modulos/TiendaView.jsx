@@ -474,11 +474,10 @@ export const TiendaView = () => {
 
             {/* Solapas + búsqueda */}
             <div className="flex flex-col md:flex-row md:items-center gap-3">
-                {/* [21/08] Pills de filtro OCULTAS por ahora (pedido: esconderlas hasta que haya
-                    más variedad de tipos publicados). La lógica de solapas queda intacta —
-                    para reactivarlas, cambiar el `false &&` de abajo. La grilla era 2 columnas
-                    en mobile porque las cuatro no entraban a lo ancho. */}
-                {false && (
+                {/* [21/08] Pills de filtro ocultas hasta que hubiera más variedad de tipos publicados.
+                    [09/10] Reactivadas. La grilla es 2 columnas en mobile porque las cuatro no
+                    entran a lo ancho. */}
+                {(
                 <div className="grid grid-cols-2 sm:flex gap-1.5 md:gap-2">
                     {SOLAPAS.map(s => (
                         <button

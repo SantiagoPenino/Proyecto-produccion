@@ -1,8 +1,8 @@
 import React from 'react';
-import { Layers, Eye, Printer } from 'lucide-react';
+import { Layers, Eye, Printer, FlagTriangleRight } from 'lucide-react';
 import { printEtiquetaLote } from '../../../utils/printHelper';
 
-const RollCard = ({ roll, index, onViewDetails, isSelected, onToggleSelect, isMachineView, machineName }) => {
+const RollCard = ({ roll, index, onViewDetails, isSelected, onToggleSelect, isMachineView, machineName, avisoFinalizar }) => {
     if (!roll) return null;
 
     // Impresión PARCIAL (TPU, por unidades): la card muestra "Unidades" (no metros) y el avance
@@ -49,6 +49,17 @@ const RollCard = ({ roll, index, onViewDetails, isSelected, onToggleSelect, isMa
                         </span>
                     )}
                 </div>
+
+                {/* Lote pausado con todo marcado: solo falta finalizarlo (lo calcula MachineControl) */}
+                {avisoFinalizar && (
+                    <div
+                        className="flex items-center gap-1.5 mb-2 tablet:mb-1.5 px-2 py-1 rounded-lg bg-amber-50 border border-amber-200 text-amber-700 text-[10px] tablet:text-[9px] font-bold uppercase tracking-wide"
+                        title="Todas las órdenes están marcadas: iniciá el lote y finalizalo con la banderita"
+                    >
+                        <FlagTriangleRight size={12} className="shrink-0" />
+                        {avisoFinalizar}
+                    </div>
+                )}
 
                 {/* Métricas: Órdenes y Metros */}
                 <div className="flex items-center justify-between border-t border-zinc-100 pt-2.5 tablet:pt-1.5">

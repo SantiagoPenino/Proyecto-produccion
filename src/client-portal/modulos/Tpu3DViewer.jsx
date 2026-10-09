@@ -164,6 +164,16 @@ const TILE_MAX_FACTOR = 1.5;
 // (Sin "engorde" del tile: la impresión real del 09/09 sacó nítidos trazos de 0,10 mm; el engorde
 // fundía la trama en bloques y no correspondía a nada físico.)
 const RELIEVE_DOBLE_SIEMPRE = true;
+// Modo matriz: CANALETA entre zonas (08/10, pedido de Santiago). Entre dos zonas de relieve que se
+// tocan queda 1 pt (0,35 mm del parche real) sin relieve ni barniz, donde solo se ve el color. La cede
+// la zona MÁS GRANDE (la que más se ve; si empatan, la de índice menor): casi siempre el fondo, así que
+// las letras y el dibujo quedan enteros aunque el diseñador haya dibujado los agujeros como parches
+// encima. Las MANCHITAS (formas de menos de CANALETA_MANCHA_MM de lado en el parche real) no hacen
+// ceder a nadie. Es lo que imprime el generador (SEPARACION_ZONAS_PT y CANALETA_MANCHA_MM en
+// tpu_matriz.py, y la medida en tpuMatrizService.js): cambiar los tres juntos. 0 la apaga.
+const SEPARACION_ZONAS_PT = 1;
+const CANALETA_MANCHA_MM = 0.5;
+const PT_POR_MM = 72 / 25.4;
 
 // Carga una textura y la deja rasterizada como TILE de tamaño entero en píxeles, EN GRISES.
 // La textura no pinta color: el color lo sigue poniendo el arte. Se usa como mapa de RELIEVE
@@ -646,7 +656,10 @@ const PadMover = ({ dx, dy, onChange, onReset, clase }) => {
 //    tocando formas del parche), toda zona lleva relieve (liso o textura, normal o doble), y el
 //    botón Listo devuelve todo por `onListo({ zonas })` — nada se guarda ni se aprueba.
 //    `inicial.zonas` (misma forma que la salida) reabre el visor con lo ya elegido.
-export const Tpu3DViewer = ({ ordenId, codigo, onClose, onAprobado, modo = 'cliente', fuente = null, inicial = null, onListo = null }) => {
+//    `medidaMm` ({ ancho, alto } en mm, la medida pedida): con ella la canaleta entre zonas mide 1 pt
+//    del parche real; sin ella se toma el tamaño del PDF. `separacionPt`: la canaleta a dibujar; por
+//    defecto la actual (pedido nuevo). Una orden ya generada pasa la suya (0 si es anterior al 08/10).
+export const Tpu3DViewer = ({ ordenId, codigo, onClose, onAprobado, modo = 'cliente', fuente = null, inicial = null, onListo = null, medidaMm = null, separacionPt = SEPARACION_ZONAS_PT }) => {
     const esInterno = modo === 'interno';
     const esMatriz = modo === 'matriz';
     const fuentePdf = esMatriz ? (fuente?.pdf || null) : null;
@@ -821,6 +834,12 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose, onAprobado, modo = 'clie
     // fijarVista2D (ver el armado); acá vive el estado y se sincroniza con efectos.
     const zonasDefRef = useRef(zonasDef);
     useEffect(() => { zonasDefRef.current = zonasDef; }, [zonasDef]);
+    // La medida va por ref: el armado de la escena la lee una vez, y como prop llega como objeto nuevo
+    // en cada render del formulario (no puede ser dependencia del efecto sin rearmar la escena).
+    const medidaMmRef = useRef(medidaMm);
+    medidaMmRef.current = medidaMm;
+    const separacionPtRef = useRef(separacionPt);
+    separacionPtRef.current = separacionPt;
     const alternarSeleccionRef = useRef(null);
     const alternarSeleccion = (seqno) => setSeleccion(s => {
         const n = new Set(s);
@@ -1311,10 +1330,33 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose, onAprobado, modo = 'clie
                 // índice en colores fallaría en los bordes por el antialias.
                 let idMap = null;
                 let formasMatriz = [];
+                let radioCanaletaPx = 0;
+                let esManchaK = new Uint8Array(1);   // por índice de idMap: 1 = manchita (no hace ceder)
                 if (esMatriz) {
                     formasMatriz = (analisisMatriz?.formas || []).filter(f => f.fill && f.d);
                     idMap = new Int32Array(W * H);
                     const sM = W / ((fr.x1 - fr.x0) * pdfArte.baseW);
+                    // Canaleta: 1 pt del parche REAL en píxeles del lienzo. sM son px por pt del PDF y el
+                    // parche se imprime a `escala` del PDF: la medida pedida sobre el tamaño del arte, como
+                    // en el generador (el lado que más ajusta). Sin medida, el tamaño del PDF.
+                    {
+                        const b = analisisMatriz?.bbox, med = medidaMmRef.current;
+                        const anchoMm = Array.isArray(b) ? (b[2] - b[0]) / PT_POR_MM : 0;
+                        const altoMm = Array.isArray(b) ? (b[3] - b[1]) / PT_POR_MM : 0;
+                        const f = [
+                            Number(med?.ancho) > 0 && anchoMm > 0 ? Number(med.ancho) / anchoMm : 0,
+                            Number(med?.alto) > 0 && altoMm > 0 ? Number(med.alto) / altoMm : 0,
+                        ].filter(v => v > 0);
+                        const escala = f.length ? Math.min(...f) : 1;
+                        radioCanaletaPx = (Number(separacionPtRef.current) || 0) * sM / escala;
+                        // Manchitas: el lado mayor de la forma, en mm del parche real
+                        esManchaK = new Uint8Array(formasMatriz.length + 1);
+                        formasMatriz.forEach((fm, k) => {
+                            const r = fm.rect;
+                            if (!Array.isArray(r)) return;
+                            if (Math.max(r[2] - r[0], r[3] - r[1]) * escala / PT_POR_MM < CANALETA_MANCHA_MM) esManchaK[k + 1] = 1;
+                        });
+                    }
                     const cvId = document.createElement('canvas'); cvId.width = W; cvId.height = H;
                     const ctxId = cvId.getContext('2d', { willReadFrequently: true });
                     formasMatriz.forEach((f, k) => {
@@ -1459,6 +1501,66 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose, onAprobado, modo = 'clie
                     zonasMini = zonasPix.map(miniDe);
                     setZonas(zonasPix.map((_, i) => ({ idx: i, nombre: nombres[i] || `Zona ${i + 1}`, mini: zonasMini[i] })));
                 };
+                // CANALETA entre zonas (08/10, ver SEPARACION_ZONAS_PT), igual que el generador
+                // (tpu_matriz.py, canaleta_zonas): un píxel de una zona se saca de la zona si a menos de
+                // la canaleta hay un píxel de una zona MÁS CHICA (menos superficie visible; si empatan,
+                // cede la de índice menor) que no sea una manchita. Ahí no queda relieve ni barniz: se
+                // ve el color del arte al ras. En vez de medir desde cada píxel, se pinta un disco
+                // alrededor de los píxeles de BORDE de cada zona: la zona más chica más cercana a un
+                // píxel de la canaleta siempre lo toca por un píxel de borde (el vecino que va hacia él
+                // ya no es de ella, o es una manchita), así que el resultado es el mismo.
+                const quitarCanaleta = (masks) => {
+                    if (!(radioCanaletaPx > 0) || masks.length < 2) return;
+                    const nZ = masks.length;
+                    const zonaDe = new Int16Array(W * H).fill(-1);
+                    masks.forEach((m, z) => { for (let i = 0; i < W * H; i++) if (m[i]) zonaDe[i] = z; });
+                    const area = new Float64Array(nZ);
+                    for (let i = 0; i < W * H; i++) if (zonaDe[i] >= 0) area[zonaDe[i]]++;
+                    // cede[a * nZ + b] = 1 si la zona a cede ante la b (a es más grande)
+                    const cede = new Uint8Array(nZ * nZ);
+                    for (let a = 0; a < nZ; a++) {
+                        for (let b = 0; b < nZ; b++) {
+                            if (a !== b && area[b] > 0 && (area[a] > area[b] || (area[a] === area[b] && a < b))) cede[a * nZ + b] = 1;
+                        }
+                    }
+                    const haceCeder = (j) => zonaDe[j] >= 0 && !esManchaK[idMap[j]];
+                    // "+ 0,5": la distancia se mide entre centros de píxel; así llega al borde entre formas
+                    const r = radioCanaletaPx + 0.5, r2 = r * r, R = Math.ceil(r);
+                    const canal = new Uint8Array(W * H);
+                    for (let y = 0; y < H; y++) {
+                        for (let x = 0; x < W; x++) {
+                            const i = y * W + x;
+                            if (!haceCeder(i)) continue;
+                            const zq = zonaDe[i];
+                            // borde: algún vecino de otra zona (o sin zona) o una manchita
+                            let borde = false;
+                            for (let dy = -1; dy <= 1 && !borde; dy++) {
+                                const yy = y + dy;
+                                if (yy < 0 || yy >= H) continue;
+                                for (let dx = -1; dx <= 1; dx++) {
+                                    const xx = x + dx;
+                                    if ((!dx && !dy) || xx < 0 || xx >= W) continue;
+                                    const j = yy * W + xx;
+                                    if (zonaDe[j] !== zq || !haceCeder(j)) { borde = true; break; }
+                                }
+                            }
+                            if (!borde) continue;
+                            for (let dy = -R; dy <= R; dy++) {
+                                const yy = y + dy;
+                                if (yy < 0 || yy >= H) continue;
+                                for (let dx = -R; dx <= R; dx++) {
+                                    if (dx * dx + dy * dy > r2) continue;
+                                    const xx = x + dx;
+                                    if (xx < 0 || xx >= W) continue;
+                                    const j = yy * W + xx;
+                                    const zp = zonaDe[j];
+                                    if (zp >= 0 && cede[zp * nZ + zq]) canal[j] = 1;
+                                }
+                            }
+                        }
+                    }
+                    for (const m of masks) for (let i = 0; i < W * H; i++) if (canal[i]) m[i] = 0;
+                };
                 // Modo matriz: máscaras desde los trazados del vector que el cliente puso en cada zona.
                 const definirZonasMatriz = (def) => {
                     if (!idMap) return;
@@ -1469,6 +1571,7 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose, onAprobado, modo = 'clie
                         if (ids.size) for (let i = 0; i < W * H; i++) if (ids.has(idMap[i])) m[i] = 1;
                         return m;
                     });
+                    quitarCanaleta(masks);
                     definirZonasEscena(masks, (def || []).map((z, i) => z.nombre || `Zona ${i + 1}`));
                 };
 
@@ -2467,7 +2570,10 @@ export const Tpu3DViewerAuto = (props) => {
                 const rf = await fetch(`${base}/fuente`, { headers: authHeaders() });
                 if (!rf.ok) { if (vivo) setMatriz(null); return; }
                 const pdf = await rf.arrayBuffer();
-                if (vivo) setMatriz({ pdf, analisis: j.analisis, zonas: j.job?.zonas || [] });
+                if (vivo) setMatriz({
+                    pdf, analisis: j.analisis, zonas: j.job?.zonas || [], medida: j.job?.medida_mm || null,
+                    separacionPt: Number(j.job?.separacion_zonas_pt) || 0,   // la de ESTA orden (0 si es anterior al 08/10)
+                });
             } catch {
                 if (vivo) setMatriz(null);
             }
@@ -2484,6 +2590,8 @@ export const Tpu3DViewerAuto = (props) => {
                 codigo={props.codigo}
                 fuente={{ pdf: matriz.pdf, analisis: matriz.analisis }}
                 inicial={{ zonas: matriz.zonas }}
+                medidaMm={matriz.medida}
+                separacionPt={matriz.separacionPt}
                 onClose={props.onClose}
             />
         );

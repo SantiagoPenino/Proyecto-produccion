@@ -6,7 +6,7 @@ import { Droppable, Draggable } from '@hello-pangea/dnd';
 import Tippy from '@tippyjs/react';
 import 'tippy.js/dist/tippy.css';
 
-const MachineControl = ({ machine, onAssign, onToggleStatus, onViewDetails, onUnassign, pendingRolls = [], areaCode = '' }) => {
+const MachineControl = ({ machine, onAssign, onPromote, onToggleStatus, onViewDetails, onUnassign, pendingRolls = [], areaCode = '' }) => {
     // machine.rolls tiene los rollos asignados
     // machine.status es el estado de la maquina
 
@@ -75,8 +75,11 @@ const MachineControl = ({ machine, onAssign, onToggleStatus, onViewDetails, onUn
     // en 0 en impresoras reales como MIMAKI y las hacía pasar por calandra.
     const esCalandra = /^\s*calandra/i.test(String(machine.name || ''));
     const lockDrag = isSB && esCalandra;
+    // El selector de una CALANDRA no ofrece la Mesa de Armado: a la calandra los lotes llegan de la
+    // impresora (al finalizar la impresión), no se eligen de la mesa (pedido de Santiago, 09/10/2026).
+    const ofreceMesa = pendingRolls.length > 0 && !noRecibeLotes && !esCalandra;
 
-    // Bloqueo duro de "Finalizar Lote": SB y DTF. Mientras queden órdenes del lote activo sin
+    // Bloqueo duro de "Finalizar Lote": SB, DTF, TPU y ECOUV. Mientras queden órdenes del lote activo sin
     // marcar (impreso; calandrado solo en calandras de SB) no se puede finalizar. Misma regla que
     // el modal (allPrinted). En el resto de las áreas el marcado no aplica: se finaliza sin exigirlo.
     // Fail-open: si el board todavía no manda el flag (backend viejo), NO bloquea — evita trabar la planta
@@ -86,6 +89,8 @@ const MachineControl = ({ machine, onAssign, onToggleStatus, onViewDetails, onUn
     // NOMBRE (esCalandra), NO por !isPrinter: SeparacionImpresion está en 0 en impresoras reales como
     // MIMAKI, y con !isPrinter el gate les exigía 'calandrado' → lote imposible de finalizar.
     const isDTF = ['DF', 'DTF'].includes(String(areaCode || '').toUpperCase());
+    // ECOUV exige el lote entero marcado desde el 08/10/2026; como en DTF, el orden no importa.
+    const esECOUV = String(areaCode || '').toUpperCase() === 'ECOUV';
     // Cómo se llama el equipo que sigue a la impresora, según el área. El destino que se manda al
     // backend es siempre 'calender' (es el nombre del paso, no del equipo): acá solo cambia cómo se
     // lo nombra en pantalla, para que el operario lea el equipo que tiene al lado.
@@ -103,8 +108,8 @@ const MachineControl = ({ machine, onAssign, onToggleStatus, onViewDetails, onUn
     const palabraMarca = enSegundaEstacion ? (esTPU ? 'cortado' : 'calandrado') : 'impreso';
     const rollOrders = activeRoll?.orders || [];
     const hasMarkData = rollOrders.some(o => o[printedField] !== undefined);
-    // Bloqueo duro: SB, DTF y TPU — para finalizar, todo el lote debe estar marcado.
-    const unmarkedCount = ((isSB || isDTF || esTPU) && hasMarkData) ? rollOrders.filter(o => !o[printedField]).length : 0;
+    // Bloqueo duro: SB, DTF, TPU y ECOUV — para finalizar, todo el lote debe estar marcado.
+    const unmarkedCount = ((isSB || isDTF || esTPU || esECOUV) && hasMarkData) ? rollOrders.filter(o => !o[printedField]).length : 0;
     const canFinish = isRunning && unmarkedCount === 0;
     // Impresión PARCIAL: el área finaliza el lote aunque queden órdenes incompletas — vuelven a la
     // Mesa de Armado conservando su avance (lo hace el backend) y acá solo se avisa en el modal.
@@ -112,6 +117,18 @@ const MachineControl = ({ machine, onAssign, onToggleStatus, onViewDetails, onUn
     // hay incompletas que avisar. Espeja AREAS_IMPRESION_PARCIAL del backend.
     const isPartialArea = false;
     const incompletas = (isPartialArea && hasMarkData) ? rollOrders.filter(o => !o[printedField]) : [];
+
+    // Lote PAUSADO con todas sus órdenes marcadas: la tarjeta avisa que solo falta finalizarlo (lote 4156,
+    // pausado en la Calandra 1 desde el 30/09 con todo calandrado). roll.marcas lo manda el backend solo
+    // para los pausados. Misma marca y mismas áreas que el bloqueo de "Finalizar Lote".
+    const avisoFinalizar = (roll) => {
+        if (!(isSB || isDTF || esTPU || esECOUV)) return null;
+        if (String(roll.status || '').trim().toLowerCase() !== 'pausado') return null;
+        const m = roll.marcas;
+        if (!m || !m.total) return null;
+        const faltan = enSegundaEstacion ? m.sinCalandrar : m.sinImpreso;
+        return faltan === 0 ? `Todo ${palabraMarca} · falta finalizar` : null;
+    };
 
     return (
         <div className={`min-w-0 bg-white rounded-2xl shadow-lg border-t-4 flex flex-col max-h-full transition-colors
@@ -195,12 +212,15 @@ const MachineControl = ({ machine, onAssign, onToggleStatus, onViewDetails, onUn
                                     onChange={(id) => {
                                         const isPending = pendingRolls.some(r => String(r.id) === String(id));
                                         if (isPending && noRecibeLotes) return; // en mantenimiento no se le agregan lotes
+                                        // El lote elegido acá es el "actual" de la máquina: pasa al primer lugar
+                                        // de la columna (lo guarda el padre en la Secuencia). El de la mesa entra
+                                        // ya primero (onAssign); el que ya estaba en la máquina se sube si no lo era.
                                         if (isPending) {
                                             onAssign(id);
-                                            setSelectedRollId(id);
-                                        } else {
-                                            setSelectedRollId(id);
+                                        } else if (onPromote && String(machine.rolls[0]?.id) !== String(id)) {
+                                            onPromote(id);
                                         }
+                                        setSelectedRollId(id);
                                     }}
                                     disabled={isRunning || isFalla}
                                 >
@@ -250,8 +270,8 @@ const MachineControl = ({ machine, onAssign, onToggleStatus, onViewDetails, onUn
                                                     </>
                                                 )}
 
-                                                {/* SECTION: MESA DE ARMADO (no se ofrece si la máquina no recibe lotes) */}
-                                                {pendingRolls.length > 0 && !noRecibeLotes && (
+                                                {/* SECTION: MESA DE ARMADO (no se ofrece si la máquina no recibe lotes, ni en una calandra) */}
+                                                {ofreceMesa && (
                                                     <>
                                                         <div className={`px-3 py-1.5 text-[10px] font-bold text-zinc-400 bg-zinc-50 uppercase sticky top-0 z-[61] ${machine.rolls.length > 0 ? 'mt-1 border-t border-zinc-100' : ''}`}>Mesa de Armado</div>
                                                         {pendingRolls.map((r) => (
@@ -281,7 +301,7 @@ const MachineControl = ({ machine, onAssign, onToggleStatus, onViewDetails, onUn
                                                     </>
                                                 )}
                                                 
-                                                {machine.rolls.length === 0 && (pendingRolls.length === 0 || noRecibeLotes) && (
+                                                {machine.rolls.length === 0 && !ofreceMesa && (
                                                      <div className="px-4 py-3 text-xs text-zinc-400 italic text-center">No hay lotes disponibles</div>
                                                 )}
                                             </Listbox.Options>
@@ -338,6 +358,7 @@ const MachineControl = ({ machine, onAssign, onToggleStatus, onViewDetails, onUn
                                             isMachineView={true}
                                             machineName={machine.name}
                                             isSelected={String(roll.id) === String(selectedRollId)}
+                                            avisoFinalizar={avisoFinalizar(roll)}
                                             onViewDetails={(r) => onViewDetails(r, machine)} // Pass machine context if needed
                                         />
                                     </div>

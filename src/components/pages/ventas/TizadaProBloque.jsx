@@ -1,4 +1,5 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { REFRESCAR_SI_MAS_DE_MS, tomarTizadaPrecargada, verTizadaPrecargada } from './solicitudPrecarga';
 import { toast } from 'sonner';
 import { AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, ClipboardPaste, FileSpreadsheet, Loader2, Plus, RefreshCw, Trash2, Wand2 } from 'lucide-react';
 import { solicitudesVendedorService as svc } from '../../../services/modules/solicitudesVendedorService';
@@ -80,11 +81,15 @@ function leerPegado(texto, columnas) {
 // de nombre y número y "Generar tizada" (puedeGenerar lo decide la pantalla: diseñador y ya enviado a Diseño).
 export default function TizadaProBloque({ id, p, puede, onCargado, numero = null, extra = null, modo = 'carga', puedeGenerar = false, motivoNoGenerar = null }) {
     const enDiseno = modo === 'diseno';
-    const [info, setInfo] = useState(null);
-    const [molde, setMolde] = useState(null);
-    const [disenos, setDisenos] = useState([]);
-    const [filas, setFilas] = useState([]);
-    const [sucio, setSucio] = useState(false);
+    // Lo que la lista de solicitudes adelantó al pasar el mouse (solicitudPrecarga.js): si ya llegó, el bloque
+    // se arma completo desde el primer cuadro, sin "Leyendo el molde…" (ni spinner) y sin aparecer después.
+    // Acá solo se LEE (el render de montaje puede repetirse); se consume en el efecto.
+    const pre0 = verTizadaPrecargada(id, p.ProductoSolID)?.data || null;
+    const [info, setInfo] = useState(pre0?.[0] ?? null);
+    const [molde, setMolde] = useState(pre0?.[1] ?? null);
+    const [disenos, setDisenos] = useState(pre0?.[0]?.datos?.disenos || []);
+    const [filas, setFilas] = useState(pre0?.[0]?.datos?.planilla || []);
+    const [sucio, setSucio] = useState(!!pre0?.[0]?.sinGuardar);
     const [ocupado, setOcupado] = useState('');
     const [pegando, setPegando] = useState(false);
     const [pegado, setPegado] = useState('');
@@ -94,17 +99,32 @@ export default function TizadaProBloque({ id, p, puede, onCargado, numero = null
     const [vistas, setVistas] = useState({});        // miniaturas de los editables leídos: { "<diseño>|<objeto>": dataURL } (no se guardan)
     const [leyendo, setLeyendo] = useState(null);    // índice del diseño cuyo arte se está leyendo
 
+    const aplicar = useCallback((v, m) => {
+        setInfo(v); setMolde(m);
+        setDisenos(v.datos?.disenos || []);
+        setFilas(v.datos?.planilla || []);
+        setSucio(!!v.sinGuardar);   // arranque propuesto (JUGADOR + su arte): falta guardarlo
+    }, []);
     const cargar = useCallback(async () => {
         try {
             const [v, m] = await Promise.all([svc.tizadaProVer(id, p.ProductoSolID), svc.moldeDelProducto(id, p.ProductoSolID).catch(() => null)]);
-            setInfo(v); setMolde(m);
-            setDisenos(v.datos?.disenos || []);
-            setFilas(v.datos?.planilla || []);
-            setSucio(!!v.sinGuardar);   // arranque propuesto (JUGADOR + su arte): falta guardarlo
+            aplicar(v, m);
             return v;
         } catch (e) { toast.error(errorDe(e)); return null; }
-    }, [id, p.ProductoSolID]);
-    useEffect(() => { cargar(); }, [cargar, p]);   // p cambia cuando la pantalla recarga (ej. después de "Enviar a TIZADA PRO")
+    }, [id, p.ProductoSolID, aplicar]);
+    const ultimoP = useRef(null);
+    useEffect(() => {   // p cambia cuando la pantalla recarga (ej. después de "Enviar a TIZADA PRO")
+        if (ultimoP.current === p) return;   // StrictMode repite el efecto con el mismo p
+        const primera = ultimoP.current === null;
+        ultimoP.current = p;
+        if (primera) {
+            const pre = tomarTizadaPrecargada(id, p.ProductoSolID);
+            if (pre?.data) { if (Date.now() - pre.at > REFRESCAR_SI_MAS_DE_MS) cargar(); return; }   // ya en pantalla
+            // Adelantado por la lista y todavía en camino: se espera eso mismo, sin pedirlo dos veces.
+            if (pre) { pre.p.then(([v, m]) => aplicar(v, m)).catch(() => cargar()); return; }
+        }
+        cargar();
+    }, [id, p, cargar, aplicar]);
 
     const columnas = info?.estructura?.columnas || [];
     const modelos = molde?.modelos || [];
@@ -131,8 +151,8 @@ export default function TizadaProBloque({ id, p, puede, onCargado, numero = null
         return s + (col && Number(f[col.id]) > 0 ? Number(f[col.id]) : 1);
     }, 0), [filas, columnas]);
 
-    if (!info) return <div className="pt-3 mt-3 border-t border-slate-200 text-xs text-slate-500 flex items-center gap-2"><Loader2 size={12} className="animate-spin" /> Leyendo el molde en TIZADA PRO…</div>;
-    if (!info.aplica) return null;
+    // Mientras llega, nada (antes: "Leyendo el molde en TIZADA PRO…" con spinner, que se veía girar al abrir).
+    if (!info || !info.aplica) return null;
 
     const cambiarDiseno = (i, cambios) => {
         setDisenos(ds => ds.map((d, k) => {

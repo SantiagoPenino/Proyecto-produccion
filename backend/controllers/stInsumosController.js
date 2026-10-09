@@ -228,3 +228,125 @@ exports.listarUsos = async (req, res) => {
         res.json({ success: true, data: result.recordset.map(u => ({ ...u, SolCodigo: u.SolId ? codigo(u.SolId) : null })) });
     } catch (err) { responderError(res, err, 'insumos.listarUsos'); }
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Repuestos críticos de una máquina (ficha técnica, parte 2, 08/10) — tabla ST_EquipoRepuestos
+// (docs/servicio-tecnico/st-ficha-tecnica.sql). Solo dice qué artículos del /stock son repuestos de qué máquina:
+// el stock y los límites son los del /stock (Stock → Gestión de Sistema → Alertas de stock), con su misma regla
+// (wmsInternoController, panel): crítico si el stock global llega a la cantidad crítica de la variante, alerta si
+// llega a la de alerta. A diferencia del panel del /stock, acá un repuesto en 0 se marca "Sin stock": para una
+// máquina es lo peor que puede pasar. Leer: cualquier usuario interno; agregar y quitar: técnicos o Admin.
+// ─────────────────────────────────────────────────────────────────────────────
+const { tablas } = require('./stFichaEquipoController');
+
+const estadoRepuesto = (stock, critica, alerta) => {
+    const s = Number(stock) || 0, c = Number(critica) || 0, a = Number(alerta) || 0;
+    if (s <= 0) return 'SIN_STOCK';
+    if (c > 0 && s <= c) return 'CRITICO';
+    if (a > 0 && s <= a) return 'ALERTA';
+    return c > 0 || a > 0 ? 'OK' : 'SIN_LIMITES';
+};
+
+// GET /equipos/:id/repuestos → { disponible, deposito, data: [...] }
+exports.repuestosEquipo = async (req, res) => {
+    const equipoId = idNum(req.params.id);
+    if (!equipoId) return res.status(400).json({ success: false, error: 'Máquina inválida.' });
+    try {
+        const pool = await getPool();
+        if (!(await tablas(pool)).repuestos) return res.json({ success: true, disponible: false, deposito: null, data: [] });
+        const dep = await depositoConfigurado(pool, req);
+        const r = await pool.request().input('E', sql.Int, equipoId).input('Dep', sql.Int, dep?.id || null).query(`
+            SELECT r.RepId, r.VarId, r.Nota, r.UsuarioNombre, r.FechaAlta,
+                   LTRIM(RTRIM(pm.Nombre)) AS Producto, v.NombreVariante, v.CodigoVariante, pm.UnidadBase AS Unidad, v.Activa,
+                   v.CantidadCritica, v.CantidadAlerta, v.CantidadIdeal, s.Stock,
+                   CASE WHEN @Dep IS NULL THEN NULL ELSE sd.StockDeposito END AS StockDeposito
+            FROM dbo.ST_EquipoRepuestos r
+            JOIN dbo.Wms_Variantes v ON v.VarId = r.VarId
+            JOIN dbo.Wms_ProductosMaestros pm ON pm.PmaId = v.PmaId
+            CROSS APPLY (SELECT ISNULL(SUM(e.CantidadActual), 0) AS Stock FROM dbo.Wms_Etiquetas e WHERE e.VarId = v.VarId AND e.Estado = 'activo') s
+            OUTER APPLY (SELECT ISNULL(SUM(e.CantidadActual), 0) AS StockDeposito FROM dbo.Wms_Etiquetas e
+                         WHERE e.VarId = v.VarId AND e.Estado = 'activo' AND e.DepId = @Dep) sd
+            WHERE r.EquipoId = @E
+            ORDER BY pm.Nombre, v.NombreVariante`);
+        const deposito = dep ? (await pool.request().input('D', sql.Int, dep.id).query('SELECT Nombre FROM dbo.Wms_Depositos WHERE DepId = @D')).recordset[0]?.Nombre || null : null;
+        res.json({
+            success: true, disponible: true, deposito,
+            data: r.recordset.map(x => ({ ...x, Estado: estadoRepuesto(x.Stock, x.CantidadCritica, x.CantidadAlerta) })),
+        });
+    } catch (err) { responderError(res, err, 'repuestos.listar'); }
+};
+
+// POST /equipos/:id/repuestos { varId, nota } → técnicos
+exports.agregarRepuesto = async (req, res) => {
+    if (!exigirTecnico(req, res, 'cargar repuestos de una máquina')) return;
+    const equipoId = idNum(req.params.id);
+    const varId = idNum(req.body?.varId);
+    if (!equipoId) return res.status(400).json({ success: false, error: 'Máquina inválida.' });
+    if (!varId) return res.status(400).json({ success: false, error: 'Elegí el artículo del stock.' });
+    let tx = null;
+    try {
+        const pool = await getPool();
+        if (!(await tablas(pool)).repuestos) return res.status(503).json({ success: false, error: 'Falta correr docs/servicio-tecnico/st-ficha-tecnica.sql en la base.' });
+        const [eq, v] = await Promise.all([
+            pool.request().input('E', sql.Int, equipoId).query('SELECT EquipoID FROM dbo.ConfigEquipos WHERE EquipoID = @E'),
+            pool.request().input('V', sql.Int, varId).query(`
+                SELECT LTRIM(RTRIM(pm.Nombre)) AS Producto, v.NombreVariante FROM dbo.Wms_Variantes v
+                JOIN dbo.Wms_ProductosMaestros pm ON pm.PmaId = v.PmaId WHERE v.VarId = @V`),
+        ]);
+        if (!eq.recordset.length) return res.status(404).json({ success: false, error: 'No existe la máquina.' });
+        if (!v.recordset.length) return res.status(400).json({ success: false, error: 'Ese artículo no existe en el stock.' });
+        const nombre = [v.recordset[0].Producto, v.recordset[0].NombreVariante].filter(Boolean).join(' — ');
+        const ya = await pool.request().input('E', sql.Int, equipoId).input('V', sql.Int, varId)
+            .query('SELECT 1 AS x FROM dbo.ST_EquipoRepuestos WHERE EquipoId = @E AND VarId = @V');
+        if (ya.recordset.length) return res.status(400).json({ success: false, error: `«${nombre}» ya está en los repuestos de esta máquina.` });
+        const usuario = await usuarioActual(pool, req);
+        const nota = texto(req.body?.nota, 300);
+        tx = new sql.Transaction(pool);
+        await tx.begin();
+        const ins = await tx.request().input('E', sql.Int, equipoId).input('V', sql.Int, varId).input('N', sql.NVarChar(300), nota)
+            .input('U', sql.Int, usuario.id).input('UN', sql.NVarChar(150), usuario.nombre)
+            .query(`INSERT INTO dbo.ST_EquipoRepuestos (EquipoId, VarId, Nota, UsuarioId, UsuarioNombre)
+                    OUTPUT INSERTED.RepId VALUES (@E, @V, @N, @U, @UN)`);
+        await historial(tx, { entidad: 'EQUIPO', entidadId: equipoId, usuario, accion: 'REPUESTO', detalle: `Repuesto crítico agregado: ${nombre}${nota ? ` (${nota})` : ''}` });
+        await tx.commit();
+        tx = null;
+        emitirST(req, { equipoId });
+        res.json({ success: true, data: { RepId: ins.recordset[0].RepId } });
+    } catch (err) {
+        await rollbackSeguro(tx, 'ST agregar repuesto');
+        responderError(res, err, 'repuestos.agregar');
+    }
+};
+
+// DELETE /equipos/:id/repuestos/:repId → técnicos
+exports.quitarRepuesto = async (req, res) => {
+    if (!exigirTecnico(req, res, 'quitar repuestos de una máquina')) return;
+    const equipoId = idNum(req.params.id);
+    const repId = idNum(req.params.repId);
+    if (!equipoId || !repId) return res.status(400).json({ success: false, error: 'Repuesto inválido.' });
+    let tx = null;
+    try {
+        const pool = await getPool();
+        if (!(await tablas(pool)).repuestos) return res.status(503).json({ success: false, error: 'Falta correr docs/servicio-tecnico/st-ficha-tecnica.sql en la base.' });
+        const r = await pool.request().input('R', sql.Int, repId).input('E', sql.Int, equipoId).query(`
+            SELECT LTRIM(RTRIM(pm.Nombre)) AS Producto, v.NombreVariante FROM dbo.ST_EquipoRepuestos r
+            JOIN dbo.Wms_Variantes v ON v.VarId = r.VarId JOIN dbo.Wms_ProductosMaestros pm ON pm.PmaId = v.PmaId
+            WHERE r.RepId = @R AND r.EquipoId = @E`);
+        if (!r.recordset.length) return res.status(404).json({ success: false, error: 'Ese repuesto ya no está en la máquina.' });
+        const nombre = [r.recordset[0].Producto, r.recordset[0].NombreVariante].filter(Boolean).join(' — ');
+        const usuario = await usuarioActual(pool, req);
+        tx = new sql.Transaction(pool);
+        await tx.begin();
+        await tx.request().input('R', sql.Int, repId).query('DELETE FROM dbo.ST_EquipoRepuestos WHERE RepId = @R');
+        await historial(tx, { entidad: 'EQUIPO', entidadId: equipoId, usuario, accion: 'REPUESTO', detalle: `Repuesto crítico quitado: ${nombre}` });
+        await tx.commit();
+        tx = null;
+        emitirST(req, { equipoId });
+        res.json({ success: true });
+    } catch (err) {
+        await rollbackSeguro(tx, 'ST quitar repuesto');
+        responderError(res, err, 'repuestos.quitar');
+    }
+};
+
+exports._estadoRepuesto = estadoRepuesto;

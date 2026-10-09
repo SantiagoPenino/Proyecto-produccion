@@ -8,6 +8,7 @@ import SelectorFecha from '../../ui/SelectorFecha';
 import { solicitudesVendedorService as svc } from '../../../services/modules/solicitudesVendedorService';
 import { fmtFecha, fmtFechaHora } from '../../../utils/fechas';
 import { ESTADO_SOLICITUD, errorDe, plata } from './solicitudesComunes';
+import { cargarPerfil, precargarSolicitud } from './solicitudPrecarga';
 
 // Botón principal y buscador de esta pantalla (06/10): brand-cyan, como el resto del sistema. BTN_PRIMARIO e INPUT de
 // solicitudesComunes son índigo y los usan las pantallas oscuras de Solicitudes, que los pasan a amarillo. El buscador
@@ -82,6 +83,11 @@ export default function SolicitudesVendedorPage() {
         finally { setLoading(false); }
     }, [filtros]);
     useEffect(() => { const t = setTimeout(cargar, filtros.q ? 350 : 0); return () => clearTimeout(t); }, [cargar, filtros.q]);
+    // Precarga el código del detalle y el perfil: así el detalle no arranca con el spinner de pantalla vacía ni con los
+    // botones del encabezado apareciendo después.
+    useEffect(() => { import('./SolicitudVendedorDetalle').catch(() => { }); cargarPerfil().catch(() => { }); }, []);
+    // Los datos de la solicitud ya se piden al pasar el mouse; si no llegó a pasar (teclado, toque rápido), al tocar.
+    const abrir = (sid) => { precargarSolicitud(sid).catch(() => { }); navigate(`/ventas/solicitudes/${sid}`); };
     useEffect(() => {
         svc.vendedores()
             .then(lista => setVendedores((lista || []).filter(v => ROLES_FILTRO_VENDEDOR.includes(sinAcentos(v.NombreRol)))))
@@ -183,12 +189,12 @@ export default function SolicitudesVendedorPage() {
                 </div>
             </div>
 
-            {vista === 'calendario' && <CalendarioSolicitudes onAbrir={(sid) => navigate(`/ventas/solicitudes/${sid}`)} />}
+            {vista === 'calendario' && <CalendarioSolicitudes onAbrir={abrir} />}
 
             {vista === 'fichas' && (
                 <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
                     {!loading && visibles.length === 0 && <div className="col-span-full rounded-2xl border border-slate-200 bg-white px-4 py-10 text-center text-sm text-slate-400">No hay solicitudes con estos filtros.</div>}
-                    {visibles.map(s => <Ficha key={s.SolicitudID} s={s} onAbrir={() => navigate(`/ventas/solicitudes/${s.SolicitudID}`)} />)}
+                    {visibles.map(s => <Ficha key={s.SolicitudID} s={s} onAbrir={() => abrir(s.SolicitudID)} onPrecargar={() => precargarSolicitud(s.SolicitudID)} />)}
                 </div>
             )}
 
@@ -206,7 +212,8 @@ export default function SolicitudesVendedorPage() {
                         </thead>
                         <tbody>
                             {visibles.map(s => (
-                                <tr key={s.SolicitudID} className="border-t border-slate-100 hover:bg-slate-50 cursor-pointer" onClick={() => navigate(`/ventas/solicitudes/${s.SolicitudID}`)}>
+                                <tr key={s.SolicitudID} className="border-t border-slate-100 hover:bg-slate-50 cursor-pointer" onClick={() => abrir(s.SolicitudID)}
+                                    onPointerEnter={() => precargarSolicitud(s.SolicitudID)} onPointerDown={() => precargarSolicitud(s.SolicitudID)}>
                                     <td className={TD}>
                                         {pastillaSolicitud(s)}
                                         {s.Listo !== null && s.Estado !== 'PEDIDO_SOLICITADO' && <div className="mt-1">{pastillaIngreso(s)}</div>}
@@ -250,7 +257,7 @@ export default function SolicitudesVendedorPage() {
 // 06/10: el estado y lo que falta para ingresar son pastillas escritas normal (antes, mayúsculas y el sello torcido
 // de la maqueta); los datos van en etiquetas del mismo estilo, sin borde; la entrega y lo que falta, abajo, separados
 // por una línea y siempre al pie aunque las fichas de la fila tengan distinto alto.
-function Ficha({ s, onAbrir }) {
+function Ficha({ s, onAbrir, onPrecargar }) {
     const f = s.Ficha || {};
     const convertida = s.Estado === 'PEDIDO_SOLICITADO';
     const franja = s.Estado === 'CANCELADA' ? 'border-l-slate-300 opacity-60' : convertida && !(s.DisenoPendProd > 0) ? 'border-l-slate-400' : s.Listo ? 'border-l-emerald-500' : 'border-l-rose-500';
@@ -264,7 +271,7 @@ function Ficha({ s, onAbrir }) {
         s.RequiereSena && [`Seña ${s.SenaConfirmada ? 'confirmada' : 'sin confirmar'}`, s.SenaConfirmada ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'],
     ].filter(Boolean);
     return (
-        <button type="button" onClick={onAbrir} className={`flex flex-col gap-3 text-left bg-white border border-slate-200 border-l-4 rounded-2xl p-4 transition hover:border-slate-300 hover:shadow-md ${franja}`}>
+        <button type="button" onClick={onAbrir} onPointerEnter={onPrecargar} onPointerDown={onPrecargar} className={`flex flex-col gap-3 text-left bg-white border border-slate-200 border-l-4 rounded-2xl p-4 transition hover:border-slate-300 hover:shadow-md ${franja}`}>
             <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                     <div className="text-xs text-slate-400">#{s.SolicitudID} · {fmtFechaHora(s.FechaSolicitud)}</div>

@@ -57,3 +57,15 @@ docs
 backend/.env.bak-antes-wms-interno
 
 backend/consultas/
+
+# Carpetas de archivos que el backend crea solo si falta su variable en el .env (08/10/2026).
+# En producción y en local van fuera del repo (FALLAS_PATH, COMPROBANTES_PAGOS_PATH, etc.).
+# Con el nombre exacto del código: en Linux importan las mayúsculas.
+backend/fallas/
+backend/comprobantesPagos/
+backend/comprobantesEncomiendas/
+backend/Comprobantes/
+backend/stock/compras/
+# Respaldos del .env (tienen las claves)
+backend/.env.bak*
+.env.bak*

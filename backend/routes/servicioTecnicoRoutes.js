@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const c = require('../controllers/servicioTecnicoController');
 const eq = require('../controllers/stEquiposController');
+const fi = require('../controllers/stFichaEquipoController');
 const mt = require('../controllers/stMantenimientoController');
 const pr = require('../controllers/stProyectosController');
 const ins = require('../controllers/stInsumosController');
@@ -47,8 +48,21 @@ router.put('/config/encargado', c.setEncargado);                 // { usuarioId 
 
 // Máquinas (etapa 2): ficha, estado e historial de cambios
 router.get('/equipos', eq.listar);                               // ?inactivas=1
+router.post('/equipos', eq.crearEquipo);                         // { nombre, areaId, tipo, esImpresora } — técnicos (08/10)
 router.get('/equipos/:id', eq.ficha);
 router.put('/equipos/:id/estado', c.cambiarEstadoMaquina);       // { estado, motivo, solId? }
+// Ficha técnica (08/10, docs/servicio-tecnico/ficha-tecnica-maquinas-plan.md): una sección por vez, o copiar de otra
+router.put('/equipos/:id/ficha', fi.guardarFicha);              // { seccion, titulo, valores, resumen } | { copiarDe }
+router.put('/equipos/:id/capacidad', fi.guardarCapacidad);      // columnas de ConfigEquipos (Planificación) + extra
+// Parte 2 (08/10): preventivo y repuestos críticos de la máquina
+router.get('/equipos/:id/preventivo', mt.preventivoEquipo);      // planes, programado (con lo vencido) y últimos cerrados
+router.get('/equipos/:id/repuestos', ins.repuestosEquipo);       // repuestos con el stock y los límites del /stock
+router.post('/equipos/:id/repuestos', ins.agregarRepuesto);      // { varId, nota } — técnicos
+router.delete('/equipos/:id/repuestos/:repId', ins.quitarRepuesto); // técnicos
+// Parte 3 (08/10): fotos, manuales y otros archivos de la máquina (ST_Adjuntos, Entidad EQUIPO) — técnicos
+router.post('/equipos/:id/adjuntos', subirAdjuntos, eq.adjuntarEquipo);  // multipart: adjuntos
+router.put('/equipos/:id/adjuntos/:adjId', eq.renombrarAdjuntoEquipo);  // { nombre }
+router.delete('/equipos/:id/adjuntos/:adjId', eq.borrarAdjuntoEquipo);
 router.post('/equipos/:id/cambios', subirAdjuntos, eq.crearCambio);
 router.put('/cambios/:camId', eq.editarCambio);
 router.delete('/cambios/:camId', eq.borrarCambio);               // solo Admin

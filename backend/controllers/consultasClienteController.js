@@ -259,7 +259,9 @@ async function ejecutarCancelacion(cancelar, consulta, req) {
 
     // usuario 70 = el sistema, igual que en el resto de las acciones disparadas por
     // el portal (webhooks de pago, aprobación de boceto).
-    const comun = { reason: motivo, motivoId: null, detalles: consulta.ConComentarioCli || null, usuario: 70 };
+    // sinAvisoCliente: el que cancela es el propio cliente, no hace falta mandarle el push de
+    // "se canceló un archivo de tu pedido" (cancelFile lo manda en las demás cancelaciones).
+    const comun = { reason: motivo, motivoId: null, detalles: consulta.ConComentarioCli || null, usuario: 70, sinAvisoCliente: true };
     const quien = { user: { id: 70, nombre: 'Cliente (consulta)' }, io, ip: `consulta-${cancelar.consultaId}` };
 
     if (cancelar.tipo === 'FILE') {

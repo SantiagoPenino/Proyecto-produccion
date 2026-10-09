@@ -1975,7 +1975,9 @@ const getCompletedOrdersForReplacement = async (req, res) => {
  * Recibe lista de archivos a reponer de una orden ya terminada.
  */
 const createCustomerReplacementOrder = async (req, res) => {
-    const { originalOrderId, files, globalObservation, userId } = req.body;
+    const { originalOrderId, files, globalObservation } = req.body;
+    // Quién la crea sale del token (verifyToken en la ruta), nunca del body.
+    const userId = req.user?.id;
     let transaction;
 
     try {
@@ -2249,6 +2251,7 @@ const createCustomerReplacementOrder = async (req, res) => {
         }
 
         await transaction.commit();
+        logger.info(`[Reposición] ${newCode} (OrdenID ${newOrderId}) creada desde ${originalOrder.CodigoOrden} por usuario ${userId}.`);
 
         // Miniaturas del clon (best-effort, fuera de la transacción): mismo archivo de Drive,
         // así que se copia el JPG ya rasterizado en vez de volver a bajar y rasterizar.

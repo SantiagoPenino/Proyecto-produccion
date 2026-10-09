@@ -1544,7 +1544,7 @@ const FilePrintControl = ({ areaCode }) => {
                           leaveFrom="opacity-100"
                           leaveTo="opacity-0"
                         >
-                          <ListboxOptions className="absolute mt-1 max-h-60 w-full overflow-auto rounded-xl bg-white py-2 text-base shadow-lg ring-1 ring-black/5 focus:outline-none sm:text-sm z-50">
+                          <ListboxOptions className="absolute mt-1 max-h-[22rem] w-full overflow-auto rounded-xl bg-white py-2 text-base shadow-lg ring-1 ring-black/5 focus:outline-none sm:text-sm z-50">
                             <ListboxOption
                               value=""
                               className={({ active }) =>

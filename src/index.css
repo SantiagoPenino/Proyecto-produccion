@@ -190,6 +190,57 @@ body {
   animation: replegar 0.22s ease-in forwards;
 }
 
+/* Contenido que se reemplaza en el mismo lugar (ej.: una sección de la ficha técnica de una máquina que
+   pasa de ver a editar): entra con un fundido corto y un leve desplazamiento. El alto lo acompaña el
+   contenedor (AltoAnimado en servicio-tecnico/FichaTecnica.jsx). Con "reducir movimiento" no se anima.
+   Nombre propio: `fadeIn` está definido dos veces (acá y en el portal) con efectos distintos. */
+@keyframes aparecer-suave {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.animate-aparecer-suave {
+  animation: aparecer-suave 0.22s ease-out;
+}
+
+/* Pantalla que entra después de cargar sus datos (ej.: el detalle de una solicitud): fundido desde abajo. */
+@keyframes entrar-pagina {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.animate-entrar-pagina {
+  animation: entrar-pagina 0.25s ease-out;
+}
+
+/* Esqueleto de carga: espera 150 ms antes de verse, así una carga rápida no lo muestra ni un instante. */
+.animate-aparecer-demorado {
+  animation: fadeIn 0.2s ease-out 0.15s both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-fade-in,
+  .animate-aparecer-suave,
+  .animate-entrar-pagina,
+  .animate-aparecer-demorado {
+    animation: none;
+  }
+}
+
 /* Bell ring animation */
 @keyframes bell-ring {
   0% { transform: rotate(0); }

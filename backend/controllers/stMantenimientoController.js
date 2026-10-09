@@ -587,6 +587,47 @@ exports.listarTrabajos = async (req, res) => {
     } catch (err) { responderError(res, err, 'trabajos.listar'); }
 };
 
+// GET /equipos/:id/preventivo → el preventivo de una máquina, para su página (ficha técnica, parte 2, 08/10):
+// sus planes activos con el próximo trabajo, todo lo que tiene programado (incluye lo vencido y las tareas
+// sueltas) y los últimos 10 trabajos cerrados.
+exports.preventivoEquipo = async (req, res) => {
+    const id = idNum(req.params.id);
+    if (!id) return res.status(400).json({ success: false, error: 'Máquina inválida.' });
+    try {
+        const pool = await getPool();
+        const hoy = hoyUY();
+        await asegurarTodosLosPlanes(pool); // por si algún plan quedó sin su próximo trabajo (como el calendario)
+        const base = () => pool.request().input('E', sql.Int, id).input('Hoy', sql.VarChar(10), hoy);
+        const [planes, abiertos, cerrados] = await Promise.all([
+            base().query(`
+                SELECT p.PlanId, p.Titulo, p.Descripcion, p.EquipoId, p.EquipoTexto, p.ProcId, pr.Titulo AS ProcTitulo,
+                       p.CadaValor, p.CadaUnidad, p.TecnicoId, p.TecnicoNombre, CONVERT(VARCHAR(10), p.ProximaFecha, 23) AS ProximaFecha,
+                       p.ParaMaquina, p.Activo, p.DiasSemana, p.HoraDesde, p.HoraHasta, p.MinutosEstimados,
+                       t.TrabId AS TrabAbiertoId, CONVERT(VARCHAR(10), t.FechaProgramada, 23) AS TrabAbiertoFecha, t.Estado AS TrabAbiertoEstado,
+                       t.VecesPospuesto AS TrabAbiertoPospuesto,
+                       CASE WHEN t.FechaProgramada < CAST(@Hoy AS DATE) THEN 1 ELSE 0 END AS TrabAbiertoVencido,
+                       (SELECT CONVERT(VARCHAR(10), MAX(x.FechaFin), 23) FROM dbo.ST_Trabajos x WHERE x.PlanId = p.PlanId AND x.Estado = 'REALIZADO') AS UltimaVezRealizado
+                FROM dbo.ST_Planes p
+                LEFT JOIN dbo.ST_Procedimientos pr ON pr.ProcId = p.ProcId
+                OUTER APPLY (SELECT TOP 1 * FROM dbo.ST_Trabajos x WHERE x.PlanId = p.PlanId AND x.Estado IN ('PENDIENTE', 'EN_CURSO') ORDER BY x.FechaProgramada) t
+                WHERE p.EquipoId = @E AND p.Activo = 1
+                ORDER BY t.FechaProgramada, p.Titulo`),
+            base().query(`${SELECT_TRABAJO} WHERE t.EquipoId = @E AND t.Estado IN ('PENDIENTE', 'EN_CURSO') ORDER BY t.FechaProgramada, t.Titulo`),
+            base().query(`SELECT TOP 10 * FROM (${SELECT_TRABAJO} WHERE t.EquipoId = @E AND t.Estado NOT IN ('PENDIENTE', 'EN_CURSO')) x
+                          ORDER BY x.FechaFin DESC, x.FechaProgramada DESC`),
+        ]);
+        res.json({
+            success: true,
+            data: {
+                hoy,
+                planes: planes.recordset.map(p => ({ ...p, CadaTexto: cadaTexto(p.CadaValor, p.CadaUnidad, p.DiasSemana) })),
+                abiertos: abiertos.recordset,
+                cerrados: cerrados.recordset,
+            },
+        });
+    } catch (err) { responderError(res, err, 'equipos.preventivo'); }
+};
+
 // GET /mi-semana → lo del técnico logueado: esta semana, atrasado, sin asignar, sus solicitudes y seguimientos
 exports.miSemana = async (req, res) => {
     try {

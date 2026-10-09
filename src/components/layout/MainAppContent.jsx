@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef, useCallback, Suspense, lazy } from 'react';
-import { LayoutDashboard, Warehouse, Printer, ClipboardList, Terminal, CircleUserRound, Tags, Headset, Calculator, Landmark, Shirt, Sun, Sparkles, Flame, Scissors, Pen, Shapes, PenLine, QrCode, ShieldBan, PrinterCheck, History, LayoutGrid, PackagePlus, PackageCheck, Truck, FileSearch, Boxes, Waypoints, Send, Package, Bus, ClipboardCheck, Menu, Users, Shield, Eye, Settings, Database, UserX, RefreshCw, BadgeDollarSign, Layers, BookOpen, Banknote, CreditCard, ShieldCheck, Calendar, CalendarCheck, MapPin, Store, LifeBuoy, Ticket, ScanLine, FileText, Cpu, FileDown, Inbox, Receipt, ShoppingCart, Palette, Megaphone, ScanEye, FileSignature, TrendingUp, Wrench, Gift, Handshake, ClipboardPen, PenTool, ChartGantt, UserPen, ListChecks, Target, Zap, ReceiptText, CalendarDays, Repeat, FolderKanban } from 'lucide-react';
+import { LayoutDashboard, Warehouse, Printer, ClipboardList, Terminal, CircleUserRound, Tags, Headset, Calculator, Landmark, Shirt, Sun, Sparkles, Flame, Scissors, Pen, Shapes, PenLine, QrCode, ShieldBan, PrinterCheck, History, LayoutGrid, PackagePlus, PackageCheck, Truck, FileSearch, Boxes, Waypoints, Send, Package, Bus, ClipboardCheck, Menu, Users, Shield, Eye, Settings, Database, UserX, RefreshCw, BadgeDollarSign, Layers, BookOpen, Banknote, CreditCard, ShieldCheck, Calendar, CalendarCheck, MapPin, Store, LifeBuoy, Ticket, ScanLine, FileText, Cpu, FileDown, Inbox, Receipt, ShoppingCart, Palette, Megaphone, ScanEye, FileSignature, TrendingUp, Wrench, Gift, Handshake, ClipboardPen, PenTool, ChartGantt, UserPen, ListChecks, Target, Zap, ReceiptText, CalendarDays, Repeat, FolderKanban, ListOrdered } from 'lucide-react';
 import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
 import { SECCIONES_STOCK } from '../pages/stockSecciones';
 import { SECCIONES_ST, destinoServicioTecnico } from '../pages/servicioTecnicoSecciones';
@@ -366,6 +366,8 @@ const lucideIconMapRaw = {
     'bandeja de diseno': PenTool,
     'planificación': ChartGantt,           // /produccion/planificacion
     'planificacion': ChartGantt,
+    'coordinación': ListOrdered,           // /coordinacion (reordenar lotes y pendientes por área)
+    'coordinacion': ListOrdered,
     // En Modulos tiene Icono = 'PenTool' (un nombre de Lucide, no una clase de Font Awesome): sin esta
     // entrada salía en blanco
     'diseñadores': UserPen,
@@ -977,18 +979,14 @@ const MainAppContent = ({ menuItems = [] }) => {
 
                 <main className="flex-1 overflow-hidden relative bg-slate-100 w-full">
                     <div className={`absolute inset-0 overflow-y-auto scroll-smooth ${['/caja/transaccion', '/contabilidad/caja-admin', '/admin/helpdesk', '/atencion-cliente/helpdesk', '/consultas/ordenes', '/admin/clientes-integration', '/ventas/presupuestos'].includes(location.pathname) || location.pathname.startsWith('/production/machine') ? 'p-0' : 'p-0 md:p-6'}`}>
-                        <AnimatePresence mode="wait">
-                            <motion.div
-                                key={location.pathname}
-                                initial={{ opacity: 0 }}
-                                animate={{ opacity: 1 }}
-                                exit={{ opacity: 0 }}
-                                transition={{ duration: 0.15, ease: "easeOut" }}
-                                className="h-full"
-                            >
-                                {cachedRoutes}
-                            </motion.div>
-                        </AnimatePresence>
+                        {/* Cambio de pantalla: la nueva entra con un fundido de CSS y la anterior se va al instante.
+                            Antes era AnimatePresence mode="wait" (fundido de salida + fundido de entrada): medido
+                            cuadro por cuadro (09/10), la pantalla saliente volvía a opacidad 1 un frame antes de
+                            desmontarse y la entrante caía a 0 un frame al terminar — eso era el "flash" al abrir
+                            una solicitud. */}
+                        <div key={location.pathname} className="h-full animate-fade-in">
+                            {cachedRoutes}
+                        </div>
                     </div>
                 </main>
             </div>

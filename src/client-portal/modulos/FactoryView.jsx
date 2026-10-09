@@ -1001,19 +1001,23 @@ export const FactoryView = () => {
                                                 const pf = projectFiles[project.id];
                                                 if (!pf || pf.loading) return pf ? <div className="px-4 pt-4 text-[11px] text-zinc-500">Cargando archivos…</div> : null;
                                                 if (!pf.files.length) return null;
+                                                // Archivos cancelados (09/10/2026): se muestran apagados, con el cartel y el motivo.
+                                                const cantCancelados = pf.files.filter(f => f.Cancelado).length;
                                                 return (
                                                     <div className="px-4 pt-4">
-                                                        <div className="text-[10px] font-black text-zinc-500 uppercase tracking-widest mb-2">Archivos ({pf.files.length})</div>
+                                                        <div className="text-[10px] font-black text-zinc-500 uppercase tracking-widest mb-2">
+                                                            Archivos ({pf.files.length}){cantCancelados > 0 && <span className="text-red-400"> · {cantCancelados} cancelado{cantCancelados > 1 ? 's' : ''}</span>}
+                                                        </div>
                                                         <div className="flex flex-wrap gap-3">
                                                             {pf.files.map(f => {
                                                                 const driveId = extractDriveId(f.RutaAlmacenamiento);
                                                                 return (
                                                                     <div key={f.ArchivoID} className="flex flex-col items-center gap-1.5 w-[500px] max-w-full">
-                                                                        <div className="w-[500px] h-[500px] max-w-full rounded-lg overflow-hidden border border-zinc-700/60 bg-zinc-800 relative shrink-0">
+                                                                        <div className={`w-[500px] h-[500px] max-w-full rounded-lg overflow-hidden border bg-zinc-800 relative shrink-0 ${f.Cancelado ? 'border-red-500/40' : 'border-zinc-700/60'}`}>
                                                                             <img
                                                                                 src={`/thumbnails/${f.CodigoOrden || project.id}/${f.ArchivoID}.jpg`}
                                                                                 alt={f.NombreArchivo}
-                                                                                className="w-full h-full object-contain"
+                                                                                className={`w-full h-full object-contain ${f.Cancelado ? 'opacity-30 grayscale' : ''}`}
                                                                                 onError={e => {
                                                                                     if (e.target.dataset.fb !== '1' && driveId) {
                                                                                         e.target.dataset.fb = '1';
@@ -1024,9 +1028,20 @@ export const FactoryView = () => {
                                                                                     e.target.parentNode.innerHTML = '<div class="w-full h-full flex items-center justify-center text-zinc-600"><svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg></div>';
                                                                                 }}
                                                                             />
-                                                                            <span className="absolute top-2 right-2 bg-brand-cyan text-white text-xs font-black px-2 py-0.5 rounded-md shadow-lg">x{f.Copias}</span>
+                                                                            {f.Cancelado ? (
+                                                                                <span className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                                                                                    <span className="bg-red-500 text-white text-sm font-black tracking-widest px-4 py-1.5 rounded-md shadow-lg">CANCELADO</span>
+                                                                                </span>
+                                                                            ) : (
+                                                                                <span className="absolute top-2 right-2 bg-brand-cyan text-white text-xs font-black px-2 py-0.5 rounded-md shadow-lg">x{f.Copias}</span>
+                                                                            )}
                                                                         </div>
-                                                                        <span className="text-[11px] text-zinc-400 text-center leading-tight w-full truncate" title={f.NombreArchivo}>{f.NombreArchivo}</span>
+                                                                        <span className={`text-[11px] text-center leading-tight w-full truncate ${f.Cancelado ? 'text-zinc-500 line-through' : 'text-zinc-400'}`} title={f.NombreArchivo}>{f.NombreArchivo}</span>
+                                                                        {f.Cancelado && (
+                                                                            <span className="text-[11px] text-red-400 text-center leading-snug w-full">
+                                                                                {f.MotivoCancelacion ? `Cancelado: ${f.MotivoCancelacion}` : 'Este archivo fue cancelado y no se va a producir.'}
+                                                                            </span>
+                                                                        )}
                                                                         {isMultitela && f.Material && (
                                                                             <span className="text-[10px] text-cyan-300/80 bg-cyan-400/5 border border-cyan-500/20 px-2 py-0.5 rounded font-bold uppercase tracking-wide truncate max-w-full" title={f.Material}>{f.Material}</span>
                                                                         )}

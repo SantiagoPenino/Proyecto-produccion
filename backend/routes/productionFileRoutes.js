@@ -43,9 +43,9 @@ router.get('/orden/:id/pending-services', etiquetasController.getPendingServices
 router.post('/orden/:id/next-service', etiquetasController.updateOrderNextService);
 
 // --- REPOSICIONES (Atención al Cliente) ---
-router.get('/ordenes/entregadas', productionFileController.getCompletedOrdersForReplacement);
-router.get('/orden/:ordenId/relacionadas', productionFileController.getRelatedOrders);
-router.post('/ordenes/reposicion', productionFileController.createCustomerReplacementOrder);
+router.get('/ordenes/entregadas', verifyToken, productionFileController.getCompletedOrdersForReplacement);
+router.get('/orden/:ordenId/relacionadas', verifyToken, productionFileController.getRelatedOrders);
+router.post('/ordenes/reposicion', verifyToken, productionFileController.createCustomerReplacementOrder);
 
 // --- CANASTO FALLA (Confirmación y Liberación) ---
 router.post('/canasto-falla/confirmar', productionFileController.confirmarFalla);
