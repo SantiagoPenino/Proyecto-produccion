@@ -1,3 +1,4 @@
+// SIN USO (13/10): solo lo usa pages/RollsKanban.jsx (tablero viejo, sin uso). Ver docs/auditoria-limpieza-2026-10-09.md.
 import React, { useState } from 'react';
 import Swal from 'sweetalert2';
 import { rollsService, insumosService } from '../../services/api';

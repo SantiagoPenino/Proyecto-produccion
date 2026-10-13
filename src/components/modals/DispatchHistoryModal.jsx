@@ -1,3 +1,4 @@
+// SIN USO (13/10): solo lo importa pages/LogisticsView.jsx, que tampoco se usa. El historial está en logistics/DispatchView (modo history). Ver docs/auditoria-limpieza-2026-10-09.md.
 import React, { useState, useEffect } from 'react';
 import { logisticsService } from '../../services/api';
 import QRCode from "react-qr-code";

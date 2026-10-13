@@ -531,6 +531,7 @@ exports.printPedidoRemito = async (req, res) => {
     }
 };
 
+// SIN USO (13/10): getImages, updateLocation, getMasterVariants y updateVariantPrice: wmsService no los expone y el front no llama a esas rutas de /wms. Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
 exports.getImages = async (req, res) => {
     try {
         const pool = await getPool();

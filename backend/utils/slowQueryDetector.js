@@ -1,3 +1,4 @@
+// SIN USO (13/10): nunca se requirió. El filtro SLOW_QUERY de SysAdminPage nunca ve nada por esto: o se cablea timedQuery o se sacan los dos. Ver docs/auditoria-limpieza-2026-10-09.md.
 const logger = require('./logger');
 
 const SLOW_QUERY_THRESHOLD = parseInt(process.env.SLOW_QUERY_MS) || 500; // ms

@@ -1,3 +1,4 @@
+// SIN USO (13/10): solo lo importa pages/AdminDashboard.jsx, que tampoco se usa. Ver docs/auditoria-limpieza-2026-10-09.md.
 import React, { useState, useMemo } from 'react';
 
 const DynamicGrid = ({ data = [], loading = false }) => {

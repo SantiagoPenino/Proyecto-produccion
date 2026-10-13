@@ -2396,6 +2396,7 @@ exports.updateAreaStatus = async (req, res) => {
     }
 };
 
+// SIN USO (13/10): deleteOrder: el front no llama a DELETE /orders/:id. Además borra sin transacción ni cascada (hermanas, bultos). Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
 exports.deleteOrder = async (req, res) => {
     const { id } = req.params;
     try {
@@ -3758,7 +3759,9 @@ exports.cancelRequest = async (req, res) => {
         res.status(500).json({ error: e.message });
     }
 };
+// SIN USO (13/10): cancelRoll: stub que responde success sin hacer nada; el front no llama a /orders/cancel-roll. Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
 exports.cancelRoll = async (req, res) => { res.json({ success: true }); };
+// SIN USO (13/10): getOrderHistory: devuelve un historial simulado; el front no llama a /orders/history (el historial real viene en /orders/details). Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
 exports.getOrderHistory = async (req, res) => {
     const { id } = req.params;
     try {
@@ -3956,6 +3959,7 @@ exports.cancelFile = async (req, res) => {
         res.status(500).json({ error: e.message });
     }
 };
+// SIN USO (13/10): assignFabricBobbin: stub que responde success sin hacer nada; ordersService.assignFabricBobbin no tiene callers. Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
 exports.assignFabricBobbin = async (req, res) => { res.json({ success: true }); };
 
 // ============================================================
@@ -3994,6 +3998,7 @@ const getLastFileStatesBeforeCancel = async (transaction, ordenId) => {
     return res.recordset; // [{ ArchivoID, NombreArchivo, EstadoRestaurar }]
 };
 
+// SIN USO (13/10): reactivateFile: ordersService.reactivateFile existe pero nadie lo llama. Puede ser algo pensado para el modal de archivos que nunca se cableó. Ver docs/auditoria-limpieza-2026-10-09.md.
 /**
  * Reactivar UN ARCHIVO individual.
  * - Restaura el EstadoArchivo al estado previo a la cancelación.

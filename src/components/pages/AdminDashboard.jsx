@@ -1,3 +1,4 @@
+// SIN USO (13/10): nunca se importó. Es el único que llama a GET /api/admin/dynamic (adminController.getDynamicData). Ver docs/auditoria-limpieza-2026-10-09.md.
 import React, { useState, useEffect } from 'react';
 import DynamicGrid from '../common/DynamicGrid';
 import { API_URL } from '../../services/apiClient';

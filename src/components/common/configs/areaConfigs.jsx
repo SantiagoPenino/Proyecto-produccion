@@ -1,3 +1,4 @@
+// SIN USO (13/10): lo importaban production/areas/DTFArea.jsx y ECOUVArea.jsx (borrados el 13/10). La config de cada área sale hoy de menuItem.ui_config (MainAppContent). Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
 import React from 'react';
 
 // 🎨 Estilos Base

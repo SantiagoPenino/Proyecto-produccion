@@ -970,6 +970,7 @@ const anularDocumentoContable = async (docId, transaction = null) => {
     `);
 };
 
+// SIN USO (13/10): marcarDocumentoComoPagado: está en module.exports pero nadie lo llama. Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
 const marcarDocumentoComoPagado = async (docId, transaction = null) => {
   const pool = transaction ? null : await getPool();
   const request = transaction ? new sql.Request(transaction) : pool.request();

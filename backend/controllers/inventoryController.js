@@ -169,6 +169,7 @@ exports.addStock = async (req, res) => {
 // 3. ACTUALIZAR USO DE BOBINA (AUTOMATICO)
 // ==========================================
 // Esta función se llama internamente cuando MagicSort crea un rollo
+// SIN USO (13/10): registerConsumption: nadie lo llama (el comentario dice MagicSort, pero no lo usa). Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
 exports.registerConsumption = async (poolInstance, bobinaId, metrosUsados, loteProdId) => {
     // Nota: poolInstance debe ser una Transacción activa si viene de MagicSort
     try {

@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { ordersService, areasService } from '../../services/api';
-// import OrderTrackingModal from '../common/OrderTrackingModal'; // DEPRECATED
 import OrderDetailModal from '../production/components/OrderDetailModal'; // NEW MODAL
 import IntegralOrderView from './IntegralOrderView';
 

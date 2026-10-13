@@ -64,6 +64,7 @@ async function hermanasSinBultoPropio(db, ordenId, estadosEnArea, estadoPortador
     return r.recordset;
 }
 
+// SIN USO (13/10): isOrdenCompleta y getOrdenesPedido: están en module.exports pero nadie los llama. Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
 /**
  * Todos los archivos y servicios extra (no cancelados) de la orden están en OK/FINALIZADO
  * y ninguno en FALLA. Misma regla que usa completarOrden.

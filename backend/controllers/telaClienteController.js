@@ -196,6 +196,7 @@ exports.getEstadoCuenta = async (req, res) => {
 // 3. BULTOS FÍSICOS ACTIVOS DEL CLIENTE
 //    GET /api/tela-cliente/:clienteId/bultos
 // ─────────────────────────────────────────────────────────────────────
+// SIN USO (13/10): getBultos, reservarMetros y liberarReserva: el front solo usa /tela-cliente/:id/saldo y /estado-cuenta. Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
 exports.getBultos = async (req, res) => {
     const { clienteId } = req.params;
 

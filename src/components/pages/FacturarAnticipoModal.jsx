@@ -1,3 +1,4 @@
+// SIN USO (13/10): nunca se importó. Ver docs/anticipo-facturado-plan.md (plan vigente): decidir si se cablea o se borra. Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
 import React, { useState, useEffect } from 'react';
 import { X, CheckCircle2, RefreshCw } from 'lucide-react';
 import api from '../../services/api';

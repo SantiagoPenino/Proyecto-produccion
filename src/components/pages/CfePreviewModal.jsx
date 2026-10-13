@@ -1,3 +1,4 @@
+// SIN USO (13/10): la Bandeja CFE dejó de usarlo el 14/05; la vista previa es el PDF y CfePreviewDgiModal. Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
 import React, { useState, useEffect } from 'react';
 import { X, FileText, Printer } from 'lucide-react';
 import api from '../../services/apiClient';

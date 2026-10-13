@@ -53,6 +53,7 @@ exports.sincronizarRetirosWeb = async (req, res) => {
     res.json({ success: true, count: 0, message: 'Sincronización deshabilitada: DB es fuente de verdad.' });
 };
 
+// SIN USO (13/10): reportarPagoRetiro: no está en webRetirosRoutes. Ver docs/auditoria-limpieza-2026-10-09.md.
 /**
  * Reportar un Pago hecho en esta plataforma a la API central
  */
@@ -1716,6 +1717,7 @@ exports.gestionarExcepcion = async (req, res) => {
     }
 };
 
+// SIN USO (13/10): seedConfigEstantes: el front no llama a POST /web-retiros/estantes/config/seed. Además usa ordenesDeRetiro/ordenesParaEntregar, que no existen en esta función (ReferenceError después del commit). Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
 /**
  * SEED: Recrear ConfiguracionEstantes
  * POST /web-retiros/estantes/config/seed

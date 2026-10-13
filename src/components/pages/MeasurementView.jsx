@@ -1,3 +1,4 @@
+// SIN USO (13/10): AreaView le sacó la ruta el 12/05. La medición está en RollDetailsModal + rollsService. Ver docs/auditoria-limpieza-2026-10-09.md.
 import React, { useState, useEffect, useMemo } from 'react';
 import api from '../../services/api';
 import FileItem from '../production/components/FileItem';

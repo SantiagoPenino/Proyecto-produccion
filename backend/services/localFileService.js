@@ -1,3 +1,4 @@
+// SIN USO (13/10): solo lo requiere controllers/chatController.js (sin uso). Ver docs/auditoria-limpieza-2026-10-09.md.
 const fs = require('fs');
 const path = require('path');
 const mammoth = require('mammoth');

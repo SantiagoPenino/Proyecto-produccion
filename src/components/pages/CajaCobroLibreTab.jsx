@@ -1,3 +1,4 @@
+// SIN USO (13/10): CajaTransaccionView lo importa pero no lo renderiza desde el 21/05. Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
 import React, { useState, useRef, useEffect } from 'react';
 import { ShoppingCart, CheckCircle, Search, Loader2, ArrowRight, User, Trash2, Wallet, Plus, AlertCircle, DollarSign } from 'lucide-react';
 import api from '../../services/apiClient';

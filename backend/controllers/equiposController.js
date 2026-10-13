@@ -1,3 +1,4 @@
+// SIN USO (13/10): consulta la tabla Maquinas, que no existe (lo dice embBoardController). La ruta /production-file-control/equipos no tiene caller en el front. Ver docs/auditoria-limpieza-2026-10-09.md.
 const { sql, getPool } = require('../config/db');
 const logger = require('../utils/logger');
 

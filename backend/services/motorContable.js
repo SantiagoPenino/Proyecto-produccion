@@ -84,6 +84,7 @@ async function generaDeuda(codigo) {
     return evt ? !!evt.EvtGeneraDeuda : false;
 }
 
+// SIN USO (13/10): aplicaRecurso, efectoSaldo, listarEventos y resolverLineasAsiento: están en module.exports pero nadie los llama. Ver docs/auditoria-limpieza-2026-10-09.md.
 /**
  * Verifica si un tipo de movimiento aplica a recursos (metros/kg).
  * @param {string} codigo

@@ -160,6 +160,7 @@ function aSvgPath(trazo) {
     return d.trim();
 }
 
+// SIN USO (13/10): detectarBandas, parsearMolde y validarDespiece (y solape, MIN_LADO_CM, MAX_LADO_CM, SOLAPE_MIN arriba): despiece viejo, no se exporta. module.exports solo saca leerTrazos, aSvgPath y PT2CM. Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
 /**
  * Agrupa los nidos en bandas horizontales. Un molde con varias curvas las
  * dibuja en filas separadas de la hoja (masculino arriba, femenino al medio,

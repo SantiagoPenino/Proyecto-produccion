@@ -1,3 +1,4 @@
+// SIN USO (13/10): ejecutarCierreCiclos solo loguea "Cierre automático DESACTIVADO" y devuelve ceros, pero server.js lo sigue agendando cada noche. Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
 /**
  * ciclosCredito.job.js
  * ──────────────────────────────────────────────────────────────────────────────

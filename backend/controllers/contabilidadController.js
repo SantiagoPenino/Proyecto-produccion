@@ -2328,6 +2328,7 @@ exports.cerrarCiclosVencidos = async (req, res) => {
 // SECCIÓN 6: PLANES DE METROS
 // ============================================================
 
+// SIN USO (13/10): getPlanesMetros: sin ruta (la ruta usa getPlanesCliente, que devuelve lo mismo). Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
 /**
  * GET /api/contabilidad/planes/:CliIdCliente
  * Devuelve los planes de metros activos e históricos del cliente.
@@ -2369,6 +2370,7 @@ exports.getPlanesMetros = async (req, res) => {
   }
 };
 
+// SIN USO (13/10): crearPlanMetros: sin ruta. Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
 /**
  * POST /api/contabilidad/planes
  * Crea un nuevo plan de metros/kg prepago.
@@ -2852,6 +2854,7 @@ const getBatch = () => {
 };
 
 /** GET /api/contabilidad/cola/:ColIdCola/preview — devuelve HTML renderizado */
+// SIN USO (13/10): previewEstadoCola: sin ruta (el JSDoc cita GET /cola/:id/preview, que contabilidadRoutes no monta). Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
 exports.previewEstadoCola = async (req, res) => {
   try {
     const pool    = await getPool();
@@ -5794,6 +5797,7 @@ exports.getFacturasParaCargar = async (req, res) => {
 // Devuelve los metros al plan, revierte los movimientos generados y deja la
 // orden de nuevo PENDIENTE DE FACTURAR (le quita la marca CUBIERTO).
 // ============================================================================
+// SIN USO (13/10): devolverConsumoRecurso: sin ruta (el front usa devolver-consumo-saldo, que es otro handler). Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
 exports.devolverConsumoRecurso = async (req, res) => {
   const pool = await getPool();
   let transaction = null;

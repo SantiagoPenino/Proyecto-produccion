@@ -1,3 +1,4 @@
+// SIN USO (13/10): solo lo requiere tpuPlanchaService.js (sin uso). OJO: es la única implementación PDF → HPGL (.plt) del repo; si la cortadora necesita .plt y hoy se pasa por Corel a mano, esto era el reemplazo. Ver docs/auditoria-limpieza-2026-10-09.md.
 /**
  * [TPU] Generación del archivo de corte (.plt / HPGL) desde el PDF de la plancha.
  *

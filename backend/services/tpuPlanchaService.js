@@ -1,3 +1,4 @@
+// SIN USO (13/10): nunca se requirió desde que se creó (14/08). El TPU vivo es tpuMatrizService.js + python/tpu_matriz.py. Ver docs/auditoria-limpieza-2026-10-09.md.
 /**
  * [TPU] Imposición de la plancha: toma el arte de UN parche (PDF/AI con sus capas) y arma la
  * plancha con N copias en filas y columnas, más las marcas de registro, y exporta UN PDF POR CAPA.

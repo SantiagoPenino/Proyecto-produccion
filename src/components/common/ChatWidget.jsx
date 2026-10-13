@@ -1,3 +1,4 @@
+// SIN USO (13/10): MainAppContent lo importa pero su render está comentado. El backend /api/chat sigue montado. Ver docs/auditoria-limpieza-2026-10-09.md.
 import React, { useState, useRef, useEffect } from 'react';
 import axios from 'axios';
 import { useAuth } from '../../context/AuthContext';

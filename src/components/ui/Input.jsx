@@ -1,3 +1,4 @@
+// SIN USO (13/10): nadie lo importa desde el 17/02. Tiene el ojo de contraseña (endIcon) que pautas/FormInput no tiene. Ver docs/auditoria-limpieza-2026-10-09.md.
 export const Input = ({ label, error, icon, endIcon, onEndIconClick, className = '', ...props }) => {
     return (
         <div className="w-full mb-4">

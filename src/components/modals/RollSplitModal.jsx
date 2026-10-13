@@ -1,3 +1,4 @@
+// SIN USO (13/10): MachineDetailView lo importa pero nunca lo abre (setSplitModalRoll solo se llama con null). Ver docs/auditoria-limpieza-2026-10-09.md.
 
 import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';

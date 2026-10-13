@@ -1123,6 +1123,7 @@ exports.createRemitoFromOrders = async (req, res) => {
     }
 };
 
+// SIN USO (13/10): validateDispatch: su único caller es src/components/pages/LogisticsView.jsx, que no se usa. Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
 exports.validateDispatch = async (req, res) => {
     const { bultosIds } = req.body; // Array of IDs
     // Check status
@@ -3087,6 +3088,7 @@ exports.getEsperandoBultos = async (req, res) => {
     }
 };
 
+// SIN USO (13/10): getDashboard: su único caller es src/components/pages/LogisticsView.jsx, que no se usa. Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
 exports.getDashboard = async (req, res) => {
     const { areaId } = req.query;
     try {
@@ -3248,6 +3250,7 @@ exports.getDashboard = async (req, res) => {
     }
 };
 
+// SIN USO (13/10): getHistory: su único caller es modals/DispatchHistoryModal.jsx, que no se usa. Además ordena por FechaMovimiento y los INSERT usan FechaHora. Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
 exports.getHistory = async (req, res) => {
     // Implementation similar to legacy but querying Logistica_Bultos or MovimientosLogistica
     // Keeping it simple for now

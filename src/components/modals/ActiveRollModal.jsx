@@ -1,3 +1,4 @@
+// SIN USO (13/10): solo lo usa pages/ProductionKanban.jsx (tablero viejo, sin uso). Llama rollsService.closeRoll, que no existe. Ver docs/auditoria-limpieza-2026-10-09.md.
 import React, { useState } from 'react';
 import { ordersService, rollsService } from '../../services/api';
 

@@ -1,3 +1,4 @@
+// SIN USO (13/10): reemplazado por logistics/ReceptionView.jsx el 29/01 (mandaba usuarioId: 1 fijo). Ver docs/auditoria-limpieza-2026-10-09.md.
 import React, { useState, useEffect, useRef } from 'react';
 import { logisticsService } from '../../services/api';
 

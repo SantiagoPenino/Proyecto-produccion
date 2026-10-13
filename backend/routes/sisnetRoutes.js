@@ -1,3 +1,4 @@
+// SIN USO (13/10): rutas de prueba de SISNET sin auth y sin caller en el front (ver controllers/sisnetController.js). Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
 const express = require('express');
 const router = express.Router();
 const sisnetController = require('../controllers/sisnetController');

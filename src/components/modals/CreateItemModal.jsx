@@ -1,3 +1,4 @@
+// SIN USO (13/10): StockRequestModal dejó de usarlo el 01/10. El alta de insumos está en InsumosCatalogPage. Ver docs/auditoria-limpieza-2026-10-09.md.
 import React, { useState, useEffect } from 'react';
 import { stockService } from '../../services/api';
 

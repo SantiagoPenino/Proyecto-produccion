@@ -1,3 +1,4 @@
+// SIN USO (13/10): nunca se importó en ningún archivo. Ver docs/auditoria-limpieza-2026-10-09.md.
 import React from 'react';
 import { Check, Settings, Circle, Ban, AlertTriangle, Trash2 } from 'lucide-react';
 

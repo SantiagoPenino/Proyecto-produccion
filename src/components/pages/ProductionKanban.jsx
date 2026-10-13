@@ -1,3 +1,4 @@
+// SIN USO (13/10): tablero de lotes viejo: AreaView lo monta en la ruta "produccion" pero ningún botón lleva ahí. El vivo es PlaneacionTrabajo. Además llama rollsService.closeRoll, que no existe (TypeError). Ver docs/auditoria-limpieza-2026-10-09.md.
 import React, { useState, useEffect } from 'react';
 import { DragDropContext, Droppable } from '@hello-pangea/dnd';
 import { productionService, rollsService } from '../../services/api';

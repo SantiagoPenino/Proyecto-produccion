@@ -64,6 +64,7 @@ exports.sendRegistrationMail = async (to, clientName, codCliente) => {
     return exports.sendMail(to, "Activá tu cuenta", html);
 };
 
+// SIN USO (13/10): sendOrderConfirmation y sendPasswordResetMail: nadie los llama. Ver docs/auditoria-limpieza-2026-10-09.md.
 exports.sendOrderConfirmation = async (to, clientName, orderNumber, orderDetails) => {
     const html = `<div style="font-family:Arial, sans-serif; max-width:600px; margin: 0 auto; padding: 20px;">
     <h2>Detalles del pedido</h2>

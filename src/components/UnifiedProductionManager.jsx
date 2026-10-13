@@ -1,3 +1,4 @@
+// SIN USO (13/10): nunca se importó; sus 3 pestañas (ImportadorManualView, QuotationView, LabelGenerationPage) tienen ruta propia. Ver docs/auditoria-limpieza-2026-10-09.md.
 import React, { useState } from 'react';
 import ImportadorManualView from './production/ImportadorManualView';
 import LabelGenerationPage from './pages/LabelGenerationPage';

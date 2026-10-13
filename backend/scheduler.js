@@ -50,6 +50,7 @@ async function runJob(id, fn) {
 }
 
 // ─── Scheduler principal ─────────────────────────────────────────────────────
+// SIN USO (13/10): startAutoSync y checkAndSync: server.js los requiere pero nunca los llama (el sync ERP automático está apagado). Lo único vivo del archivo son los registrar() de arriba, y dejan 4 tarjetas sin función en /admin/cron. Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
 async function startAutoSync(io) {
     try {
         const pool = await getPool();

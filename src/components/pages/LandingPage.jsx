@@ -338,6 +338,7 @@ export default function LandingPage() {
   );
 }
 
+// SIN USO (13/10): useCountUp, StatCard y StatsCounter (hasta antes de la siguiente sección): el único <StatsCounter /> está comentado. Pide /api/stats/public. Ver docs/auditoria-limpieza-2026-10-09.md.
 function useCountUp(target, duration = 2000, started = false) {
   const [count, setCount] = useState(0);
   const raf = useRef(null);

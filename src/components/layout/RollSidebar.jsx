@@ -1,3 +1,4 @@
+// SIN USO (13/10): AreaView lo importa pero no lo renderiza (renderSidebar devuelve null). Ver docs/auditoria-limpieza-2026-10-09.md.
 import React from 'react';
 
 const RollSidebar = ({ orders, currentFilter, onFilterChange, onClose, title = "LOTES" }) => {

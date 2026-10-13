@@ -27,6 +27,7 @@
  *    5. Estado "En Diseño" por paso que espera su archivo.
  */
 
+// SIN USO (13/10): todos los exports salvo createWebOrder y las 5 funciones WMS (ver cabecera): ~3.000 líneas copiadas de webOrdersController que ninguna ruta llama. Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
 const { sql, getPool } = require('../config/db');
 const { siguienteCodigoVenta } = require('../utils/codigoVenta');
 const driveService = require('../services/driveService');

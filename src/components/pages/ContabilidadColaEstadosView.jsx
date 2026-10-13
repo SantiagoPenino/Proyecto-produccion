@@ -1,3 +1,4 @@
+// SIN USO (13/10): a confirmar: está ruteada, pero Aprobar/Rechazar mandan PATCH a /contabilidad/cola/:id/estado y el backend solo acepta POST, así que nunca pudieron funcionar. Decide Santiago si se arregla o se saca. Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
 /**
  * ContabilidadColaEstadosView.jsx
  * Cola de estados de cuenta — revisión, previsualización y envío de emails.

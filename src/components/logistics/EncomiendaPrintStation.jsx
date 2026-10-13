@@ -1,3 +1,4 @@
+// SIN USO (13/10): sigue ruteada en App.jsx (/encomienda-station) pero no se usa en producción desde el 19/06: las encomiendas se imprimen en PrintStationPage. Ver docs/auditoria-limpieza-2026-10-09.md.
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Printer, Wifi, WifiOff, Volume2, VolumeX, Bell, RotateCcw, Package, AlertTriangle, XCircle, Tag, History, ChevronUp, ChevronDown, RefreshCcw, CheckSquare } from 'lucide-react';
 import { socket } from '../../services/socketService';

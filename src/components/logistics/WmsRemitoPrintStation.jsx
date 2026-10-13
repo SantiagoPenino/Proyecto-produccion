@@ -1,3 +1,4 @@
+// SIN USO (13/10): ruteada en App.jsx (/wms-remito-station), pero PrintStationPage ya imprime los remitos WMS. Antes de sacar la ruta, mirar en los logs de nginx si alguien la abre. Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Printer, Wifi, WifiOff, Volume2, VolumeX, Bell, RotateCcw, Package, AlertTriangle, XCircle, FileText } from 'lucide-react';
 import { socket } from '../../services/socketService';

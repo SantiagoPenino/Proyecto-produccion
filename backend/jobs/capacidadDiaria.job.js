@@ -1,3 +1,4 @@
+// SIN USO (13/10): solo lo requiere scheduler.startAutoSync, que nadie llama: este job nunca se agenda. Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
 const { getPool, sql } = require('../config/db');
 const logger = require('../utils/logger');
 const { calcularSituacion, upsertSnapshotDiario } = require('../controllers/planificacionController');

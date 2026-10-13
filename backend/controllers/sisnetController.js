@@ -1,3 +1,4 @@
+// SIN USO (13/10): rutas de prueba contra el web service real de SISNET (status, cae, enviar-prueba con un CFE de ejemplo), sin auth y sin caller en el front. La emisión real está en sisnetService + cfeController. Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
 // Modificado para forzar reinicio de nodemon y recargar .env
 const soap = require('soap');
 const logger = require('../utils/logger');

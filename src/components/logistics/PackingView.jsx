@@ -1,3 +1,4 @@
+// SIN USO (13/10): LogisticsDashboard lo importa pero no lo renderiza. Tiene TODOs de prototipo (usuarioId: 1 fijo). Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
 import React, { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { logisticsService } from '../../services/modules/logisticsService';

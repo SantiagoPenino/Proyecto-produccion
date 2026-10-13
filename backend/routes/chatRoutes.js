@@ -1,3 +1,4 @@
+// SIN USO (13/10): el front no llama a /api/chat (ver controllers/chatController.js). Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
 const express = require('express');
 const router = express.Router();
 const chatController = require('../controllers/chatController');

@@ -535,6 +535,7 @@ exports.getOrderDetails = async (req, res) => {
 };
 
 // Stubs para evitar errores de Undefined en el Router
+// SIN USO (13/10): getBoardData, moveOrder, createRoll, reorderOrders y updateRollName: stubs que responden vacío o success; el front usa /rolls/* y /production-kanban. Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
 exports.getBoardData = async (req, res) => { res.json([]); };
 exports.moveOrder = async (req, res) => { res.json({ success: true }); };
 exports.createRoll = async (req, res) => { res.json({ success: true }); };
@@ -630,6 +631,7 @@ exports.printEtiquetaLote = async (req, res) => {
         res.status(500).send('<h1>Error generando la etiqueta del lote</h1>');
     }
 };
+// SIN USO (13/10): getMachines: stub sin ruta. Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
 exports.getMachines = async (req, res) => { res.json([]); };
 
 // ==========================================
@@ -884,6 +886,7 @@ exports.magicSort = async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 };
+// SIN USO (13/10): getGroupedOrderDetails y measureFiles: sin ruta (measurementRoutes usa el measureFiles de measurementController). Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
 exports.getGroupedOrderDetails = async (req, res) => { res.json([]); };
 
 exports.measureFiles = async (req, res) => {

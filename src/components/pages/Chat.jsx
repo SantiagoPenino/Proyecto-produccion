@@ -1,3 +1,4 @@
+// SIN USO (13/10): maqueta estática (canales y mensajes fijos, input deshabilitado), nunca tuvo ruta. Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
 import React from 'react';
 
 const Chat = ({ onSwitchTab }) => {

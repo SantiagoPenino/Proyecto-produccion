@@ -1,3 +1,4 @@
+// SIN USO (13/10): el front no llama a /api/chat (ChatWidget tiene el render comentado). QUERY_DB ejecuta el SQL que devuelve el modelo y GET /api/chat/test-gemini no tiene auth. Ver docs/auditoria-limpieza-2026-10-09.md.
 require('dotenv').config();
 const { getPool, sql } = require('../config/db');
 const localFileService = require('../services/localFileService');

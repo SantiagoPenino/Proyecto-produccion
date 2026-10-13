@@ -1,3 +1,4 @@
+// SIN USO (13/10): AreaView le sacó la ruta el 30/04. La reemplaza logistics/LogisticsDashboard.jsx. Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { Warehouse, Truck } from 'lucide-react';

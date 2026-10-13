@@ -762,6 +762,7 @@ async function hookOrdenCreada(params, transaction = null) {
   }
 }
 
+// SIN USO (13/10): hookReposicion: está en module.exports pero nadie lo llama. Ver docs/auditoria-limpieza-2026-10-09.md.
 /**
  * hookReposicion
  * Llamar cuando la orden es una REPOSICIÓN (CodigoOrden empieza con 'R').
@@ -4124,6 +4125,7 @@ async function cerrarCiclosVencidos() {
   return { procesados, errores };
 }
 
+// SIN USO (13/10): forzarCierreTodosCiclosAbiertos: su única llamada está comentada en jobs/estadosCuenta.job.js. Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
 /**
  * forzarCierreTodosCiclosAbiertos
  * Busca TODOS los ciclos ABIERTOS (sin importar si vencieron) y los cierra.
@@ -4157,6 +4159,7 @@ async function forzarCierreTodosCiclosAbiertos() {
 // SECCIÓN X: HOOK — RETIRO AUTORIZADO SIN PAGO (FIADO)
 // ============================================================
 
+// SIN USO (13/10): hookRetiroSinPago: está en module.exports pero nadie lo llama. Ver docs/auditoria-limpieza-2026-10-09.md.
 async function hookRetiroSinPago({ OReIdOrdenRetiro, CliIdCliente, OrdIds = [], Monto = 0, UsuarioAlta = 1, Observacion = '' }) {
   try {
     const pool = await getPool();
@@ -4598,6 +4601,7 @@ async function revertirRecursosPorTransaccion(tcaId, usuarioId, transaction) {
   return { revertidos, pendientes };
 }
 
+// SIN USO (13/10): transformarMovimiento: solo lo llama services/pagoService.js, que está @deprecated. Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
 /**
  * transformarMovimiento
  * Cambia el tipo de movimientos existentes (ej. ORDEN -> VTA_CAJA) y les asigna
@@ -4712,6 +4716,7 @@ async function reducirDeuda(params, transaction = null) {
   logger.info(`[CONTAB] reducirDeuda: ${where} monto=${monto}`);
 }
 
+// SIN USO (13/10): reemplazarDeuda: nadie lo llama. OJO: hace DELETE de DeudaDocumento. Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
 /**
  * reemplazarDeuda
  * Elimina las deudas existentes de un documento y crea una nueva.

@@ -1,3 +1,4 @@
+// SIN USO (13/10): ConfigPage lo importa pero ninguna tarjeta abre el modal "flows". Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
 import React, { useState, useEffect } from 'react';
 import { areasService, workflowsService } from '../../../services/api';
 

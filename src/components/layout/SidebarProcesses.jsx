@@ -1,3 +1,4 @@
+// SIN USO (13/10): AreaView dejó de usarlo; la navegación por áreas está en MainAppContent + Navbar. Ver docs/auditoria-limpieza-2026-10-09.md.
 import React from "react";
 
 const SidebarProcesses = ({

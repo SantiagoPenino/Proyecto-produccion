@@ -1,3 +1,4 @@
+// SIN USO (13/10): nadie la importa desde el 17/02 (3ce1094). El login vivo es src/components/pages/LoginPage.jsx y el registro RegisterPage.jsx. Ver docs/auditoria-limpieza-2026-10-09.md.
 import React, { useState } from 'react';
 import { useAuth } from '../auth/AuthContext';
 import { GlassCard } from '../pautas/GlassCard';

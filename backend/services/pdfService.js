@@ -228,6 +228,7 @@ const generarPdfEgreso = async (voucher) => {
 // ═══════════════════════════════════════════════════════════════════════════════
 // INGRESO GENÉRICO
 // ═══════════════════════════════════════════════════════════════════════════════
+// SIN USO (13/10): generarPdfIngreso: está en module.exports pero nadie lo llama. Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
 /**
  * Genera y guarda el PDF de un ingreso genérico.
  * @param {Object} datos - { tcaId, concepto, monto, moneda, metodoPago, fecha, serieDoc, numeroDoc,

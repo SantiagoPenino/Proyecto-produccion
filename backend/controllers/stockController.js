@@ -1,3 +1,4 @@
+// SIN USO (13/10): consulta dbo.Solicitudes, tabla que el propio repo declara inexistente (StockRequestModal, MainAppContent, StockGestionPage). Los pedidos de insumos van por /wms-interno. Ver docs/auditoria-limpieza-2026-10-09.md.
 const { getPool, sql } = require('../config/db');
 const logger = require('../utils/logger');
 

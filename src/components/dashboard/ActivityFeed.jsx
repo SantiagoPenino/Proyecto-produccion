@@ -1,3 +1,4 @@
+// SIN USO (13/10): datos de ejemplo fijos; Dashboard.jsx dejó de importarlo el 02/03. Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
 import React from 'react';
 
 // Ejemplo de actividad, luego puedes pasarla como prop si quieres

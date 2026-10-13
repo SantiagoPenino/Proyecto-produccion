@@ -1,3 +1,4 @@
+// SIN USO (13/10): solo lo usa pages/ProductionKanban.jsx (tablero viejo, sin uso). No confundir con RollDetailsModal.jsx, que es el vivo. Ver docs/auditoria-limpieza-2026-10-09.md.
 import React, { useState, useEffect } from 'react';
 
 const RollDetailModal = ({ isOpen, onClose, roll }) => {

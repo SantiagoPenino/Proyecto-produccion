@@ -323,6 +323,7 @@ exports.getColumnsDictionary = async (req, res) => {
 // =====================================================================
 // 8. LEGACY (Por si acaso quedó algo viejo llamando a JSON)
 // =====================================================================
+// SIN USO (13/10): updateAreaConfig: marcado LEGACY y sin ruta en areasRoutes. Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
 exports.updateAreaConfig = async (req, res) => {
     const { code } = req.params;
     const { ui_config } = req.body;

@@ -133,6 +133,7 @@ async function generarEstadoParaCliente(pool, cliente) {
 // SECCIÓN 3: TAMBIÉN DETECTAR CICLOS VENCIDOS
 // ============================================================
 
+// SIN USO (13/10): marcarCiclosVencidos: está en module.exports pero runEstadosCuentaBatch no la llama ni nadie más. Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
 /**
  * marcarCiclosVencidos
  * Actualiza a 'VENCIDO' los CiclosCredito cuya CicFechaCierre ya pasó.

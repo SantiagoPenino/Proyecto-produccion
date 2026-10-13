@@ -127,6 +127,7 @@ async function sqlUltimoEnvio(modulo, columnaId, alias = 'env') {
     };
 }
 
+// SIN USO (13/10): historialDe: está en module.exports pero nadie lo llama. Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
 /**
  * Historial de envíos de un registro puntual (para una pantalla de detalle).
  */

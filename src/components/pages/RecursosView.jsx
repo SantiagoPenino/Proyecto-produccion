@@ -1,3 +1,4 @@
+// SIN USO (13/10): nunca tuvo ruta. Es la única UI para crear, recargar o cerrar un plan de recursos a mano. Ver docs/auditoria-limpieza-2026-10-09.md.
 /**
  * RecursosView.jsx
  * Gestión de Planes de Recursos (Metros, KG, Unidades).

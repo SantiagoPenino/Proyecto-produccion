@@ -433,6 +433,7 @@ function generarHTMLEstadoCuenta(datos, empresa = {}) {
 // SECCIÓN 5: VERIFICACIÓN DE CONEXIÓN
 // ============================================================
 
+// SIN USO (13/10): verificarConexion: está en module.exports pero nadie lo llama. Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
 async function verificarConexion() {
   const t = getTransporter();
   if (!t) return { ok: false, motivo: 'sin_credenciales' };

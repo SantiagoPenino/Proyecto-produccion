@@ -1,3 +1,4 @@
+// SIN USO (13/10): AreaView lo importa pero no lo renderiza (renderSidebar devuelve null). Ver docs/auditoria-limpieza-2026-10-09.md.
 const MatrixSidebar = ({ orders, currentFilter, onFilterChange }) => {
   // Agrupar por estado de matriz (específico de Bordado)
   const matrixGroups = orders.reduce((acc, order) => {

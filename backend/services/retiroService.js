@@ -53,6 +53,7 @@ async function proximoId(transaction, nombre) {
     return r.recordset[0].Id;
 }
 
+// SIN USO (13/10): resolverEstadoPorTipoCliente: no se exporta ni se llama. Ver docs/auditoria-limpieza-2026-10-09.md.
 /**
  * resolverEstadoPorTipoCliente
  * SOLO como fallback cuando no hay datos de contabilidad disponibles.
@@ -280,6 +281,7 @@ async function ordenCubiertaPorLibro(transaction, OrdIdOrdenDeposito) {
     }
 }
 
+// SIN USO (13/10): tienePlanHistorico: no se exporta ni se llama (lo reemplazó el criterio por costo, ver más abajo). Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
 async function tienePlanHistorico(transaction, CliIdCliente, ProIdProducto) {
     if (!CliIdCliente || !ProIdProducto) return false;
     const r = await transaction.request()

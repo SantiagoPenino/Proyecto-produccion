@@ -1,3 +1,4 @@
+// SIN USO (13/10): a confirmar: el front no llama a /api/integration-logs (incluye POST /clean, que borra filas, sin auth). Mirar en los logs si lo usa un sistema externo. Ver docs/auditoria-limpieza-2026-10-09.md.
 const { sql, getPool } = require('../config/db');
 const logger = require('../utils/logger');
 

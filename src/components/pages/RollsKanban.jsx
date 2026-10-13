@@ -1,3 +1,4 @@
+// SIN USO (13/10): tablero de lotes viejo: AreaView lo monta en la ruta "lotes" pero ningún botón lleva ahí. El vivo es PlaneacionTrabajo. Ver docs/auditoria-limpieza-2026-10-09.md.
 import React, { useState, useEffect, useRef } from 'react';
 import Swal from 'sweetalert2';
 import { DragDropContext, Droppable, Draggable } from '@hello-pangea/dnd';

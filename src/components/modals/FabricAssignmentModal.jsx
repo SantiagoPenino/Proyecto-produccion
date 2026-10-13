@@ -1,3 +1,4 @@
+// SIN USO (13/10): ActiveRollModal dejó de usarlo el 18/02. Lo reemplaza BobinaAssignmentModal dentro de RollDetailsModal. Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
 import React, { useState, useEffect } from 'react';
 import { insumosService } from '../../services/api';
 

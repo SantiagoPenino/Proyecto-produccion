@@ -182,6 +182,7 @@ class Forma:
         self.es_fondo = False
 
 
+# SIN USO (13/10): _es_rectangulo: definida y nunca llamada. Ver docs/auditoria-limpieza-2026-10-09.md.
 def _es_rectangulo(forma):
     it = forma.items
     if len(it) == 1 and it[0][0] == "re":

@@ -1,3 +1,4 @@
+// SIN USO (13/10): nunca se requirió desde que se creó (03/02). Las etiquetas las arma services/LabelGenerationService.js. Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
 const { sql, getPool } = require('../config/db');
 
 /**

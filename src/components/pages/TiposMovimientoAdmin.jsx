@@ -1,3 +1,4 @@
+// SIN USO (13/10): nunca tuvo ruta. Es la única UI para editar TiposMovimiento. Ver docs/auditoria-limpieza-2026-10-09.md.
 import React, { useEffect, useState, useCallback } from 'react';
 import { Settings, RefreshCw, Save, CheckCircle, XCircle, Info, Trash2, Plus, X } from 'lucide-react';
 import { toast } from 'sonner';
