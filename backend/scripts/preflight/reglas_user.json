@@ -1,0 +1,55 @@
+{
+  "_comentario": "Reglas de preflight USER Centro de Impresión Digital. Extraídas de las guías Julio 2025. Medidas en cm salvo indicación.",
+
+  "global": {
+    "formatos_admitidos": [".pdf", ".jpg", ".jpeg", ".png"],
+    "pdf_max_version": 2.0,
+    "rechazar_encriptados": true,
+    "advertir_texto_vivo": true,
+    "advertir_fuentes_no_embebidas": true,
+    "advertir_transparencias": true,
+    "perfil_cmyk_recomendado": "U.S. Web Coated (SWOP) v2",
+    "perfil_rgb_recomendado": "sRGB"
+  },
+
+  "servicios": {
+    "sublimacion": {
+      "nombre": "Sublimación Textil",
+      "dpi_minimo": 150,
+      "dpi_recomendado": 300,
+      "largo_maximo_cm": 500,
+      "nota_largo": "Illustrator permite hasta 5 m. Si supera, trabajar al 50% e indicarlo en Notas del formulario.",
+      "descuento_ancho_tela_cm": 3,
+      "color_recomendado": "CMYK",
+      "contacto": "092 284 262"
+    },
+    "tela_cliente": {
+      "nombre": "Sublimación en Tela del Cliente",
+      "dpi_minimo": 150,
+      "dpi_recomendado": 300,
+      "largo_minimo_cm": 500,
+      "nota_largo_minimo": "El mínimo de compra es 5 metros con un único archivo en la misma tela.",
+      "descuento_ancho_tela_cm": 3,
+      "color_recomendado": "CMYK",
+      "contacto": "092 284 262"
+    },
+    "dtf": {
+      "nombre": "Estampado DTF Textil",
+      "dpi_minimo": 200,
+      "dpi_recomendado": 300,
+      "tamano_maximo_plana_cm": [58, 38],
+      "tamano_maximo_curva_cm": [13, 8],
+      "color_recomendado": "CMYK",
+      "contacto": "091 612 909"
+    },
+    "gran_formato": {
+      "nombre": "Gran Formato Ecosolvente y UV",
+      "dpi_minimo": 100,
+      "dpi_recomendado": 150,
+      "descuento_ancho_material_cm": 3,
+      "margen_colocacion_cm": 4,
+      "color_recomendado": "CMYK",
+      "contacto": "099 985 373"
+    }
+  }
+}

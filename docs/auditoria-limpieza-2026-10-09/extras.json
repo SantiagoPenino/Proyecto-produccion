@@ -1,0 +1,1492 @@
+{
+  "feUnreachable": [
+    {
+      "file": "src/assets/animations/Loading-CMYK.json",
+      "lastCommit": "2026-05-06",
+      "tracked": true
+    },
+    {
+      "file": "src/assets/animations/check.json",
+      "lastCommit": "2026-05-06",
+      "tracked": true
+    },
+    {
+      "file": "src/assets/animations/success.json",
+      "lastCommit": "2026-05-06",
+      "tracked": true
+    },
+    {
+      "file": "src/assets/images/asesores/43963263.webp",
+      "lastCommit": "2026-09-01",
+      "tracked": true
+    },
+    {
+      "file": "src/assets/images/asesores/47698395.webp",
+      "lastCommit": "2026-04-17",
+      "tracked": true
+    },
+    {
+      "file": "src/assets/images/asesores/50095320.webp",
+      "lastCommit": "2026-04-17",
+      "tracked": true
+    },
+    {
+      "file": "src/assets/images/asesores/53637682.webp",
+      "lastCommit": "2026-04-17",
+      "tracked": true
+    },
+    {
+      "file": "src/assets/images/asesores/54792053.webp",
+      "lastCommit": "2026-04-17",
+      "tracked": true
+    },
+    {
+      "file": "src/assets/images/asesores/65733688.webp",
+      "lastCommit": "2026-04-17",
+      "tracked": true
+    },
+    {
+      "file": "src/assets/images/logo/logo-white.svg",
+      "lastCommit": "2026-06-15",
+      "tracked": true
+    },
+    {
+      "file": "src/assets/images/logo/logo_new.svg",
+      "lastCommit": "2026-09-02",
+      "tracked": true
+    },
+    {
+      "file": "src/assets/images/logo/u-simple-black.svg",
+      "lastCommit": "2026-04-17",
+      "tracked": true
+    },
+    {
+      "file": "src/assets/images/logo/u-simple.svg",
+      "lastCommit": "2026-04-17",
+      "tracked": true
+    },
+    {
+      "file": "src/assets/images/logo/u.ico",
+      "lastCommit": "2026-04-17",
+      "tracked": true
+    },
+    {
+      "file": "src/assets/images/logo/u.png",
+      "lastCommit": "2026-04-17",
+      "tracked": true
+    },
+    {
+      "file": "src/assets/images/logo/u.svg",
+      "lastCommit": "2026-04-17",
+      "tracked": true
+    },
+    {
+      "file": "src/assets/images/marcas/cecnco.svg",
+      "lastCommit": "2026-04-17",
+      "tracked": true
+    },
+    {
+      "file": "src/assets/images/marcas/dtfuy.svg",
+      "lastCommit": "2026-04-17",
+      "tracked": true
+    },
+    {
+      "file": "src/assets/images/marcas/ecouv.svg",
+      "lastCommit": "2026-04-17",
+      "tracked": true
+    },
+    {
+      "file": "src/assets/images/marcas/emblemas.svg",
+      "lastCommit": "2026-04-17",
+      "tracked": true
+    },
+    {
+      "file": "src/assets/images/marcas/impritex.svg",
+      "lastCommit": "2026-04-17",
+      "tracked": true
+    },
+    {
+      "file": "src/assets/images/maskable_icon_x192.png",
+      "lastCommit": "2026-04-30",
+      "tracked": true
+    },
+    {
+      "file": "src/assets/images/maskable_icon_x512.png",
+      "lastCommit": "2026-04-30",
+      "tracked": true
+    },
+    {
+      "file": "src/assets/images/pasarelas/u.png",
+      "lastCommit": "2026-04-20",
+      "tracked": true
+    },
+    {
+      "file": "src/assets/images/pwa.png",
+      "lastCommit": "2026-04-17",
+      "tracked": true
+    },
+    {
+      "file": "src/assets/images/pwa.svg",
+      "lastCommit": "2026-04-17",
+      "tracked": true
+    },
+    {
+      "file": "src/assets/images/social/whatsappnegro.svg",
+      "lastCommit": "2026-04-17",
+      "tracked": true
+    },
+    {
+      "file": "src/assets/textures/README.md",
+      "lastCommit": "2026-09-07",
+      "tracked": true
+    },
+    {
+      "file": "src/catch_browser_error.cjs",
+      "lastCommit": "2026-07-01",
+      "tracked": true
+    },
+    {
+      "file": "src/client-portal/apiClient.js",
+      "lastCommit": "2026-06-23",
+      "tracked": true
+    },
+    {
+      "file": "src/client-portal/components/orders/OrderForm.jsx",
+      "lastCommit": "2026-05-06",
+      "tracked": true
+    },
+    {
+      "file": "src/client-portal/components/orders/hooks/useFileUploader.js",
+      "lastCommit": "2026-07-09",
+      "tracked": true
+    },
+    {
+      "file": "src/client-portal/components/orders/hooks/useOrderLogic.js",
+      "lastCommit": "2026-02-16",
+      "tracked": true
+    },
+    {
+      "file": "src/client-portal/components/orders/services/BordadoService.jsx",
+      "lastCommit": "2026-02-16",
+      "tracked": true
+    },
+    {
+      "file": "src/client-portal/components/orders/services/CorteService.jsx",
+      "lastCommit": "2026-02-16",
+      "tracked": true
+    },
+    {
+      "file": "src/client-portal/components/orders/services/CorteTechnicalUI.jsx",
+      "lastCommit": "2026-02-16",
+      "tracked": true
+    },
+    {
+      "file": "src/client-portal/components/orders/services/DTFService.jsx",
+      "lastCommit": "2026-02-16",
+      "tracked": true
+    },
+    {
+      "file": "src/client-portal/components/orders/services/ServiceFactory.jsx",
+      "lastCommit": "2026-02-16",
+      "tracked": true
+    },
+    {
+      "file": "src/client-portal/components/orders/services/SublimacionService.jsx",
+      "lastCommit": "2026-02-16",
+      "tracked": true
+    },
+    {
+      "file": "src/client-portal/components/orders/ui/GlassCard.jsx",
+      "lastCommit": "2026-05-06",
+      "tracked": true
+    },
+    {
+      "file": "src/client-portal/components/orders/ui/ItemRow.jsx",
+      "lastCommit": "2026-02-16",
+      "tracked": true
+    },
+    {
+      "file": "src/client-portal/fileService.js",
+      "lastCommit": "2026-06-11",
+      "tracked": true
+    },
+    {
+      "file": "src/client-portal/main.jsx",
+      "lastCommit": "2026-02-16",
+      "tracked": true
+    },
+    {
+      "file": "src/client-portal/modulos/LoginPage.jsx",
+      "lastCommit": "2026-07-31",
+      "tracked": true
+    },
+    {
+      "file": "src/client-portal/modulos/ProfileManager.jsx",
+      "lastCommit": "2026-02-16",
+      "tracked": true
+    },
+    {
+      "file": "src/client-portal/pautas/ProcessStepper.jsx",
+      "lastCommit": "2026-02-16",
+      "tracked": true
+    },
+    {
+      "file": "src/components/UnifiedProductionManager.jsx",
+      "lastCommit": "2026-04-27",
+      "tracked": true
+    },
+    {
+      "file": "src/components/baskets/BasketCard.jsx",
+      "lastCommit": "2026-01-16",
+      "tracked": true
+    },
+    {
+      "file": "src/components/baskets/FailureBasket.jsx",
+      "lastCommit": "2026-01-16",
+      "tracked": true
+    },
+    {
+      "file": "src/components/baskets/IncompleteProductionBasket.jsx",
+      "lastCommit": "2026-01-16",
+      "tracked": true
+    },
+    {
+      "file": "src/components/baskets/RepositionBasket.jsx",
+      "lastCommit": "2026-01-16",
+      "tracked": true
+    },
+    {
+      "file": "src/components/common/DynamicGrid.jsx",
+      "lastCommit": "2026-05-06",
+      "tracked": true
+    },
+    {
+      "file": "src/components/common/OrderTrackingModal.jsx",
+      "lastCommit": "2026-05-06",
+      "tracked": true
+    },
+    {
+      "file": "src/components/common/configs/areaConfigs.jsx",
+      "lastCommit": "2026-05-21",
+      "tracked": true
+    },
+    {
+      "file": "src/components/common/rendererMap.jsx",
+      "lastCommit": "2026-06-22",
+      "tracked": true
+    },
+    {
+      "file": "src/components/dashboard/ActivityFeed.jsx",
+      "lastCommit": "2026-01-16",
+      "tracked": true
+    },
+    {
+      "file": "src/components/layout/SidebarProcesses.jsx",
+      "lastCommit": "2026-05-06",
+      "tracked": true
+    },
+    {
+      "file": "src/components/layout/Sidebarborrar.jsx",
+      "lastCommit": "2026-05-06",
+      "tracked": true
+    },
+    {
+      "file": "src/components/logistics/TransportView.bak",
+      "lastCommit": "2026-04-22",
+      "tracked": true
+    },
+    {
+      "file": "src/components/modals/CreateItemModal.jsx",
+      "lastCommit": "2026-05-13",
+      "tracked": true
+    },
+    {
+      "file": "src/components/modals/DispatchHistoryModal.jsx",
+      "lastCommit": "2026-05-13",
+      "tracked": true
+    },
+    {
+      "file": "src/components/modals/FabricAssignmentModal.jsx",
+      "lastCommit": "2026-05-14",
+      "tracked": true
+    },
+    {
+      "file": "src/components/modals/ImportLogModal.jsx",
+      "lastCommit": "2026-05-14",
+      "tracked": true
+    },
+    {
+      "file": "src/components/modals/ReceiveDispatchModal.jsx",
+      "lastCommit": "2026-06-10",
+      "tracked": true
+    },
+    {
+      "file": "src/components/modals/SettingsModal.jsx",
+      "lastCommit": "2026-05-14",
+      "tracked": true
+    },
+    {
+      "file": "src/components/modals/inventory/CloseBobinaModal.jsx",
+      "lastCommit": "2026-05-12",
+      "tracked": true
+    },
+    {
+      "file": "src/components/pages/AdminDashboard.jsx",
+      "lastCommit": "2026-05-06",
+      "tracked": true
+    },
+    {
+      "file": "src/components/pages/CfePreviewModal.jsx",
+      "lastCommit": "2026-07-23",
+      "tracked": true
+    },
+    {
+      "file": "src/components/pages/Chat.jsx",
+      "lastCommit": "2026-01-16",
+      "tracked": true
+    },
+    {
+      "file": "src/components/pages/FacturarAnticipoModal.jsx",
+      "lastCommit": "2026-09-01",
+      "tracked": true
+    },
+    {
+      "file": "src/components/pages/LogisticsView.jsx",
+      "lastCommit": "2026-05-14",
+      "tracked": true
+    },
+    {
+      "file": "src/components/pages/MeasurementView.jsx",
+      "lastCommit": "2026-05-06",
+      "tracked": true
+    },
+    {
+      "file": "src/components/pages/Metricas.jsx",
+      "lastCommit": "2026-01-16",
+      "tracked": true
+    },
+    {
+      "file": "src/components/pages/Planilla.jsx",
+      "lastCommit": "2026-01-16",
+      "tracked": true
+    },
+    {
+      "file": "src/components/pages/ProductsIntegration_new.jsx",
+      "lastCommit": "2026-06-08",
+      "tracked": true
+    },
+    {
+      "file": "src/components/pages/RecursosView.jsx",
+      "lastCommit": "2026-05-06",
+      "tracked": true
+    },
+    {
+      "file": "src/components/pages/TiposMovimientoAdmin.jsx",
+      "lastCommit": "2026-05-06",
+      "tracked": true
+    },
+    {
+      "file": "src/components/pages/customer-service/EntregaPedidosView.bak",
+      "lastCommit": "2026-04-22",
+      "tracked": true
+    },
+    {
+      "file": "src/components/production/OrderCard.jsx",
+      "lastCommit": "2026-05-12",
+      "tracked": true
+    },
+    {
+      "file": "src/components/production/areas/CoordinacionArea.jsx",
+      "lastCommit": "2026-05-06",
+      "tracked": true
+    },
+    {
+      "file": "src/components/production/areas/CosturaArea.jsx",
+      "lastCommit": "2026-05-06",
+      "tracked": true
+    },
+    {
+      "file": "src/components/production/areas/DTFArea.jsx",
+      "lastCommit": "2026-01-16",
+      "tracked": true
+    },
+    {
+      "file": "src/components/production/areas/DepositoArea.jsx",
+      "lastCommit": "2026-05-06",
+      "tracked": true
+    },
+    {
+      "file": "src/components/production/areas/Despacho.jsx",
+      "lastCommit": "2026-05-06",
+      "tracked": true
+    },
+    {
+      "file": "src/components/production/areas/Directa320Area.jsx",
+      "lastCommit": "2026-05-06",
+      "tracked": true
+    },
+    {
+      "file": "src/components/production/areas/ECOUVArea.jsx",
+      "lastCommit": "2026-05-06",
+      "tracked": true
+    },
+    {
+      "file": "src/components/production/areas/EstampadoArea.jsx",
+      "lastCommit": "2026-05-06",
+      "tracked": true
+    },
+    {
+      "file": "src/components/production/areas/Infraestructura.jsx",
+      "lastCommit": "2026-05-06",
+      "tracked": true
+    },
+    {
+      "file": "src/components/production/areas/LaserArea.jsx",
+      "lastCommit": "2026-05-06",
+      "tracked": true
+    },
+    {
+      "file": "src/components/production/areas/TPUUVArea.jsx",
+      "lastCommit": "2026-05-06",
+      "tracked": true
+    },
+    {
+      "file": "src/components/production/areas/TerminacionUVArea.jsx",
+      "lastCommit": "2026-05-06",
+      "tracked": true
+    },
+    {
+      "file": "src/components/production/components/ProductionTable.backup.jsx",
+      "lastCommit": "2026-05-12",
+      "tracked": true
+    },
+    {
+      "file": "src/components/production/components/Workflow.jsx",
+      "lastCommit": "2026-05-12",
+      "tracked": true
+    },
+    {
+      "file": "src/components/production/context/ProductionContext.jsx",
+      "lastCommit": "2026-05-06",
+      "tracked": true
+    },
+    {
+      "file": "src/components/production/scheduler/BordadoScheduler.jsx",
+      "lastCommit": "2026-05-12",
+      "tracked": true
+    },
+    {
+      "file": "src/components/ui/Card.jsx",
+      "lastCommit": "2026-05-06",
+      "tracked": true
+    },
+    {
+      "file": "src/components/ui/Input.jsx",
+      "lastCommit": "2026-05-06",
+      "tracked": true
+    },
+    {
+      "file": "src/data/mockData.js",
+      "lastCommit": "2026-05-06",
+      "tracked": true
+    },
+    {
+      "file": "src/fix_empty_state.cjs",
+      "lastCommit": "2026-07-01",
+      "tracked": true
+    },
+    {
+      "file": "src/fix_empty_state_robust.cjs",
+      "lastCommit": "2026-07-01",
+      "tracked": true
+    },
+    {
+      "file": "src/patch_ui.cjs",
+      "lastCommit": "2026-07-01",
+      "tracked": true
+    },
+    {
+      "file": "src/services/modules/labelsService.js",
+      "lastCommit": "2026-01-16",
+      "tracked": true
+    }
+  ],
+  "beUnreachable": [
+    {
+      "file": "backend/__tests__/auth.test.js",
+      "lastCommit": "2026-03-23",
+      "tracked": true
+    },
+    {
+      "file": "backend/__tests__/health.test.js",
+      "lastCommit": "2026-03-23",
+      "tracked": true
+    },
+    {
+      "file": "backend/__tests__/pedidosExternos.traductor.test.js",
+      "lastCommit": "2026-09-21",
+      "tracked": true
+    },
+    {
+      "file": "backend/__tests__/push.test.js",
+      "lastCommit": "2026-03-23",
+      "tracked": true
+    },
+    {
+      "file": "backend/auditar_cliente_capa.js",
+      "lastCommit": "2026-10-08",
+      "tracked": true
+    },
+    {
+      "file": "backend/controllers/PedidosDetalladosController.js",
+      "lastCommit": "2026-03-05",
+      "tracked": true
+    },
+    {
+      "file": "backend/controllers/productionFileController_extensions.js",
+      "lastCommit": "2026-06-22",
+      "tracked": true
+    },
+    {
+      "file": "backend/controllers/utilsController.js",
+      "lastCommit": "2026-02-03",
+      "tracked": true
+    },
+    {
+      "file": "backend/jest.config.js",
+      "lastCommit": "2026-03-23",
+      "tracked": true
+    },
+    {
+      "file": "backend/oauth-credentials.json",
+      "lastCommit": null,
+      "tracked": false
+    },
+    {
+      "file": "backend/package-lock.json",
+      "lastCommit": "2026-09-23",
+      "tracked": true
+    },
+    {
+      "file": "backend/package.json",
+      "lastCommit": "2026-09-23",
+      "tracked": true
+    },
+    {
+      "file": "backend/python/dtf_blanco.py",
+      "lastCommit": "2026-09-08",
+      "tracked": true
+    },
+    {
+      "file": "backend/python/medir_trazo_texturas.py",
+      "lastCommit": "2026-09-29",
+      "tracked": true
+    },
+    {
+      "file": "backend/python/quitar_fondo.py",
+      "lastCommit": "2026-09-01",
+      "tracked": true
+    },
+    {
+      "file": "backend/python/svg_trazos.py",
+      "lastCommit": "2026-09-08",
+      "tracked": true
+    },
+    {
+      "file": "backend/python/tpu_matriz.py",
+      "lastCommit": "2026-10-09",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/AUDITORIA_COBROS_SIN_MOVIMIENTO.md",
+      "lastCommit": "2026-07-27",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/CATALOGO_BUGS_SALDO_CLIENTES.md",
+      "lastCommit": "2026-07-31",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/RESUMEN_SESION_20-07_PALMERO.md",
+      "lastCommit": "2026-07-21",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/RUNBOOK_desfasaje_cierre_ciclo.md",
+      "lastCommit": "2026-07-15",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/RUNBOOK_pendiente_produccion.md",
+      "lastCommit": "2026-07-21",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/addEsCajaAdmin.js",
+      "lastCommit": "2026-06-22",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/addNotaGestionAutorizacion.js",
+      "lastCommit": "2026-06-22",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/analizar_tizadapro.js",
+      "lastCommit": "2026-09-29",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/auditar_movimientos_nc.js",
+      "lastCommit": "2026-07-23",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/auditoria_integridad_docs.js",
+      "lastCommit": "2026-07-15",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/backfillThumbnails.js",
+      "lastCommit": "2026-09-01",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/backfill_desglose_pcd.js",
+      "lastCommit": "2026-09-23",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/backfill_ordcodigoorden_detalle.js",
+      "lastCommit": "2026-07-22",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/backfill_passwords_bcrypt.js",
+      "lastCommit": "2026-09-17",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/clientes_afectados_desfasaje.csv",
+      "lastCommit": "2026-07-07",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/color_calibrate.py",
+      "lastCommit": "2026-06-22",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/diagWmsEgresos.js",
+      "lastCommit": "2026-09-17",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/diag_bug3_lote_v2.js",
+      "lastCommit": "2026-07-21",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/diag_clientes_con_sobrante_no_expuesto.js",
+      "lastCommit": "2026-07-30",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/diag_clientes_cruce_no_descontado.js",
+      "lastCommit": "2026-07-30",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/diag_favio_fa128_5_41.js",
+      "lastCommit": "2026-07-30",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/diag_reconciliacion_lote.js",
+      "lastCommit": "2026-07-21",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/diag_recurso_nc_burguez.js",
+      "lastCommit": "2026-07-30",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/diag_saldo_vivo_lote.js",
+      "lastCommit": "2026-07-21",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/diag_venta_personalizada.js",
+      "lastCommit": "2026-09-17",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/diagnostico_cliente.js",
+      "lastCommit": "2026-07-15",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/diagnostico_coherencia_moneda_facturas.js",
+      "lastCommit": "2026-07-15",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/diagnostico_doc_crossmoneda.js",
+      "lastCommit": "2026-07-15",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/diagnostico_monedapc_resolver.js",
+      "lastCommit": "2026-07-15",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/diagnostico_ordenes_hermanas_sin_cargo.js",
+      "lastCommit": "2026-10-01",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/export_libro_cobros_contador.js",
+      "lastCommit": "2026-08-10",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/export_libro_ventas_contador.js",
+      "lastCommit": "2026-08-10",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/find_mateo.js",
+      "lastCommit": "2026-06-22",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/fix-entregas-mal-tipadas.js",
+      "lastCommit": "2026-06-24",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/fix-plan-articulos-no-cubiertos.js",
+      "lastCommit": "2026-06-24",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/fix_referencia_cobros.js",
+      "lastCommit": "2026-07-23",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/igualador_color.py",
+      "lastCommit": "2026-06-22",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/listado_clientes_a_favor_27jul.csv",
+      "lastCommit": "2026-07-30",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/listado_clientes_pendiente_billetera.csv",
+      "lastCommit": "2026-07-30",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/listado_clientes_pendiente_billetera.js",
+      "lastCommit": "2026-07-30",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/migrar-matrices-tpu.js",
+      "lastCommit": "2026-08-11",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/preflight/reglas_user.json",
+      "lastCommit": null,
+      "tracked": false
+    },
+    {
+      "file": "backend/scripts/preflight/user_preflight.py",
+      "lastCommit": "2026-07-03",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/regenerar_etiquetas_orden.js",
+      "lastCommit": "2026-09-17",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/regenerar_lineas_docs.js",
+      "lastCommit": "2026-09-17",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/registrarPagosOnlinePendientes.js",
+      "lastCommit": "2026-10-08",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/regularizar-requisitos-historicos.js",
+      "lastCommit": "2026-09-01",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/reimprimir_etiqueta.js",
+      "lastCommit": "2026-10-01",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/reparar_rebaja_plan_ordenes_sin_linea.js",
+      "lastCommit": "2026-09-29",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/resolver_clientes_por_doc.js",
+      "lastCommit": "2026-07-21",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/sql/areas_sector_stock_2026-09-29.sql",
+      "lastCommit": null,
+      "tracked": false
+    },
+    {
+      "file": "backend/scripts/sql/cierre_bultos_entregados_2026-09-25.sql",
+      "lastCommit": null,
+      "tracked": false
+    },
+    {
+      "file": "backend/scripts/sql/cierre_bultos_ordenes_canceladas_2026-09-25.sql",
+      "lastCommit": null,
+      "tracked": false
+    },
+    {
+      "file": "backend/scripts/sql/consultas_cliente.sql",
+      "lastCommit": null,
+      "tracked": false
+    },
+    {
+      "file": "backend/scripts/sql/menu_stock_gestion.sql",
+      "lastCommit": null,
+      "tracked": false
+    },
+    {
+      "file": "backend/scripts/sql/menu_stock_secciones_2026-09-28.sql",
+      "lastCommit": null,
+      "tracked": false
+    },
+    {
+      "file": "backend/scripts/sql/wms_compras_recibido_2026-09-30.sql",
+      "lastCommit": null,
+      "tracked": false
+    },
+    {
+      "file": "backend/scripts/test_auditoria_deposito_casos.js",
+      "lastCommit": "2026-09-08",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/verificar-iva.js",
+      "lastCommit": "2026-06-24",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/verificar_tipocfe_nc.js",
+      "lastCommit": "2026-07-23",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/wmsBajarSnapshot.js",
+      "lastCommit": "2026-09-01",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/wmsBultosVentaAlDeposito.js",
+      "lastCommit": "2026-09-17",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/wmsImportSnapshot.js",
+      "lastCommit": "2026-09-25",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/wmsRellenoTelas.js",
+      "lastCommit": "2026-09-23",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/wmsRepararNegativos.js",
+      "lastCommit": "2026-09-17",
+      "tracked": true
+    },
+    {
+      "file": "backend/services/RestApiService.js",
+      "lastCommit": "2026-03-16",
+      "tracked": true
+    },
+    {
+      "file": "backend/services/apiService.js",
+      "lastCommit": "2026-03-16",
+      "tracked": true
+    },
+    {
+      "file": "backend/services/erpService.js",
+      "lastCommit": "2026-03-16",
+      "tracked": true
+    },
+    {
+      "file": "backend/services/googleSheetsService.js",
+      "lastCommit": "2026-07-15",
+      "tracked": true
+    },
+    {
+      "file": "backend/services/pagoService.js",
+      "lastCommit": "2026-09-01",
+      "tracked": true
+    },
+    {
+      "file": "backend/services/tpuPlanchaService.js",
+      "lastCommit": "2026-08-14",
+      "tracked": true
+    },
+    {
+      "file": "backend/services/tpuPltService.js",
+      "lastCommit": "2026-08-14",
+      "tracked": true
+    },
+    {
+      "file": "backend/token.json",
+      "lastCommit": null,
+      "tracked": false
+    },
+    {
+      "file": "backend/utils/datosTela.js",
+      "lastCommit": "2026-09-23",
+      "tracked": true
+    },
+    {
+      "file": "backend/utils/slowQueryDetector.js",
+      "lastCommit": "2026-03-20",
+      "tracked": true
+    }
+  ],
+  "duplicateBasenames": [
+    {
+      "base": "OrderForm.jsx",
+      "files": [
+        "src/client-portal/modulos/OrderForm.jsx",
+        "src/client-portal/components/orders/OrderForm.jsx"
+      ]
+    },
+    {
+      "base": "RecursosView.jsx",
+      "files": [
+        "src/client-portal/modulos/RecursosView.jsx",
+        "src/components/pages/RecursosView.jsx"
+      ]
+    },
+    {
+      "base": "LoginPage.jsx",
+      "files": [
+        "src/components/pages/LoginPage.jsx",
+        "src/client-portal/modulos/LoginPage.jsx"
+      ]
+    },
+    {
+      "base": "fileService.js",
+      "files": [
+        "src/client-portal/api/fileService.js",
+        "src/client-portal/fileService.js"
+      ]
+    },
+    {
+      "base": "CorteTechnicalUI.jsx",
+      "files": [
+        "src/client-portal/modulos/order-form/components/CorteTechnicalUI.jsx",
+        "src/client-portal/components/orders/services/CorteTechnicalUI.jsx"
+      ]
+    },
+    {
+      "base": "OrderCard.jsx",
+      "files": [
+        "src/components/production/components/OrderCard.jsx",
+        "src/components/production/OrderCard.jsx"
+      ]
+    },
+    {
+      "base": "AuthContext.jsx",
+      "files": [
+        "src/context/AuthContext.jsx",
+        "src/client-portal/auth/AuthContext.jsx"
+      ]
+    },
+    {
+      "base": "apiClient.js",
+      "files": [
+        "src/client-portal/api/apiClient.js",
+        "src/client-portal/apiClient.js",
+        "src/services/apiClient.js"
+      ]
+    },
+    {
+      "base": "Dashboard.jsx",
+      "files": [
+        "src/client-portal/modulos/Dashboard.jsx",
+        "src/components/pages/Dashboard.jsx"
+      ]
+    },
+    {
+      "base": "ConfirmationModal.jsx",
+      "files": [
+        "src/client-portal/pautas/ConfirmationModal.jsx",
+        "src/components/modals/ConfirmationModal.jsx"
+      ]
+    },
+    {
+      "base": "solicitudesVendedorService.js",
+      "files": [
+        "src/services/modules/solicitudesVendedorService.js",
+        "backend/services/solicitudesVendedorService.js"
+      ]
+    },
+    {
+      "base": "documentoUY.js",
+      "files": [
+        "src/utils/documentoUY.js",
+        "backend/utils/documentoUY.js"
+      ]
+    },
+    {
+      "base": "main.jsx",
+      "files": [
+        "src/main.jsx",
+        "src/client-portal/main.jsx"
+      ]
+    },
+    {
+      "base": "Toast.jsx",
+      "files": [
+        "src/client-portal/pautas/Toast.jsx",
+        "src/components/ui/Toast.jsx"
+      ]
+    },
+    {
+      "base": "descripcionLineaFactura.js",
+      "files": [
+        "src/utils/descripcionLineaFactura.js",
+        "backend/utils/descripcionLineaFactura.js"
+      ]
+    },
+    {
+      "base": "totemAuth.js",
+      "files": [
+        "src/client-portal/modulos/totem/totemAuth.js",
+        "backend/middleware/totemAuth.js"
+      ]
+    },
+    {
+      "base": "GlassCard.jsx",
+      "files": [
+        "src/client-portal/pautas/GlassCard.jsx",
+        "src/client-portal/components/orders/ui/GlassCard.jsx"
+      ]
+    },
+    {
+      "base": "notificacionesService.js",
+      "files": [
+        "src/services/modules/notificacionesService.js",
+        "backend/services/notificacionesService.js"
+      ]
+    },
+    {
+      "base": "solicitudesInsumoService.js",
+      "files": [
+        "src/services/modules/solicitudesInsumoService.js",
+        "backend/services/solicitudesInsumoService.js"
+      ]
+    }
+  ],
+  "publicUnreferenced": [
+    "public/assets/images/marcas/cecnco.svg",
+    "public/assets/images/marcas/dtfuy.svg",
+    "public/assets/images/marcas/ecouv.svg",
+    "public/assets/images/marcas/emblemas.svg",
+    "public/assets/images/marcas/impritex.svg"
+  ],
+  "backendScripts": [
+    {
+      "file": "backend/scripts/AUDITORIA_COBROS_SIN_MOVIMIENTO.md",
+      "lastCommit": "2026-07-27",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/CATALOGO_BUGS_SALDO_CLIENTES.md",
+      "lastCommit": "2026-07-31",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/RESUMEN_SESION_20-07_PALMERO.md",
+      "lastCommit": "2026-07-21",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/RUNBOOK_desfasaje_cierre_ciclo.md",
+      "lastCommit": "2026-07-15",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/RUNBOOK_pendiente_produccion.md",
+      "lastCommit": "2026-07-21",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/__pycache__/color_calibrate.cpython-314.pyc",
+      "lastCommit": "2026-06-22",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/addEsCajaAdmin.js",
+      "lastCommit": "2026-06-22",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/addNotaGestionAutorizacion.js",
+      "lastCommit": "2026-06-22",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/analizar_tizadapro.js",
+      "lastCommit": "2026-09-29",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/auditar_movimientos_nc.js",
+      "lastCommit": "2026-07-23",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/auditoria_integridad_docs.js",
+      "lastCommit": "2026-07-15",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/backfillThumbnails.js",
+      "lastCommit": "2026-09-01",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/backfill_desglose_pcd.js",
+      "lastCommit": "2026-09-23",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/backfill_ordcodigoorden_detalle.js",
+      "lastCommit": "2026-07-22",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/backfill_passwords_bcrypt.js",
+      "lastCommit": "2026-09-17",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/clientes_afectados_desfasaje.csv",
+      "lastCommit": "2026-07-07",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/color_calibrate.py",
+      "lastCommit": "2026-06-22",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/diagWmsEgresos.js",
+      "lastCommit": "2026-09-17",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/diag_bug3_lote_v2.js",
+      "lastCommit": "2026-07-21",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/diag_clientes_con_sobrante_no_expuesto.js",
+      "lastCommit": "2026-07-30",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/diag_clientes_cruce_no_descontado.js",
+      "lastCommit": "2026-07-30",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/diag_favio_fa128_5_41.js",
+      "lastCommit": "2026-07-30",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/diag_reconciliacion_lote.js",
+      "lastCommit": "2026-07-21",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/diag_recurso_nc_burguez.js",
+      "lastCommit": "2026-07-30",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/diag_saldo_vivo_lote.js",
+      "lastCommit": "2026-07-21",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/diag_venta_personalizada.js",
+      "lastCommit": "2026-09-17",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/diagnostico_cliente.js",
+      "lastCommit": "2026-07-15",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/diagnostico_coherencia_moneda_facturas.js",
+      "lastCommit": "2026-07-15",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/diagnostico_doc_crossmoneda.js",
+      "lastCommit": "2026-07-15",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/diagnostico_monedapc_resolver.js",
+      "lastCommit": "2026-07-15",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/diagnostico_ordenes_hermanas_sin_cargo.js",
+      "lastCommit": "2026-10-01",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/export_libro_cobros_contador.js",
+      "lastCommit": "2026-08-10",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/export_libro_ventas_contador.js",
+      "lastCommit": "2026-08-10",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/find_mateo.js",
+      "lastCommit": "2026-06-22",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/fix-entregas-mal-tipadas.js",
+      "lastCommit": "2026-06-24",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/fix-plan-articulos-no-cubiertos.js",
+      "lastCommit": "2026-06-24",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/fix_referencia_cobros.js",
+      "lastCommit": "2026-07-23",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/igualador_color.py",
+      "lastCommit": "2026-06-22",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/listado_clientes_a_favor_27jul.csv",
+      "lastCommit": "2026-07-30",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/listado_clientes_pendiente_billetera.csv",
+      "lastCommit": "2026-07-30",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/listado_clientes_pendiente_billetera.js",
+      "lastCommit": "2026-07-30",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/migrar-matrices-tpu.js",
+      "lastCommit": "2026-08-11",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/preflight/__pycache__/user_preflight.cpython-314.pyc",
+      "lastCommit": "2026-07-03",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/preflight/user_preflight.py",
+      "lastCommit": "2026-07-03",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/regenerar_etiquetas_orden.js",
+      "lastCommit": "2026-09-17",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/regenerar_lineas_docs.js",
+      "lastCommit": "2026-09-17",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/registrarPagosOnlinePendientes.js",
+      "lastCommit": "2026-10-08",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/regularizar-requisitos-historicos.js",
+      "lastCommit": "2026-09-01",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/reimprimir_etiqueta.js",
+      "lastCommit": "2026-10-01",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/reparar_rebaja_plan_ordenes_sin_linea.js",
+      "lastCommit": "2026-09-29",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/resolver_clientes_por_doc.js",
+      "lastCommit": "2026-07-21",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/test_auditoria_deposito_casos.js",
+      "lastCommit": "2026-09-08",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/verificar-iva.js",
+      "lastCommit": "2026-06-24",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/verificar_tipocfe_nc.js",
+      "lastCommit": "2026-07-23",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/wmsBajarSnapshot.js",
+      "lastCommit": "2026-09-01",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/wmsBultosVentaAlDeposito.js",
+      "lastCommit": "2026-09-17",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/wmsImportSnapshot.js",
+      "lastCommit": "2026-09-25",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/wmsRellenoTelas.js",
+      "lastCommit": "2026-09-23",
+      "tracked": true
+    },
+    {
+      "file": "backend/scripts/wmsRepararNegativos.js",
+      "lastCommit": "2026-09-17",
+      "tracked": true
+    }
+  ],
+  "trackedIgnored": [
+    "ANALISIS_APPSCRIPT_BORDADO.md",
+    "CHANGELOG.md",
+    "backend/scripts/AUDITORIA_COBROS_SIN_MOVIMIENTO.md",
+    "backend/scripts/CATALOGO_BUGS_SALDO_CLIENTES.md",
+    "backend/scripts/RESUMEN_SESION_20-07_PALMERO.md",
+    "backend/scripts/RUNBOOK_desfasaje_cierre_ciclo.md",
+    "backend/scripts/RUNBOOK_pendiente_produccion.md",
+    "docs/API_Telas_Activas.md",
+    "docs/DISENO_separar_impresion_terminaciones_ecouv.md",
+    "docs/PLAN_rename_pedido_caja.md",
+    "docs/PRECIOS SEMANALES (1).docx",
+    "docs/capacidad-planta-plan.md",
+    "docs/disenadores-portal-plan.md",
+    "docs/dtf-tinta-blanca-propuesta.md",
+    "docs/ecommerce-portal-plan.md",
+    "docs/falla-por-copias-propuesta.md",
+    "docs/fix-socket-lentitud.md",
+    "docs/impresion-parcial-plan.md",
+    "docs/poslink-integracion-plan.md",
+    "docs/tpu-boceto-aprobacion-plan.md",
+    "docs/tpu-cliente-sube-vectorizado-plan.md",
+    "docs/tpu-migracion-matrices-sheets.md",
+    "docs/tpu-reuso-matriz-fixes.md",
+    "docs/tpu-texturas-3d-plan.md",
+    "public/assets/textures/README.md",
+    "scripts/DEPLOY_BILLETERA_PREPAGO.md",
+    "scripts/GUIA_PRUEBAS_BILLETERA.md",
+    "specs/00-glosario.md",
+    "specs/01-vision-general.md",
+    "specs/02-pedidos-e-ingreso.md",
+    "specs/03-produccion.md",
+    "specs/04-logistica-y-entrega.md",
+    "specs/05-caja-y-cobranza.md",
+    "specs/06-facturacion-y-contabilidad.md",
+    "specs/07-recursos-del-cliente.md",
+    "specs/08-stock-articulos-tienda.md",
+    "specs/09-precios.md",
+    "specs/10-portal-usuarios-notificaciones.md",
+    "specs/11-modelo-de-datos-conceptual.md",
+    "specs/12-seguridad.md",
+    "specs/13-trazabilidad-auditoria.md",
+    "specs/14-maquina-de-estados-procesos.md",
+    "specs/15-errores-y-mensajes.md",
+    "specs/16-arquitectura-y-modularidad.md",
+    "specs/17-frontend-y-experiencia.md",
+    "specs/18-documentos-impresos-y-reporteria.md",
+    "specs/19-gestion-de-archivos.md",
+    "specs/20-procesamiento-de-imagenes.md",
+    "specs/21-administracion-y-mantenimiento.md",
+    "specs/22-integraciones-externas.md",
+    "specs/23-requisitos-no-funcionales.md",
+    "specs/24-estrategia-de-pruebas.md",
+    "specs/25-cumplimiento-legal-y-datos.md",
+    "specs/26-crm-comercial.md",
+    "specs/27-soporte-mesa-de-ayuda.md",
+    "specs/28-tesoreria.md",
+    "specs/29-compras-y-gastos.md",
+    "specs/30-contenido-portal-cms.md",
+    "specs/31-migracion-de-datos.md",
+    "specs/32-plan-de-construccion.md",
+    "specs/33-presupuestos-cotizaciones.md",
+    "specs/34-mantenimiento-de-maquinas.md",
+    "specs/35-estados-contables.md",
+    "specs/36-rrhh-ligero.md",
+    "specs/37-activos-fijos.md",
+    "specs/38-presupuesto-de-gastos.md",
+    "specs/README.md",
+    "src/assets/animations/Loading-CMYK.json",
+    "src/assets/animations/Loading.json",
+    "src/assets/animations/check.json",
+    "src/assets/animations/confetti.json",
+    "src/assets/animations/success.json",
+    "src/assets/textures/README.md",
+    "start-ngrok.bat"
+  ]
+}

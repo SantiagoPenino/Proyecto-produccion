@@ -1,0 +1,921 @@
+# Áreas
+
+## Backend · Logística, depósito, WMS, stock, tela de cliente, recepción, auditoría de depósito (archivos revisados: 43)
+NOTAS: QUÉ QUEDA VIVO DE CADA WMS. (1) WMS 'propio/interno': backend/controllers/wmsInternoController.js (68 handlers, /api/wms-interno, wmsInternoRoutes.js 9-86) + backend/services/wmsInternoService.js (16 funciones, único escritor de Wms_Etiquetas/Wms_Movimientos según su cabecera) + egresarVentaCompat como destino de wmsStockService cuando WMS_INTERNO=true; UI src/components/pages/StockGestionPage.jsx (alcanzable; ~90 llamadas a /wms-interno). También lo usan configuradorController, productsIntegrationController, stInsumosController, tiendaController (grafo inDegree 8). Está completo y vivo. (2) WMS 'externo' (Johnson, proxy 3.85.26.173:5005/sql, docs/wms-johnson-schema.md): solo quedan las ramas condicionadas por WMS_INTERNO !== 'true' en wmsController.leerCatalogoWmsExterno (9-34) y getCatalog (171-199), wmsStockService.descontarStockWmsExterno (30-124), más configuradorController/tiendaController/productsIntegrationController (no leídos, solo grep), y los scripts wmsBajarSnapshot/wmsImportSnapshot/wmsRepararNegativos/diagWmsEgresos. Con el flag prendido es código muerto; el flag en prod lo da por prendido CHANGELOG.md:907 (30/09) pero en mi .env local está en false (backend/.env:108) — no puedo verificar prod. (3) Lo que se llama 'WMS' pero NO es ninguno de los dos: wmsController.js (/api/wms: catalog/sync/order/exchange-rate/remito-print) y logisticaWmsController.js (/api/wms-logistica: pedidos VEN de PedidosCobranza, preparación, ingreso a depósito, cobro tienda). Es el módu
+
+### Refactor (16)
+- [alta/L] `backend/controllers/logisticsController.js` (4540 líneas): Un solo archivo con al menos 9 responsabilidades distintas. Mapa por bloques (leído completo): 19-150 helpers de prendas/depósito/contabilidad (esHermanaDePrendaPersonalizada, resolverOrdenParaDeposito, resolverCliPK, estadoAsientoOrden); 158-203 candados pedido completo + libro; 216-345 armarLineas
+  - propuesta: Partir en: (1) services/remitosService.js con createRemito/armarLineasRemito/gates (673-1062, 158-345); (2) services/recepcionRemitoService.js con receiveDispatch partido (ver ítem aparte); (3) services/depositoContableService.js con el bloque contable 2069-2720 + helpers 19-150; (4) controllers/req
+  - ev: Read completo en 7 tramos; grep de `^exports\.` da 46 exports, 4 de ellos repetidos (getOrderRequirements 3533/3864, toggleRequirement 3608/3941, getLostItems 3798/4163, recoverItem 3808/4176). wc -l 
+- [alta/L] `backend/controllers/logisticsController.js` (1411 líneas): receiveDispatch (1352-2763) es UNA función de 1411 líneas con 7 niveles de anidación. Dentro del loop por item (1437-1943) mezcla: datos del bulto (1452-1500), devolución de tela cliente (1506-1528), check-in TERMINAC (1538-1566), auto-cumplimiento de requisitos con MERGE de 50 líneas (1571-1706), a
+  - propuesta: Extraer por hook: procesarItemRecibido(tx, item, ctx) con sub-funciones puras (resolverBultoInfo, hookDevolucionTela, hookTerminac, cumplirRequisitosPorLlegada, hookAccesoriosPro, hookPrendaCliente, sincronizarBobina); gateEsperarBultosPorPedido(tx, ...); contabilizarIngresoDeposito(poolLocal, orden
+  - ev: Read 1352-2763. grep -n 'INSERT INTO OrdenesDeposito' en el archivo: 2302, 2589, 2697. console.log de debug dentro del bloque: 2122, 2131, 2173, 2178, 2184, 2188, 2207, 2319, 2341, 2418, 2440, 2443, 2
+- [alta/M] `backend/controllers/logisticsController.js` (390 líneas): createRemito (673-1062) tiene 390 líneas: auto-creación de bultos, 4 candados/avisos distintos (cancelada 745-760, pedido completo 762-804, PEDIDO_PARCIAL 815-860, ORDENES_ENTREGADAS 871-888), auto-consumo de insumos (890-937), cabecera, items, líneas del libro, cambios de estado y hermanas sin bult
+  - propuesta: Mover la lógica a services/remitosService.crearRemito({areaOrigen, areaDestino, usuarioId, bultosIds, newBultos, lineasOrden, flags}, {tx, user, io}) que devuelva {dispatchCode, envioId} o lance errores con statusCode/codigo. El controller y logisticaWmsController llaman al service directo, sin fake
+  - ev: Read 673-1124. Llamadas con fakeRes en logisticaWmsController.js:253-262, 426-440, 487-501 (verificado).
+- [alta/M] `backend/controllers/logisticaWmsController.js` (1331 líneas): Controller de pedidos de venta (VEN) que además contiene toda la lógica de cobro de la tienda online: cobrarVentaTiendaPagada (567-626), cobrarHandyTiendaPorCaja con reintentos por deadlock (630-662), aplicarReservaBilleteraTienda (668-740), crearRetiroTiendaAbonado (744-801), liberarReservasTienda 
+  - propuesta: Mover 567-825 a services/tiendaCobroService.js (o a cajaService/retiroService que ya existen). Partir confirmPreparation en: descontarStockPedido, generarBultosVenta, liberarCombos, armarRemitosAutomaticos (usando remitosService). receivePreparedOrder debería usar la misma crearFilaDeposito(...) que
+  - ev: Read completo. Imports internos: require('./logisticsController') ×3 (251, 424, 485), require('./webOrdersController') 575, require('./contabilidadController') 727, require('../services/cajaService') 
+- [media/L] `backend/controllers/wmsInternoController.js` (1949 líneas): La cabecera (1-5) dice 'toda escritura de stock pasa por wmsInternoService', pero el controller tiene ~1.700 líneas de SQL propio: inventario/etiquetas 49-203, panel gerencial con 9 queries en Promise.all 209-374, historial 376-475, gasto por sectores 484-583, remitos 586-687, mi sector 689-728, sol
+  - propuesta: Partir en 4 controllers finos (stockInventarioController, stockComprasController, stockGestionController, stockPanelController) y mover el SQL a services: wmsComprasService (compras+importaciones+costos+adjuntos), wmsGestionService (maestros/límites), wmsReportesService (panel/historial/gasto). El p
+  - ev: Read completo en 3 tramos; grep de exports da 68 handlers en un archivo; wmsInternoService.js solo expone 16 funciones (736-740) y el controller llama a svc.* en 9 lugares (180, 200, 657, 669, 680, 72
+- [alta/M] `backend/controllers/inventoryController.js` (1246 líneas): Tres responsabilidades mezcladas: bobinas/insumos de producción (7-430), CRUD de Insumos + reporte de desperdicio (435-897), y tela/prendas de cliente para el portal (902-1246). Además tiene 3 exports definidos DOS veces (updateInsumo 516 y 708, getInventoryReport 562 y 754, deleteInsumo 692 y 883):
+  - propuesta: Borrar 516-706. Partir en inventarioBobinasController (7-430), insumosController (435-515 + 708-897) y telaClienteInventarioController (902-1246, o fusionar con telaClienteController que ya existe para el mismo dominio). Las dos funciones 'disponibles' (1128-1175 y 1188-1246) comparten el bloque de 
+  - ev: Read completo; diff visual 516-560 vs 708-752, 562-690 vs 754-881, 692-706 vs 883-897: idénticos. inventoryRoutes.js referencia los nombres (7, 22, 23), que resuelven a la segunda definición.
+- [media/S] `backend/controllers/auditDepositoController.js` (458 líneas): checkAudit (21-184) e initAudit (277-377) repiten inline la misma clasificación de ~70 líneas (query a OrdenesDeposito con SQL_COLS_PAGO_DOC, dbMap/rowsPorCodigo, loop ok/falta/sobra/olvidadas/entregadasSinPago, loop de desconocidos). El comentario 284 lo admite ('Reutilizamos la lógica de checkAudi
+  - propuesta: Mover la clasificación sin sesión a auditDepositoSql.js (clasificarSinSesion(rows, scannedCodes, maxDias)) y que checkAudit/initAudit la llamen. Sacar los 5 `const { getPool } = require('../config/db')` repetidos dentro de handlers (216, 381, 394, 421, 443) — ya está importado en la línea 1.
+  - ev: Read completo; la forma del `item` (120-134 y 329-337) también se repite en auditoriaDepositoService.itemSnap (490-501) y auditoriaDepositoReportesService.itemsEnVivo (53-63).
+- [media/S] `backend/controllers/libroEntregasController.js` (123 líneas): getEnvioInfo (49-123) tiene 75 líneas de reglas de negocio (madre vs complemento, 'aprobar por tandas', cantidad sugerida, puedeCompletar) en el controller, y repite la regla de sigueEnProduccionPorTandas que vive en logisticsController.js:216-225 (misma condición CantidadAprobadaBultos < magnitud e
+  - propuesta: Mover a libroEntregasService.getEnvioInfoOrdenes(ids, areaOrigen, areaDestino) y exponer una sola sigueEnProduccionPorTandas(conn, madre, madreId, areasUnidades) que usen el service y createRemito.
+  - ev: Read libroEntregasController.js 49-123 y logisticsController.js 216-225; libroEntregasController.js:81 y logisticsController.js:221 hacen el mismo require interno.
+- [media/M] `backend/controllers/receptionController.js` (694 líneas): createReception (12-334) son 320 líneas que insertan Recepciones + Logistica_Bultos + InventarioBobinas + MovimientosInsumos + InventarioPrendasCliente + vinculación a órdenes + PDF + vínculo a solicitud de insumo. generarComprobanteRecepcion (592-675) es renderizado de PDF con pdf-lib dentro del co
+  - propuesta: Mover generarComprobanteRecepcion a services/pdfService.js (ya existe y se importa en la línea 4). Partir createReception en recepcionService.crearRecepcion(tx, datos) con pasos: cabecera, bultos, bobinas (altaBobinaTelaCliente), prendas, vincularOrdenes.
+  - ev: Read completo. Línea 3 importa pdf-lib directo y la 4 pdfService; el PDF se genera en 592-675 y se guarda en disco 664-674.
+- [media/M] `backend/controllers/wmsController.js` (618 líneas): printPedidoRemito (382-532) tiene 95 líneas de HTML+CSS inline (430-525) dentro del controller. getCatalog (139-244) y syncCatalog (36-137) bifurcan por process.env.WMS_INTERNO entre el WMS externo (fetch al proxy 3.85.26.173:5005) y las tablas Wms_*: la rama externa queda muerta cuando el flag está
+  - propuesta: Sacar la plantilla HTML a services/templates/remitoPedidoWms.js (o reusar el generador de etiquetas). Extraer crearOrdenAnclaVenta(tx, {codigo, cliente, items, proximoServicio, estadoDependencia}) a un service y usarla en los 3 lugares. Cuando se confirme el cutover en prod, borrar leerCatalogoWmsEx
+  - ev: Read completo. grep WMS_INTERNO en backend: wmsController.js:40 y 165, wmsStockService.js:25, configuradorController.js:54, tiendaController.js:99, productsIntegrationController.js:13.
+- [media/M] `backend/controllers/solicitudesInsumoController.js` (346 líneas): crearVenInterna (233-283) crea PedidosCobranza + PedidosCobranzaDetalle + orden ancla PRO dentro del controller — es la tercera copia del 'molde de venta' (el comentario 228 lo dice: 'mismo molde que crearVentaTienda'). decidir (133-225) es un switch de 90 líneas con 5 decisiones de negocio y una re
+  - propuesta: Mover crearVenInterna y las 5 ramas de decidir a solicitudesInsumoService (que hoy solo tiene 133 líneas de búsqueda de stock). El controller queda con validación + respuesta.
+  - ev: Read completo; requires internos en 60, 112, 205, 210.
+- [baja/M] `backend/services/auditoriaDepositoService.js` (1172 líneas): cerrarAuditoria (577-835) son 260 líneas en una sola transacción que hacen 5 cosas: lectura snapshot+escaneos, detección de 6 tipos de hallazgo (611-695), fusión contra el registro (697-767), auto-cierre (769-803) y cierre de sesión (805-830). accionCaso (1035-1151) es un switch de 11 casos con SQL 
+  - propuesta: Partir cerrarAuditoria en detectarHallazgos(snap, esc, cfg) (pura, testeable), fusionarHallazgos(tran, hallazgos, vivos), autoCerrar(tran, ...), cerrarSesion(tran, ...). Para accionCaso, una tabla ACCIONES[acc].aplicar(c, ctx) → {set, estadoNuevo, texto} en vez del switch.
+  - ev: Read completo. Es el módulo mejor estructurado del área (service con invariantes documentados 11-17 y tests en scripts/test_auditoria_deposito_casos.js), por eso baja prioridad.
+- [media/S] `backend/services/wmsInternoService.js` (740 líneas): El loop FIFO con UPDLOCK se repite en egresarVenta (52-87) y crearRemito (409-432); el bloque 'DECLARE @Id = MAX(EtiId)+1; INSERT Wms_Etiquetas; INSERT Wms_Movimientos' se repite 4 veces (131-136, 486-491, 549-554, 648-653). Las cantidades se interpolan en el SQL con `.replace(/@ToMa/g, toma.toFixed
+  - propuesta: Extraer consumirFifo(tran, {varId, depId, cantidad, tipo, refTipo, refId, idemKey, usuarioId}) y crearEtiqueta(tran, {...}) y usarlas en los 6 lugares; pasar `toma`/`sale` como sql.Decimal input.
+  - ev: Read completo.
+- [baja/S] `backend/controllers/stockArtController.js` (791 líneas): No es stock de depósito: administra StockArt/articulos/Terminaciones/ProductosTerminados/PreciosBase (catálogo ERP y configurador). Está en el área 'stock' por el nombre de la tabla. Expone upsertPrecioBase (216-242, 791) que usa configuradorController. 20 handlers de ABM con SQL inline, pero limpio
+  - propuesta: Renombrar a catalogoArticulosController.js y mover upsertPrecioBase a services/preciosBaseService.js (lo comparten configurador y terminaciones). Sin partirlo: es cohesivo.
+  - ev: Read completo; grafo: importado por routes/stockArtRoutes.js y controllers/configuradorController.js. Tablas tocadas: StockArt, articulos, Terminaciones, MaterialTerminaciones, PreciosBase, ProductosT
+- [baja/S] `backend/controllers/telaClienteController.js` (495 líneas): getSaldo (14-101) y getEstadoCuenta (108-193) repiten el parseo de 'TELA: xxx' desde Recepciones.Detalle y el join por `LEFT(ib.Referencia, LEN-2)`; el mismo parseo está en inventoryController 63-75 y 1066-1074. Son 4 copias de 'cómo saber qué tela es una bobina'.
+  - propuesta: Una vista SQL o una función SQL_DESCRIPCION_TELA(alias) en un helper compartido (como hace auditDepositoSql.js con SQL_JOIN_PAGO_DOC), y que los 4 lugares la usen.
+  - ev: Read telaClienteController.js 28-38, 83-92 e inventoryController.js 63-75, 1066-1074.
+- [media/S] `backend/controllers/auditDepositoAccionesService.js` (258 líneas): ejecutarAccionOrdenes (22-227) arma `sqlCodes` escapando comillas a mano (34) y lo interpola en 14 queries; además interpola `${usuarioId}` directo en 4 INSERT (45, 80, 118, 133). avisarNuevamente (233-256) en el mismo archivo ya hace el IN parametrizado (239) — el archivo tiene los dos estilos.
+  - propuesta: Reusar el bindCodes de avisarNuevamente para ejecutarAccionOrdenes y pasar usuarioId como input. Mover a un módulo compartido depositoCodigosSql.
+  - ev: Read completo; grep -c 'IN (\${' = 14 en el archivo.
+
+### Duplicación (16)
+- `backend/controllers/logisticsController.js`, `backend/controllers/logisticaWmsController.js`, `backend/services/telaClienteDevolucionFisicaService.js`, `backend/services/erpSyncService.js`, `backend/controllers/ordenesController.js`: INSERT INTO OrdenesDeposito (OrdCodigoOrden, OrdCantidad, CliIdCliente, OrdNombreTrabajo, MOrIdModoOrden, ProIdProducto, MonIdMoneda, OrdCostoFinal, OrdFechaIngresoOrden, OrdUsuarioAlta, OrdEstadoActual, ...) + INSERT HistoricoEstadosOrdenes: 7 copias con pequ
+  - propuesta: services/ordenesDepositoService.crearFilaDeposito(exec, {codigo, cantidad, cliId, trabajo, prodId, monId, costo, usuarioId, lugarRetiro, estado=1, extras}) que inserte fila + histórico y devuelva OrdIdOrden.
+  - ev: grep -rn 'INSERT INTO OrdenesDeposito' backend: logisticsController.js:2302, 2589, 2697; logisticaWmsController.js:907; telaClienteDevolucionFisicaService.js:552; erpSyncService.js:969; ordenesControl
+- `backend/controllers/logisticaWmsController.js`, `backend/controllers/wmsController.js`: SELECT de pedidos VEN con 5 JOINs (PedidosCobranza + Clientes + PedidosCobranzaDetalle + Articulos + Articulos_WMS_Variantes + Articulos_UbicacionLocal) y el agrupado `ordersMap` por PedidoID con `fullName`: logisticaWmsController getPendingOrders 156-200, get
+  - propuesta: pedidosVentaService.listarPedidos({estados, search, top}) con el SELECT y el mapper una sola vez; los 3 handlers pasan solo el filtro de EstadoCobro.
+  - ev: Read logisticaWmsController.js 156-200, 996-1020, 1082-1116 y wmsController.js 388-407 (comparación visual: mismas columnas y mismos alias).
+- `backend/controllers/logisticaWmsController.js`: Shim `fakeRes = { json: d => ..., status: c => ({ json: ... }) }` + `logisticsController.createRemitoFromOrders({ body, user, app }, fakeRes)` copiado 3 veces: 253-262 (enviarVenReposicionAlArea), 426-440 (combo), 487-501 (accesorio).
+  - propuesta: Desaparece al extraer remitosService.crearRemitoDesdeOrdenes(...) (ver refactor); mientras tanto, una sola función crearRemitoInterno(req, body) en el mismo archivo.
+  - ev: Read logisticaWmsController.js 251-265, 424-448, 485-506.
+- `backend/controllers/wmsController.js`, `backend/services/wmsStockService.js`, `backend/controllers/configuradorController.js`, `backend/controllers/tiendaController.js`, `backend/controllers/productsIntegrationController.js`, `backend/scripts/diagWmsEgresos.js`, `backend/scripts/wmsBajarSnapshot.js`, `backend/scripts/wmsImportSnapshot.js`, `backend/scripts/wmsRepararNegativos.js`: Cliente del proxy SQL del WMS externo: `fetch(`${process.env.WMS_SQL_URL || 'http://3.85.26.173:5005'}/sql`, {method:'POST', body: JSON.stringify({query:'USE Ventas_Dev; ...'})})` y el chequeo de `.success/.data`. La URL literal con IP aparece como default en 
+  - propuesta: Un solo services/wmsExternoClient.js con sqlFetch(query) y una constante/funcion wmsInternoActivo(); si el cutover en prod está confirmado, directamente ARCHIVAR el cliente externo (ver basura).
+  - ev: grep -rn 'WMS_INTERNO|WMS_SQL_URL|3.85.26.173' backend (sin node_modules): 29 líneas en 10 archivos (listado en el output). Leídos: wmsController.js 9-34 y 167-199, wmsStockService.js 30-47.
+- `backend/controllers/logisticaWmsController.js`, `backend/controllers/tiendaController.js`: DDL 'auto-heal' sobre PedidosCobranza (ALTER TABLE ADD Origen / ModoRetiro / FechaPagoOnline / PagoOnlineRef / MetodoPagoOnline): ensureMarcaTienda (logisticaWmsController 124-141) vs ensureTiendaSchema (tiendaController 14-91). El comentario 120-122 admite qu
+  - propuesta: Una sola función en un módulo de esquema (o mejor, migración SQL versionada en docs/migrations y sacar el DDL del request path). wmsController.js:387 pasa a llamar a esa única función.
+  - ev: Read logisticaWmsController.js 124-143; grep tiendaController.js: ensureTiendaSchema 14-91 con los mismos ALTER en 75, 77, 81.
+- `backend/controllers/logisticsController.js`, `backend/controllers/logisticaWmsController.js`, `backend/services/bultosCancelacionService.js`, `backend/services/LabelGenerationService.js`, `backend/services/retiroService.js`, `backend/scripts/wmsBultosVentaAlDeposito.js`: INSERT INTO MovimientosLogistica escrito a mano aunque existe el helper registrarMovimiento (logisticsController 350-368). Copias inline: logisticsController 545, 1941, 3325, 3825, 4195, 4505; logisticaWmsController 945; bultosCancelacionService 113, 165; Labe
+  - propuesta: Mover registrarMovimiento a services/movimientosLogisticaService.js y usarlo en los 12 lugares; una sola forma de columnas.
+  - ev: grep -rn 'INSERT INTO MovimientosLogistica' backend (sin node_modules): 14 ocurrencias en 7 archivos.
+- `backend/controllers/logisticsController.js`: Exports definidos dos veces en el mismo archivo: getOrderRequirements (3533-3606 vs 3864-3939, idénticos salvo `cum.Observaciones` en 3880), toggleRequirement (3608-3670 versión con bug '@Doc no declarada' vs 3941-3999 arreglada, lo dice el comentario 3942-394
+  - propuesta: Borrar 3533-3670 y 3798-3842 (y el bloque de comentarios 3844-3860).
+  - ev: grep -n '^exports\.' muestra los 4 nombres repetidos; Read de ambas versiones de cada uno.
+- `backend/controllers/inventoryController.js`: updateInsumo (516-560 vs 708-752), getInventoryReport (562-690 vs 754-881) y deleteInsumo (692-706 vs 883-897) definidos dos veces, idénticos. La primera copia está pisada.
+  - propuesta: Borrar 516-706.
+  - ev: Read completo; comparación línea a línea.
+- `backend/controllers/logisticsController.js`: Hook 'check-in en TERMINAC' (buscar hermana XEUV Pendiente del mismo NoDocERP y pasarla a Material Recibido): inline en receiveDispatch 1543-1566 y como función hookTerminacRecuperado 3767-3796 con la misma query.
+  - propuesta: receiveDispatch llama a hookTerminacRecuperado (ya acepta transaction, bultoId, req, location).
+  - ev: Read 1543-1566 y 3767-3796.
+- `backend/controllers/logisticsController.js`, `backend/controllers/wmsController.js`, `backend/controllers/logisticaWmsController.js`, `backend/controllers/solicitudesInsumoController.js`: INSERT INTO Ordenes de la 'orden ancla' PRO (AreaID 'PRO', EstadoDependencia 'VENTA_DIRECTA', Material 'VENTA WMS', ProximoServicio, UM 'u'): wmsController.createOrder 316-342, logisticaWmsController.ensureAnclasPedido 1154-1178, solicitudesInsumoController.cr
+  - propuesta: ordenesAnclaService.crearAncla(exec, {tipo, codigo, cliente, cliId, desc, magnitud, proximoServicio, prodId, wmsVarianteId, madreId}).
+  - ev: Read de los 4 bloques.
+- `backend/controllers/inventoryController.js`, `backend/controllers/telaClienteController.js`: SQL para deducir la descripción de la tela de una bobina: `COALESCE(NULLIF(ib.DescripcionTela,''), CASE WHEN r.Detalle LIKE 'TELA:%' THEN LTRIM(SUBSTRING(r.Detalle,7,500)) ...)` con el join `r.Codigo = LEFT(ib.Referencia, LEN(ib.Referencia)-2)`: inventoryContr
+  - propuesta: Fragmento SQL compartido o columna DescripcionTela siempre poblada en el alta (receptionController 136 ya la guarda) y eliminar el fallback.
+  - ev: Read de los 4 bloques.
+- `backend/controllers/inventoryController.js`: Resolver clienteId desde req.user.codCliente (portal): 1135-1145 (getBovinasDisponibles) y 1196-1206 (getPrendasClienteDisponibles), idéntico.
+  - propuesta: helper resolverClientePortal(pool, req) → {clienteId, idClienteStr}.
+  - ev: Read 1128-1246.
+- `backend/services/libroEntregasService.js`, `backend/services/reposicionesService.js`: Constante AREAS_TRANSFER = ['DF','TPU'] definida en los dos (el comentario de reposicionesService 18-19 admite que es 'mismo valor que libroEntregasService.AREAS_TRANSFER').
+  - propuesta: reposicionesService importa la de libroEntregasService (ya la exporta en 497).
+  - ev: grep AREAS_TRANSFER: libroEntregasService.js:130, reposicionesService.js:20.
+- `backend/controllers/auditDepositoController.js`, `backend/services/auditoriaDepositoService.js`, `backend/services/auditoriaDepositoReportesService.js`: Forma del objeto `item` de la pantalla de auditoría (codigo, trabajo, cliente, clienteTelefono, clienteEmail, clienteTipo, pagoEstado, ordenRetiro, avisado, fechaAviso, estadoActualId, diasEnDeposito, maxDiasDeposito): auditDepositoController 120-134 y 329-337
+  - propuesta: itemDepositoPublico(row, cfg) en auditDepositoSql.js y usarlo en los 4.
+  - ev: Read de los 4 bloques.
+- `backend/controllers/wmsInternoController.js`: SQL de recálculo de GastosExtras/TotalCompra + prorrateo de CostoPuestoLocal: 1639-1648 (agregarCostoExtra) y 1667-1673 (borrarCostoExtra).
+  - propuesta: recalcularCostoCompra(exec, compId) en wmsInternoService.
+  - ev: Read 1626-1676.
+- `backend/controllers/logisticsController.js`, `backend/controllers/libroEntregasController.js`: Regla 'sigue en producción por tandas' (CantidadAprobadaBultos < magnitud efectiva y EstadoenArea != PRONTO, con getMagnitudEfectiva para áreas que cuentan unidades): logisticsController 216-225 y libroEntregasController 76-87.
+  - propuesta: Una función en libroEntregasService.
+  - ev: Read de ambos bloques; ambos hacen require('./embBoardController') inline (221 y 81).
+
+### Basura (17)
+- **BORRAR** `backend/controllers/logisticsController.js (3533-3670 y 3798-3842)` [versiones viejas pisadas en el mismo archivo]
+  - ev: exports.getOrderRequirements/toggleRequirement/getLostItems/recoverItem se asignan dos veces; la segunda (3864+, 4163+) pisa a la primera. 3608-3670 es además la versión con el bug '@Doc no declarada' que el comentario 3942-3947 describe como reemplazada. Son ~180 líneas que Node nunca ejecuta.
+- **BORRAR** `backend/controllers/logisticsController.js (3844-3860)` [bloque de comentarios 'pensando en voz alta' (17 líneas: 'Let's modify confirmTr]
+  - ev: Read 3844-3860: no documenta nada vigente, confirmTransport ya actualiza Estado (3336-3340).
+- **BORRAR** `backend/controllers/logisticsController.js (1925-1931, 4159, 4258)` [código comentado / comentarios de código removido ('REQUIREMENTS ENGINE (DISABLE]
+  - ev: Read de las líneas; el git log del archivo permite recuperar lo removido si hiciera falta.
+- **BORRAR** `backend/controllers/logisticsController.js (25 console.log/error)` [logs de debug con console.* en vez de logger]
+  - ev: grep -n 'console\.(log|error)': 1206, 1240, 1243 ([SEARCH REMITOS]), 2122, 2131, 2173, 2178, 2184, 2188, 2207, 2319, 2341, 2418, 2440, 2443, 2470, 2478, 2518, 2560, 2605, 2611, 2615, 2678, 2713, 2718. El archivo importa logger en la línea 3. Los del bloque contable podrían pasar a logger.debug si se
+- **BORRAR** `backend/controllers/inventoryController.js (516-706)` [versión duplicada pisada (updateInsumo, getInventoryReport, deleteInsumo)]
+  - ev: Idénticas a 708-897, que son las que quedan asignadas en exports.
+- **BORRAR** `backend/controllers/wmsInternoController.js:1731` [`logger.info();` vacío]
+  - ev: Read 1721-1734: llamada sin argumentos, no loguea nada.
+- **SIN_USO** `backend/controllers/stockController.js + backend/routes/stockRoutes.js + backend/routes/areasRoutes.js líneas 3-14` [módulo entero contra una tabla que no existe (dbo.Solicitudes)]
+  - ev: stockController.js 18/36/51/67/80 consultan dbo.Solicitudes; 4 comentarios en el repo dicen que esa tabla no existe (src/components/modals/StockRequestModal.jsx:10, src/components/layout/MainAppContent.jsx:1117, src/components/pages/StockGestionPage.jsx:668, backend/controllers/wmsInternoController.
+- **SIN_USO** `backend/controllers/wmsController.js getImages (534-544), updateLocation (546-565), getMasterVariants (578-595), updateVariantPrice (597-618) + wmsRoutes.js 11-16` [endpoints sin consumidor]
+  - ev: grep -rnE 'wms/(images|location|master)|variants/[^/]+/price' en src: solo rutas de /products-integration (PriceProfiles.jsx, ProductsIntegration.jsx), ninguna a /wms/. wmsService.js (leído completo) no los expone.
+- **SIN_USO** `backend/controllers/logisticsController.js getDashboard (3090-3249), getHistory (3251-3263), validateDispatch (1126-1140) + logisticsRoutes.js 20, 70, 71` [endpoints cuyos únicos consumidores son componentes inalcanzables]
+  - ev: logisticsService.getDashboard y validateDispatch solo se llaman desde src/components/pages/LogisticsView.jsx (grafo: UNREACHABLE); logisticsService.getHistory solo desde src/components/modals/DispatchHistoryModal.jsx (UNREACHABLE). getHistory además ordena por `FechaMovimiento` (3258) mientras los I
+- **SIN_USO** `backend/controllers/receptionController.js guardarComprobante (681-694) + receptionRoutes.js:12 + src/services/modules/receptionService.js guardarComprobante (29-32)` [endpoint y método de service sin consumidor]
+  - ev: grep -rn guardarComprobante src: única aparición es la definición en receptionService.js:29.
+- **SIN_USO** `backend/controllers/telaClienteController.js getBultos (199-240), reservarMetros (249-326), liberarReserva (333-389) + telaClienteRoutes.js 13, 16, 19` [endpoints sin consumidor]
+  - ev: grep -rnE 'tela-cliente/[^'"`]*/(reservar|liberar|bultos)|reservarMetros|liberarReserva|ctrl.getBultos' en src y backend: solo definiciones y rutas; el front solo pega a /saldo y /estado-cuenta (ClienteTelaMetros.jsx:27, TelaClienteEstadoCuenta.jsx:389-390, VendedorCliente360.jsx:469/657, receptionS
+- **SIN_USO** `backend/utils/datosTela.js` [util solo usado por un script de un paso pendiente del cutover]
+  - ev: grafo: inDegree 1, único importador backend/scripts/wmsRellenoTelas.js:20 (no alcanzable desde server.js). docs/deploy-wms-cutover.md:171-188 (paso B7) indica que ese script se corre después del import final del cutover; CHANGELOG.md:1067 dice lo mismo. Si B7 ya se corrió en prod (no lo sé), script 
+- **ARCHIVAR** `backend/scripts/wmsBajarSnapshot.js, wmsImportSnapshot.js, wmsRepararNegativos.js, wmsBultosVentaAlDeposito.js, diagWmsEgresos.js` [scripts del WMS externo (Johnson) y fixes one-off]
+  - ev: Cabeceras leídas: wmsImportSnapshot.js:9-11 'SOLO ANTES DEL CUTOVER: con WMS_INTERNO=true se niega a escribir'; wmsRepararNegativos.js repara etiquetas negativas del WMS externo; wmsBultosVentaAlDeposito.js es un fix puntual del 17/09 'para las que quedaron de antes'; diagWmsEgresos.js diagnostica e
+- **ARCHIVAR** `backend/controllers/wmsController.js leerCatalogoWmsExterno (9-34) y rama externa de getCatalog (171-199); backend/services/wmsStockService.js rama externa de descontarStockWmsExterno (30-124); docs/wms-johnson-schema.md` [código del WMS externo que queda muerto con WMS_INTERNO=true]
+  - ev: Las ramas solo corren si process.env.WMS_INTERNO !== 'true' (wmsController.js:40/165, wmsStockService.js:25). En mi .env local WMS_INTERNO=false (backend/.env:108, verificado), así que localmente SÍ corren; en prod el CHANGELOG dice prendido (inferido). Misma condición que el ítem anterior.
+- **SIN_USO** `src/services/modules/logisticsService.js addParcel (150-153) y getLabels (155-158)` [métodos del front que apuntan a rutas que no existen (/logistics/add-parcel, /lo]
+  - ev: grep -rnE 'add-parcel|/labels' backend/routes: sin resultados; grep en src de 'addParcel|getLabels' fuera del service: ninguno. Fuera del área estricta (es front) pero cuelga de /api/logistics.
+- **BORRAR** `backend/routes/wmsRoutes.js:4` [import comentado con nota de 'omit verifyToken for easier testing']
+  - ev: Read: la línea 6 importa verifyToken de verdad; la 4 es ruido.
+- **BORRAR** `backend/routes/logisticsRoutes.js:68-69 y backend/controllers/receptionController.js:52-53` [comentarios duplicados línea seguida ('// Dashboard & History' ×2, '// Determine]
+  - ev: Read de ambos archivos.
+
+### Código muerto en vivos (14)
+- `backend/controllers/inventoryController.js` (172-211): exports.registerConsumption (comentario 171: 'se llama internamente cuando MagicSort crea un rollo')
+  - ev: grep -rn registerConsumption en todo el repo (sin node_modules): única aparición es la definición. Ninguna ruta ni controller lo importa.
+- `backend/controllers/logisticsController.js` (3533-3670, 3798-3842): Primeras definiciones de getOrderRequirements, toggleRequirement, getLostItems, recoverItem (pisadas por las segundas)
+  - ev: CJS: `exports.x = ...` dos veces en el mismo módulo; logisticsRoutes.js resuelve al valor final (3864+, 4163+).
+- `backend/controllers/inventoryController.js` (516-706): Primeras definiciones de updateInsumo, getInventoryReport, deleteInsumo
+  - ev: Pisadas por 708-897; inventoryRoutes.js 7/22/23 referencia los nombres, que apuntan a la segunda copia.
+- `backend/controllers/logisticsController.js` (3090-3263, 1126-1140): Handlers getDashboard, getHistory, validateDispatch (montados en logisticsRoutes 70, 71, 20) sin consumidor alcanzable
+  - ev: Consumidores en src: LogisticsView.jsx (getDashboard 81, validateDispatch 272) y DispatchHistoryModal.jsx (getHistory 20) — ambos en frontend.unreachable del grafo (verificado con el JSON).
+- `backend/controllers/wmsController.js` (534-618): getImages, updateLocation, getMasterVariants, updateVariantPrice
+  - ev: Sin método en src/services/modules/wmsService.js y sin llamada directa (grep de las rutas en src: 0).
+- `backend/controllers/telaClienteController.js` (199-389): getBultos, reservarMetros, liberarReserva
+  - ev: grep en src y backend: solo definición y montaje en telaClienteRoutes.js 13/16/19.
+- `backend/controllers/receptionController.js` (681-694): guardarComprobante
+  - ev: receptionService.guardarComprobante nunca se llama (grep src).
+- `backend/controllers/stockController.js` (5-86): createRequest, getHistory, getAllRequests, updateRequestStatus, getUrgentCount (todo el archivo)
+  - ev: Ver basura: consumidores inalcanzables y tabla dbo.Solicitudes declarada inexistente en 4 comentarios del repo.
+- `backend/services/auditoriaDepositoService.js` (36, 1167): export ESTADOS_CERRADOS (nadie lo importa; se usa el literal ('RESUELTO','ASUMIDO') en SQL)
+  - ev: grep -rn ESTADOS_CERRADOS backend: solo definición y module.exports.
+- `backend/services/auditoriaDepositoReportesService.js` (17-20, 333): export TRAMOS
+  - ev: grep -rn TRAMOS backend: uso interno (100) y export; ningún importador.
+- `backend/services/telaClienteDevolucionFisicaService.js` (822, 835): exports ensureSchema y getUmbralMetros (uso interno únicamente)
+  - ev: grep -rn 'ensureSchema|getUmbralMetros' backend: fuera del archivo solo aparece el ensureSchema de consultasClienteService (otro módulo).
+- `backend/services/solicitudesInsumoService.js` (133): exports buscarStockTela, buscarStockPrenda, getPlazoDias (solo se usan internamente vía buscarStock/crearSolicitud)
+  - ev: grep -rn de los 3 nombres en backend: solo dentro del archivo.
+- `backend/controllers/wmsInternoController.js` (23): exports.COMPRAS_PATH
+  - ev: grep -rn COMPRAS_PATH backend: solo uso interno (27, 1891); server.js:95 recalcula la ruta por su cuenta en vez de importarla.
+- `src/components/modals/LogisticsCartModal.jsx` (21): Llama logisticsService.getCandidates(areaCode), método que NO existe en logisticsService (TypeError en runtime). Componente alcanzable desde AreaView.jsx. Fuera del área backend pero es el consumidor 
+  - ev: grep -rn getCandidates src: única aparición es la llamada; logisticsService.js leído completo, no lo define.
+
+### Mal ubicados (14)
+- `backend/controllers/logisticaWmsController.js (554-825: cobrarVentaTiendaPagada, cobrarHandyTiendaPorCaja, aplicarReservaBilleteraTienda, crearRetiroTiendaAbonado, liberarReservasTienda)` → backend/services/tiendaCobroService.js (o extender cajaService/retiroService). — Lógica de caja, billetera y retiros de la tienda online adentro del controller de pedidos WMS; requiere cajaService, contabilidadService, contabilidadController y retiroService des
+- `backend/controllers/logisticaWmsController.js (logEvento 10-26, ensureMarcaTienda 124-141)` → backend/services/pedidosVentaEventosService.js (logEvento) y módulo de esquema/migración (ensureMarcaTienda, unificado c — Son funciones de servicio consumidas por otros 3 controllers (prendasOrdersController.js:2664, tiendaController.js:719, wmsController.js:353 y 387) vía require de un controller.
+- `backend/controllers/logisticsController.js (2069-2720 contabilidad del ingreso a depósito; 19-150 helpers resolverOrdenParaDeposito/resolverCliPK/estadoAsientoOrden)` → backend/services/depositoContableService.js — Asientos contables, planes de metros, re-estampado de costo y creación de OrdenesDeposito viven dentro de un handler HTTP de logística.
+- `backend/controllers/logisticsController.js (3864-4157 requisitos de producción; 4217-4539 sync ERP de depósito)` → controllers/requisitosProduccionController.js y controllers/depositoSyncController.js (este último apoyado en erpSyncSer — Requisitos de producción (ConfigRequisitosProduccion/OrdenCumplimientoRequisitos) y sincronización ERP/React no son logística de bultos; comparten archivo por accidente histórico.
+- `backend/controllers/wmsInternoController.js (979-1413 gestión de maestros; 1416-1843 compras/importaciones; 209-583 panel/historial/gasto)` → services/wmsComprasService.js, services/wmsGestionService.js, services/wmsReportesService.js — 1.700 líneas de SQL en controller contradiciendo la cabecera del propio archivo (todo por wmsInternoService); escrituras de compras fuera del service transaccional.
+- `backend/controllers/receptionController.js generarComprobanteRecepcion (592-675)` → backend/services/pdfService.js (ya importado en la línea 4). — Render de PDF con pdf-lib y escritura a disco dentro del controller; copia el estilo de pdfService.
+- `backend/controllers/wmsController.js printPedidoRemito (430-525)` → backend/services/templates/ o junto a los otros prints de etiquetas (productionFileController ya tiene el patrón). — Plantilla HTML/CSS de 95 líneas inline en el controller.
+- `backend/controllers/solicitudesInsumoController.js crearVenInterna (233-283) y ramas de decidir (166-198)` → backend/services/solicitudesInsumoService.js — Crea PedidosCobranza/Detalle/Ordenes y decide reglas de negocio en el controller; el service homónimo (solicitudesInsumoService) tiene solo búsqueda de stock.
+- `backend/controllers/libroEntregasController.js getEnvioInfo (49-123)` → backend/services/libroEntregasService.js — 75 líneas de reglas (madre/complemento, tandas, cantidad sugerida) en el controller mientras existe libroEntregasService.
+- `backend/controllers/auditDepositoController.js (clasificación inline 76-176 y 305-356)` → backend/services/auditDepositoSql.js — Lógica de clasificación duplicada en dos handlers; ya existe auditDepositoSql.js para compartirla.
+- `backend/controllers/stockArtController.js` → Renombrar a catalogoArticulosController.js; upsertPrecioBase a services/preciosBaseService.js — Nombre y carpeta 'stock' pero administra catálogo ERP (StockArt, articulos, Terminaciones, ProductosTerminados, PreciosBase); upsertPrecioBase lo consume configuradorController.
+- `backend/utils/telaClienteDevolucion.js` → backend/services/telaClienteSaldoService.js (al lado de telaClienteDevolucionFisicaService.js, que lo nombra en su cabec — Es lógica de negocio con transacción (devolver metros al saldo de tela cliente) en utils/, y hace `require('mssql')` directo (línea 1) en vez de config/db como el resto.
+- `backend/scripts/test_auditoria_deposito_casos.js` → backend/__tests__/ (adaptado a Jest, que ya existe con 4 tests) o backend/scripts/tests/. — Es una prueba (303 líneas, 'PRUEBAS OBLIGATORIAS del motor de casos') conviviendo con scripts de migración; corre contra la base local y limpia lo que crea.
+- `backend/controllers/inventoryController.js getBovinasDisponibles/getPrendasClienteDisponibles (1128-1246)` → telaClienteController.js (mismo dominio: recursos del cliente) o un portalRecursosController. — Endpoints del portal de clientes (consumidos por src/client-portal/modulos/order-form/hooks/useOrderForm.js:620/643/664 y PrendaOrderForm.jsx:624) montados bajo /api/inventory junt
+
+### Patrones de riesgo (14)
+- SQL armado por concatenación: `IN (${ids.join(',')})`, listas con comillas escapadas a mano y cantidades interpoladas en (63) — logisticsController.js 22 (ej. 236, 750, 786 nodocList con replace de comillas, 1080 `orderIds.join` sin validar numéricos, 1135 `bultosIds.join` sin validar, 3395 idsList desde JSON.parse del body);  — La mayoría son ids numéricos filtrados con Number/isNaN, pero logisticsController 1080, 1135 y 3395 interpolan arrays que vienen del body sin filtrar. auditDepositoController (73, 221-224) y auditDepositoAccionesService.avisarNuevamente (239) ya muestran el pa
+- require('mssql') inline en vez del `sql` que ya exporta config/db (68) — logisticsController.js (65 ocurrencias, p.ej. 23, 53, 90, 2099, 2111, 2128, 2138 ... hasta 2711) a pesar de `const { getPool, sql } = require('../config/db')` en la línea 2; auditDepositoController.js — Inofensivo en runtime (mismo módulo), pero duplica estilos y complica el refactor. Un search/replace.
+- Controller que requiere a otro controller (dependencia entre handlers HTTP) (16) — logisticsController.js 221, 2873 (embBoardController), 4268 (configuracionesController); logisticaWmsController.js 251, 424, 485 (logisticsController), 575 (webOrdersController), 727 (contabilidadCont — No encontré ciclos directos entre los archivos del área (logisticsController NO requiere logisticaWmsController; embBoardController requiere libroEntregasService, no logisticsController — verificado por grep). Pero son todos require() dentro de funciones, seña
+- Invocar un handler Express como función con req/res falsos (fakeRes) y mutar req.body para 're-enrutar' (4) — logisticaWmsController.js 253-262, 426-440, 487-501 → logisticsController.createRemitoFromOrders; logisticsController.js 1107-1118 (createRemitoFromOrders reescribe req.body y llama exports.createRemi — Los errores se capturan por `remitoResult._statusCode`; un throw dentro de createRemito antes del try/catch interno dejaría colgado al caller. Desaparece con remitosService.
+- catch vacío o que solo deja un comentario (39) — 39 en el área: logisticsController.js 2203, 2873, 2878, 3024, 3392; logisticaWmsController.js 45, 68, 93, 116, 797, 1272; wmsController.js 313, 355; wmsInternoController.js 796, 1153, 1546, 1652, 1891 — 24 son guardas de `rollback()` (aceptables). Los que tragan errores de negocio: logisticaWmsController 45/68/93/116 (badges de pedidos: si falla la query se devuelve la lista sin dato, sin log), 1272 (eventos), wmsController 313/355, logisticsController 2203 (
+- DDL en el request path ('auto-heal' de esquema): ALTER TABLE / CREATE TABLE / CREATE INDEX ejecutados desde handlers o s (6) — logisticsController.js 3391 (ALTER TABLE Logistica_Bultos ADD ComprobantePath dentro de la transacción de cada confirmRemitoDelivery, error tragado); logisticaWmsController.js 124-141 (ensureMarcaTien — Patrón asumido por el proyecto ('prod no corre migraciones', wmsInternoService.js:255). Riesgo para el refactor: hay esquema que solo existe si alguien pegó al endpoint; una migración versionada (docs/migrations ya existe) sacaría esto del código.
+- Feature flag leído con process.env en cada archivo y URL del WMS externo hardcodeada como default (16) — `String(process.env.WMS_INTERNO || '').toLowerCase() === 'true'` en wmsController.js 40/165, wmsStockService.js 25, configuradorController.js 54, tiendaController.js 99, productsIntegrationController. — Estado del flag: local backend/.env:108 WMS_INTERNO=false (verificado); producción prendido según CHANGELOG.md:907 ('verificado el 30/09') — inferido del CHANGELOG, no lo pude verificar. Hasta confirmarlo, las dos ramas son 'vivas' y cualquier refactor tiene q
+- Transacciones mixtas en la misma operación: parte dentro de la transacción y parte con un pool aparte (commit parcial po (5) — logisticsController.js receiveDispatch: `transaction` para Logistica_* y Ordenes; `poolLocal` (2074) para contabilidad + OrdenesDeposito; `poolCnt` (2624) para contadores; `poolDevolucion` (1517) para — Documentado como best-effort en comentarios (1511-1513, 926), pero significa que un rollback de la recepción deja asientos/filas de depósito huérfanos. Antes de partir receiveDispatch hay que decidir si eso es intencional.
+- Rutas sin verifyToken en módulos que escriben (44) — logisticsRoutes.js: 29 rutas, solo /recover (76) con verifyToken; receptionRoutes.js: 8 rutas sin token (incluye POST /create y /guardar-comprobante); stockRoutes.js: 7 rutas sin token (POST /, PUT /: — Verificado leyendo los 11 archivos de rutas. No sé si server.js aplica un middleware global antes de montarlas (no leí server.js completo: solo grep de los app.use). Si no, createRemito/receiveDispatch/createReception aceptan usuarioId del body sin autenticar.
+- console.log/console.error en vez de logger (26) — logisticsController.js 25 (listado en basura); auditDepositoAccionesService.js 67 — logger está importado en ambos (línea 3 y 9).
+- Nombres mezclados español/inglés y nombres que no dicen lo que hacen (12) — receiveDispatch/createRemito/getAreaStock/getLostItems (logisticsController) vs recibirRemitoItem/crearRemito/getInventario (wmsInterno*) para conceptos equivalentes; `remito` = 3 entidades distintas  — Antes de mover archivos conviene fijar un glosario: remito-de-area (Logistica_Envios), remito-interno-stock (Wms_RemitosInternos), pedido-venta (VEN), solicitud-insumo-cliente (SolicitudesInsumo), pedido-insumo-sector (Wms_Solicitudes).
+- Columnas/tablas referenciadas que no existen o no coinciden entre escrituras y lecturas (3) — stockController.js (dbo.Solicitudes, 5 queries); logisticsController.js 3258 ordena MovimientosLogistica por FechaMovimiento mientras los INSERT del área usan FechaHora (362, 945, 4505); logisticsCont — No tengo acceso al esquema real: no lo sé. Los dos primeros solo afectan endpoints SIN_USO; el 1146 es un id de insumo quemado en código vivo (getAvailableResources).
+- Lógica duplicada front/back y métodos del front sin backend (5) — src/services/modules/logisticsService.js addParcel (151) y getLabels (156) apuntan a rutas inexistentes; LogisticsCartModal.jsx:21 llama logisticsService.getCandidates que no existe; stockService (src — Cualquier cambio en los códigos de error de createRemito rompe postRemitoConAviso en el front.
+- Hooks de dominio ajeno acoplados dentro del flujo de recepción (8) — receiveDispatch llama a 8 subsistemas: telaClienteDevolucionFisicaService (1516), changeOrderState (1554, 1952, 1964, 2733), reposicionesService.alRecibirEnvio (1980), bultosPedido.contarBultos (2038, — Es el punto de mayor acoplamiento del área; cualquier cambio en contabilidad, reposiciones o tela de cliente toca este archivo.
+
+## Frontend · Portal del cliente, tótem, páginas públicas y PWA (archivos revisados: 102)
+NOTAS: COBERTURA. Leídos completos los 7 archivos grandes que habían quedado parciales (OrderForm 3917, PrendaOrderForm 4305, Tpu3DViewer 2603, RecursosView 1777, PickupView 1716, FactoryView 1324, TiendaView 1255) más todo lo listado en el área (~100 archivos; el conteo 102 es aproximado, incluye public/sw.js y PedidoPrendaPage). NO leí (fuera del área o solo por grep): WmsOrderPage.jsx, VendedorCliente360.jsx, PrintStationPage.jsx, HelpDeskAdminView.jsx, OrderDetailModal.jsx, src/context/AuthContext.jsx, src/services/apiClient.js — las duplicaciones con ellos están marcadas como inferidas de los comentarios del propio código o verificadas solo por grep de nombres. De utils solo leí los que el grafo asigna al área (analytics, comprimirImagen, device, errorReporter, hardReload, pushInterno, pwa). PISTAS: (1) OrderForm vs PrendaOrderForm: fork declarado el 16-07-2026 (PrendaOrderForm 13-32); 1905/4305 líneas iguales en secuencia (44%), hooks 79%, catálogos 94%. Lo importante no es el % sino que `PedidoPrendaPage` monta `<PrendaOrderForm />` sin props y el default es 'sublimacion', así que ~500-600 líneas de ramas tpu/ecouv/directa/corte/bordado/estampado/DF del fork son inalcanzables, y el fork no recibió los fixes posteriores del original (candado doble envío, noValidate, modal de éxito, uploadErrorMsg). (2) DesignerOrderPage NO es un tercer formulario: 46 líneas que renderizan `<OrderForm serviceId=…/>` con un banner de impersonación. (3) backdrop-blur: 4 en el portal, los 4 en mod
+
+### Refactor (22)
+- [alta/L] `src/client-portal/modulos/OrderForm.jsx` (3917 líneas): Un solo componente con 8 responsabilidades: helpers de material/TPU (51-145), lógica ECOUV de terminaciones/ficha PT (214-575: fetch por material, medidaPTOk, toggles, capas del plano), TPU matriz propia + 'Mis matrices' (585-673), reglas de urgencia (674-730), validación de archivo con 280 líneas e
+  - propuesta: Extraer (1) `useEcouvTerminaciones` (214-575 + render 2912-3522 → `EcouvItemPanel`), (2) `useTpuMatriz` + `TpuModeSelector` (585-673, 2644-2850), (3) `armarPayloadPedido(state, config)` puro en `order-form/utils/payload.js` (1572-2236) para poder testearlo, (4) `validarPedido` (1277-1562), (5) `Orde
+  - ev: Leído completo en 5 tramos (1-800, 801-1600, 1601-2400, 2401-3200, 3201-3917). Rangos citados del archivo. `grafo.json` sizes: 3918 líneas, inDegree 2 (ClientPortalApp, DesignerOrderPage).
+- [alta/L] `src/client-portal/modulos/PrendaOrderForm.jsx` (4305 líneas): Fork declarado de OrderForm (comentario 13-32: 'copia FIEL al 16-07-2026') que después creció ~1400 líneas propias: búsqueda de cliente copiada de WmsOrderPage (204-263), 560 líneas de efectos encadenados que escriben en comboServicios/selectedComplementary (265-828) con 6 `eslint-disable react-hook
+  - propuesta: Decidir una de dos: (a) extraer lo compartido con OrderForm a módulos comunes (ver propuesta de OrderForm) y dejar acá solo lo de prendas; o (b) aceptar que es otro producto (form interno de vendedor) y BORRAR del fork las ~900 líneas de ramas por serviceId que nunca corren. En ambos casos mover el 
+  - ev: Leído completo en 6 tramos. `grep -n 'PrendaOrderForm\|serviceId' src/components/pages/ventas/PedidoPrendaPage.jsx` → línea 23 `<PrendaOrderForm />` sin props. difflib previo: 1905/4305 líneas iguales
+- [alta/L] `src/client-portal/modulos/Tpu3DViewer.jsx` (2603 líneas): Mezcla 4 capas en un archivo: utilidades puras de raster/máscaras/contornos (36-495: abrirPdf, rasterizar, cargarTile, distanciaInterior, componentesDe, bboxUnaCopia, simplificar…), generador del PNG de aprobación con canvas 2D (497-611), widget PadMover (613-645) y el componente React (662-2603) cu
+  - propuesta: Partir en `tpu3d/raster.js` (36-495), `tpu3d/imagenAprobacion.js` (497-611), `tpu3d/escena.js` (armado three.js como función que devuelve la API {componer, definirZonas, resaltar, capturar, dispose}) y `Tpu3DViewer.jsx` solo UI. Reemplazar 1603-1625 por `distanciaInterior(silCrop.m, W, H)`. Usar api
+  - ev: Leído completo (1-800, 801-1600, 1601-2000, 2001-2603). `grep -n distanciaInterior` → definida 113, usada 1725; el bloque 1603-1625 repite el mismo algoritmo (dos pasadas, +3/+4) sin llamarla. inDegre
+- [alta/M] `src/client-portal/modulos/PickupView.jsx` (1716 líneas): Cinco handlers de pago (handleCreatePickup 253-331, handleInitMpPayment 373-411, handleCubrirConBilletera 444-514, handlePagarConSaldo 516-586, handleInitPayment 589-638) que rearman el mismo payload de envío (~20 líneas cada uno). Modal de pasarela con 60 líneas de CSS en un `<style>` string (1280-
+  - propuesta: Un `armarPayloadRetiro()` memoizado; extraer `ModalPasarela` compartido con TiendaView y RecursosView; mover el recibo a `utils/reciboPdf.js` compartido con PaymentResult; `swalDark` helper en pautas.
+  - ev: Leído completo (1-938 y 939-1716). Rangos citados. `grep -rn 'Tarjeta crédito / débito\|Saldo, tarjeta o cuotas\|USER no almacena' src` → PickupView 1454/1477/1495 y TiendaView 887/898/906.
+- [media/M] `src/client-portal/modulos/RecursosView.jsx` (1777 líneas): Cinco secciones + dos modales en un archivo: ModalConsumoPlan (84-314), ModalConsumoTela (342-598), SeccionBeneficios (612-951), SeccionCuentasSaldo (953-1328), SeccionPlanes (1330-1466), SeccionAvisosExcedente (1474-1556), SeccionTelas (1561-1696), RecursosView (1701-1776). El modal 'Estado de cuen
+  - propuesta: Separar en `recursos/` (una sección por archivo) y extraer `ModalEstadoCuenta`, `SelectorComprobanteFiscal` y `BotonesPasarela` reusables; reemplazar window.confirm por ConfirmationModal de pautas.
+  - ev: Leído completo (1-782, 783-1282, 1283-1777). `grep -n 'window.confirm(' src/client-portal` → solo este archivo, 981 y 992.
+- [media/M] `src/client-portal/modulos/FactoryView.jsx` (1324 líneas): STATUS_CONFIG/getStatusKey heurístico por `includes()` (15-71) repetido conceptualmente en DesignerHomeView y StatusBadge; agrupación de proyectos en el cuerpo del render sin useMemo (401-497); 4 `alert()` (215, 239, 256, 305); `innerHTML` con SVG en string (854, 920, 1028); tres modales con el mism
+  - propuesta: Un `ModalMotivo` genérico (título, placeholder, maxLength, color) para los tres; portalar también el de cancelación; mover getStatusKey a `pautas/estados.js` compartido con StatusBadge/DesignerHomeView; reemplazar alert() por addToast.
+  - ev: Leído completo (1-964, 965-1324). `grep -n 'alert(' FactoryView.jsx` → 4. `grep -n innerHTML` → 854, 920, 1028.
+- [media/M] `src/client-portal/modulos/TiendaView.jsx` (1255 líneas): `FichaProducto` (920-1252, 333 líneas) es un modal completo con su propia lógica de variantes/ejes/fotos dentro del archivo de la tienda; `useSwipeDown`, `NumeroAnimado`, `PrecioFicha`, `parseVariante`, `fmt` también adentro. Tres `<style>` con keyframes en JSX (603, 1020, 1061). 6 `eslint-disable`.
+  - propuesta: Mover FichaProducto y helpers a `tienda/` (FichaProducto.jsx, useSwipeDown.js, variantes.js); keyframes a index.css; compartir `ModalPasarela` con PickupView.
+  - ev: Leído completo (1-823, 824-1255). `grep -c eslint-disable TiendaView.jsx` → 6 (el máximo del portal junto con PrendaOrderForm).
+- [media/M] `src/components/pages/LandingPage.jsx` (1181 líneas): Cinco subcomponentes en un archivo (ServiceCard, InfiniteMarquee, ProcessFlow, VideoTypewriter, StatsCounter+StatCard+useCountUp). La familia StatsCounter (341-496, ~155 líneas, con `fetch('/api/stats/public')` en 419) está muerta porque su único render está comentado (255). States `scrolled` (85, s
+  - propuesta: Partir en `landing/` (un componente por archivo); marcar SIN USO o borrar StatsCounter según decisión del dueño; borrar states/imports muertos.
+  - ev: Leído completo. Línea 255 `{/* <StatsCounter .../> */}`; `grep -n 'StatsCounter' LandingPage.jsx` → definición 341+ y solo el render comentado.
+- [media/S] `src/client-portal/layout/MainLayout.jsx` (517 líneas): Bloque comentado de 62 líneas 'Servicios Collapsible' (285-346) y otro CLUB (362-369); imports sin uso `UserPen, Menu, Truck` (lucide), `Logo` (25), `Swal` (5); `ChevronDown`, `SERVICES_LIST` (24), `getErpCode` (177-190), `visibleConfig`, `isServicesOpen`, `isMobileMenuOpen` (solo set), `navigate` (
+  - propuesta: Borrar bloques comentados y sus imports/estados huérfanos; dejar un solo dueño del contador de tickets (hook `useTicketsNoLeidos` compartido) y un solo `LogoutModal`.
+  - ev: Leído completo. unused_imports2.cjs: UserPen, Menu, Truck, Logo. `grep -n 'getErpCode\|visibleConfig\|isServicesOpen' MainLayout.jsx` → usos solo dentro de 285-346.
+- [media/M] `src/components/shared/LandingNavbar.jsx` (682 líneas): Usa `src/context/AuthContext` (app interna) aunque se renderiza dentro del portal (MainLayout 219) → dos AuthContext conviviendo leyendo las mismas claves de localStorage. Todo en estilos inline (incluye `backdropFilter: 'none'` explícito 348-349, 491). `ITEMS` de Recursos duplicado (51-56 vs 581-58
+  - propuesta: Recibir la sesión por props o por un hook neutro `useSesionActual()` que lea una sola vez; mover ITEMS a constante única; pasar estilos a Tailwind como el resto del portal.
+  - ev: Leído completo. `grep -n "context/AuthContext" LandingNavbar.jsx` → import de la app interna. `grep -n console.log` → 668.
+- [alta/M] `src/client-portal/modulos/order-form/hooks/useOrderForm.js` (962 líneas): useReducer con ~60 setters generados a mano; `useCallback` importado sin uso (2); claves duplicadas en los defaults `bocetoFile: null, bordadoBocetoFile: null` (462-465, la segunda pisa la primera); `try { await fileService.uploadStream(...) } catch (e) { throw e; }` inútil (847-877); `setItems` con
+  - propuesta: Un solo hook parametrizado por catálogo (`useOrderForm(serviceId, { catalogo: SERVICES | PRENDA_SERVICES })`) con `setField` genérico en vez de 60 setters; soportar updater functions en setItems o sacar el warn.
+  - ev: Leídos ambos hooks completos. usePrendaOrderForm.js:7 `// [PRENDAS] Fork de useOrderForm.js — copia fiel al 16-07-2026.` difflib: 857/1081 líneas iguales.
+- [media/S] `src/client-portal/constants/services.js` (338 líneas): `prendaServices.js` (340) es copia al 94% (317/339 líneas iguales). Ambos tienen bloques comentados 162-182 y 298-326, y las URLs de Drive de las planillas repetidas 6 veces por archivo (49-50, 208-209, 285-286) y otras 2 en TemplatesPage (17, 24). prendaServices mantiene la virtualVariant 'Producto
+  - propuesta: Un solo catálogo con `prendaServices = conOverrides(SERVICES, { EMB: { visible: true } })`; constantes `PLANILLAS_DRIVE` en un lugar.
+  - ev: Leídos ambos; difflib 94%. `grep -c 'drive.google' services.js prendaServices.js TemplatesPage.jsx`.
+- [media/S] `src/client-portal/modulos/order-form/components/CorteTechnicalUI.jsx` (482 líneas): Dos componentes en uno: `CorteStandalone` (29-353) y el layout viejo/compacto (376-475); la lista de bobinas (416-445) es casi verbatim de `BobinaSelector.jsx` (9-45) que existe al lado; `document.getElementById('add-tizada-file-input').click()` (299) en vez de ref.
+  - propuesta: Usar `<BobinaSelector/>` adentro; separar CorteStandalone a su archivo; input por ref.
+  - ev: Leído completo; comparación visual 416-445 vs BobinaSelector 9-45.
+- [baja/S] `src/client-portal/modulos/order-form/components/FileUploadZone.jsx` (513 líneas): `VistaBandera` con shader WebGL (32-188) vive dentro del componente genérico de upload (inDegree 7); todos los consumidores cargan el código del shader aunque solo sublimación medida-fija lo use (`modoBandera`).
+  - propuesta: Mover VistaBandera a `components/VistaBandera.jsx` y cargarla lazy solo con `modoBandera`.
+  - ev: Leído completo; OrderForm 3267 es el único que pasa `modoBandera`.
+- [media/S] `src/client-portal/modulos/totem/TotemDashboard.jsx` (720 líneas): 5 `fetch(` directos con `API_BASE` propio (TotemApp 9/23, Dashboard 10/137/163/268/325); `Toast = Swal.mixin` creado dentro del componente en cada render (80-91); keypad JSX duplicado (564-579 vs 677-692); impresión 80mm por iframe (15-71) con la misma técnica que PrintStationPage 95-120 e index.css
+  - propuesta: Cliente HTTP del tótem (`totemApi.js`) sobre fetch con el token de dispositivo; `Keypad` componente; mover `printTotemTicket` a `utils/print80mm.js` compartido; constantes de retiro al config del backend.
+  - ev: Leído completo. `grep -c 'fetch(' TotemApp.jsx TotemDashboard.jsx` → 1 + 4.
+- [media/S] `src/components/pages/PaymentResult.jsx` (645 líneas): `generateReceipt` jsPDF de 190 líneas (59-248) casi idéntico a PickupView 640-696; `InfoCard` (583-596) definido y nunca usado; `labelW` sin uso (218); imports `CreditCard, Logo` sin uso; 2 `fetch(` directos (279, 296).
+  - propuesta: `utils/reciboPdf.js` compartido; borrar InfoCard/labelW/imports; usar apiClient.
+  - ev: Leído completo; `grep -n InfoCard PaymentResult.jsx` → solo la definición.
+- [media/S] `src/components/pages/LoginPage.jsx` (615 líneas): `ResetPasswordScreen` interno (15-137) duplica `ResetPasswordPage.jsx`; `GOOGLE_CLIENT_ID` hardcodeado (11); globals `window.__gsi_initialized`/`window.__gsi_callback` (305-318); `console.log('🔍 LOGIN RESULT:', JSON.stringify(result))` (380) vuelca el resultado del login (token incluido si viene en
+  - propuesta: Sacar el console.log ya; CLIENT_ID a `VITE_GOOGLE_CLIENT_ID`; borrar ResetPasswordScreen y enrutar a ResetPasswordPage; GSI en un hook `useGoogleIdentity`.
+  - ev: Leído completo; líneas citadas.
+- [media/S] `src/components/pages/RegisterPage.jsx` (565 líneas): HTML de SweetAlert construido a mano con estilos inline en strings (183-259 y 354-463, ~190 líneas de DOM dentro del componente); 3 fetch directos (35, 54, 150); `ChevronDown` sin uso.
+  - propuesta: Reemplazar los Swal gigantes por un modal React de pautas; apiClient.
+  - ev: Leído completo.
+- [media/S] `src/client-portal/api/fileService.js` (520 líneas): `uploadStream` (462-518) arma Authorization y `X-Cliente-CodCliente` leyendo localStorage a mano, duplicando lo que ya hace `api/apiClient.js` (y lo mismo hace Tpu3DViewer.authHeaders 26-34); extracción de MediaBox duplicada (329-353 vs 396-415); 9 `console.log` (95,118,124,135,222,306,322,359,430);
+  - propuesta: Exponer `apiClient.authHeaders()` y usarlo en uploadStream y Tpu3DViewer; `leerMediaBox(page)` única; sacar logs.
+  - ev: Leído completo; `grep -rn 'STORAGE_TYPE\|ALLOWED_FORMATS' src` → solo definición.
+- [media/S] `src/client-portal/auth/AuthContext.jsx` (182 líneas): 16 accesos a localStorage con claves (`auth_token`, `user_session`, `user`, `designer_cliente`) compartidas con `src/context/AuthContext.jsx` de la app interna (dos proveedores distintos leen/escriben lo mismo; PedidoPrendaPage monta los dos a la vez). `login`/`register` con `try { } catch (error) {
+  - propuesta: Un módulo `sesion.js` único (leer/escribir claves) consumido por los dos contextos; sacar try/rethrow; usar Navigate.
+  - ev: Leído completo; `grep -c 'localStorage.' AuthContext.jsx` → 16.
+- [baja/S] `src/components/pages/TermsPage.jsx` (187 líneas): El renderer de SECTIONS (118-186) es idéntico al de PrivacyPage (87-154): 122 líneas iguales. GuidesPage y ColorPalettesPage repiten el visor PDF por iframe + tabs. Nueve páginas públicas repiten el mismo useEffect de `document.body.style.overflow`/scrollTo (Contact 65-69, WorkWithUs 78-82, ColorPal
+  - propuesta: `<PaginaLegal sections={...}/>`, `<VisorPdfTabs/>` y un `usePaginaPublica()` que haga el reset de overflow/scroll.
+  - ev: Leídas todas las páginas públicas; rangos citados.
+- [baja/S] `src/client-portal/modulos/tickets/TicketsClienteView.jsx` (225 líneas): Mapa de estados TicEstado {1 Abierto, 2 Procesando, 3 Responder, 4 Resuelto, 5 Cerrado} escrito tres veces (TicketThreadWindow 189-192; TicketsClienteView 82-92 y 110-117, más clases de color 233-239). `AdjuntoCliente` (TicketThreadWindow 11-63) hace fetch con token manual (17-27) aunque `apiClient.
+  - propuesta: `tickets/estados.js` con el mapa y las clases; `AdjuntoCliente` sobre `apiClient.getBlob`.
+  - ev: Leídos los 3 archivos. `grep -rn AdjuntoCliente src` → solo TicketThreadWindow (el comentario 'igual que el panel admin' no pude confirmarlo como copia: no lo sé).
+
+### Duplicación (25)
+- `src/client-portal/modulos/OrderForm.jsx`, `src/client-portal/modulos/PrendaOrderForm.jsx`: Fork completo del formulario de pedido: ServiceAccordion (51-85 / 68-102), TOLERANCIA_ANCHO_M (91 / 161), resolveMaterialWidth (94-126 / 164-196), handleFileUpload (970-1251 / 1099-1323), Swal 'NO PUDIMOS MEDIR TU ARCHIVO' (992-1027 / 1120-1155), fileKeys/addT
+  - propuesta: Extraer helpers y bloques a `order-form/utils|components` y que ambos los importen; o borrar del fork lo que nunca corre (serviceId fijo 'sublimacion').
+  - ev: Leídos completos. difflib: 1905/4305 líneas iguales en secuencia (44%). PrendaOrderForm 13-32 declara el fork. `grep -rn 'NO PUDIMOS MEDIR TU ARCHIVO' src` → 2 archivos.
+- `src/client-portal/modulos/order-form/hooks/useOrderForm.js`, `src/client-portal/modulos/order-form/hooks/usePrendaOrderForm.js`: Reducer + ~60 setters + handleUploadProcess + carga de nomencladores. 857 de 1081 líneas iguales (79%).
+  - propuesta: Un hook parametrizado por catálogo.
+  - ev: Leídos ambos; usePrendaOrderForm.js:7 'Fork de useOrderForm.js — copia fiel al 16-07-2026'.
+- `src/client-portal/constants/services.js`, `src/client-portal/constants/prendaServices.js`: Catálogo de servicios: 317/339 líneas iguales (94%), mismos bloques comentados (162-182, 298-326), mismas 6 URLs de Drive por archivo.
+  - propuesta: Catálogo único con overrides.
+  - ev: difflib sobre ambos archivos.
+- `src/client-portal/modulos/OrderForm.jsx`, `src/client-portal/modulos/order-form/components/TpuTechnicalUI.jsx`, `src/client-portal/modulos/PrendaOrderForm.jsx`: Regex del tope de medida TPU `/(\d+(?:[.,]\d+)?)\s*[x×]\s*(\d+(?:[.,]\d+)?)/i`: `medidaMaximaTPU` en OrderForm 132-139 y TpuTechnicalUI 9-16 (comentario 'Mismo criterio que /portal/order/tpu'), e inline en PrendaOrderForm 1585.
+  - propuesta: `order-form/utils/tpu.js` → `medidaMaximaTPU`.
+  - ev: grep del patrón en src → exactamente esas 3 líneas.
+- `src/client-portal/modulos/OrderForm.jsx`, `src/client-portal/modulos/PrendaOrderForm.jsx`, `src/client-portal/pautas/PrintSettingsPanel.jsx`, `src/client-portal/modulos/order-form/utils/medirTizada.js`: `TOLERANCIA_ANCHO_M = 0.002` definida 3 veces (OrderForm 91, PrendaOrderForm 161, PrintSettingsPanel 18, con comentario 'Mantener en sincronía'); el margen de 3 cm como literal `- 0.03` en OrderForm 1093 y 1177, PrendaOrderForm 1215, PrintSettingsPanel 81, mie
+  - propuesta: `order-form/utils/medidas.js` con TOLERANCIA_ANCHO_M y MARGEN_TELA_M únicos.
+  - ev: `grep -rn 'TOLERANCIA_ANCHO_M\s*='` → 3 definiciones; lecturas de las líneas con `- 0.03`.
+- `src/client-portal/modulos/Tpu3DViewer.jsx`: Transformada de distancia chamfer 3-4: función `distanciaInterior` (113-137) y el mismo algoritmo copiado inline (1603-1625) para el degradado de borde, con `void compsSil` (1645) para silenciar una variable.
+  - propuesta: Llamar `distanciaInterior(silCrop.m, W, H)` en 1603.
+  - ev: Leídos ambos bloques; idénticos salvo el nombre del array.
+- `src/client-portal/modulos/Tpu3DViewer.jsx`, `src/client-portal/api/fileService.js`, `src/client-portal/api/apiClient.js`: Armado de headers `Authorization: Bearer` + `X-Cliente-CodCliente` leyendo `auth_token` y `designer_cliente` de localStorage: Tpu3DViewer.authHeaders 26-34, fileService.uploadStream 462-518, apiClient (su propia versión).
+  - propuesta: `apiClient.authHeaders()` exportado.
+  - ev: Lectura de los tres archivos.
+- `src/client-portal/modulos/PickupView.jsx`, `src/client-portal/modulos/TiendaView.jsx`, `src/client-portal/modulos/RecursosView.jsx`: Selector de pasarela de pago (Billetera / Handy #722efa / MercadoPago #ffe600 con los textos 'Tarjeta crédito / débito', 'Saldo, tarjeta o cuotas' y la nota 'USER no almacena…'): PickupView 1375-1497 (inline styles + 60 líneas de CSS en <style> 1280-1339), Tie
+  - propuesta: `pautas/ModalPasarela.jsx` con props {billetera, onElegir}.
+  - ev: `grep -rn 'Tarjeta crédito / débito|Saldo, tarjeta o cuotas|USER no almacena' src` → PickupView 1454/1477/1495, TiendaView 887/898/906; RecursosView leído 844-847, 1208-1213.
+- `src/client-portal/modulos/RecursosView.jsx`: Dentro del mismo archivo: modal 'Estado de cuenta' (header, resumen de saldo, tabla de 8 columnas, footer) en SeccionBeneficios 854-948 y en SeccionCuentasSaldo 1219-1325 (~95 líneas casi idénticas, cambia ícono Zap/Wallet y textos); selector fiscal e-Ticket/e
+  - propuesta: `ModalEstadoCuenta` y `SelectorComprobanteFiscal` compartidos dentro de recursos/.
+  - ev: Leídas ambas copias (783-1325).
+- `src/client-portal/modulos/RecursosView.jsx`, `src/components/pages/VendedorCliente360.jsx`: `ModalConsumoPlan` y `ModalConsumoTela` definidos en los dos archivos (RecursosView 84 y 342; VendedorCliente360 112 y 459). RecursosView 79-81 y 340 dicen 'Misma lógica que … de VendedorCliente360.jsx'.
+  - propuesta: Un componente compartido en `components/shared/consumo/` con prop `soloLectura`.
+  - ev: `grep -rn 'ModalConsumoPlan\|ModalConsumoTela' src` → 4 definiciones. El grado de igualdad lo infiero del comentario: no hice diff con VendedorCliente360 (fuera del área).
+- `src/components/pages/PaymentResult.jsx`, `src/client-portal/modulos/PickupView.jsx`: `generateReceipt` con jsPDF: PaymentResult 59-248 (190 líneas) ≈ PickupView 640-696.
+  - propuesta: `utils/reciboPdf.js`.
+  - ev: Leídos ambos.
+- `src/client-portal/layout/MainLayout.jsx`, `src/components/shared/LandingNavbar.jsx`, `src/client-portal/modulos/Dashboard.jsx`: Fetch de `/tickets` + `socket.emit('join:ticket')` (MainLayout 107-172 / LandingNavbar 212-259; ambos corren a la vez porque MainLayout renderiza LandingNavbar en 219); modal de logout (MainLayout 222-264 / LandingNavbar 298-340); `getErpCode` (MainLayout 177-
+  - propuesta: Hook `useTicketsNoLeidos`, `LogoutModal`, `getErpCode` en utils.
+  - ev: Leídos los 4 archivos.
+- `src/client-portal/modulos/tickets/TicketThreadWindow.jsx`, `src/client-portal/modulos/tickets/TicketsClienteView.jsx`: Mapa de TicEstado 1..5 y clases de color: TicketThreadWindow 189-192; TicketsClienteView 82-92, 110-117, 233-239.
+  - propuesta: `tickets/estados.js`.
+  - ev: Leídos.
+- `src/components/pages/TermsPage.jsx`, `src/components/pages/PrivacyPage.jsx`, `src/components/pages/GuidesPage.jsx`, `src/components/pages/ColorPalettesPage.jsx`, `src/components/pages/TemplatesPage.jsx`: Renderer de SECTIONS (Terms 118-186 / Privacy 87-154, 122 líneas iguales); visor PDF iframe + tabs (Guides / ColorPalettes); ícono de descarga SVG inline (ColorPalettes 161-163, Guides 132-134, Templates 39-45).
+  - propuesta: `PaginaLegal`, `VisorPdfTabs`, ícono Lucide `Download`.
+  - ev: Leídos; difflib Terms/Privacy.
+- `src/components/pages/LoginPage.jsx`, `src/components/pages/RegisterPage.jsx`, `src/components/pages/ForgotPasswordPage.jsx`, `src/components/pages/ResetPasswordPage.jsx`, `src/client-portal/modulos/totem/TotemApp.jsx`: Barra CMYK `fixed bottom-0 … flex h-2 md:hidden` (cyan/magenta/yellow/white): LoginPage 129-134 y 604-609, RegisterPage 554-559, ForgotPassword 146-151, ResetPassword 202-207, TotemApp 152-157, TotemDashboard 152-157.
+  - propuesta: `<BarraCMYK/>` en pautas.
+  - ev: Leídos.
+- `src/components/pages/ContactPage.jsx`, `src/components/pages/WorkWithUsPage.jsx`, `src/client-portal/modulos/totem/TotemDashboard.jsx`: `Toast = Swal.mixin({toast:true, position:'top-end', …})`: ContactPage 24-33, WorkWithUs 7-16, TotemDashboard 80-91 (este dentro del componente).
+  - propuesta: `pautas/swalToast.js`.
+  - ev: Leídos.
+- `src/client-portal/hooks/usePushNotifications.js`, `src/utils/pushInterno.js`, `src/utils/pwa.js`, `src/client-portal/components/InstallAppBanner.jsx`, `src/utils/device.js`: `urlBase64ToUint8Array` (usePushNotifications 98-107 / pushInterno 11-18); `navigator.serviceWorker.register('/sw.js')` en 3 lugares (usePushNotifications 47, pwa 17, pushInterno 28); detección iOS/iPad (InstallAppBanner 13-15, pushInterno 9, device 27).
+  - propuesta: Un `utils/push.js` + `device.esIOS()` únicos; registrar el SW una sola vez en pwa.js y exponer la registration.
+  - ev: Leídos los 5.
+- `src/client-portal/modulos/order-form/components/CorteTechnicalUI.jsx`, `src/client-portal/modulos/order-form/components/BobinaSelector.jsx`: Lista de bobinas: CorteTechnicalUI 416-445 ≈ BobinaSelector 9-45.
+  - propuesta: Usar BobinaSelector adentro.
+  - ev: Leídos.
+- `src/client-portal/modulos/FactoryView.jsx`, `src/client-portal/modulos/DesignerHomeView.jsx`, `src/client-portal/pautas/StatusBadge.jsx`: Heurística de estado por `includes()` sobre el texto: FactoryView STATUS_CONFIG/getStatusKey 15-71, DesignerHomeView.estadoChip 9-21, StatusBadge 4-44.
+  - propuesta: `pautas/estados.js` único.
+  - ev: Leídos.
+- `src/client-portal/modulos/FactoryView.jsx`: Tres shells de modal iguales (1148-1200, 1206-1254, 1258-1310) además de `ConfirmationModal` ya usado en 1137.
+  - propuesta: `ModalMotivo` genérico.
+  - ev: Leído 965-1324.
+- `src/client-portal/modulos/HistorialView.jsx`, `src/client-portal/modulos/PricesView.jsx`, `src/client-portal/modulos/ProfileView.jsx`, `src/client-portal/modulos/TiendaView.jsx`, `src/client-portal/modulos/RecursosView.jsx`: Formateo de moneda `toLocaleString('es-UY', …)` repetido: HistorialView 235/303/310, PricesView 52, ProfileView 337/371, TiendaView `fmt` 36-37, RecursosView `fmtNum` 21-23 (23 ocurrencias en 10 archivos del portal).
+  - propuesta: `utils/moneda.js` → `fmtMoneda(valor, moneda)`.
+  - ev: `grep -rc "toLocaleString('es-UY'" src/client-portal` → 23.
+- `src/client-portal/modulos/totem/TotemDashboard.jsx`, `src/components/pages/PrintStationPage.jsx`, `src/index.css`: Impresión 80 mm por iframe + `@page { size: 80mm auto }`: TotemDashboard 15-71, PrintStationPage 95-120, index.css 328.
+  - propuesta: `utils/print80mm.js`.
+  - ev: TotemDashboard leído; PrintStationPage e index.css: líneas tomadas de grep previo, no leí PrintStationPage entero (fuera del área).
+- `src/client-portal/modulos/ProfileEdit.jsx`, `src/client-portal/modulos/HistorialView.jsx`, `src/client-portal/modulos/totem/TotemDashboard.jsx`, `src/components/shared/LandingNavbar.jsx`: Duplicados internos chicos: ProfileEdit estado inicial 22-32 vs 42-53; HistorialView lógica de URL de comprobante 193-203 vs 204-216; TotemDashboard keypad 564-579 vs 677-692; LandingNavbar ITEMS 51-56 vs 581-586.
+  - propuesta: Factorizar cada uno en una función/constante.
+  - ev: Leídos.
+- `src/client-portal/modulos/PrendaOrderForm.jsx`, `src/components/pages/customer-service/WmsOrderPage.jsx`: Buscador de cliente con debounce 500 ms y la tarjeta de cliente elegido (PrendaOrderForm 204-263 y 2689-2762, comentarios 'Copiado de WmsOrderPage.jsx' en 206 y 2690).
+  - propuesta: `ClienteSelector` compartido en components/shared.
+  - ev: Inferido de los comentarios del propio archivo; no leí WmsOrderPage (fuera del área).
+- `src/client-portal/apiClient.js`, `src/client-portal/api/apiClient.js`, `src/client-portal/fileService.js`, `src/client-portal/api/fileService.js`: Versiones viejas en la raíz de client-portal (35% y 66% iguales a las de api/), no alcanzables.
+  - propuesta: Ver basura (SIN_USO).
+  - ev: grafo.json unreachable; difflib.
+
+### Basura (20)
+- **BORRAR** `src/client-portal/main.jsx` [entry viejo roto]
+  - ev: 11 líneas, `import App from './App.jsx'` y `src/client-portal/App.jsx` no existe (Glob vacío). Último commit 2026-02-16 (extras.json). No alcanzable desde src/main.jsx.
+- **SIN_USO** `src/client-portal/apiClient.js` [módulo viejo (versión previa de api/apiClient.js)]
+  - ev: grafo.json unreachable; 93 líneas; último commit 2026-06-23; `grep -rn "client-portal/apiClient'\|from './apiClient'" src` → solo lo importan los otros archivos no alcanzables (fileService.js raíz, components/orders/**).
+- **SIN_USO** `src/client-portal/fileService.js` [módulo viejo (versión previa de api/fileService.js), con 8 console.log y 1 fetch]
+  - ev: unreachable; 322 líneas; último commit 2026-06-11; 66% igual a api/fileService.js.
+- **SIN_USO** `src/client-portal/components/orders/** (OrderForm.jsx, hooks/useFileUploader.js, hooks/useOrderLogic.js, services/BordadoService.jsx, CorteService.jsx, CorteTechnicalUI.jsx, DTFService.jsx, ServiceFactory.jsx, SublimacionService.jsx, ui/GlassCard.jsx, ui/ItemRow.jsx)` [árbol viejo del formulario de pedido (11 archivos, 889 líneas)]
+  - ev: Los 11 en grafo.json unreachable; último commit 2026-05-06; el vivo es modulos/OrderForm.jsx + modulos/order-form/**. CorteService usa Font Awesome `fa-*`; BordadoService importa ItemRow sin usarlo.
+- **SIN_USO** `src/client-portal/modulos/LoginPage.jsx` [login viejo del portal (407 líneas, 7 imports sin uso)]
+  - ev: unreachable; último commit 2026-07-31; el vivo es src/components/pages/LoginPage.jsx (inDegree 2).
+- **SIN_USO** `src/client-portal/modulos/ProfileManager.jsx` [componente huérfano (125 líneas)]
+  - ev: unreachable; último commit 2026-02-16; `grep -rn ProfileManager src` → solo su definición.
+- **SIN_USO** `src/client-portal/pautas/ProcessStepper.jsx` [componente huérfano (101 líneas)]
+  - ev: unreachable; último commit 2026-02-16; `grep -rn ProcessStepper src` → solo su definición.
+- **SIN_USO** `src/components/pages/RecursosView.jsx` [pantalla admin 'Gestión de Planes de Recursos' huérfana (1045 líneas, usa `sonne]
+  - ev: unreachable; último commit 2026-05-06; NO es copia del RecursosView del portal (contenido distinto). Nadie la enruta en App.jsx/MainAppContent.jsx (grep 'pages/RecursosView' vacío en ambos).
+- **BORRAR** `public/assets/images/maskable_icon_x192.png y maskable_icon_x512.png` [assets duplicados]
+  - ev: `cmp` byte a byte idénticos a public/maskable_icon_x192.png / x512.png; `grep -rn 'assets/images/maskable' src index.html public/manifest* public/sw.js backend` vacío (el manifest apunta a /maskable_icon_*).
+- **BORRAR** `public/assets/images/favicon_bk.svg` [backup de favicon]
+  - ev: Sufijo `_bk`; `grep -rn favicon_bk src index.html public backend` vacío.
+- **SIN_USO** `public/assets/images/marcas/{cecnco,dtfuy,ecouv,emblemas,impritex}.svg` [logos de marcas sin referencia]
+  - ev: `grep -rn 'images/marcas' src index.html backend docs` vacío; GuidesPage usa 'impritex' solo como id y `/guias/guia-impritex.pdf`. Coincide con `publicUnreferenced` de extras.json.
+- **BORRAR** `src/client-portal/layout/MainLayout.jsx:285-346 y 362-369` [bloques JSX comentados (62 + 8 líneas) 'Servicios Collapsible' y CLUB, con sus e]
+  - ev: Leído; los únicos usos de getErpCode/visibleConfig/isServicesOpen/SERVICES_LIST/ChevronDown/navigate están dentro del bloque comentado.
+- **BORRAR** `src/client-portal/modulos/ProfileView.jsx:56-87` [KPIs comentados (32 líneas) + imports `Crown, DollarSign, TrendingUp, CheckCircl]
+  - ev: Leído.
+- **BORRAR** `src/client-portal/constants/services.js:162-182 y 298-326 (y los mismos rangos en prendaServices.js)` [servicios comentados (21 + 29 líneas, ×2 archivos)]
+  - ev: Leídos ambos.
+- **BORRAR** `src/client-portal/modulos/PrendaOrderForm.jsx:2596-2624` [29 líneas de comentarios en primera persona de un asistente ('I missed setShowSu]
+  - ev: Leído; además describe un workaround que nunca se aplicó: el caso sin upload sigue en un toast (2623) mientras OrderForm 2252 abre el modal.
+- **SIN_USO** `src/components/pages/LandingPage.jsx:341-496` [StatsCounter/StatCard/useCountUp (~155 líneas) cuyo único render está comentado ]
+  - ev: Leído; `grep -n StatsCounter LandingPage.jsx`.
+- **BORRAR** `console.log en código vivo: api/fileService.js 95,118,124,135,222,306,322,359,430 (9); OrderForm.jsx 2238 y PrendaOrderForm.jsx 2588 (vuelcan el payload completo del pedido); pages/LoginPage.jsx 380 (vuelca el resultado del login); LandingNavbar.jsx 668 (datos del lead)` [logs de depuración (Vite los dropea en build, pero en dev exponen token/payload)]
+  - ev: `grep -rn 'console.log' src/client-portal src/components/pages src/components/shared/LandingNavbar.jsx` → 23 (8 en fileService viejo no alcanzable).
+- **BORRAR** `Imports sin uso (lista verificada por lectura + script unused_imports2.cjs)` [imports muertos]
+  - ev: OrderForm: ImageIcon, User, Check (lucide); PrendaOrderForm: Check; useOrderForm.js y usePrendaOrderForm.js: useCallback; MainLayout: UserPen, Menu, Truck, Logo, Swal; ClubView: CustomButton; FactoryView: GlassCard; PickupView: FormInput; ProfileEdit: GlassCard; CreateTicketModal: CustomButton; Tick
+- **BORRAR** `src/client-portal/api/apiClient.js:8-15` [bloque `if (response.status === 401 && …) { /* comentado */ }` vacío]
+  - ev: Leído.
+- **BORRAR** `src/client-portal/modulos/EcouvTerminacionesUI.jsx:6` [`// import { toast } from 'react-hot-toast'; // Not used yet` (lib que no está e]
+  - ev: Leído; `grep react-hot-toast package.json` vacío.
+
+### Código muerto en vivos (14)
+- `src/client-portal/modulos/PrendaOrderForm.jsx` (ver detalle): Todas las ramas por serviceId distinto de 'sublimacion' heredadas de OrderForm: TPU (isTpuEtiquetaOficial 835-839, mis matrices 945-959, selector de modo/boceto/matrices 3385-3490, reuso 1389-1414, va
+  - ev: `PedidoPrendaPage.jsx:23` `<PrendaOrderForm />` sin props; `PrendaOrderForm.jsx:198` `propServiceId = 'sublimacion'` y 300 `serviceId = propServiceId || …` → siempre 'sublimacion'. Es el único consumidor (inDegree 1).
+- `src/client-portal/modulos/PrendaOrderForm.jsx` (112, 2767-2800, 960-983, 2777, 333): Bloque del selector de Prioridad (2767-2800, 34 líneas) detrás de `MOSTRAR_PRIORIDAD = false` (112); `tiempoEntregaTexto/tiempoEntregaNormal/Urgente` (960-972) y `prioridadesVisibles` (981-983) solo s
+  - ev: grep de cada símbolo en el archivo.
+- `src/client-portal/modulos/OrderForm.jsx` (454-461, 180, 2332, 6-7): `setItemTerminacionCantidad` (454-461) definida y nunca llamada (la cantidad pasó a ser calculada, 3210-3216); `fabricType` destructurado (180) sin uso; `isDisabled = false` (2332) sin uso; imports `I
+  - ev: `grep -n 'setItemTerminacionCantidad\|fabricType\|isDisabled\|ImageIcon\|\bUser\b\|\bCheck\b' OrderForm.jsx` → solo definiciones/imports (el 'Check' de 203 es un comentario).
+- `src/components/pages/LandingPage.jsx` (341-496, 255, 85-88, 4-5): StatsCounter + StatCard + useCountUp (341-496) y su fetch a /api/stats/public (419): el único `<StatsCounter/>` está comentado (255). States `scrolled` (85), `menuOpen` (87), `sessionDropdown` (88) y 
+  - ev: grep en el archivo.
+- `src/components/pages/PaymentResult.jsx` (583-596, 218): `InfoCard` (583-596) nunca renderizado; `labelW` (218) sin uso; imports `CreditCard`, `Logo`.
+  - ev: `grep -n InfoCard PaymentResult.jsx` → 1 resultado (definición).
+- `src/client-portal/layout/MainLayout.jsx` (24, 42, 177-190, 285-346): `getErpCode` (177-190), `visibleConfig` state, `isServicesOpen`, `isMobileMenuOpen` (solo set), `navigate` (42), `SERVICES_LIST` (24), `ChevronDown`: todos sus usos están dentro del JSX comentado 285-
+  - ev: Leído; grep de cada símbolo.
+- `src/client-portal/modulos/Tpu3DViewer.jsx` (151-153, 1602-1646): `ALTURA_PASO` (153) declarada sin uso (el comentario 151-152 lo admite: slider escondido); `void compsSil` (1645) para tapar una variable que no se usa; `distanciaInterior` reimplementada inline 1603-
+  - ev: grep ALTURA_PASO → solo 153; lectura.
+- `src/client-portal/api/fileService.js` (11-19): `STORAGE_TYPE` (11) y `ALLOWED_FORMATS` (14-19) exportados y nunca importados.
+  - ev: `grep -rn 'STORAGE_TYPE\|ALLOWED_FORMATS' src` → solo este archivo.
+- `src/client-portal/modulos/order-form/hooks/useOrderForm.js (y usePrendaOrderForm.js)` (462-465 / 490-493): Claves repetidas en el estado inicial: `bocetoFile: null, bordadoBocetoFile: null` aparecen dos veces (462-465 / 490-493): la segunda pisa la primera, la primera es letra muerta. `useCallback` importa
+  - ev: Leídos ambos.
+- `src/client-portal/constants/prendaServices.js` (118): virtualVariant 'Productos Personalizados' (118) que `services.js` 113-115 documenta como retirada → en el fork sigue viva aunque el form de prendas nunca llega a ECOUV (serviceId fijo).
+  - ev: Lectura comparada de ambos catálogos.
+- `src/client-portal/pautas/PrintSettingsPanel.jsx` (1-3): Imports `FormInput`, `GlassCard` sin uso; comentarios '// Asumiendo que existe' (2-3) de componentes que ya existen.
+  - ev: Leído; script unused_imports2.cjs.
+- `src/client-portal/modulos/UnpaidPickupsView.jsx` (107): `user` del contexto sin uso; imports `AlertCircle, ChevronRight, Package`; `catch (e) { }` 107.
+  - ev: Leído.
+- `src/components/shared/LandingNavbar.jsx` (581-586): Prop `user` recibida por `DropdownPortalDesktop` y no leída; segunda copia de `ITEMS` (581-586).
+  - ev: Leído.
+- `src/client-portal/modulos/order-form/components/EcouvTerminacionesUI.jsx` (6): Import comentado de react-hot-toast (6) 'Not used yet'.
+  - ev: Leído.
+
+### Mal ubicados (11)
+- `src/client-portal/modulos/PrendaOrderForm.jsx (+ usePrendaOrderForm.js, constants/prendaServices.js, order-form/components/DtfTechnicalUI.jsx, TpuTechnicalUI.jsx, PrendaClienteSelector.jsx)` → src/components/pages/ventas/pedido-prenda/ (form + hook + catálogo + UIs DTF/TPU/PrendaCliente), dejando en el portal so — Es un formulario INTERNO de vendedor (elige cliente y lo impersona vía localStorage 'designer_cliente' 252-263; su única ruta es /ventas/pedido-prenda en MainAppContent 1023) pero 
+- `src/client-portal/pautas/CustomSelect.jsx` → src/components/shared/Selector.jsx (y que el portal lo importe de ahí), alineado con la regla del dueño de usar Selector — Es el 'Selector propio' (headlessui Listbox, variantes dark/light/black) y lo usan 4 archivos de la app interna (CajaCobroLibreTab, CajaTransaccionView, CargaPagosView, shared/Clie
+- `src/client-portal/modulos/Tpu3DViewer.jsx` → src/components/shared/tpu3d/ (raster.js, escena.js, Tpu3DViewer.jsx). — Tiene modo 'interno' con rutas /orders/:id/* y tema claro (662-743) y lo importa `components/production/components/OrderDetailModal.jsx` de la app interna; configura el worker de p
+- `src/components/shared/LandingNavbar.jsx` → Que reciba `sesion` por props desde quien la monta, o un `useSesionActual()` neutro en src/utils/sesion.js. — Se renderiza dentro del portal (MainLayout 219) pero consume `src/context/AuthContext` de la app interna; además duplica tickets/logout de MainLayout.
+- `src/utils/comprimirImagen.js` → src/components/servicio-tecnico/utils/comprimirImagen.js. — inDegree 7 y los 7 consumidores están en components/servicio-tecnico/.
+- `src/utils/pushInterno.js vs src/client-portal/hooks/usePushNotifications.js` → src/utils/push.js único con `suscribir(tipo: 'interno'|'cliente')`, consumido por ambos. — Dos implementaciones de suscripción push (helpers duplicados, registro del SW repetido) para el mismo /sw.js.
+- `src/client-portal/modulos/totem/TotemApp.jsx y TotemDashboard.jsx` → src/totem/ (fuera de client-portal) con su `totemApi.js`. — Definen `API_BASE` propio y usan fetch directo (5) en vez del apiClient del portal; el tótem es un kiosco con token de dispositivo propio (`totemToken`) y no comparte sesión con el
+- `src/client-portal/modulos/Tpu3DViewer.jsx:26-34 y api/fileService.js:462-518 (authHeaders a mano)` → Exportar `authHeaders()` desde api/apiClient.js. — Reimplementan el armado de headers del apiClient.
+- `src/components/pages/RecursosView.jsx` → Si se revive: src/components/pages/admin/GestionPlanesRecursos.jsx; si no, marcar SIN USO. — Nombre idéntico al RecursosView del portal pero es una pantalla admin (y está huérfana).
+- `public/assets/images/maskable_icon_x192.png, x512.png` → Borrar (ver basura). — Copias de public/maskable_icon_*.png que son las que referencia el manifest.
+- `src/client-portal/modulos/order-form/components/FileUploadZone.jsx:32-188 (VistaBandera WebGL)` → order-form/components/VistaBandera.jsx cargado lazy. — Un shader para la previsualización de banderas dentro del componente genérico de upload.
+
+### Patrones de riesgo (20)
+- `fetch(` directo sin pasar por apiClient (37) — Tpu3DViewer 10 (948, 978, 1059, 1083, 1102, 1200, 1211, 2566, 2570…), totem 5 (TotemApp 23; TotemDashboard 137, 163, 268, 325), RegisterPage 3, PickupView 2, PaymentResult 2, LoginPage 2, analytics.js — Cada uno rearma headers/token/manejo de error a mano; la impersonación (`X-Cliente-CodCliente`) solo viaja donde alguien se acordó de agregarla.
+- Acceso directo a localStorage / sessionStorage (88) — localStorage 66 (AuthContext 16, pages/LoginPage 5, api/apiClient 5, MainLayout 4, Tpu3DViewer 2, PrendaOrderForm 3…); sessionStorage 22 (PickupView, OrderForm/PrendaOrderForm `df_announcement_seen`,  — Dos AuthContext (portal e interno) leen/escriben las mismas claves `auth_token`, `user_session`, `user`, `designer_cliente`; PedidoPrendaPage monta ambos a la vez y PrendaOrderForm escribe `designer_cliente` para impersonar (252-263).
+- Navegación dura: `window.location.href =` / `window.location.reload()` (18) — href 14 en 12 archivos (AuthContext.logout, ProtectedRoute 9, LandingNavbar, LoginPage…); reload: OrderForm 3870, PrendaOrderForm 4258, PickupView 507 y 579 — Rompe el estado del SPA y la PWA (recarga shell completa); ProtectedRoute debería usar <Navigate>.
+- `catch {}` vacío o con solo un comentario (30) — vacíos 13 (fileService 4, PickupView 3, LandingNavbar, LoginPage 337, LandingPage, UnpaidPickupsView 107, OrderForm 533, fileService viejo) + 17 con comentario (Tpu3DViewer 32, 951, 1009, 1115…) — Regla del dueño: nunca `catch {}` mudo. Los de Tpu3DViewer al menos documentan la intención.
+- console.log en código vivo (23) — api/fileService 9; OrderForm 2238 y PrendaOrderForm 2588 (payload completo del pedido); pages/LoginPage 380 (resultado del login); LandingNavbar 668 (lead); fileService viejo 8; orders/OrderForm viejo — Vite los dropea en build (`esbuild.drop`), pero en dev el del login expone el resultado completo en consola.
+- Diálogos nativos: `alert()` / `window.confirm()` (8) — alert: FactoryView 215, 239, 256, 305; UnpaidPickupsView 60, 65. confirm: RecursosView 981, 992 — Conviven con ConfirmationModal de pautas y con Swal.
+- Tres sistemas de notificación a la vez (3) — Swal.fire/mixin en 10 archivos (35 llamadas); react-toastify en ClientPortalApp, OrderForm, PrendaOrderForm; ToastProvider propio (`useToast`) en 6+ archivos — OrderForm usa los tres en el mismo flujo (Swal 992, toast.error 1023, addToast 1243).
+- `eslint-disable` (sin ESLint en el repo) (21) — TiendaView 6, PrendaOrderForm 6 (todos `react-hooks/exhaustive-deps` sobre efectos encadenados que escriben estado del reducer: 395, 446, 613, 690, 711, 762), PredisenoBordadoModal 3, useOrderForm 2,  — Sin linter configurado los comentarios no hacen nada; en PrendaOrderForm señalan dependencias omitidas a propósito en efectos que sincronizan estado derivado.
+- `<select>` nativo en vez del Selector propio (9) — PredisenoBordadoModal 579, 680, 844, 857; PrendaOrderForm 3051, 3067; HistorialView 1; MisDisenadores 1; PricesView 1 (+ los del árbol viejo components/orders) — Regla del dueño: Selector/SelectorFecha propios.
+- Font Awesome `<i className="fa-...">` (index.html lo carga por CDN; el paquete npm está declarado y no se importa) (4) — PrintSettingsPanel 360, 381; PrendaOrderForm 2970; components/orders/services/CorteService (viejo) — Regla del dueño: íconos Lucide brand-cyan sin fondo.
+- `backdrop-blur` (dato pedido) (4) — src/client-portal: 4, todos en modulos/RecursosView.jsx (183, 422, 858, 1223). Páginas públicas (src/components/pages/*Page.jsx + LandingNavbar): 0; LandingNavbar tiene `backdropFilter: 'none'` explíc — Regla del dueño: nunca backdrop-blur. Solo RecursosView lo viola.
+- Escalera de z-index arbitraria en modales del portal (27) — z-[100] RecursosView ×4; z-[9999] ErrorModal, FileUploadZone, ConfirmationModal, ProfileView, Tpu3DViewer, TotemDashboard; z-[10000] OrderForm 3791, PrendaOrderForm, TiendaView ×3 (1017, comentario: ' — La regla del dueño es modales z-[6000]+; acá cada modal sube uno más que el anterior. Centralizar en 3 tokens (navbar / modal / modal-sobre-modal).
+- Formateo de moneda repetido `toLocaleString('es-UY', …)` (23) — 10 archivos del portal (HistorialView 3, PricesView, ProfileView 2, TiendaView, RecursosView…) — Un `fmtMoneda` evitaría divergencias de decimales/símbolo (hay `Moneda == 2 || includes('USD')` en HistorialView 235).
+- Base de API recalculada: `import.meta.env.VITE_API_URL || '/api'` (12) — api/apiClient 1, api/fileService 477, MainLayout 31, PickupView 219 y 352, TotemApp 9, TotemDashboard 10, PaymentResult 11, errorReporter 7, printHelper 15 y 49, src/services/apiClient — Debería existir una sola constante exportada.
+- CSS en strings dentro del JSX (`<style>{`…`}</style>`) e `innerHTML` con SVG (7) — PickupView 1280-1339 (60 líneas), TiendaView 603, 1020, 1061; innerHTML: FactoryView 854, 920, 1028 — Keyframes y clases que deberían vivir en index.css; innerHTML con SVG en strings es frágil.
+- Hardcodes de negocio en el front (20) — codArt/codStock '1375'/'1.1.6.1' (corte), '110'/'1.1.5.1' (estampado), '112'/'1.1.7.1' (costura) en OrderForm y PrendaOrderForm (12 ocurrencias); CodArticulo '1568' (etiqueta oficial) y '1560' (twinfa — Cualquier cambio de artículo en el ERP exige tocar dos archivos de 4000 líneas. Los del fork además son letra muerta (serviceId fijo).
+- Fork sin los fixes del original (OrderForm → PrendaOrderForm) (5) — candado anti doble envío `enviandoRef` (OrderForm 1254-1273, pedidos BOR-12291/12292) ausente en PrendaOrderForm.handleSubmit 1326; `noValidate` en el <form> (OrderForm 2315) ausente en 2683; modal de — Riesgo real: el form interno de prendas puede crear pedidos duplicados con doble click, que es justo lo que se arregló en el original.
+- useEffect sin array de dependencias (corre en cada commit) (2) — OrderForm 750-758, PrendaOrderForm 999-1007 — Documentado como intencional (auto-corrige items vacíos en TPU). En PrendaOrderForm es además código muerto (serviceId nunca es 'tpu').
+- TODO/FIXME (19) — 21 en el área (OrderForm, PrendaOrderForm, Tpu3DViewer, PickupView, FactoryView…) — Conteo de grep previo; ninguno marcado como bloqueante.
+- Doble fetch/socket por renderizar dos navbars (2) — MainLayout 107-172 + LandingNavbar 212-259 (MainLayout monta LandingNavbar en 219) — Cada carga del portal pide /tickets dos veces y hace `join:ticket` dos veces por ticket.
+
+## Backend · Caja, cobranza, contabilidad, CFE, tesorería, beneficios y precios (archivos revisados: 60)
+NOTAS: Leí los 60 archivos del área: 10 routes, 20 controllers, 19 services, 5 jobs y 6 utils (reintentarDeadlock y rollbackSeguro incluidos). Los 7 grandes (cajaController 4798, cfeController 2786, contabilidadController 6060, contabilidadReportesController 1843, cajaService 3080, contabilidadService 6503, quotationController 1306) se leyeron completos por tramos en la sesión anterior a la compactación; las líneas que cito de ellos salen de esa lectura (sin cambios en el repo entre medio). De fuera del área sólo miré fragmentos por grep/sed para confirmar impacto: webOrdersController (fakeRes 5533-5647, 5931), retiroService.registrarPago (776-850), scheduler.js (53-110) y server.js (16, 103-247, 560-600); no los audité. Verificaciones hechas con grep (no asumidas): todas las rutas de contabilidadRoutes apuntan a handlers que existen; el front sí consume /apipagos y /apicotizaciones (CargaPagosView, CajaTransaccionView, ClienteVista360, CierreCicloPreviewModal) y /contabilidad/cola|planes|movimientos; los exports marcados SIN USO tienen 0 callers fuera de su archivo en backend y src. Del grafo.unusedExports: cuadreSaldos `_sql`/SQL_* son exports deliberados 'solo para pruebas' (377-378) y `run` sí se usa internamente vía reg.setFn (348) → no son basura; desgloseLineaPedido r2/r4 tienen nombre genérico y no pude separar sus usos de otros r2/r4 → no lo sé. Marcas: 'anularFactura falla por input duplicado' es inferido del comportamiento de mssql, no probado contra la base; que la recon
+
+### Refactor (22)
+- [alta/L] `backend/controllers/cajaController.js` (1100 líneas): procesarPagoDeudaInterno (1483-2579) es una sola función de ~1100 líneas con transacción propia que hace todo el cobro: busca deudas, reduce deuda (1651), registra PAGO (1659-1671), waterfall ImputacionPago (2345-2367), excedente→ANTICIPO (2373-2413), asiento (2420-2505) y retiro (2508-2540). Es la 
+  - propuesta: Partir en pasos nombrados dentro de un servicio de cobro único (resolver deudas / imputar / registrar movimiento / excedente / asiento / retiro) y que cajaController, cajaService y contabilidadController lo llamen. Primero congelar el comportamiento con un test de caja contra copia local.
+  - ev: Leído completo cajaController.js 1483-2579; los rangos de cada paso son los citados. _invocarHandler 1106-1116 y las llamadas 1188/1227 muestran que además se invoca a otros handlers con res falso.
+- [alta/L] `backend/services/cajaService.js` (1200 líneas): procesarTransaccion (805-2021) ~1200 líneas y procesarVentaDirecta (74-748) ~670 líneas. Usan el payload como canal lateral de estado (header._movimientosPagoRegistrados 726/2328, _imputadoDeuda 1282, _imputacionCajaHecha 1283, _creoDeuda 1865, header.docIdDocumento 1690) y escriben tablas contables
+  - propuesta: Extraer un objeto de contexto explícito (ctx) en lugar de mutar header, y reemplazar los INSERT/UPDATE crudos por los helpers de contabilidadService. Separar 'venta directa' y 'cobro de deuda' en módulos.
+  - ev: Leído completo cajaService.js; líneas citadas verificadas. Bloque comentado RC 1692-1745 (54 líneas) y stub _tipoMovimientoPago 2308-2313 (siempre devuelve 'PAGO').
+- [alta/L] `backend/services/contabilidadService.js` (840 líneas): cerrarCicloCompleto (3247-4087) ~840 líneas corre paso a paso con pool.request() (sin transacción): si falla a mitad quedan documento, deuda y movimientos a medio escribir. Además repite el 'guardar precios' del controller (3273-3367).
+  - propuesta: Envolver en una transacción con rollbackSeguro, extraer el recálculo de precios a una función compartida con contabilidadController.guardarPrecios/guardarPreciosCiclo.
+  - ev: Leído contabilidadService.js 3247-4087 por tramos: todos los pasos usan pool.request(), no hay transaction.begin().
+- [alta/L] `backend/services/contabilidadService.js`: Tres entradas superpuestas para el mismo evento contable: hookOrdenCreada (449-763), hookEntregaMetros (918-1210) y procesarEventoContable (6010-6502). El cruce de moneda está duplicado (628-692 vs 6324-6380) y module.exports (5931-5999) está ANTES de la definición de procesarEventoContable (6010), 
+  - propuesta: Dejar procesarEventoContable como único punto de entrada (ya lo usan 13 archivos) y que los hooks sean funciones internas. Mover module.exports al final del archivo.
+  - ev: grep 'procesarEventoContable' fuera del service: 13 usos (bash background bwvko0h36). Rangos verificados por lectura.
+- [alta/L] `backend/controllers/cfeController.js` (1010 líneas): editarFactura (1348-2359) ~1010 líneas. Al reemitir el asiento usa CueId numéricos hardcodeados 119/118 y 411 (2321-2322) e inserta Cont_AsientosDetalle a mano (2324-2339) salteando generarAsientoCompleto; códigos de cuenta literales '1.1.1','1.1.2','2.3.1','1.2.1','1.2.2' en 988-1009. cuentaDineroC
+  - propuesta: Reemplazar el INSERT crudo por contabilidadCore.generarAsientoCompleto + resolverLineasDesdeMotor, resolver CueId con resolverCuentaDineroCliente, y partir editarFactura en: validar / recalcular líneas / reemitir docs / reasentar.
+  - ev: Leído cfeController.js completo; 2321-2339 y 988-1009 verificados.
+- [alta/S] `backend/controllers/contabilidadController.js`: recomputarSaldoCuenta (1706-1724) recalcula CueSaldoActual con un CTE que NO excluye ORDEN/ORDEN_ANTICIPO, mientras registrarAjusteManual (695-705), beneficiosService.saldoRealCuenta (103-111) y cuadreSaldos.job (92-94) usan la fórmula canónica que SÍ los excluye. Dos verdades distintas para el mism
+  - propuesta: Un único helper getSaldoRealCuenta (ya existe en contabilidadService 4889-4894) y que todos lo llamen.
+  - ev: Leídas ambas funciones; grep de la fórmula en backend: 33 ocurrencias en 8 archivos.
+- [alta/S] `backend/controllers/cajaController.js`: anularFactura (4067-4208) registra dos veces .input('CicAnulado', ...) en 4158-4159; mssql rechaza nombres de parámetro repetidos, así que la anulación de una factura con ciclo fallaría.
+  - propuesta: Borrar el input duplicado y probar anulación con ciclo en copia local.
+  - ev: Leído 4150-4165. Que falle en runtime es INFERIDO del comportamiento de mssql (no lo probé contra la base).
+- [media/M] `backend/routes/contabilidadRoutes.js` (570 líneas): Seis handlers con lógica de negocio y transacciones viven en el archivo de rutas: /documentos/buscar 277-295, /reconciliacion/audit 303-328, /reconciliacion/ejecutar 330-340, /ordenes/editar-metros 348-431, /ordenes/eliminar-metros 435-751 (316 líneas), /ordenes/insertar-manual 755-845. getPool se r
+  - propuesta: Mover a contabilidadController (o un planesMetrosController) y dejar el router sólo con wiring.
+  - ev: Leído contabilidadRoutes.js completo (850 líneas).
+- [media/L] `backend/controllers/contabilidadController.js` (640 líneas): consumirRecursoAdelantado (4122-4765) ~640 líneas con bloque muerto `if (false) return ...` (4749-4754, 'legacy placeholder'). cubrirRetiroConBilletera (5499-5691) repite la selección de candidatas/partes de contabilidadService.consumirPrepagoDelCiclo (5065-5255) y llama a exports.consumirDesdeSaldo
+  - propuesta: Extraer 'elegir cuentas candidatas y partir importe' a una función de servicio compartida; eliminar el if(false).
+  - ev: Leído contabilidadController.js completo; rangos verificados.
+- [media/L] `backend/services/pricingService.js` (810 líneas): calculatePrice (175-982) es un único método estático de ~810 líneas: resolución de artículo, bordado/estampado hardcodeados (288-356), reglas, beneficios, recargos, prepago y desglose. Además loguea en info el traceDecision completo (737) en CADA cotización de línea.
+  - propuesta: Separar en pasos (resolverArticulo, precioBase, reglasAplicables, competencia, beneficios, recargos, prepago, desglose) y bajar el trace a debug o hacerlo opcional por variable.
+  - ev: Leído pricingService.js completo.
+- [media/M] `backend/controllers/pagosController.js`: realizarPago (31-233) reimplementa inline lo que retiroService.registrarPago ya centraliza (INSERT Pagos 75-77, UPDATE OrdenesRetiro 89-95, Histórico 102-103, UPDATE OrdenesDeposito 132-141, auto-cierre 147-176). retiroService.js:747 dice literalmente 'Centraliza la lógica que estaba duplicada en pa
+  - propuesta: Que realizarPago llame a retiroService.registrarPago dentro de su transacción y mueva el post-proceso a un servicio con manejo de error explícito.
+  - ev: Leído pagosController.js completo; retiroService.registrarPago 776-850 (grep: INSERT Pagos / UPDATE OrdenesRetiro / Histórico / UPDATE OrdenesDeposito). Front lo usa: src/components/pages/CargaPagosVi
+- [media/L] `backend/controllers/quotationController.js` (470 líneas): saveQuotation (766-1232) ~470 líneas; propagarCotizacionADeposito (358-600) abre una transacción por orden; require inline de contabilidadService en 466 y 491 (no está en el top); búsqueda de cabecera con 2 fallbacks duplicada entre getQuotation 127-154 y saveQuotation 820-849; reconstruirLineas lla
+  - propuesta: Extraer buscarCabeceraPedido(), mover requires al top y separar persistencia de cálculo.
+  - ev: Leído quotationController.js completo.
+- [media/S] `backend/controllers/tesoreriaController.js`: anularCheque encuentra el asiento a revertir buscando por texto: AsiConcepto LIKE '%#NumeroCheque%' AND NOT LIKE '%ANULACI%' (353-361). Dos cheques con el mismo número (admitidos con confirmarDuplicado, 81-92) o un número corto que sea substring de otro revierten el asiento equivocado. Además `await
+  - propuesta: Guardar AsiId en TesoreriaCheques al generar el asiento y revertir por id; usar utils/rollbackSeguro.
+  - ev: Leído tesoreriaController.js completo.
+- [media/S] `backend/services/libroContadorService.js`: Cuentas del plan del contador y códigos de moneda/libro hardcodeados con '⚠ A CONFIRMAR' (23-41: CTA_DEUDORES, CTA_VENTAS, CTA_IVA, CUENTA_POR_METODO por id de método de pago, MONEDA_USD, LIBRO_COBROS).
+  - propuesta: Llevarlos a ConfiguracionGlobal o a una tabla de mapeo método→cuenta; dejar los defaults como fallback.
+  - ev: Leído libroContadorService.js completo.
+- [media/S] `backend/services/anticipoService.js`: Dos funciones definidas y nunca llamadas (crearTransaccionAnticipo 38-68 y resolverMetodoPagoAnticipo 21-35) cuyo contenido está copiado inline en aplicarAnticipoAOrden (158-184 y 187-194). Numera TcaNumeroDoc con MAX()+1 sin lock (64, 181). calcularSaldoEfectivo lee CueSaldoActual (90-100) y no el 
+  - propuesta: Usar las funciones ya escritas (o borrarlas), parametrizar, y tomar el saldo con getSaldoRealCuenta.
+  - ev: Leído anticipoService.js completo; grep dentro del archivo: crearTransaccionAnticipo( y resolverMetodoPagoAnticipo( sólo aparecen en su definición.
+- [media/S] `backend/services/contabilidadService.js`: UsuarioAlta por defecto = 70 en 5278 y 6021 (también pagosController:33 y quotationController 467/511/516), cuando cajaController 87-91 documenta que el usuario 70 no existe en Usuarios. Otros defaults: 1 (tesoreria 143/198/389/462, beneficiosController 173, cuentaDineroCliente 23, muchos `req.user?
+  - propuesta: Una constante USUARIO_SISTEMA única (estadosCuenta.job:38 ya la define y no la usa) y validarla contra Usuarios.
+  - ev: grep 'UsuarioAlta' con defaults 70/1/999 en los archivos citados; cajaController 87-91 leído.
+- [baja/S] `backend/controllers/cajaController.js`: module.exports principal en 4509-4530 y luego `module.exports.x =` sueltos en 4598, 4599, 4707, 4736, 4798 (guardarComprobante exportado dos veces: 4529 y 4599). conReintentoDeadlock local (28-43) con el mismo nombre que utils/reintentarDeadlock.conReintentoDeadlock pero otra firma. Requires inline 
+  - propuesta: Un solo module.exports al final, usar el helper de utils y mover todos los require al top.
+  - ev: Leído cajaController.js completo.
+- [baja/M] `backend/controllers/contabilidadController.js`: getClientesActivos (2988-3182) tiene tres SELECT casi idénticos (3064-3089, 3097-3128, 3136-3175). fmt() formateador de UI en 884. asientoVentaOrdenBilletera (25-57) con usuarioId: 1 fijo y un require (aplicarRecargoUrgenciaRollo, 58) después de la función. svc re-requerido en 3881 y 5947 (ya en 11)
+  - propuesta: Parametrizar el SELECT por modo, mover fmt a utils y los requires al top.
+  - ev: Leído contabilidadController.js completo.
+- [baja/M] `backend/services/contabilidadService.js`: getMovimientos (1728-2015) arma un 'saldo visual' para la pantalla (1948-2012): presentación dentro del service. SQL_EXCLUIR_ORDEN_YA_FACTURADA se define en 5921 pero se usa antes (2189, 2935, 3042) y lo importa cobranzasReportesController:26.
+  - propuesta: Mover el saldo visual al controller/front y SQL_EXCLUIR_ORDEN_YA_FACTURADA a un módulo de fragmentos SQL compartidos.
+  - ev: Leído contabilidadService.js por tramos.
+- [baja/S] `backend/controllers/profilesController.js`: saveProfile depende de la propiedad privada de mssql `transaction._aborted === false` para decidir el rollback (126). Chequea COL_LENGTH en runtime en cada llamada (11, 49-51).
+  - propuesta: Usar utils/rollbackSeguro y un cache del chequeo de columna como hace pricingService.
+  - ev: Leído profilesController.js completo.
+- [baja/S] `backend/jobs/cuadreSaldos.job.js`: SQL_CUENTAS interpola la tolerancia `${tol}` en 8 lugares (104-119) y el INSERT de la foto interpola los 11 contadores (261-263) en vez de usar .input(). Crea la tabla en runtime (60-83).
+  - propuesta: Parametrizar con .input() y mover el CREATE TABLE a scripts/.
+  - ev: Leído cuadreSaldos.job.js completo.
+- [baja/S] `backend/controllers/erpContabilidadController.js`: crearCuenta y actualizarCuenta no loguean el error (225-227, 266-268) a diferencia del resto del archivo; getLibroMayor arma `where` como string y lo pega en 3 queries (112, 134, 139) con cueIds interpolados (99).
+  - propuesta: Agregar logger.error y parametrizar la lista de CueId.
+  - ev: Leído erpContabilidadController.js completo.
+
+### Duplicación (19)
+- `backend/controllers/cajaController.js`, `backend/services/cajaService.js`, `backend/services/contabilidadService.js`, `backend/services/pagoService.js`, `backend/controllers/contabilidadController.js`: La imputación de un pago a deudas está escrita cuatro veces: cajaController.procesarPagoDeudaInterno (reducirDeuda 1651, PAGO 1659-1671, ImputacionPago 2345-2367, excedente→ANTICIPO 2373-2413); cajaService.procesarTransaccion PASO 3.5 (UPDATE crudo DeudaDocume
+  - propuesta: Un servicio de imputación único (contabilidadService.imputarPago + reducirDeuda) usado por caja, cajaService y controller; cajaService deja de escribir DeudaDocumento/ImputacionPago a mano.
+  - ev: Lectura de los cuatro archivos; grep 'imputarPago' fuera del service: 3 usos (contabilidadController 754/834/3484).
+- `backend/services/contabilidadService.js`, `backend/controllers/webOrdersController.js`, `backend/controllers/contabilidadController.js`, `backend/services/beneficiosService.js`, `backend/controllers/tiendaController.js`, `backend/services/cajaService.js`, `backend/jobs/cuadreSaldos.job.js`: La fórmula del saldo real (SUM(MovImporte) ... MovTipo NOT IN ('ORDEN','ORDEN_ANTICIPO')) aparece 33 veces: svc 15 (290-295, 641-646, 1243-1249, 3508-3513, 3650-3655, 4889-4894 getSaldoRealCuenta, 5101-5103, 6118-6120, 6281-6283, 6331-6338...), webOrdersContro
+  - propuesta: Exportar un fragmento SQL `SQL_SALDO_REAL(alias)` + la función getSaldoRealCuenta y reemplazar todas las copias.
+  - ev: grep -c de la fórmula en backend (bash de la sesión anterior): 33 ocurrencias en 8 archivos.
+- `backend/services/contabilidadService.js`, `backend/controllers/cfeController.js`, `backend/utils/montoTotalPedido.js`, `backend/controllers/presupuestosController.js`, `backend/jobs/contabilidadReconciliacionJob.js`, `backend/controllers/cotizacionesController.js`: 'SELECT TOP 1 CotDolar FROM Cotizaciones ORDER BY CotFecha DESC' repetido 54 veces en 21 archivos: svc 657, 719, 1030, 5320, 6089, 6133, 6346, 6453; cfe 483, 619, 754, 964, 2103, 2220, 2316; montoTotalPedido T_SQL_COTIZ 17-20; presupuestos 153; reconciliacionJ
+  - propuesta: Un helper getCotizacionDolar(pool|tx) con cache corto y piso 40 (montoTotalPedido ya tiene la versión SQL).
+  - ev: grep 'TOP 1 CotDolar' en backend: 54 ocurrencias en 21 archivos (sesión anterior).
+- `backend/controllers/cotizacionesController.js`, `backend/jobs/cotizacionBCU.job.js`: INSERT INTO Cotizaciones con CotIdCotizacion = MAX()+1 copiado tres veces: cotizacionesController 54-55 y 87-88, cotizacionBCU.job 105-106. Chequeo '¿ya hay cotización hoy?' también tres veces (41-45, 71-75, job 90-93).
+  - propuesta: insertarCotizacionDelDia(pool, valor) en el job, usada por el controller.
+  - ev: Leídos ambos archivos completos.
+- `backend/controllers/contabilidadController.js`, `backend/services/contabilidadService.js`: guardarPrecios (1757-1946) y guardarPreciosCiclo (2159-2291) son casi iguales (UPDATE m SET MovImporte 1870-1914 vs 2240-2261; resync billetera 1842-1859 vs 2215-2232) y hay una tercera copia dentro de svc.cerrarCicloCompleto 3273-3367.
+  - propuesta: Una función aplicarPreciosAPedido(pedidoId, lineas, tx) en el service, con flag 'ciclo'.
+  - ev: Lectura comparada de los tres rangos.
+- `backend/controllers/contabilidadController.js`, `backend/services/cajaService.js`: getPlanesCliente (1004-1061) y getPlanesMetros (2335-2370) devuelven lo mismo (sólo la primera está ruteada, routes:97). INSERT INTO PlanesMetros copiado en 1144-1160, 2405-2415 y cajaService 272-288.
+  - propuesta: Dejar getPlanesCliente, borrar/marcar SIN USO getPlanesMetros y crearPlanMetros, y un crearPlanMetros(tx, datos) único en el service.
+  - ev: grep en src de 'planes-metros|crearPlanMetros|getPlanesMetros': sin resultados; routes leído.
+- `backend/services/contabilidadService.js`, `backend/controllers/cajaController.js`, `backend/controllers/contabilidadController.js`, `backend/controllers/pagosController.js`, `backend/services/pagoService.js`, `backend/services/retiroService.js`: UPDATE del retiro a 'abonado' (estado 1→3, 5→8, PagIdPago, ORePasarPorCaja=0 + Histórico): svc 3807-3817, 5232-5242, 6414-6424; cajaController 2323-2334; contabilidadController 4896-4902; pagosController 61 y 83-104; pagoService 262-276; retiroService.registra
+  - propuesta: Todos llaman a retiroService.registrarPago / marcarRetiroAbonado(tx, …).
+  - ev: Lectura de los rangos; retiroService.js:747 comentario 'Centraliza la lógica que estaba duplicada en pagosController y webRetirosController'.
+- `backend/controllers/cajaController.js`: generarNotaCredito (2822-3174) y generarNotaDebito (3332-3541) comparten secuencia (2890-2907 / 3364-3381), INSERT DocumentosContables (2964-2988 / 3410-3434) y loop de líneas (2990-3025 / 3436-3471). _registrarDevolucionNC (2668-2777) repite el flujo de regis
+  - propuesta: generarNotaAjuste(tipo:'NC'|'ND'), registrarEgresoInterno(tx, datos) reutilizado por la devolución, helper siguienteNumero(tx, tipoDoc) y una vista/CTE para 'movimientos de caja del día'.
+  - ev: Lectura comparada de los rangos citados.
+- `backend/controllers/cfeController.js`, `backend/services/anticipoService.js`, `backend/services/pagoService.js`, `backend/controllers/pagosController.js`: INSERT INTO dbo.Pagos: cfeController 6 copias (798-807, 819-828, 2167-2176, 2188-2197, 2270-2279, 2291-2300), anticipoService 204-213, pagoService 245-250, pagosController 75-77. INSERT TransaccionesCaja: cfe 770-778 y 2243-2251, anticipoService 55-66 y 173-18
+  - propuesta: insertarPago(tx, {...}) e insertarTransaccionCaja(tx, {...}) en cajaService.
+  - ev: Lectura de los archivos citados.
+- `backend/services/cuentaDineroCliente.js`, `backend/services/beneficiosService.js`, `backend/controllers/contabilidadController.js`: INSERT INTO dbo.CuentasCliente con la misma lista de columnas: cuentaDineroCliente 44-48, beneficiosService 874-878 (bolsa) y 955-957 (billeteraComun), contabilidadController.reasignarOrdenesCliente 2073 (ésta usa la columna FechaAlta en vez de CueFechaAlta, d
+  - propuesta: Una sola función crearCuentaCliente(tx, {...}) en cuentaDineroCliente.js.
+  - ev: Lectura de los cuatro puntos; la discrepancia FechaAlta/CueFechaAlta se verificó en contabilidadController 2073 vs cuentaDineroCliente 46.
+- `backend/controllers/cobranzasReportesController.js`, `backend/controllers/contabilidadReportesController.js`, `backend/controllers/reportesOrdenesController.js`: condEsVenta (cobranzas 28-34 vs contabilidadReportes), VENDEDOR_APPLY (cobranzas 37-40 vs reportesOrdenes 38-41) y parseFecha (cobranzas 46-50 vs reportesOrdenes 31-35) copiados textualmente con comentario 'mismo criterio que…'.
+  - propuesta: backend/utils/sqlReportes.js con condEsVenta, VENDEDOR_APPLY y parseFechaIso.
+  - ev: Leídos los tres controllers; el comentario de cobranzas 18 y reportesOrdenes 30 admite la copia.
+- `backend/controllers/cajaController.js`, `backend/controllers/cfeController.js`: Cliente genérico 'Consumidor Final': LIKE '%Consumidor%' en cajaController 793-798, 1009-1012, 2743-2746 e ids hardcodeados 2089 en 1011, 2810, 2912, 3386 y cfeController 902, 1716 (con 100101 y 8741).
+  - propuesta: resolverClienteGenerico() con los ids en ConfiguracionGlobal.
+  - ev: grep '2089' y 'Consumidor' en los dos controllers.
+- `backend/controllers/cajaController.js`, `backend/services/cajaService.js`: _metodosChequeIds (cajaController 3615-3627) ≈ _metodosCheque (cajaService 2294-2306). Validación 'Saldo de cuenta' en cajaController 2249-2289 y cajaService 396-424 y 1037-1074. Query PedKey 2025-2037 ≈ cajaService 493-501.
+  - propuesta: Mover a cajaService y exportar.
+  - ev: Lectura comparada.
+- `backend/services/contabilidadService.js`: Query 'esSemanal' (4940-4947, 5113-5119, 5367-5373); pago sintético ANTICIPO_APLICADO (398-410, 3856-3865; también cajaService 1929-1941 y anticipoService 204-213); lista literal de tipos monetarios (946, 1261, 1300-1304; contabilidadController 1100, 3010, 319
+  - propuesta: esClienteSemanal(cliId), crearPagoSintetico(tx,…) y constante TIPOS_MONETARIOS exportada.
+  - ev: Lectura por tramos.
+- `backend/controllers/cfeController.js`: Resolución de empresa duplicada 457-468 vs 601-612; SQL_EMAIL_CLIENTE (69-77) usado una sola vez (2402) mientras 168 inlinea la misma expresión.
+  - propuesta: resolverEmpresa() y usar SQL_EMAIL_CLIENTE en 168.
+  - ev: Leído cfeController.js.
+- `backend/services/contabilidadCore.js`: resolverLineasDetalle (652-928): MODO 1 (757-848) y MODO 2 (868-921) con SQL casi igual.
+  - propuesta: Un builder de query parametrizado por modo.
+  - ev: Leído contabilidadCore.js completo.
+- `backend/routes/contabilidadRoutes.js`: Recálculo de PlaActivo de PlanesMetros copiado 3 veces (405-422, 577-594, 819-836) y regex /Plan\s*#?\s*(\d+)/i 3 veces (385-390, 557-562, 612).
+  - propuesta: recalcularPlaActivo(tx, planId) y extraerPlanDeObservaciones(texto) en planSobregiroService.
+  - ev: Leído contabilidadRoutes.js.
+- `backend/controllers/contabilidadController.js`, `backend/services/contabilidadService.js`: cubrirRetiroConBilletera (ctrl 5499-5691) repite la selección de cuentas candidatas y partes de consumirPrepagoDelCiclo (svc 5065-5255).
+  - propuesta: Usar la función del service desde el controller.
+  - ev: Lectura comparada.
+- `backend/controllers/cajaController.js`, `backend/controllers/cfeController.js`: resolverFechaCobro (cajaController 65-83) ≈ resolverFechaDocumento (cfeController 18-26).
+  - propuesta: utils/fechas.js.
+  - ev: Lectura.
+
+### Basura (15)
+- **ARCHIVAR** `backend/services/pagoService.js` [service deprecado]
+  - ev: Cabecera 1-16: '@deprecated 2026-06-08 … Este archivo se conserva solo como referencia histórica'. extras.json lo marca beUnreachable; grep de require('../services/pagoService'|./pagoService) en backend: ningún archivo lo importa (bash de esta sesión). Arrastra consigo contabilidadService.transforma
+- **SIN_USO** `backend/jobs/ciclosCredito.job.js` [job cron no-op]
+  - ev: ejecutarCierreCiclos (35-39) sólo loguea 'Cierre automático DESACTIVADO' y devuelve ceros; server.js:577 igual registra el cron (iniciarCronCiclos) que dispara ese no-op todas las noches. detenerCronCiclos y ejecutarCierreCiclos: 0 usos externos (grep backend+src). Funcionalmente muerto: decidir si 
+- **SIN_USO** `backend/scheduler.js` [scheduler nunca invocado (fuera del área, afecta al job de reconciliación)]
+  - ev: server.js:16 lo requiere pero grep 'startAutoSync(' en server.js no da ninguna llamada (sólo la definición en scheduler.js:53). cuadreSaldos.job 334-336 y server.js 592 lo confirman: 'startAutoSync está desactivado… todo lo agendado ahí nunca corre'. Consecuencia en mi área: contabilidadReconciliaci
+- **SIN_USO** `backend/services/emailService.js › sendPasswordResetMail y sendOrderConfirmation` [exports sin caller]
+  - ev: Comentario propio en 78: 'Legacy: code-based reset (kept for compatibility, unused)'. grep -w en backend+src: sendPasswordResetMail 0 usos, sendOrderConfirmation 0 usos (sendRegistrationMail sí: 2).
+- **SIN_USO** `backend/services/contabilidadService.js › reemplazarDeuda, hookReposicion, hookRetiroSinPago, forzarCierreTodosCiclosAbiertos, transformarMovimiento` [exports sin caller]
+  - ev: grep en backend fuera del service: reemplazarDeuda 0, hookReposicion 0, hookRetiroSinPago 0, forzarCierreTodosCiclosAbiertos sólo comentado en jobs/estadosCuenta.job.js:228, transformarMovimiento sólo en pagoService (deprecado). reemplazarDeuda (4730-4764) hace DELETE de DeudaDocumento: marcar SIN U
+- **SIN_USO** `backend/controllers/contabilidadController.js › getPlanesMetros, crearPlanMetros, previewEstadoCola, devolverConsumoRecurso` [handlers exportados sin ruta]
+  - ev: Ninguno aparece en contabilidadRoutes.js (leído completo); grep en src de 'devolver-consumo-recurso|cola/.*preview|planes-metros|crearPlanMetros|getPlanesMetros': sin resultados (el front usa 'devolver-consumo-saldo', otra ruta). El JSDoc de previewEstadoCola (2855) cita 'GET /cola/:ColIdCola/previe
+- **SIN_USO** `backend/controllers/cajaController.js › getSecuencias (614-625)` [handler exportado sin ruta]
+  - ev: Exportado en 4515; routes:217 usa secuenciasController.getSecuencias; grep 'caja.getSecuencias|cajaController.getSecuencias' en backend: ningún caller.
+- **SIN_USO** `backend/services/motorContable.js › aplicaRecurso, efectoSaldo, listarEventos, resolverLineasAsiento` [exports sin caller]
+  - ev: grep -w en backend fuera del archivo: 0 usos para los cuatro (getEvento 7, getReglasAsiento 3, generaDeuda 5, invalidarCache 2 sí se usan).
+- **SIN_USO** `backend/jobs/estadosCuenta.job.js › marcarCiclosVencidos y const USUARIO_SISTEMA` [función y constante sin uso]
+  - ev: marcarCiclosVencidos (140-154) exportada pero runEstadosCuentaBatch no la llama (223-274) y grep externo: 0. USUARIO_SISTEMA (38) definida y nunca referenciada (grep en el archivo: sólo la línea 38; en 207 se usa el literal 1).
+- **SIN_USO** `backend/services/pdfService.js › generarPdfIngreso, guardarPDF` [exports sin caller externo]
+  - ev: grep -w en backend+src fuera del archivo: generarPdfIngreso 0, guardarPDF 0 (guardarDesdeBase64 2, getBaseDir 2, generarPdfCierre 3, generarPdfEgreso 1).
+- **SIN_USO** `backend/services/contabilidadEmailService.js › verificarConexion` [export sin caller]
+  - ev: grep -w verificarConexion en backend+src fuera del archivo: 0.
+- **SIN_USO** `backend/services/envioEmailLog.js › historialDe` [export sin caller]
+  - ev: grep -w historialDe en backend (excluyendo el archivo): 0 resultados.
+- **SIN_USO** `backend/services/contabilidadCore.js › marcarDocumentoComoPagado, aplicarDesglosePcd, getCuentaId` [exports sin caller externo]
+  - ev: grep -w en backend fuera del archivo: 0 usos cada uno (enriquecerLineasDocumento 1, anularDocumentoContable 2, actualizarFirmaCFE 2 sí). Uso interno dentro del propio core no lo verifiqué: marcar, no borrar.
+- **SIN_USO** `backend/services/beneficiosService.js › esRolAprobador, ROLES_APRUEBAN, reglaAFila, rangoAlcance, resolverArticulo, precioMotor, billeteraComun, saldoRealCuenta (como exports)` [exports innecesarios (sí se usan internamente)]
+  - ev: grep -w fuera del archivo (backend+src): 0 para cada uno; normalizaRol da 7 pero son los de middleware/authMiddleware.js (otra función homónima, 64). Sólo recortar la lista de module.exports 1025-1034.
+- **SIN_USO** `backend/utils/montoTotalPedido.js › sqlOrdenTieneAsiento (export)` [export sin caller externo]
+  - ev: grafo unusedExports lo marca; grep -w fuera del archivo: 0 (se usa internamente en 114 y 173). Sólo quitar del export 353.
+
+### Código muerto en vivos (12)
+- `backend/services/cajaService.js` (1692-1745): Bloque de ~54 líneas de código comentado ('RC') dentro de procesarTransaccion.
+  - ev: Leído el rango: todo son líneas que empiezan con // con SQL y lógica vieja.
+- `backend/controllers/cajaController.js` (3495-3508): Bloque SQL comentado (14 líneas) dentro de generarNotaDebito.
+  - ev: Leído el rango.
+- `backend/controllers/contabilidadController.js` (4749-4754): `if (false) return ...` con comentario 'legacy placeholder' dentro de consumirRecursoAdelantado.
+  - ev: Leído el rango; la condición es literal false.
+- `backend/services/cajaService.js` (2308-2313): _tipoMovimientoPago: stub que devuelve siempre 'PAGO' sin mirar el argumento.
+  - ev: Leída la función.
+- `backend/services/anticipoService.js` (21-68): crearTransaccionAnticipo y resolverMetodoPagoAnticipo definidas, no exportadas y nunca llamadas; su cuerpo está copiado inline en aplicarAnticipoAOrden 158-194.
+  - ev: Leído el archivo completo: los nombres sólo aparecen en su definición.
+- `backend/jobs/ciclosCredito.job.js` (35-39): ejecutarCierreCiclos es un no-op ('DESACTIVADO') que el cron sigue disparando a diario (79-84).
+  - ev: Leído el archivo; server.js:577 llama iniciarCronCiclos.
+- `backend/jobs/estadosCuenta.job.js` (38, 140-154, 228): USUARIO_SISTEMA sin uso; marcarCiclosVencidos exportada y no llamada; llamada a forzarCierreTodosCiclosAbiertos comentada.
+  - ev: Leído el archivo; grep externo 0 usos.
+- `backend/services/contabilidadService.js` (4640-4642, 5931-5999): Cabecera de sección 'EXPORTS' huérfana en 4640 y module.exports en 5931 cuando procesarEventoContable se define después (6010-6502): el código posterior al export parece muerto a primera vista aunque 
+  - ev: Leído por tramos.
+- `backend/controllers/profilesController.js` (149-160): Comentario-borrador de diseño ('Como no tengo acceso directo a la tabla Clientes del ERP… haré un LEFT JOIN…') que ya no describe lo que hace el código.
+  - ev: Leído el archivo.
+- `backend/routes/contabilidadRoutes.js` (173, 188, 190, 246): Comentarios '// NUEVO' sobre código que ya es estable (ERP, uploads).
+  - ev: Leído el archivo.
+- `backend/services/emailService.js` (78-94): sendPasswordResetMail marcado 'unused' por su propio comentario y sin callers.
+  - ev: grep -w sendPasswordResetMail en backend+src fuera del archivo: 0.
+- `backend/controllers/beneficiosService (backend/services/beneficiosService.js)` (1025-1034): Lista de exports con 8 símbolos que nadie importa (ver basura).
+  - ev: grep -w por símbolo fuera del archivo: 0.
+
+### Mal ubicados (11)
+- `backend/routes/contabilidadRoutes.js (277-845)` → backend/controllers/planesMetrosController.js (o contabilidadController) + utils para el recálculo de PlaActivo. — Lógica de negocio, SQL y transacciones en el archivo de rutas (editar/eliminar/insertar metros, reconciliación, buscar documentos).
+- `backend/controllers/cajaController.js › procesarPagoDeudaInterno (1483-2579), _registrarDevolucionNC, generarNotaCredito/Debito` → backend/services/cobroService.js (o cajaService) exponiendo funciones puras (tx, datos) → resultado. — Transacciones contables completas dentro de un controller HTTP; otros controllers (webOrdersController 5637) lo llaman con un res falso para reutilizarlo.
+- `backend/controllers/contabilidadController.js › asientoVentaOrdenBilletera (25-57), fmt() (884), consumirRecursoAdelantado (4122-4765), cubrirRetiroConBilletera (5499-5691)` → contabilidadCore / contabilidadService para la lógica; utils/formato.js para fmt. — Asientos contables y reglas de consumo de recursos viven en el controller; fmt es formateo de presentación.
+- `backend/services/contabilidadService.js › getMovimientos saldo visual (1948-2012)` → Controller o front (src). — Cálculo de presentación ('saldo visual' para la grilla) dentro del service de dominio.
+- `backend/controllers/pricesController.js (11, 66, 88) › require('./tiendaController').ensureTiendaSchema` → Sólo en el arranque (server.js) o en backend/scripts/*.sql. — Un controller de precios ejecuta DDL de la tienda en cada request por si faltan columnas; server.js:310 ya corre ensureTiendaSchema al arrancar.
+- `backend/controllers/presupuestosController.js › ensureTablas (26-72) y backend/jobs/cuadreSaldos.job.js › asegurarTabla (60-83)` → backend/scripts/ con el resto de las migraciones. — CREATE TABLE/INDEX en runtime desde controller/job.
+- `backend/services/pdfService.js (56-60)` → ConfiguracionGlobal EMPRESA_* (contabilidadEmailService 166-171 ya las lee). — Razón social, dirección y RUC de la empresa hardcodeados como fallback en código.
+- `backend/services/libroContadorService.js (23-41)` → ConfiguracionGlobal o tabla Cont_MapeoContador. — Plan de cuentas del contador y mapeo método de pago→cuenta hardcodeados.
+- `backend/services/contabilidadService.js › SQL_EXCLUIR_ORDEN_YA_FACTURADA (5921)` → backend/utils/sqlFragmentos.js junto con condEsVenta/VENDEDOR_APPLY/SQL_SALDO_REAL. — Fragmento SQL compartido (lo importa cobranzasReportesController:26) definido al final de un service de 6500 líneas y usado antes de su definición (2189, 2935, 3042).
+- `backend/controllers/pagosController.js › realizarPago (64-180)` → Delegar en backend/services/retiroService.js. — Repite el flujo que retiroService.registrarPago centraliza.
+- `backend/services/emailService.js` → Dejarlo donde está pero sacarlo del área contable en futuras auditorías; el mailer contable es contabilidadEmailService  — Es el mailer del portal (activación, reset de contraseña, Resend); está en el lote 'contabilidad' sólo por nombre. No es contable.
+
+### Patrones de riesgo (15)
+- catch vacío / rollback mudo (35) — cajaController 890, 1095, 1470, 3800, 4593, 4727-4729, 4790 · contabilidadController 874, 1496, 1942, 2109, 2287, 2444 · cajaService 2172, 2987, 3062 · contabilidadRoutes 428, 748, 842 · contabilidadS — Regla del dueño: nunca catch {} mudo. Varios tapan el rollback o el chequeo de esquema; al menos loguear en warn.
+- SQL con valores interpolados en el template (IN (...join), ids, nombres de columna/tabla) (70) — cajaController 1406 ('${evtCodigo}'), 2303/2320/2327, 2533, 4453, 4622-4692, 4778 (dbo.${tabla}) · cajaService 839, 1137, 1174, 1220, 1799, 2546, 2635, 2656, 2678, 2714 · contabilidadService 1047, 140 — La mayoría son ids numéricos ya parseados (riesgo bajo de inyección) pero impiden plan cache y hay strings (3228, 4778, 1406). Centralizar un helper inList(req, 'p', ids).
+- Controller llamando a otro controller con un `res` falso (fakeRes / _invocarHandler) (10) — cajaController 1106-1116, 1188, 1227 · contabilidadController 5657-5660 · webOrdersController 5533, 5584, 5637, 5931 · logisticaWmsController 253, 426, 487 — Síntoma de que la lógica está en controllers y no en services; cualquier cambio de formato de respuesta rompe a los callers internos.
+- Responder al cliente y seguir ejecutando lógica contable sin control (fire-and-forget) (3) — pagosController 190-223 (res.json y después procesarEventoContable + generarCFEDesdeOrdenesDirectas) · pagoService 365-392 · cajaService.generarCFEDesdeOrdenesDirectas post-commit desde pagosControlle — Si falla la parte contable el usuario ya vio 'OK'; sólo queda un logger.error.
+- Escrituras contables crudas salteando los helpers centrales (6) — cajaService INSERT MovimientosCuenta 656-676 (no registrarMovimiento), UPDATE DeudaDocumento 1236-1246 (no reducirDeuda), INSERT DeudaDocumento 1904-1919 (no crearDeudaDocumento) · cfeController INSER — Es la fuente de los descuadres que el cuadre nocturno detecta (CueSaldoActual ≠ libro, cargos sin documento).
+- Usuario del sistema por defecto mágico (70 / 1 / 999) (20) — 70: contabilidadService 5278, 6021 · pagosController 33 · quotationController 467, 511, 516 (cajaController 87-91 dice que 70 no existe en Usuarios) · 1: tesoreriaController 143, 198, 389, 462 · benef — La auditoría de quién hizo qué queda rota; una sola constante validada.
+- IDs y códigos contables hardcodeados (8) — cfeController 119/118/411 (2321-2322), '1.1.1','1.1.2','2.3.1','1.2.1','1.2.2' (988-1009) · cajaController '4.2.1'/'5.2.01' (53-54) · libroContadorService 23-41 · cliente genérico 2089/8741/100101 (ca — contabilidadCore.CUENTAS ya es el lugar para los códigos; los ids de cliente a ConfiguracionGlobal.
+- Numeración con MAX()+1 sin bloqueo (6) — anticipoService 64, 181 (TcaNumeroDoc ANTICIPO) · pagoService 176 (COBRO_WEB) · cotizacionesController 55, 88 y cotizacionBCU.job 106 (CotIdCotizacion) — codigoVenta.js (applock) y presupuestosController.proximoNumero (UPDLOCK/HOLDLOCK) muestran cómo hacerlo; el 18/09 ya hubo un VEN duplicado por esto.
+- Chequeo de esquema (¿existe la tabla/columna?) en runtime, cacheado por proceso (14) — beneficiosService 43-51 · envioEmailLog 35-47 · profilesController 11, 49-51 · pricingService 21-37 · presupuestosController 25-72 · cuadreSaldos 60-83 · pricesController 11/66/88 · cajaController/cfe — productsIntegrationController 613 lo justifica: 'prod no corre migraciones'. Es deuda estructural: cada feature nueva suma otro IF OBJECT_ID.
+- Requires inline y dependencias circulares entre services (40) — contabilidadService↔urgenciaDescuentoRolloService (svc:22 / urg:142) · contabilidadService↔beneficiosService (ben 896, 975 / svc 4986, 6164) · beneficiosService↔pricingService (ben 397 / pricing 651)  — Los ciclos se evitan a mano con require en tiempo de llamada; conviene cortar el grafo (beneficios no debería requerir contabilidad ni viceversa).
+- Datos de negocio codificados como texto libre (observaciones/conceptos) y leídos con LIKE/regex (8) — tesoreriaController 353-361 (asiento por LIKE '%#num%') · contabilidadRoutes regex 'Plan #' 385-390, 557-562, 612 · marcas CUBIERTO_*/MATERIAL_CUBIERTO_* en MovObservaciones (reportesOrdenesController — Frágil ante cambios de texto; ya hay 9 cargos (reportesOrdenes cabecera) con consumo sin la marca.
+- Dos verdades para el saldo: CueSaldoActual (columna) vs libro (5) — anticipoService 90-100 (lee CueSaldoActual) · planSobregiroService 70 · contabilidadEmailService 239, 344 · pagoService 320-325 · contabilidadController.recomputarSaldoCuenta 1706-1724 (fórmula distin — cuadreSaldos.job cuenta 'ColumnaMal' justamente por esto; mientras la columna exista, todo lector debería usar getSaldoRealCuenta.
+- Logs verbosos en caliente (4) — pricingService 737 logger.info(traceDecision) en cada línea cotizada · pagosController 34 logger.info(req.body) · mercadoPagoService 69 payload completo · pricesController 35 logger.info por listado — Impacta /home/logs (ver memoria tamaño de logs) y mezcla datos de clientes en el log.
+- TLS sin validar certificado (1) — contabilidadEmailService 46 tls: { rejectUnauthorized: false } — Innecesario con Brevo; sacar o justificar.
+- Transacción con rollback directo en catch (sin rollbackSeguro) y dependencia de internals de mssql (7) — tesoreriaController 159, 206, 404, 471 · motorContableController 126, 151 · profilesController 126 (transaction._aborted) — utils/rollbackSeguro.js ya existe y lo usan caja/cfe.
+
+## Backend · Pedidos web, portal, TPU/DTF/TizadaPro, solicitudes de vendedor, archivos (archivos revisados: 96)
+NOTAS: Leídos completos: webOrdersController (7568), webRetirosController, ordenesRetiroController, retiroService, tiendaController, webAuthController, los 10 solicitudesVendedor*, tizadaPro* (Api, Arte, Editables, Service), tpuMatrizService, dtfBlancoService, quitarFondoService, moldeContornoService, fichaPedidoPdf, fileProcessingService, measurementController, ticketsController, vendedorVistaController, consultasClienteService, consultasClienteController, driveService, sheetsService, sheetsRawMappingService, handyService, trackingService, localFileService, n8nService, cryptoService, pedidoCompletoService, bultosPedidoService, webRecursosController, webContentController, webDesignerController, clientOrdersController, pedidosController, colorController, importOnDemandController, los 10 multer*/impersonarClienteInterno, los 10 utils, todas las routes del área (webOrders, prendasOrders, webRetiros, getwayOrdenesRetiro, getwayLugaresRetiro, getwayOrdenes, solicitudesVendedor, tizadaProAviso, measurement, tickets, googleAuth), medir_trazo_texturas.py y quitar_fondo.py. Parciales: prendasOrdersController (leído 1–680, 1420–1680, 2470–2730 y header; el resto solo por diff automático contra webOrders), tpu_matriz.py (docstring 1–77, constantes 96–133, analizar/main 1855–1944; cuerpo 140–1850 solo por conteo de defs), svg_trazos.py y dtf_blanco.py (solo defs), tpuPlanchaService/tpuPltService/googleSheetsService/pagoService/RestApiService/apiService/erpService/datosTela (solo headers y greps
+
+### Refactor (25)
+- [alta/L] `backend/controllers/webOrdersController.js` (7568 líneas): Un solo controller con 12 responsabilidades distintas: alta de pedidos (221–2181), upload de archivos (2216–2542), listado del cliente (2544–2771), DDL de esquema (2776–2812), aprobación/rechazo (2817–2989), matrices TPU y visor 3D (2995–3730), borrado de proyectos (3777–3981), CMS de áreas (4014–41
+  - propuesta: Partir por dominio en: pedidosPortalController (alta+upload+listado), tpuPortalController (+ mover texturas/boceto a tpuMatrizService), retirosPortalController (pickup+TOTEM), billeteraPortalController, pagosPortalController (Handy/MP/webhooks), comprobantesPdfService (los dos PDFs). Dejar webOrders
+  - ev: wc -l = 7568. Mapa de responsabilidades por lectura completa del archivo. grep -c 'require(' = 87; grep -cE '^\s+.*require\(' = 73. Importadores según grafo.json edges hacia webOrdersController.
+- [alta/L] `backend/controllers/webOrdersController.js` (1961 líneas): createWebOrder es UNA función de ~1961 líneas (221–2181): normaliza 3 formatos de payload (389–741), resuelve artículos (773–857), y dentro de una transacción por cada ejecución hace código de orden, UM/variante, ficha ECOUV, bordado (1277–1396), matriz TPU (1398–1406), tela de cliente (1408–1511), 
+  - propuesta: Extraer un pipeline: normalizarPayload() → resolverArticulos() → por ejecución: insertarOrden(), aplicarBordado(), aplicarTelaCliente(), crearPlaceholdersArchivos(), aplicarTerminaciones() → postCommit(). Los códigos de artículo a una tabla/constante única (ver duplicación con sheetsRawMappingServic
+  - ev: Lectura de webOrdersController.js 221–2181; transacción 893–2118; commit en 2118; setImmediate 2156–2170; literales en 687–711 y 1398–1406.
+- [alta/M] `backend/controllers/webOrdersController.js` (760 líneas): handyWebhook (6334–6707, 373 líneas) y mpWebhook (7006–7393, 387 líneas) repiten el mismo flujo con bloques casi idénticos: retiro diferido (6462–6534 vs 7199–7260), guardia de doble cobro (6544–6578 vs 7270–7296), procesarTransaccion (6595–6635 vs 7313–7337), comprobante (6643–6663 vs 7354–7376). A
+  - propuesta: Un confirmarPagoPortal({ proveedor, transaccion, monto, retiroDiferido }) que haga retiro + guardia + procesarTransaccion + comprobante; los webhooks solo parsean y validan firma. Unificar los IDs de método de pago en una constante y revisar el 8 vs 10.
+  - ev: Lectura de 6334–6707 y 7006–7393; comparación de bloques. 6219–6220 vs 7331 leídos.
+- [alta/S] `backend/controllers/webOrdersController.js` (18 líneas): deleteOrderBundle arma SQL por concatenación: `DetallesCancelacion = '${razon.trim().replace(/'/g, "''")}' WHERE OrdenID = ${oid}` (3946–3947) y seis DELETE con `WHERE OrdenID = ${oid}` (3957–3962). El escape manual de comillas es el único freno contra inyección en razon.
+  - propuesta: Pasar a parámetros (.input('Razon', sql.NVarChar(sql.MAX), razon), .input('OID', sql.Int, oid)). Es un cambio chico y aislado.
+  - ev: sed -n '3944,3964p' backend/controllers/webOrdersController.js (visto en esta sesión).
+- [media/M] `backend/controllers/webOrdersController.js` (327 líneas): uploadOrderFile (2216–2542) hace en una sola función: chequeo multipágina, medida fija, subida a Drive, thumbnail, capa blanca DTF, perfil ICC, preflight, hold de diseñador y activación. Con catch vacío en 2539 y requires inline de sharp, preflight, colorProfile, dtfBlancoService, driveService.
+  - propuesta: Mover a un archivosPedidoService con pasos encadenados (medir → subir → derivar → activar) y dejar el handler como adaptador HTTP.
+  - ev: Lectura de 2216–2542; catch vacíos en 2201 y 2539.
+- [media/M] `backend/controllers/webOrdersController.js` (1090 líneas): Billetera/beneficios/recargas (5043–6131) viven en el controller de pedidos y llaman a otros controllers con un res falso: cfeController.crearFacturaManual (5533, 5584), cajaController.registrarPagoAnticipo (5637), contabilidadController.consumirDesdeSaldo (5931). Repite 8 veces el lookup de CliIdCl
+  - propuesta: billeteraPortalService con resolverCliIdCliente(), cotizacionDolar(), saldoCuenta() y que llame a servicios (no controllers) de CFE/caja/contabilidad.
+  - ev: Lectura de 5043–6131. grep -F 'SELECT CliIdCliente FROM dbo.Clientes WITH(NOLOCK) WHERE CodCliente = @Cod' → 8 en webOrders; 'SELECT TOP 1 CotDolar FROM dbo.Cotizaciones' → 5; "NOT IN ('ORDEN','ORDEN_
+- [alta/L] `backend/controllers/prendasOrdersController.js` (5805 líneas): Fork declarado del webOrdersController (header 1–28: 'Copia FIEL tomada el 16-07-2026… Solo se usa createWebOrder… El resto de los exports… están MUERTOS'). 77,8% de las líneas (4514/5805) son bloques idénticos al original; 15 funciones son copia byte a byte (totem*, generatePickupReceipt, createHan
+  - propuesta: Ahora: marcar SIN USO en cabecera todos los exports que no usan prendasOrdersRoutes/logisticaWms/pedidosExternos (lista en codigoMuertoEnVivos) y borrar imports que solo usan ellos. Después: dejar el archivo en createWebOrder + WMS (281–514) y, cuando se parta webOrders, que ambos createWebOrder com
+  - ev: cmp_fork.py (difflib) sobre ambos archivos: 4514 líneas en bloques iguales, 81,4% existen literal en web; createWebOrder 1300 líneas iguales (58,7%). grep -rnoE 'prendasOrdersController\.[A-Za-z_]+' b
+- [alta/M] `backend/controllers/ordenesRetiroController.js` (370 líneas): editarCostoOrden (1133–1502) son 370 líneas de lógica contable (buscar ERP, mov contable, recalcular cargo, caja) adentro del controller de órdenes de retiro; junto con cancelarOrdenCaja (1636–1769), exonerarOrdenCaja (1773–1837), revertirExoneracionOrden (1885–1942) y getDesgloseOrdenesCaja (1844–1
+  - propuesta: Mover todo el bloque /caja/orden/* a cajaOrdenesController + cajaService; dejar en ordenesRetiro solo retiros.
+  - ev: Lectura completa del archivo; rutas /caja/orden/* en getwayOrdenesRetiro.js 11–18.
+- [alta/S] `backend/controllers/webRetirosController.js` (1 líneas): seedConfigEstantes (1724–1778) emite en 1761 `ordenesRetiro: (ordenesDeRetiro || ordenesParaEntregar || [])` y ninguna de las dos variables existe en esa función (ordenesDeRetiro se declara en 854, en otra función) → ReferenceError después del commit: el seed queda hecho pero la respuesta es 500 y e
+  - propuesta: Sacar el emit o pasar un array real. Verificar si el endpoint /estantes/config/seed se usa (grep en src = 0) y marcarlo SIN USO si no.
+  - ev: sed -n '1757,1764p'; grep -nE '(const|let|var)\s+(ordenesDeRetiro|ordenesParaEntregar)' → solo 854. grep -rn 'web-retiros/estantes/config/seed' src → 0.
+- [media/M] `backend/controllers/webRetirosController.js` (510 líneas): Seis reportes casi iguales: getCuadreDiario (1070–1179), getHistorialPagos (1184–1288), getPagosOnlineFallidos (1293–1350), getPagosOnline (1355–1433), getPagosMp (1439–1512), getPagosMpFallidos (1517–1580). Cambian proveedor y estado, el resto es la misma query y el mismo armado de respuesta. Tres 
+  - propuesta: Un listarPagosOnline({ proveedor: 'HANDY'|'MP', estado: 'OK'|'FALLIDO', desde, hasta }) y seis wrappers finitos, o un solo endpoint con query params.
+  - ev: Lectura de 1070–1580; grep -n 'console\.' webRetirosController.js → 1176, 1285, 1347.
+- [baja/S] `backend/controllers/webRetirosController.js` (32 líneas): crearRetiro (15–46) en realidad hace un UPDATE de OrdenesRetiro (no crea nada) y comparte nombre con retiroService.crearRetiro, que sí inserta. El endpoint /ingresar no tiene llamadas en src.
+  - propuesta: Renombrar a actualizarRetiroWeb o marcar SIN USO si nadie externo lo pega (no lo sé: puede llamarlo un sistema externo).
+  - ev: Lectura de 15–46 (UPDATE OrdenesRetiro). grep -F 'web-retiros/ingresar' src → 0.
+- [media/M] `backend/services/retiroService.js` (305 líneas): crearRetiro (317–622) es una función de 305 líneas que mezcla cálculo de cobertura (rollo/plan/billetera/ciclo/adelanto), decisión de estado (1/3/9), inserts, devoluciones de tela e IN con join de ids (613). Dos helpers definidos y nunca llamados (ver codigoMuertoEnVivos). Las secuencias se crean co
+  - propuesta: Separar calcularCobertura() (pura, testeable) de persistirRetiro(); mover CREATE SEQUENCE a migración.
+  - ev: Lectura completa; module.exports línea 912 = { crearRetiro, marcarEntregado, registrarPago }.
+- [alta/M] `backend/controllers/tiendaController.js` (989 líneas): ensureTiendaSchema (14–91) ejecuta 12 ALTER/CREATE y 13 COL_LENGTH en runtime (lo llama server.js:310 en cada GET /api/precios-publicos). fetchStockWms (96–132) manda TEXTO SQL con `${depositoId}` interpolado por HTTP a WMS_SQL_URL con default 'http://3.85.26.173:5005'. El admin de vitrina (139–292)
+  - propuesta: DDL a migración; fetchStockWms a un cliente WMS con parámetros; admin de vitrina a tiendaAdminController; helpers compartidos con webOrders (clienteBloqueado, cotizacionDolar).
+  - ev: Lectura completa; grep -c 'COL_LENGTH' = 13; grep -cE 'ALTER TABLE|CREATE TABLE' = 12; server.js:310 visto en esta sesión.
+- [media/S] `backend/controllers/webAuthController.js` (175 líneas): activationPage (651–825) son 175 líneas de HTML/CSS/JS inline (canvas con partículas) con 'https://user.com.uy/login' hardcodeado, dentro del controller de auth. Queda también un log de debug en producción: 187 `🔍 DEBUG - DB WebResetPassword…`.
+  - propuesta: Mover la página a public/ o a una plantilla; URL desde env; borrar el log de 187.
+  - ev: Lectura de 651–825 y 187.
+- [media/S] `backend/routes/prendasOrdersRoutes.js` (190 líneas): Archivo de rutas con handlers y SQL inline: /productos-terminados (52–121, con COL_LENGTH como feature flag), /productos-terminados/:proIdProducto/servicios (135–241, `IN (${ids.join(',')})` en 197) y /ping (244, 0 usos en src).
+  - propuesta: Mover los dos handlers a un controller (productosTerminadosController) y dejar el router declarativo.
+  - ev: Lectura completa del archivo; grep -F 'prendas-orders/ping' src → 0.
+- [media/M] `backend/routes/webOrdersRoutes.js` (290 líneas): Monta 5 dominios (web-orders, consultas 163–168, tienda 235–248, API de integración con clave 171–182 y default 'macrosoft-secret-key', Drive OAuth 185–205, upload CMS 256–285), define dos multer inline (208–218 diskStorage 5GB; 256–269) y handlers inline (/file-thumbnail 12–23, /area-mapping 61, /p
+  - propuesta: Separar en routers por dominio; multer a middleware/; Drive OAuth unificar con googleAuthRoutes y protegerlo; sacar el default del secret.
+  - ev: Lectura completa del archivo.
+- [media/M] `backend/controllers/measurementController.js` (859 líneas): Cinco bloques casi idénticos de 'resolver nombre/extensión → stream desde Drive/http/disco': processBatch (80–184), processOrdersBatch (187–372), downloadOrdersZip (525–679), buildFilesManifest (709–764), downloadSingleFile (785–827); tres sanitize distintos (113, 233/572, sanitizeFileName 690); hel
+  - propuesta: Un archivoFuente.resolver(archivo) → { nombre, stream } reutilizado por los cinco; importar las unidades desde fileProcessingService; agregar verifyToken.
+  - ev: Lectura completa de measurementController.js y measurementRoutes.js; grep de 'const getDriveId' → 4 definiciones en backend.
+- [media/M] `backend/services/fileProcessingService.js` (345 líneas): processOrderListInternal (56–401) es una función de 345 líneas disparada con setImmediate que requiere ordersController adentro (385) 'para no crear un ciclo' — ordersController la importa a ella.
+  - propuesta: Sacar lo que necesita de ordersController a un service compartido y partir la función por etapa (listar → medir → persistir → notificar).
+  - ev: Lectura completa; grafo.json: ordersController → fileProcessingService y fileProcessingService → ordersController (require en 385).
+- [media/M] `backend/services/solicitudesVendedorService.js` (1257 líneas): Fachada (1176–1249) que inyecta objetos 'base' en los módulos hermanos vía require perezoso y exporta _baseTizadaPro (1252) que TizadaPro vuelve a requerir en 778 → ciclo Service ↔ TizadaPro. 19 require() adentro de funciones. obtener() (929–1024) requiere FichaProducto, Tizadas, Checklist y Convers
+  - propuesta: Un módulo solicitudesVendedorBase.js con lo compartido (fallo, norm, txt, jsonObj, tieneFicha, consultas base) que todos importen arriba; Service deja de ser fachada circular.
+  - ev: Lectura completa; grep -cE '^\s+.*require\(' = 19; TizadaPro.js:778 require('./solicitudesVendedorService')._baseTizadaPro().
+- [media/S] `backend/services/tpuMatrizService.js` (479 líneas): procesarOrden (251–380) requiere webOrdersController en 345 para guardarTexturasOrden, y webOrdersController requiere tpuMatrizService 5 veces inline → ciclo. carpetaTexturas está duplicada (111–117 vs webOrders 3407–3415). setInterval a nivel módulo (122–137) y cola serial propia (231–249) igual qu
+  - propuesta: Mover guardarTexturasOrden/leerTexturasOrden/carpetaTexturas de webOrders a tpuMatrizService (o tpuTexturasService) y que el controller lo importe; una colaSerial() compartida para los tres servicios Python.
+  - ev: Lectura completa; webOrdersController 3386–3562; grafo edges webOrders↔tpuMatrizService.
+- [media/M] `backend/controllers/importOnDemandController.js` (568 líneas): previewOnDemand (9–430) tiene 420 líneas; el bloque de mapeo y corrección de metros (58–111) está copiado literal en importOnDemand (477–528); importOnDemand se llama a sí mismo por HTTP (540: axios.post http://localhost:${port}/api/web-orders/integration/create) en vez de invocar la función; apiKey
+  - propuesta: Extraer normalizarOrdenesSheets(); llamar directo al controller de integración; corregir 405 (reqCodClienteStr); apiKey a env; sacar el DEBUG.
+  - ev: Lectura completa del archivo (tool-results bbl2nxjhd); grep -n 'reqCodCliente\b' → solo 405.
+- [baja/M] `backend/services/sheetsRawMappingService.js` (747 líneas): mapECOUV (84–123) ≈ mapDF (125–169) y mapIMD (243–396) ≈ mapSB (399–611): ~150 líneas repetidas de detección corte/costura/bordado con códigos '1375'/90, '115'/36, '1567'/434 (también en mapGenerico 704–709 y en webOrders/importOnDemand). module.exports repetido en 745 y 747.
+  - propuesta: Un mapHoja(config) parametrizado por hoja; tabla única de códigos de servicio. Borrar la línea 747.
+  - ev: Lectura completa; sed -n '743,747p' muestra los dos module.exports. Último commit 2026-05-28 (estable).
+- [media/S] `backend/controllers/webOrdersController.js` (37 líneas): ensureColFechaAprobacion (2776–2812) hace ALTER TABLE y CREATE TABLE OrdenTexturasTPU en runtime y la llaman ordersController (×5) y rollsController (×2) además de webOrders.
+  - propuesta: Correr el DDL una vez como migración y borrar la función (dejar un comentario con la fecha). Mismo criterio para handyService.ensureHandyColumns (15–24), consultasClienteService.correrEsquema (61–149), colorController.ensureChartTables (74–102), retiroService secuencias (32–47).
+  - ev: Lectura de 2776–2812; grep -rn 'ensureColFechaAprobacion' backend → ordersController 5, rollsController 2.
+- [baja/S] `backend/controllers/colorController.js` (268 líneas): Rutas absolutas de producción como default: SCRIPT_PATH '/var/www/sistema-produccion/scripts/igualador_color.py' (5), ICC_DIR '/mnt/user-data/uploads' (7–10); spawn de python con el patrón duplicado en match (23–52) y calibrate (240–258); crea tablas en runtime (74–102).
+  - propuesta: Centralizar resolverPython/correrPython con tpuMatrizService; defaults relativos a __dirname; DDL a migración.
+  - ev: Lectura completa (tool-results bbl2nxjhd).
+- [baja/S] `backend/services/solicitudesVendedorTizadaPro.js` (114 líneas): enviar (574–688) junta armado de ZIP, descarga de Drive, firma y POST en 114 líneas; polling iniciarSondeo arranca al requerir tizadaProAvisoRoutes (línea 14) como efecto secundario de montar una ruta.
+  - propuesta: Partir enviar en prepararPaquete() + postear(); arrancar el sondeo desde server.js junto a los otros jobs.
+  - ev: Lectura completa de TizadaPro.js y tizadaProAvisoRoutes.js:14.
+
+### Duplicación (14)
+- `backend/controllers/webOrdersController.js`, `backend/controllers/prendasOrdersController.js`: 4514 de 5805 líneas de prendas son bloques idénticos a webOrders. Funciones copiadas al 100%: totemLookup (web 4405–4461 / prendas 3931–3987), totemLookupByClient, totemCreatePickup, totemAnnounce, parseAmount, generatePickupReceipt (4898–4968 / 4390–4460), cr
+  - propuesta: Marcar SIN USO todo lo que no sea createWebOrder + WMS en prendas (la casa no borra). A futuro: pipeline de alta compartido con hooks por tipo de pedido.
+  - ev: cmp_fork.py con difflib.SequenceMatcher sobre ambos archivos; ratios por función calculados en esta auditoría.
+- `backend/controllers/webOrdersController.js`: Dentro del mismo archivo: crearRetiro + wrapper de transacción 6 veces (4567–4582, 4831–4857, 5945–5970, 6061–6083, 6466–6482, 7204–7220); UPDATE OrdenesRetiro SET AgenciaOtra/ReceptorNombre 5 veces (4860–4873, 5971–5974, 6084–6087, 6488–6499, 7225–7236); SQL 
+  - propuesta: crearRetiroConDatosEnvio(tx, …) único; una query base de pickup con filtro por cliente; clienteBloqueado(pool, cod) y conReintentoDeadlock(fn) compartidos.
+  - ev: grep -F 'await crearRetiro(' → 6 en webOrders; 'SET AgenciaOtra = @' → 5; "ESTADO === 'BLOQUEADO'" → 3; 'MAX_RETRIES' → 8 menciones; 'const r2 = (n)' → 4.
+- `backend/controllers/webOrdersController.js`, `backend/controllers/webRecursosController.js`, `backend/controllers/tiendaController.js`, `backend/services/beneficiosService.js`, `backend/controllers/contabilidadController.js`, `backend/services/contabilidadService.js`: Lookup `SELECT CliIdCliente FROM dbo.Clientes WITH(NOLOCK) WHERE CodCliente = @Cod` (8 en webOrders + webRecursos:34, que ya lo tiene como resolverCliIdCliente 27–37); `SELECT TOP 1 CotDolar FROM dbo.Cotizaciones … ORDER BY CotFecha DESC` (webOrders 5, tienda 
+  - propuesta: utils/clientePortal.js: resolverCliIdCliente(req|cod); utils/cotizacionDolar.js (ya hay uno en contabilidadCore según el grep — verificar y usar ese); saldoCuenta(cueId) en contabilidadService.
+  - ev: grep -F de las tres cadenas sobre backend/ (conteos arriba).
+- `backend/controllers/webRetirosController.js`, `backend/controllers/ordenesRetiroController.js`, `backend/services/retiroService.js`: Tres capas de retiros: asignarRetiroAEstante (webRetiros 583–619) repite el SQL de marcar pronto de ordenesRetiro 362–388; anularRetiro (webRetiros 1969–2059) repite cancelarRetiroCompleto (ordenesRetiro 1073–1090); lugarRetiro COALESCE(fe.Nombre, CASE WHEN LE
+  - propuesta: retiroService como única capa de escritura (marcarPronto, cancelar, registrarDeuda, liberarEstante) y los dos controllers solo HTTP. La expresión de lugarRetiro a un fragmento SQL exportado.
+  - ev: grep -F 'COALESCE(fe.Nombre' → webRetiros 2, ordenesRetiro 1; 'INSERT INTO RetirosConDeuda' → 2 + 1; 'DELETE FROM OcupacionEstantes' → 3/1/1/1; grep -c 'ordenesRetiroController\.' webRetirosController
+- `backend/controllers/measurementController.js`, `backend/services/fileProcessingService.js`, `backend/controllers/productionController.js`, `backend/controllers/embBoardController.js`: Helpers de medición getPdfUserUnit, pointsToCm, pixelsToCm, cmToM, getDriveId definidos en measurementController 11–34 y fileProcessingService 10–47 (pointsToCm/pixelsToCm/getDriveId también en productionController; getDriveId en embBoardController). Tres sani
+  - propuesta: utils/medidasArchivo.js y utils/driveId.js únicos; un sanitizeNombreArchivo en utils/nombreArchivoOrden.js (ya tiene sanitizeParte).
+  - ev: grep -F 'const getDriveId' → 4 archivos; 'const pointsToCm' → 3; 'const sanitize = (str)' → 3 en measurement + 4 archivos más.
+- `backend/services/tpuMatrizService.js`, `backend/services/dtfBlancoService.js`, `backend/services/quitarFondoService.js`, `backend/controllers/colorController.js`: Tres resolverPython distintos (tpuMatriz 72–91 verifica candidatos; dtfBlanco 36–55 no verifica; quitarFondo 21–42 execFileSync y agrega 'py') y tres colas seriales por Promise chain (tpuMatriz 231–249, dtfBlanco 58–88, quitarFondo 44–66); colorController hace
+  - propuesta: utils/python.js con resolverPython() cacheado, correrPython(script, args, opts) y colaSerial(nombre).
+  - ev: grep -F 'function resolverPython' → 3 archivos; lectura de los cuatro.
+- `backend/controllers/webOrdersController.js`, `backend/services/tpuMatrizService.js`, `backend/python/tpu_matriz.py`, `backend/python/medir_trazo_texturas.py`, `src/client-portal/modulos/Tpu3DViewer.jsx`: carpetaTexturas en webOrders 3407–3415 y tpuMatrizService 111–117; REPETICIONES_DEFAULT = 2 en webOrders 3402, tpu_matriz.py 108 y medir_trazo_texturas.py 56; SEPARACION_ZONAS_PT en tpuMatrizService 64, tpu_matriz.py y Tpu3DViewer.jsx; RELIEVE_DOBLE_SIEMPRE en
+  - propuesta: Un tpu.config.json que lean Node, Python y el front (o que Node se lo pase a Python en el job y al front por endpoint).
+  - ev: grep -rn 'SEPARACION_ZONAS_PT|RELIEVE_DOBLE_SIEMPRE|REPETICIONES_DEFAULT' src backend (salida en esta sesión).
+- `backend/services/solicitudesVendedorService.js`, `backend/services/solicitudesVendedorTizadaPro.js`, `backend/services/solicitudesVendedorTizadas.js`, `backend/services/solicitudesVendedorSublimacion.js`, `backend/services/solicitudesVendedorRecuperar.js`, `backend/services/solicitudesVendedorConversion.js`, `backend/services/tizadaProService.js`, `backend/services/tiendaConfeccionService.js`: Micro-helpers redefinidos por archivo: fallo(status,msg) en 8 archivos, jsonObj en 4, txt en 4 (+2 fuera), leer en 2, sinTilde/normalize('NFD') en 7 del área.
+  - propuesta: solicitudesVendedorBase.js (o utils/helpersTexto.js) con fallo, txt, entero, decimal, jsonObj, leer, slug, sinTilde.
+  - ev: grep -F 'const fallo = (status' → 9 archivos; 'const jsonObj = (s)' → 4; 'const txt = (v' → 6; "normalize('NFD')" → 13 archivos.
+- `backend/services/solicitudesVendedorTizadaPro.js`, `backend/services/solicitudesVendedorFichaPdf.js`, `backend/services/tpuMatrizService.js`, `backend/services/solicitudesVendedorRecuperar.js`: Bajar un archivo de Drive a buffer: bajarDeDrive (TizadaPro 343–350), bajarDeDrive (FichaPdf 276–283), descargarDrive (tpuMatriz 404–412), paginasDe (Recuperar 41–48).
+  - propuesta: driveService.descargarBuffer(idOUrl) único.
+  - ev: grep -F 'async function bajarDeDrive' → 2; 'async function descargarDrive' → 1; lectura de Recuperar 41–48.
+- `backend/services/tizadaProArte.js`, `backend/services/moldeContornoService.js`: cargarPdfjs (tizadaProArte 17–29) y la carga de pdfjs legacy en moldeContornoService 42–57.
+  - propuesta: utils/pdfjsLegacy.js con un solo loader cacheado.
+  - ev: Lectura de ambos archivos.
+- `backend/middleware/multerConfig.js`, `backend/middleware/multerArticulosConfig.js`, `backend/middleware/multerFichaDisenoConfig.js`, `backend/middleware/multerMoldeTizadaConfig.js`, `backend/middleware/multerSolicitudesConfig.js`, `backend/middleware/multerTicketsConfig.js`, `backend/middleware/multerConsultasConfig.js`, `backend/middleware/multerEncomiendasConfig.js`, `backend/middleware/multerServicioTecnico.js`: Cinco configs son la misma plantilla diskStorage + mkdirSync + nombre con timestamp (Config, Articulos, FichaDiseno, MoldeTizada, Solicitudes). Tickets y Consultas repiten getXFolder/moverXA (Consultas 4–7 lo declara 'copia deliberada'). Encomiendas hace sharp
+  - propuesta: middleware/multerFactory.js: crearUploadDisco({ carpeta, maxMB, tipos }) y crearUploadMemoriaWebp(); los 9 archivos quedan en 3–5 líneas cada uno.
+  - ev: Lectura de los 9 middlewares; grep -rn 'multer({' backend --include=*.js.
+- `backend/controllers/webOrdersController.js`, `backend/services/sheetsRawMappingService.js`, `backend/controllers/importOnDemandController.js`: Tabla de servicios hardcodeada: corte '1375'/'1.1.6.1'/ProId 90, costura '115'/'1.1.7.1'/36, bordado '1567'/'1.1.9.1'/434, matriz TPU '156'/'1.1.10.1'/417 en webOrders 687–711 y 1398–1406, sheetsRawMapping 234 y 704–709 (y dentro de mapIMD/mapSB), importOnDema
+  - propuesta: constants/serviciosArticulos.js único (o leerlos de Articulos por CodArticulo una vez y cachear).
+  - ev: Lectura de los tres archivos en las líneas citadas.
+- `backend/services/solicitudesVendedorChecklist.js`, `src/components/pages/ventas/checklistSolicitud.js`: Reglas del checklist duplicadas front/back; el header de Checklist.js 11–12 dice 'MISMAS reglas… Si se cambia una, se cambia la otra'.
+  - propuesta: Exponer las reglas por endpoint o mover a un JSON compartido en src/shared que el back importe.
+  - ev: Lectura de solicitudesVendedorChecklist.js 11–12.
+- `backend/routes/webOrdersRoutes.js`, `backend/routes/googleAuthRoutes.js`: Dos flujos OAuth de Google: /web-orders/drive/auth-url + save-token (185–205, vía driveService) y /google/auth + callback + status (googleAuthRoutes 6–50, vía sheetsService). Ambos leen/escriben backend/token.json (inferido de driveService 44 y googleAuthRoute
+  - propuesta: Un solo googleAuthRoutes con scopes de Drive+Sheets; marcar SIN USO el de webOrdersRoutes.
+  - ev: grep -rn 'drive/auth-url|drive/save-token|google/auth' src backend → src solo usa /google/auth (ClientsIntegration.jsx:1102).
+
+### Basura (24)
+- **BORRAR** `backend/services/sheetsRawMappingService.js:747` [línea duplicada]
+  - ev: sed -n '743,747p': `module.exports = SheetsRawMappingService;` aparece en 745 y 747.
+- **ARCHIVAR** `backend/services/tpuPlanchaService.js` [service inalcanzable (240 líneas, 2026-08-14)]
+  - ev: grafo.json: unreachable. Header: port JS del script de Illustrator para plancha/PLT, reemplazado por python/tpu_matriz.py. grep -rn 'tpuPlanchaService' backend → solo tpuPltService (también inalcanzable).
+- **ARCHIVAR** `backend/services/tpuPltService.js` [service inalcanzable (238 líneas, 2026-08-14)]
+  - ev: grafo.json: unreachable; solo lo referencia tpuPlanchaService.
+- **ARCHIVAR** `backend/services/googleSheetsService.js` [service inalcanzable (Apps Script, 102 líneas, 2026-07-15)]
+  - ev: grafo.json: unreachable. webAuthController.js header 5–7: la sync de Sheets migró a API directa (sheetsService). SCRIPT_ID hardcodeado adentro.
+- **ARCHIVAR** `backend/services/pagoService.js` [service deprecado (404 líneas, @deprecated 2026-06-08)]
+  - ev: Header: 'Este archivo se conserva solo como referencia histórica'. grafo: unreachable. grep -rn 'pagoService' en cfeController:1898, cajaService:1091, contabilidadService:4604 → las tres son comentarios, no require (verificado en esta sesión).
+- **SIN_USO** `backend/services/RestApiService.js` [service inalcanzable (23 líneas, 2026-03-16)]
+  - ev: grafo: unreachable; único referente PedidosDetalladosController.js, también inalcanzable.
+- **SIN_USO** `backend/services/apiService.js` [service inalcanzable (21 líneas, 2026-03-16)]
+  - ev: Ídem RestApiService: solo lo requiere PedidosDetalladosController (inalcanzable).
+- **SIN_USO** `backend/services/erpService.js` [service inalcanzable (27 líneas, 2026-03-16)]
+  - ev: grafo: unreachable; sin require en backend fuera de archivos inalcanzables.
+- **SIN_USO** `backend/utils/datosTela.js` [util fuera del grafo de server.js]
+  - ev: grafo: unreachable desde server.js, pero scripts/wmsRellenoTelas.js:20 lo requiere → VIVO como dependencia de script; mover junto al script o dejar con cartel 'solo scripts'.
+- **SIN_USO** `backend/controllers/webRetirosController.js:51-54 (sincronizarRetirosWeb) + ruta POST /web-retiros/sincronizar` [stub]
+  - ev: La función responde 'Sincronización deshabilitada' sin hacer nada; la pega src/components/logistics/WebRetirosPage.jsx:966 (sacar el botón o el endpoint juntos).
+- **SIN_USO** `backend/controllers/webRetirosController.js:59-109 (reportarPagoRetiro)` [export sin ruta ni caller]
+  - ev: No está en webRetirosRoutes.js (40 líneas leídas); script dead_exports_portal.py: 0 referencias externas, 1 interna (la definición).
+- **SIN_USO** `backend/routes/webRetirosRoutes.js: POST /pay-link` [ruta duplicada]
+  - ev: /pay-link y /payment apuntan al mismo handler createHandyPaymentLinkForRetiro; el front usa /web-retiros/payment (UnpaidPickupsView.jsx:46); grep 'web-retiros/pay-link' src → 0.
+- **SIN_USO** `backend/routes/webRetirosRoutes.js: POST /estantes/config/seed → seedConfigEstantes (1724–1778)` [endpoint de seed, además con bug]
+  - ev: grep 'web-retiros/estantes/config/seed' src → 0; línea 1761 ReferenceError (ver refactor).
+- **SIN_USO** `backend/routes/getwayOrdenesRetiro.js:61-62 (GET y POST /backfill-lugar → backfillLugarRetiro 930–970)` [endpoint de mantenimiento one-shot]
+  - ev: grep 'apiordenesRetiro/backfill' src → 0; es un backfill de columna, no una operación de negocio.
+- **SIN_USO** `backend/routes/webOrdersRoutes.js:185-205 (/drive/auth-url, /drive/save-token, /drive/save-token-get)` [flujo OAuth sin consumidor]
+  - ev: grep '/web-orders/drive/' src → 0; googleAuthRoutes cubre la autorización (ClientsIntegration.jsx:1102). Ojo: hoy escriben token.json sin verifyToken.
+- **SIN_USO** `backend/routes/webOrdersRoutes.js: /handy-refund y /pickup-orders/handy-payment` [rutas sin llamadas desde el front]
+  - ev: grep '/web-orders/handy-refund' src → 0; '/web-orders/pickup-orders/handy-payment' → 0. No lo sé si las pega algún sistema externo; verificar en logs de nginx antes de marcar.
+- **SIN_USO** `backend/routes/measurementRoutes.js: POST /analyze, POST /auto-measure` [rutas sin llamadas desde el front]
+  - ev: grep 'measurements/analyze' y 'measurements/auto-measure' src → 0 (process-batch 3, process-server 2, download-zip 1 sí se usan).
+- **SIN_USO** `backend/routes/prendasOrdersRoutes.js:244 (/ping)` [endpoint de prueba]
+  - ev: grep 'prendas-orders/ping' src → 0.
+- **SIN_USO** `backend/controllers/prendasOrdersController.js — exports muertos (uploadOrderFile 2728, getClientOrders 2938, aprobarPedido 3123, getMisMatrices 3197, reuseMatrizTPU 3230, getOrderFiles 3383, getOrdersFiles 3421, deleteIncompleteOrder 3454, deleteOrderBundle 3524, getActiveSublimationOrders 3620, getAreaMapping 3649, updateAreaVisibility 3700, getPickupOrders 3749, totemLookup 3931, totemLookupByClient 3988, totemCreatePickup 4035, totemAnnounce 4142, createPickupOrder 4247, generatePickupReceipt 4390, initHandyPayment 4461, createHandyPaymentLink 4536, handyWebhook 4709, getPaymentStatus 5011, createHandyRefund 5092, handyRefundWebhook 5171, initMpPayment 5229, mpWebhook 5302, getShippingData 5633, updatePickupShipping 5688, saveAddress 5723, deleteAddress 5772, totemVerify 212)` [~3000 líneas de copia sin consumidor]
+  - ev: Header del archivo 1–28 lo declara; grep -rnoE 'prendasOrdersController\.[A-Za-z_]+' backend → solo createWebOrder y las 5 funciones WMS. Solo uploadOrderFile tiene cartel SIN USO (2724–2727).
+- **BORRAR** `backend/controllers/webRetirosController.js:2 (const axios) y :7 (const ordenesRetiroController)` [imports sin uso]
+  - ev: grep -c 'axios\.' webRetirosController.js → 0; grep -c 'ordenesRetiroController\.' → 0.
+- **BORRAR** `backend/controllers/prendasOrdersController.js: import contabilidadService` [import sin uso]
+  - ev: grep -c '\bcontabilidadService\b' prendasOrdersController.js → 1 (solo el require).
+- **BORRAR** `backend/services/trackingService.js:19-27` [bloque comentado (llamada a SP vieja)]
+  - ev: Lectura completa del archivo: código comentado sin referencia.
+- **BORRAR** `backend/controllers/webAuthController.js:187` [log de debug en prod]
+  - ev: `🔍 DEBUG - DB WebResetPassword…` dentro de login (74–209).
+- **BORRAR** `backend/controllers/importOnDemandController.js:130` [log DEBUG que vuelca el JSON completo del pedido]
+  - ev: logger.info('[DEBUG-PEDIDO-COMPLETO] …JSON.stringify(pedido, null, 2))' en el loop de previewOnDemand.
+
+### Código muerto en vivos (13)
+- `backend/services/retiroService.js` (61-63, 283-301): resolverEstadoPorTipoCliente (61–63) y tienePlanHistorico (283–301): definidas, no exportadas, nunca llamadas. El comentario de 451 ('Antes tienePlanHistorico dejaba pasar…') confirma que se reemplazó
+  - ev: Lectura completa; module.exports (912) = { crearRetiro, marcarEntregado, registrarPago }; grep -n 'tienePlanHistorico\|resolverEstadoPorTipoCliente' → solo definición y comentario.
+- `backend/services/moldeContornoService.js` (24-26, 133-139, 183-294): Mitad del archivo es el despiece viejo: constantes MIN_LADO_CM/MAX_LADO_CM/SOLAPE_MIN (24–26), solape (133–139), detectarBandas (183–202), parsearMolde (210–275), validarDespiece (282–294). No están e
+  - ev: module.exports (296) = { leerTrazos, aSvgPath, PT2CM }; dead_exports_portal.py: PT2CM 0 externos.
+- `backend/python/tpu_matriz.py` (185): _es_rectangulo definida en 185 y nunca llamada (único def con una sola mención en el archivo).
+  - ev: Conteo de menciones por nombre de def sobre tpu_matriz.py: todas ≥2 salvo _es_rectangulo: 1.
+- `backend/controllers/webRetirosController.js` (884, 1761): Variable ordenesParaEntregar usada en 884 y 1761 sin existir en ninguna función. En 884 nunca se evalúa (ordenesDeRetiro de 854 cortocircuita); en 1761 explota.
+  - ev: grep -nE '(const|let|var)\s+(ordenesDeRetiro|ordenesParaEntregar)' → solo 854 (ordenesDeRetiro).
+- `backend/controllers/importOnDemandController.js` (405, 447-451): detectArea del fallback (447–451) es un stub que devuelve 'DF' siempre; reqCodCliente (405) no existe (ReferenceError en la rama sin servicios/items/lineas).
+  - ev: grep -n 'reqCodCliente\b' → solo 405; lectura de 447–451.
+- `backend/controllers/prendasOrdersController.js` (51-211, 212-222, 2728-5805): Además de los exports listados en basura: funciones internas solo usadas por código muerto (generateHandyReceipt 51–211, parseAmount, performCheckoutRollback 4590–4708, getClientePickupOrders) e impor
+  - ev: Diff por función con cmp_fork.py; grep -c de cada import sobre el archivo; lectura de 212–222.
+- `backend/controllers/webRetirosController.js` (51-109): reportarPagoRetiro (59–109) exportado sin ruta; sincronizarRetirosWeb (51–54) stub.
+  - ev: webRetirosRoutes.js leído completo; dead_exports_portal.py 0 refs externas.
+- `backend/services/pedidoCompletoService.js` (72-104): isOrdenCompleta (72–84) y getOrdenesPedido (90–104) exportadas sin ningún consumidor en backend ni src; sqlOrdenPronta/sqlOrdenNoCancelada exportadas pero solo usadas adentro.
+  - ev: grafo.json unusedExports + dead_exports_portal.py: 0 externos para las cuatro.
+- `backend/services/solicitudesVendedorConversion.js` (37, 144-237): armarPedido (144–237), SERVICIO_DE_AREA (37) y areaPrincipalDeParte exportados pero solo usados adentro del archivo (no son muertos, son exports innecesarios).
+  - ev: dead_exports_portal.py: 0 referencias externas.
+- `backend/services/solicitudesVendedorTizadaPro.js` (893-916): MODO_ENVIO, procesarEstado y sondear exportados sin consumidor externo (sondear lo usa iniciarSondeo adentro). Exporta conPiezas/bajarDeDrive/zipEnMemoria 'para services/tiendaConfeccionService.js' — 
+  - ev: dead_exports_portal.py; git status muestra tiendaConfeccionService.js como ?? (sin commitear).
+- `backend/utils/thumbnailGenerator.js, backend/utils/variantesEjes.js, backend/utils/nombreArchivoOrden.js, backend/utils/imagenWebp.js, backend/utils/avisosOrdenesPortal.js, backend/middleware/multerConsultasConfig.js, backend/middleware/multerServicioTecnico.js, backend/services/dtfBlancoService.js`: Exports sin consumidor externo: generatePdfThumbnail y generateImageThumbnail (usados solo por generateThumbnail), parsePorTalle y TALLES_CONOCIDOS, areasNombreNuevo y sanitizeParte, convertirArchivoS
+  - ev: grafo.json unusedExports (thumbnailGenerator, variantesEjes, nombreArchivoOrden, multerConsultasConfig, multerServicioTecnico, dtfBlancoService) y dead_exports_portal.py (imagenWebp, avisosOrdenesPortal).
+- `backend/services/consultasClienteService.js, backend/services/fichaPedidoPdf.js, backend/services/solicitudesVendedorFichaPdf.js, backend/services/tizadaProArte.js, backend/services/tpuMatrizService.js, backend/services/bultosPedidoService.js, backend/services/sheetsService.js, backend/services/localFileService.js, backend/services/solicitudesVendedorPlazo.js, backend/services/solicitudesVendedorRecuperar.js, backend/services/solicitudesVendedorTizadas.js`: Más exports sin consumidor externo: evaluarConsultable/DEPENDENCIA_CONSULTA/ESTADO_AREA_CONSULTA; datosPedido/htmlFichaPedido; htmlFicha; analizarArte/claveFuente; rutaDeToken; ordenesReemplazadas/EST
+  - ev: dead_exports_portal.py sobre backend/ y src/ (scripts/tests contados aparte).
+- `backend/controllers/webOrdersController.js` (4309-4403, 5512-5657): _acreditarRecargaBilletera y texturaValida exportados pero solo usados adentro; getClientePickupOrders (4309–4403) duplica getPickupOrders y queda como variante paralela.
+  - ev: dead_exports_portal.py: 0 externos para ambos; lectura de 4125–4403.
+
+### Mal ubicados (20)
+- `backend/controllers/ordenesRetiroController.js:1133-1942 (editarCostoOrden, cancelarOrdenCaja, exonerarOrdenCaja, getDesgloseOrdenesCaja, revertirExoneracionOrden)` → backend/controllers/cajaOrdenesController.js + backend/services/cajaService.js — Es lógica de caja/contabilidad (ERP, movimientos contables, exoneraciones) montada bajo /apiordenesRetiro/caja/orden/*; nada que ver con órdenes de retiro.
+- `backend/controllers/webOrdersController.js:34-190 (generateHandyReceipt) y 4898-4965 (generatePickupReceipt)` → backend/services/comprobantesPdfService.js — Dos generadores de PDF con pdf-lib (rgb usado 21 veces) dentro de un controller HTTP; escriben a COMPROBANTES_PATH.
+- `backend/controllers/webOrdersController.js:2776-2812 (ensureColFechaAprobacion)` → Migración SQL en backend/scripts/sql/ (correr una vez) y borrar la función — DDL (ALTER TABLE + CREATE TABLE OrdenTexturasTPU) en un controller, invocado desde ordersController y rollsController.
+- `backend/controllers/webOrdersController.js:3267-3730 (visor 3D, texturas, boceto TPU: rolCapaTpu, getTpuMatriz*, carpetaTexturas, guardarTexturasOrden, analizarMatrizTpu, subirBocetoAprobado…)` → backend/services/tpuMatrizService.js (lógica) + backend/controllers/tpuPortalController.js (HTTP) — tpuMatrizService y ordersController dependen de funciones del controller (ciclo); carpetaTexturas ya está duplicada en el service.
+- `backend/controllers/webOrdersController.js:5043-6131 (billetera, beneficios, recargas, cubrirConBilletera, pagarConSaldoBilletera)` → backend/controllers/billeteraPortalController.js + backend/services/billeteraPortalService.js — Dominio contable del cliente, no pedidos; llama a cfe/caja/contabilidad por res falso.
+- `backend/controllers/webOrdersController.js:6134-7393 (Handy, MercadoPago, webhooks, refunds, getPaymentStatus)` → backend/controllers/pagosPortalController.js — Pasarelas de pago y webhooks públicos conviven con alta de pedidos.
+- `backend/controllers/webOrdersController.js:4014-4120 (getAreaMapping, updateAreaVisibility)` → backend/controllers/webContentController.js — CMS de visibilidad de áreas del portal.
+- `backend/controllers/webAuthController.js:651-825 (activationPage)` → backend/public/activacion.html (o plantilla) servida con res.sendFile — 175 líneas de HTML/CSS/JS con animación de canvas dentro de un controller.
+- `backend/controllers/tiendaController.js:139-292 (admin de vitrina)` → backend/controllers/tiendaAdminController.js — Montado en productsIntegrationRoutes; es administración interna mezclada con checkout del cliente.
+- `backend/routes/prendasOrdersRoutes.js:52-241` → backend/controllers/productosTerminadosController.js — Handlers completos con SQL en el archivo de rutas.
+- `backend/routes/webOrdersRoutes.js:171-182, 185-205, 208-218, 256-285` → backend/middleware/apiKeyIntegracion.js, backend/routes/googleAuthRoutes.js, backend/middleware/multerFactory.js — Middleware de API key, flujo OAuth, dos multer y handlers inline dentro del router.
+- `backend/python/medir_trazo_texturas.py` → backend/scripts/medir_trazo_texturas.py — Es una herramienta de mantenimiento (regenera public/assets/textures/texturas.json, monkeypatchea tm._capa_raster) que Node nunca ejecuta; solo se menciona en un comentario (webOrd
+- `backend/scripts/preflight/user_preflight.py` → backend/python/user_preflight.py — Es un script que se ejecuta en runtime desde utils/preflight.js, pero vive en scripts/ (donde están las herramientas one-shot) y no en python/ con los otros scripts de runtime.
+- `backend/routes/tizadaProAvisoRoutes.js:14 (iniciarSondeo())` → backend/server.js junto a los otros jobs (ej. startConsultasVencimientoJob en 604) — Arranca un polling periódico como efecto secundario de requerir un router.
+- `backend/controllers/webRetirosController.js:441-897 (estantes) y 1070-1580 (reportes de pagos/cuadre)` → backend/controllers/estantesController.js y backend/controllers/reportesPagosController.js — Estantes es logística de depósito y los reportes son caja; el archivo es 'retiros web'.
+- `backend/services/consultasClienteService.js:61-149 (correrEsquema) y backend/services/retiroService.js:32-47 (CREATE SEQUENCE)` → Migraciones en backend/scripts/sql/ — DDL en runtime dentro de servicios de negocio.
+- `backend/utils/avisosOrdenesPortal.js:56-67` → backend/config/sockets.js (o donde se configura socket.io en server.js 388–422) — Monkeypatch de io.emit para interceptar eventos; es infraestructura de sockets, no un util.
+- `backend/middleware/impersonarClienteInterno.js` → Ambos en backend/middleware/impersonarCliente.js con dos variantes — Espeja webDesignerController.impersonarCliente (205–249); un middleware vive en middleware/ y su gemelo en un controller.
+- `backend/services/localFileService.js` → Junto al módulo de chat o renombrar a manualesService.js — Lee ../../Manuales y lo usa solo chatController (2026-04-20).
+- `backend/oauth-credentials.json, backend/token.json` → backend/config/secrets/ con ruta por env — Credenciales en la raíz del backend (ignoradas por git: .gitignore 28–29, OK) mezcladas con el código.
+
+### Patrones de riesgo (20)
+- require() adentro de funciones para esquivar ciclos (156) — webOrdersController 73 de 87, prendasOrdersController 33, solicitudesVendedorService 19, solicitudesVendedorTizadaPro 12, tiendaController 6, tpuMatrizService 5, webAuthController 5, retiroService 3 — grep -cE '^\s+.*require\(' por archivo. Esconde dependencias circulares reales (ver siguiente) y hace imposible leer el grafo arriba del archivo.
+- Dependencias circulares (5) — webOrdersController ↔ tpuMatrizService (service:345 / controller 2129–2149); ordersController ↔ fichaPedidoPdf, solicitudesVendedorFichaPdf y fileProcessingService (385); solicitudesVendedorService ↔  — grafo.json edges + requires inline leídos. Controllers importando controllers es la raíz.
+- Llamar handlers de Express con req/res falsos (fakeRes) (19) — webOrdersController 8 (5533, 5584, 5637, 5931…), logisticaWmsController 6, contabilidadController 2, consultasClienteController.invocarHandler 223–252, solicitudesVendedorFichaPdf.invocar 449–456, fic — grep -rn 'fakeRes' backend + lectura. El propio comentario de consultasClienteController 204–221 explica el riesgo: cualquier req.headers/res.setHeader nuevo rompe en runtime. La salida es extraer la lógica a services.
+- DDL (ALTER/CREATE) ejecutado en runtime desde controllers/services (31) — tiendaController 12, webOrdersController 9, consultasClienteService 5, colorController 2, handyService 2, retiroService 1 (los 5 de webDesignerController son un comentario de header, no runtime) — grep -rcE 'ALTER TABLE|CREATE TABLE|CREATE SEQUENCE'. Cada arranque o request toca sys.columns; ensureTiendaSchema corre en cada GET /api/precios-publicos (server.js:310).
+- COL_LENGTH() como feature flag en SQL (50) — tiendaController 13, webOrdersController 8, solicitudesVendedorSublimacion 7, Conversion 5, Service 4, FichaProducto 3, Tizadas 2, handyService 2, consultasClienteService 2, prendasOrdersController 2, — grep -rc 'COL_LENGTH'. Significa que el código soporta esquemas que ya no existen en prod; una vez migrado, se puede simplificar.
+- SQL con interpolación ${} en lugar de parámetros (72) — webOrdersController 20, prendasOrdersController 13, webRetirosController 6, measurementController 6, retiroService 5, ordenesRetiroController 5, solicitudesVendedorService 4, vendedorVistaController 4 — La mayoría son IN (${ids.join(',')}) con enteros ya validados. Los peligrosos: webOrdersController 3946–3963 (string de usuario con escape manual), tizadaProService:114 (replace('@Ref', `'${…}'`)), driveService 90–91 (query de Drive `name = '${folderName}'`), 
+- catch vacío o que traga el error (70) — webOrdersController 12, ordenesRetiroController 12, tpuMatrizService 8, prendasOrdersController 6, webRetirosController 5, dtfBlancoService 4, TizadaPro 2, Sublimacion 2, fileProcessingService 2, y 1  — grep -rcE 'catch\s*(\((\w+|_)\))?\s*\{\s*\}'. Regla de la casa: nunca catch {} mudo. ordenesRetiroController.buscarOrdenErpId (1093–1105) devuelve null en silencio en una operación de caja.
+- console.* en vez de logger (6) — webRetirosController 1176, 1285, 1347; retiroService 741; webAuthController 187 (log de DEBUG); cryptoService 1 — grep -rn 'console\.' sobre el área.
+- Rutas sin verifyToken (22) — getwayOrdenesRetiro.js /estados (22), /caja (34), /pasarporcaja (37), /filterByDate (42), /lugar/:lugarId (45); getwayLugaresRetiro.js (toda); getwayOrdenes.js 8, 11, 14, 30, 36, 39; measurementRoutes — Lectura de los routers. /drive/save-token escribe token.json sin auth. /totem-verify (130) y los webhooks (108, 114, 142) son públicos a propósito.
+- Secretos, URLs y rutas hardcodeados con default inseguro (12) — webOrdersRoutes 171–182 e importOnDemandController 542: INTEGRATION_API_KEY || 'macrosoft-secret-key'; importOnDemandController 38 y 461: apiKey 'planillas-macrosoft-2026'; tiendaController ~100: WMS_ — Si falta la env, el sistema arranca con la clave de ejemplo. Lectura directa de cada archivo.
+- Números mágicos de negocio repetidos (4) — metodoPago 9 (Handy) / 8 vs 10 (MP) inconsistentes entre webOrdersController 6219–6220 y 7331; usuario 70 'el sistema' (consultasClienteController 265, webOrders varios); PRO_VENTA_TIENDA 386 (tiendaC — El 8 vs 10 de MercadoPago puede hacer que performCheckoutRollback no reconozca un pago MP. No lo sé cuál es el correcto en dbo.MetodosPago: dar la query y verificar.
+- Cinco formas distintas de parsear el código de retiro (R-000123) (17) — webRetirosController /^[A-Za-z]+-0*/ (24, 64, 874, 992, 1980) y /(\d+)$/ (314, 543, 574, 661, 1883); ordenesRetiroController .replace('R-', '') (322, 356, 463, 497) y /[^0-9]/g (1146, 1581, 1646) — grep -F de cada variante. .replace('R-','') falla con prefijos distintos de R. Un parseCodigoRetiro() único en retiroService.
+- Estado a nivel de módulo: caches, flags, timers y colas (11) — tpuMatrizService setInterval 122–137 + cola 231–249 + _pendientes; dtfBlancoService cola 58–88; quitarFondoService cola 44–66; tizadaProService _cat 38; driveService OAuth init 44 + folderCache 48; so — Con pm2 en cluster cada worker tiene su copia (colas no serializan entre procesos). Lectura de cada archivo.
+- Fire-and-forget con setImmediate sin manejo de error (3) — webOrdersController 2156–2170 (auto-cotización), solicitudesVendedorConversion 364–371 (ficha PDF), fileProcessingService 56 (processOrderListInternal) — consultasClienteController 75 lo hace bien (.catch con logger.warn); los otros tres pueden tirar unhandled rejection.
+- Self-call por HTTP a localhost en vez de llamar la función (1) — importOnDemandController 540: axios.post(`http://localhost:${port}/api/web-orders/integration/create`) — Depende de PORT, del middleware de API key y del default 'macrosoft-secret-key'; con pm2 cluster puede caer en otro worker.
+- Constantes espejadas front/back/python sin fuente única (4) — minCopiesReuso (webOrdersController ~3402 ↔ src/client-portal/constants/services.js y prendaServices.js ↔ OrderForm/PrendaOrderForm 'min 15'); SEPARACION_ZONAS_PT y RELIEVE_DOBLE_SIEMPRE (tpuMatrizSer — grep -rn sobre src y backend. Los comentarios piden 'cambiar los dos juntos'; eso siempre termina desincronizado.
+- Helper de request de transacción repetido (9) — retiroService 635, 669, 712, 778, 797, 814, 829, 868, 886: typeof x.request === 'function' ? x.request() : new sql.Request(x) — grep -F sobre el archivo. Un reqDe(db) de 1 línea lo resuelve.
+- ReferenceError latente (variable inexistente en rama poco usada) (2) — webRetirosController 1761 (ordenesDeRetiro/ordenesParaEntregar en seedConfigEstantes); importOnDemandController 405 (reqCodCliente) — Verificado por grep de declaraciones. Ambas ramas se ejecutan poco, por eso no se notaron.
+- Fallback inseguro de cifrado (1) — cryptoService.js 32–37 y 74–80: sin SISNET_ENC_KEY, encrypt/decrypt devuelven texto plano con un warn — Documentado en el header. No lo sé si la env está seteada en prod (infra-prod-servidor.md no lo dice); vale verificar en el .env del VPS.
+- Loop de reintento por deadlock copiado en vez de helper (4) — webOrdersController 4519–4610 y 6596–6635; prendasOrdersController (mismas copias); MAX_RETRIES 8 menciones en cada uno; error.number === 1205 en ambos — grep -F 'MAX_RETRIES' y 'error.number === 1205'. No lo sé si ya existe un helper compartido (memoria deadlock-reintento-1205.md); si existe, usarlo acá.

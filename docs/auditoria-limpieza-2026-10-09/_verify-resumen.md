@@ -1,0 +1,667 @@
+# Verificación de no alcanzables
+
+## verify-1-backend___tests___auth.test.js.json
+NOTAS: Resumen del cluster: de 19 ítems, 3 BORRAR (los tres __pycache__, 7 .pyc trackeados sin regla en .gitignore), 2 SIN_USO (user_preflight.py + reglas_user.json: motor cableado pero apagado por PREFLIGHT_ENABLED, decisión pendiente del dueño; marcar SIN USO también en backend/utils/preflight.js) y 14 VIVO. Los 5 .py de backend/python/ son falsos positivos del grafo por invocarse con execFile (dtf_blanco, quitar_fondo, tpu_matriz) o por import de Python (svg_trazos) o a mano (medir_trazo_texturas, documentado en public/assets/textures/README.md). backend/config/db.js ni siquiera figura como inalcanzable en grafo.json: entró a la lista por error. Los dos .py de backend/scripts/ (igualador_color, color_calibrate) son la única fuente en el repo de lo que colorController.js spawnea en /var/www/sistema-produccion/scripts/ (fuera de backend/); que la copia del server exista y coincida: no lo sé (inferido de memoria color-calibracion-camara-plan.md:27 que se copia desde acá). Tests: infraestructura completa (jest 30.3 + supertest 7.2 instalados, `npm test` en backend/, jest.config.js lo carga Jest solo), ningún test referencia módulos inexistentes, pero NO los ejecuté y no hay CI ni mención de correrlos en CHANGELOG/docs/memoria (grep 'npm test|jest|__tests__' vacío): inferido que se corren a mano o no se corren; los 3 de marzo necesitan DB/VAPID para pasar. backend/.env local no define COLOR_SCRIPT_PATH, COLOR_CALIB_SCRIPT_PATH, PREFLIGHT_ENABLED, DTF_BLANCO_ENABLED, TPU_MATRIZ_ENABLED
+
+- **VIVO** `backend/__tests__/auth.test.js` (riesgo bajo, 2026-03-23 test y encomienda print station)
+  - qué es: Smoke test Jest+supertest de /api/auth/login, /api/auth/me y /api/web-auth/login (espera 401/403 sin credenciales).
+  - evidencia: Se alcanza por `npm test` en backend/: backend/package.json:7 "test": "jest --detectOpenHandles --forceExit"; backend/jest.config.js:5 testMatch '**/__tests__/**/*.test.js'. Importa `require('../server')` y server.js:635 exporta `{ app, server }`; server.js:283 y :533 no arrancan cron ni listen cuando NODE_ENV==='test'
+- **VIVO** `backend/__tests__/health.test.js` (riesgo bajo, 2026-03-23 test y encomienda print station)
+  - qué es: Smoke test de GET /api/health (espera 200 y status 'ok').
+  - evidencia: Alcanzado por `npm test` (backend/package.json:7 + jest.config.js:5 testMatch). server.js:182 define `app.get('/api/health', ...)`. require('../server') válido (server.js:635 exporta app). No ejecutado: si pasa no lo sé.
+- **VIVO** `backend/__tests__/push.test.js` (riesgo bajo, 2026-03-23 test y encomienda print station)
+  - qué es: Smoke test de /api/push/vapid-key (público) y subscribe/unsubscribe sin token (401/403).
+  - evidencia: Alcanzado por `npm test` (package.json:7 + jest.config.js:5). server.js:140 monta /api/push → routes/pushRoutes.js:7 `router.get('/vapid-key')`. No ejecutado: si pasa no lo sé (vapid-key exige VAPID configurado en .env).
+- **VIVO** `backend/__tests__/pedidosExternos.traductor.test.js` (riesgo medio, 2026-09-21 21092026)
+  - qué es: Test unitario (función pura, sin DB ni red) del traductor pedido de negocio → body de /ventas/pedido-prenda: 11 casos de reglas de negocio (SB por tela, PRO madre, EST encadenado a DF/TPU, bordado, te
+  - evidencia: Alcanzado por `npm test` (package.json:7 + jest.config.js:5). Módulo que importa existe: backend/services/pedidosExternos/traductor.js:269 `module.exports = { traducir }`, :266 devuelve `{ payload, archivos }` como espera el test. Claves que el test asserta están en traductor.js: esPrendaPersonalizada :116, chainedAfte
+- **VIVO** `backend/jest.config.js` (riesgo bajo, 2026-03-23 test y encomienda print station)
+  - qué es: Config de Jest: testEnvironment node, testMatch __tests__/**/*.test.js, timeout 15s, y setea NODE_ENV='test'.
+  - evidencia: Jest lo carga solo desde rootDir al correr `npm test` (backend/package.json:7); no hay clave "jest" en package.json (grep 'jest' en root package.json: False; backend/package.json solo en scripts/devDependencies). No lo requiere ningún .js por diseño: por eso el grafo lo marca inalcanzable. La línea 1 `process.env.NODE_
+- **VIVO** `backend/python/dtf_blanco.py` (riesgo alto, 2026-09-08 merge)
+  - qué es: Generador de la capa de tinta blanca DTF (reemplaza la acción de Photoshop): PDF/PNG → PDF con Separation 'Spot 1', choke, tail-cut; CLI argparse, última línea JSON para Node.
+  - evidencia: backend/services/dtfBlancoService.js:29 `SCRIPT = path.join(__dirname,'..','python','dtf_blanco.py')` y :107 `execFile(resolverPython(), [SCRIPT, copia, salida], ...)`. El servicio se requiere en backend/controllers/webOrdersController.js:2351 (uploadOrderFile) y el grafo lo marca REACHABLE. Flag DTF_BLANCO_ENABLED def
+- **VIVO** `backend/python/medir_trazo_texturas.py` (riesgo alto, 2026-09-29 de todo)
+  - qué es: Herramienta de mantenimiento manual (no la llama Node): mide el trazo de cada textura TPU del catálogo con el generador real y escribe trazoMm/escalaMin en public/assets/textures/texturas.json.
+  - evidencia: Se corre a mano desde backend/: documentado en public/assets/textures/README.md:38-45 (`python python/medir_trazo_texturas.py [--recalcular]`). Importa tpu_matriz (línea 44) y pikepdf/scipy/skimage. Su salida está consumida: public/assets/textures/texturas.json tiene 41 `trazoMm` para 41 SVGs del catálogo (grep -c / ls
+- **VIVO** `backend/python/quitar_fondo.py` (riesgo alto, 2026-09-01 que quilombo que se va a armar)
+  - qué es: Quita el fondo de una foto de producto con rembg/U2-Net (modelo u2net explícito) → PNG con alfa; 47 líneas, uso `quitar_fondo.py <entrada> <salida.png>`.
+  - evidencia: backend/services/quitarFondoService.js:17 `SCRIPT = path.join(__dirname,'..','python','quitar_fondo.py')` y :52 `execFile(resolverPython(), [SCRIPT, inPath, outPath])`. Lo usa backend/controllers/productsIntegrationController.js:656-660 (checkbox `quitarFondo === '1'` en uploadArticleImage del catálogo de marketing); r
+- **VIVO** `backend/python/svg_trazos.py` (riesgo alto, 2026-09-08 fixes tpu y yoa)
+  - qué es: Parser propio de SVG de texturas TPU (clases CSS, <pattern>, transforms, comandos de path) porque fitz no aplica CSS ni patterns; expone leer_svg() y contenido_tile().
+  - evidencia: Importado por backend/python/tpu_matriz.py:93-94 (`sys.path.insert(0, dirname(__file__))` + `import svg_trazos`) y usado en tpu_matriz.py:726 `svg_trazos.leer_svg(ruta_svg)`, :732 y :754 `contenido_tile`. También lo importa indirectamente medir_trazo_texturas.py vía tpu_matriz. CHANGELOG.md:1186 y :1213 lo listan como 
+- **VIVO** `backend/python/tpu_matriz.py` (riesgo alto, 2026-09-17 un monton de cambios)
+  - qué es: Generador TPU 'Hago mi matriz': subcomandos `analizar arte.pdf` y `generar job.json` → PDFs -cmyk-spots / -corte / -boceto para el RIP (1944 líneas; reemplaza el script de Illustrator).
+  - evidencia: backend/services/tpuMatrizService.js:34 `SCRIPT = path.join(__dirname,'..','python','tpu_matriz.py')` y :96 `execFile(resolverPython(), [SCRIPT, ...args])`; CLI en tpu_matriz.py:1922-1930 (subparsers analizar/generar). tpuMatrizService lo requieren backend/controllers/ordersController.js y webOrdersController.js (grafo
+- **VIVO** `backend/scripts/color_calibrate.py` (riesgo alto, 2026-06-22 fixes mios)
+  - qué es: Calibración de color por foto: lee JSON por stdin (parches rgb/lab + sample_rgb), ajusta por mínimos cuadrados RGB→LAB (cuadrático si ≥10 parches) y devuelve LAB calibrado + dE2000 medio.
+  - evidencia: Lo spawnea backend/controllers/colorController.js:241 `spawn(pythonCmd, [CALIB_SCRIPT_PATH])` en `calibrate`; CALIB_SCRIPT_PATH (:6) = env COLOR_CALIB_SCRIPT_PATH o SCRIPT_PATH con igualador_color.py→color_calibrate.py, o sea por defecto `/var/www/sistema-produccion/scripts/color_calibrate.py` (fuera de backend/). Ruta
+- **VIVO** `backend/scripts/igualador_color.py` (riesgo alto, 2026-06-22 fixes mios)
+  - qué es: Igualador de color: dado un Lab, calcula CMYK de salida y de entrada con `transicc` (LittleCMS) sobre dos perfiles ICC, chequeo de gama y dE2000; CLI `--lab L a b [--entrada] [--salida] --json`.
+  - evidencia: backend/controllers/colorController.js:5 `SCRIPT_PATH = process.env.COLOR_SCRIPT_PATH || '/var/www/sistema-produccion/scripts/igualador_color.py'` y :23 `spawn(pythonCmd, [SCRIPT_PATH, ...args])` con `--lab L a b --json` (coincide con el argparse del script :149-155). Ruta routes/colorRoutes.js:8 POST /match; server.js
+- **SIN_USO** `backend/scripts/preflight/user_preflight.py` (riesgo medio, 2026-07-03 sublimacion)
+  - qué es: Motor de preflight de archivos de clientes (PyMuPDF/pikepdf/Pillow): valida PDF/JPG/PNG contra reglas por servicio (dpi, medidas, color, fuentes, transparencias) y emite JSON + mensaje al cliente; 515
+  - evidencia: Cableado pero APAGADO: backend/utils/preflight.js:9 `SCRIPT = .../scripts/preflight/user_preflight.py` y :54 `execFileAsync(PYTHON, [SCRIPT, tmp, '--servicio', ...])`. preflight.js se requiere SOLO adentro de `if (process.env.PREFLIGHT_ENABLED === '1' && ...)` en backend/controllers/webOrdersController.js:2379-2380 y p
+- **SIN_USO** `backend/scripts/preflight/reglas_user.json` (riesgo medio, sin commits (no trackeado; ignorado por .gitignore:30 *.json))
+  - qué es: Reglas del preflight por servicio (sublimación, tela_cliente, dtf, gran_formato: dpi mínimo, largos, descuentos de ancho, contactos) que lee user_preflight.py.
+  - evidencia: Lo abre user_preflight.py:70-72 `cargar_reglas(ruta='reglas_user.json')` con `Path(__file__).parent / ruta` (path relativo al script, correcto). Comparte el estado del motor: apagado por PREFLIGHT_ENABLED (ver user_preflight.py). HALLAZGO: NO está trackeado en git — `git ls-files --error-unmatch` falla, `git check-igno
+- **BORRAR** `backend/python/__pycache__` (riesgo bajo, 2026-09-25 (según extras.json/fechas de los .pyc; el dir en sí no tiene commit))
+  - qué es: Bytecode compilado de Python (5 .pyc cpython-314) generado automáticamente al importar/correr los scripts de backend/python/.
+  - evidencia: `git ls-files | grep __pycache__` → trackeados: backend/python/__pycache__/dtf_blanco.cpython-314.pyc, medir_trazo_texturas…, quitar_fondo…, svg_trazos…, tpu_matriz.cpython-314.pyc. No hay regla que los ignore: grep 'pycache|pyc' en .gitignore vacío, no existe backend/.gitignore, `git check-ignore` exit 1. Python los r
+- **BORRAR** `backend/scripts/__pycache__` (riesgo bajo, 2026-06-22 fixes mios)
+  - qué es: Bytecode compilado: 1 .pyc (color_calibrate.cpython-314.pyc).
+  - evidencia: `git ls-files` lo lista trackeado: backend/scripts/__pycache__/color_calibrate.cpython-314.pyc (extras.json: lastCommit 2026-06-22). Sin regla en .gitignore (grep vacío). Generado automáticamente, se regenera solo. Ya estaba en 'hallazgos confirmados' del contexto.
+- **BORRAR** `backend/scripts/preflight/__pycache__` (riesgo bajo, 2026-07-03 sublimacion)
+  - qué es: Bytecode compilado: 1 .pyc (user_preflight.cpython-314.pyc).
+  - evidencia: `git ls-files` lo lista trackeado: backend/scripts/preflight/__pycache__/user_preflight.cpython-314.pyc (extras.json: lastCommit 2026-07-03). Sin regla en .gitignore. Generado automáticamente. Ya estaba en 'hallazgos confirmados' del contexto.
+- **VIVO** `backend/catalogos/fnc.html` (riesgo alto, 2026-09-01 que quilombo que se va a armar)
+  - qué es: Página autocontenida 'Catálogo Verano FNC · Tu Socio Productivo' (7,19 MB, 2439 líneas; JS inline de Google model-viewer, noindex), servida fuera del SPA.
+  - evidencia: backend/server.js:453-457 `app.get('/fnc', ...)` → `res.sendFile(path.join(__dirname, 'catalogos', 'fnc.html'))` con X-Robots-Tag noindex y Cache-Control 1h; comentario server.js:448-452 explica que vive en backend/catalogos porque backend/public lo pisa cada build del front y que robots.txt no lo menciona a propósito.
+- **VIVO** `backend/config/db.js` (riesgo alto, 2026-09-08 fixes tpu y yoa)
+  - qué es: EL pool de conexiones MSSQL del backend (config desde .env, useUTC, pool max 25) que exporta { sql, getPool, poolPromise }.
+  - evidencia: Falso positivo de la lista: el propio grafo.json lo marca REACHABLE con inDegree 223 (no está en backend.unreachable). backend/server.js:184, :301 y :339 `require('./config/db')`; backend/scheduler.js:3 ídem; `grep -rl 'config/db' backend` (sin node_modules) → 237 archivos. No existe otro db.js con el que se confunda (
+
+## verify-2-src_client-portal_main.jsx.json
+NOTAS: Resumen del cluster portal-legacy: los 17 están realmente muertos; cero falsos positivos del grafo. Todo quedó inalcanzable en fcc5d0a (2026-02-16 'unificacion', cuando el portal dejó de ser app aparte) salvo modulos/LoginPage.jsx, que murió al día siguiente (3ce1094, 2026-02-17). Verifiqué que ningún archivo vivo los importa ni estática ni dinámicamente (grep de `import(` en App.jsx/MainAppContent.jsx/client-portal; index.html:38 solo carga /src/main.jsx; vite.config.js sin rollupOptions.input; backend solo menciona client-portal en comentarios de pedidosExternos/catalogo.js:60 y traductor.js:6 que apuntan a PrendaOrderForm.jsx, vivo). CHANGELOG/docs/specs/public no nombran a ninguno de los 17. Respuesta a la pista: el árbol viejo components/orders/** NO tiene ningún servicio que el nuevo no cubra. Corte → order-form/components/CorteTechnicalUI.jsx (más formatos: .ai; medición real con medirTizada.js; bobinas; tela cliente). Bordado → BordadoTechnicalUI.jsx (ponchado + boceto + estimación de puntadas). Sublimación → modulos/OrderForm.jsx + useOrderForm.js (globalMaterial/dynamicMaterials). DTF → DtfTechnicalUI.jsx + FileUploadZone.jsx (damero real; la 'validación de transparencia' vieja leía `hasTransparency` que nadie seteaba, así que nunca funcionó). Al revés sí: el nuevo tiene TPU, ECOUV, Estampado, Costura y directa_320 que el viejo no. El OrderForm viejo además es un esqueleto (handleSubmit = console.log) que ni siquiera importa ServiceFactory; ServiceFactory tiene inDe
+
+- **BORRAR** `src/client-portal/main.jsx` (riesgo bajo, 2026-02-16 fcc5d0a unificacion)
+  - qué es: Entry point (11 líneas) del portal cuando era una app Vite aparte: ReactDOM.createRoot + import './App.jsx' + './index.css'.
+  - reemplazado por: src/main.jsx + src/App.jsx:25 (lazy ClientPortalApp) y App.jsx:92/121 <Route path="/portal/*">
+  - evidencia: Leído entero. Línea 3 importa './App.jsx' que no existe: grafo.json frontend.unresolved {from: src/client-portal/main.jsx, spec: ./App.jsx}; `git log --all --diff-filter=D -- src/client-portal/App.jsx` → borrado en 15cfff5 2026-03-23 'cambios webpush pwa' (79 líneas). Único entry real: index.html:38 `<script type="modu
+- **BORRAR** `src/client-portal/apiClient.js` (riesgo bajo, 2026-06-23 7eb9f2d nuevos fixes)
+  - qué es: Wrapper fetch del portal (93 líneas): get/post/put/delete/postFormData con Bearer de localStorage 'auth_token' y handleResponse.
+  - reemplazado por: src/client-portal/api/apiClient.js
+  - evidencia: Leído entero. Grep `from '../apiClient'|'./apiClient'|client-portal/apiClient` → todos los hits son de src/services/apiClient.js (el cliente del sistema interno, otro archivo); ninguno resuelve a client-portal/apiClient.js. Todo el portal importa `../api/apiClient` (ej. modulos/LoginPage.jsx:8, modulos/OrderForm.jsx:16
+- **BORRAR** `src/client-portal/fileService.js` (riesgo bajo, 2026-06-11 10b0966 nuevos fix)
+  - qué es: Medición de archivos del portal (322 líneas): DPI real de PNG (pHYs)/JPEG (JFIF), MediaBox/CropBox de PDF por regex con fallback pdf.js, y uploadStream a /web-orders/upload-stream.
+  - reemplazado por: src/client-portal/api/fileService.js
+  - evidencia: Leído entero. Grep `client-portal/fileService|from '../fileService'|'./fileService'` → 0 fuera del propio archivo; `STORAGE_TYPE` solo en las dos copias. El único importador del árbol viejo (components/orders/hooks/useFileUploader.js:2) importa `../../../api/fileService`, o sea el VIVO. CHANGELOG.md:1037 nombra solo ap
+- **BORRAR** `src/client-portal/components/orders/OrderForm.jsx` (riesgo bajo, 2026-05-06 3e0d4ef cambios front)
+  - qué es: Prototipo 'OrderForm Refactorizado (Clean Architecture)' (147 líneas) nunca terminado: orquesta useOrderLogic + useFileUploader + CorteTechnicalUI viejo.
+  - reemplazado por: src/client-portal/modulos/OrderForm.jsx + modulos/order-form/**
+  - evidencia: Leído entero. Es un esqueleto: handleSubmit solo hace console.log (l.35-40), comentario 'Aquí iría el FileUploadZone' (l.106), `setField('corte_mold', val)` escribe un campo que el reducer no tiene y el propio comentario lo admite (l.91). No importa ServiceFactory ni ningún *Service: el árbol viejo ni siquiera está cab
+- **BORRAR** `src/client-portal/components/orders/hooks/useFileUploader.js` (riesgo bajo, 2026-07-09 787f753 fixes)
+  - qué es: Hook (101 líneas): processFile (mide con fileService y valida ancho vs maxMaterialWidth−0.03 redondeando a cm) y startUploadStream secuencial.
+  - reemplazado por: src/client-portal/modulos/order-form/hooks/useOrderForm.js (uploadStream) + modulos/OrderForm.jsx:1092-1121 (validación de ancho)
+  - evidencia: Leído entero. Único importador: components/orders/OrderForm.jsx:7 (muerto). Grep `useFileUploader` → solo esos dos. Commit 787f753 2026-07-09 le cambió el redondeo a Math.ceil… 5 meses después de quedar muerto; la misma fórmula está en el vivo modulos/OrderForm.jsx:1092-1093 (`Math.ceil(Number(((fileWidthM - TOLERANCIA
+- **BORRAR** `src/client-portal/components/orders/hooks/useOrderLogic.js` (riesgo bajo, 2026-02-16 fcc5d0a unificacion)
+  - qué es: Hook useReducer (138 líneas) con jobName/urgency/globalMaterial/items/complementaryServices/technicalSpecs{corte,costura}.
+  - reemplazado por: src/client-portal/modulos/order-form/hooks/useOrderForm.js
+  - evidencia: Leído entero. Único importador: components/orders/OrderForm.jsx:6 (muerto). Grep `useOrderLogic` → solo esos dos. Sin commits después de la unificación. Vivo: order-form/hooks/useOrderForm.js (`export const useOrderForm` l.207; globalMaterial l.27, setGlobalMaterial sincroniza items l.268-273; dynamicMaterials l.104; b
+- **BORRAR** `src/client-portal/components/orders/services/BordadoService.jsx` (riesgo bajo, 2026-02-16 fcc5d0a unificacion)
+  - qué es: UI de Bordado (69 líneas): dos <input type=file> crudos, ponchado (multiple) y boceto.
+  - reemplazado por: src/client-portal/modulos/order-form/components/BordadoTechnicalUI.jsx
+  - evidencia: Leído entero. Único importador: services/ServiceFactory.jsx:3, que a su vez nadie importa (inDegree 0). Grep `BordadoService` → solo esos dos. Vivo: order-form/components/BordadoTechnicalUI.jsx (647 líneas) con ponchadoFiles/bocetoFile (l.33-34), boceto por diseño con preview y quitar (l.518-534), estimación de puntada
+- **BORRAR** `src/client-portal/components/orders/services/CorteService.jsx` (riesgo bajo, 2026-02-16 fcc5d0a unificacion)
+  - qué es: UI de Corte (96 líneas): upload de tizadas .plt/.hpgl/.dxf y selector de moldería digital/física/desarrollo.
+  - reemplazado por: src/client-portal/modulos/order-form/components/CorteTechnicalUI.jsx + order-form/utils/medirTizada.js
+  - evidencia: Leído entero. Único importador: services/ServiceFactory.jsx:4 (muerto). Grep `CorteService` → solo esos dos. Vivo: order-form/components/CorteTechnicalUI.jsx — FORMATOS_TIZADA '.dxf,.plt,.hpgl,.ai' (l.10), moldType/fabricOrigin/TELA CLIENTE (l.387-413), bobinas, tizadaFiles; medición real de tizada en order-form/utils/
+- **BORRAR** `src/client-portal/components/orders/services/CorteTechnicalUI.jsx` (riesgo bajo, 2026-02-16 fcc5d0a unificacion)
+  - qué es: Toggle 'Corte Automatizado' (76 líneas) con selects moldType (digital/fisica/desarrollo) y fabricOrigin (propia/cliente). Homónimo del vivo.
+  - reemplazado por: src/client-portal/modulos/order-form/components/CorteTechnicalUI.jsx
+  - evidencia: Leído entero. Único importador: components/orders/OrderForm.jsx:11 (muerto). Grep `CorteTechnicalUI`: los hits vivos (modulos/OrderForm.jsx:39/2594/3592, PrendaOrderForm.jsx:58/3359/3746) importan `./order-form/components/CorteTechnicalUI` (export const l.355 + default l.481), con props superset (clientFabricName, sele
+- **BORRAR** `src/client-portal/components/orders/services/DTFService.jsx` (riesgo bajo, 2026-02-16 fcc5d0a unificacion)
+  - qué es: UI DTF/DTG (84 líneas): requisitos, lista de ItemRow y una 'validación visual de transparencia (simulada)'.
+  - reemplazado por: src/client-portal/modulos/order-form/components/DtfTechnicalUI.jsx + FileUploadZone.jsx
+  - evidencia: Leído entero. Único importador: services/ServiceFactory.jsx:5 (muerto). Grep `DTFService` → solo esos dos. La advertencia de transparencia (l.60-66) lee `item.file.hasTransparency`; grep `hasTransparency` en todo src → solo este archivo: ningún fileService lo setea, así que la advertencia saldría siempre (nunca funcion
+- **BORRAR** `src/client-portal/components/orders/services/ServiceFactory.jsx` (riesgo bajo, 2026-02-16 fcc5d0a unificacion)
+  - qué es: Switch por serviceId (49 líneas) que renderiza Sublimacion/Bordado/Corte/DTF Service o un fallback genérico.
+  - reemplazado por: src/client-portal/constants/services.js + modulos/OrderForm.jsx
+  - evidencia: Leído entero. inDegree 0 en grafo: nadie lo importa, ni siquiera el OrderForm viejo. Grep `ServiceFactory` en todo el repo → solo el propio archivo. `git log -S"ServiceFactory" -- src` → solo fcc5d0a. Vivo: constants/services.js define los ids (sublimacion l.15, DF l.62, ecouv l.85, bordado l.135, corte l.186, tpu l.22
+- **BORRAR** `src/client-portal/components/orders/services/SublimacionService.jsx` (riesgo bajo, 2026-02-16 fcc5d0a unificacion)
+  - qué es: UI de Sublimación/gran formato (71 líneas): ItemRow por archivo + select de material por ítem si !config.singleMaterial.
+  - reemplazado por: src/client-portal/modulos/OrderForm.jsx + order-form/hooks/useOrderForm.js
+  - evidencia: Leído entero. Único importador: services/ServiceFactory.jsx:2 (muerto). Grep `SublimacionService` → solo esos dos. Vivo: modulos/OrderForm.jsx (serviceId 'sublimacion' de constants/services.js:15) con useOrderForm.js globalMaterial/dynamicMaterials (l.27, 104, 268-273) y FileUploadZone.
+- **BORRAR** `src/client-portal/components/orders/ui/GlassCard.jsx` (riesgo bajo, 2026-05-06 3e0d4ef cambios front)
+  - qué es: Card blanca redondeada (15 líneas) con title opcional. Homónimo reducido del pautas/GlassCard vivo.
+  - reemplazado por: src/client-portal/pautas/GlassCard.jsx
+  - evidencia: Leído entero. inDegree 7 pero los 7 importadores son los archivos muertos de components/orders/** (grep `GlassCard` en src). El vivo es src/client-portal/pautas/GlassCard.jsx:3 (title, icon, noPadding, ...props), importado por Dashboard.jsx:2, modulos/OrderForm.jsx:22, PrendaOrderForm.jsx:49, ProfileView/Edit, tickets/
+- **BORRAR** `src/client-portal/components/orders/ui/ItemRow.jsx` (riesgo bajo, 2026-02-16 fcc5d0a unificacion)
+  - qué es: Fila 'ARCHIVO #n' (43 líneas) con input file crudo, botón eliminar y medida detectada.
+  - reemplazado por: src/client-portal/modulos/order-form/components/FileUploadZone.jsx
+  - evidencia: Leído entero. Importadores: Bordado/DTF/Sublimacion Service (los 3 muertos). Grep `ItemRow` en el repo → solo el árbol muerto (más un CSV de JavaFX en .claude/skills/ui-ux-pro-max, ruido). Vivo: order-form/components/FileUploadZone.jsx:193 (preview, damero DTF, guía de margen de seguridad, multiple, accept).
+- **SIN_USO** `src/client-portal/modulos/LoginPage.jsx` (riesgo bajo, 2026-07-31 a81fcfa fixes y merge)
+  - qué es: Login + registro del portal (407 líneas): idcliente/password, registro con nomencladores (dep/loc/agencia/formaEnvío), ChangePasswordForm → /web-auth/update-password, bloque 'cuenta inactiva' → /web-a
+  - reemplazado por: src/components/pages/LoginPage.jsx (login) + src/components/pages/RegisterPage.jsx (registro)
+  - perdería: Casi nada: el registro viejo dejaba elegir 'Forma de Envío' y 'Nombre Fantasía' por separado; RegisterPage los deduce (formaEnvioId = Montevideo?1:2 l.168; fantasyName = razonSocial || idCliente l.162). Es decisión de di
+  - evidencia: Leído entero. Nadie la importa: `git show 3ce1094 -- ClientPortalApp.jsx` (2026-02-17 'login con registro') borró `import { LoginPage } from './modulos/LoginPage'` y `<Route path="/login">`. Grep `LoginPage` en el repo: App.jsx:5 importa `./components/pages/LoginPage` y App.jsx:87 monta `/login`; LandingPage.jsx:6 impo
+- **BORRAR** `src/client-portal/modulos/ProfileManager.jsx` (riesgo bajo, 2026-02-16 fcc5d0a unificacion)
+  - qué es: 'Mi Perfil' con 3 tabs (125 líneas): Datos (updateProfile real), Seguridad (form sin estado ni onSubmit) e Historial (mock hardcodeado [1,2,3] 'Hace i días desde Chrome/Windows').
+  - reemplazado por: src/client-portal/modulos/ProfileView.jsx + modulos/ProfileEdit.jsx
+  - evidencia: Leído entero. Grep `ProfileManager` en todo el repo → solo el propio archivo (l.9). `git log -S"ProfileManager" -- src` → solo fcc5d0a: nunca se importó después de la unificación. Vivo: ClientPortalApp.jsx:47-62 monta /profile → modulos/ProfileView.jsx (381 líneas) y /profile/edit → modulos/ProfileEdit.jsx (203 líneas,
+- **SIN_USO** `src/client-portal/pautas/ProcessStepper.jsx` (riesgo bajo, 2026-02-16 fcc5d0a unificacion)
+  - qué es: Stepper horizontal genérico (101 líneas): pasos con status COMPLETED/ACTIVE/ERROR/CANCELLED, subLabel y botón eliminar opcional.
+  - evidencia: Leído entero. Grep `ProcessStepper` en todo el repo → solo el propio archivo. `git log -S"ProcessStepper" -- src` → solo fcc5d0a: nunca se importó. Grep `Stepper` en src: WmsReceiveSalesView.jsx:262 y FilePrintControl.jsx definen su propio `const Stepper` local, no importan este. Usa la clase `animate-spin-slow` (l.33)
+
+## verify-3-src_assets_animations.json
+NOTAS: Patrón general (verificado): public/assets/ es un espejo de src/assets/ — de 49 archivos con el mismo path relativo, 44 son idénticos por md5; distintos solo logo-white.svg, logo_new.svg (viewBox) y textures/README.md; los 5 JSON de animations existen solo en src. La regla para decidir quién está vivo: lo que el código importa (`import x from '../assets/...'`) resuelve a src/assets y lo empaqueta Vite; lo que se referencia por string de URL ("/assets/images/...", en sw.js, manifest.json, backend, src con template strings) resuelve a public/ → Vite lo copia a backend/public (vite.config.js: outDir 'backend/public', publicDir por defecto) y lo sirve express.static (backend/server.js:460-469). Por eso las 26 de src/assets de la lista son copias o huérfanas, y las referencias por URL no las salvan. Cuidados al grepear en este repo: (1) rg respeta .gitignore y acá `*.json`, `*.md`, `*.bat`, `*.sql`, `docs` están ignorados globalmente → sin `--no-ignore --hidden` el grep se salta manifest.json, package.json, CHANGELOG.md y docs/. (2) backend/public/ es el build de Vite (gitignored, 384 archivos): hay que excluirlo, el bundle minificado da falsos positivos (ej. 'u.ico'). (3) `rg` falla sobre el archivo `nul` de la raíz (os error 1), inofensivo. Hallazgos fuera de la lista, vistos al verificar: (a) public/manifest.json y public/assets/textures/texturas.json NO están trackeados (los tapa `*.json`; git ls-files vacío) — manifest.json es el que define los íconos maskable, conviene forza
+
+- **SIN_USO** `src/assets/animations/check.json` (riesgo bajo, 2026-05-06 fix: agregar todos los JSON de animaciones al repo (único commit, 58c6506))
+  - qué es: Animación Lottie (bodymovin 5.1.1, comp «Comp 1», 720×720, 30 frames, 1 capa «ae_demo Outlines»): un tilde/check de confirmación. 2,8 KB.
+  - evidencia: rg --no-ignore --hidden 'check\.json' en src/, backend/, public/ (manifest.json, sw.js), index.html, docs/, specs/, CHANGELOG.md, package.json → 0 hits (excluido backend/public, que es el build). Los únicos imports de assets/animations/ son Loading.json (ClientsIntegration.jsx:9, VerificarPagosOnlineView.jsx:4, client-
+- **SIN_USO** `src/assets/animations/success.json` (riesgo bajo, 2026-05-06 fix: agregar todos los JSON de animaciones al repo (único commit, 58c6506))
+  - qué es: Animación Lottie (bodymovin 5.12.0, comp «Final Celebration», 304×330, 129 frames @29fps, 1 capa «lottie (mobile)» + 7 assets embebidos): festejo de éxito. 55 KB.
+  - evidencia: rg --no-ignore --hidden 'success\.json' en todo el repo (src, backend, public, index.html, docs, specs, CHANGELOG.md, package.json) → 0. Mismo listado de imports de assets/animations/ que check.json: nadie lo importa. Sin import dinámico. Sin copia en public/. El rol de «festejo» lo cubre confetti.json en TotemDashboar
+- **BORRAR** `src/assets/images/asesores/43963263.webp` (riesgo bajo, 2026-09-01 que quilombo que se va a armar (dec902d))
+  - qué es: Foto de asesor/vendedor (webp 22 KB), nombrada por cédula. Copia byte a byte de public/assets/images/asesores/43963263.webp (md5 igual).
+  - reemplazado por: public/assets/images/asesores/43963263.webp
+  - evidencia: Las fotos se arman por URL, no por import: client-portal/modulos/ProfileView.jsx:226 src={`/assets/images/asesores/${user.vendedorCedula}.webp`}, RegisterPage.jsx:363 `/assets/images/asesores/${v.Cedula}.webp`, VendedorVentasMensuales.jsx:131 y :141; el comentario en VendedorVentasMensuales.jsx:113 y CHANGELOG.md:681 d
+- **BORRAR** `src/assets/images/asesores/47698395.webp` (riesgo bajo, 2026-04-17 nueva web, mercado pago, fuentes, landing, etc (6653e8d))
+  - qué es: Foto de asesor por cédula (webp 26 KB). Copia idéntica (md5) de public/assets/images/asesores/47698395.webp.
+  - reemplazado por: public/assets/images/asesores/47698395.webp
+  - evidencia: Igual que 43963263: solo se alcanza por URL template /assets/images/asesores/${cedula}.webp (ProfileView.jsx:226, RegisterPage.jsx:363, VendedorVentasMensuales.jsx:131,141) → resuelve a public/, no a src/. rg --no-ignore '47698395' en todo el repo → 0. Ningún import de la carpeta src/assets/images/asesores/.
+- **BORRAR** `src/assets/images/asesores/50095320.webp` (riesgo bajo, 2026-04-17 nueva web, mercado pago, fuentes, landing, etc (6653e8d))
+  - qué es: Foto de asesor por cédula (webp 27 KB). Copia idéntica (md5) de public/assets/images/asesores/50095320.webp.
+  - reemplazado por: public/assets/images/asesores/50095320.webp
+  - evidencia: Idem: alcanzable solo por URL /assets/images/asesores/${cedula}.webp (ProfileView.jsx:226, RegisterPage.jsx:363, VendedorVentasMensuales.jsx:131,141) → public/. rg --no-ignore '50095320' → 0. Sin import.
+- **BORRAR** `src/assets/images/asesores/53637682.webp` (riesgo bajo, 2026-04-17 nueva web, mercado pago, fuentes, landing, etc (6653e8d))
+  - qué es: Foto de asesor por cédula (webp 28 KB). Copia idéntica (md5) de public/assets/images/asesores/53637682.webp.
+  - reemplazado por: public/assets/images/asesores/53637682.webp
+  - evidencia: Idem: alcanzable solo por URL /assets/images/asesores/${cedula}.webp (ProfileView.jsx:226, RegisterPage.jsx:363, VendedorVentasMensuales.jsx:131,141) → public/. rg --no-ignore '53637682' → 0. Sin import.
+- **BORRAR** `src/assets/images/asesores/54792053.webp` (riesgo bajo, 2026-04-17 nueva web, mercado pago, fuentes, landing, etc (6653e8d))
+  - qué es: Foto de asesor por cédula (webp 21 KB). Copia idéntica (md5) de public/assets/images/asesores/54792053.webp.
+  - reemplazado por: public/assets/images/asesores/54792053.webp
+  - evidencia: Idem: alcanzable solo por URL /assets/images/asesores/${cedula}.webp (ProfileView.jsx:226, RegisterPage.jsx:363, VendedorVentasMensuales.jsx:131,141) → public/. rg --no-ignore '54792053' → 0. Sin import.
+- **BORRAR** `src/assets/images/asesores/65733688.webp` (riesgo bajo, 2026-04-17 nueva web, mercado pago, fuentes, landing, etc (6653e8d))
+  - qué es: Foto de asesor por cédula (webp 21 KB). Copia idéntica (md5) de public/assets/images/asesores/65733688.webp.
+  - reemplazado por: public/assets/images/asesores/65733688.webp
+  - evidencia: Idem: alcanzable solo por URL /assets/images/asesores/${cedula}.webp (ProfileView.jsx:226, RegisterPage.jsx:363, VendedorVentasMensuales.jsx:131,141) → public/. rg --no-ignore '65733688' → 0. Sin import.
+- **SIN_USO** `src/assets/images/logo/logo-white.svg` (riesgo bajo, 2026-06-15 mas fixes (304c92d, único commit))
+  - qué es: Logo «user» blanco con cuadritos CMYK, export de Illustrator 29 (viewBox 0 0 294.2×112.5, clases .st0-.st3). 2 KB. Leído entero.
+  - reemplazado por: src/assets/images/logo/logo-white.webp (inferido: mismo nombre y rol, es el que importan LandingNavbar y LandingPage)
+  - perdería: es la versión vectorial del logo blanco; el vivo es raster (.webp). No hay copia igual en otro lado (la de public/ es otra composición)
+  - evidencia: rg --no-ignore --hidden 'logo-white\.svg' en src, backend, public, index.html, docs, CHANGELOG.md → 0. Lo que se importa es logo-white.webp (shared/LandingNavbar.jsx:5, pages/LandingPage.jsx:5). Hay un public/assets/images/logo/logo-white.svg pero es DISTINTO (diff: viewBox 0 0 358.32×229.17, con <rect> y sin <style>; 
+- **BORRAR** `src/assets/images/logo/logo_new.svg` (riesgo bajo, 2026-09-02 mas fixes (c2e786c, único commit))
+  - qué es: Logo «user» full color vectorial (polígonos magenta/amarillo/cyan/negro + wordmark), viewBox 0 0 358.32×229.17. 8,7 KB.
+  - reemplazado por: public/assets/images/logo/logo_new.svg
+  - perdería: solo el viewBox sin recortar (mismo dibujo); si hiciera falta se cambia la línea 2 del vivo
+  - evidencia: Referenciado solo por URL, nunca por import: pages/ventas/PresupuestosPage.jsx:170 (`${window.location.origin}/assets/images/logo/logo_new.svg` en el HTML de impresión), :644 y :754 (src="/assets/images/logo/logo_new.svg") → resuelve a public/assets/images/logo/logo_new.svg vía Vite publicDir → backend/public → express
+- **BORRAR** `src/assets/images/logo/u-simple-black.svg` (riesgo bajo, 2026-04-17 nueva web, mercado pago, fuentes, landing, etc (6653e8d))
+  - qué es: Isotipo «U» en negro, viewBox 0 0 37.32×44.13, un solo <path>. 506 bytes. Copia idéntica (md5) de public/assets/images/logo/u-simple-black.svg.
+  - reemplazado por: public/assets/images/logo/u-simple-black.svg (copia idéntica, también sin uso)
+  - evidencia: rg --no-ignore --hidden 'u-simple' en src, backend, public (manifest.json, sw.js), index.html, docs, CHANGELOG.md, package.json → 0 (excluyendo el bundle compilado backend/public). Ni la copia de src ni la de public se referencian. Imports de logo/ en src son solo logo.webp, logo-white.webp y logo-mini.svg (rg 'assets/
+- **BORRAR** `src/assets/images/logo/u-simple.svg` (riesgo bajo, 2026-04-17 nueva web, mercado pago, fuentes, landing, etc (6653e8d))
+  - qué es: Isotipo «U» en blanco (.cls-1 fill #fff), viewBox 0 0 37.32×44.13. 614 bytes. Copia idéntica (md5) de public/assets/images/logo/u-simple.svg.
+  - reemplazado por: public/assets/images/logo/u-simple.svg (copia idéntica, también sin uso)
+  - evidencia: Mismo grep que u-simple-black: rg --no-ignore 'u-simple' → 0 en todo el repo. Nadie importa ni referencia por URL ninguna de las dos copias.
+- **BORRAR** `src/assets/images/logo/u.ico` (riesgo bajo, 2026-04-17 nueva web, mercado pago, fuentes, landing, etc (6653e8d))
+  - qué es: Favicon ICO de la «U» con 15 tamaños hasta 256×256 (file). 36 KB. Copia idéntica (md5) de public/assets/images/logo/u.ico.
+  - reemplazado por: public/favicon.ico (el favicon vivo); copia idéntica en public/assets/images/logo/u.ico
+  - evidencia: El favicon real es public/favicon.ico (index.html:10 href="/favicon.ico?v=20260429"; 3 íconos 48/32, md5 distinto de u.ico). rg --no-ignore 'u\.ico' en src, backend, public/*.json, sw.js, index.html, docs, CHANGELOG → 0 (el único hit era ruido en el bundle minificado backend/public/assets/ClientPortalApp-*.js). Sin imp
+- **BORRAR** `src/assets/images/logo/u.png` (riesgo bajo, 2026-04-17 nueva web, mercado pago, fuentes, landing, etc (6653e8d))
+  - qué es: PNG 106×125 del isotipo «U». 988 bytes. Copia idéntica (md5) de public/assets/images/logo/u.png.
+  - reemplazado por: public/assets/images/logo/u.png
+  - evidencia: Única referencia textual: placeholder="/assets/images/logo/u.png" del campo EmpLogoUrl en pages/admin/EmpresasAdminPanel.jsx:449 (texto de ayuda, no una carga). Si alguna Empresa tiene ese valor en la base (no lo sé), el backend lo resuelve con path.join(__dirname,'..','public',rel) = backend/public (services/pdfServic
+- **BORRAR** `src/assets/images/logo/u.svg` (riesgo bajo, 2026-04-17 nueva web, mercado pago, fuentes, landing, etc (6653e8d))
+  - qué es: Isotipo «U» vectorial, viewBox 0 0 37.32×58.46. 688 bytes. Copia idéntica (md5) de public/assets/images/logo/u.svg.
+  - reemplazado por: public/favicon.svg (rol de ícono SVG); copia idéntica en public/assets/images/logo/u.svg
+  - evidencia: rg --no-ignore 'logo/u\.svg' y '"u\.svg"' → 0 en todo el repo. El SVG que usan index.html:9 y public/manifest.json:15 es /favicon.svg = public/favicon.svg (mismo viewBox pero md5 distinto, trae metadata RDF). Sin import en src.
+- **BORRAR** `src/assets/images/marcas/cecnco.svg` (riesgo bajo, 2026-04-17 nueva web, mercado pago, fuentes, landing, etc (6653e8d))
+  - qué es: Logo vectorial de la submarca CENCO (13 KB). Copia idéntica (md5) de public/assets/images/marcas/cecnco.svg.
+  - reemplazado por: public/assets/images/marcas/cecnco.svg (copia idéntica)
+  - evidencia: rg --no-ignore --hidden -i 'marcas/' en src, backend, public (manifest.json, sw.js), index.html, docs, specs, CHANGELOG.md → 0; rg -i 'cecnco' → 0. GuidesPage.jsx:6-55 usa PDFs (/guias/guia-*.pdf) e íconos SVG inline, no estos logos; backend/catalogos/fnc.html:1639 usa un SVG base64 inline y describe las 5 submarcas en
+- **BORRAR** `src/assets/images/marcas/dtfuy.svg` (riesgo bajo, 2026-04-17 nueva web, mercado pago, fuentes, landing, etc (6653e8d))
+  - qué es: Logo vectorial de la submarca DTF.uy (20 KB). Copia idéntica (md5) de public/assets/images/marcas/dtfuy.svg.
+  - reemplazado por: public/assets/images/marcas/dtfuy.svg (copia idéntica)
+  - evidencia: Mismo grep que cecnco: rg --no-ignore -i 'marcas/' → 0, 'dtfuy' → 0 en todo el repo. Sin import, sin URL, sin mención en docs/CHANGELOG.
+- **BORRAR** `src/assets/images/marcas/ecouv.svg` (riesgo bajo, 2026-04-17 nueva web, mercado pago, fuentes, landing, etc (6653e8d))
+  - qué es: Logo vectorial de la submarca ECOUV (17 KB). Copia idéntica (md5) de public/assets/images/marcas/ecouv.svg.
+  - reemplazado por: public/assets/images/marcas/ecouv.svg (copia idéntica)
+  - evidencia: rg --no-ignore -i 'marcas/' → 0; 'ecouv\.svg' → 0 (la palabra ECOUV aparece mucho pero como área de producción, no como imagen). Sin import ni URL.
+- **BORRAR** `src/assets/images/marcas/emblemas.svg` (riesgo bajo, 2026-04-17 nueva web, mercado pago, fuentes, landing, etc (6653e8d))
+  - qué es: Logo vectorial de la submarca EMBLEMAS (violeta #792e88, viewBox 139×34). 7 KB. Copia idéntica (md5) de public/assets/images/marcas/emblemas.svg.
+  - reemplazado por: public/assets/images/marcas/emblemas.svg (copia idéntica)
+  - evidencia: rg --no-ignore -i 'marcas/' → 0; 'emblemas\.svg' → 0. Sin import ni URL.
+- **BORRAR** `src/assets/images/marcas/impritex.svg` (riesgo bajo, 2026-04-17 nueva web, mercado pago, fuentes, landing, etc (6653e8d))
+  - qué es: Logo vectorial de la submarca IMPRITEX (19 KB). Copia idéntica (md5) de public/assets/images/marcas/impritex.svg.
+  - reemplazado por: public/assets/images/marcas/impritex.svg (copia idéntica)
+  - evidencia: rg --no-ignore -i 'marcas/' → 0; 'impritex\.svg' → 0 (los hits de 'impritex' son GuidesPage.jsx:45-49 que apunta a /guias/guia-impritex.pdf, TemplatesPage.jsx:12 texto, StockGestionPage.jsx:2140 comentario). Sin import ni URL.
+- **BORRAR** `src/assets/images/maskable_icon_x192.png` (riesgo bajo, 2026-04-30 fixes (ae98971))
+  - qué es: Ícono PWA «maskable» 192×192 PNG (3,3 KB). Tercera copia idéntica (md5) de public/maskable_icon_x192.png y public/assets/images/maskable_icon_x192.png.
+  - reemplazado por: public/maskable_icon_x192.png
+  - evidencia: rg --no-ignore --hidden 'maskable' → solo public/manifest.json:33 ("src": "/maskable_icon_x192.png", purpose maskable) y :39. Esa URL es la raíz de public/ (copiada a backend/public por Vite y servida por server.js:469). La copia de src no se importa en ningún lado; la de public/assets/images/ tampoco se referencia. Oj
+- **BORRAR** `src/assets/images/maskable_icon_x512.png` (riesgo bajo, 2026-04-30 fixes (ae98971))
+  - qué es: Ícono PWA «maskable» 512×512 PNG (12,8 KB). Tercera copia idéntica (md5) de public/maskable_icon_x512.png y public/assets/images/maskable_icon_x512.png.
+  - reemplazado por: public/maskable_icon_x512.png
+  - evidencia: Igual que x192: la única referencia es public/manifest.json:39 ("/maskable_icon_x512.png") → raíz de public/. Sin import en src; rg 'maskable' no da nada más en src, backend, sw.js, index.html, docs ni CHANGELOG.
+- **BORRAR** `src/assets/images/pasarelas/u.png` (riesgo bajo, 2026-04-20 fixes y sistema de helpdesk (3cb9a5a))
+  - qué es: PNG 66×104 del isotipo «U» que va arriba a la izquierda en el comprobante de pago PDF (pdf-lib). 836 bytes. Copia idéntica (md5) de public/assets/images/pasarelas/u.png.
+  - reemplazado por: public/assets/images/pasarelas/u.png (1er camino de findImage)
+  - evidencia: Lo usa el backend: findImage('pasarelas/u.png') en controllers/webOrdersController.js:69 y controllers/prendasOrdersController.js:86. findImage (webOrders:57-64, prendas:74-81) prueba en orden: repo/public/assets/images, repo/src/assets/images, cwd/public/assets/images, cwd/src/assets/images y devuelve la primera que e
+- **BORRAR** `src/assets/images/pwa.png` (riesgo bajo, 2026-04-17 iconos pwa y favicon actualizados (8e08fad; antes cc595a8 «pwa y notificaciones push», 15cfff5))
+  - qué es: Ícono PWA/push 500×500 PNG («U» blanca sobre fondo redondeado). 7 KB. Copia idéntica (md5) de public/assets/images/pwa.png.
+  - reemplazado por: public/assets/images/pwa.png
+  - evidencia: Todas las referencias son por URL '/assets/images/pwa.png' → public/: public/sw.js:27 (PRECACHE_ASSETS), :119-120 (icon y badge de la notificación push), backend/services/pushNotificationService.js:107 y :228 (icon por defecto). Vite no procesa esas strings; resuelven al estático de backend/public (server.js:469). Sin 
+- **BORRAR** `src/assets/images/pwa.svg` (riesgo bajo, 2026-04-17 iconos pwa y favicon actualizados (8e08fad))
+  - qué es: Mismo ícono PWA en SVG, viewBox 500×500 con rect redondeado. 1 KB. Copia idéntica (md5) de public/assets/images/pwa.svg.
+  - reemplazado por: public/assets/images/pwa.svg
+  - evidencia: Única referencia: public/sw.js:26 '/assets/images/pwa.svg' en PRECACHE_ASSETS → public/. rg --no-ignore 'pwa\.svg' en src, backend, index.html, manifest.json, docs, CHANGELOG → nada más. Sin import.
+- **BORRAR** `src/assets/images/social/whatsappnegro.svg` (riesgo bajo, 2026-04-17 nueva web, mercado pago, fuentes, landing, etc (6653e8d))
+  - qué es: Ícono de WhatsApp en negro (viewBox 177×177, con mix-blend-mode). 3,8 KB. Copia idéntica (md5) de public/assets/images/social/whatsappnegro.svg.
+  - reemplazado por: public/assets/images/social/whatsappnegro.svg (copia idéntica, también sin uso); por rol, whatsapp.svg / whatsappwhite.svg
+  - evidencia: rg --no-ignore --hidden 'whatsappnegro' en todo el repo → 0. Los hermanos sí se importan: social/whatsapp.svg (components/Footer.jsx:12, pages/ContactPage.jsx:8) y social/whatsappwhite.svg (ContactPage.jsx:7); facebook/instagram/tiktok en Footer.jsx:5-7. Ni la copia de src ni la de public se usan.
+- **SIN_USO** `public/assets/images/marcas/cecnco.svg` (riesgo bajo, 2026-04-17 nueva web, mercado pago, fuentes, landing, etc (6653e8d))
+  - qué es: Logo vectorial de la submarca CENCO (13 KB), servido estático en /assets/images/marcas/cecnco.svg. Idéntico a la copia de src.
+  - perdería: no rompe nada; si se borran las dos copias (src y public) el repo se queda sin el logo vectorial de CENCO
+  - evidencia: rg --no-ignore --hidden -i 'marcas/' en src, backend, public (manifest.json, sw.js), index.html, docs, specs, CHANGELOG.md, package.json → 0; 'cecnco' → 0. No hay template `marcas/${...}` ni import.meta.glob en src. GuidesPage.jsx usa /guias/*.pdf; fnc.html (backend/catalogos) lleva su SVG en base64 inline (:1639). Vit
+- **SIN_USO** `public/assets/images/marcas/dtfuy.svg` (riesgo bajo, 2026-04-17 nueva web, mercado pago, fuentes, landing, etc (6653e8d))
+  - qué es: Logo vectorial de la submarca DTF.uy (20 KB). Idéntico a la copia de src.
+  - perdería: no rompe nada; borrar ambas copias deja al repo sin el logo vectorial de DTF.uy
+  - evidencia: Mismo grep: rg --no-ignore -i 'marcas/' → 0, 'dtfuy' → 0 en todo el repo (src, backend, public, index.html, docs, CHANGELOG). Sin URL ni import.
+- **SIN_USO** `public/assets/images/marcas/ecouv.svg` (riesgo bajo, 2026-04-17 nueva web, mercado pago, fuentes, landing, etc (6653e8d))
+  - qué es: Logo vectorial de la submarca ECOUV (17 KB). Idéntico a la copia de src.
+  - perdería: no rompe nada; borrar ambas copias deja al repo sin el logo vectorial de ECOUV
+  - evidencia: rg --no-ignore -i 'marcas/' → 0; 'ecouv\.svg' → 0 (ECOUV como área aparece en código, pero nunca como imagen). Sin URL ni import.
+- **SIN_USO** `public/assets/images/marcas/emblemas.svg` (riesgo bajo, 2026-04-17 nueva web, mercado pago, fuentes, landing, etc (6653e8d))
+  - qué es: Logo vectorial de la submarca EMBLEMAS (7 KB). Idéntico a la copia de src.
+  - perdería: no rompe nada; borrar ambas copias deja al repo sin el logo vectorial de EMBLEMAS
+  - evidencia: rg --no-ignore -i 'marcas/' → 0; 'emblemas\.svg' → 0. Sin URL ni import.
+- **SIN_USO** `public/assets/images/marcas/impritex.svg` (riesgo bajo, 2026-04-17 nueva web, mercado pago, fuentes, landing, etc (6653e8d))
+  - qué es: Logo vectorial de la submarca IMPRITEX (19 KB). Idéntico a la copia de src.
+  - perdería: no rompe nada; borrar ambas copias deja al repo sin el logo vectorial de IMPRITEX
+  - evidencia: rg --no-ignore -i 'marcas/' → 0; 'impritex\.svg' → 0 (GuidesPage.jsx:49 apunta a /guias/guia-impritex.pdf, no al SVG). Sin URL ni import.
+
+## verify-4-src_components_baskets.json
+NOTAS: Método: leí los 13 archivos enteros (todos ≤231 líneas). Grep con `grep -rnIE` sobre toda la raíz del repo (src, backend, docs, specs, public, index.html, CHANGELOG.md, package.json, start-ngrok.bat) excluyendo node_modules, .git, .claude (hay worktrees copiados en .claude/worktrees/ que duplican todo y meten ruido), dist, muestras, package-lock.json y el archivo `nul`. Sin ripgrep en la máquina; ojo que la Grep tool (ripgrep) respeta el .gitignore que ignora *.md/*.json/*.bat globales, por eso usé grep plano. Verifiqué que no hay imports dinámicos con template en src (grep 'import(\\s*`' → 0), así que no hay forma rara de alcanzarlos. Resumen: 13/13 muertos, 0 falsos positivos. BORRAR 8 (4 baskets, OrderTrackingModal, Sidebarborrar, Card.jsx, labelsService), SIN_USO 5 (ActivityFeed, DynamicGrid, rendererMap, SidebarProcesses, Input.jsx). Todos riesgo bajo. Si Yoania prefiere la regla conservadora, los 8 BORRAR también se pueden marcar SIN USO sin perder nada; los únicos que SÍ rompen o engañan si alguien los toca son Sidebarborrar (import a CSS inexistente, rompe el build) y labelsService (endpoint /api/labels no existe, 404). Hallazgos colaterales fuera de la lista, para otros clusters: 1) src/components/pages/AdminDashboard.jsx: unreachable, 0 importers, nunca importado en la historia (`git log -S\"pages/AdminDashboard\"` vacío); el propio backend lo documenta en adminRoutes.js:16. Cadena muerta AdminDashboard → DynamicGrid → GET /api/admin/dynamic (adminController.getDyna
+
+- **BORRAR** `src/components/baskets/BasketCard.jsx` (riesgo bajo, 2026-01-16 3288b8d Fix: Aplicado gitignore para archivos sensibles y credenciales (único commit, creado ahí))
+  - qué es: Card genérico de 'canasto' (título, descripción, métricas, ícono) con lista expandible de órdenes; 52 líneas, sin dependencias locales.
+  - reemplazado por: src/components/logistics/CanastosView.jsx (reachable: LogisticsDashboard.jsx ← MainAppContent.jsx:36), que define CANASTOS_DEFINIDOS con Canasto Falla / Reposic
+  - evidencia: Leído entero. grafo: unreachable, inDegree 3 y los 3 importers son FailureBasket/IncompleteProductionBasket/RepositionBasket (también unreachable). grep -rnIE 'BasketCard|FailureBasket|IncompleteProductionBasket|RepositionBasket|components/baskets|/baskets' en todo el repo (src, backend, docs, specs, public, index.html
+- **BORRAR** `src/components/baskets/FailureBasket.jsx` (riesgo bajo, 2026-01-16 3288b8d Fix: Aplicado gitignore para archivos sensibles y credenciales (único commit))
+  - qué es: Wrapper de BasketCard para 'Canasto de Fallas' (título/ícono fijos, métricas órdenes+bultos); 22 líneas.
+  - reemplazado por: src/components/logistics/CanastosView.jsx ('Canasto Falla' en CANASTOS_DEFINIDOS, línea 8)
+  - evidencia: Leído entero. grafo: unreachable, importers 0. Mismo grep del cluster baskets (ver BasketCard): 0 referencias fuera de src/components/baskets/. `git log -S"FailureBasket" -- src` → solo 3288b8d (nunca importado en la historia). Única dependencia: ./BasketCard (muerto).
+- **BORRAR** `src/components/baskets/IncompleteProductionBasket.jsx` (riesgo bajo, 2026-01-16 3288b8d Fix: Aplicado gitignore para archivos sensibles y credenciales (único commit))
+  - qué es: Wrapper de BasketCard para 'Producción Incompleta'; 22 líneas.
+  - reemplazado por: src/components/logistics/CanastosView.jsx ('Canasto Incompletos', línea 10)
+  - evidencia: Leído entero. grafo: unreachable, importers 0. grep del cluster baskets: 0 referencias fuera de la carpeta. `git log -S` del nombre → solo 3288b8d. Única dependencia ./BasketCard (muerto).
+- **BORRAR** `src/components/baskets/RepositionBasket.jsx` (riesgo bajo, 2026-01-16 3288b8d Fix: Aplicado gitignore para archivos sensibles y credenciales (único commit))
+  - qué es: Wrapper de BasketCard para 'Canasto de Reposiciones' (tránsito); 22 líneas.
+  - reemplazado por: src/components/logistics/CanastosView.jsx ('Canasto Reposiciones', línea 9)
+  - evidencia: Leído entero. grafo: unreachable, importers 0. grep del cluster baskets: 0 referencias fuera de la carpeta. Única dependencia ./BasketCard (muerto).
+- **SIN_USO** `src/components/dashboard/ActivityFeed.jsx` (riesgo bajo, 2026-01-16 3288b8d Fix: Aplicado gitignore para archivos sensibles y credenciales)
+  - qué es: Timeline de 'Actividad Reciente' para el dashboard; 52 líneas; trae datos de ejemplo HARDCODEADOS (activityLog: 'Carlos inició corte en #1050', 'Reporte retraso en Área UV'), sin fuente de datos real.
+  - evidencia: Leído entero. grafo: unreachable, importers 0. grep -rnIE 'ActivityFeed' en todo el repo → 0 hits fuera del archivo. Historia: creado en 0e9d025 (2025-11-28); `git log -S"dashboard/ActivityFeed" -- src` → b0d8bb2 2026-03-02 'orders cards' le sacó el import a src/components/pages/Dashboard.jsx (diff: `-import ActivityFe
+- **SIN_USO** `src/components/common/DynamicGrid.jsx` (riesgo bajo, 2026-05-06 3e0d4ef cambios front)
+  - qué es: Tabla genérica que detecta columnas del primer registro, filtro de texto por columna en el header, estados loading/vacío y footer 'Mostrando X de Y'; 106 líneas, sin dependencias locales.
+  - perdería: filtro por columna automático sobre cualquier dataset; nadie lo usa hoy
+  - evidencia: Leído entero. grafo: unreachable, inDegree 1: único importer src/components/pages/AdminDashboard.jsx:2 (`import DynamicGrid from '../common/DynamicGrid'`, usado en :91). AdminDashboard.jsx está unreachable con 0 importers: grep -rnIE 'AdminDashboard' en todo el repo → solo su propia definición (:5, :98) y el comentario
+- **BORRAR** `src/components/common/OrderTrackingModal.jsx` (riesgo bajo, 2026-05-06 3e0d4ef cambios front)
+  - qué es: Modal de trazabilidad de una orden: header con estado/cliente/fecha, OrderRouteTracker (ruta armada desde history), card 'Area Actual' y tabs Archivos/Historial/Fallas; usa ordersService.getFullDetail
+  - reemplazado por: src/components/production/components/OrderDetailModal.jsx (OrdersQueryView.jsx:4 y :303) + src/components/pages/IntegralOrderView.jsx (ruta con OrderRouteTracke
+  - evidencia: Leído entero. grafo: unreachable, importers 0. grep -rnIE 'OrderTrackingModal' en todo el repo → único hit src/components/pages/OrdersQueryView.jsx:3 `// import OrderTrackingModal from '../common/OrderTrackingModal'; // DEPRECATED`; la línea 4 importa OrderDetailModal '// NEW MODAL' y lo usa en :303. Historia: en 3288b
+- **SIN_USO** `src/components/common/rendererMap.jsx` (riesgo bajo, 2026-06-22 afe2d3e rgrg)
+  - qué es: Boceto de un 'mapeo centralizado' de tabla de producción: `export const RendererMap` con claves UNIVERSAL_TABLE/DTF_TABLE/BORDADO_TABLE, cada una con defaultColDefs (12 columnas) y renderRowCells (bot
+  - reemplazado por: patrón vivo equivalente: src/components/common/configs/areaConfigs.jsx + src/components/production/areas/*Area.jsx (renderRowCells por área); ningún archivo lo 
+  - evidencia: Leído entero. grafo: unreachable, importers 0. grep -rnIE 'rendererMap|RendererMap|UNIVERSAL_TABLE|DTF_TABLE|BORDADO_TABLE' en todo el repo → 0 hits fuera del archivo. 'renderRowCells'/'defaultColDefs' sí aparecen en src/components/common/configs/areaConfigs.jsx:169-290, production/areas/*Area.jsx:29-31 y AreaView.jsx:
+- **SIN_USO** `src/components/layout/SidebarProcesses.jsx` (riesgo bajo, 2026-05-06 3e0d4ef cambios front)
+  - qué es: Sidebar de 260px que lista todas las áreas de `allAreaConfigs` como botones (ícono+nombre, 'Activo'), con callback onAreaChange y bloque fijo 'Panel Admin'; 65 líneas, sin dependencias locales.
+  - reemplazado por: navegación actual en src/components/layout/MainAppContent.jsx + Navbar.jsx (inferido: AreaView dejó de usarlo y la navegación por áreas vive ahí; no comparé 1:1
+  - evidencia: Leído entero. grafo: unreachable, importers 0. grep -rnIE 'SidebarProcesses' en todo el repo → 0 hits fuera del archivo; grep 'allAreaConfigs|onAreaChange' en src → 0 fuera del archivo (nadie provee esas props). Historia: creado en 09453df (2025-12-09), donde lo importaba src/components/production/areas/AreaView.jsx:24
+- **BORRAR** `src/components/layout/Sidebarborrar.jsx` (riesgo bajo, 2026-05-06 3e0d4ef cambios front)
+  - qué es: Sidebar en árbol (menuItems con ModuleID/ParentID/Route/Icon/Title, carpetas desplegables, navigate(child.Route)) estilado con CSS Modules; 79 líneas; el nombre ya dice 'borrar'.
+  - reemplazado por: src/components/layout/Navbar.jsx / MainAppContent.jsx (inferido; es otro modelo de menú, las rutas están en código y no en una tabla de módulos)
+  - evidencia: Leído entero. Línea 3 `import styles from './Sidebar.module.css'`: ese archivo NO existe (`find src -name '*.module.css'` → vacío; grafo lo lista en frontend.unresolved). Si alguien lo importara, Vite rompería el build. grafo: unreachable, importers 0. grep -rnIE 'Sidebarborrar|Sidebar\.module' en todo el repo → 0 fuer
+- **BORRAR** `src/components/ui/Card.jsx` (riesgo bajo, 2026-05-06 3e0d4ef cambios front)
+  - qué es: `export const Card`: div blanco con borde, sombra, padding y título opcional; 14 líneas, sin imports.
+  - evidencia: Leído entero. grafo: unreachable, importers 0. grep -rnIE "ui/Card['\"]|components/ui/Card|from ['\"]\./Card['\"]|from ['\"]\.\./Card['\"]" en todo el repo → 0; grep 'import \{[^}]*\bCard\b[^}]*\} from' en src → 0; grep 'export (const|default|function) Card' en src → solo este archivo. `git log -S'ui/Card' -- src` → VA
+- **SIN_USO** `src/components/ui/Input.jsx` (riesgo bajo, 2026-05-06 3e0d4ef cambios front)
+  - qué es: `export const Input`: input con label, ícono izquierdo, endIcon clickeable (ojo de contraseña vía onEndIconClick), mensaje de error y estilos de foco; 42 líneas, sin imports.
+  - reemplazado por: en LoginPage.jsx: inputs propios (inferido del diff de 3ce1094, no leí el LoginPage actual). Mismo rol en el portal: src/client-portal/pautas/FormInput.jsx (6 i
+  - perdería: endIcon/onEndIconClick (toggle de contraseña): FormInput.jsx no lo tiene (grep 'endIcon|onEndIconClick|rightIcon' → 0). Es un componente reutilizable de tema claro sin equivalente en src/components/ui/, por eso SIN_USO y
+  - evidencia: Leído entero. grafo: unreachable, importers 0. grep -rnIE "ui/Input['\"]|components/ui/Input|from ['\"]\./Input['\"]" en todo el repo → 0; grep 'import \{[^}]*\bInput\b[^}]*\} from' en src → 0. Historia: en 3288b8d lo importaba src/components/pages/LoginPage.jsx:4 (`import { Input } from '../ui/Input'`); 3ce1094 (2026-
+- **BORRAR** `src/services/modules/labelsService.js` (riesgo bajo, 2026-01-16 3288b8d Fix: Aplicado gitignore para archivos sensibles y credenciales (único commit))
+  - qué es: `export const cancelLabel(etiquetaId)` → `axios.delete('/api/labels/:id')` con axios crudo (sin el cliente `api` compartido ni token); 13 líneas.
+  - reemplazado por: src/services/modules/fileControlService.js:101 `deleteLabel(id)` → api.delete('/production-file-control/etiqueta/:id') → backend/routes/productionFileRoutes.js:
+  - evidencia: Leído entero. grafo: unreachable, importers 0; NO está re-exportado por src/services/api.js (grep 'labels|Labels' en api.js → 0; sí exporta fileControlService en :20). grep -rnIE 'labelsService|cancelLabel' en todo el repo → 0 fuera del archivo. El endpoint NO EXISTE: grep 'api/labels' en todo el repo → 0; grep -i 'lab
+
+## verify-5-package.json__ra_z_____fortawesome_fontawesome-free__7.1.0.json
+NOTAS: Método: grep -rnI excluyendo node_modules, .git, __pycache__ y public (backend/public es el build de Vite: sus bundles minificados dan falsos positivos, p.ej. pdf.worker.min-*.js contiene '@napi-rs/canvas'); git log -S'\"<dep>\"' -- package.json / backend/package.json para el commit de alta; git log -S'<dep>' sobre los dirs de código para saber si alguna vez se requirió. Para los 'unresolved' leí el archivo entero o la cabecera y busqué el destino con find/ls. Resumen: de 23 ítems, 19 BORRAR, 4 VIVO (pdfjs-dist backend, el import '/pdfjs/pdf.mjs', vite.config.js, y ninguno SIN_USO/ARCHIVAR). Los 4 'unresolved' de archivos son realmente rotos (destino borrado o nunca existió) y sin referencias: borrarlos no cambia nada que compile hoy. Las 9 deps de la raíz y las 3 del backend (express-validator, node-fetch, node-unrar-js) nunca se importaron en ningún commit (git log -S vacío sobre el código). Patrón: cors/express/sharp/google-auth-library/puppeteer/@napi-rs/canvas/basic-ssl en la raíz y basic-ssl en el backend son 'npm install en la carpeta equivocada' (cada commit de alta tocó solo código del otro lado). Quitarlos del package.json no toca el build: Vite solo bundlea lo que src/ importa. Para que el package-lock quede consistente hay que correr npm install después (yo no lo corrí, solo lectura). Ojo con un falso 'VIVO' que NO lo es: la pista preguntaba si scripts/leer_tizada_prueba.cjs usa deps de la raíz; no, requiere '../backend/node_modules/dotenv' y '../backend/node_modu
+
+- **BORRAR** `package.json (raíz) → @fortawesome/fontawesome-free ^7.1.0` (riesgo bajo, 0e9d025 2025-11-28 proyecto-produccionv1 (lo agregó); package.json último commit 2026-09-01)
+  - qué es: Paquete npm de Font Awesome (CSS + webfonts) declarado como dependencia del frontend.
+  - reemplazado por: CDN cdnjs font-awesome 6.0.0 en index.html:25
+  - evidencia: grep -rni 'fortawesome' en src/, backend/ (sin public), scripts/, index.html, vite/tailwind/postcss.config.js, index.css: único hit package.json:15. No hay @import ni import de su CSS (src/index.css:2 solo importa Google Fonts; src/main.jsx importa @fontsource/*). Los íconos sí se usan (1328 líneas con clases `fa-` en 
+- **BORRAR** `package.json (raíz) → clsx ^2.1.1` (riesgo bajo, fcc5d0a 2026-02-16 unificacion)
+  - qué es: Helper para concatenar classNames condicionales.
+  - evidencia: grep -rn 'clsx' en src/, backend/, scripts/, configs, index.html: único hit package.json:24. git log -S"from 'clsx'" -- src: vacío en toda la historia (nunca se importó). No existe un util cn() (grep -E "(const|function) cn\b" src: vacío). Lo agregó fcc5d0a 2026-02-16 'unificacion' (merge del portal) junto con tailwind
+- **BORRAR** `package.json (raíz) → cors ^2.8.5` (riesgo bajo, 3288b8d 2026-01-16 Fix: Aplicado gitignore para archivos sensibles y credenciales)
+  - qué es: Middleware CORS de Express: dependencia de backend puesta en el package.json del frontend.
+  - reemplazado por: backend/package.json (cors ^2.8.5)
+  - evidencia: grep -rnE "require\(['\"]cors['\"]\)|from ['\"]cors['\"]" en src/, scripts/, vite/tailwind/postcss.config.js, temp_layout.jsx: vacío. El único .cjs de la raíz (scripts/leer_tizada_prueba.cjs:7-8) requiere '../backend/node_modules/dotenv' y '../backend/node_modules/mssql' explícitamente: no usa node_modules de la raíz. 
+- **BORRAR** `package.json (raíz) → express ^5.2.1` (riesgo bajo, 3985845 2026-01-26 Feat: Auth in Dispatch & Transport Control…)
+  - qué es: Framework HTTP del backend, declarado en el frontend (y en otra major: raíz ^5.2.1, backend ^4.18.2).
+  - reemplazado por: backend/package.json (express ^4.18.2)
+  - evidencia: grep -rnE "require\(['\"]express['\"]\)|from ['\"]express['\"]" en src/, scripts/, configs de raíz: vacío. scripts/leer_tizada_prueba.cjs no lo usa. Entró en 3985845 2026-01-26 (commit de Dispatch/Reception: 49 archivos, todos src/ o backend/, ningún script de raíz). backend/package.json tiene express ^4.18.2 que es el
+- **BORRAR** `package.json (raíz) → google-auth-library ^10.6.1` (riesgo bajo, 589a1d1 2026-03-13 google fix)
+  - qué es: Cliente OAuth2 de Google (login con Google), dependencia del backend puesta en la raíz.
+  - reemplazado por: backend/package.json (google-auth-library ^10.5.0)
+  - evidencia: grep -rn 'google-auth-library' en src/, scripts/, configs: vacío fuera de package.json:29. Único uso real: backend/controllers/authController.js:245 `require('google-auth-library')`, y backend/package.json ya la declara (^10.5.0). Entró en 589a1d1 2026-03-13 'google fix', commit que tocó authController.js (2 líneas) y 
+- **BORRAR** `package.json (raíz) → pdf-lib ^1.17.1` (riesgo bajo, 5f366b6 2025-12-12 amanecer 1212, con mediciones a medias)
+  - qué es: Librería para leer/escribir PDF; en este proyecto se usa solo del lado del servidor.
+  - reemplazado por: backend/package.json (pdf-lib ^1.17.1)
+  - evidencia: grep -rn 'pdf-lib' en src/: solo 2 comentarios (src/client-portal/api/fileService.js:168 y :377, que dicen que la validación la hace el backend con pdf-lib). git log -S"from 'pdf-lib'" -- src: vacío en toda la historia. En backend hay ~20 require('pdf-lib') (fileProcessingService.js:6, pdfService.js:9, webOrdersControl
+- **BORRAR** `package.json (raíz) → react-pdf ^10.2.0` (riesgo bajo, 3288b8d 2026-01-16 Fix: Aplicado gitignore para archivos sensibles y credenciales)
+  - qué es: Componente React para mostrar PDFs (wrapper de pdf.js).
+  - reemplazado por: pdfjs-dist ^5.4.624 (raíz) usado directo
+  - evidencia: grep -rn 'react-pdf' en src/, index.html, configs: único hit package.json:45. git log -S'react-pdf' -- src: vacío (nunca se importó). Los previews de PDF del front usan pdfjs-dist directo: src/client-portal/api/fileService.js:5-6, src/client-portal/api/pdfPreview.js:31, src/client-portal/modulos/Tpu3DViewer.jsx:39, src
+- **BORRAR** `package.json (raíz) → sharp ^0.34.5` (riesgo bajo, 5f366b6 2025-12-12 amanecer 1212, con mediciones a medias)
+  - qué es: Procesamiento de imágenes nativo (libvips) para Node; dependencia del backend puesta en el frontend.
+  - reemplazado por: backend/package.json (sharp ^0.35.4)
+  - evidencia: grep -rnE "require\(['\"]sharp['\"]\)|from ['\"]sharp['\"]" y grep -E '\bsharp\b' en src/, scripts/, vite.config.js: vacío. backend/package.json tiene sharp ^0.35.4 y lo usan los services de thumbnails/medición. Entró en la raíz en 5f366b6 2025-12-12 (ningún archivo de raíz en ese commit). Es un paquete nativo: instala
+- **BORRAR** `package.json (raíz) → tailwind-merge ^3.4.1` (riesgo bajo, fcc5d0a 2026-02-16 unificacion)
+  - qué es: Helper twMerge para resolver conflictos de clases Tailwind.
+  - evidencia: grep -rn 'tailwind-merge' y 'twMerge' en src/, configs: único hit package.json:54. git log -S'twMerge' -- src y -S'tailwind-merge' -- src: vacíos en toda la historia. No hay util cn(). Entró en fcc5d0a 2026-02-16 'unificacion' junto con clsx.
+- **BORRAR** `backend/package.json → express-validator ^7.3.1` (riesgo bajo, 3288b8d 2026-01-16 Fix: Aplicado gitignore para archivos sensibles y credenciales)
+  - qué es: Middleware de validación de requests para Express.
+  - evidencia: grep -rn 'express-validator' en backend/ (sin node_modules ni public), src/, scripts/: vacío fuera de backend/package.json. git log -S'express-validator' -- backend/controllers backend/services backend/utils backend/routes backend/middleware backend/scripts backend/server.js backend/jobs backend/cron: vacío (nunca se r
+- **BORRAR** `backend/package.json → node-fetch ^3.3.2` (riesgo bajo, adc149a 2026-02-24 prueba de fuego)
+  - qué es: Polyfill de fetch para Node viejo (v3 es ESM-only, no se puede ni require en este backend CJS).
+  - reemplazado por: fetch global de Node 22
+  - evidencia: grep -rn 'node-fetch' en backend/ (sin node_modules/public), src/, scripts/, docs/, CHANGELOG.md: vacío fuera de backend/package.json. git log -S'node-fetch' en todos los dirs de código del backend: vacío (nunca se requirió). El backend usa fetch global: 15 llamadas `fetch(` (p.ej. backend/controllers/chatController.js
+- **BORRAR** `backend/package.json → node-unrar-js ^2.0.2` (riesgo bajo, de473a5 2026-05-21 nuevos cambios yoa)
+  - qué es: Extractor de archivos .rar en Node (WASM).
+  - evidencia: grep -rniE '\brar\b|\.rar|unrar|createExtractor' en backend/controllers, services, utils, routes, server.js: vacío. Mismo grep en docs/ y CHANGELOG.md: vacío (no hay plan de aceptar .rar). git log -S'node-unrar-js' en código del backend: vacío (nunca se requirió). Entró en de473a5 2026-05-21 'nuevos cambios yoa' junto 
+- **VIVO** `backend/package.json → pdfjs-dist ^6.3.289` (riesgo alto, 213f994 2026-09-17 17092026 (lo agregó al backend))
+  - qué es: pdf.js para Node: lee operadores, capas y fuentes de los PDF de TIZADA PRO (molde, arte, editables).
+  - evidencia: El grafo lo marcó 'no importado' porque se carga con require.resolve + import() dinámico, no con require estático. Usos reales: backend/services/moldeContornoService.js:48 `require.resolve('pdfjs-dist/legacy/build/pdf.mjs')` → import(pathToFileURL); backend/services/tizadaProArte.js:22 ídem; backend/services/tizadaProE
+- **VIVO** `backend/services/tizadaProEditables.js → import('/pdfjs/pdf.mjs') sin resolver` (riesgo alto, 2026-10-08 08102026)
+  - qué es: Falso positivo del grafo: no es un import del módulo, es un `import` dentro de un string HTML que se ejecuta en Chrome headless.
+  - evidencia: Leído tizadaProEditables.js:40-76: `const HTML = \`<!doctype html>…<script type="module">import * as pdfjs from '/pdfjs/pdf.mjs'; pdfjs.GlobalWorkerOptions.workerSrc = '/pdfjs/pdf.worker.mjs'…\``. Esa URL la resuelve un servidor http efímero creado en extraer() (:84-89): `dirPdfjs = path.dirname(require.resolve('pdfjs-
+- **BORRAR** `src/client-portal/main.jsx → ./App.jsx sin resolver` (riesgo bajo, 2026-02-16 unificacion)
+  - qué es: Entry point del portal de clientes cuando era una app Vite separada (10 líneas: createRoot + <App/> + ./index.css).
+  - reemplazado por: src/main.jsx + src/App.jsx:25,92,121 (ClientPortalApp)
+  - evidencia: Leído entero (10 líneas). Importa './App.jsx' que no existe: ls src/client-portal/ no tiene App.jsx; git log --diff-filter=D: borrado en 15cfff5 2026-03-23 'cambios webpush pwa'. El entry real es index.html:38 `<script type="module" src="/src/main.jsx">` → src/main.jsx; el portal se monta desde src/App.jsx:25 `lazy(() 
+- **BORRAR** `src/components/layout/Sidebarborrar.jsx → ./Sidebar.module.css sin resolver` (riesgo bajo, 2026-05-06 cambios front)
+  - qué es: Sidebar viejo (79 líneas) que arma un árbol de menú por ModuleID/ParentID con CSS modules; el propio nombre dice 'borrar'.
+  - reemplazado por: src/components/layout/Navbar.jsx
+  - evidencia: Leído :1-40: `import styles from './Sidebar.module.css'` (:3) y usa styles.sidebar/sidebarHeader/etc. El CSS no existe: `find src -name '*.module.css'` vacío; git log --diff-filter=D: Sidebar.module.css borrado en 3288b8d 2026-01-16. grep -rn 'Sidebarborrar' en src/, backend/, index.html, vite.config.js, docs/, CHANGEL
+- **BORRAR** `src/components/production/areas/ECOUVArea.jsx → ../../utils/configs/areaConfigs sin resolver` (riesgo bajo, 2026-05-06 cambios front)
+  - qué es: Wrapper de 23 líneas que renderiza <AreaView areaKey="ECOUV" areaConfig={areaConfigs.ECOUV}/>.
+  - reemplazado por: src/components/layout/MainAppContent.jsx:34,1187 (AreaView directo) + src/components/common/configs/areaConfigs.jsx:202
+  - evidencia: Leído entero. :5 importa `../../utils/configs/areaConfigs`: no existe (ls src/utils/configs y src/components/utils/configs: no existen). El areaConfigs vivo está en src/components/common/configs/areaConfigs.jsx:162 y tiene la clave 'ECOUV' en :202. grep -rn 'ECOUVArea' en src/, index.html, docs/, CHANGELOG.md: vacío. N
+- **BORRAR** `backend/controllers/PedidosDetalladosController.js → ./apiService sin resolver` (riesgo bajo, 2026-03-05 para santi1)
+  - qué es: Controller de 37 líneas que pide un pedido con sublíneas a una API externa (ERP) y lo reformatea para el front.
+  - evidencia: Leído entero. :1 `require('./apiService')`: no existe en controllers/ (find backend -iname 'apiService*': solo backend/services/apiService.js, que sí exporta getPedidoCompleto en :20-21 y pega a ERP_API_URL/api/pedidos/:id/con_sublineas). Define `pedidoDetalladoV2` pero NO tiene module.exports (grep 'exports' en el arc
+- **VIVO** `vite.config.js → manualChunks y optimizeDeps.include` (riesgo alto, 2026-09-17 un monton de cambios)
+  - qué es: Config de Vite: 4 chunks de vendors y pre-bundle de 7 paquetes en dev.
+  - evidencia: Leído vite.config.js entero (98 líneas). manualChunks (:13-19): react/react-dom (entry), react-router-dom 59 imports en src, framer-motion 20, lucide-react 239, sonner 137. optimizeDeps.include (:27): ag-grid-community 1, ag-grid-react 1, jspdf 10, jspdf-autotable 5, @tanstack/react-query 15, @tanstack/react-table 3, a
+- **BORRAR** `package.json devDependencies (raíz) → @napi-rs/canvas ^1.0.2` (riesgo bajo, 22094ae 2026-07-24 commit24/7)
+  - qué es: Canvas nativo para Node (lo usa pdf.js para renderizar fuera del browser). No tiene sentido en el frontend: Vite no lo bundlea.
+  - reemplazado por: optionalDependency de pdfjs-dist en backend/node_modules
+  - evidencia: grep -rn '@napi-rs/canvas' y -i 'napi' en src/, backend/ (sin public), scripts/, vite.config.js, index.html, CHANGELOG.md: único hit de código ninguno; solo docs/tpu-texturas-3d-plan.md:294 ('Nota para quien lo reproduzca en Node: pdf.js v5 usa Path2D/DOMMatrix globales y @napi-rs/canvas…'), que describe un experimento
+- **BORRAR** `package.json devDependencies (raíz) → @vitejs/plugin-basic-ssl ^2.1.4` (riesgo bajo, 5ccc724 2026-02-06 (alta); 98ddb29 2026-06-09 (dejó de usarse))
+  - qué es: Plugin de Vite para servir el dev server con HTTPS autofirmado.
+  - reemplazado por: túnel cloudflared (vite.config.js:32-36)
+  - evidencia: vite.config.js actual (leído entero) no lo importa: plugins: [react()] (:5-7). git log -S'basicSsl' -- vite.config.js: entró en 5ccc724 2026-02-06 'Configurar HTTPS y Proxy para produccion local' y lo sacaron en 98ddb29 2026-06-09 (diff: -import basicSsl from '@vitejs/plugin-basic-ssl', -basicSsl(), -https: true x2). g
+- **BORRAR** `package.json devDependencies (raíz) → puppeteer ^25.3.0` (riesgo bajo, dd725ab 2026-07-01 01072026)
+  - qué es: Chrome headless para Node; en la raíz solo lo usa un script de parcheo de un día.
+  - reemplazado por: backend/package.json (puppeteer ^25.1.0)
+  - evidencia: grep -rnE "require\(['\"]puppeteer['\"]\)|from ['\"]puppeteer['\"]" en src/, scripts/, vite.config.js: único hit src/catch_browser_error.cjs:1 (script que abre localhost:5173/admin/products-integration y loguea errores de consola). Ese script y puppeteer entraron en el mismo commit dd725ab 2026-07-01 '01072026' junto c
+- **BORRAR** `backend/package.json devDependencies → @vitejs/plugin-basic-ssl ^2.1.4` (riesgo bajo, 5ccc724 2026-02-06 Configurar HTTPS y Proxy para produccion local)
+  - qué es: Plugin de Vite en un backend Express que no tiene Vite: instalado en la carpeta equivocada.
+  - evidencia: backend/package.json no tiene vite ni vite.config; grep -rn 'plugin-basic-ssl|basicSsl|basic-ssl' en backend/ (sin node_modules/public): vacío. Entró en 5ccc724 2026-02-06 en el mismo commit que la copia de la raíz (stat: backend/package.json +1, package.json +1, vite.config.js 23 líneas): se corrió npm install en amba
+
+## verify-6-src_components_modals.json
+NOTAS: Patrones del cluster. (1) 33bdec9 «conflictos fix» (2026-05-14) rompió el JSX de ImportLogModal.jsx y SettingsModal.jsx (merge mal resuelto sobre archivos ya muertos): son los únicos dos de la lista que no compilan si alguien los importa; los otros 10 son válidos o .bak. (2) Casi todos murieron por reemplazo explícito con fecha verificable por pickaxe: SettingsModal→StockRequestModal (16/01), CloseBobinaModal→ManageBobinaModal (26/01), ReceiveDispatchModal→ReceptionView (29/01), FabricAssignmentModal sacado de ActiveRollModal (18/02), CfePreviewModal sacado de Bandeja (14/05), CreateItemModal sacado de StockRequestModal (01/10). AdminDashboard.jsx nunca estuvo importado en la historia del repo. (3) Arrastres fuera de la lista que conviene marcar junto: src/components/pages/LogisticsView.jsx (661 líneas, unreachable, único importador de DispatchHistoryModal; también importa ReceptionView/DispatchView que sí viven por LogisticsDashboard); src/components/common/DynamicGrid.jsx (solo AdminDashboard); src/services/modules/stockService.js (re-exportado por api.js:10 pero sin ningún componente que lo use); backend adminController.getDynamicData + GET /api/admin/dynamic (único caller front: AdminDashboard muerto); GET /logistics/history (logisticsRoutes.js:71; único caller front era DispatchHistoryModal — no revisé si algo del backend lo usa). (4) ChatWidget.jsx está importado en MainAppContent.jsx:57 pero renderizado comentado en :991: alcanzable por import, apagado en la práctica. 
+
+- **SIN_USO** `src/components/modals/CreateItemModal.jsx` (riesgo bajo, 2026-05-13 aa7129c conflictos de merge resueltos)
+  - qué es: Modal «Nuevo Insumo» (nombre + unidad) que crea un ítem en el catálogo global vía stockService.createItem → POST /stock/items (backend/routes/stockRoutes.js:17, invCtrl.createInsumo). 122 líneas, JSX 
+  - reemplazado por: src/components/stock/PedirInsumos.jsx (vía StockRequestModal.jsx) para el pedido; para crear insumos, src/components/pages/InsumosCatalogPage.jsx («Nuevo Insumo
+  - evidencia: Grafo: frontend.unreachable=true, inDegree ninguno, edges solo a src/services/api.js. Grep «CreateItemModal» en todo el repo (js/jsx/cjs/mjs/html/md/json/bat/css, sin node_modules/dist): solo el propio archivo. Pickaxe git log -S"CreateItemModal" -- src: lo importaba src/components/modals/StockRequestModal.jsx hasta 39
+- **SIN_USO** `src/components/modals/DispatchHistoryModal.jsx` (riesgo bajo, 2026-05-13 7b1ec06 fix dispatch modal)
+  - qué es: Modal «Historial de Despachos» por área: lista remitos vía logisticsService.getHistory(areaId) → GET /logistics/history (ruta existe: backend/routes/logisticsRoutes.js:71 → logisticsController.getHist
+  - reemplazado por: src/components/logistics/DispatchView.jsx modo historial (viewMode === 'history', «Historial de Envíos» línea 1097; búsqueda GET /logistics/remitos/search :440;
+  - perdería: listado filtrado por areaId contra /logistics/history (el vivo busca por código/cliente). Inferido del grep; menor. La ruta backend queda sin caller front.
+  - evidencia: Grafo: unreachable=true pero inDegree=1: único importador src/components/pages/LogisticsView.jsx:13 (`import DispatchHistoryModal from '../modals/DispatchHistoryModal'`) y uso en :484. LogisticsView.jsx está él mismo en frontend.unreachable (grafo importedBy=[]; grep «LogisticsView» en src: solo su propio archivo) → mu
+- **SIN_USO** `src/components/modals/FabricAssignmentModal.jsx` (riesgo bajo, 2026-05-14 33bdec9 conflictos fix)
+  - qué es: Modal «Cambio de Material»: trae inventario con insumosService.getInventoryByArea('SUBLIMACION') hardcodeado, filtra bobinas por nombre de material (fuzzy), ordena FIFO por FechaIngreso, input autofoc
+  - reemplazado por: BobinaAssignmentModal definido dentro de src/components/modals/RollDetailsModal.jsx (insumosService.getInventoryByArea(areaCode) :27, Enter :85, autoFocus :107 
+  - perdería: el filtro fuzzy por materialName de la orden y el área 'SUBLIMACION' fija no los vi en el vivo (el vivo recibe areaCode y busca por texto). No lo sé si alguien lo necesita; el vivo cubre escáner + inventario por área.
+  - evidencia: Grafo: unreachable=true, inDegree ninguno. Grep «FabricAssignmentModal» en repo: solo el archivo. Pickaxe -S"FabricAssignmentModal": lo importaba src/components/modals/ActiveRollModal.jsx hasta 2b56f3b (2026-02-18 «para unir»): -import (línea 17 del diff) y -<FabricAssignmentModal (235); ese commit le sacó 124 líneas a
+- **BORRAR** `src/components/modals/ImportLogModal.jsx` (riesgo bajo, 2026-05-14 33bdec9 conflictos fix)
+  - qué es: Era la «Consola de Importación» del ERP (logs estilo terminal). Hoy es un archivo ROTO: línea 4 `return (` y la línea 5 arranca con `</div>` cerrando algo que nunca se abrió; 5 `<div` contra 9 `</div>
+  - reemplazado por: src/components/pages/ConfigPage.jsx:407 (ImportLogModal inline, superset: soporta logs tipo objeto con lista de pedidos clickeables vía onViewPedido)
+  - evidencia: Grafo: unreachable=true, edges=[]. Leí el archivo entero (46 líneas). Historia: en 3288b8d (2026-01-16) tenía 55 líneas y abría bien (`<div className="fixed inset-0 z-[999]...`); en ad884bf (2026-05-12) seguía bien; quedó truncado en 33bdec9 «conflictos fix» (2026-05-14) — merge mal resuelto sobre un archivo ya muerto.
+- **SIN_USO** `src/components/modals/ReceiveDispatchModal.jsx` (riesgo bajo, 2026-06-10 867283d fixes)
+  - qué es: Modal de recepción de despachos en 2 pasos: escanear remito (logisticsService.getRemitoByCode) y escanear bultos uno a uno (logisticsService.receiveDispatchItem con usuarioId: 1 hardcodeado), parseo c
+  - reemplazado por: src/components/logistics/ReceptionView.jsx (vivo vía LogisticsDashboard.jsx:8/:151): getRemitoByCode :173, receiveDispatchItem :265 con user?.id real, resuelve 
+  - perdería: feedback sonoro (0 ocurrencias de Audio/playSound en ReceptionView) y el parseo client-side de `$ }`. Menor: el vivo resuelve el QR en backend. El muerto además mandaba usuarioId: 1 fijo.
+  - evidencia: Grafo: unreachable=true, inDegree ninguno. Grep «ReceiveDispatchModal» en repo: solo el archivo. Pickaxe -S: lo importaba src/components/pages/LogisticsView.jsx y 5f6651e (2026-01-29 «Fix Legacy Integration…») lo cambió por ReceptionView (-import ReceiveDispatchModal línea 16 / +import ReceptionView 18; -<ReceiveDispat
+- **BORRAR** `src/components/modals/SettingsModal.jsx` (riesgo bajo, 2026-05-14 33bdec9 conflictos fix)
+  - qué es: Pese al nombre, exporta `StockModal`: formulario «Solicitud Insumos» por área (ítem, cantidad, unidad, prioridad) vía stockService.create → POST /stock. ROTO: el `return (` arranca directo en el `<div
+  - reemplazado por: src/components/modals/StockRequestModal.jsx (AreaView.jsx:29 import, :1060 `<StockRequestModal isOpen… areaName={areaConfig.name} areaCode={areaKey} />`, mismas
+  - evidencia: Grafo: unreachable=true, inDegree ninguno. Leí el archivo entero (146 líneas). En ad884bf (2026-05-12) estaba balanceado 10/10 con `<div className="fixed inset-0 bg-zinc-900/60 … z-[1300]" onClick={onClose}>`; se rompió en 33bdec9 «conflictos fix» (2026-05-14). Grep «SettingsModal» y «StockModal» en repo: solo el archi
+- **BORRAR** `src/components/modals/inventory/CloseBobinaModal.jsx` (riesgo bajo, 2026-05-12 ad884bf fixes)
+  - qué es: Modal «Cerrar Bobina»: metros reales sobrantes → calcula merma, motivo de cierre, checkbox «Dar de baja», llama inventoryService.closeBobina({bobinaId, metrosFinales, motivo, finish}). 119 líneas, vál
+  - reemplazado por: src/components/modals/inventory/ManageBobinaModal.jsx (vivo: InventoryPage.jsx:8/:751 y TelaClienteInventarioPage.jsx:8/:671)
+  - evidencia: Grafo: unreachable=true, inDegree ninguno. Grep «CloseBobinaModal» en repo: solo el archivo. Pickaxe -S: src/components/pages/InventoryPage.jsx lo cambió por ManageBobinaModal en 3985845 (2026-01-26): -import CloseBobinaModal (línea 16 del diff) / +import ManageBobinaModal (19); -<CloseBobinaModal (424) / +<ManageBobin
+- **BORRAR** `src/components/logistics/TransportView.bak` (riesgo bajo, 2026-04-22 583604f scaneo y cambios)
+  - qué es: Copia byte a byte de TransportView.jsx tal como estaba en el commit anterior a 583604f (vista «En Viaje» de transportes con modal «Cerrar / Upload» de comprobantes multi-archivo: modalFiles + bultoMap
+  - reemplazado por: src/components/logistics/TransportView.jsx (571 líneas, último 2026-10-01 4806b92; diff vs .bak 320+/300−)
+  - perdería: la UI de panel de archivos múltiples con selector «Archivo N» por bulto (.bak líneas 419-516) se cambió por adjuntar foto por doble click en cada bulto (vivo :450, bultoMappings {checked, file} :56/:104, más sección «Com
+  - evidencia: `git diff --stat 583604f^:src/components/logistics/TransportView.jsx 583604f:src/components/logistics/TransportView.bak` → vacío (idénticos). Único commit del .bak: 583604f (2026-04-22 «scaneo y cambios»), que a la vez modificó TransportView.jsx (+261/−227). Nadie lo importa (no se puede importar un .bak). Los stringRe
+- **BORRAR** `src/components/pages/customer-service/EntregaPedidosView.bak` (riesgo bajo, 2026-04-22 583604f scaneo y cambios)
+  - qué es: Copia byte a byte de EntregaPedidosView.jsx tal como estaba en el commit anterior a 583604f (vista Entrega de Pedidos: retiros, encomiendas, ticket de retiro, AlertaAutorizacionModal). 1997 líneas, ex
+  - reemplazado por: src/components/pages/customer-service/EntregaPedidosView.jsx (2103 líneas, último 2026-10-01 393a980; diff vs .bak 258+/152−)
+  - evidencia: `git diff --stat 583604f^:…/EntregaPedidosView.jsx 583604f:…/EntregaPedidosView.bak` → vacío (idénticos). Único commit: 583604f (2026-04-22), que a la vez modificó el .jsx (+352/−269). Los stringRefs del grafo (MainAppContent.jsx, EntregaPedidosView.jsx) son por el nombre base: MainAppContent importa EntregaPedidosView
+- **SIN_USO** `src/components/pages/AdminDashboard.jsx` (riesgo bajo, 2026-05-06 3e0d4ef cambios front)
+  - qué es: «Panel DB»: tabs Órdenes/Rollos/Equipos que hacen `fetch(${API_URL}/admin/dynamic?reportType=…)` crudo (sin token) y renderizan con DynamicGrid. 98 líneas, válido.
+  - perdería: grilla genérica de tablas crudas. Arrastra a src/components/common/DynamicGrid.jsx (unreachable, único importador es este) y en backend a adminController.getDynamicData (adminController.js, 26 líneas, único export) + GET
+  - evidencia: Grafo: unreachable=true, inDegree ninguno, edges a common/DynamicGrid.jsx y services/apiClient.js. Grep «AdminDashboard» en repo: solo backend/routes/adminRoutes.js:16, un comentario: «Nadie la llama hoy: AdminDashboard.jsx no se importa en ningún lado». Pickaxe -S"AdminDashboard" -- src fuera del archivo: ningún commi
+- **SIN_USO** `src/components/pages/CfePreviewModal.jsx` (riesgo bajo, 2026-07-23 cb2fd37 232072026-1)
+  - qué es: Modal «Vista Previa Documento»: ticket HTML en pantalla de un CFE (cabecera USER S.A./RUT/dirección hardcodeados, cliente receptor, detalle vía GET /contabilidad/cfe/documentos/:id/detalle, totales, «
+  - reemplazado por: Dos cosas: (a) src/components/pages/CfePreviewDgiModal.jsx ocupa el lugar del «preview» en la Bandeja pero es OTRA función: muestra qué CFE se le pediría a DGI 
+  - perdería: la vista «ticket» HTML en pantalla sin bajar PDF (textos «Vista Previa Documento»/«DOCUMENTO NO VÁLIDO COMO FACTURA» no aparecen en ningún vivo). Menor: el PDF muestra lo mismo. El muerto tiene RUT y dirección de la empr
+  - evidencia: Grafo: unreachable=true, inDegree ninguno. Grep «CfePreviewModal» en repo: solo el archivo. Pickaxe -S"CfePreviewModal": ContabilidadBandejaCFE.jsx lo importó en 2ac0cd0 (2026-04-27 «contabilidad integrada») y lo sacó en 33bdec9 (2026-05-14): -import (línea 20 del diff), -`<CfePreviewModal doc={previewDoc} onClose=…>` 
+- **SIN_USO** `src/components/pages/Chat.jsx` (riesgo bajo, 2026-01-16 3288b8d Fix: Aplicado gitignore para archivos sensibles y credenciales)
+  - qué es: Maqueta estática de «Mensajería» entre áreas: canales hardcodeados (General Planta / Área DTF / Mantenimiento), dos mensajes de ejemplo, fecha fija «Hoy, 10 de Octubre», input `disabled` y leyenda «Ch
+  - evidencia: Grafo: unreachable=true, edges=[]. Grep «pages/Chat» en repo: nada. Los stringRefsToUnreachable del grafo para «Chat» son falsos positivos: headers de tabla `'Chat'` en CosturaArea.jsx:29, Directa320Area.jsx:28, EstampadoArea.jsx:28, LaserArea.jsx:28, TerminacionUVArea.jsx:28, mockData.js, y «Chat Thread» comentario en
+
+## verify-7-src_components_pages.json
+NOTAS: Método: para cada archivo leí el contenido (entero los chicos, cabecera/imports/exports los grandes), crucé con grafo.json/extras.json (inDegree, edges, stringRefs, lastCommit), grep de nombre base + exports + path en src/, backend/, docs/, CHANGELOG.md, package.json, .bat, .md, y git log -S para encontrar el commit exacto que desenganchó cada página. Excluí .claude/worktrees/* de los greps: son copias enteras del repo y duplican cada match. Patrón que surgió: 4 de las 8 páginas NACIERON sin import (FacturarAnticipoModal 21/05, RecursosView 27/04, TiposMovimientoAdmin 27/04, ProductsIntegration_new 08/06): nunca tuvieron ruta. Las otras 4 fueron desenganchadas en commits identificados (Metricas y Planilla en 3288b8d 16/01; LogisticsView en 058e103 30/04; MeasurementView en ad884bf 12/05). Cascadas y huérfanos para otros clusters: (1) src/components/modals/DispatchHistoryModal.jsx solo lo importa LogisticsView → muere con él. (2) Endpoints backend que quedan sin ningún consumidor en el front si se confirman estas bajas: measurementRoutes GET /, /save, /process-batch, /process-server; contabilidad POST /planes, /planes/:id/recargar, /planes/:id/desactivar, GET /grupos-erp, GET /articulos?grupo=; tipos-movimiento GET/POST/PATCH/DELETE (contabilidadRoutes.js:160-163). (3) puppeteer en package.json raíz (:77) solo lo usa src/catch_browser_error.cjs; el backend tiene el suyo. Riesgo medio solo en pages/RecursosView.jsx y TiposMovimientoAdmin.jsx: son la única UI del front para endp
+
+- **SIN_USO** `src/components/pages/FacturarAnticipoModal.jsx` (riesgo bajo, 2026-09-01 01092026 (solo cambio toast, 2 líneas))
+  - qué es: Modal React (default export, 251 líneas) para facturar como e-Ticket/e-Factura contado un lote de órdenes ya cobradas con anticipo: elige moneda/tipo doc/datos DGI, valida RUT/CI con validarDocumentoU
+  - reemplazado por: src/components/pages/ContabilidadCuentasView.jsx (Facturar consumos)
+  - evidencia: Grafo: inDegree 0, importa src/services/api.js y src/utils/documentoUY.js. grep 'FacturarAnticipoModal' en todo el repo (excl. node_modules/dist/.git/.claude): solo el propio archivo y docs/anticipo-facturado-plan.md:19 («no lo importa nadie — código muerto») y :78 («Borrar FacturarAnticipoModal.jsx (muerto)»). git log
+- **SIN_USO** `src/components/pages/LogisticsView.jsx` (riesgo bajo, 2026-05-14 algo)
+  - qué es: Página de logística por área (662 líneas): dashboard de canastos/bultos con selección de órdenes, impresión de etiquetas (labelPrinter), validación de despacho (logisticsService.validateDispatch) e hi
+  - reemplazado por: src/components/logistics/LogisticsDashboard.jsx
+  - perdería: inferido de los imports y de LogisticsDashboard.jsx:147: nada relevante (el historial de despachos vive en DispatchView mode=history). No comparé línea por línea las 662 líneas.
+  - evidencia: Grafo: inDegree 0; importa api.js, AuthContext, labelPrinter, DispatchHistoryModal, ReceptionView, DispatchView. grep 'LogisticsView' (excl. .claude/worktrees): solo el archivo. git show 058e103 (30/04/2026 «JUEVES 30») -- AreaView.jsx: `-import LogisticsView from "../../pages/LogisticsView"` y `-<Route path="logistica
+- **SIN_USO** `src/components/pages/MeasurementView.jsx` (riesgo bajo, 2026-05-06 cambios front)
+  - qué es: Página de medición de archivos por área (548 líneas): GET /measurements?area=, filtro por rollo/estado, mide y guarda (POST /measurements/save, /process-batch, /process-server), descarga ZIP con JSZip
+  - reemplazado por: src/components/modals/RollDetailsModal.jsx + src/services/modules/rollsService.js
+  - perdería: pantalla standalone por área con filtro rollo/estado y guardado manual de medidas (/measurements/save). No sé si RollDetailsModal cubre el guardado manual; según memoria el enfoque actual es «medición por header».
+  - evidencia: Grafo: inDegree 0; importa api.js y production/components/FileItem.jsx. grep 'MeasurementView': solo el archivo. git show ad884bf (12/05/2026 «fixes») -- AreaView.jsx: `-import MeasurementView from "../../pages/MeasurementView"` y `-<Route path="medicion" element={<MeasurementView areaCode={areaKey} />} />`. La medició
+- **BORRAR** `src/components/pages/Metricas.jsx` (riesgo bajo, 2026-01-16 Fix: Aplicado gitignore para archivos sensibles y credenciales)
+  - qué es: Mockup v1 de «Métricas de Planta» (142 líneas): KPIs hardcodeados («88%», «200 Órdenes», «Balanceado»), sin fetch ni imports locales.
+  - reemplazado por: módulo de analítica de producción (CHANGELOG 2026-05); no identifiqué un archivo único
+  - evidencia: Grafo: 0 imports locales, inDegree 0. git: nace en 0e9d025 (28/11/2025 «proyecto-produccionv1») importado desde App.jsx; 3288b8d (16/01/2026) lo saca (`-import Metricas from './components/pages/Metricas.jsx'`, `-case 'metricas': return <Metricas .../>`). Sin cambios desde. Metricas.module.css (que nació con él) ya no e
+- **BORRAR** `src/components/pages/Planilla.jsx` (riesgo bajo, 2026-01-16 Fix: Aplicado gitignore para archivos sensibles y credenciales)
+  - qué es: Menú v1 de 12 áreas (53 líneas) con botones que llaman onSwitchTab('planilla-dtf'...); datos hardcodeados, sin imports locales.
+  - reemplazado por: src/components/layout/MainAppContent.jsx (rutas /area/... + menú) y src/components/common/configs/areaConfigs.jsx
+  - evidencia: Grafo: inDegree 0, 0 imports. git: nace en 0e9d025 (v1); 3288b8d (16/01/2026) lo saca de App.jsx (`-import Planilla`, `-case 'planilla': return <Planilla onSwitchTab={switchTab} />`). Sin cambios desde. Planilla.module.css ya no existe. grep de import/ruta (`pages/Planilla'`, `import Planilla\b`, `<Planilla\b`): vacío.
+- **BORRAR** `src/components/pages/ProductsIntegration_new.jsx` (riesgo bajo, 2026-06-08 08062026)
+  - qué es: Copia corrupta (UTF-16 LE con mojibake «â”€», «Ã³») de ProductsIntegration.jsx en su versión del 04/06/2026, pre-rewrite: EditModal con combos SupFlia→Grupo→CodStock y tabla ArticleRow (614 líneas dec
+  - reemplazado por: src/components/pages/ProductsIntegration.jsx
+  - evidencia: `file` → «UTF-16, little-endian». Único commit 45521c3 (08/06/2026, «Bin 0 -> 68988 bytes»), el mismo commit que reescribió ProductsIntegration.jsx (926 líneas cambiadas). Decodificado con Python a UTF-8 y diffeado: contra ProductsIntegration.jsx@45521c3~1 difieren 93 líneas y TODAS son solo encoding (mismo texto con c
+- **SIN_USO** `src/components/pages/RecursosView.jsx` (riesgo medio, 2026-05-06 cambios front)
+  - qué es: Backoffice «Gestión de Planes de Recursos» (1045 líneas, default export): buscar clientes con cuentas de recursos, ver planes, crear (POST /api/contabilidad/planes), recargar (/planes/:id/recargar), c
+  - reemplazado por: src/components/pages/ContabilidadCuentasView.jsx (lectura de planes); el alta/recarga pasó a «venta de rollo»/billetera — inferido de CHANGELOG líneas 1256-1263
+  - perdería: única UI del front para crear/recargar/cerrar un plan a mano y para consultar /grupos-erp y /articulos?grupo=. Si hoy eso se hace solo por venta de rollo, los 3 endpoints de planes quedan sin consumidor en el front (anot
+  - evidencia: Grafo: inDegree 0, 0 imports locales (fetch directo). git log -S'import RecursosView' y -S"pages/RecursosView'" -- src: vacío → nunca tuvo import; nace en ffa80fa (27/04/2026 «empezando contabilidad»), último toque 3e0d4ef (06/05). Ese mismo 27/04 (d4e3bb8) ya existía `/contabilidad/recursos → <Navigate to="/contabilid
+- **SIN_USO** `src/components/pages/TiposMovimientoAdmin.jsx` (riesgo medio, 2026-05-06 cambios front)
+  - qué es: CRUD admin de TiposMovimiento (414 líneas): TmoNombre, TmoPrefijo, TmoAfectaSaldo (+1/0/-1), TmoGeneraDeuda, TmoAplicaRecurso, TmoRequiereDoc, TmoActivo, TmoOrden contra /api/contabilidad/tipos-movimi
+  - perdería: toda: es la única UI para editar tipos de movimiento; los 4 endpoints backend quedan sin consumidor en el front (grep). No sé si es intencional (tipos seedeados, no editables desde UI).
+  - evidencia: Grafo: inDegree 0, importa api.js. grep 'TiposMovimientoAdmin' (excl. .claude): solo el archivo. git log -S'TiposMovimientoAdmin' -- src: único commit 2ac0cd0 (27/04/2026 «contabilidad integrada») → nunca importado. Ese mismo día d4e3bb8 agregó `/contabilidad/tipos-movimiento → <Navigate to="/contabilidad/motor">` (Mai
+- **BORRAR** `src/patch_ui.cjs` (riesgo bajo, 2026-07-01 01072026)
+  - qué es: Script Node de un día que inyecta por regex el bloque «WMS Importer» (estados wmsMasters/handleImportWms + UI) en ProductsIntegration.jsx, leyendo y escribiendo la ruta hardcodeada c:/Integracion/User
+  - evidencia: patch_ui.cjs:3 path absoluto de otra PC; :36 y :110 content.replace; :115 fs.writeFileSync. Único commit dd725ab (01/07/2026). grep 'patch_ui' en todo el repo incl. package.json, .bat, .md: vacío. No está en package.json scripts. El parche ya quedó aplicado en el vivo: ProductsIntegration.jsx:1299-1300 (wmsMasters, wms
+- **BORRAR** `src/fix_empty_state.cjs` (riesgo bajo, 2026-07-01 01072026)
+  - qué es: Script Node de un día que reemplaza por string literal el empty state «No se encontraron artículos» dentro de ProductsIntegration.jsx, en la misma ruta hardcodeada de otra máquina.
+  - evidencia: fix_empty_state.cjs:3 path c:/Integracion/User-Macrosoft/...; :19 y :59 content.replace de bloques literales; :61 writeFileSync. Único commit dd725ab (01/07/2026). grep 'fix_empty_state' en todo el repo (package.json, .bat, .md incluidos): vacío.
+- **BORRAR** `src/fix_empty_state_robust.cjs` (riesgo bajo, 2026-07-01 01072026)
+  - qué es: Segunda versión (con regex) del script anterior: mueve el empty state de ProductsIntegration.jsx y además reemplaza los `import('sonner').then(m => m.toast...)` por toast directo. Misma ruta hardcodea
+  - evidencia: fix_empty_state_robust.cjs:3 path c:/Integracion/User-Macrosoft/...; :17-44 content.replace con regex; :46 writeFileSync. Único commit dd725ab (01/07/2026). grep 'fix_empty_state_robust' en todo el repo: vacío. El vivo ya importa `{ toast } from 'sonner'` (ProductsIntegration.jsx:4) → el parche quedó aplicado.
+- **BORRAR** `src/catch_browser_error.cjs` (riesgo bajo, 2026-07-01 01072026)
+  - qué es: Smoke test manual con puppeteer: abre http://localhost:5173/admin/products-integration, clickea «Productos» y vuelca consola/errores del navegador (32 líneas).
+  - evidencia: catch_browser_error.cjs:1 require('puppeteer'); :11 URL localhost:5173 hardcodeada. Único commit dd725ab (01/07/2026), el mismo de los otros 3 .cjs. grep 'catch_browser_error' en todo el repo: vacío; no está en package.json scripts. Dato lateral para el cluster de deps: puppeteer está declarado en package.json raíz (:7
+- **VIVO** `src/assets/textures/README.md` (riesgo bajo, 2026-09-07 fixes)
+  - qué es: Cartel de 8 líneas: «esta carpeta NO es el catálogo de texturas; el catálogo que lee el visor 3D es public/assets/textures/», con el relato del error del 03/09.
+  - perdería: el aviso contra repetir el error del 03/09
+  - evidencia: No es código ni lo importa nada: es documentación preventiva puesta a propósito. ls src/assets/textures/: solo el README. git: 9c7dc6a (30/07/2026) lo crea; b28dd1a (03/09) agregó acá 33 textura-0XX.svg por error; f3a0a45 (07/09) las borró (D ×33) y actualizó el README. El catálogo real lo resuelven webOrdersController
+- **BORRAR** `temp_layout.jsx` (riesgo bajo, 2026-06-17 17062026)
+  - qué es: Fragmento JSX suelto en la raíz del repo (216 líneas): arranca en un comentario «PREMIUM MINIMALIST LAYOUT» y `return (`, termina en `}`; sin imports ni export. Es un borrador de layout alternativo de
+  - reemplazado por: src/components/pages/CajaPanelPago.jsx (el layout que quedó)
+  - evidencia: temp_layout.jsx:1-5 y últimas 5 líneas: no es módulo válido. grep 'PREMIUM MINIMALIST LAYOUT' en el repo: solo este archivo. `resultingDocDescription` existe únicamente en CajaPanelPago.jsx:188/331/961 → es un borrador de CajaPanelPago que nunca se integró (el vivo usa zinc/brand-cyan/font-archivo; este usa slate/indig
+- **BORRAR** `.bak` (riesgo bajo, 2026-09-02 02092026)
+  - qué es: Copia completa (4207 líneas) de backend/controllers/cajaController.js tal cual estaba justo antes del commit c58674d (02/09/2026).
+  - reemplazado por: backend/controllers/cajaController.js
+  - evidencia: diff .bak vs `git show c58674d~1:backend/controllers/cajaController.js` = 0 líneas (idéntico). Vs el vivo hoy (4425 líneas): 53 líneas solo en .bak / 271 solo en vivo; las 53 son versiones viejas de líneas modificadas, no funciones perdidas (p.ej. conReintentoDeadlock maxIntentos 3 → 4 en cajaController.js:26; `req.use
+
+## verify-8-backend_controllers_PedidosDetalladosController.js.json
+NOTAS: Resumen: 6 BORRAR (PedidosDetalladosController, productionFileController_extensions, RestApiService, apiService, erpService, googleSheetsService = 421 líneas, ninguno fue requerido jamás o perdió su último caller hace meses, todos con reemplazo vivo verificado), 5 SIN_USO (utilsController, pagoService ya @deprecated, slowQueryDetector, tpuPlanchaService, tpuPltService), 1 ARCHIVAR (auditar_cliente_capa.js), 2 VIVO (datosTela vía backend/scripts/wmsRellenoTelas.js; bandejaRoutes vía emb/est/twc/twtRoutes → server.js:203-215; este último estaba en la lista por error, el grafo ya lo tenía como alcanzable). Lo único con funcionalidad realmente perdida es tpuPltService (única implementación PDF→HPGL .plt del repo; el pipeline Python vivo emite -corte.pdf con CutContour): decidir con Santiago si la cortadora ya acepta el PDF o si el paso Corel sigue a mano. Side-effects al borrar: sacar ERP_SECONDARY_API_URL de backend/.env (solo lo usaba erpService) y la opción SLOW_QUERY de SysAdminPage.jsx:366,495 si se borra slowQueryDetector. pdf-lib y pdfjs-dist del backend siguen en uso por otros archivos (14 y 3), así que los TPU muertos no permiten sacar deps. Metodología: leí los 14 archivos enteros (el más largo 404 l.); greps de nombre base, cada export, path relativo y env vars en src/, backend/, docs/, CHANGELOG.md, package.json, .env, .bat (solo existe start-ngrok.bat, sin relación); `git log -1`, `-5` y `git log -S` por módulo para fecha de alta y de último require. Hallazgos colate
+
+- **BORRAR** `backend/controllers/PedidosDetalladosController.js` (riesgo bajo, 2026-03-05 para santi1 (cambio masivo de 2 líneas))
+  - qué es: Handler `pedidoDetalladoV2` que pedía un pedido al ERP vía `apiService.getPedidoCompleto(id || 28)` (id 28 hardcodeado) y lo reformateaba para el front. No exporta nada.
+  - reemplazado por: backend/controllers/RestSyncController.js
+  - evidencia: Línea 1 `require('./apiService')` apunta a controllers/apiService.js, que no existe (`ls` falla) y nunca existió (`git log --all -- backend/controllers/apiService.js` vacío); el apiService real está en services/. Sin `module.exports` (grep vacío). Grep de 'PedidosDetalladosController' y 'pedidoDetalladoV2' en src/, bac
+- **BORRAR** `backend/controllers/productionFileController_extensions.js` (riesgo bajo, 2026-06-22 rgrg)
+  - qué es: Copia suelta de `getCompletedOrdersForReplacement` y `createCustomerReplacementOrder` (reposición de cliente -R). Sin `module.exports`: no es usable como módulo.
+  - reemplazado por: backend/controllers/productionFileController.js (líneas 1935-2270)
+  - evidencia: Grep de 'productionFileController_extensions' y '_extensions' en todo el repo: 0 referencias. `git log -S"productionFileController_extensions"` vacío: nunca requerido. Las dos funciones viven en productionFileController.js:1935 y :1977, exportadas en :2794-2795 y montadas en productionFileRoutes.js:46 y :48. Nació en 2
+- **SIN_USO** `backend/controllers/utilsController.js` (riesgo bajo, 2026-02-03 feat: Add Label Generator View and Real-Time Sync Monitor)
+  - qué es: Helpers de etiquetas: getPedidoNumber, isLastOrder, validateLabelReady (INTERMEDIATE/FINAL + campos faltantes) y getOrderLabelData (estrategia ServiciosExtraOrden vs ArchivosOrden). Exporta las 4.
+  - reemplazado por: backend/services/LabelGenerationService.js (otro diseño, parcial)
+  - perdería: validateLabelReady (chequeo INTERMEDIATE/FINAL de campos faltantes) y la estrategia extras-vs-archivos de getOrderLabelData no existen en el vivo; pero nunca estuvieron conectadas, así que en producción no se perdió nada
+  - evidencia: Grep del nombre y de las 4 funciones exportadas en src/, backend/, docs/, CHANGELOG.md: solo el propio archivo. `git log -S"utilsController" -- 'backend/**/*.js'` vacío: nunca fue requerido desde su creación en 6546ebc (2026-02-03 'Add Label Generator View and Real-Time Sync Monitor', commit que también metió scripts c
+- **BORRAR** `backend/services/RestApiService.js` (riesgo bajo, 2026-03-16 logger)
+  - qué es: Cliente axios al ERP (`ERP_API_URL`, default :6061) con getPendingHeaders (`/pedidos/todos?NroFact=`) y fetchOrderDeepDetails (`/pedidos/:n/con_sublineas`), timeout 7 s.
+  - reemplazado por: backend/controllers/RestSyncController.js
+  - evidencia: Grep de 'RestApiService', 'getPendingHeaders', 'fetchOrderDeepDetails' en todo el repo (sin .claude/worktrees): solo el propio archivo. `git log -S"RestApiService"` → solo 3288b8d (2026-01-16, su creación): nunca requerido. RestSyncController.js:43 (`axios.get(API_BASE/api/pedidos/todos?NroFact=`) y :81 (`/api/pedidos/
+- **BORRAR** `backend/services/apiService.js` (riesgo bajo, 2026-03-16 logger)
+  - qué es: Cliente axios al ERP con una sola función getPedidoCompleto(id) → `/pedidos/:id/con_sublineas`.
+  - reemplazado por: backend/controllers/RestSyncController.js
+  - evidencia: Único consumidor histórico: PedidosDetalladosController.js:1, con require roto (`./apiService` desde controllers/). Grep de 'getPedidoCompleto' en backend/, docs/, CHANGELOG.md, package.json: solo apiService.js:10,21 y PedidosDetalladosController.js:6. `git log -S"getPedidoCompleto"` → solo 3288b8d. OJO: en src/ hay un
+- **BORRAR** `backend/services/erpService.js` (riesgo bajo, 2026-03-16 logger)
+  - qué es: fetchErpOrders(): GET a `${ERP_SECONDARY_API_URL||localhost:3000}/api/pedidos` y normaliza la respuesta a array.
+  - reemplazado por: backend/controllers/RestSyncController.js + backend/services/erpSyncService.js
+  - evidencia: Grep de 'erpService', 'fetchErpOrders', 'ERP_SECONDARY_API_URL' en todo el repo (sin .claude): solo el archivo y backend/.env:15 (la env var queda huérfana). Historia con `git log -S` + `git show`: lo requería backend/controllers/importController.js desde f65b219 (2025-12-11); 3288b8d (2026-01-16) sacó ese require; imp
+- **BORRAR** `backend/services/googleSheetsService.js` (riesgo bajo, 2026-07-15 varios cambios)
+  - qué es: Escritura de clientes en la planilla de Google vía Apps Script: insertarClienteEnGoogle / actualizarClienteEnGoogle (SCRIPT_ID hardcodeado, INTEGRATION_API_KEY).
+  - reemplazado por: backend/services/sheetsService.js
+  - evidencia: Grep de 'googleSheetsService', 'insertarClienteEnGoogle', 'actualizarClienteEnGoogle' (sin .claude): solo el archivo y los comentarios de sheetsService.js:192 y :234 que dicen literalmente 'Reemplaza el insertarClienteEnGoogle / actualizarClienteEnGoogle del Apps Script'. `git log -S"googleSheetsService"`: eda0a4b (202
+- **SIN_USO** `backend/services/pagoService.js` (riesgo bajo, 2026-09-01 01092026)
+  - qué es: registrarPagoCompleto(): flujo entero de cobro online (Handy/MP): imputa DeudaDocumento (+fallback PEPS), TransaccionesCaja tipo COBRO_WEB serie 'W', Pagos, OrdenesRetiro/Deposito, submayor, asiento c
+  - reemplazado por: backend/services/cajaService.js (procesarTransaccion :805, generarCFEDesdeOrdenesDirectas :2468)
+  - perdería: El tipo de documento COBRO_WEB / serie 'W' no lo genera nadie más (grep 'COBRO_WEB' en backend: solo acá); los registros viejos en la base quedan y cfeController:1838 los contempla por TcaId. Es un abandono deliberado, n
+  - evidencia: Cabecera :4-16: `@deprecated 2026-06-08 … REEMPLAZADO POR cajaService.procesarTransaccion … Este archivo se conserva solo como referencia histórica. NO agregues llamadas nuevas`. Grep de 'registrarPagoCompleto' / 'pagoService' (sin .claude): solo comentarios (cfeController.js:1838, cajaService.js:1091 'Replicamos la ló
+- **SIN_USO** `backend/services/tpuPlanchaService.js` (riesgo medio, 2026-08-14 tpu y dtf automatizado)
+  - qué es: Imposición Node de la plancha TPU (port de `Script TPU 240726v2.jsx` de Illustrator): N copias en filas/columnas + marcas de registro, un PDF por capa OCG con pdf-lib + `pdftocairo`, y .plt best-effor
+  - reemplazado por: backend/services/tpuMatrizService.js + backend/python/tpu_matriz.py
+  - perdería: Imponer un PDF con capas YA existente (arte armado por el operario): el vivo impone solo el arte que genera desde el vector del cliente. Inferido de docs/tpu-cliente-sube-vectorizado-plan.md:258 ('el que corre hoy en Ill
+  - evidencia: Grep de 'tpuPlanchaService', 'generarPlancha', 'leerCapas', 'aislarCapa' (sin .claude): solo el archivo. `git log -S"tpuPlanchaService"` vacío: nunca requerido desde 6d652d8 (2026-08-14). El TPU vivo es tpuMatrizService.js (reachable; requerido por ordersController.js:1160 y webOrdersController.js:534, 2136, 3294, 3570
+- **SIN_USO** `backend/services/tpuPltService.js` (riesgo alto, 2026-08-14 tpu y dtf automatizado)
+  - qué es: Genera el archivo de corte HPGL (.plt) desde el PDF de la plancha: extrae contornos de la capa Corte con pdfjs-dist, aplana Béziers (0,05 mm), escribe PU/PD a 40 u/mm con origen en el centro, pluma 1 
+  - perdería: SÍ: es la única implementación PDF→HPGL del repo. Si producción sigue pasando el corte por Corel a mano para la cortadora, esto era el reemplazo. No lo sé si la cortadora acepta hoy el -corte.pdf directo. El dialecto que
+  - evidencia: Únicos requires: tpuPlanchaService.js:91 y :221 (también muerto). Grep de 'generarPltDesdePlancha', 'extraerContornosDeCapa', 'escribirPlt', 'UNIDADES_POR_MM': solo esos dos archivos. `git log -S"tpuPltService"` → solo 6d652d8. El pipeline vivo NO genera .plt: tpu_matriz.py emite `-corte.pdf` con tinta CutContour (tpu_
+- **VIVO** `backend/utils/datosTela.js` (riesgo medio, 2026-09-23 algo se rompe)
+  - qué es: Parsers puros (leerAncho, leerGramaje, leerComposicion, leerDatosTela, colorSospechoso) que sacan ancho, gramaje y composición del NOMBRE de una variante de tela del WMS.
+  - evidencia: Requerido por backend/scripts/wmsRellenoTelas.js:20 (`const { leerDatosTela, colorSospechoso } = require('../utils/datosTela')`) y usado en :42 y :48. Ese script es operativo y está en el runbook: docs/deploy-wms-cutover.md:182-188 (paso B7: `node scripts/wmsRellenoTelas.js` y `--aplicar`), CHANGELOG.md:1057 y :1063 ('
+- **SIN_USO** `backend/utils/slowQueryDetector.js` (riesgo bajo, 2026-03-20 sysadmin implementado)
+  - qué es: timedQuery(pool, sql, inputs): envuelve una query mssql y loguea `[SLOW_QUERY] <ms>` si tarda más de SLOW_QUERY_MS (default 500 ms).
+  - perdería: La detección de queries lentas nunca estuvo activa. Si se borra, sacar también la opción SLOW_QUERY de SysAdminPage.jsx:495 y :366 (o, al revés, cablear el util en los paths críticos, que era la intención).
+  - evidencia: Grep de 'slowQueryDetector', 'timedQuery', 'SLOW_QUERY' (sin .claude): solo el archivo y src/components/pages/admin/SysAdminPage.jsx:366 (pinta naranja las líneas con '[SLOW_QUERY]') y :495 (opción de filtro 'SLOW_QUERY' en el visor de logs). `git log -S"slowQueryDetector"` vacío: nunca requerido desde 19dfd86 (2026-03
+- **ARCHIVAR** `backend/auditar_cliente_capa.js` (riesgo bajo, 2026-10-08 08102026)
+  - qué es: Script CLI para UN cliente (CLIENTE_ID=854, 'CAPA Indumentaria Deportiva'): `--ver` imprime cuentas/deudas/movimientos; `--snapshot` guarda un JSON con saldos y max IDs; `--revertir <json>` BORRA en p
+  - evidencia: Cabecera :2 dice `auditar_cliente_854.js` (fue renombrado). Único commit 1cae602 (2026-10-08 '08102026'), 321 líneas nuevas. Grep de 'auditar_cliente' y 'snapshot_cliente' en el repo: solo el archivo; `find` de snapshot_cliente_*.json: ninguno en disco (y `.gitignore:30 *.json` los ignoraría igual). Contexto del episod
+- **VIVO** `backend/routes/bandejaRoutes.js` (riesgo alto, 2026-10-01 01102026)
+  - qué es: Fábrica createBandejaRoutes(area): arma el router de 'bandeja/control' (órdenes sin lotes) sobre embBoardController y fallaBandejaController, forzando req.query.area.
+  - perdería: n/a (borrarlo tira las bandejas de Bordado, Estampado, Corte láser y Taller de costura)
+  - evidencia: Falso positivo de la lista: el propio grafo lo tiene en backend.reachable (unreachable:false, importedBy = embRoutes, estRoutes, twcRoutes, twtRoutes). Cadena concreta: server.js:203 `app.use('/api/emb', require('./routes/embRoutes'))`, :207 `/api/est`, :211 `/api/twc`, :215 `/api/twt`; cada uno de esos cuatro archivos
+
+## verify-9-src_components_production.json
+NOTAS: Cluster entero confirmado muerto: 20/20 inalcanzables, ninguno importado por código vivo. Patrón: las *Area.jsx, Despacho, Infraestructura, ProductionContext y mockData eran la app del prototipo (App.jsx de 0e9d025, 2025-11-28, importaba todo eso + mockData); el commit 3288b8d (2026-01-16) reescribió App.jsx, sacó todos esos imports y ya borró hermanos de la misma camada (SublimationArea.jsx, UVArea.jsx, BordadoArea.jsx, AreaGenerica.jsx, AreaHeader.jsx, *.module.css); fcf9b31 (2026-09-29) borró areas/ServicioTecnico.jsx. Los que quedan son el resto de esa limpieza. Los commits de mayo 2026 que figuran como 'último commit' (3e0d4ef 06/05, ad884bf 12/05) NO son cambios funcionales: 3e0d4ef solo tocó CRLF/espacios en estos archivos (diff con --ignore-cr-at-eol vacío) y ad884bf solo renombró clases slate→zinc (find/replace masivo). Excepción: areaConfigs.jsx sí recibió contenido real el 21/05 (Yoania agregó IMD/XMD), por eso va SIN_USO. Tres archivos están rotos si alguien los importara: CoordinacionArea (usa styles/OrderKanban/OrderKanbanMetrics sin importar, y no existen), CosturaArea (renderiza WorkflowFlows indefinido) y ECOUVArea (import a utils/configs/areaConfigs borrado en 3288b8d). Las 7 *Area grandes le pasan a ProductionTable un contrato (areaConfig/orders/selectedOrders/onToggleSelection) que la ProductionTable viva no acepta (ProductionTable.jsx:25), así que ni montándolas funcionarían. Efecto colateral verificado: ProductionTable.backup.jsx es el único importador d
+
+- **BORRAR** `src/components/production/areas/CoordinacionArea.jsx` (riesgo bajo, 2026-05-06 cambios front (solo whitespace/CRLF; último cambio real 2026-01-16 3288b8d))
+  - qué es: Wrapper viejo de 'Coordinación y Diseño' (82 líneas) que renderiza un OrderKanban + OrderKanbanMetrics con CSS modules.
+  - reemplazado por: src/components/pages/CoordinacionView.jsx (MainAppContent.jsx:121 lazy import, :813 <Route path="/coordinacion">)
+  - evidencia: Leído entero. Líneas 3-5 tienen los imports de OrderKanban, OrderKanbanMetrics y CoordinacionArea.module.css COMENTADOS, pero el cuerpo los usa igual (styles.* en 30,41,42,43,49,50,57,58,59,61,67; <OrderKanban> en 31; <OrderKanbanMetrics> en 51) → ReferenceError si se montara. `find src -iname 'OrderKanban*' -o -iname 
+- **BORRAR** `src/components/production/areas/CosturaArea.jsx` (riesgo bajo, 2026-05-06 cambios front (solo CRLF; último cambio real 2025-12-09 09453df))
+  - qué es: Vista por área 'Costura' de la generación anterior (444 líneas): header con tabs, sidebar 'Talleres' hardcodeado y ProductionTable con areaConfig propio; celdas con valores fijos ('22/11','09:00','20u
+  - reemplazado por: src/components/production/areas/AreaView.jsx (genérica) vía MainAppContent.jsx:738 <Route path="/area/:areaId/*"> y :1187 <AreaView areaKey=... areaConfig={menu
+  - evidencia: Leído entero. Línea 3 importa `Workflow` pero la línea 299 renderiza `<WorkflowFlows area="Costura" />`, identificador que no existe en ningún lado (grep 'WorkflowFlows' en todo el repo: solo CosturaArea.jsx:299) → ReferenceError al tocar la pestaña 'Flujos'. Líneas 292-297 le pasan a ProductionTable props `areaConfig/
+- **BORRAR** `src/components/production/areas/DTFArea.jsx` (riesgo bajo, 2026-01-16 Fix: Aplicado gitignore para archivos sensibles y credenciales)
+  - qué es: Wrapper de 23 líneas: `<AreaView areaKey="DTF" areaConfig={areaConfigs.DTF} {...props} />`.
+  - reemplazado por: src/components/layout/MainAppContent.jsx:1183-1187 (DynamicRouter → AreaView con ui_config del menú)
+  - evidencia: Leído entero. Imports resuelven (../areas/AreaView existe; ../../common/configs/areaConfigs existe). Grep 'DTFArea' en src/backend/index.html/public/docs/specs/CHANGELOG/package.json/*.bat: solo el propio archivo. Grafo: inDegree 0, importedBy []. Es el único importador de areaConfigs.jsx. MainAppContent.jsx:1183-1187 
+- **BORRAR** `src/components/production/areas/DepositoArea.jsx` (riesgo bajo, 2026-05-06 cambios front (solo CRLF; último cambio real 2025-12-09 09453df))
+  - qué es: Vista 'Depósito' de la generación anterior (386 líneas), clon de la plantilla Directa320Area con grid 'Item/Ubicación/Stock/Estado/Categoría' y datos fijos.
+  - reemplazado por: src/components/logistics/DepositoDashboard.jsx (MainAppContent.jsx:85,750), DepositStockPage (:744), CargaDepositoPage (:77,747)
+  - evidencia: Leída cabecera (1-80) y diff completo contra Directa320Area.jsx: difiere solo en nombre, tab inicial ('inventario'), gridTemplate/headers y celdas; misma estructura. Importa ProductionTable (línea 2) y le pasa `areaConfig/orders/selectedOrders/onToggleSelection`, contrato que el ProductionTable vivo no acepta (Producti
+- **BORRAR** `src/components/production/areas/Despacho.jsx` (riesgo bajo, 2026-05-06 cambios front (solo CRLF; último cambio real 2025-12-09 09453df))
+  - qué es: Mockup 'Centro de Despacho' (252 líneas) hecho con React.createElement: 6 tabs, 4 de ellas con texto 'En desarrollo'; input de escaneo y botones sin handlers.
+  - reemplazado por: módulo de logística vivo: src/components/pages/customer-service/ActiveStockPage.jsx (/atencion-cliente/despachos, MainAppContent.jsx:740,1114), src/components/l
+  - evidencia: Leído entero. Líneas 110-145: los tabs stock/create_withdraw/withdraw_list/delivery son un div con texto '... - En desarrollo'. Líneas 25-46: input y botón 'Escanear' sin onChange/onClick. Línea 86-97: botón 'Notificar Clientes' sin handler. No importa nada salvo React. Grep de path (`areas/Despacho`, `import Despacho`
+- **BORRAR** `src/components/production/areas/Directa320Area.jsx` (riesgo bajo, 2026-05-06 cambios front (solo CRLF; último cambio real 2025-12-09 09453df))
+  - qué es: Vista 'Directa 3.20' de la generación anterior (427 líneas): plantilla base de la que se clonaron Laser/Estampado/TPUUV/TerminacionUV; celdas fijas ('22/11','09:00','5h','Textil','20m').
+  - reemplazado por: AreaView.jsx (isDirecta = ['DIRECTA','IMD'] en AreaView.jsx:513) vía MainAppContent.jsx:738/1187
+  - evidencia: Leída cabecera 1-80 e imports/exports. `diff` contra LaserArea, EstampadoArea, TPUUVArea y TerminacionUVArea: solo cambian nombre del componente, name/gridTemplate/headers y 2-3 celdas; el resto es idéntico. Línea 2 importa ProductionTable y le pasa `areaConfig/orders/selectedOrders/onToggleSelection`, incompatible con
+- **BORRAR** `src/components/production/areas/ECOUVArea.jsx` (riesgo bajo, 2026-05-06 cambios front (solo CRLF; último cambio real 2025-12-11 f65b219))
+  - qué es: Wrapper de 23 líneas: `<AreaView areaKey="ECOUV" areaConfig={areaConfigs.ECOUV} />`, igual a DTFArea.
+  - reemplazado por: MainAppContent.jsx:1022-1024 (/area/ecouv/config → EcouvConfigPage) y :1183-1187 (DynamicRouter → AreaView con ui_config)
+  - evidencia: Leído entero. Línea 5: `import { areaConfigs } from '../../utils/configs/areaConfigs'` → resuelve a src/components/utils/configs/areaConfigs, que NO existe (`ls src/components/utils` falla; `find src -iname 'areaConfigs*'` solo da common/configs/areaConfigs.jsx). Git: `git log --name-status -- 'src/components/utils/con
+- **BORRAR** `src/components/production/areas/EstampadoArea.jsx` (riesgo bajo, 2026-05-06 cambios front (solo CRLF; último cambio real 2025-12-09 09453df))
+  - qué es: Vista 'Estampado DTF' de la generación anterior (401 líneas), clon de Directa320Area con headers 'Prenda/Prensa' y celdas fijas ('80u').
+  - reemplazado por: AreaView.jsx vía MainAppContent.jsx:738/1187
+  - evidencia: Diff contra Directa320Area.jsx: solo nombre, name/gridTemplate/headers y celdas Tiempo/Rollo/Modo quitadas. Import ProductionTable (línea 2) con contrato viejo (ProductionTable.jsx:25 no acepta areaConfig/orders). Grep 'EstampadoArea' en src/backend/index.html/public/docs/specs/CHANGELOG/package.json/*.bat: solo el pro
+- **BORRAR** `src/components/production/areas/Infraestructura.jsx` (riesgo bajo, 2026-05-06 cambios front (solo CRLF; último cambio real 2025-12-09 09453df))
+  - qué es: Mockup 'Infraestructura' (303 líneas) con React.createElement: tabla de 3 tickets hardcodeados (fechas 2024) y tab 'Zonas' con texto 'En desarrollo'.
+  - reemplazado por: módulo Servicio Técnico: src/components/pages/ServicioTecnicoPage.jsx + src/components/servicio-tecnico/* (incluye mantenimiento/tickets)
+  - evidencia: Leído entero. Líneas 6-10: `mockInfraTickets` con 3 objetos fijos ('22/11/2024', etc.). Línea 188: 'Mapa y gestión de zonas de la planta - En desarrollo'. Botón 'Nuevo Ticket' (30-46) sin handler. Solo importa React. Grep de path (`areas/Infraestructura`, `import Infraestructura`, `<Infraestructura`, `Infraestructura.j
+- **BORRAR** `src/components/production/areas/LaserArea.jsx` (riesgo bajo, 2026-05-06 cambios front (solo CRLF; último cambio real 2025-12-09 09453df))
+  - qué es: Vista 'Corte Láser' de la generación anterior (423 líneas), clon de Directa320Area con headers 'Material/Formato/Láser' y celdas fijas ('MDF 3mm','A4').
+  - reemplazado por: AreaView.jsx vía MainAppContent.jsx:738/1187
+  - evidencia: Diff contra Directa320Area.jsx: solo nombre, config, un checkbox extra y celdas Material/Formato hardcodeadas. Import ProductionTable (línea 2) con contrato viejo incompatible con ProductionTable.jsx:25. Grep 'LaserArea' en src/backend/index.html/public/docs/specs/CHANGELOG/package.json/*.bat: solo el propio archivo. G
+- **BORRAR** `src/components/production/areas/TPUUVArea.jsx` (riesgo bajo, 2026-05-06 cambios front (solo CRLF; último cambio real 2025-12-09 09453df))
+  - qué es: Vista 'TPU UV' de la generación anterior (409 líneas), clon de Directa320Area con columna 'Matriz' fija ('TPU-001') y '150u'.
+  - reemplazado por: AreaView.jsx vía MainAppContent.jsx:738/1187 (con MatrixSidebar)
+  - evidencia: Diff contra Directa320Area.jsx: solo nombre, config y celdas Matriz/Unidades/Máquina. Import ProductionTable (línea 2) con contrato viejo incompatible con ProductionTable.jsx:25. Grep 'TPUUVArea' en src/backend/index.html/public/docs/specs/CHANGELOG/package.json/*.bat: solo el propio archivo. Grafo: inDegree 0. Histori
+- **BORRAR** `src/components/production/areas/TerminacionUVArea.jsx` (riesgo bajo, 2026-05-06 cambios front (solo CRLF; último cambio real 2025-12-09 09453df))
+  - qué es: Vista 'Terminaciones UV' de la generación anterior (402 líneas), clon de Directa320Area con columna 'Proceso' fija ('Barniz UV Alto Brillo').
+  - reemplazado por: MainAppContent.jsx:1033-1034 `<AreaView key="TERMINAC" areaKey="terminac" areaConfig={{ name: 'Terminaciones' }} />` (+ redirect en :1100)
+  - evidencia: Diff contra Directa320Area.jsx: solo nombre, config y celdas Proceso/Unidades/Equipo. Import ProductionTable (línea 2) con contrato viejo incompatible con ProductionTable.jsx:25. Grep 'TerminacionUVArea' en src/backend/index.html/public/docs/specs/CHANGELOG/package.json/*.bat: solo el propio archivo. Grafo: inDegree 0.
+- **SIN_USO** `src/components/common/configs/areaConfigs.jsx` (riesgo bajo, 2026-05-21 nuevos cambios yoa)
+  - qué es: Mapa `areaConfigs` (291 líneas) con name/fileRequirements/gridTemplate/headers/renderRowCells por área (DTF, IMD/XMD, ECOUV, SUB, planilla-*, bord, laser, costura, despacho, servicio, infraestructura,
+  - reemplazado por: menuItem.ui_config (base de datos) parseado en src/components/layout/MainAppContent.jsx:1183-1185 + columnDefs internas de src/components/production/components/
+  - perdería: Las `fileRequirements` por área (DTF/ECOUV/IMD: 'Archivo de Impresión' requerido; bordado: 'Boceto' requerido) no tienen consumidor vivo; no verifiqué si NewOrderModal implementa ese requisito de otra forma → no lo sé. L
+  - evidencia: Leído entero. Único importador: src/components/production/areas/DTFArea.jsx:4 (muerto). Grep 'areaConfigs' en src/backend/index.html/public/docs/specs/CHANGELOG: solo DTFArea, ECOUVArea (import roto a otra ruta) y el propio archivo. Grep 'fileRequirements' en src excluyendo este archivo: vacío. Grep 'renderRowCells'/'g
+- **BORRAR** `src/components/production/context/ProductionContext.jsx` (riesgo bajo, 2026-05-06 cambios front (solo CRLF; último cambio real 2025-11-28 0e9d025))
+  - qué es: Context + useReducer del prototipo (77 líneas): estado `orders` sembrado desde mockData, toggle de selección, filtro de rollo y un `createRoll` que solo hace console.log.
+  - reemplazado por: src/components/production/areas/AreaView.jsx (useQuery ['orders', areaKey, areaDatos] + socket) y servicios en src/services/api.js
+  - evidencia: Leído entero. Línea 2 importa mockOrders/mockMachines de ../../../data/mockData; línea 7 `orders: mockOrders`; líneas 50-53 `createRoll` = console.log stub. Grep 'ProductionProvider', 'useProduction', 'ProductionContext', 'production/context' en src/backend/index.html/public/docs/specs/CHANGELOG/package.json: solo el p
+- **BORRAR** `src/data/mockData.js` (riesgo bajo, 2026-05-06 cambios front (solo CRLF; último cambio real 2025-12-09 09453df))
+  - qué es: Datos de prueba del prototipo de nov-2025 (119 líneas): mockMachines (3), mockOrders (3 órdenes del 2025-11-22) y AREA_CONFIG (gridTemplates/headers por área).
+  - evidencia: Leído entero. Grep 'mockData', 'data/mockData', 'mockMachines', 'AREA_CONFIG' en src/backend/index.html/public/docs/specs/CHANGELOG/package.json: solo ProductionContext.jsx:2 (muerto) y el propio archivo. El 'mockOrders' que aparece en src/components/pages/customer-service/LogisticsPage.jsx:118 es una const local, no u
+- **BORRAR** `src/components/production/OrderCard.jsx` (riesgo bajo, 2026-05-12 fixes (solo slate→zinc; creado 2026-01-16 3288b8d))
+  - qué es: Card Tailwind de orden (77 líneas) que lee campos crudos de la base en PascalCase (CodigoPedido/CodigoOrden/OrdenID, NombreRollo, ClienteNombre, Material, DescripcionTrabajo); props order/isSelected/o
+  - reemplazado por: src/components/production/components/OrderCard.jsx
+  - evidencia: Leído entero. Duplicado por nombre con src/components/production/components/OrderCard.jsx (209 líneas, vivo: importado por FilePrintControl.jsx:7 y PlaneacionTrabajo.jsx:9 con path '../production/components/OrderCard'; AreaView.jsx:14 lo tiene comentado). Grep de imports 'OrderCard' en src: ninguno apunta a 'production
+- **BORRAR** `src/components/production/components/Workflow.jsx` (riesgo bajo, 2026-05-12 fixes (solo slate→zinc; último cambio real 2025-11-28 0e9d025))
+  - qué es: Vista mock 'Flujos de Trabajo' (238 líneas): arma tarjetas a partir de orders con area==='COORD', con pasos, tiempos y textos hardcodeados ('22/11 09:00', 'Hace 2h', 'Coordinación Central'); botones D
+  - evidencia: Leído entero. Líneas 44-52 `generateSteps` devuelve 5 pasos fijos; 26-27 strings fijos; 204-212 botones sin onClick. Único importador: CosturaArea.jsx:3 (muerto), que además ni lo usa (renderiza `WorkflowFlows`, indefinido). Grep 'components/Workflow', 'Workflow.jsx', "from './Workflow'" en src: solo CosturaArea. El 'W
+- **BORRAR** `src/components/production/scheduler/BordadoScheduler.jsx` (riesgo bajo, 2026-05-12 fixes (solo slate→zinc; creado 2026-01-16 3288b8d))
+  - qué es: Mock 'Planificador de Bordado – Optimización de carga por IA' (288 líneas): 3 máquinas hardcodeadas, carga con Math.random, 'IA' = setTimeout 2s y sugerencias aleatorias.
+  - reemplazado por: src/components/pages/PlanificacionPage.jsx (/produccion/planificacion, MainAppContent.jsx:53,1030,1103; planificacionService real)
+  - evidencia: Leído entero. Líneas 10-14 máquinas fijas; 30-37 `Math.floor(Math.random()*80)+10`; 39-48 `await new Promise(r => setTimeout(r, 2000))`; 50-61 máquina y prioridad al azar; 74-84 applySuggestion = console.log + filtros locales. Grep 'BordadoScheduler', 'production/scheduler', 'Planificador de Bordado' en src/backend/ind
+- **BORRAR** `src/components/production/components/ProductionTable.backup.jsx` (riesgo bajo, 2026-05-12 fixes)
+  - qué es: Copia de respaldo (182 líneas) de la ProductionTable basada en AG Grid (ag-grid-react/ag-grid-community), previa a la reescritura con @tanstack/react-table.
+  - reemplazado por: src/components/production/components/ProductionTable.jsx (tanstack)
+  - evidencia: Leído entero. Creado en ad884bf (2026-05-12 'fixes') en el mismo commit que reescribió ProductionTable.jsx (+507 líneas). Comparado con la versión inmediatamente anterior de ProductionTable.jsx (adc149a, 2026-02-24): 63 líneas de diff y TODAS son renombres slate→zinc en className → es exactamente la versión pre-reescri
+- **SIN_USO** `src/components/UnifiedProductionManager.jsx` (riesgo bajo, 2026-04-27 contabilidad integrada)
+  - qué es: Shell con 3 pestañas 'Gestión de Producción / Panel Maestro Unificado' (81 líneas): 1. ImportadorManualView, 2. QuotationView, 3. LabelGenerationPage.
+  - perdería: solo el layout unificado en 3 pasos (Cargar ERP → Confirmar Cotización → Etiquetas); no hay lógica propia.
+  - evidencia: Leído entero. Imports resuelven y los tres hijos están vivos por sus propias rutas (MainAppContent.jsx:68,111,785,1076; AreaView.jsx:23,36). Les pasa `embedded={true}` (líneas 64 y 74) pero ninguno acepta esa prop: ImportadorManualView.jsx:4 `{ isModal, onClose, onImportSuccess }`, LabelGenerationPage.jsx:9 `{ initialA

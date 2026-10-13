@@ -1,0 +1,305 @@
+# Scripts y docs
+
+## scripts-14-B6.json
+NOTAS: Episodios para archivar por carpeta: 2026-06-caja-planes (6 scripts), 2026-07-desfasaje-ciclos (2 runbooks + 5 diagnósticos + sql/ raíz), 2026-07-palmero-saldos (2 md + 7 scripts), 2026-07-saldos-a-favor-billetera (1 md + 5 scripts + 2 CSV), 2026-08-tpu-migracion-matrices (js + md), 2026-08-tpu (4 planes), 2026-09-wms-cutover (6 scripts + 4 sql + docs/wms-data + 2 md + pdf), 2026-09-bultos-cierre (2 sql), 2026-09-plan-sin-linea (2 scripts), 2026-09-billetera (scripts/*.md), 2026-09-casos y 2026-10-casos (reportes/sql puntuales), 2026-10-07-incidente-pagos-online, 2026-10-capa-854. Hallazgos que exceden la clasificación: (1) `*.sql` en .gitignore hizo PERDER archivos que el repo cita: los .sql de los RUNBOOK de julio (fix_saldo_por_cliente.sql, listar_clientes_afectados.sql, add_PagIdCheque.sql, fix_pago_mal_aplicado_pc2220.sql…), diag_reconciliacion_cliente.sql (rompe diag_reconciliacion_lote.js) y `docs/migrations/configurador_tizadapro.sql`, `configurador_etiquetas.sql`, `configurador_costuras_paso_a_paso.sql` que cita backend/controllers/configuradorController.js y src/components/pages/ConfiguradorPasosCostura.jsx (la carpeta docs/migrations no existe en disco: ls → No such file). Si existen en la PC de Santiago, rescatarlos antes de nada. (2) Secretos en texto en el repo: docs/API_Telas_Activas.md trae un valor de x-api-key; backend/scripts/analizar_tizadapro.js L18 trae la clave de sa de la base local. (3) El skill .claude/skills está trackeado a medias (CSV y .py sí, SKILL.md y .json no). (4) specs/README indexa 39–41 inexistentes. (5) backend/scripts/color_calibrate.py e igualador_color.py se invocan por una ruta default `/var/www/sistema-produccion/scripts/...` que no es backend/scripts: no lo sé si en prod está COLOR_SCRIPT_PATH o copiaron los .py. (6) Corridas en prod: solo pude confirmar por CHANGELOG registrarPagosOnlinePendientes (L172), migrar-matrices-tpu (L1480), fix-cuenta-cero (L131) y menu_stock_gestion (deploy-wms-cutover.md); el resto de los one
+
+GITIGNORE:
+- QUITAR L30-34: `*.json` + `!package.json` + `!package-lock.json` + `!tsconfig.json` + `!src/assets/animations/` (la negación del directorio NO re-incluye los .json de adentro; hoy src/assets/animations/*.json, backend/scripts/preflight/reglas_user.json y .vscode/settings.json quedan ignorados). Reem
+- QUITAR L44 `*.bat` (solo ignoraba start-ngrok.bat, que está trackeado igual). Si no quieren el .bat en git: `git rm --cached start-ngrok.bat`.
+- QUITAR L45 `*.sql`: dejó afuera backend/scripts/sql/*.sql (7, citados en CHANGELOG), docs/servicio-tecnico/*.sql (9, citados desde el código), docs/wms-data/DDL-*.sql (2, citados desde wmsInternoService.js) y perdió para siempre los .sql que citan los RUNBOOK de julio (fix_saldo_por_cliente.sql, add
+- QUITAR L53 `*.md`: ignora CHANGELOG.md, specs/*.md, docs/*.md, .claude/skills/**/SKILL.md, public/assets/textures/README.md. Ninguno es sensible; la regla solo esconde documentación nueva.
+- QUITAR L54 `docs/multitela-costo-por-orden-plan.md` (ignorado a mano; es un plan vigente).
+- QUITAR L56 `docs` (ignora toda la carpeta: 17 archivos trackeados-ignorados y ~45 planes/SQL sin trackear). Reemplazar por lo pesado/generado: `docs/wms-data/snap_*.json`, `docs/.obsidian/`, y si no quieren PDFs en git: `docs/*.pdf`.
+- QUITAR L51 `backend/docs` y L59 `backend/consultas/` solo si confirman que no existen (ls: no existen hoy). Inofensivas, pero ruido.
+- AGREGAR: `__pycache__/` y `*.pyc` (hay 7 .pyc trackeados: backend/python/__pycache__/*, backend/scripts/__pycache__/*, backend/scripts/preflight/__pycache__/*) → `git rm -r --cached backend/python/__pycache__ backend/scripts/__pycache__ backend/scripts/preflight/__pycache__`.
+- AGREGAR: `.claude/` (tooling del asistente; worktrees, settings.local.json y skills) → `git rm -r --cached .claude/skills`. Si quieren compartir permisos del proyecto: `.claude/*` + `!.claude/settings.json`.
+- AGREGAR: `*.bak`, `.bak`, `*.backup.jsx`, `*.bak.jsx` (hoy `.bak` raíz, TransportView.bak, EntregaPedidosView.bak, ProductionTable.backup.jsx están trackeados) → `git rm --cached .bak src/components/logistics/TransportView.bak src/components/pages/customer-service/EntregaPedidosView.bak src/componen
+- AGREGAR: `muestras/` → `git rm -r --cached muestras` (43 archivos, 14 MB de PDFs/PNG de un pedido de prueba; nadie los lee).
+- AGREGAR: `backend/scripts/etiqueta_*.html` (lo escribe reimprimir_etiqueta.js al lado del script, L556) y `wms-snap/` (salida default de wmsBajarSnapshot.js).
+- AGREGAR si sacan los CSV de clientes del repo: `backend/scripts/*.csv` y `sql/*.csv` → `git rm --cached backend/scripts/*.csv sql/*.csv sql/*.txt` (traen nombres de clientes e importes; regenerables).
+- MANTENER tal cual: L1-13 (logs, node_modules, dist, dist-ssr, *.local), L16-24 (.vscode/* con !extensions.json, .idea, .DS_Store…), L26-29 (.env, backend/.env, oauth-credentials.json, token.json), L35 (.antigravity_rules.md), L38-42 (backend/node_modules, logs, ComprobantesPagos, tickets, servicio-t
+- TRACKEADOS HOY QUE DEBERÍAN DEJAR DE ESTARLO (git rm --cached): .bak, temp_layout.jsx, start-ngrok.bat (si no se usa), 7 .pyc, .claude/skills/ui-ux-pro-max/** (55), muestras/** (43), docs/PRECIOS SEMANALES (1).docx, backend/scripts/listado_clientes_pendiente_billetera.csv, backend/scripts/listado_cl
+- IGNORADOS HOY QUE DEBERÍAN TRACKEARSE (git add después de arreglar el .gitignore): backend/scripts/sql/*.sql (7), backend/scripts/preflight/reglas_user.json (lo requiere user_preflight.py:70), docs/servicio-tecnico/*.sql (9) y *.md (2), docs/wms-data/DDL-wms-propio.sql y DDL-wms-compras.sql, docs/co
+
+### ARCHIVAR (82)
+- `backend/scripts/addEsCajaAdmin.js` [migracion_one_off, 2026-06-22] Migración ALTER TABLE: agrega EsCajaAdmin a TransaccionesCaja y EgresosCaja (IF NOT EXISTS). → backend/scripts/_historico/2026-06-caja-planes/
+  - ev: Leído L1-40: solo ALTER TABLE idempotente. git log -1: 2026-06-22 'rgrg'. grep 'addEsCajaAdmin' en CHANGELOG.md/src/backend/docs: 0. La columna ya la usa el código (caja central vs admin, specs/05 RN-CAJA.07) → ya corrid
+- `backend/scripts/addNotaGestionAutorizacion.js` [migracion_one_off, 2026-06-22] Migración ALTER TABLE AutorizacionesSinPago ADD AuzNotaGestion. → backend/scripts/_historico/2026-06-caja-planes/
+  - ev: Leído entero (27 líneas). git log -1 2026-06-22. CHANGELOG 0 menciones. Mismo patrón que addEsCajaAdmin.
+- `backend/scripts/fix-entregas-mal-tipadas.js` [migracion_one_off, 2026-06-24] Reclasifica movimientos ORDEN→ENTREGA en cuentas de recurso (bug de insertar-manual, corregido en commit afe2d3e). Dry-run/--apply. → backend/scripts/_historico/2026-06-caja-planes/
+  - ev: Cabecera L1-30 explica el bug y el commit del fix. CHANGELOG 0 menciones. No lo sé si se corrió en prod (regla de la casa: las querys las corre Santiago).
+- `backend/scripts/fix-plan-articulos-no-cubiertos.js` [diagnostico_caso, 2026-06-24] Fix puntual para 3 clientes (Sklofsky 6844, Diseño Basico 1731, Valentina Rodríguez 1821) con cobro monetario incorrecto por plan. → backend/scripts/_historico/2026-06-caja-planes/
+  - ev: Cabecera L1-30 nombra los 3 clientes y órdenes (DTF-1986, DTF-1781, DTF-1562). 339 líneas. CHANGELOG 0.
+- `backend/scripts/verificar-iva.js` [diagnostico_caso, 2026-06-24] Verificación 'de un solo uso' (L1): tasa de IVA por línea ≠ 22%. → backend/scripts/_historico/2026-06-caja-planes/
+  - ev: L1: 'Script de verificación de un solo uso'. Solo lectura. CHANGELOG 0.
+- `backend/scripts/RUNBOOK_desfasaje_cierre_ciclo.md` [runbook_doc, 2026-07-15] Runbook del desfasaje factura vs estado de cuenta (julio 2026), 155 líneas; 'la factura manda'. → backend/scripts/_historico/2026-07-desfasaje-ciclos/
+  - ev: Leído L1-45. Referencia listar_clientes_afectados.sql, fix_saldo_por_cliente.sql y ../../sql/clientes_afectados_desfasaje_2026-07-14.csv. Los .sql NO están en el repo: git ls-files '*.sql' = 0 y find solo encuentra 22 .s
+- `backend/scripts/RUNBOOK_pendiente_produccion.md` [runbook_doc, 2026-07-21] Orden de scripts SQL a correr en prod (17-jul-2026): grupos A limpiezas, B cheques, C add_PagIdCheque. → backend/scripts/_historico/2026-07-desfasaje-ciclos/
+  - ev: Leído L1-45. Todos los .sql que lista (fix_deudas_duplicadas_por_documento.sql, add_PagIdCheque.sql…) no existen en el repo (find). No lo sé si se corrieron todos en prod; el código actual escribe PagIdCheque (caja), así
+- `backend/scripts/diagnostico_cliente.js` [diagnostico_caso, 2026-07-15] SOLO LECTURA: diagnóstico del desfasaje para UN IDCliente (ej. 'capa'). → backend/scripts/_historico/2026-07-desfasaje-ciclos/
+  - ev: L1-4 cabecera. Mismo episodio que el RUNBOOK (misma fecha/commit '15072024').
+- `backend/scripts/diagnostico_coherencia_moneda_facturas.js` [diagnostico_caso, 2026-07-15] SOLO LECTURA: cabezal en una moneda y líneas en otra (ratio en banda del TC). → backend/scripts/_historico/2026-07-desfasaje-ciclos/
+  - ev: Cabecera L1-13. CHANGELOG 0.
+- `backend/scripts/diagnostico_doc_crossmoneda.js` [diagnostico_caso, 2026-07-15] SOLO LECTURA: anatomía de un documento cross-moneda (variante C), ej. PC-1274. → backend/scripts/_historico/2026-07-desfasaje-ciclos/
+  - ev: Cabecera L1-3. Caso PC-1274 hardcodeado como ejemplo.
+- `backend/scripts/diagnostico_monedapc_resolver.js` [diagnostico_caso, 2026-07-15] SOLO LECTURA: reproduce la query del resolver MODO 1 (default PC-1274). → backend/scripts/_historico/2026-07-desfasaje-ciclos/
+  - ev: L1-2 cabecera; L5 default 'PC-1274'.
+- `backend/scripts/auditoria_integridad_docs.js` [diagnostico_caso, 2026-07-15] SOLO LECTURA: clasifica todos los docs con suma de líneas ≠ DocTotal (cross-moneda, rework). → backend/scripts/_historico/2026-07-desfasaje-ciclos/
+  - ev: L1-2: 'ver qué queda por corregir y si los 3 scripts cubren todo'. Es genérico; si lo quieren reusar como auditoría, MANTENER.
+- `sql/ (b1_deudas_a_cancelar_2026-07-14.csv, clientes_afectados_desfasaje_2026-07-14.csv, lista_C_refacturar_2026-07-15.txt, reporte_13docs_reconciliacion_2026-07-14.csv)` [dato_exportado, 2026-07-15] 4 exportes del episodio desfasaje (clientes, deudas a cancelar, docs a refacturar). Trackeados. → backend/scripts/_historico/2026-07-desfasaje-ciclos/ (o fuera del repo: traen nombres de clientes e importes)
+  - ev: ls sql/ + head: columnas Cliente/Documento/Importe. git log -1 2026-07-15 '15072024'. RUNBOOK_desfasaje L? 'Snapshot al 14/07/2026: ../../sql/clientes_afectados_desfasaje_2026-07-14.csv'. Carpeta sql/ en la raíz no tiene
+- `backend/scripts/RESUMEN_SESION_20-07_PALMERO.md` [runbook_doc, 2026-07-21] Cronología de la sesión Palmero (CliId 998) 20-21/07: PC-2220, cross-moneda, bloqueos SQL. 332 líneas. → backend/scripts/_historico/2026-07-palmero-saldos/
+  - ev: Leído L1-45. Referencia fix_pago_mal_aplicado_pc2220.sql 'YA CORRIDO Y CONFIRMADO' (archivo no está en el repo). Memoria palmero-factura-vs-pedido.
+- `backend/scripts/diag_bug3_lote_v2.js` [diagnostico_caso, 2026-07-21] SOLO LECTURA BUG 3 para 5 clientes hardcodeados (elea 257, Martina Berriel 896, Rdssport 930, SRL Tienda Online 644, Ventas local USER 8627). → backend/scripts/_historico/2026-07-palmero-saldos/
+  - ev: L6-12 lista los clientes. Referencia fix_crossmoneda_lote1.sql (no existe).
+- `backend/scripts/diag_reconciliacion_lote.js` [diagnostico_caso, 2026-07-21] Corre una plantilla SQL para los mismos 5 clientes. ROTO: lee diag_reconciliacion_cliente.sql que no existe. → backend/scripts/_historico/2026-07-palmero-saldos/ (anotar que no corre)
+  - ev: L16: fs.readFileSync(path.resolve(__dirname,'diag_reconciliacion_cliente.sql')). find -name diag_reconciliacion_cliente.sql: 0 resultados (ignorado por *.sql y nunca commiteado).
+- `backend/scripts/diag_saldo_vivo_lote.js` [diagnostico_caso, 2026-07-21] SOLO LECTURA: saldo en vivo vs deuda viva (CATALOGO punto 4) para los mismos 5 clientes. → backend/scripts/_historico/2026-07-palmero-saldos/
+  - ev: L1-3 cabecera; L7-13 mismos 5 clientes hardcodeados.
+- `backend/scripts/resolver_clientes_por_doc.js` [diagnostico_caso, 2026-07-21] SOLO LECTURA: CliIdCliente de 6 documentos fijos (PC-1906, PC-1165, ET-1330, FA-73, ET-2061, ET-2074). → backend/scripts/_historico/2026-07-palmero-saldos/
+  - ev: L5 lista fija de docs. 27 líneas.
+- `backend/scripts/backfill_ordcodigoorden_detalle.js` [migracion_one_off, 2026-07-22] Backfill de OrdCodigoOrden en DocumentosContablesDetalle parseando el texto (95,9% recuperado en local). Dry-run/--apply. → backend/scripts/_historico/2026-07-palmero-saldos/
+  - ev: Cabecera L1-17. CHANGELOG 0. No lo sé si corrió en prod.
+- `backend/scripts/fix_referencia_cobros.js` [migracion_one_off, 2026-07-23] Backfill DocIdDocumento en movs PAGO/COBRO 'Sin referencia' (caso PC-2505). Dry-run/--apply. → backend/scripts/_historico/2026-07-palmero-saldos/
+  - ev: L1-12 cabecera. CHANGELOG 0. No lo sé si corrió en prod.
+- `backend/scripts/AUDITORIA_COBROS_SIN_MOVIMIENTO.md` [runbook_doc, 2026-07-27] Auditoría 27/7: 36 docs COBRADO sin movimiento que los respalde, clasificados uno por uno (buckets A/B/C). → backend/scripts/_historico/2026-07-saldos-a-favor-billetera/
+  - ev: Leído L1-45. Tabla de scripts 'validados en local con ROLLBACK — pendientes de correr en PROD' (fix_estampar_docid_pagos_deuda.sql, repara_movs_pago_ausentes_et1489_pc2070.sql, fix_revertir_cobros_fantasma_deudas.sql): n
+- `backend/scripts/diag_clientes_con_sobrante_no_expuesto.js` [diagnostico_caso, 2026-07-30] SOLO LECTURA: patrón Favio Curbelo (sobrante flotante no expuesto) en todas las cuentas. → backend/scripts/_historico/2026-07-saldos-a-favor-billetera/
+  - ev: L1-5 cabecera. CHANGELOG 0.
+- `backend/scripts/diag_clientes_cruce_no_descontado.js` [diagnostico_caso, 2026-07-30] SOLO LECTURA: patrón exacto Favio Curbelo (PAGO_CRUZADO previo al cierre no descontado). → backend/scripts/_historico/2026-07-saldos-a-favor-billetera/
+  - ev: L1-5 cabecera.
+- `backend/scripts/diag_favio_fa128_5_41.js` [diagnostico_caso, 2026-07-30] SOLO LECTURA: FA-128 de Favio Curbelo, movimientos del documento. → backend/scripts/_historico/2026-07-saldos-a-favor-billetera/
+  - ev: L6-10: WHERE DocSerie='FA' AND DocNumero=128. Nombre de cliente y nro de factura en el nombre del archivo.
+- `backend/scripts/diag_recurso_nc_burguez.js` [diagnostico_caso, 2026-07-30] SOLO LECTURA: recurso vivo tras NC, cliente Javier Burguez (DELBUR). → backend/scripts/_historico/2026-07-saldos-a-favor-billetera/
+  - ev: L1-3 cabecera, L11 IDCliente LIKE 'DELBUR%'.
+- `backend/scripts/listado_clientes_pendiente_billetera.js` [diagnostico_caso, 2026-07-30] SOLO LECTURA: listado de todos los clientes con pendiente y billetera por moneda → CSV. → backend/scripts/_historico/2026-07-saldos-a-favor-billetera/
+  - ev: L1-9 cabecera: replica la lógica del Panel 360 (que ya lo muestra). Reporte previo al pivot de billetera (scripts/DEPLOY_BILLETERA_PREPAGO.md).
+- `backend/scripts/listado_clientes_pendiente_billetera.csv` [dato_exportado, 2026-07-30] Salida del script anterior: 1266 filas con cliente, pendiente y billetera por moneda. → fuera del repo (git rm --cached): datos financieros de clientes; regenerable con el .js
+  - ev: head -3: 'Cliente;IDCliente;Tipo;Pendiente $;Pendiente US$;Billetera $;Billetera US$'. wc -l 1266. Trackeado.
+- `backend/scripts/listado_clientes_a_favor_27jul.csv` [dato_exportado, 2026-07-30] 368 filas: clientes con saldo a favor al 27/07. → fuera del repo (git rm --cached): nombres de clientes e importes
+  - ev: head -3: 'Cliente;IDCliente;Moneda;AFavor' con nombres reales. Trackeado.
+- `backend/scripts/migrar-matrices-tpu.js` [migracion_one_off, 2026-08-11] Migración única Sheets 'PARCHES TPU' → SQL (188 matrices). Dry-run/--commit, idempotente, requiere oauth-credentials.json y token.json. → backend/scripts/_historico/2026-08-tpu-migracion-matrices/ (junto con docs/tpu-migracion-matrices-sheets.md)
+  - ev: Cabecera L1-17 'migración de una sola vez'. CHANGELOG L1480 ([2026-08-06]): 'script de una sola vez (backend/scripts/migrar-matrices-tpu.js) que trae las 188 matrices'. Memoria tpu-matriz-migrada-reactivada → ya corrido.
+- `backend/scripts/wmsBajarSnapshot.js` [migracion_one_off, 2026-09-01] Baja los snap_*.json del WMS externo (proxy 3.85.26.173:5005) para importar offline. → backend/scripts/_historico/2026-09-wms-cutover/
+  - ev: L1-15 cabecera: 'es el corte del cutover'. Solo tiene sentido mientras el WMS externo sea la fuente; docs/deploy-wms-cutover.md lo cita. Cutover hecho: inferido de CHANGELOG L799/L1336 (tienda lee stock propio con WMS_IN
+- `backend/scripts/wmsImportSnapshot.js` [migracion_one_off, 2026-09-25] Importador re-ejecutable del WMS externo a tablas Wms_* (542 líneas); con WMS_INTERNO=true se niega a escribir. → backend/scripts/_historico/2026-09-wms-cutover/ (dejar nota: `--solo-paridad` sigue sirviendo mientras exista el WMS ext
+  - ev: L790-792: 'SOLO ANTES DEL CUTOVER: con WMS_INTERNO=true se niega a escribir'. CHANGELOG L1000 y L1052. Referenciado solo en comentarios: wmsInternoService.js:11, wmsStockService.js:24, docs/wms-data/DDL-wms-propio.sql (a
+- `backend/scripts/wmsRellenoTelas.js` [migracion_one_off, 2026-09-23] Completa ancho/gramaje/composición de las 80 variantes de telas desde el nombre; 'correrlo DESPUÉS de la carga final'. → backend/scripts/_historico/2026-09-wms-cutover/
+  - ev: L1-15 cabecera; L828 'En producción… correrlo DESPUÉS de la carga final'. CHANGELOG L1057 y L1063 (paso B7 del cutover). Idempotente: si quieren re-correrlo, no se rompe nada.
+- `backend/scripts/wmsRepararNegativos.js` [diagnostico_caso, 2026-09-17] Reubica etiquetas negativas del WMS EXTERNO (Ventas_Dev) insertando movimientos egreso_venta_web. → backend/scripts/_historico/2026-09-wms-cutover/
+  - ev: L1-30: trabaja contra los triggers del WMS externo (trg_StockMovimientos_AfterInsert). Post-cutover el stock vive en Wms_* propias → obsoleto.
+- `backend/scripts/wmsBultosVentaAlDeposito.js` [migracion_one_off, 2026-09-17] Acomoda bultos de ventas VEN trabados en 'Crear Remito' de PRO, 'para las que quedaron de antes' del fix de receivePreparedOrder. → backend/scripts/_historico/2026-09-wms-cutover/
+  - ev: L8-9: 'Desde el fix… las ventas nuevas mueven el bulto solas. Este script es para las que quedaron de antes'. CHANGELOG 0. No lo sé si corrió en prod.
+- `backend/scripts/diagWmsEgresos.js` [diagnostico_caso, 2026-09-17] SOLO LECTURA: ¿el pedido VEN salió de verdad del WMS externo? Cruza con remitos WEB-xxxxx de Ventas_Dev. → backend/scripts/_historico/2026-09-wms-cutover/
+  - ev: L1-18 cabecera; L20 WMS_URL proxy externo. Obsoleto con stock propio (inferido del cutover).
+- `backend/scripts/sql/menu_stock_gestion.sql` [migracion_one_off, 2026-09 (sin git log: no trackeado)] [WMS PROPIO F3] ítem de menú /stock, permiso al rol 1. NO trackeado (ignorado por *.sql). → backend/scripts/_historico/2026-09-wms-cutover/
+  - ev: Leído entero (12 líneas). CHANGELOG L1339. docs/deploy-wms-cutover.md: 'Ya hecho (01/09/2026): el SQL de módulos/menú corrió en producción'. Existe otra versión distinta en docs/wms-data/menu_stock_gestion.sql (diff: DIF
+- `backend/scripts/sql/menu_stock_secciones_2026-09-28.sql` [migracion_one_off, 2026-09-28] Stock en cinco páginas del menú (transacción, busca el módulo por ruta). → backend/scripts/_historico/2026-09-wms-cutover/ (después de confirmar que corrió en prod)
+  - ev: Cabecera L1-7. CHANGELOG L907 (bloque deploy 07/10 'Stock se divide en cinco páginas'). No trackeado. Inferido corrido con el deploy del 07/10.
+- `backend/scripts/sql/areas_sector_stock_2026-09-29.sql` [migracion_one_off, 2026-09-29] Agrega Areas.WmsDepId y asigna el sector de stock a cada área. Idempotente. → backend/scripts/_historico/2026-09-wms-cutover/ (tras confirmar corrida)
+  - ev: Cabecera L1-7. CHANGELOG L902: 'SQL: backend/scripts/sql/areas_sector_stock_2026-09-29.sql'. No trackeado.
+- `backend/scripts/sql/wms_compras_recibido_2026-09-30.sql` [migracion_one_off, 2026-09-30] Compras migradas del sistema viejo: recalcula lo recibido por línea y el progreso. Re-ejecutable. → backend/scripts/_historico/2026-09-wms-cutover/ (tras confirmar corrida)
+  - ev: Cabecera L1-16 (caso compra #42 Dalian). CHANGELOG L774 (deploy 07/10). No trackeado.
+- `backend/scripts/sql/cierre_bultos_entregados_2026-09-25.sql` [migracion_one_off, 2026-09-25] Cierre retroactivo de 24.494 bultos de órdenes ya entregadas (por tandas de 2.000). → backend/scripts/_historico/2026-09-bultos-cierre/ (tras confirmar corrida en prod)
+  - ev: Cabecera L1-15. CHANGELOG L796 (deploy 07/10). No trackeado. No lo sé si ya corrió en prod.
+- `backend/scripts/sql/cierre_bultos_ordenes_canceladas_2026-09-25.sql` [migracion_one_off, 2026-09-25] Bultos de órdenes canceladas antes del 25/09 que siguen en stock o en remitos sin recibir. → backend/scripts/_historico/2026-09-bultos-cierre/ (tras confirmar corrida)
+  - ev: Cabecera L1-17. CHANGELOG L787: 'se limpian con backend/scripts/sql/cierre_bultos_ordenes_canceladas_2026-09-25.sql. Probado en lo[cal]'. No trackeado.
+- `backend/scripts/reparar_rebaja_plan_ordenes_sin_linea.js` [migracion_one_off, 2026-09-29] Rebaja retroactiva del plan de metros para 63 órdenes sin línea en PedidosCobranzaDetalle (deploy 23-sep). → backend/scripts/_historico/2026-09-plan-sin-linea/
+  - ev: Cabecera L1-19 (fecha 25-sep, problema desde el deploy del 23-sep). CHANGELOG 'rebaja|plan sin línea' 0. No lo sé si corrió en prod.
+- `backend/scripts/backfill_desglose_pcd.js` [migracion_one_off, 2026-09-23] Rellena PrecioLista/Descuento/Recargo de líneas viejas desde LogPrecioAplicado. Dry-run/--apply/--cliente. → backend/scripts/_historico/2026-09-plan-sin-linea/
+  - ev: Cabecera L1-17. CHANGELOG 0. No lo sé si corrió en prod.
+- `backend/scripts/registrarPagosOnlinePendientes.js` [migracion_one_off, 2026-10-08] 'Script de UNA SOLA VEZ (incidente 07/10/2026)': registra 9 pagos MP/Handy con txIds hardcodeados. → backend/scripts/_historico/2026-10-07-incidente-pagos-online/
+  - ev: L1-2 cabecera; L29+ lista PENDIENTES con txIds. CHANGELOG L172: 'se registraron con scripts/registrarPagosOnlinePendientes.js --ejecutar, y los 9 retiros quedaron con su pago' → ya corrido.
+- `backend/scripts/regularizar-requisitos-historicos.js` [migracion_one_off, 2026-09-01] Aplica retroactivamente el 'no aplica' de requisitos bloqueantes a órdenes viejas (SB/TWC/EST). → backend/scripts/_historico/2026-09-requisitos-bloqueantes/
+  - ev: Cabecera L1-30. CHANGELOG L1267 ([2026-09-01], deployado 07/10). No lo sé si corrió en prod.
+- `backend/scripts/backfill_passwords_bcrypt.js` [migracion_one_off, 2026-09-17] Hashea contraseñas en texto plano (Usuarios, Clientes, Disenadores). Idempotente, --aplicar. → backend/scripts/_historico/2026-09-bcrypt/
+  - ev: Cabecera L1-19. CHANGELOG L1168 ([2026-09-10]). Memoria passwords-bcrypt-implementado. Corrida en prod: inferido de la memoria, no verificado.
+- `backend/scripts/analizar_tizadapro.js` [diagnostico_caso, 2026-09-29] Análisis estructural de la BD TizadaPro (tablas, FKs, un molde). Tiene password 'sa' literal. → backend/scripts/_historico/2026-09-tizadapro-analisis/ — sacar la clave antes (L18 password: '2441')
+  - ev: L1-10 cabecera; L15-23 cfg con server localhost, user sa, password '2441' hardcodeados. CHANGELOG 0. Memoria tizadapro-integracion-yoania.
+- `backend/auditar_cliente_capa.js` [diagnostico_caso, 2026-10-08] Auditoría/snapshot/reversión de la cuenta del cliente CAPA (ID 854): --ver/--snapshot/--revertir (revertir ESCRIBE). 321 líneas, suelto en la raíz del backend. → backend/scripts/_historico/2026-10-capa-854/
+  - ev: Cabecera L1-15 (dice auditar_cliente_854.js). L23 CLIENTE_ID = 854. grafo.json backend.unreachable lo incluye; edges solo a config/db.js. CHANGELOG 'CAPA|854': 0. Trackeado (commit 08102026).
+- `scripts/DEPLOY_BILLETERA_PREPAGO.md` [runbook_doc, 2026-09-02] Runbook del deploy de la billetera prepaga (31-08-2026): orden de 5 SQL + deploy. → docs/_historico/2026-09-billetera/
+  - ev: Leído L1-30. CHANGELOG L1297: 'Los scripts SQL que este bloque exige no están en el repo… solo existen descritos en scripts/DEPLOY_BILLETERA_PREPAGO.md'. Deploy hecho el 07/10 (memoria deploy-2026-10-07: todo lo 'sin dep
+- `scripts/GUIA_PRUEBAS_BILLETERA.md` [runbook_doc, 2026-09-01] Guía de pruebas manuales de la billetera (F1–F5) contra la réplica local. → docs/_historico/2026-09-billetera/
+  - ev: Leído L1-20. Episodio cerrado (ver item anterior).
+- `scripts/leer_tizada_prueba.cjs` [diagnostico_caso, 2026-10-05] Sonda SOLO LECTURA contra el servidor de prueba TizadaPro (192.168.0.101) para el molde 'Camiseta Goes 2026'. → docs/_historico/2026-10-tizadapro-goes/ (o BORRAR)
+  - ev: L1-12: servidor y molde hardcodeados (prod_20260921_152644_a01c); require de ../backend/node_modules/mssql. CHANGELOG 0.
+- `muestras/tizadapro_goes_2026/** (43 archivos, 14 MB)` [muestra, 2026-10-06] PDFs/PNG/XLSX del pedido de prueba SOL-1010 GOES 2026 (TizadaPro): pliegos DTF, editables, listas de jugadores. → fuera del repo (git rm -r --cached muestras/ + `muestras/` en .gitignore)
+  - ev: find muestras -type f: 43 archivos; git ls-files muestras | wc -l: 43; du 14M. grep 'muestras/|tizadapro_goes' en CHANGELOG, docs, backend/services/tizadaPro*.js: 0. Ningún código las lee.
+- `ANALISIS_APPSCRIPT_BORDADO.md` [runbook_doc, 2026-08-05] Análisis funcional de la web app externa de bordado (Apps Script + Sheets) para ver qué adaptar. → docs/_historico/2026-08-bordado-appscript/
+  - ev: Leído L1-25. Trackeado pero ignorado (*.md). Insumo de análisis, no doc del sistema.
+- `docs/DISENO_separar_impresion_terminaciones_ecouv.md` [plan_cerrado, 2026-07-23] Nota de diseño: ECOUV impresión y terminaciones en locales distintos; concluye que el mecanismo ya existe. → docs/_historico/2026-07-ecouv-terminaciones/
+  - ev: L12: 'Buena noticia: el mecanismo YA está implementado'. Memoria separacion-impresion-es-impresora (tilde renombrado 08/10, CHANGELOG sin deployar).
+- `docs/capacidad-planta-plan.md` [plan_cerrado, 2026-08-14] Documento de traspaso: capacidad de planta y fechas de entrega (12-ago). → docs/_historico/2026-08-capacidad-planta/
+  - ev: CHANGELOG L1267 ([2026-09-01], deployado 07/10): 'motor de Planificación', 'Capacidad real de planta' en Configuración → Equipos. Memoria horas-uso-rendimiento-bitacora sigue el tema pero desde ST.
+- `docs/disenadores-portal-plan.md` [plan_cerrado, 2026-07-06] Plan diseñadores en el portal; F1–F4 IMPLEMENTADAS (06/07). Pendiente menor: pantalla admin para aprobar diseñadores. → docs/_historico/2026-07-disenadores/ (anotar el pendiente menor en la memoria disenadores-portal-pendiente)
+  - ev: L3 'Estado: F1+F2+F3+F4 IMPLEMENTADAS'. CHANGELOG [2026-07] 'Diseñadores en el portal'. src/client-portal/modulos/DesignerRegister.jsx existe; pantalla admin de aprobación: grep 'aprobar.*dise' en src: 0 → sigue pendient
+- `docs/dtf-tinta-blanca-propuesta.md` [plan_cerrado, 2026-07-01] Propuesta (01/07) de generar la capa blanca DTF con Python. → docs/_historico/2026-07-dtf-blanco/
+  - ev: Implementado: backend/python/dtf_blanco.py existe; CHANGELOG [2026-08-18] 'Tinta blanca DTF — semitonos/gamma/corte de cola' y L1162 ([2026-09-10]). Memoria dtf-capa-tinta-blanca-pendiente guarda los ajustes pendientes.
+- `docs/fix-socket-lentitud.md` [plan_cerrado, 2026-06-24] Diagnóstico y fixes de las tormentas de refetch por socket (24/06). → docs/_historico/2026-06-sockets/
+  - ev: CHANGELOG [2026-06] 'Rendimiento: lentitud por tormentas de refetch de sockets'. Memoria performance-refetch-storms-sockets.
+- `docs/impresion-parcial-plan.md` [plan_cerrado, 2026-07-21] Impresión parcial (avance por unidades) en TPU; IMPLEMENTADO F1+F2 20/07. → docs/_historico/2026-07-tpu/
+  - ev: L3 'Estado: IMPLEMENTADO (F1+F2) el 20/07/26'. CHANGELOG L1568 ('CantidadImpresa').
+- `docs/tpu-boceto-aprobacion-plan.md` [plan_cerrado, 2026-08-03] TPU: boceto + aprobación; IMPLEMENTADO (4 fases). → docs/_historico/2026-08-tpu/
+  - ev: L3 'Estado: IMPLEMENTADO (4 fases)'. CHANGELOG L1480 estados reales Esperando/Aprobado/Rechazado. Memoria tpu-boceto-aprobacion-pendiente guarda lo que falta.
+- `docs/tpu-migracion-matrices-sheets.md` [plan_cerrado, 2026-08-11] Plan de la migración única Sheets → SQL de matrices TPU. → backend/scripts/_historico/2026-08-tpu-migracion-matrices/ (junto al .js)
+  - ev: migrar-matrices-tpu.js L6 lo cita. CHANGELOG L1480: migración hecha (188 matrices).
+- `docs/tpu-reuso-matriz-fixes.md` [plan_cerrado, 2026-08-03] Arreglos del reuso de matriz TPU (tarde del 03/08). → docs/_historico/2026-08-tpu/
+  - ev: L1-3: 'Todo lo que se tocó en la tarde del 03/08… ya hecho en local'. Es un diario de fixes, no un plan.
+- `docs/tpu-texturas-3d-plan.md` [plan_cerrado, 2026-08-03] TPU texturas por zona en el visor 3D; IMPLEMENTADO F0–F5 30/07. → docs/_historico/2026-08-tpu/
+  - ev: L3 'Estado: IMPLEMENTADO (F0–F5) el 30/07/2026'. CHANGELOG 'visor 3D' 19 menciones. public/assets/textures/ tiene los SVG. Memoria tpu-texturas-3d-pendiente para lo que quede.
+- `docs/analisis-cpu-sql-2026-09-23.md` [plan_cerrado, 2026-09-23] Análisis del informe de CPU de SQL Server del 23/09 (4 consultas más caras). → docs/_historico/2026-09-performance/
+  - ev: CHANGELOG [2026-09-24] 'Medido después del deploy' y L807 (lista de Caja). Memoria performance-tablero-31-08 / índices tablero. No trackeado.
+- `docs/consulta-cliente-revision-prototipo.md` [plan_cerrado, 2026-09-02] Revisión (02/09) del prototipo Desktop/xime de Consulta al Cliente; superada por el plan del 10/09. → docs/_historico/2026-09-consulta-cliente/
+  - ev: consultas-cliente-plan.md L4 la cita como insumo ya revisado. Nadie más la referencia.
+- `docs/deploy-wms-cutover.md` [runbook_doc, 2026-09-22] Checklist de deploy del WMS propio (Parte A subir todo / Parte B cutover), rev. 22/09. → docs/_historico/2026-09-wms-cutover/
+  - ev: Cutover hecho: inferido de CHANGELOG L799 y L1336 (tienda/configurador leen stock propio con WMS_INTERNO) y memoria wms-propio-plan. Cita wmsImportSnapshot.js y wmsBajarSnapshot.js. No trackeado.
+- `docs/deploy-wms-produccion.pdf` [dato_exportado, 2026-09] Versión imprimible del checklist anterior (14 KB). → docs/_historico/2026-09-wms-cutover/
+  - ev: deploy-wms-cutover.md L4: 'versión para imprimir, más completa: docs/deploy-wms-produccion.pdf'.
+- `docs/plan-gasto-por-sector.md` [plan_cerrado, 2026-09-24] Dónde entra el gasto en insumos por sector en /stock (maqueta 24/09). Implementado. → docs/_historico/2026-09-stock/
+  - ev: CHANGELOG bloque 07/10: 'El Panel de Control muestra cuánto gasta cada sector en insumos'.
+- `docs/reporte-pagos-online-duplicados.pdf` [dato_exportado, 2026-08] Reporte de pagos online duplicados (5 KB). → docs/_historico/2026-08-casos/
+  - ev: CHANGELOG L1320 ([2026-08-27]): 'Dobles cobros a clientes que pagaron online (Handy / MercadoPago)' → arreglado.
+- `docs/resumen-dtf-20974-archivo-194m.pdf` [dato_exportado, 2026-09] Resumen de un caso puntual (DTF-20974, archivo de 194 MB). → docs/_historico/2026-09-casos/
+  - ev: Nombre y tamaño (3 KB). Nadie lo referencia.
+- `docs/resumen-reclamo-tela-sub-19126.md (+ .pdf)` [dato_exportado, 2026-09-03] Resumen interno del reclamo SUB-19126 (Rotulos Carteleria, Panamá vs Nagasaki), 03/09. → docs/_historico/2026-09-casos/
+  - ev: Leído L1-14: caso cerrado ('el pedido se hizo en Nagasaki de principio a fin').
+- `docs/reversas-contables-investigacion.md` [plan_cerrado, 2026-08-28] Investigación 28/08: por qué las reversas pasaron los guards. Diagnóstico y diseño. → docs/_historico/2026-08-reversas-contables/
+  - ev: CHANGELOG L826 (deploy 07/10): 'La reversa automática del ingreso a Depósito cobraba de nuevo en vez de revertir' → arreglado.
+- `docs/servicio-tecnico/st-borrar-solicitudes-prueba.sql` [migracion_one_off, 2026-09/10] Borra TODAS las solicitudes de ST (de prueba) y lo que cuelga. → docs/_historico/2026-10-servicio-tecnico/ (ya pasó el deploy del 07/10)
+  - ev: Cabecera L1-7. Peligroso de dejar junto a los de esquema.
+- `docs/tienda-retiro-encomienda-y-billetera.md` [plan_cerrado, 2026-09-23] Recorrido 23/09 de la compra en tienda por forma de envío, previo a sumar billetera. → docs/_historico/2026-09-tienda/
+  - ev: CHANGELOG L1010 ([2026-09-23]): 'Tienda: el retiro en el local se puede pagar con la billetera prepago' → lo que el doc preparaba ya está.
+- `docs/ventas-por-vendedor-por-documento.md` [plan_cerrado, 2026-10-01] Ventas por vendedor sobre documentos + NC restan en Contabilidad (01/10). → docs/_historico/2026-10-ventas-vendedor/
+  - ev: CHANGELOG bloque 07/10: '"Ventas por vendedor" muestra plata por documento, no órdenes (01/10)' y 'reportes de ventas de Contabilidad ahora restan las notas de crédito'. Memoria ventas-vendedor-base-comision.
+- `docs/wms-johnson-schema.md` [plan_cerrado, 2026-08-26] Schema reconstruido del WMS externo (Ventas_Dev), 26/08. → docs/_historico/2026-09-wms-cutover/
+  - ev: Describe un sistema ajeno ya reemplazado (inferido del cutover). Cita docs/wms-data/ (snapshots).
+- `docs/wms-data/menu_stock_gestion.sql` [migracion_one_off, 2026-08/09] Ítem de menú /stock (versión 'pre-cutover solo rol 1'); duplicado distinto de backend/scripts/sql/menu_stock_gestion.sql. → docs/_historico/2026-09-wms-cutover/ (quedarse con uno solo)
+  - ev: diff docs/wms-data/menu_stock_gestion.sql backend/scripts/sql/menu_stock_gestion.sql → DIFERENTES. Ya corrido en prod el 01/09 (deploy-wms-cutover.md).
+- `docs/wms-data/snap_*.json (28 archivos; snap_Stock_Etiquetas.json 18,4 MB, snap_Stock_Movimientos.json 4,3 MB; carpeta 23 MB)` [dato_exportado, 2026-08-26] Snapshot completo del WMS externo (27 tablas, 71.429 filas) del 26/08. NO trackeados. → zip fuera del repo; nunca trackear (agregar `docs/wms-data/snap_*.json` al .gitignore antes de destrabar `docs`)
+  - ev: du -sh docs/wms-data: 23M; git ls-files docs/wms-data: 0. wms-johnson-schema.md L3 los describe. Solo los lee wmsImportSnapshot.js --dir (obsoleto post-cutover).
+- `docs/wms-data/A_tipos.json, B_volumetria.json, C_stock_vivo.json, D_triggers.json` [dato_exportado, 2026-08-26] Resultados de las queries A–D de confirmación del schema del WMS externo. → docs/_historico/2026-09-wms-cutover/ (chicos: 51 KB, 3 KB, 0,4 KB, 3 KB)
+  - ev: DDL-wms-propio.sql L5: 'Tipos calcados de Ventas_Dev (INFORMATION_SCHEMA 26/08, A_tipos.json)'. No trackeados.
+- `docs/fix-cuenta-cero-cliente-2340.sql` [dato_exportado, 2026-10-08] Fix de la cuenta con CueIdCuenta = 0 (Mariana Cabrera, cliente 2340), 08-oct. → docs/_historico/2026-10-casos/
+  - ev: CHANGELOG L131 (sección 'Datos corregidos (ya aplicados en producción)'): '08/10, cuenta con id 0 (Mariana Cabrera, cliente 2340)'. Ya corrido.
+- `docs/repaso-sin-cobrar-matias-setiembre.sql` [dato_exportado, 2026-10] SOLO LECTURA: repaso de órdenes sin cobrar de Matías Siri, setiembre 2026 (4 grillas). → docs/_historico/2026-10-casos/
+  - ev: Cabecera L1-3. CHANGELOG L189: 'Emmanuel Ferreira reemplaza a Matías Siri como vendedor' → episodio cerrado.
+- `docs/deploy-2026-10-05.pdf (365 KB), docs/novedades-deploy-2026-10-07.pdf (146 KB), docs/cambios-sin-deployar-2026-10-09.pdf (101 KB)` [dato_exportado, 2026-10-05 → 2026-10-09] PDFs generados de notas de deploy/novedades (derivados del CHANGELOG). → docs/_historico/deploys/ o fuera del repo (el CHANGELOG es la fuente)
+  - ev: find docs -printf tamaños. No trackeados (regla `docs`). Nadie los referencia.
+### BORRAR (9)
+- `backend/scripts/find_mateo.js` [basura, 2026-06-22] 13 líneas: imprime las columnas de CuentasCliente. Sonda de un día.
+  - ev: Leído entero: un SELECT a INFORMATION_SCHEMA.COLUMNS y console.log. Sin referencias (grep 'find_mateo' en todo el repo: 0).
+- `backend/scripts/clientes_afectados_desfasaje.csv` [dato_exportado, 2026-07-07] CSV de 49 clientes afectados (07/07), con nombres y ajuste de saldo.
+  - ev: El propio RUNBOOK_desfasaje_cierre_ciclo.md lo marca: 'El CSV viejo clientes_afectados_desfasaje.csv (49 clientes) está obsoleto — el bug siguió'. Lo reemplaza sql/clientes_afectados_desfasaje_2026-07-14.csv. Datos de cl
+- `backend/scripts/__pycache__/color_calibrate.cpython-314.pyc, backend/scripts/preflight/__pycache__/user_preflight.cpython-314.pyc, backend/python/__pycache__/*.pyc (5)` [basura, 2026-06-22 / 2026-07-03] Bytecode Python trackeado (7 .pyc).
+  - ev: git ls-files | grep pyc → 7 archivos. No hay regla __pycache__/ ni *.pyc en .gitignore (cat -n .gitignore).
+- `scripts/lineas_sin_area_sep2026.xlsx` [dato_exportado, 2026-10-05] Export de datos (2 hojas, 56 KB) 'líneas sin área, sep 2026'. → guardar copia fuera del repo si sirve
+  - ev: Trackeado (git ls-files scripts). grep 'lineas_sin_area' en CHANGELOG/docs/src/backend: 0. Nadie lo lee.
+- `temp_layout.jsx` [basura, 2026-06-17] Fragmento JSX suelto de 216 líneas, no es módulo válido.
+  - ev: Ya confirmado en contexto-auditoria.md. git log -1 2026-06-17. Trackeado.
+- `.bak` [basura, 2026-09-02] Copia vieja de backend/controllers/cajaController.js (4207 líneas).
+  - ev: Contexto: 324 líneas de diff contra el actual. Trackeado (git ls-files raíz). Agregar `*.bak` y `.bak` al .gitignore.
+- `nul` [basura, local] CSS de Tailwind generado por un redirect a `nul` en Windows (317 KB).
+  - ev: stat 317687 bytes; no trackeado; .gitignore L55 lo ignora. Borrar el archivo local.
+- `docs/.obsidian/ (app.json, appearance.json, core-plugins.json, workspace.json)` [tooling_asistente, local] Config de Obsidian para leer docs/. No trackeada. → del alcance del repo: agregar `docs/.obsidian/` al .gitignore (hoy la cubre la regla `docs` que hay que sacar)
+  - ev: ls docs/.obsidian; git ls-files docs/.obsidian: 0. workspace.json 5,7 KB cambia con cada apertura.
+- `.claude/skills/ui-ux-pro-max/** (55 archivos trackeados: data/*.csv, scripts/*.py, tests)` [tooling_asistente, 2026-09-21] Skill genérico de UI/UX del asistente (catálogos de estilos, fuentes, iconos, tests en Python). No es del dominio del proyecto. → git rm -r --cached .claude/skills + `.claude/` en .gitignore (si algún día quieren compartir permisos, `!.claude/setting
+  - ev: git ls-files .claude | wc -l: 55. Y está INCOMPLETO en git: SKILL.md, data/*.json, references/*.md y fixtures *.json figuran como ignorados (`!!` en git status --ignored, por `*.md` y `*.json`) → un clone recibe un skill
+### MOVER (6)
+- `backend/scripts/CATALOGO_BUGS_SALDO_CLIENTES.md` [runbook_doc, 2026-07-31] Catálogo genérico de bugs de saldo/cuenta corriente (BUG 1..N) con query de detección cada uno. 333 líneas. → docs/caja-cobranza/CATALOGO_BUGS_SALDO_CLIENTES.md (conocimiento vigente: memorias 'caja imputa dos veces' y 'deuda nace
+  - ev: Leído L1-45: metodología reusable, no atada a un cliente. Referencia .sql ausentes (fix_deudas_duplicadas_por_documento.sql, diag_crossmoneda_todos_clientes.sql) → anotar que faltan.
+- `backend/scripts/test_auditoria_deposito_casos.js` [otro, 2026-09-08] 6 pruebas manuales del motor de casos de Auditoría de Depósito contra la base local (crea y borra datos). No es Jest. → backend/__tests__/manual/test_auditoria_deposito_casos.js
+  - ev: Cabecera L1-20: 'NO correr en producción', 'Crea… y al final los BORRA'. require('../services/auditoriaDepositoService') resuelve. backend/__tests__ tiene 4 tests Jest (contexto).
+- `start-ngrok.bat` [otro, 2026-05-28] 2 líneas: `ngrok http 5050 --domain=hatchling-parsnip-sycamore.ngrok-free.dev`. → scripts/dev/start-ngrok.bat si todavía usan ngrok para webhooks en local; si no, BORRAR
+  - ev: cat start-ngrok.bat. Backend escucha PORT || 5000 (server.js:427): el 5050 no coincide con el default → no lo sé si sigue en uso. Trackeado pero ignorado (*.bat, línea 44).
+- `docs/PRECIOS SEMANALES (1).docx` [dato_exportado, trackeado (git ls-files)] Lista de precios especiales por cliente (ATAN-2023, KOVA, Andrés Xu…). Dato de negocio, no doc del sistema. → fuera del repo (Drive/compartida) + git rm --cached
+  - ev: Texto extraído del docx: 'ATAN-2023 | Tela Sublimada: Dry Microporoso: USD 6,5 …'. 12 KB. Nadie lo referencia.
+- `docs/servicio-tecnico-plan.md` [plan_cerrado, 2026-09-28] Plan del módulo Servicio Técnico (28/09), etapas 1–5. → docs/servicio-tecnico/servicio-tecnico-plan.md (junto al resto del módulo) y trackearlo; actualizar las 6 referencias de
+  - ev: Etapas 1–5 deployadas 07/10 (CHANGELOG L201+ 'etapa 2…etapa 5'). Referenciado desde backend/server.js (2), servicioTecnicoService.js, constantes.js, SolicitudDetalle.jsx, NuevaSolicitudModal.jsx y los st-etapa*.sql. No t
+- `docs/wms-data/DDL-wms-propio.sql, docs/wms-data/DDL-wms-compras.sql` [migracion_one_off, 2026-08-27] DDL de las tablas Wms_* propias (v1 aprobado 26/08, compras 27/08). Idempotentes. → backend/scripts/sql/wms/ y trackear (hoy ignorados); actualizar wmsInternoService.js:11 y wmsImportSnapshot.js L788 que 
+  - ev: Cabeceras leídas. Referenciados desde backend/services/wmsInternoService.js:11 ('Tablas: docs/wms-data/DDL-wms-propio.sql'). Son el esquema vivo del stock.
+### MANTENER (42)
+- `backend/scripts/auditar_movimientos_nc.js` [utilidad_recurrente, 2026-07-23] SOLO LECTURA: por cada Nota de Crédito verifica las 4 patas (MovimientosCuenta, DeudaDocumento, asiento, DGI). Usa services/sisnetService.
+  - ev: L1-10: auditoría genérica de todas las NC, no de un caso. require('../services/sisnetService') resuelve (chequeo de requires: todos existen). Memoria contabilidad-reportes-notas-restan: las NC siguen siendo tema vivo.
+- `backend/scripts/verificar_tipocfe_nc.js` [utilidad_recurrente, 2026-07-23] SOLO LECTURA: qué tipo de CFE (101/102/111/112…) se pediría a DGI, llamando a las mismas funciones de sisnetService.
+  - ev: L1-18 cabecera: 'no envía nada a SISNET ni a DGI'. Útil cada vez que se toca emisión de NC. Requires resuelven.
+- `backend/scripts/export_libro_cobros_contador.js` [utilidad_recurrente, 2026-08-10] CLI del libro de cobros para el contador; la lógica vive en services/libroContadorService.js.
+  - ev: L4-8: 'compartida con el botón de Reportes de Contabilidad → Libro Contador'. Uso mensual (YYYY-MM).
+- `backend/scripts/export_libro_ventas_contador.js` [utilidad_recurrente, 2026-08-10] CLI del libro de ventas (ACEPTADO_DGI) para el contador, --fecha=dgi|contable.
+  - ev: L4-13 cabecera. require('../services/libroContadorService') resuelve.
+- `backend/scripts/sql/consultas_cliente.sql` [runbook_doc, 2026-09 (no trackeado)] Esquema base de Consulta al Cliente (idempotente; el backend lo crea solo la primera vez). → trackearlo (hoy ignorado por *.sql)
+  - ev: L1-13: 'Plan: docs/consultas-cliente-plan.md … el backend además lo crea solo (services/consultasClienteService.js)'. Módulo vivo (CHANGELOG [2026-09-10] 'Consultar al cliente antes de imprimir — base funcionando').
+- `backend/scripts/diagnostico_ordenes_hermanas_sin_cargo.js` [diagnostico_caso, 2026-10-01] SOLO LECTURA: órdenes de pedidos partidos (1/2, 2/2) que entraron a Depósito sin cargo. --csv. → archivar a backend/scripts/_historico/2026-10-pedidos-divididos/ cuando se corrijan los datos
+  - ev: L1-10: causa arreglada en logisticsController (CHANGELOG L816, deploy 07/10) pero los datos viejos siguen pendientes: docs/pedidos-divididos-cargo-incompleto.md punto 5 y memoria pedidos-divididos-cargo-incompleto.
+- `backend/scripts/backfillThumbnails.js` [utilidad_recurrente, 2026-09-01] Genera miniaturas de PDFs de ArchivosOrden; modo cron --dias=3 --lock --quiet.
+  - ev: Cabecera L1-16 (modo cron). Memoria thumbnails-circuito-generacion L16: 'cron cada 10 min en el server (instalado 21/08): backfillThumbnails.js --dias=3 --lock --quiet', log /home/logs/backfill-thumbs-cron.log. Citado en
+- `backend/scripts/reimprimir_etiqueta.js` [utilidad_recurrente, 2026-10-01] SOLO LECTURA: arma el HTML de una etiqueta (mismo printEtiquetas del controller) y lo guarda en un archivo.
+  - ev: L1-7 cabecera; L11 require('../controllers/etiquetasController'). Escribe etiqueta_<codigo>.html al lado del script (L556) → agregar `backend/scripts/etiqueta_*.html` al .gitignore.
+- `backend/scripts/regenerar_etiquetas_orden.js` [utilidad_recurrente, 2026-09-17] Genera etiquetas/bultos de UNA orden 'Pronta' sin etiqueta con LabelGenerationService (escribe).
+  - ev: L1-16: 'Caso típico: trabajo interno de un pedido con PRO…'; no hace nada si ya tiene etiquetas. Require resuelve.
+- `backend/scripts/diag_venta_personalizada.js` [utilidad_recurrente, 2026-09-17] SOLO LECTURA: cómo quedó armado un pedido 'Comprar y personalizar' por NoDocERP.
+  - ev: L1-22 cabecera: parametrizado por pedido, no atado a un caso; explica qué mirar.
+- `backend/scripts/regenerar_lineas_docs.js` [utilidad_recurrente, 2026-09-17] Regenera líneas de docs rotos (sin CAE) con el resolver actual de contabilidadCore. Dry-run/--apply.
+  - ev: L1-8 cabecera: herramienta de reparación genérica ('NO toca docs aceptados por DGI'). Nació en el episodio de julio pero se actualizó el 17/09.
+- `backend/scripts/color_calibrate.py` [utilidad_recurrente, 2026-06-22] Calibración de color por foto (mínimos cuadrados RGB→LAB), lee JSON por stdin.
+  - ev: VIVO: backend/controllers/colorController.js:6 CALIB_SCRIPT_PATH deriva de COLOR_SCRIPT_PATH; ruta montada en server.js:219 ('/api/color'). OJO: el default es '/var/www/sistema-produccion/scripts/igualador_color.py' (raí
+- `backend/scripts/igualador_color.py` [utilidad_recurrente, 2026-06-22] Igualador de color Lab→CMYK con transicc (LittleCMS) y perfiles ICC.
+  - ev: colorController.js:5 SCRIPT_PATH. Defaults de perfiles en /mnt/user-data/uploads/*.icc (L15-16) → dependen del server. CHANGELOG [2026-06] 'Igualador de Color: pantalla nueva…'.
+- `backend/scripts/preflight/user_preflight.py` [utilidad_recurrente, 2026-07-03] Motor de preflight de archivos de clientes (PyMuPDF/pikepdf/Pillow), 515 líneas.
+  - ev: Invocado por backend/utils/preflight.js:9 (execFile), que requieren prendasOrdersController.js:2796 y webOrdersController.js:2380. Memoria preflight-archivos-subida: implementado pero DESACTIVADO por defecto (PREFLIGHT_E
+- `backend/scripts/preflight/reglas_user.json` [otro, sin git log (ignorado)] Reglas del preflight por servicio (sublimación, DTF, gran formato). NO TRACKEADO. → trackearlo: hoy un clone no tiene las reglas
+  - ev: user_preflight.py:70 cargar_reglas(ruta='reglas_user.json'). git check-ignore -v: .gitignore:30 `*.json`. preflight.js L12 habla de 'reglas_user.json'.
+- `backend/catalogos/fnc.html` [otro, 2026-09-01] Catálogo Verano FNC autocontenido (7,19 MB, Lit + 3D) servido en GET /fnc.
+  - ev: VIVO: backend/server.js:453-457 app.get('/fnc') → sendFile(catalogos/fnc.html), comentario 'Viven en backend/catalogos porque backend/public lo pisa entero cada build'. CHANGELOG L1350. Pesa 7 MB en git; docs/catalogos-c
+- `.antigravity_rules.md` [tooling_asistente, local] Reglas para otro asistente (Antigravity). No trackeado. → dejarlo local, ya ignorado explícito (.gitignore L35)
+  - ev: cat: 2 reglas (sin acceso a prod, no actuar solo). git ls-files: no.
+- `.vscode/settings.json` [tooling_asistente, local] `{"css.validate": false}`. No trackeado. → local; ya lo cubre `.vscode/*` (L16)
+  - ev: cat; git check-ignore -v lo marca ignorado.
+- `.editorconfig` [otro, 2026-07-13] charset = utf-8 para todo el repo (evita mojibake).
+  - ev: cat: comentario explica el origen ('Â±', 'âœ“' en JSX). Trackeado.
+- `docs/API_Telas_Activas.md` [runbook_doc, 2026-07-23] Doc para consumidor externo de GET /api/external/telas (x-api-key). → sacar del doc el valor literal del header ('user-ext-2024-clave-segura')
+  - ev: Ruta viva: server.js:235 app.use('/api/external') + externalRoutes.js:15 router.get('/telas'). El código lee process.env.EXTERNAL_API_KEY (externalController.js:52); grep del valor literal en backend: 0 → no lo sé si coi
+- `docs/PLAN_rename_pedido_caja.md` [plan_vigente, 2026-07-23] Plan de renombrar 'Pedidos Caja' → 'Borrador de Factura'. Estado: pendiente (solo rótulo en bandeja CFE).
+  - ev: L3 'Estado: pendiente'. CHANGELOG 'Borrador de Factura': 0. Referenciado desde src/utils/tiposDocumento.js (comentario). No lo sé si sigue en agenda o se abandonó.
+- `docs/ecommerce-portal-plan.md` [plan_vigente, 2026-08-14] Plan de la tienda del portal; F0–F2 hechas (10-12/08), F3–F5 pendientes al 14/08.
+  - ev: Tienda viva: CHANGELOG L799, L1010 ('Tienda: el retiro en el local se puede pagar con la billetera'), L1021-1022. F3–F5 (precarga, admin, post-venta): no verificado → parcial. Memoria ecommerce-portal-tienda-plan.
+- `docs/falla-por-copias-propuesta.md` [plan_cerrado, 2026-08-06] Falla por copias en Control; IMPLEMENTADO 05/08. → lo referencia el código: productionFileController.js y FileControlCard.jsx (comentarios 'docs/falla-por-copias-propuesta
+  - ev: L1-3 'Estado: IMPLEMENTADO el 05/08/2026'. CHANGELOG L1441. Memoria falla-por-copias-pendiente dice IMPLEMENTADA. grep -o 'docs/…' en backend/src lo lista 2 veces.
+- `docs/poslink-integracion-plan.md` [plan_vigente, 2026-08-11] Plan comercial de cobro en tótems (POSLink + Cashdro), 03/07, actualizado 07/08. Nada implementado.
+  - ev: CHANGELOG 'POSLink': 0. Memoria poslink-integracion-pendiente. poslink-implementacion-plan.md L5: 'sigue siendo válido como documento de decisiones comerciales'.
+- `docs/poslink-implementacion-plan.md` [plan_vigente, 2026-09-16] Plan técnico POSLink rev 2.2 (16/09), 69 KB. 'Nada implementado'. NO trackeado. → trackearlo
+  - ev: L4: 'grep -ri poslink backend/ src/ devuelve 0 resultados fuera de docs/'. Ignorado por la regla `docs` (L56).
+- `docs/tpu-cliente-sube-vectorizado-plan.md` [plan_cerrado, 2026-09-17] TPU: el cliente sube el vector y el sistema genera las planchas (IMPLEMENTADO 04/09; base de «Hago mi matriz»). → es la referencia de diseño de un módulo vivo y en evolución (canaleta 08/10 sin deployar)
+  - ev: L3 'IMPLEMENTADO el 04/09 (sin deployar) — ver §0.8'. CHANGELOG L13 ('TPU «Hago mi matriz»: canaleta…'). Memoria tpu-matriz-propia-implementacion.
+- `docs/anticipo-facturado-plan.md` [plan_vigente, 2026-08-20] Saldo anticipado facturable; propuesta sin implementar (20/08). → trackearlo
+  - ev: L3 'Estado: propuesta, sin implementar'. CHANGELOG 'anticipo facturable': 0. Memoria anticipo-facturado-plan. No trackeado (regla `docs`).
+- `docs/app-movil-portal-plan.md` [plan_vigente, 2026-09-30] App móvil del portal con Capacitor (30/09). → trackearlo
+  - ev: grep 'capacitor' en package.json y backend/package.json: 0 → nada implementado. CHANGELOG 'Capacitor|App móvil': 0.
+- `docs/catalogos-clientes-plan.md` [plan_vigente, 2026-08-26] Catálogos para clientes como función del sistema (reemplaza el fnc.html artesanal). Propuesta. → trackearlo
+  - ev: L3 'Estado: propuesta, sin implementar'. Memoria catalogos-clientes-plan. CHANGELOG 'Catálogos para clientes': 0. backend/catalogos/fnc.html sigue siendo el único catálogo.
+- `docs/ciclos-abiertos-clientes-no-semanales.md` [plan_vigente, 2026-09-30] Análisis 30/09: 47 ciclos abiertos de clientes no semanales, 123 órdenes sin facturar. → trackearlo
+  - ev: Memoria ciclos-semanales-abiertos-sin-facturar (pendiente de datos). CHANGELOG 'ciclos abiertos': 0 → no resuelto.
+- `docs/consultas-cliente-plan.md` [plan_cerrado, 2026-09-10] Plan de implementación de Consulta al Cliente (SB/DTF/ECOUV), 10/09. Implementado. → trackearlo: lo referencia el código
+  - ev: backend/services/consultasClienteService.js existe; CHANGELOG [2026-09-10] 'Consultar al cliente antes de imprimir — base funcionando'. Referenciado en consultasClienteController.js (2), consultasService.js, OrderDetailM
+- `docs/consulta-en-lote-o-maquina.md` [plan_cerrado, 2026-09-23] Análisis 23/09: consultar con la orden en lote o en máquina. Implementado (regla §9). → trackearlo: lo referencia el código
+  - ev: consultasClienteService.js:232 '(regla del 23/09, docs/consulta-en-lote-o-maquina.md §9)' y L238 ESTADOS_LOTE_CONSULTABLE = ['abierto','en cola','pausado']. También OrderDetailModal.jsx. No trackeado.
+- `docs/multitela-costo-por-orden-plan.md` [plan_vigente, 2026-07-08] Multitela: órdenes hermanas con costo por orden. PROPUESTA no implementada (08/07). → trackearlo y borrar la línea 54 del .gitignore que lo ignora a mano
+  - ev: L3 'Estado: PROPUESTA — no implementado'. Memoria multitela-costo-por-orden-pendiente. .gitignore L54 lo ignora explícito (redundante con `docs`).
+- `docs/pedidos-divididos-cargo-incompleto.md` [plan_vigente, 2026-09-30] Análisis 30/09: pedidos (n/m) con cargo incompleto. Código arreglado (deploy 07/10); datos viejos pendientes. → trackearlo
+  - ev: CHANGELOG L816 (07/10) 'solo se asentaba la primera parte'. Doc punto 5 + memoria pedidos-divididos-cargo-incompleto: datos sin corregir. Va con backend/scripts/diagnostico_ordenes_hermanas_sin_cargo.js.
+- `docs/reporte-doble-cobro-rollo-retiro.md (+ .pdf)` [dato_exportado, 2026-09-03] Reporte 03/09: clientes 'Rollo por adelantado' cobrados dos veces (plan + caja al retirar), caso DTF-19364, 8 órdenes US$ 892,99. → trackear el .md; archivar cuando se confirme el fix
+  - ev: CHANGELOG 'DTF-19364|Panda': 0. CHANGELOG L1191 ([2026-09-07] 'Rollo por adelantado') es otra cosa (anulación de factura). No lo sé si el doble cobro se arregló; memoria caja-imputa-dos-veces sigue 'sin arreglar'.
+- `docs/servicio-tecnico/ficha-tecnica-maquinas-plan.md` [plan_cerrado, 2026-10-08] Ficha técnica de máquinas (08/10): implementado, sin deployar. → trackearlo
+  - ev: L5 'las cuatro partes están implementadas desde el 08/10, sin deployar'. CHANGELOG L23 (Sin deployar). Referenciado desde fichaTecnicaCampos.js, MaquinaServicio.jsx, MaquinaFicha.jsx, FichaTecnica.jsx.
+- `docs/servicio-tecnico/horas-uso-y-rendimiento.md (+ horas-uso-rendimiento-consultas.sql)` [plan_vigente, 2026-10-08] Análisis 08/10: horas de uso y rendimiento desde la bitácora; sin código. → trackearlos
+  - ev: L3 'análisis… No se cambió código'. Memoria horas-uso-rendimiento-bitacora. .sql SOLO LECTURA para prod.
+- `docs/servicio-tecnico/st-etapa1.sql, st-etapa2.sql, st-etapa3.sql, st-etapa4.sql, st-locales.sql, st-menu-secciones.sql, st-procedimiento-insumos.sql, st-ficha-tecnica.sql` [migracion_one_off, 2026-09-28 → 2026-10-08] Esquema del módulo Servicio Técnico (idempotentes). st-ficha-tecnica.sql pendiente de deploy. → trackearlos; opcional MOVER a backend/scripts/sql/servicio-tecnico/ para que las migraciones vivan en un solo lugar
+  - ev: Cabeceras leídas ('Se puede correr más de una vez'). Referenciados desde stInsumosController.js (3), stFichaEquipoController.js (2), servicioTecnicoController.js (2), NuevaSolicitudModal.jsx, servicioTecnicoSecciones.js 
+- `docs/subidas-webp-y-carpetas.md` [plan_cerrado, 2026-10-07] Subidas en WebP y carpetas en /home; implementado 07/10, sin deployar. → trackearlo; archivar después del deploy
+  - ev: L3 'Implementado el 07/10/2026 (sin deployar)' con archivos (backend/utils/imagenWebp.js, rutasUploads.js). Cita backfillThumbnails.js.
+- `docs/wms-propio-plan.md` [plan_cerrado, 2026-08-21] Plan del WMS propio (21/08); implementado (fases 1 y 3 + cutover). → trackearlo o archivarlo actualizando wmsStockService.js:24 que lo cita
+  - ev: CHANGELOG L1339 ([2026-08-27]) y L1336. Referenciado desde backend/services/wmsStockService.js:24 ('Ver docs/wms-propio-plan.md'). Memoria wms-propio-plan.
+- `specs/ (00-glosario.md … 38-presupuesto-de-gastos.md + README.md; 39 archivos, 5.077 líneas)` [runbook_doc, 2026-10-01 (commits 01/09, 03/09, 17/09, 21/09, 29/09, 01/10)] Especificaciones funcionales a nivel de negocio: 01–11 describen el sistema ACTUAL (as-is), 12–38 son to-be ('contrato para el diseño de la próxima versión'). → dejar trackeadas y destrabar `*.md`; corregir README (indexa 39, 40 y 41 que no existen ni en `git log --all -- specs/39
+  - ev: README L1-10 y L70-74 leídos. CHANGELOG L1272 ([2026-09-01]). Contraste as-is: specs/05 RN-CAJA.01 'una sola Sesión de Caja abierta' coincide con cajaController.js:1341 (SELECT TOP 1 … WHERE StuEstado='ABIERTA' WITH(UPDL
+- `CHANGELOG.md` [runbook_doc, creado 2026-07-23, modificado hoy] Changelog del sistema (1700 líneas, Keep a Changelog): una entrada por deploy desde julio 2026, mensual antes. → un solo archivo (todo es 2025-11→2026-10, partir por año no aporta). Opcional: mover la reconstrucción mensual (L1576–17
+  - ev: grep -n '^#{1,3} ' CHANGELOG.md completo; awk de líneas por bloque: [2026-10-07] tiene 762 líneas (45% del archivo), 'Sin deployar' actual 157. Estructura consistente: `## [fecha] — nota` + `### Agregado/Cambiado/Arregla

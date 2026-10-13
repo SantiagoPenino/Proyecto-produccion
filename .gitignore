@@ -1,5 +1,21 @@
-# Logs
-logs
+# ======================================================================
+# Se ignora por RUTA. No volver a poner *.md / *.sql / *.json / *.bat / docs
+# globales: escondían archivos que el código necesita (public/manifest.json,
+# texturas.json, reglas_user.json) y la documentación (CHANGELOG, specs, docs).
+# Auditoría de limpieza 09/10/2026: docs/auditoria-limpieza-2026-10-09.md §14.
+# ======================================================================
+
+# --- Dependencias y builds ---
+node_modules/
+dist/
+dist-ssr/
+*.local
+# Salida de `vite build` (outDir en vite.config.js): se regenera en cada deploy
+backend/public/
+.tmp/
+
+# --- Logs ---
+logs/
 *.log
 npm-debug.log*
 yarn-debug.log*
@@ -7,65 +23,66 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
-node_modules
-dist
-dist-ssr
-*.local
+# --- Secretos: nunca entran (un .env.example sí se puede subir) ---
+.env
+.env.*
+!.env.example
+backend/.env
+backend/.env.*
+!backend/.env.example
+backend/oauth-credentials.json
+backend/token.json
 
-# Editor directories and files
+# --- Carpetas que el backend crea en runtime. En producción las apuntan las *_PATH
+#     del .env. Con el nombre exacto del código: en Linux importan las mayúsculas ---
+backend/uploads/
+backend/thumbnails/
+backend/ordenes/
+backend/scratch/
+backend/tickets/
+backend/consultas/
+backend/servicio-tecnico/
+backend/fallas/
+backend/ComprobantesPagos/
+backend/comprobantesPagos/
+backend/comprobantesEncomiendas/
+backend/Comprobantes/
+backend/stock/compras/
+# Salidas de scripts: reimprimir_etiqueta.js escribe al lado; wmsBajarSnapshot.js baja a wms-snap/
+backend/scripts/etiqueta_*.html
+wms-snap/
+
+# --- Generados, bytecode y backups (esto sí por extensión: nunca son fuente) ---
+nul
+__pycache__/
+*.pyc
+*.bak
+*.bak.*
+*.backup.*
+*.orig
+*.tmp
+
+# --- Datos de clientes y archivos pesados que no van en git ---
+# (con / adelante: solo la carpeta de la raíz; sin la barra también taparía backend/scripts/sql/)
+/muestras/
+/sql/
+backend/scripts/**/*.csv
+scripts/**/*.xlsx
+docs/**/*.pdf
+docs/**/*.docx
+docs/**/*.xlsx
+docs/wms-data/*.json
+docs/.obsidian/
+
+# --- Herramientas del asistente y del editor (no son del proyecto) ---
+.claude/
+.antigravity_rules.md
 .vscode/*
 !.vscode/extensions.json
-.idea
+.idea/
 .DS_Store
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
 *.sw?
-# --- SEGURIDAD: Archivos sensibles del proyecto ---
-.env
-backend/.env
-backend/oauth-credentials.json
-backend/token.json
-*.json
-!package.json
-!package-lock.json
-!tsconfig.json
-!src/assets/animations/
-.antigravity_rules.md
-
-# Carpetas de dependencias adicionales
-backend/node_modules/
-backend/logs/
-backend/ComprobantesPagos/
-backend/tickets/
-backend/servicio-tecnico/
-
-*.bat
-*.sql
-
-backend/ordenes/
-backend/public/
-backend/scratch/
-backend/thumbnails/
-backend/docs
-backend/uploads
-*.md
-docs/multitela-costo-por-orden-plan.md
-nul
-docs
-backend/.env.bak-antes-wms-interno
-
-backend/consultas/
-
-# Carpetas de archivos que el backend crea solo si falta su variable en el .env (08/10/2026).
-# En producción y en local van fuera del repo (FALLAS_PATH, COMPROBANTES_PAGOS_PATH, etc.).
-# Con el nombre exacto del código: en Linux importan las mayúsculas.
-backend/fallas/
-backend/comprobantesPagos/
-backend/comprobantesEncomiendas/
-backend/Comprobantes/
-backend/stock/compras/
-# Respaldos del .env (tienen las claves)
-backend/.env.bak*
-.env.bak*
