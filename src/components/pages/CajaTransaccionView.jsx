@@ -23,6 +23,12 @@ import CajaSaldoAnticipoTab from './CajaSaldoAnticipoTab';
 import CajaPagoDeudaTab from './CajaPagoDeudaTab';
 import CajaOtrosIngresosTab from './CajaOtrosIngresosTab';
 import CajaPanelPago from './CajaPanelPago';
+import CajaCobroPosModal from './CajaCobroPosModal';
+import CajaVentasPosModal from './CajaVentasPosModal';
+
+// Id de la línea de pago "Tarjeta (POS)" (cobro con tarjeta integrado). No existe en MetodosPagos: el
+// backend registra el pago como Débito o Crédito según lo que diga el POS.
+const METODO_POS_ID = -1;
 import TicketImpresion from '../common/TicketImpresion';
 import ClienteBilletera from '../common/ClienteBilletera';
 import ChequeRecibirModal from './tesoreria/ChequeRecibirModal';
@@ -166,6 +172,14 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
   const [chequeIndexActivo, setChequeIndexActivo] = useState(null);
   const [searchSituacionInput, setSearchSituacionInput] = useState('');
   const [procesandoCobro, setProcesandoCobro] = useState(false);
+  // Cobro con tarjeta integrado (POSLink). Sin terminales habilitadas no se ofrece la línea "Tarjeta (POS)".
+  const [terminalesPos, setTerminalesPos] = useState([]);
+  const [cobroPos, setCobroPos] = useState(null);          // estado público del cobro en curso (o null)
+  const [accionPos, setAccionPos] = useState(false);       // cancelando / cerrando
+  const cobroPosCtxRef = useRef(null);                     // lo necesario para el ticket al registrarse
+  const [verVentasPos, setVerVentasPos] = useState(false); // lista de cobros con tarjeta (anular / devolver)
+  const [hayVentasPos, setHayVentasPos] = useState(false);
+  const [casosPos, setCasosPos] = useState(0); // cobros con tarjeta trabados que esperan a una persona
   const [motorPagos, setMotorPagos] = useState([{ id: Date.now(), metodoPagoId: 1, moneda: 'UYU', monedaId: 1, monto: '' }]);
   const [motorTipoDoc, setMotorTipoDoc] = useState('40');
   const [motorSerieDoc, setMotorSerieDoc] = useState('A');
@@ -904,6 +918,16 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
         if (contadoId) setVentaPagos([{ id: Date.now(), metodoPagoId: contadoId, moneda: 'UYU', monedaId: 1, monto: '' }]);
       }
       if (rCot.status === 'fulfilled' && rCot.value.data?.cotizaciones?.[0]) setCotizacion(rCot.value.data.cotizaciones[0].CotDolar);
+      api.get('/contabilidad/caja/pos/terminales')
+        .then(r => setTerminalesPos(Array.isArray(r.data?.data) ? r.data.data : []))
+        .catch(e => { console.warn('[POS] No se pudieron leer las terminales:', e?.message); setTerminalesPos([]); });
+      // El botón "Cobros con tarjeta" aparece si hay ventas para anular (pueden ser de un tótem, sin terminal de caja).
+      api.get('/contabilidad/caja/pos/ventas?dias=7')
+        .then(r => setHayVentasPos(Array.isArray(r.data?.data) && r.data.data.length > 0))
+        .catch(e => { console.warn('[POS] No se pudieron leer los cobros con tarjeta:', e?.message); setHayVentasPos(false); });
+      api.get('/contabilidad/caja/pos/revisar')
+        .then(r => setCasosPos(Array.isArray(r.data?.data) ? r.data.data.length : 0))
+        .catch(e => { console.warn('[POS] No se pudieron leer los casos para revisar:', e?.message); setCasosPos(0); });
       if (rGastos.status === 'fulfilled') setCuentasGastos(rGastos.value.data?.data || []);
       if (rOps.status === 'fulfilled') setOperacionesCaja(rOps.value.data?.data || []);
       if (rNom.status === 'fulfilled' && rNom.value.data?.success) {
@@ -1486,6 +1510,12 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
     });
     if (chequeFaltante) return toast.warning('Debe cargar los datos del cheque en el método de pago correspondiente.');
     if (!tipoDocCobro || tipoDocCobro === 'NINGUNO') return toast.warning('La emisión de un Documento es requerida.');
+    const posIdx = carritosPago.findIndex(p => parseInt(p.metodoPagoId) === METODO_POS_ID);
+    if (posIdx >= 0) {
+      if (carritosPago.filter(p => parseInt(p.metodoPagoId) === METODO_POS_ID).length > 1) return toast.warning('Una sola línea puede ir con Tarjeta (POS).');
+      if (esCobroCredito) return toast.warning('Un cobro a crédito no lleva pago con tarjeta.');
+      if (!terminalesPos.length) return toast.warning('No hay ninguna terminal POS habilitada.');
+    }
     setProcesandoCobro(true);
     try {
       let deudaPuraUSD = 0, deudaPuraUYU = 0;
@@ -1509,15 +1539,21 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
       // idCheque: lo devuelve ChequeRecibirModal al dar de alta el cheque. Sin enviarlo,
       // el cheque queda sin vínculo con el cobro y no se puede mostrar su número después.
       const pags = carritosPago.map(p => ({ metodoPagoId: parseInt(p.metodoPagoId), moneda: p.moneda, monedaId: p.moneda === 'USD' ? 2 : 1, montoOriginal: parseFloat(p.monto), cotizacion: p.moneda === 'USD' ? cotizacion : null, idCheque: p.idCheque || null, cueIdCuenta: p.cueIdCuenta || null }));
-      const res = await api.post('/contabilidad/caja/transaccion', {
-        header: { clienteId: seleccionados[0]?.retiro?.CliIdCliente, tipoDocumento: tipoDocCobro, serieDoc: serieDocCobro, numeroDoc: numDocCobro || null, observaciones: obsCobro, deudaPuraUSD, deudaPuraUYU, admin: isAdminCaja, moneda: monedaExhibicion, cotizacion: cotizacion, esCredito: esCobroCredito, importeACobrar: (esCobroCredito || Math.abs(ajusteCobroUI) < 0.005) ? null : montoACobrar },
-        aplicaciones: apps, pagos: esCobroCredito ? [] : pags
-      });
+      const headerCobro = { clienteId: seleccionados[0]?.retiro?.CliIdCliente, tipoDocumento: tipoDocCobro, serieDoc: serieDocCobro, numeroDoc: numDocCobro || null, observaciones: obsCobro, deudaPuraUSD, deudaPuraUYU, admin: isAdminCaja, moneda: monedaExhibicion, cotizacion: cotizacion, esCredito: esCobroCredito, importeACobrar: (esCobroCredito || Math.abs(ajusteCobroUI) < 0.005) ? null : montoACobrar };
+      const pagosCobro = esCobroCredito ? [] : pags;
+      // Para el ticket: la línea "Tarjeta (POS)" sale con lo que dijo el POS (débito/crédito).
+      const pagosTicketDe = (etiquetaPos) => carritosPago.map(p => ({
+        metodo: parseInt(p.metodoPagoId) === METODO_POS_ID
+          ? etiquetaPos
+          : (metodosPago.find(m => m.MPaIdMetodoPago === parseInt(p.metodoPagoId))?.MPaDescripcionMetodo || 'Pago'),
+        moneda: p.moneda,
+        monto: p.monto
+      }));
 
-      const newTicket = {
+      const armarTicket = (resData, pagosTicket) => ({
         empresa: 'USER',
         fecha: new Date().toLocaleString('es-UY'),
-        comprobante: res.data?.serieDoc ? `${res.data.serieDoc}-${res.data.numeroDoc}` : (res.data?.numeroDoc || 'TICKET CAJA'),
+        comprobante: resData?.serieDoc ? `${resData.serieDoc}-${resData.numeroDoc}` : (resData?.numeroDoc || 'TICKET CAJA'),
         cajero: sesion?.usrLogin || 'Sistema',
         cliente: seleccionados[0]?.retiro?.CliNombre || 'CLIENTE',
         caja: isAdminCaja ? 'Caja Administrativa' : 'Caja Central',
@@ -1554,25 +1590,120 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
           total: totalIngresado,
           moneda: monedaExhibicion === 'USD' ? 'US$' : '$'
         },
-        pagos: carritosPago.map(p => ({
-          metodo: metodosPago.find(m => m.MPaIdMetodoPago === parseInt(p.metodoPagoId))?.MPaDescripcionMetodo || 'Pago',
-          moneda: p.moneda,
-          monto: p.monto
-        }))
-      };
-      setTicketData(newTicket);
-      printTicketData(newTicket);
-      saveTicketOnServer(newTicket);
+        pagos: pagosTicket
+      });
 
-      const clienteId = seleccionados[0]?.retiro?.CliIdCliente;
-      toast.success(`Cobro registrado (${res.data?.numeroDoc || 'OK'})`);
-      setSeleccionados([]); setAjustes({}); setImporteACobrar('');
-      setCarritosPago([{ id: Date.now(), metodoPagoId: 1, moneda: 'UYU', monedaId: 1, monto: '' }]);
-      setObsCobro(''); 
-      fetchRetiros();
-    } catch (e) { toast.error(e.response?.data?.error || 'Error al cobrar'); }
-    finally { setProcesandoCobro(false); }
+      const cerrarExitoso = (resData, pagosTicket) => {
+        const newTicket = armarTicket(resData, pagosTicket);
+        setTicketData(newTicket);
+        printTicketData(newTicket);
+        saveTicketOnServer(newTicket);
+        toast.success(`Cobro registrado (${resData?.numeroDoc || 'OK'})`);
+        setSeleccionados([]); setAjustes({}); setImporteACobrar('');
+        setCarritosPago([{ id: Date.now(), metodoPagoId: 1, moneda: 'UYU', monedaId: 1, monto: '' }]);
+        setObsCobro('');
+        fetchRetiros();
+      };
+
+      if (posIdx >= 0) {
+        // Con una línea "Tarjeta (POS)" el cobro no se registra acá: se manda al POS y lo registra el
+        // backend cuando la tarjeta aprueba (también si esta pantalla se cierra: lo sigue el barrido).
+        // El modal muestra el estado; el botón queda bloqueado hasta cerrarlo.
+        cobroPosCtxRef.current = {
+          finalizado: false, cerrarExitoso, pagosTicketDe,
+          resData: { serieDoc: headerCobro.serieDoc, numeroDoc: headerCobro.numeroDoc },
+        };
+        const r = await api.post('/contabilidad/caja/pos/cobros', {
+          terminal: terminalesPos[0].PteIdTerminal, header: headerCobro, aplicaciones: apps, pagos: pagosCobro, posIndex: posIdx
+        });
+        setCobroPos(r.data?.data || null);
+        return;
+      }
+
+      const res = await api.post('/contabilidad/caja/transaccion', { header: headerCobro, aplicaciones: apps, pagos: pagosCobro });
+      cerrarExitoso(res.data, pagosTicketDe('Tarjeta'));
+    } catch (e) {
+      cobroPosCtxRef.current = null;
+      toast.error(e.response?.data?.error || 'Error al cobrar');
+    }
+    finally { if (!cobroPosCtxRef.current) setProcesandoCobro(false); }
   };
+
+  // ── Cobro con tarjeta (POSLink): poleo cada 2,5 s mientras el modal está abierto ──
+  // Entre consultas a Resonet tienen que pasar entre 2 y 3 s (SPEC p.29); cada GET hace una.
+  useEffect(() => {
+    if (!cobroPos?.uuid || cobroPos.final) return;
+    let vivo = true;
+    const t = setTimeout(async () => {
+      try {
+        const r = await api.get(`/contabilidad/caja/pos/cobros/${cobroPos.uuid}`);
+        if (vivo && r.data?.data) setCobroPos(r.data.data);
+      } catch (e) {
+        // Se sigue intentando: el cobro vive en el servidor aunque esta consulta falle.
+        console.warn('[POS] Falló la consulta del cobro:', e?.message);
+        if (vivo) setCobroPos(prev => (prev ? { ...prev, erroresConsulta: (prev.erroresConsulta || 0) + 1 } : prev));
+      }
+    }, 2500);
+    return () => { vivo = false; clearTimeout(t); };
+  }, [cobroPos]);
+
+  // Registrado: ticket y limpieza, una sola vez (el modal queda mostrando el resultado hasta "Listo").
+  useEffect(() => {
+    const ctx = cobroPosCtxRef.current;
+    if (cobroPos?.estado !== 'REGISTRADA' || !ctx || ctx.finalizado) return;
+    ctx.finalizado = true;
+    const etiqueta = `Tarjeta ${cobroPos.debito === true ? 'débito' : cobroPos.debito === false ? 'crédito' : ''} (POS)`.replace('  ', ' ');
+    // El comprobante lo numera la caja al registrar: viene en el estado del cobro.
+    const resData = cobroPos.numeroDoc ? { serieDoc: cobroPos.serieDoc, numeroDoc: cobroPos.numeroDoc } : ctx.resData;
+    let pagosTicket = ctx.pagosTicketDe(etiqueta);
+    // Rebaja de IVA (Ley 19.210): la tarjeta cobró el neto y la diferencia la devuelve el Estado.
+    if (cobroPos.rebajaIva) {
+      pagosTicket = pagosTicket.flatMap(p => p.metodo === etiqueta
+        ? [{ ...p, monto: (Number(p.monto) - cobroPos.rebajaIva).toFixed(2) },
+           { metodo: 'Rebaja IVA Ley 19.210', moneda: p.moneda, monto: cobroPos.rebajaIva.toFixed(2) }]
+        : [p]);
+    }
+    ctx.cerrarExitoso(resData, pagosTicket);
+  }, [cobroPos]);
+
+  const cancelarCobroPos = async () => {
+    if (!cobroPos?.uuid) return;
+    setAccionPos(true);
+    try {
+      const r = await api.post(`/contabilidad/caja/pos/cobros/${cobroPos.uuid}/cancelar`);
+      if (r.data?.data) setCobroPos(r.data.data);
+      if (r.data && !r.data.cancelada) toast.warning(r.data.motivo || 'El POS ya tomó la venta: para cancelar, usá la tecla roja del POS.');
+    } catch (e) { toast.error(e.response?.data?.error || 'No se pudo cancelar'); }
+    finally { setAccionPos(false); }
+  };
+
+  const cerrarCobroPosSinCobro = async () => {
+    if (!cobroPos?.uuid) return;
+    setAccionPos(true);
+    try {
+      const r = await api.post(`/contabilidad/caja/pos/cobros/${cobroPos.uuid}/cerrar-sin-cobro`);
+      if (r.data?.data) setCobroPos(r.data.data);
+    } catch (e) { toast.error(e.response?.data?.error || 'No se pudo cerrar'); }
+    finally { setAccionPos(false); }
+  };
+
+  const cerrarModalPos = () => {
+    // En duda, cobrado sin registrar, o una anulación (libera el retiro): la lista tiene que reflejarlo.
+    const peligro = ['INDETERMINADA', 'APROBADA_SIN_REGISTRAR'].includes(cobroPos?.estado) || (cobroPos?.tipo && cobroPos.tipo !== 'VENTA');
+    setCobroPos(null);
+    cobroPosCtxRef.current = null;
+    setProcesandoCobro(false);
+    // En duda o cobrado sin registrar: el retiro quedó bloqueado; la lista lo tiene que mostrar así.
+    if (peligro) fetchRetiros();
+  };
+
+  // La línea "Tarjeta (POS)" no es un método de la tabla: al cobrar se manda al POS y el backend la
+  // registra como Débito o Crédito según la tarjeta. Solo en la solapa de Cobro de retiros.
+  const metodosCobro = useMemo(() => (
+    terminalesPos.length
+      ? [...metodosPago, { MPaIdMetodoPago: METODO_POS_ID, MPaDescripcionMetodo: 'Tarjeta (POS)', MPaAyuda: `Se cobra en la terminal ${terminalesPos[0].PteEtiqueta}` }]
+      : metodosPago
+  ), [metodosPago, terminalesPos]);
 
   useEffect(() => {
     if (tipoDocCobro && tipoDocCobro !== 'NINGUNO') {
@@ -1880,6 +2011,16 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                 />
                 <button type="submit" className="hidden">Buscar</button>
               </form>
+              {(terminalesPos.length > 0 || hayVentasPos || casosPos > 0) && (
+                <button onClick={() => setVerVentasPos(true)}
+                  className="bg-white flex items-center gap-2 px-3 py-1.5 rounded-lg border border-zinc-200 hover:border-zinc-300 h-9 text-[11px] font-black uppercase tracking-widest text-zinc-700"
+                  title={casosPos > 0 ? `${casosPos} cobro(s) con tarjeta para revisar` : 'Anular o devolver un cobro con tarjeta'}>
+                  <CreditCard size={14} className="text-brand-cyan" /> Cobros con tarjeta
+                  {casosPos > 0 && (
+                    <span className="min-w-[18px] h-[18px] px-1 rounded-full bg-rose-500 text-white text-[10px] font-black flex items-center justify-center">{casosPos}</span>
+                  )}
+                </button>
+              )}
               <div className="bg-white flex items-center gap-2 px-3 py-1.5 rounded-lg border border-zinc-200 h-9">
                 <RefreshCw size={14} className={`text-brand-cyan cursor-pointer hover:text-brand-cyan/80 ${loadingCot ? 'animate-spin' : ''}`} onClick={buscarCotizBCU} />
                 <span className="font-bold text-custom-dark">1 US$ = <span className="text-brand-cyan">${cotizacion ? fmt(cotizacion) : '---'}</span></span>
@@ -1974,7 +2115,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                         ) : null}
                         moneda={monedaExhibicion}
                         cotizacion={cotizacion}
-                        metodosPago={metodosPago}
+                        metodosPago={metodosCobro}
                         pagos={carritosPago}
                         onPagosChange={setCarritosPago}
                         tipoDoc={tipoDocCobro}
@@ -3621,6 +3762,24 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
           </div>
         </div>
       )}
+
+      {/* ── Anular / devolver un cobro con tarjeta ── */}
+      <CajaVentasPosModal
+        abierto={verVentasPos}
+        pestanaInicial={casosPos > 0 ? 'revisar' : 'ventas'}
+        onCambioRevision={setCasosPos}
+        onCerrar={() => setVerVentasPos(false)}
+        onIniciado={(c) => { setVerVentasPos(false); if (c) { setProcesandoCobro(true); setCobroPos(c); } }}
+      />
+
+      {/* ── Cobro con tarjeta integrado (POSLink) ── */}
+      <CajaCobroPosModal
+        cobro={cobroPos}
+        accionando={accionPos}
+        onCancelar={cancelarCobroPos}
+        onCerrarSinCobro={cerrarCobroPosSinCobro}
+        onCerrar={cerrarModalPos}
+      />
 
       {/* ── Modal Editar Órdenes del Retiro ── */}
       {editRetiro && (

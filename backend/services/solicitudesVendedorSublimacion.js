@@ -57,7 +57,14 @@ async function moldeDelProducto(pool, user, base, solicitudId, productoSolId) {
         : `Este producto no lleva molde: la producción principal va con el archivo pronto${medidaFija ? ` a medida fija ${medidaFija.anchoM.toFixed(2)} × ${medidaFija.altoM.toFixed(2)} m` : ''}.`,
     };
   }
+  return opcionesDelMolde(pool, p, elegido);
+}
 
+// Modelos que ofrece el producto (con sus piezas y telas fijas) y telas a elegir, a partir del producto del
+// catálogo y su molde. Separado de moldeDelProducto (09/10/2026) para que la tienda del portal lo use sin una
+// solicitud: el cliente elige modelo y telas igual que el vendedor (services/tiendaConfeccionService.js).
+// p: { ProIdProducto, MoldeRef, Molde, TecnicaPrincipal }
+async function opcionesDelMolde(pool, p, elegido = null) {
   const [molde] = await tizadaPro.moldes(pool, { ref: p.MoldeRef, soloActivos: false });
   if (!molde) return { aplica: false, motivo: 'El molde vinculado ya no está en TizadaPro.', elegido };
   const req = () => pool.request().input('PID', sql.Int, p.ProIdProducto);
@@ -211,4 +218,4 @@ async function guardarTalles(pool, user, base, solicitudId, productoSolId, body)
   return n;
 }
 
-module.exports = { moldeDelProducto, guardarSublimacion, faltaSublimacion, guardarTalles };
+module.exports = { moldeDelProducto, opcionesDelMolde, guardarSublimacion, faltaSublimacion, guardarTalles };

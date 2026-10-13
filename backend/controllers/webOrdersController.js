@@ -4401,6 +4401,9 @@ async function getClientePickupOrders(pool, cliIdCliente) {
         };
     });
 }
+// Lo usa también el cobro con POS del tótem (services/poslink/poslinkTotemService.js): el importe
+// que se cobra sale de acá, el mismo que el cliente ve en pantalla.
+exports.getClientePickupOrders = getClientePickupOrders;
 
 exports.totemLookup = async (req, res) => {
     try {
@@ -5551,6 +5554,8 @@ const _acreditarRecargaBilletera = async (pool, { storedData, codCliente, txId, 
             // La factura YA existe: NO reintentar la emisión. Recuperación manual desde el 360:
             // /api/beneficios/activar { BenIdBeneficio, CliIdCliente, DocIdDocumento } con esta factura.
             logger.error(`[BENEFICIOS PORTAL] 🚨 CRÍTICO Tx ${txId}: la factura doc ${outFactB.docId} se emitió pero la ACTIVACIÓN del beneficio #${benId} falló (${eAct.message}). Activarlo a mano con esa factura (POST /api/beneficios/activar).`);
+            // Marca para el webhook: con la factura emitida NO se puede volver a correr la recarga (emitiría otra)
+            eAct.facturaEmitida = outFactB.docId;
             throw eAct;
         }
         const ioB = req?.app?.get ? req.app.get('socketio') : null;
@@ -5616,6 +5621,8 @@ const _acreditarRecargaBilletera = async (pool, { storedData, codCliente, txId, 
             // La factura YA existe: NO reintentar la emisión. Recuperación manual:
             // libro de la cuenta prepago → "Vincular factura emitida".
             logger.error(`[BILLETERA PORTAL] 🚨 CRÍTICO Tx ${txId}: la factura doc ${outFact.docId} se emitió pero la CARGA_PREPAGO falló (${eCarga.message}). Cargar a mano con "Vincular factura emitida" en el libro de la cuenta #${storedData.cueIdCuenta}.`);
+            // Marca para el webhook: con la factura emitida NO se puede volver a correr la recarga (emitiría otra)
+            eCarga.facturaEmitida = outFact.docId;
             throw eCarga;
         }
         const ioP = req?.app?.get ? req.app.get('socketio') : null;
@@ -7056,6 +7063,8 @@ exports.mpWebhook = async (req, res) => {
     // Contexto para el ticket de alerta si el registro falla con el cobro ya
     // capturado (se setean recién cuando el pago está aprobado y por registrarse).
     let mpTxRef = null, mpRetiroEnCurso = null, mpCodCliente = null, mpMonto = null;
+    // true cuando caja ya registró el pago: un error DESPUÉS (referencia, comprobante) no es "cobrado sin registrar"
+    let mpPagoRegistrado = false;
 
     logger.info('------------------------------------------');
     logger.info('🔔 [MP WEBHOOK] Evento recibido:');
@@ -7177,14 +7186,66 @@ exports.mpWebhook = async (req, res) => {
 
         // ── RECARGA DE BILLETERA (portal): acreditar la cuenta y terminar ──
         if (storedData.type === 'wallet-topup') {
-            try {
-                await _acreditarRecargaBilletera(pool, {
-                    storedData, codCliente: tx.CodCliente, txId: String(externalRef),
-                    metodoPagoId: 10, monedaId: (paymentData.currency_id === 'USD') ? 2 : 1,
-                    monto: paymentData.transaction_amount, req,
-                });
-            } catch (eTopup) {
-                logger.error(`[MP WEBHOOK] Recarga de billetera falló (Tx ${externalRef}): ${eTopup.message}`);
+            // Antes (hasta 12/10/2026) un fallo acá solo quedaba en el log: la plata cobrada sin acreditar, la marca
+            // PaidAt puesta (todo aviso posterior se descartaba) y nadie se enteraba. Ahora:
+            //   · deadlock SIN factura emitida → se reintenta (3 veces, 2 s y 4 s). Seguro: la recarga se fija por Tx
+            //     si ya está acreditada, y sin factura no quedó nada a medias.
+            //   · si igual falla: ticket a Finanzas. La marca se libera solo si fue un choque pasajero y no se emitió
+            //     factura (el próximo aviso de MP la acredita solo). Con la factura emitida NO se libera: otro intento
+            //     emitiría una segunda factura; se carga a mano con esa factura (lo dice el ticket).
+            const { esDeadlock } = require('../utils/reintentarDeadlock');
+            const esChoque = (e) => esDeadlock(e) || /deadlock/i.test(String(e?.message || ''));
+            const monedaTopup = (paymentData.currency_id === 'USD') ? 2 : 1;
+            const montoTopup = paymentData.transaction_amount;
+            const TOPUP_INTENTOS = 3;
+            for (let intento = 1; intento <= TOPUP_INTENTOS; intento++) {
+                try {
+                    await _acreditarRecargaBilletera(pool, {
+                        storedData, codCliente: tx.CodCliente, txId: String(externalRef),
+                        metodoPagoId: 10, monedaId: monedaTopup, monto: montoTopup, req,
+                    });
+                    return;
+                } catch (eTopup) {
+                    if (esChoque(eTopup) && !eTopup.facturaEmitida && intento < TOPUP_INTENTOS) {
+                        const esperaMs = intento * 2000;
+                        logger.warn(`[MP WEBHOOK] ⚠️ Deadlock acreditando la recarga Tx ${externalRef}, intento ${intento}/${TOPUP_INTENTOS}. Reintento en ${esperaMs} ms.`);
+                        await new Promise(r => setTimeout(r, esperaMs));
+                        continue;
+                    }
+                    logger.error(`[MP WEBHOOK] Recarga de billetera falló (Tx ${externalRef}): ${eTopup.message}`);
+                    let marcaLiberada = false;
+                    if (!eTopup.facturaEmitida && esChoque(eTopup)) {
+                        try {
+                            const r = await pool.request().input('Tx', sql.VarChar(100), String(externalRef))
+                                .query('UPDATE MercadoPagoTransactions SET PaidAt = NULL WHERE TransactionId = @Tx AND PaidAt IS NOT NULL');
+                            marcaLiberada = (r.rowsAffected?.[0] || 0) > 0;
+                        } catch (eMarca) {
+                            logger.error(`[MP WEBHOOK] No se pudo liberar la marca de procesado de ${externalRef}: ${eMarca.message}`);
+                        }
+                    }
+                    const simb = monedaTopup === 2 ? 'US$' : '$';
+                    const destino = storedData.beneficioId
+                        ? `activación del beneficio #${storedData.beneficioId}`
+                        : `cuenta #${storedData.cueIdCuenta}${storedData.nombreCuenta ? ` (${storedData.nombreCuenta})` : ''}`;
+                    let queHacer;
+                    if (eTopup.facturaEmitida) {
+                        queHacer = storedData.beneficioId
+                            ? `La factura YA se emitió (doc ${eTopup.facturaEmitida}) pero el beneficio no se activó. NO emitir otra: activar el beneficio a mano con esa factura desde el 360.`
+                            : `La factura YA se emitió (doc ${eTopup.facturaEmitida}) pero el saldo no se cargó. NO emitir otra: cargarlo con «Vincular factura emitida» en el libro de la cuenta #${storedData.cueIdCuenta}.`;
+                    } else if (marcaLiberada) {
+                        queHacer = 'No se emitió nada. Si MercadoPago vuelve a avisar de este pago, el sistema la acredita solo: antes de acreditarla a mano, fijate que no esté ya en la cuenta.\nSi sigue sin acreditar: acreditarla a mano o devolver el pago en MercadoPago.';
+                    } else {
+                        queHacer = 'No se emitió nada. Acreditarla a mano o devolver el pago en MercadoPago.';
+                    }
+                    try {
+                        await crearTicketFinanzas(pool, tx.CodCliente,
+                            `ALERTA: recarga de billetera MercadoPago cobrada SIN acreditar (Tx ${externalRef})`,
+                            `MercadoPago aprobó la recarga de ${simb} ${montoTopup} (${destino}) pero la acreditación falló:\n${eTopup.message}\n\nTransactionId: ${externalRef}\n\nEl cliente YA pagó.\n${queHacer}`);
+                    } catch (e2) {
+                        logger.error('[MP WEBHOOK] No se pudo crear ticket de alerta de la recarga:', e2.message);
+                    }
+                    return;
+                }
             }
             return;
         }
@@ -7309,32 +7370,50 @@ exports.mpWebhook = async (req, res) => {
         const CliIdCliente = cliRes2.recordset[0]?.CliIdCliente;
 
         // ── Pago unificado a través de cajaService (Caja Administrativa online) ──
+        // Reintento ante deadlock (12/10/2026): el pago de RW-32253 murió víctima de un 1205 a las 10:27 (otro
+        // cobro de MP entraba a caja a la vez) y quedó cobrado sin registrar. A MP ya se le contestó 200, así que
+        // nadie más lo reintenta. El 1205 revierte la transacción entera: volver a correrla es seguro. Mismo
+        // criterio que el webhook de Handy (3 intentos, 2 s y 4 s).
         mpMonto = totalAmountPaid;
         const { procesarTransaccion } = require('../services/cajaService');
-        const mpResult = await procesarTransaccion({
-            usuarioId: 999,
-            header: {
-                clienteId:        CliIdCliente,
-                esAdministrativa:  true,
-                tipoDocumento:     '07',   // E-Ticket Contado
-                moneda,
-                observaciones:     `Cobro MercadoPago (Tx: ${externalRef})`,
-            },
-            aplicaciones: [{
-                tipo:           'ORDEN_RETIRO',
-                referenciaId:   ordenRetiroId,
-                montoOriginal:  totalAmountPaid,
-                descripcion:    `Retiro diferido RW-${ordenRetiroId}`,
-                // orderNumbers vacío → cajaService los descubre solo en BD
-            }],
-            pagos: [{
-                metodoPagoId:  10,  // MercadoPago
-                monedaId,
-                moneda,
-                montoOriginal: totalAmountPaid,
-                cotizacion:    1,
-            }],
-        });
+        const { esDeadlock } = require('../utils/reintentarDeadlock');
+        const MP_INTENTOS = 3;
+        let mpResult = null;
+        for (let intento = 1; intento <= MP_INTENTOS; intento++) {
+            try {
+                mpResult = await procesarTransaccion({
+                    usuarioId: 999,
+                    header: {
+                        clienteId:        CliIdCliente,
+                        esAdministrativa:  true,
+                        tipoDocumento:     '07',   // E-Ticket Contado
+                        moneda,
+                        observaciones:     `Cobro MercadoPago (Tx: ${externalRef})`,
+                    },
+                    aplicaciones: [{
+                        tipo:           'ORDEN_RETIRO',
+                        referenciaId:   ordenRetiroId,
+                        montoOriginal:  totalAmountPaid,
+                        descripcion:    `Retiro diferido RW-${ordenRetiroId}`,
+                        // orderNumbers vacío → cajaService los descubre solo en BD
+                    }],
+                    pagos: [{
+                        metodoPagoId:  10,  // MercadoPago
+                        monedaId,
+                        moneda,
+                        montoOriginal: totalAmountPaid,
+                        cotizacion:    1,
+                    }],
+                });
+                break;
+            } catch (errCaja) {
+                if (!esDeadlock(errCaja) || intento === MP_INTENTOS) throw errCaja;
+                const esperaMs = intento * 2000;
+                logger.warn(`[MP WEBHOOK] ⚠️ Deadlock registrando el pago de RW-${ordenRetiroId} (Tx ${externalRef}), intento ${intento}/${MP_INTENTOS}. Reintento en ${esperaMs} ms.`);
+                await new Promise(r => setTimeout(r, esperaMs));
+            }
+        }
+        mpPagoRegistrado = true;
 
         const pagoId = mpResult.pagosCreados[0]?.pagIdPago;
         logger.info(`[MP WEBHOOK] ✅ Pago procesado vía Caja: PagoId=${pagoId} TcaId=${mpResult.tcaIdTransaccion} Retiro=${ordenRetiroId}`);
@@ -7378,16 +7457,32 @@ exports.mpWebhook = async (req, res) => {
     } catch (e) {
         logger.error('[MP WEBHOOK] Error procesando evento:', e.message);
         // mpTxRef solo se setea con el pago aprobado y a punto de registrarse:
-        // si llegamos acá con él seteado, hay plata cobrada sin registrar.
-        if (mpTxRef) {
+        // si llegamos acá con él seteado y caja no lo registró, hay plata cobrada sin registrar.
+        if (mpTxRef && !mpPagoRegistrado) {
+            // La marca PaidAt se puso al entrar (guarda contra IPN + webhook simultáneos) y quedaba puesta aunque
+            // el registro fallara: todo aviso posterior de MP sobre este pago se descartaba como duplicado y nada lo
+            // recuperaba (RW-32253, 12/10/2026). Se libera para que el próximo aviso lo registre solo. Seguro: la
+            // guarda del retiro (PagIdPago) frena un segundo registro si mientras tanto se cobró a mano.
+            let marcaLiberada = false;
+            try {
+                const poolMarca = await getPool();
+                const r = await poolMarca.request().input('Tx', sql.VarChar(100), mpTxRef)
+                    .query('UPDATE MercadoPagoTransactions SET PaidAt = NULL WHERE TransactionId = @Tx AND PaidAt IS NOT NULL');
+                marcaLiberada = (r.rowsAffected?.[0] || 0) > 0;
+            } catch (eMarca) {
+                logger.error(`[MP WEBHOOK] No se pudo liberar la marca de procesado de ${mpTxRef}: ${eMarca.message}`);
+            }
             try {
                 const poolAlerta = await getPool();
                 await crearTicketFinanzas(poolAlerta, mpCodCliente,
                     `ALERTA: pago MercadoPago cobrado SIN registrar (Tx ${mpTxRef})`,
-                    `MercadoPago aprobó el cobro${mpMonto ? ` de ${mpMonto}` : ''} pero el registro del pago falló:\n${e.message}\n\nTransactionId: ${mpTxRef}${mpRetiroEnCurso ? `\nRetiro: RW-${mpRetiroEnCurso}` : ''}\n\nEl cliente YA pagó. NO volver a cobrar este retiro en caja: registrar el pago a mano o devolver el pago en MercadoPago.`);
+                    `MercadoPago aprobó el cobro${mpMonto ? ` de ${mpMonto}` : ''} pero el registro del pago falló:\n${e.message}\n\nTransactionId: ${mpTxRef}${mpRetiroEnCurso ? `\nRetiro: RW-${mpRetiroEnCurso}` : ''}\n\nEl cliente YA pagó. NO volver a cobrar este retiro en caja.${marcaLiberada ? '\nSi MercadoPago vuelve a avisar de este pago, el sistema lo registra solo: antes de registrarlo a mano, fijate que el retiro siga sin pago.' : ''}\nSi sigue sin pago: registrarlo a mano o devolver el pago en MercadoPago.`);
             } catch (e2) {
                 logger.error('[MP WEBHOOK] No se pudo crear ticket de alerta:', e2.message);
             }
+        } else if (mpTxRef && mpPagoRegistrado) {
+            // El pago quedó registrado; falló algo posterior (referencia en el retiro, comprobante). No es plata perdida.
+            logger.warn(`[MP WEBHOOK] Pago de ${mpTxRef} registrado, pero falló un paso posterior: ${e.message}`);
         }
     }
 };

@@ -458,10 +458,21 @@ exports.backupDatabase = async (req, res) => {
 //    exista. Es un bug de Brave (brave/brave-browser#58670); la página sigue funcionando.
 //  · "Script error." sin archivo ni línea: error de un script de otro origen (extensiones, scripts que
 //    inyecta el navegador). El navegador esconde el detalle: no hay nada para mirar.
+//  · (13/10/2026) Errores que ocurren ENTERO dentro de una extensión del navegador: todos los pasos del
+//    stack son chrome-extension:// / moz-extension:// / safari(-web)-extension:// (ej. "reading 'M_ID'",
+//    ~35 líneas por visita de un cliente). Si algún paso es de la app, se loguea igual.
+//  · (13/10/2026) "__firefox__": el código que Firefox para iPhone inyecta en cada página (modo lectura).
 // No se guardan ni se loguean, y no cuentan para la alerta de "muchos errores".
-const esRuidoAjeno = (message, source) => {
+// La misma regla está en src/utils/errorReporter.js (ahí evita mandarlos); acá cubre a los
+// navegadores que todavía tienen el front viejo.
+const RX_URL_STACK = /(?:[a-z][a-z0-9+.-]*:\/\/[^\s)'"]+|webpack-internal:[^\s)'"]+)/gi;
+const RX_EXTENSION = /^(chrome|moz|safari|safari-web|ms-browser)-extension:\/\//i;
+const esRuidoAjeno = (message, source, stack) => {
     const m = String(message || '');
     if (/window\.ethereum/i.test(m)) return true;
+    if (/__firefox__/.test(m)) return true;
+    const urls = `${stack || ''}\n${source || ''}`.match(RX_URL_STACK) || [];
+    if (urls.length && urls.every(u => RX_EXTENSION.test(u))) return true;
     const sinOrigen = !source || /^(undefined|null)?:0:0$/.test(String(source).trim());
     return m.trim() === 'Script error.' && sinOrigen;
 };
@@ -471,7 +482,7 @@ const esRuidoAjeno = (message, source) => {
 exports.reportClientError = async (req, res) => {
     const { message, stack, source, url, userAgent, userId, timestamp } = req.body;
     const ip = (req.ip || '').replace(/^::ffff:/, '');
-    if (esRuidoAjeno(message, source)) return res.json({ ok: true, ignorado: true });
+    if (esRuidoAjeno(message, source, stack)) return res.json({ ok: true, ignorado: true });
 
     // Store in memory + log
     if (!global.__frontendErrors) global.__frontendErrors = [];

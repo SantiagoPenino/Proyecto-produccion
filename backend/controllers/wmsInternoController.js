@@ -896,12 +896,19 @@ exports.setEstadoSolicitud = async (req, res) => {
 exports.getCompras = async (req, res) => {
     try {
         const pool = await getPool();
+        await svc.asegurarColumnasAnulacion(pool);
         const filtro = String(req.query.estado || 'activas').toLowerCase();
-        const where = filtro === 'historial' ? 'rc.Recibida = 1'
-            : filtro === 'todas' ? '1 = 1' : 'rc.Recibida = 0';
+        // Las anuladas (cargadas por error) solo salen en su pestaña y en Todas
+        const where = filtro === 'historial' ? "rc.Recibida = 1 AND ISNULL(c.Estado, '') <> 'anulada'"
+            : filtro === 'anuladas' ? "c.Estado = 'anulada'"
+            : filtro === 'todas' ? '1 = 1' : "rc.Recibida = 0 AND ISNULL(c.Estado, '') <> 'anulada'";
         const r = await pool.request().query(`
             SELECT c.CompId, c.ReferenciaFactura, c.Estado, c.Progreso, c.TotalCompra, c.GastosExtras,
                    c.AutorizadoRecepcion, c.FechaCreacion, c.PlaId, c.MonedaId, c.DepRecepcionId,
+                   -- PrvId/TfaId: sin ellos "Editar compra" arrancaba con proveedor y factura vacíos
+                   -- y al guardar los dejaba en NULL
+                   c.PrvId, c.TfaId, c.ImportacionId,
+                   c.MotivoAnulacion, c.FechaAnulacion, ua.Nombre AS AnuladaPorNombre,
                    c.FechaEstimadaArribo, c.VolumenM3, c.PesoKg, c.Incoterm,
                    p.Nombre AS Proveedor, m.Codigo AS Moneda, m.Simbolo AS MonedaSimbolo,
                    pl.Nombre AS Plantilla,
@@ -918,11 +925,31 @@ exports.getCompras = async (req, res) => {
             LEFT JOIN dbo.Wms_PlantillasProgreso pl ON pl.PlaId = c.PlaId
             LEFT JOIN dbo.Wms_PlantillasProgresoPasos pas ON pas.PlaId = c.PlaId
                   AND pas.Clave = CASE WHEN c.Progreso = 'recibido' THEN ult.Clave ELSE c.Progreso END
+            LEFT JOIN dbo.Usuarios ua ON ua.IdUsuario = c.AnuladaPor
             WHERE ${where}
             ORDER BY c.FechaCreacion DESC
         `);
         res.json({ success: true, data: r.recordset });
     } catch (e) { res.status(500).json({ error: e.message }); }
+};
+
+// Una compra anulada queda de solo lectura (los adjuntos se pueden seguir cargando).
+const COMPRA_ANULADA = 'La compra está anulada: no se puede modificar.';
+async function compraAnulada(pool, compId) {
+    const r = await pool.request().input('C', sql.Int, compId)
+        .query(`SELECT Estado FROM dbo.Wms_Compras WHERE CompId = @C`);
+    return r.recordset[0]?.Estado === 'anulada';
+}
+
+// POST /compras/:id/anular { motivo } — compra cargada por error (no se borra: ver svc.anularCompra)
+exports.anularCompra = async (req, res) => {
+    try {
+        const r = await svc.anularCompra({
+            compId: parseInt(req.params.id, 10),
+            motivo: req.body?.motivo, usuarioId: uid(req),
+        });
+        res.json({ success: true, ...r });
+    } catch (e) { res.status(400).json({ error: e.message }); }
 };
 
 // GET /compras/:id — detalle: líneas (con lo ya recibido), pagos y pasos de su plantilla
@@ -1440,7 +1467,7 @@ exports.chequearReferencia = async (req, res) => {
             .input('P', sql.Int, prv).input('R', sql.NVarChar(200), ref)
             .input('X', sql.Int, parseInt(req.query.excluir, 10) || 0)
             .query(`SELECT TOP 1 CompId FROM dbo.Wms_Compras
-                    WHERE PrvId = @P AND CompId <> @X
+                    WHERE PrvId = @P AND CompId <> @X AND ISNULL(Estado, '') <> 'anulada'
                       AND UPPER(REPLACE(REPLACE(REPLACE(ISNULL(ReferenciaFactura,''), ' ', ''), '-', ''), '/', '')) = @R`);
         res.json({ success: true, libre: !r.recordset.length, compId: r.recordset[0]?.CompId || null });
     } catch (e) { res.status(500).json({ error: e.message }); }
@@ -1555,6 +1582,7 @@ exports.editarCompra = async (req, res) => {
         const { prvId, monedaId, tfaId, referenciaFactura, depRecepcionId,
                 fechaEstimadaArribo, volumenM3, pesoKg, incoterm } = req.body || {};
         const pool = await getPool();
+        if (await compraAnulada(pool, parseInt(req.params.id, 10))) return res.status(409).json({ error: COMPRA_ANULADA });
         await pool.request()
             .input('C', sql.Int, parseInt(req.params.id, 10))
             .input('Prv', sql.Int, parseInt(prvId, 10) || null)
@@ -1583,6 +1611,7 @@ exports.setProgresoCompra = async (req, res) => {
         const pool = await getPool();
         const clave = String(req.body?.clave || '').trim();
         if (!clave) return res.status(400).json({ error: 'Falta el paso' });
+        if (await compraAnulada(pool, parseInt(req.params.id, 10))) return res.status(409).json({ error: COMPRA_ANULADA });
         await pool.request()
             .input('C', sql.Int, parseInt(req.params.id, 10))
             .input('P', sql.VarChar(50), clave)
@@ -1595,6 +1624,7 @@ exports.setProgresoCompra = async (req, res) => {
 exports.autorizarCompra = async (req, res) => {
     try {
         const pool = await getPool();
+        if (await compraAnulada(pool, parseInt(req.params.id, 10))) return res.status(409).json({ error: COMPRA_ANULADA });
         await pool.request()
             .input('C', sql.Int, parseInt(req.params.id, 10))
             .input('A', sql.Bit, req.body?.autorizado === false ? 0 : 1)
@@ -1609,6 +1639,7 @@ exports.registrarPagoCompra = async (req, res) => {
         const monto = parseFloat(req.body?.monto);
         if (!(monto > 0)) return res.status(400).json({ error: 'Monto inválido' });
         const pool = await getPool();
+        if (await compraAnulada(pool, parseInt(req.params.id, 10))) return res.status(409).json({ error: COMPRA_ANULADA });
         await pool.request()
             .input('C', sql.Int, parseInt(req.params.id, 10))
             .input('M', sql.Decimal(18, 2), monto)
@@ -1629,6 +1660,7 @@ exports.agregarCostoExtra = async (req, res) => {
     const descripcion = (req.body?.descripcion || '').trim();
     if (!(monto > 0) || !descripcion) return res.status(400).json({ error: 'Falta descripción o monto' });
     const pool = await getPool();
+    if (await compraAnulada(pool, compId)) return res.status(409).json({ error: COMPRA_ANULADA });
     const tran = new sql.Transaction(pool);
     await tran.begin();
     try {
@@ -1662,6 +1694,7 @@ exports.borrarCostoExtra = async (req, res) => {
             .query(`SELECT CompId FROM dbo.Wms_ComprasCostosExtra WHERE CceId = @X`);
         if (!r.recordset.length) return res.status(404).json({ error: 'No encontrado' });
         const compId = r.recordset[0].CompId;
+        if (await compraAnulada(pool, compId)) return res.status(409).json({ error: COMPRA_ANULADA });
         await pool.request().input('X', sql.Int, parseInt(req.params.cceId, 10))
             .query(`DELETE FROM dbo.Wms_ComprasCostosExtra WHERE CceId = @X`);
         await pool.request().input('C', sql.Int, compId).query(`
@@ -1681,6 +1714,7 @@ exports.setPlantillaCompra = async (req, res) => {
         const pool = await getPool();
         const plaId = parseInt(req.body?.plaId, 10);
         if (!plaId) return res.status(400).json({ error: 'Falta la plantilla' });
+        if (await compraAnulada(pool, parseInt(req.params.id, 10))) return res.status(409).json({ error: COMPRA_ANULADA });
         await pool.request()
             .input('C', sql.Int, parseInt(req.params.id, 10))
             .input('P', sql.Int, plaId)
@@ -1834,6 +1868,7 @@ exports.vincularCompraImportacion = async (req, res) => {
         const pool = await getPool();
         const compId = parseInt(req.body?.compId, 10);
         if (!compId) return res.status(400).json({ error: 'Falta la compra' });
+        if (!req.body?.quitar && await compraAnulada(pool, compId)) return res.status(409).json({ error: COMPRA_ANULADA });
         await pool.request()
             .input('C', sql.Int, compId)
             .input('I', sql.Int, req.body?.quitar ? null : parseInt(req.params.id, 10))

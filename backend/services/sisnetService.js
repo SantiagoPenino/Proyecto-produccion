@@ -542,20 +542,82 @@ exports.prepararCFE = async (doc, lineas, cotDolar = 40.0, empresa = null) => {
 };
 
 /**
+ * Conexión SISNET efectiva: prefiere la de la empresa (multiempresa) y cae al .env si no hay empresa.
+ * SISNET_SOLO_ENV=true (solo en copias locales): la base local es copia de producción y la empresa trae
+ * la conexión al SISNET de PRODUCCIÓN; sin este freno, emitir desde local manda un CFE real a la DGI
+ * (visto el 12/10/2026: empresa 1 → LALINDE/PROD). Con el freno se usa la del .env (SISNET de pruebas).
+ * Producción no tiene la variable: ahí nada cambia.
+ */
+function conexionSisnet(empresa) {
+    const soloEnv = process.env.SISNET_SOLO_ENV === 'true';
+    const conn = soloEnv ? null : empresa;
+    return {
+        wsdl: (conn && conn.EmpSisnetWsdlUrl) || WSDL_URL,
+        user: (conn && conn.EmpSisnetUser)    || USER,
+        caja: (conn && conn.EmpSisnetCaja)    || CAJA,
+        pass: (conn && conn.EmpSisnetPass ? crypto.decrypt(conn.EmpSisnetPass) : null) || PASS,
+        desc: conn ? 'empresaId=' + conn.EmpIdEmpresa : soloEnv ? '(SISNET_SOLO_ENV: .env)' : '(fallback .env)',
+    };
+}
+
+function clienteSisnet(cx) {
+    return new Promise((resolve, reject) => {
+        soap.createClient(cx.wsdl, (err, client) => {
+            if (err) return reject(new Error('Error conectando a SISNET: ' + err.message));
+            client.setSecurity(new soap.BasicAuthSecurity(cx.user, cx.pass));
+            resolve(client);
+        });
+    });
+}
+
+/**
+ * Reserva el próximo número de CFE sin emitir nada (obtenerCAE). Lo usa el cobro con POS: la terminal
+ * necesita el número de factura ANTES de cobrar para aplicar la rebaja de IVA de la Ley 19.210.
+ * Verificado en el SISNET de pruebas (12/10/2026): cada llamada CONSUME un número (B-276, B-277…).
+ * Si después no se emite, hay que anularlo con anularNumero.
+ * @returns {Promise<Object>} wsCAE { numero, serie, numeroAutorizacion, idInterno, ... } (+ tipoCFE, caja)
+ */
+exports.reservarNumero = async (tipoCFE, empresa = null) => {
+    const cx = conexionSisnet(empresa);
+    const client = await clienteSisnet(cx);
+    const r = await new Promise((resolve, reject) =>
+        client.obtenerCAE({ tipoCFE, claveUnicaCaja: cx.caja }, (e, res) => e ? reject(e) : resolve(res)));
+    const w = r?.return;
+    if (!w || w.hayError) throw new Error('SISNET no reservó el número: ' + (w?.errorDes || 'sin respuesta'));
+    logger.info(`[SISNET-Service] Número reservado ${w.serie}-${w.numero} (CFE ${tipoCFE}, caja ${cx.caja} ${cx.desc})`);
+    return { ...w, tipoCFE, caja: cx.caja };
+};
+
+/**
+ * Anula un número reservado con reservarNumero que no se va a usar (anularNumerador). SISNET responde
+ * "OK<serie> <número>" (verificado en pruebas el 12/10/2026) y el número no se vuelve a usar.
+ */
+exports.anularNumero = async (wsCAE, empresa = null) => {
+    const cx = conexionSisnet(empresa);
+    const client = await clienteSisnet(cx);
+    const { tipoCFE, caja, ...soloWsCAE } = wsCAE || {};
+    const r = await new Promise((resolve, reject) =>
+        client.anularNumerador({ wsCAE: soloWsCAE }, (e, res) => e ? reject(e) : resolve(res)));
+    const res = r?.return;
+    if (!res || res.hayError) throw new Error('SISNET no anuló el número: ' + (res?.mensaje || 'sin respuesta'));
+    logger.info(`[SISNET-Service] Número ${wsCAE.serie}-${wsCAE.numero} anulado: ${res.mensaje}`);
+    return res;
+};
+
+/**
  * Emite un CFE real a SISNET usando la factura y sus detalles.
  * @param {Object} doc - El objeto de la cabecera de la factura (con datos del cliente).
  * @param {Array} lineas - Array de DocumentosContablesDetalle.
  * @param {Number} cotDolar - Cotización del dólar actual.
+ * @param {Object} [opciones] - { wsCAE }: número ya reservado con reservarNumero (cobro con POS). Se usa ese
+ *                              en vez de pedir uno nuevo, porque es el que la terminal mandó como factura.
  * @returns {Promise<Object>} - Devuelve un objeto con CAE, URL, Serie, etc.
  */
-exports.emitirCFE = async (doc, lineas, cotDolar = 40.0, empresa = null) => {
-    // 0. Config efectiva: prefiere valores de la empresa (multiempresa), cae al .env si no hay empresa
-    const WSDL_EFF = (empresa && empresa.EmpSisnetWsdlUrl) || WSDL_URL;
-    const USER_EFF = (empresa && empresa.EmpSisnetUser)    || USER;
-    const CAJA_EFF = (empresa && empresa.EmpSisnetCaja)    || CAJA;
-    const PASS_EFF = (empresa && empresa.EmpSisnetPass ? crypto.decrypt(empresa.EmpSisnetPass) : null) || PASS;
+exports.emitirCFE = async (doc, lineas, cotDolar = 40.0, empresa = null, opciones = {}) => {
+    const cx = conexionSisnet(empresa);
+    const WSDL_EFF = cx.wsdl, USER_EFF = cx.user, CAJA_EFF = cx.caja, PASS_EFF = cx.pass;
 
-    logger.info('[SISNET-Service] Emisor caja=' + CAJA_EFF + (empresa ? ' empresaId=' + empresa.EmpIdEmpresa : ' (fallback .env)'));
+    logger.info('[SISNET-Service] Emisor caja=' + CAJA_EFF + ' ' + cx.desc);
 
     // Se arma el MISMO payload que muestra la vista previa de la bandeja
     const prep = await exports.prepararCFE(doc, lineas, cotDolar, empresa);
@@ -566,6 +628,17 @@ exports.emitirCFE = async (doc, lineas, cotDolar = 40.0, empresa = null) => {
     }
 
     const { tipoCFE, cfeData } = prep;
+
+    // Número reservado: tiene que ser del mismo tipo de CFE y de la misma caja SISNET que esta emisión.
+    const reservado = opciones.wsCAE || null;
+    if (reservado) {
+        if (reservado.tipoCFE && Number(reservado.tipoCFE) !== Number(tipoCFE)) {
+            throw new Error(`El número reservado ${reservado.serie}-${reservado.numero} es de CFE ${reservado.tipoCFE} y este documento sale como ${tipoCFE}.`);
+        }
+        if (reservado.caja && reservado.caja !== CAJA_EFF) {
+            throw new Error(`El número reservado ${reservado.serie}-${reservado.numero} es de la caja SISNET ${reservado.caja} y esta emisión va por ${CAJA_EFF}.`);
+        }
+    }
 
     return new Promise((resolve, reject) => {
         logger.info(`[SISNET-Service] Conectando a SOAP: ${WSDL_EFF}`);
@@ -580,11 +653,20 @@ exports.emitirCFE = async (doc, lineas, cotDolar = 40.0, empresa = null) => {
             const security = new soap.BasicAuthSecurity(USER_EFF, PASS_EFF);
             client.setSecurity(security);
 
-            // Solicitar CAE del tipo que corresponde (101/111 venta, 102/112 NC, 103/113 ND)
-            logger.info(`[SISNET-Service] Solicitando CAE para Tipo CFE: ${tipoCFE} (${prep.nombreCFE})...`);
+            // Solicitar CAE del tipo que corresponde (101/111 venta, 102/112 NC, 103/113 ND),
+            // salvo que ya venga reservado (cobro con POS): entonces se emite con ese.
             const argsCAE = { tipoCFE, claveUnicaCaja: CAJA_EFF };
+            const pedirCAE = (cb) => {
+                if (!reservado) {
+                    logger.info(`[SISNET-Service] Solicitando CAE para Tipo CFE: ${tipoCFE} (${prep.nombreCFE})...`);
+                    return client.obtenerCAE(argsCAE, cb);
+                }
+                logger.info(`[SISNET-Service] Emitiendo con el número reservado ${reservado.serie}-${reservado.numero} (CFE ${tipoCFE}).`);
+                const { tipoCFE: _t, caja: _c, ...wsCAE } = reservado;
+                cb(null, { return: wsCAE });
+            };
 
-            client.obtenerCAE(argsCAE, (errCae, resultCae) => {
+            pedirCAE((errCae, resultCae) => {
                 if (errCae || resultCae?.return?.hayError) {
                     const errorMsg = errCae ? errCae.message : resultCae?.return?.errorDes;
                     logger.error("[SISNET-Service] Error obteniendo CAE: ", errorMsg);

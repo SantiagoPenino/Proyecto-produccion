@@ -605,6 +605,7 @@ async function recibirCompra({ compId, depId, lineas, usuarioId = null }) {
             .input('C', sql.Int, compId)
             .query(`SELECT CompId, AutorizadoRecepcion, Estado, DepRecepcionId FROM dbo.Wms_Compras WITH (UPDLOCK, ROWLOCK) WHERE CompId = @C`);
         if (!rC.recordset.length) throw new Error(`Compra ${compId} no existe`);
+        if (rC.recordset[0].Estado === 'anulada') throw new Error('La compra está anulada: no se puede recibir');
         if (!rC.recordset[0].AutorizadoRecepcion) throw new Error('La compra no está autorizada para recepción');
         const dep = parseInt(depId, 10) || rC.recordset[0].DepRecepcionId;
         if (!dep) throw new Error('Falta el depósito de recepción');
@@ -695,6 +696,69 @@ async function recibirCompra({ compId, depId, lineas, usuarioId = null }) {
     }
 }
 
+// ── Anular una compra cargada por error (13/10) ──
+// No se borra: queda en «Anuladas» con quién, cuándo y por qué (como el remito cancelado), así los
+// pagos y adjuntos que tenga no se pierden. Solo si no entró mercadería: lo recibido ya es stock.
+// Las columnas se crean solas la primera vez (ALTER de columnas NULL: solo metadata).
+let colsAnulacionListas = false;
+async function asegurarColumnasAnulacion(pool) {
+    if (colsAnulacionListas) return;
+    await pool.request().query(`
+        IF COL_LENGTH('dbo.Wms_Compras', 'MotivoAnulacion') IS NULL
+            ALTER TABLE dbo.Wms_Compras ADD MotivoAnulacion NVARCHAR(500) NULL;
+        IF COL_LENGTH('dbo.Wms_Compras', 'AnuladaPor') IS NULL
+            ALTER TABLE dbo.Wms_Compras ADD AnuladaPor INT NULL;
+        IF COL_LENGTH('dbo.Wms_Compras', 'FechaAnulacion') IS NULL
+            ALTER TABLE dbo.Wms_Compras ADD FechaAnulacion DATETIME NULL;
+    `);
+    colsAnulacionListas = true;
+}
+
+async function anularCompra({ compId, motivo, usuarioId = null }) {
+    const mot = String(motivo || '').trim().substring(0, 500);
+    if (!mot) throw new Error('Escribí el motivo de la anulación');
+    const pool = await getPool();
+    await asegurarColumnasAnulacion(pool);
+    const tran = new sql.Transaction(pool);
+    await tran.begin();
+    try {
+        const rC = await new sql.Request(tran).input('C', sql.Int, compId)
+            .query(`SELECT CompId, Estado, ImportacionId FROM dbo.Wms_Compras WITH (UPDLOCK, ROWLOCK) WHERE CompId = @C`);
+        if (!rC.recordset.length) throw new Error(`La compra ${compId} no existe`);
+        const comp = rC.recordset[0];
+        if (comp.Estado === 'anulada') { await tran.rollback(); return { ok: true, yaAnulada: true }; }
+        // Lo recibido ya generó etiquetas con stock (y quizá se consumió): anularla dejaría ese stock
+        // sin su compra. Las compras migradas del viejo cuentan también por sus etiquetas vivas.
+        const rRec = await new sql.Request(tran).input('C', sql.Int, compId).query(`
+            SELECT ISNULL((SELECT SUM(CantidadRecibida) FROM dbo.Wms_ComprasDetalle WHERE CompId = @C), 0) AS Recibido,
+                   (SELECT COUNT(*) FROM dbo.Wms_Etiquetas
+                    WHERE CompraId = @C AND Estado NOT IN ('pendiente_recepcion', 'anulado')) AS Etiquetas`);
+        const { Recibido, Etiquetas } = rRec.recordset[0];
+        if (Number(Recibido) > 0.0001 || Etiquetas > 0)
+            throw new Error('Ya entró mercadería de esta compra (sus etiquetas están en el inventario): no se puede anular.');
+
+        // Sale de la importación que la agrupaba: así no suma en su total ni en su cantidad de compras.
+        await new sql.Request(tran)
+            .input('C', sql.Int, compId)
+            .input('M', sql.NVarChar(500), mot)
+            .input('Usr', sql.Int, usuarioId)
+            .query(`UPDATE dbo.Wms_Compras
+                    SET Estado = 'anulada', AutorizadoRecepcion = 0, ImportacionId = NULL,
+                        MotivoAnulacion = @M, AnuladaPor = @Usr, FechaAnulacion = GETDATE()
+                    WHERE CompId = @C`);
+        // Compras migradas: las etiquetas que el viejo creaba al hacer la compra quedan anuladas (no se
+        // borran, igual que al recibir: el id queda reservado por si hay alguna impresa).
+        const rEti = await new sql.Request(tran).input('C', sql.Int, compId)
+            .query(`UPDATE dbo.Wms_Etiquetas SET Estado = 'anulado', UltimaActualizacion = GETDATE()
+                    WHERE CompraId = @C AND Estado = 'pendiente_recepcion'`);
+        await tran.commit();
+        return { ok: true, importacionId: comp.ImportacionId || null, etiquetasAnuladas: rEti.rowsAffected[0] || 0 };
+    } catch (e) {
+        try { await tran.rollback(); } catch (_) {}
+        throw e;
+    }
+}
+
 /**
  * Baja manual de una etiqueta: consumo interno, merma, rotura o venta libre.
  * Es un egreso puntual sobre UNA etiqueta (no FIFO): el operario elige el lote que sale.
@@ -735,6 +799,6 @@ async function bajaManual({ etiId, cantidad, motivo = 'baja_consumo', nota = nul
 
 module.exports = {
     egresarVenta, egresarVentaCompat, ingresarEtiqueta, ajustarConteo, getStockPorVariante,
-    crearRemito, cancelarRemito, recibirRemitoItem, recibirCompra, bajaManual,
+    crearRemito, cancelarRemito, recibirRemitoItem, recibirCompra, anularCompra, asegurarColumnasAnulacion, bajaManual,
     getMaestros, getMaestro, getVariantesDeMaestro, getCatalogoSync, crearMaestroConVariantes, asegurarColumnasTela,
 };

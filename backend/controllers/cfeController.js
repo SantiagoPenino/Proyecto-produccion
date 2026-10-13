@@ -423,11 +423,39 @@ exports.updateConfigDGI = async (req, res) => {
     }
 };
 
+// Error de validación de la emisión: lo que antes era `return res.status(...)` dentro de enviarADGI.
+const errorEmision = (statusCode, mensaje) => Object.assign(new Error(mensaje), { statusCode });
+
+/**
+ * POST /contabilidad/cfe/documentos/:id/enviar — la Bandeja CFE manda un documento a DGI.
+ * Si el documento es de un cobro con POS que reservó el número de factura antes de cobrar (Ley 19.210),
+ * se emite con ESE número: es el que la terminal le informó a la procesadora.
+ */
 exports.enviarADGI = async (req, res) => {
     try {
         const { id } = req.params;
+        const pos = require('../services/poslink/poslinkService');
+        const reserva = await pos.caeReservadoDeDocumento(id);
+        const r = await emitirDocumento(id, { wsCAE: reserva?.wsCAE || null });
+        if (reserva) await pos.marcarCaeUsado(reserva.ptxId, Number(id));
+        res.json(r);
+    } catch (error) {
+        if (error.statusCode && error.statusCode < 500) {
+            return res.status(error.statusCode).json({ error: error.message });
+        }
+        logger.error('Error enviando a DGI:', error);
+        res.status(500).json({ error: error.message });
+    }
+};
+
+/**
+ * Emite un documento a DGI (SISNET) y graba la firma. La usan la Bandeja (enviarADGI) y el cobro con POS.
+ * Los rechazos de validación salen como Error con statusCode 400/404.
+ * @param {object} [opciones] { wsCAE }: número ya reservado (ver sisnetService.reservarNumero).
+ */
+async function emitirDocumento(id, { wsCAE = null } = {}) {
         const pool = await getPool();
-        
+
         // 1. Obtener documento con datos de cliente
         const docResult = await pool.request()
             .input('Id', sql.Int, id)
@@ -439,17 +467,17 @@ exports.enviarADGI = async (req, res) => {
             `);
             
         if (docResult.recordset.length === 0) {
-            return res.status(404).json({ error: 'Documento no encontrado' });
+            throw errorEmision(404, 'Documento no encontrado');
         }
-        
+
         const doc = docResult.recordset[0];
         if (doc.CfeEstado === 'ACEPTADO_DGI') {
-            return res.status(400).json({ error: 'Este documento ya fue firmado y aceptado por DGI.' });
+            throw errorEmision(400, 'Este documento ya fue firmado y aceptado por DGI.');
         }
         if (doc.CfeEstado === 'BORRADOR') {
             const isFiscal = doc.DocTipo && !doc.DocTipo.toLowerCase().includes('pedido') && doc.DocTipo.toLowerCase().trim() !== 'pc';
             if (!isFiscal) {
-                return res.status(400).json({ error: 'El Pedido Caja es un borrador interno. Debe convertirlo a e-Ticket o e-Factura antes de enviarlo a DGI.' });
+                throw errorEmision(400, 'El Pedido Caja es un borrador interno. Debe convertirlo a e-Ticket o e-Factura antes de enviarlo a DGI.');
             }
         }
 
@@ -470,7 +498,7 @@ exports.enviarADGI = async (req, res) => {
         // Validación: la empresa emisora debe existir, estar activa y tener caja SISNET configurada
         if (!empresa || !empresa.EmpActiva || !empresa.EmpSisnetCaja) {
             logger.warn(`Emisión a DGI bloqueada para DocId ${id}: empresa emisora no configurada (EmpIdEmpresa=${doc.EmpIdEmpresa}).`);
-            return res.status(400).json({ error: 'La empresa emisora no está configurada para facturación electrónica (requiere estar activa y tener caja SISNET).' });
+            throw errorEmision(400, 'La empresa emisora no está configurada para facturación electrónica (requiere estar activa y tener caja SISNET).');
         }
 
         // 2. Obtener lineas
@@ -509,9 +537,7 @@ exports.enviarADGI = async (req, res) => {
         const valReceptor = validarDocumentoUY(docReceptorReal);
 
         if (esFacturaCFE && (!valReceptor.valido || valReceptor.tipo !== 'RUT')) {
-            return res.status(400).json({
-                error: `No se puede enviar a DGI: las e-Facturas requieren un RUT válido del cliente (12 dígitos). ${valReceptor.motivo || ''}. Solución: editá el documento y corregí el campo "Documento (RUT/CI)" del cliente, o emitilo como e-Ticket si es consumidor final.`
-            });
+            throw errorEmision(400, `No se puede enviar a DGI: las e-Facturas requieren un RUT válido del cliente (12 dígitos). ${valReceptor.motivo || ''}. Solución: editá el documento y corregí el campo "Documento (RUT/CI)" del cliente, o emitilo como e-Ticket si es consumidor final.`);
         }
 
         if (esTicketCFE) {
@@ -530,16 +556,14 @@ exports.enviarADGI = async (req, res) => {
             const umbralUYU = limiteUI * valorUI;
             const totalUYU = doc.MonIdMoneda === 2 ? Number(doc.DocTotal || 0) * cotDolar : Number(doc.DocTotal || 0);
             if (totalUYU > umbralUYU && !valReceptor.valido) {
-                return res.status(400).json({
-                    error: `No se puede enviar a DGI: este e-Ticket equivale a $ ${totalUYU.toFixed(2)} UYU y supera el umbral de $ ${umbralUYU.toFixed(2)} (${limiteUI} UI), por lo que DGI exige identificar al comprador. ${valReceptor.motivo}. Solución: editá el documento, cargá la Cédula (6-8 dígitos) o el RUT (12 dígitos) del cliente y reenviá.`
-                });
+                throw errorEmision(400, `No se puede enviar a DGI: este e-Ticket equivale a $ ${totalUYU.toFixed(2)} UYU y supera el umbral de $ ${umbralUYU.toFixed(2)} (${limiteUI} UI), por lo que DGI exige identificar al comprador. ${valReceptor.motivo}. Solución: editá el documento, cargá la Cédula (6-8 dígitos) o el RUT (12 dígitos) del cliente y reenviá.`);
             }
         }
 
         // 4. Emitir a SISNET
         logger.info(`Iniciando emisión a SISNET para DocId: ${id} con cotización: ${cotDolar}`);
-        const resultSISNET = await sisnetService.emitirCFE(doc, lineasResult.recordset, cotDolar, empresa);
-        
+        const resultSISNET = await sisnetService.emitirCFE(doc, lineasResult.recordset, cotDolar, empresa, { wsCAE });
+
         // 4. Actualizar base de datos con respuesta real
         await actualizarFirmaCFE(id, {
             cae: resultSISNET.vencimiento, // Guardamos el texto de vencimiento/CAE aquí para retrocompatibilidad
@@ -560,18 +584,15 @@ exports.enviarADGI = async (req, res) => {
         }
 
         logger.info(`Documento ${id} emitido a DGI como CFE ${resultSISNET.tipoCFE} (${resultSISNET.nombreCFE}). CAE: ${resultSISNET.cae}`);
-        res.json({
+        return {
             message: 'Documento enviado exitosamente',
             cae: resultSISNET.cae,
             numeroOficial: resultSISNET.serie,
             tipoCFE: resultSISNET.tipoCFE,
             nombreCFE: resultSISNET.nombreCFE
-        });
-    } catch (error) {
-        logger.error('Error enviando a DGI:', error);
-        res.status(500).json({ error: error.message });
-    }
-};
+        };
+}
+exports.emitirDocumento = emitirDocumento;
 
 /**
  * GET /contabilidad/cfe/documentos/:id/preview-dgi

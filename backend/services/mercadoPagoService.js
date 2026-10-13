@@ -19,6 +19,9 @@ const MP_API_BASE = 'https://api.mercadopago.com';
  * @param {Object} options.ordersData    - Datos para guardar en OrdersJson (para el webhook)
  * @param {number} options.codCliente    - Código del cliente
  * @param {string} options.logPrefix     - Prefijo para logs
+ * @param {number} options.expiraEnMinutos - Vigencia del link (24 h si no se pasa). El tótem usa minutos:
+ *                                         un QR que sigue vivo después de que el cliente se fue a pagar a la
+ *                                         caja es una puerta a cobrarle dos veces.
  * @returns {{ success, url, transactionId, preferenceId, error }}
  */
 async function createPreference({
@@ -28,7 +31,8 @@ async function createPreference({
     commerceName = 'USER',
     ordersData = {},
     codCliente = 0,
-    logPrefix = '[MP]'
+    logPrefix = '[MP]',
+    expiraEnMinutos = 24 * 60
 }) {
     const accessToken = process.env.MP_ACCESS_TOKEN;
     if (!accessToken) {
@@ -59,10 +63,10 @@ async function createPreference({
         external_reference: transactionId,
         // Métadatos de la tienda
         statement_descriptor: commerceName,
-        // Expiración de la preferencia: 24 horas
+        // Expiración de la preferencia: 24 horas salvo que se pida otra (tótem)
         expires: true,
         expiration_date_from: new Date().toISOString(),
-        expiration_date_to: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
+        expiration_date_to: new Date(Date.now() + expiraEnMinutos * 60 * 1000).toISOString()
     };
 
     logger.info(`${logPrefix} Creando preferencia de pago...`);

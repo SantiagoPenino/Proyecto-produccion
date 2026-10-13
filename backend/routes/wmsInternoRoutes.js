@@ -69,6 +69,7 @@ router.post('/compras/:id/progreso', verifyToken, ctrl.setProgresoCompra);
 router.post('/compras/:id/autorizar', verifyToken, ctrl.autorizarCompra);
 router.post('/compras/:id/pagos', verifyToken, ctrl.registrarPagoCompra);
 router.post('/compras/:id/recibir', verifyToken, ctrl.recibirCompra);
+router.post('/compras/:id/anular', verifyToken, ctrl.anularCompra);   // cargada por error: queda en «Anuladas»
 // Adjuntos de la compra (facturas, BL, despachos): disco + índice en tabla
 router.post('/compras/:id/costos', verifyToken, ctrl.agregarCostoExtra);
 router.delete('/compras/costos/:cceId', verifyToken, ctrl.borrarCostoExtra);

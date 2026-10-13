@@ -98,6 +98,21 @@ const procesarTransaccion = async (req, res) => {
 
     const pool = await getPool();
 
+    // Cobro con tarjeta integrado (POSLink): lo que la tarjeta está cobrando, o quedó en duda, no se
+    // cobra por otra vía (candado B del plan). Si el control falla se avisa en el log y la caja sigue:
+    // el choque necesita un cobro con tarjeta vivo en ese mismo momento.
+    try {
+      const enPos = await require('../services/poslink/poslinkService').referenciasEnCobro(pool, aplicaciones);
+      if (enPos.length) {
+        const r = enPos[0];
+        return res.status(409).json({ success: false, error:
+          `${r.PtrTipo === 'RETIRO' ? 'El retiro' : 'La orden'} ${r.PtrRefId} tiene un cobro con tarjeta en la terminal ${r.PteEtiqueta} `
+          + `(${r.PtxEstado}). No se puede cobrar por otra vía hasta que ese cobro se resuelva.` });
+      }
+    } catch (ePos) {
+      logger.error(`[CAJA] No se pudo verificar cobros con tarjeta en curso: ${ePos.message}`);
+    }
+
     // Validar tipo de documento
     let esCredito = false;
     if (header.tipoDocumento && header.tipoDocumento !== 'NINGUNO') {

@@ -130,6 +130,8 @@ const nomenclatorsRoutes = require('./routes/nomenclatorsRoutes');
 app.use('/api/web-auth', webAuthRoutes); // RUTAS AUTH CLIENTE WEB
 app.use('/api/web-designer', require('./routes/webDesignerRoutes')); // DISEÑADORES (suben pedidos en nombre de clientes)
 app.use('/api/web-orders', webOrdersRoutes); // RUTAS PEDIDOS CLIENTE WEB (DTF, Etc)
+app.use('/api/totem-pos', require('./routes/poslinkTotemRoutes')); // cobro con tarjeta en el tótem (POSLink)
+app.use('/api/totem-mp', require('./routes/totemMpRoutes'));        // pago con MercadoPago (QR) en el tótem
 app.use('/api/prendas-orders', require('./routes/prendasOrdersRoutes')); // ALTA INTERNA PRENDAS / PRODUCTOS TERMINADOS (fork aislado, no afecta a web-orders)
 app.use('/api/web-retiros', webRetirosRoutes);
 app.use('/api/web-recursos', require('./routes/webRecursosRoutes')); // "MIS RECURSOS" DEL PORTAL (planes de metros, solo lectura)
@@ -629,6 +631,15 @@ if (process.env.NODE_ENV !== 'test') {
                 startServicioTecnicoJob(io);
             } catch (e) {
                 logger.error("❌ [CRON] Error cargando ServicioTecnico:", e.message);
+            }
+
+            // POSLink — cobros con tarjeta sin resolver y conciliación de lotes (docs/poslink-implementacion-plan.md).
+            // No arranca si POSLINK_URL / POSLINK_SYSTEM_ID no están en el .env.
+            try {
+                const { startPoslinkBarridoJob } = require('./jobs/poslinkBarrido.job');
+                startPoslinkBarridoJob();
+            } catch (e) {
+                logger.error("❌ [CRON] Error cargando PoslinkBarrido:", e.message);
             }
 
         } catch (error) {

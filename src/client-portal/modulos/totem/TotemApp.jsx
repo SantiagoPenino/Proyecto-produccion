@@ -13,6 +13,9 @@ export const TotemApp = () => {
     const [screen, setScreen] = useState('loading'); // loading | welcome | dashboard | blocked
     const [sessionKey, setSessionKey] = useState(0);
     const timeoutRef = useRef(null);
+    // Mientras hay un cobro con tarjeta en curso no se cierra la sesión por inactividad: el cliente
+    // está con la tarjeta en el POS, no tocando la pantalla, y el cobro dura lo que diga Resonet.
+    const ocupadoRef = useRef(false);
 
     // Autorización por TOKEN DE DISPOSITIVO (antes era por IP; el local ya no tiene IP fija).
     // Si la URL trae ?activar=TOKEN se guarda en este equipo y queda activado para siempre.
@@ -36,6 +39,7 @@ export const TotemApp = () => {
     }, []);
 
     const handleLogout = useCallback(() => {
+        ocupadoRef.current = false;
         setScreen('welcome');
         setSessionKey(k => k + 1);
         if (timeoutRef.current) clearTimeout(timeoutRef.current);
@@ -59,7 +63,7 @@ export const TotemApp = () => {
 
     const resetTimer = useCallback(() => {
         if (timeoutRef.current) clearTimeout(timeoutRef.current);
-        if (screen === 'dashboard') {
+        if (screen === 'dashboard' && !ocupadoRef.current) {
             timeoutRef.current = setTimeout(() => {
                 handleLogout();
             }, INACTIVITY_TIMEOUT);
@@ -75,6 +79,11 @@ export const TotemApp = () => {
             events.forEach(e => window.removeEventListener(e, handler));
             if (timeoutRef.current) clearTimeout(timeoutRef.current);
         };
+    }, [resetTimer]);
+
+    const setOcupado = useCallback((v) => {
+        ocupadoRef.current = !!v;
+        resetTimer(); // ocupado: corta el reloj; libre: lo vuelve a arrancar desde cero
     }, [resetTimer]);
 
     // Blocked screen
@@ -111,7 +120,7 @@ export const TotemApp = () => {
 
             {/* Dashboard always behind */}
             {screen === 'dashboard' && (
-                <TotemDashboard key={sessionKey} onLogout={handleLogout} />
+                <TotemDashboard key={sessionKey} onLogout={handleLogout} onOcupado={setOcupado} />
             )}
 
             {/* Welcome curtain */}

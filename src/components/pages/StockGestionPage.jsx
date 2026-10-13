@@ -18,7 +18,7 @@ import {
     Printer, Check, X, AlertTriangle, Boxes, ScanLine, Plus, Trash2, ArrowRight, ArrowUpRight, PackageCheck,
     LayoutDashboard, DollarSign, TrendingUp, Layers, History, ShoppingCart, Lock, Unlock, CircleDot,
     MapPin, Inbox, Send, Paperclip, FileText, Upload, CalendarDays, CalendarOff, ChevronLeft,
-    Factory, Anchor, Ship, CheckCircle2, Pencil, Settings, Workflow, ChevronUp, Activity, MinusCircle
+    Factory, Anchor, Ship, CheckCircle2, Pencil, Settings, Workflow, ChevronUp, Activity, MinusCircle, Ban
 } from 'lucide-react';
 
 // Los pasos de cada plantilla traen su icono por nombre (columna Icono, migrada del
@@ -3107,6 +3107,8 @@ function TabCompras({ depositos, depDefault }) {
     const [costoMonto, setCostoMonto] = useState('');
     const [vista, setVista] = useState('compras');     // compras | importaciones
     const [editando, setEditando] = useState(null);    // datos de cabecera en edición
+    const [anulando, setAnulando] = useState(false);   // confirmación de "Anular compra" abierta
+    const [motivoAnul, setMotivoAnul] = useState('');
     const refCostos = useRef(null);
 
     // alta (mismos campos que el formulario del sistema anterior)
@@ -3179,7 +3181,7 @@ function TabCompras({ depositos, depDefault }) {
     }, []);
 
     const verDetalle = async (id) => {
-        setAbierta(id);
+        setAbierta(id); setAnulando(false); setMotivoAnul('');
         try {
             const [r, a] = await Promise.all([
                 api.get(`/wms-interno/compras/${id}`),
@@ -3281,6 +3283,19 @@ function TabCompras({ depositos, depDefault }) {
         } catch (e) { toast.error('No se pudo cambiar el seguimiento'); }
     };
 
+    // Compra cargada por error: no se borra, queda en «Anuladas» con el motivo (13/10)
+    const anular = async (c) => {
+        if (!motivoAnul.trim()) return toast.error('Escribí el motivo de la anulación');
+        try {
+            const r = await api.post(`/wms-interno/compras/${c.CompId}/anular`, { motivo: motivoAnul.trim() });
+            toast.success(r.data?.yaAnulada ? 'Esa compra ya estaba anulada' : `Compra #${c.CompId} anulada`);
+            setAnulando(false); setMotivoAnul('');
+            // En Activas/Recibidas deja de figurar: se cierra el detalle
+            if (filtro !== 'todas' && filtro !== 'anuladas') cerrarModal();
+            cargar();
+        } catch (e) { toast.error(e.response?.data?.error || 'No se pudo anular la compra'); }
+    };
+
     const recibir = async (c) => {
         const d = det[c.CompId];
         const lineas = (d?.lineas || [])
@@ -3353,7 +3368,7 @@ function TabCompras({ depositos, depDefault }) {
             {vista === 'importaciones' ? <PanelImportaciones cat={cat} /> : (<>
 
             <div className="flex flex-wrap items-center gap-2 mb-4">
-                {[['activas', 'Activas'], ['historial', 'Recibidas'], ['todas', 'Todas']].map(([v, l]) => (
+                {[['activas', 'Activas'], ['historial', 'Recibidas'], ['anuladas', 'Anuladas'], ['todas', 'Todas']].map(([v, l]) => (
                     <button key={v} onClick={() => setFiltro(v)}
                         className={`px-3.5 py-1.5 rounded-xl text-xs font-black ${filtro === v ? 'bg-slate-800 text-white' : 'bg-white border border-slate-200 text-slate-500 hover:bg-slate-50'}`}>{l}</button>
                 ))}
@@ -3598,15 +3613,17 @@ function TabCompras({ depositos, depDefault }) {
                     {compras.map(c => {
                         const pend = Number(c.TotalCompra) - Number(c.Pagado);
                         const recibida = !!c.Recibida;   // último paso de su plantilla (lo calcula el servidor)
+                        const anulada = c.Estado === 'anulada';
                         return (
                             <button key={c.CompId} onClick={() => verDetalle(c.CompId)}
                                 className="bg-white rounded-2xl border border-slate-200 hover:border-sky-300 hover:shadow-md transition-all p-5 text-left flex flex-col gap-3">
                                 <div className="flex items-start justify-between gap-2">
                                     <span className={`text-[9px] font-black uppercase tracking-widest px-2.5 py-1 rounded-full ${
-                                        recibida ? 'bg-emerald-100 text-emerald-700'
+                                        anulada ? 'bg-rose-100 text-rose-700'
+                                        : recibida ? 'bg-emerald-100 text-emerald-700'
                                         : c.Estado === 'pre-compra' ? 'bg-amber-100 text-amber-700'
                                         : 'bg-brand-cyan/10 text-brand-cyan'}`}>
-                                        {recibida ? 'Recibida' : c.Estado === 'pre-compra' ? 'Borrador / precompra' : 'Confirmada'}
+                                        {anulada ? 'Anulada' : recibida ? 'Recibida' : c.Estado === 'pre-compra' ? 'Borrador / precompra' : 'Confirmada'}
                                     </span>
                                     <span className="text-[11px] font-bold text-slate-400">{fmtFecha(c.FechaCreacion)}</span>
                                 </div>
@@ -3629,11 +3646,13 @@ function TabCompras({ depositos, depDefault }) {
                                         </p>
                                     </div>
                                     <div className="text-right shrink-0">
-                                        <p className="text-xl font-black text-emerald-600 tabular-nums font-gsanscode leading-tight">
+                                        <p className={`text-xl font-black tabular-nums font-gsanscode leading-tight ${anulada ? 'text-slate-300 line-through' : 'text-emerald-600'}`}>
                                             {simbolo(c)} {Number(c.TotalCompra).toLocaleString('es-UY', { maximumFractionDigits: 2 })}
                                         </p>
-                                        <p className={`text-[10px] font-bold ${pend > 0.01 ? 'text-amber-600' : 'text-emerald-600'}`}>
-                                            {pend > 0.01 ? `resta ${simbolo(c)} ${pend.toLocaleString('es-UY', { maximumFractionDigits: 2 })}` : 'pagada'}
+                                        <p className={`text-[10px] font-bold ${anulada ? 'text-slate-400' : pend > 0.01 ? 'text-amber-600' : 'text-emerald-600'}`}>
+                                            {anulada
+                                                ? (Number(c.Pagado) > 0 ? `pagos ${simbolo(c)} ${Number(c.Pagado).toLocaleString('es-UY', { maximumFractionDigits: 2 })}` : 'sin pagos')
+                                                : pend > 0.01 ? `resta ${simbolo(c)} ${pend.toLocaleString('es-UY', { maximumFractionDigits: 2 })}` : 'pagada'}
                                         </p>
                                     </div>
                                 </div>
@@ -3650,6 +3669,9 @@ function TabCompras({ depositos, depDefault }) {
                 const c = compras.find(x => x.CompId === abierta);
                 if (!c) return null;
                 const d = det[c.CompId];
+                const anulada = c.Estado === 'anulada';
+                // Lo recibido ya es stock: esa compra no se puede anular
+                const recibioAlgo = (d?.lineas || []).some(l => Number(l.CantidadRecibida) > 0.0001);
                 return createPortal((
                     <div className={`fixed inset-0 z-[6000] flex items-center justify-center p-3 md:p-6 bg-slate-900/60 font-dmsans ${cerrandoModal ? 'animate-fade-out' : 'animate-fade-in'}`}
                         onClick={e => { if (e.target === e.currentTarget) cerrarModal(); }}
@@ -3674,6 +3696,7 @@ function TabCompras({ depositos, depDefault }) {
                                         {!d ? <div className="flex items-center gap-2 text-slate-400 text-sm py-10 justify-center"><Loader2 size={16} className="animate-spin" /> Cargando...</div> : (<>
                                             {/* Encabezado: monto, extras y acciones */}
                                             <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-4 flex flex-wrap items-center gap-3">
+                                                {anulada ? <div className="flex-1" /> : (
                                                 <div className="flex flex-wrap items-center gap-2 flex-1">
                                                     <button onClick={() => imprimirEtiquetasCompra(c, d.lineas, simbolo(c))}
                                                         className="flex items-center gap-2 px-3.5 py-2.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-xs font-black text-slate-600">
@@ -3696,7 +3719,13 @@ function TabCompras({ depositos, depDefault }) {
                                                         className="flex items-center gap-2 px-3.5 py-2.5 rounded-xl border border-sky-200 bg-sky-50 hover:bg-sky-100 text-xs font-black text-sky-700">
                                                         <Plus size={13} /> Cargar costo extra
                                                     </button>
+                                                    <button onClick={() => { setAnulando(a => !a); setMotivoAnul(''); }} disabled={recibioAlgo}
+                                                        title={recibioAlgo ? 'Ya entró mercadería de esta compra: no se puede anular' : 'Para una compra cargada por error'}
+                                                        className={`flex items-center gap-2 px-3.5 py-2.5 rounded-xl border text-xs font-black disabled:opacity-40 disabled:cursor-not-allowed ${anulando ? 'bg-rose-100 border-rose-300 text-rose-800' : 'bg-rose-50 border-rose-200 text-rose-600 hover:bg-rose-100'}`}>
+                                                        <Ban size={13} /> {anulando ? 'No anular' : 'Anular compra'}
+                                                    </button>
                                                 </div>
+                                                )}
                                                 <div className="text-right">
                                                     <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Monto total</p>
                                                     <p className="text-3xl font-black text-brand-cyan tabular-nums font-gsanscode leading-tight">
@@ -3708,8 +3737,43 @@ function TabCompras({ depositos, depDefault }) {
                                                 </div>
                                             </div>
 
+                                            {/* Compra anulada: quién, cuándo y por qué */}
+                                            {anulada && (
+                                                <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 flex items-start gap-3">
+                                                    <Ban size={18} className="text-rose-600 shrink-0 mt-0.5" />
+                                                    <div className="min-w-0">
+                                                        <p className="text-sm font-black text-rose-700">Compra anulada</p>
+                                                        <p className="text-xs font-semibold text-rose-700/80 mt-0.5 break-words">
+                                                            {[c.FechaAnulacion && fmtFecha(c.FechaAnulacion), c.AnuladaPorNombre].filter(Boolean).join(' · ')}
+                                                            {c.MotivoAnulacion ? ` — ${c.MotivoAnulacion}` : ''}
+                                                        </p>
+                                                    </div>
+                                                </div>
+                                            )}
+
+                                            {/* Anular (compra cargada por error): motivo obligatorio */}
+                                            {anulando && !anulada && (
+                                                <div className="rounded-xl border border-rose-200 bg-rose-50/60 p-4 space-y-2">
+                                                    <p className="text-[11px] font-bold text-rose-700">
+                                                        La compra sale de Activas, no se puede recibir ni modificar y queda en «Anuladas» con el motivo.
+                                                        {d.pagos.length > 0 && ` Tiene ${d.pagos.length} pago${d.pagos.length !== 1 ? 's' : ''} por ${simbolo(c)} ${d.pagos.reduce((a, p) => a + Number(p.Monto), 0).toLocaleString('es-UY', { maximumFractionDigits: 2 })}: quedan registrados en la compra anulada.`}
+                                                        {c.ImportacionId ? ` Sale de la importación #${c.ImportacionId}.` : ''}
+                                                    </p>
+                                                    <div className="flex flex-wrap items-center gap-2">
+                                                        <input autoFocus value={motivoAnul} onChange={e => setMotivoAnul(e.target.value)}
+                                                            onKeyDown={e => { if (e.key === 'Enter') anular(c); if (e.key === 'Escape') setAnulando(false); }}
+                                                            placeholder="Motivo (obligatorio): ej. cargada dos veces"
+                                                            className="flex-1 min-w-[220px] px-3 py-2 rounded-xl border border-slate-200 text-sm outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-200" />
+                                                        <button onClick={() => anular(c)} disabled={!motivoAnul.trim()}
+                                                            className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-black disabled:opacity-40 disabled:cursor-not-allowed">Anular compra</button>
+                                                        <button onClick={() => setAnulando(false)}
+                                                            className="px-4 py-2 rounded-xl border border-slate-200 text-slate-500 text-xs font-black">Volver</button>
+                                                    </div>
+                                                </div>
+                                            )}
+
                                             {/* Edición de la cabecera */}
-                                            {editando && (
+                                            {editando && !anulada && (
                                                 <div className="rounded-xl border border-amber-200 bg-amber-50/50 p-4 space-y-3">
                                                     <p className="text-[10px] font-black uppercase tracking-wider text-amber-700">Editar datos de la compra</p>
                                                     <div className="flex flex-wrap gap-2">
@@ -3798,7 +3862,7 @@ function TabCompras({ depositos, depDefault }) {
                                                                     </span>
                                                                     <div className="flex flex-col items-end gap-0.5">
                                                                         <div className="flex justify-end items-center gap-1.5">
-                                                                            {pendiente > 0.001 ? (<>
+                                                                            {anulada ? <span className="text-[10px] font-black text-slate-300">—</span> : pendiente > 0.001 ? (<>
                                                                                 {/* Bultos: cuántas etiquetas físicas se abren con lo que entra */}
                                                                                 <input type="number" min="1" step="1" title="Bultos: etiquetas a abrir"
                                                                                     value={bultosRec[l.CDetId] ?? String(l.Bultos || 1)}
@@ -3830,6 +3894,7 @@ function TabCompras({ depositos, depDefault }) {
                                                 </div>
                                             </div>
 
+                                            {!anulada && (
                                             <div className="flex flex-wrap items-center gap-2">
                                                 <span className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-black border ${c.AutorizadoRecepcion ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-slate-50 text-slate-400 border-slate-200'}`}>
                                                     {c.AutorizadoRecepcion ? <Unlock size={13} /> : <Lock size={13} />}
@@ -3843,6 +3908,7 @@ function TabCompras({ depositos, depDefault }) {
                                                     <PackagePlus size={14} /> Recibir e imprimir etiquetas
                                                 </button>
                                             </div>
+                                            )}
 
                                             </div>
 
@@ -3850,9 +3916,11 @@ function TabCompras({ depositos, depDefault }) {
                                             <div className="rounded-xl border border-slate-200 p-4 lg:sticky lg:top-0">
                                                 <div className="flex items-center justify-between gap-2 mb-3">
                                                     <p className="text-[10px] font-black uppercase tracking-wider text-slate-400 leading-tight">Progreso<br />logístico</p>
+                                                    {!anulada && (
                                                     <Selector size="sm" ancho="w-[136px]" placeholder="Seguimiento..."
                                                         value={c.PlaId || ''} onChange={(v) => cambiarPlantilla(c, parseInt(v, 10))}
                                                         opciones={cat.plantillas.map(p => ({ value: p.PlaId, label: p.Nombre }))} />
+                                                    )}
                                                 </div>
                                                 {d.pasos?.length > 0 ? (
                                                     <div className="relative">
@@ -3864,9 +3932,9 @@ function TabCompras({ depositos, depDefault }) {
                                                                 const Ico = ICONOS_PASO[p.Icono] || CircleDot;
                                                                 const ultimo = i === d.pasos.length - 1;
                                                                 return (
-                                                                    <button key={p.Clave} onClick={() => avanzar(c, p.Clave)}
-                                                                        title={hecho ? 'Etapa cumplida — click para volver acá' : actual ? 'Etapa actual' : 'Marcar esta etapa'}
-                                                                        className="group relative flex items-start gap-3 w-full text-left pb-4 last:pb-0">
+                                                                    <button key={p.Clave} onClick={() => avanzar(c, p.Clave)} disabled={anulada}
+                                                                        title={anulada ? 'Compra anulada' : hecho ? 'Etapa cumplida — click para volver acá' : actual ? 'Etapa actual' : 'Marcar esta etapa'}
+                                                                        className="group relative flex items-start gap-3 w-full text-left pb-4 last:pb-0 disabled:cursor-default">
                                                                         {/* línea que une los pasos */}
                                                                         {!ultimo && (
                                                                             <span className={`absolute left-[9px] top-5 bottom-0 w-px ${hecho ? 'bg-emerald-300' : 'bg-slate-200'}`} />
@@ -3909,12 +3977,13 @@ function TabCompras({ depositos, depDefault }) {
                                                             <div key={x.CceId} className="flex items-center gap-3 py-1.5">
                                                                 <span className="text-xs font-bold text-slate-600 flex-1 truncate">{x.Descripcion}</span>
                                                                 <span className="text-sm font-black text-slate-800 tabular-nums font-gsanscode">{simbolo(c)} {Number(x.Monto).toLocaleString('es-UY', { maximumFractionDigits: 2 })}</span>
-                                                                <button onClick={() => quitarCosto(c, x.CceId)}
-                                                                    className="w-6 h-6 rounded-lg border border-slate-200 text-slate-400 hover:text-rose-500 flex items-center justify-center"><Trash2 size={11} /></button>
+                                                                {!anulada && <button onClick={() => quitarCosto(c, x.CceId)}
+                                                                    className="w-6 h-6 rounded-lg border border-slate-200 text-slate-400 hover:text-rose-500 flex items-center justify-center"><Trash2 size={11} /></button>}
                                                             </div>
                                                         ))}
                                                     </div>
                                                 )}
+                                                {!anulada && (
                                                 <div className="flex flex-wrap items-center gap-2">
                                                     <input value={costoDesc} onChange={e => setCostoDesc(e.target.value)} placeholder="Concepto (aduana, flete, despachante...)"
                                                         className="flex-1 min-w-[200px] px-3 py-2 rounded-xl border border-slate-200 text-sm outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-200" />
@@ -3922,6 +3991,7 @@ function TabCompras({ depositos, depDefault }) {
                                                         className="w-32 px-3 py-2 rounded-xl border border-slate-200 text-sm text-right placeholder:text-left [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-200" />
                                                     <button onClick={() => agregarCosto(c)} className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-black">Agregar costo</button>
                                                 </div>
+                                                )}
                                                 <p className="text-[10px] text-slate-400 font-semibold mt-2">
                                                     Los costos extra se reparten entre los artículos según cuánto pesa cada uno en la compra: la etiqueta que nace al recibir ya lleva el costo real puesto en depósito.
                                                 </p>
@@ -3941,6 +4011,7 @@ function TabCompras({ depositos, depDefault }) {
                                                         ))}
                                                     </div>
                                                 )}
+                                                {!anulada && (
                                                 <div className="flex flex-wrap items-center gap-2">
                                                     <input type="number" placeholder="Monto" value={pagoMonto} onChange={e => setPagoMonto(e.target.value)}
                                                         className="w-32 px-3 py-2 rounded-xl border border-slate-200 text-sm text-right placeholder:text-left [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-200" />
@@ -3948,6 +4019,7 @@ function TabCompras({ depositos, depDefault }) {
                                                         opciones={cat.motivos.map(m => ({ value: m.Nombre, label: m.Nombre }))} />
                                                     <button onClick={() => pagar(c)} className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-black">Registrar pago</button>
                                                 </div>
+                                                )}
                                             </div>
 
                                             {/* Adjuntos: facturas, BL, despachos... */}

@@ -635,6 +635,37 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
     // junto con las normales (antes iban a un grupo propio con header magenta). El indicador de
     // falla va en la FILA de cada orden (su prioridad), no en el header del grupo.
     const isFalla = (o) => /-F\d+/i.test(o?.code || o?.CodigoOrden || '');
+
+    // Zona marcada de cada falla (la imagen que se guarda al reportarla en el control de archivos). Antes solo se
+    // veía en el detalle de la orden: acá la fila -F no mostraba dónde estaba la falla (13/10/2026).
+    // { [OrdenID de la -F]: [{ FallaID, ImagenFalla, FechaFalla, TipoFalla, NombreArchivo }] }
+    const [fallasImg, setFallasImg] = React.useState({});
+    const [verFalla, setVerFalla] = React.useState(null);   // orden -F cuya zona se está mirando
+    const idsFalla = (freshRoll?.orders || []).filter(isFalla).map(o => o.id).join(',');
+    React.useEffect(() => {
+        if (!freshRoll?.id || !idsFalla) { setFallasImg({}); return; }
+        let vigente = true;
+        api.get(`/production-file-control/lote/${freshRoll.id}/fallas-imagenes`)
+            .then(res => { if (vigente) setFallasImg(res.data?.data || {}); })
+            .catch(err => { console.warn('No se pudieron leer las imágenes de falla del lote:', err?.message); if (vigente) setFallasImg({}); });
+        return () => { vigente = false; };
+    }, [freshRoll?.id, idsFalla]);
+    // Botón de la fila -F: con zona marcada abre la imagen; sin ella avisa que no se marcó al reportar.
+    const botonFalla = (o) => {
+        if (!isFalla(o)) return null;
+        const imgs = fallasImg[o.id] || [];
+        return imgs.length ? (
+            <button type="button" onClick={(e) => { e.stopPropagation(); setVerFalla(o); }}
+                className="w-6 h-6 flex items-center justify-center rounded-full text-brand-magenta hover:bg-brand-magenta/10 transition-colors"
+                title="Ver dónde está la falla">
+                <i className="fa-solid fa-crosshairs text-xs" />
+            </button>
+        ) : (
+            <span className="w-6 h-6 flex items-center justify-center text-zinc-300" title="Al reportar esta falla no se marcó la zona">
+                <i className="fa-solid fa-crosshairs text-xs" />
+            </span>
+        );
+    };
     const matKey = (o) => (groupKeyOf(o) || '—');
     // Fecha de la orden: la MISMA que la planilla (ProductionTable → DateRenderer). En TPU, si el
     // cliente ya se expidió sobre el boceto manda la fecha de su última acción — verde si aprobó,
@@ -1913,8 +1944,9 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
                                                       <div className="font-semibold text-zinc-800 truncate text-sm tablet:text-xs">{matDisplay(o)}</div>
                                                       {o.variantCode && <div className="text-xs tablet:text-[11px] text-zinc-400 truncate mt-0.5">{o.variantCode}</div>}
                                                     </div>
-                                                    <div className="w-14 flex justify-center">
+                                                    <div className="w-14 flex items-center justify-center gap-0.5">
                                                       {o.fileCount > 0 ? <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-brand-cyan/10 text-brand-cyan text-[10px] font-black border border-brand-cyan/30">{o.fileCount}</span> : <span className="text-zinc-200 text-xs">—</span>}
+                                                      {botonFalla(o)}
                                                     </div>
                                                     <div className="w-24 text-center">
                                                       {/* Los metros de la falla se editan SOLO en la impresora: en la calandra
@@ -2142,6 +2174,7 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
                                                 )}
                                             </td>
                                             <td className="px-4 py-3 text-center w-16">
+                                                <div className="flex items-center justify-center gap-0.5">
                                                 {o.fileCount > 0 ? (
                                                     <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-brand-cyan/10 text-brand-cyan text-[10px] font-black border border-brand-cyan/30">
                                                         {o.fileCount}
@@ -2149,6 +2182,8 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
                                                 ) : (
                                                     <span className="text-zinc-200 text-xs">—</span>
                                                 )}
+                                                {botonFalla(o)}
+                                                </div>
                                             </td>
                                             <td className="px-4 py-3 text-center w-20">
                                                 <span className="font-black text-zinc-800 text-sm">{isLoteTPU ? Math.round(o.magnitude || 0) : (o.magnitude || 0)}</span>
@@ -2392,6 +2427,38 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
                 currentRollId={freshRoll.id}
                 areaCode={currentAreaCode}
             />
+
+            {/* ZONA DE LA FALLA: la imagen marcada al reportarla (una por falla del archivo que repone esta -F) */}
+            {verFalla && (
+                <div className="fixed inset-0 z-[6000] flex items-center justify-center bg-black/70 p-4 animate-in fade-in duration-150"
+                    onClick={() => setVerFalla(null)}>
+                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[90vh] flex flex-col overflow-hidden" onClick={e => e.stopPropagation()}>
+                        <div className="px-5 py-3 border-b border-brand-magenta/20 bg-brand-magenta/10 flex items-center justify-between">
+                            <div>
+                                <div className="text-xs font-bold uppercase tracking-wide text-brand-magenta">Dónde está la falla</div>
+                                <div className="font-mono text-sm font-bold text-zinc-800">{verFalla.code || verFalla.CodigoOrden}</div>
+                            </div>
+                            <button type="button" onClick={() => setVerFalla(null)} className="w-8 h-8 flex items-center justify-center rounded-lg text-zinc-400 hover:text-zinc-700 hover:bg-white" title="Cerrar">
+                                <i className="fa-solid fa-xmark" />
+                            </button>
+                        </div>
+                        <div className="overflow-y-auto p-4 flex flex-col gap-4">
+                            {(fallasImg[verFalla.id] || []).map(f => (
+                                <figure key={f.FallaID} className="m-0 flex flex-col gap-2">
+                                    <a href={f.ImagenFalla} target="_blank" rel="noreferrer" className="block rounded-xl overflow-hidden border border-zinc-200 bg-zinc-50" title="Abrir en tamaño completo">
+                                        <img src={f.ImagenFalla} alt={`Zona de la falla en ${f.NombreArchivo || 'el archivo'}`} className="w-full h-auto max-h-[60vh] object-contain" />
+                                    </a>
+                                    <figcaption className="text-xs text-zinc-500 flex flex-wrap gap-x-3 gap-y-0.5">
+                                        {f.TipoFalla && <span className="font-bold text-brand-magenta">{f.TipoFalla}</span>}
+                                        {f.NombreArchivo && <span className="break-all">{f.NombreArchivo}</span>}
+                                        {f.FechaFalla && <span>{new Date(f.FechaFalla).toLocaleString('es-UY', { dateStyle: 'short', timeStyle: 'short' })}</span>}
+                                    </figcaption>
+                                </figure>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            )}
         </>,
         document.body
     );

@@ -4,6 +4,10 @@ import ChequeRecibirModal from './tesoreria/ChequeRecibirModal';
 import { Listbox } from '@headlessui/react';
 import api from '../../services/apiClient';
 import { codigoCuenta } from '../../utils/cuentaCodigo';
+import Selector from '../ui/Selector';
+
+// Botón del medio de pago: mismo tamaño y letra que tenía el <select> nativo, con la lista del Selector propio.
+const CLASE_BOTON_MEDIO = 'w-full flex items-center gap-2 bg-white border border-zinc-200 rounded-xl px-3 py-2 text-xs font-black text-zinc-800 font-archivo text-left outline-none transition-colors shadow-sm hover:border-zinc-300 focus-visible:border-brand-cyan focus-visible:ring-2 focus-visible:ring-brand-cyan/15 disabled:cursor-not-allowed disabled:opacity-70 disabled:bg-zinc-50';
 
 // Select ligero construido con Headless UI
 function LightSelect({ value, onChange, options = [], placeholder = 'Seleccionar...' }) {
@@ -593,7 +597,7 @@ export default function CajaPanelPago({
                     
                     {/* Medio select */}
                     <div className="w-36 shrink-0">
-                      <select
+                      <Selector
                         value={p.metodoPagoId}
                         disabled={locked || lockMedioPago}
                         title={lockMedioPago ? 'Medio fijo: esta factura se paga con el saldo de la cuenta (la plata ya salió al consumir). Cambiarlo cobraría dos veces.' : ''}
@@ -604,21 +608,17 @@ export default function CajaPanelPago({
                           const isNowCheque = metodosPago.find(m => m.MPaIdMetodoPago === parseInt(val))?.MPaDescripcionMetodo?.toLowerCase()?.includes('cheque');
                           if (isNowCheque && !p.idCheque) setChequeIndexActivo(p.id);
                         }}
-                        className={`w-full bg-white border border-zinc-200 rounded-xl px-3 py-2 text-xs font-black text-zinc-800 font-archivo outline-none transition-all shadow-sm appearance-none pr-8 ${locked ? 'cursor-not-allowed opacity-70 bg-zinc-50' : 'hover:border-zinc-300 focus:border-brand-cyan cursor-pointer'}`}
-                        style={{
-                          backgroundImage: `url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3E%3Cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='m6 8 4 4 4-4'/%3E%3C/svg%3E")`,
-                          backgroundPosition: `right 0.5rem center`,
-                          backgroundSize: `1.25em 1.25em`,
-                          backgroundRepeat: `no-repeat`
-                        }}
+                        claseBoton={CLASE_BOTON_MEDIO}
+                        altoMax={Infinity}
+                        aria-label="Medio de pago"
                       >
                         <option value="" disabled>Medio...</option>
                         {metodosPago.map(m => (
-                          <option key={m.MPaIdMetodoPago} value={m.MPaIdMetodoPago}>
+                          <option key={m.MPaIdMetodoPago} value={m.MPaIdMetodoPago} descripcion={m.MPaAyuda}>
                             {m.MPaDescripcionMetodo}
                           </option>
                         ))}
-                      </select>
+                      </Selector>
                     </div>
                     
                     {/* Comprobante inline: se muestra cuando el padre lo maneje (pasa
@@ -1002,7 +1002,7 @@ export default function CajaPanelPago({
               >
                 {/* Método */}
                 <div className="flex-1 min-w-0">
-                  <select
+                  <Selector
                     value={p.metodoPagoId}
                     onChange={(e) => {
                       const val = e.target.value;
@@ -1010,21 +1010,17 @@ export default function CajaPanelPago({
                       const isCheque = metodosPago.find(m => m.MPaIdMetodoPago === parseInt(val))?.MPaDescripcionMetodo?.toLowerCase().includes('cheque');
                       if (isCheque && !p.idCheque) setChequeIndexActivo(p.id);
                     }}
-                    className="w-full bg-white border border-zinc-200 rounded-xl px-3 py-2 text-xs font-black text-zinc-800 font-archivo outline-none hover:border-zinc-300 focus:border-brand-cyan transition-all shadow-sm cursor-pointer appearance-none pr-8"
-                    style={{
-                      backgroundImage: `url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3E%3Cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='m6 8 4 4 4-4'/%3E%3C/svg%3E")`,
-                      backgroundPosition: `right 0.5rem center`,
-                      backgroundSize: `1.25em 1.25em`,
-                      backgroundRepeat: `no-repeat`
-                    }}
+                    claseBoton={CLASE_BOTON_MEDIO}
+                    altoMax={Infinity}
+                    aria-label="Medio de pago"
                   >
                     <option value="" disabled>Medio...</option>
                     {metodosPago.map(m => (
-                      <option key={m.MPaIdMetodoPago} value={m.MPaIdMetodoPago}>
+                      <option key={m.MPaIdMetodoPago} value={m.MPaIdMetodoPago} descripcion={m.MPaAyuda}>
                         {m.MPaDescripcionMetodo}
                       </option>
                     ))}
-                  </select>
+                  </Selector>
                 </div>
 
                 {/* Moneda */}

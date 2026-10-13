@@ -183,6 +183,7 @@ router.get('/erp/libro-mayor/:asiId/lineas', erp.getLibroMayorLineas);   // deta
 
 // Transacciones
 router.post('/caja/transaccion',              caja.procesarTransaccion);
+router.use('/caja/pos', require('./poslinkRoutes'));   // cobro con tarjeta integrado (POSLink)
 router.post('/caja/guardar-comprobante',      caja.guardarComprobante);
 router.post('/caja/upload-comprobante-transferencia', upload.single('comprobante'), webpEnSubida, caja.subirComprobanteTransferencia);
 router.post('/caja/venta-directa',            caja.procesarVentaDirecta); // NUEVO

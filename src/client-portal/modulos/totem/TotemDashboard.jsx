@@ -1,11 +1,14 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Package, RefreshCw, CheckCircle, Search, ArrowLeft, Delete, Check, Bell, Megaphone, QrCode } from 'lucide-react';
+import { Package, RefreshCw, CheckCircle, Search, ArrowLeft, Delete, Check, Bell, Megaphone, QrCode, CreditCard, Loader2, XCircle, AlertTriangle } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Logo } from '../../../components/Logo';
 import Swal from 'sweetalert2';
 import Lottie from 'lottie-react';
 import confettiAnim from '../../../assets/animations/confetti.json';
-import { totemHeaders } from './totemAuth';
+import { totemHeaders, totemPosHeaders } from './totemAuth';
+import { QRCodeSVG } from 'qrcode.react';
+import handyLogo from '../../../assets/images/pasarelas/handy.svg';
+import mpLogo from '../../../assets/images/pasarelas/mercadopago.svg';
 
 const API_BASE = import.meta.env.VITE_API_URL || '/api';
 
@@ -70,7 +73,16 @@ const printTotemTicket = ({ ordenRetiro, client, orders, title = 'COMPROBANTE DE
     setTimeout(() => document.body.removeChild(iframe), 3000);
 };
 
-export const TotemDashboard = ({ onLogout }) => {
+// Cobro con tarjeta (POSLink): estados en los que se cobró, en los que no, y en los que no se sabe.
+const POS_SIN_COBRO = ['RECHAZADA', 'CANCELADA', 'ERROR_VALIDACION', 'REVERSADA'];
+// REVERSA_PENDIENTE: el POS tomó la tarjeta y no respondió; la reversa puede tardar hasta 24 h y mientras
+// tanto el retiro sigue bloqueado para otro cobro. Para el cliente es "no vuelvas a pagar, andá a la caja".
+const POS_EN_DUDA = ['INDETERMINADA', 'APROBADA_SIN_REGISTRAR', 'PENDIENTE_BILLETERA', 'PEDIR_AUTORIZACION', 'REVERSA_PENDIENTE'];
+const terminoParaElTotem = (c) => !!c && (c.final || POS_EN_DUDA.includes(c.estado));
+const monedaDe = (c) => (/US|U\$|USD/i.test(String(c || '')) ? 'USD' : 'UYU');
+const fmtImporte = (moneda, n) => `${moneda === 'USD' ? 'US$' : '$'} ${Number(n || 0).toLocaleString('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+export const TotemDashboard = ({ onLogout, onOcupado }) => {
     // Search state
     const [externalMode, setExternalMode] = useState(''); // '' | 'X' | 'R'
     const [prefix, setPrefix] = useState('');
@@ -103,6 +115,225 @@ export const TotemDashboard = ({ onLogout }) => {
     const [creating, setCreating] = useState(false);
     const [success, setSuccess] = useState(false);
     const [error, setError] = useState('');
+
+    // ── Cobro con tarjeta en el POS de este tótem ─────────────────────────────
+    // posInfo: { terminal } si este equipo tiene POS habilitado (clave activada con /totem?pos=…).
+    const [posInfo, setPosInfo] = useState(null);
+    const [cobro, setCobro] = useState(null);          // estado del cobro que devuelve el backend
+    const [retiroPos, setRetiroPos] = useState(null);  // { id, codigo } del retiro que se está cobrando
+    const [pagando, setPagando] = useState(false);     // pedido en curso (iniciar / reintentar / cancelar)
+    const [sinPosMotivo, setSinPosMotivo] = useState(''); // no se pudo cobrar acá → pagar en la caja
+    const ordenesCobroRef = useRef([]);                // órdenes del retiro, para el ticket
+
+    useEffect(() => {
+        fetch(`${API_BASE}/totem-pos/estado`, { headers: totemPosHeaders() })
+            .then(r => r.json())
+            .then(d => setPosInfo(d?.pos ? { terminal: d.terminal } : null))
+            .catch(e => { console.warn('[TÓTEM] No se pudo saber si hay POS:', e?.message); setPosInfo(null); });
+    }, []);
+
+    // ── Pago con MercadoPago: el tótem muestra un QR con el link de pago y el cliente paga con el celular ──
+    const [mpDisponible, setMpDisponible] = useState(false);
+    const [pagoMp, setPagoMp] = useState(null);   // { url, transactionId, retiro, moneda, monto, expiraEnMinutos, estado, desde, aprobadoDesde }
+    useEffect(() => {
+        fetch(`${API_BASE}/totem-mp/estado`, { headers: totemHeaders() })
+            .then(r => r.json())
+            .then(d => setMpDisponible(!!d?.mp))
+            .catch(e => { console.warn('[TÓTEM] No se pudo saber si hay MercadoPago:', e?.message); setMpDisponible(false); });
+    }, []);
+    const mpTermino = !!pagoMp && ['REGISTRADO', 'EN_DUDA'].includes(pagoMp.estado);
+
+    // Mientras hay un cobro abierto, la sesión no se cierra por inactividad (ver TotemApp).
+    const cobroAbierto = (!!cobro && !terminoParaElTotem(cobro)) || (!!pagoMp && !mpTermino);
+    useEffect(() => { onOcupado?.(cobroAbierto || pagando); }, [cobroAbierto, pagando, onOcupado]);
+    useEffect(() => () => onOcupado?.(false), [onOcupado]);
+
+    // Poleo cada 2,5 s (entre 2 y 3 s según Resonet) hasta que el cobro termine.
+    useEffect(() => {
+        if (!cobro?.uuid || terminoParaElTotem(cobro)) return; // lo que quede abierto lo sigue el barrido
+        let vivo = true;
+        const t = setTimeout(async () => {
+            try {
+                const r = await fetch(`${API_BASE}/totem-pos/cobros/${cobro.uuid}`, { headers: totemPosHeaders() });
+                const d = await r.json();
+                if (vivo && d?.data) setCobro(d.data);
+                else if (vivo) setCobro(prev => (prev ? { ...prev, reintento: (prev.reintento || 0) + 1 } : prev));
+            } catch (e) {
+                console.warn('[TÓTEM] Falló la consulta del cobro:', e?.message);
+                if (vivo) setCobro(prev => (prev ? { ...prev, reintento: (prev.reintento || 0) + 1 } : prev));
+            }
+        }, 2500);
+        return () => { vivo = false; clearTimeout(t); };
+    }, [cobro]);
+
+    // Ticket y salida: una sola vez por resultado.
+    const cierreRef = useRef(null);
+    const imprimirRetiro = (titulo) => setTimeout(() => {
+        try {
+            printTotemTicket({ ordenRetiro: retiroPos?.codigo || 'N/A', client, orders: ordenesCobroRef.current, title: titulo });
+        } catch (e) { console.warn('No se pudo imprimir el ticket del tótem:', e); }
+    }, 150);
+    useEffect(() => {
+        if (!terminoParaElTotem(cobro) || cierreRef.current === cobro.uuid) return;
+        if (cobro.estado === 'REGISTRADA') {
+            cierreRef.current = cobro.uuid;
+            imprimirRetiro('RETIRO PAGADO');
+            setTimeout(() => onLogout(), 10000);
+        } else if (POS_EN_DUDA.includes(cobro.estado)) {
+            cierreRef.current = cobro.uuid;
+            imprimirRetiro('RETIRO - CONSULTAR PAGO EN CAJA');
+            setTimeout(() => onLogout(), 20000);
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [cobro]);
+
+    const pagarConTarjeta = async () => {
+        if (!selectedOrders.length || pagando) return;
+        setPagando(true);
+        setError('');
+        ordenesCobroRef.current = orders.filter(o => selectedOrders.includes(o.id));
+        try {
+            const res = await fetch(`${API_BASE}/totem-pos/cobros`, {
+                method: 'POST',
+                headers: totemPosHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify({ clientId: client.idCliente, orders: selectedOrders }),
+            });
+            const data = await res.json();
+            if (data?.retiro) setRetiroPos(data.retiro);
+            if (data?.success) {
+                setCobro(data.data);
+            } else if (data?.retiro) {
+                // El retiro se creó pero no se pudo cobrar acá: ticket y a la caja, como sin POS.
+                setSinPosMotivo(data.error || 'No se pudo cobrar con tarjeta.');
+                imprimirRetiroCon(data.retiro, 'COMPROBANTE DE RETIRO');
+                setTimeout(() => onLogout(), 12000);
+            } else {
+                setError(data?.error || 'No se pudo cobrar con tarjeta');
+            }
+        } catch (e) {
+            setError('Error de conexión');
+        } finally {
+            setPagando(false);
+        }
+    };
+    const imprimirRetiroCon = (retiro, titulo) => setTimeout(() => {
+        try {
+            printTotemTicket({ ordenRetiro: retiro?.codigo || 'N/A', client, orders: ordenesCobroRef.current, title: titulo });
+        } catch (e) { console.warn('No se pudo imprimir el ticket del tótem:', e); }
+    }, 150);
+
+    const cancelarCobro = async () => {
+        if (!cobro?.uuid) return;
+        setPagando(true);
+        try {
+            const r = await fetch(`${API_BASE}/totem-pos/cobros/${cobro.uuid}/cancelar`, { method: 'POST', headers: totemPosHeaders() });
+            const d = await r.json();
+            if (d?.data) setCobro(d.data);
+        } catch (e) {
+            console.warn('[TÓTEM] No se pudo cancelar:', e?.message);
+        } finally {
+            setPagando(false);
+        }
+    };
+
+    const reintentarCobro = async () => {
+        if (!cobro?.uuid) return;
+        setPagando(true);
+        try {
+            const r = await fetch(`${API_BASE}/totem-pos/cobros/${cobro.uuid}/reintentar`, { method: 'POST', headers: totemPosHeaders() });
+            const d = await r.json();
+            if (d?.success) setCobro(d.data);
+            else setCobro(prev => ({ ...prev, detalle: d?.error || 'No se pudo reintentar.' }));
+        } catch (e) {
+            setCobro(prev => ({ ...prev, detalle: 'Error de conexión.' }));
+        } finally {
+            setPagando(false);
+        }
+    };
+
+    const pagarEnCaja = () => {
+        imprimirRetiro('COMPROBANTE DE RETIRO');
+        setSinPosMotivo('Pagá en la caja con tu número de retiro.');
+        setCobro(null);
+        setPagoMp(null);
+        setTimeout(() => onLogout(), 10000);
+    };
+
+    const pagarConMp = async () => {
+        if (!selectedOrders.length || pagando) return;
+        setPagando(true);
+        setError('');
+        ordenesCobroRef.current = orders.filter(o => selectedOrders.includes(o.id));
+        try {
+            const res = await fetch(`${API_BASE}/totem-mp/pagos`, {
+                method: 'POST',
+                headers: totemHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify({ clientId: client.idCliente, orders: selectedOrders }),
+            });
+            const data = await res.json();
+            const retiro = data?.data?.retiro || data?.retiro;
+            if (retiro) setRetiroPos(retiro);
+            if (data?.success) {
+                setPagoMp({ ...data.data, estado: 'PENDIENTE', desde: Date.now(), aprobadoDesde: null });
+            } else if (retiro) {
+                setSinPosMotivo(data.error || 'No se pudo generar el pago con MercadoPago.');
+                imprimirRetiroCon(retiro, 'COMPROBANTE DE RETIRO');
+                setTimeout(() => onLogout(), 12000);
+            } else {
+                setError(data?.error || 'No se pudo generar el pago con MercadoPago');
+            }
+        } catch (e) {
+            setError('Error de conexión');
+        } finally {
+            setPagando(false);
+        }
+    };
+
+    // Consulta cada 3 s si MercadoPago avisó el pago y si ya quedó asentado en el retiro.
+    useEffect(() => {
+        if (!pagoMp?.transactionId || mpTermino) return;
+        let vivo = true;
+        const t = setTimeout(async () => {
+            // Venció el link sin pagar: el retiro queda para la caja, con su ticket.
+            if (Date.now() - pagoMp.desde > (pagoMp.expiraEnMinutos || 15) * 60000 && pagoMp.estado !== 'APROBADO') {
+                if (vivo) pagarEnCaja();
+                return;
+            }
+            try {
+                const r = await fetch(`${API_BASE}/totem-mp/pagos/${pagoMp.transactionId}`, { headers: totemHeaders() });
+                const d = await r.json();
+                if (!vivo) return;
+                const est = d?.data?.estado || pagoMp.estado;
+                setPagoMp(prev => {
+                    if (!prev) return prev;
+                    const aprobadoDesde = est === 'APROBADO' ? (prev.aprobadoDesde || Date.now()) : prev.aprobadoDesde;
+                    // Aprobado pero sin asentar al minuto (¿el aviso de MP no llegó?): a la caja, sin volver a pagar.
+                    const estado = est === 'APROBADO' && aprobadoDesde && Date.now() - aprobadoDesde > 60000 ? 'EN_DUDA' : est;
+                    return { ...prev, estado, aprobadoDesde };
+                });
+            } catch (e) {
+                console.warn('[TÓTEM] Falló la consulta del pago con MercadoPago:', e?.message);
+                if (vivo) setPagoMp(prev => (prev ? { ...prev, reintento: (prev.reintento || 0) + 1 } : prev));
+            }
+        }, 3000);
+        return () => { vivo = false; clearTimeout(t); };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [pagoMp]);
+
+    // Resultado de MercadoPago: ticket y salida, una sola vez.
+    const cierreMpRef = useRef(null);
+    useEffect(() => {
+        if (!pagoMp || !mpTermino || cierreMpRef.current === pagoMp.transactionId) return;
+        cierreMpRef.current = pagoMp.transactionId;
+        if (pagoMp.estado === 'REGISTRADO') {
+            imprimirRetiro('RETIRO PAGADO');
+            setTimeout(() => onLogout(), 10000);
+        } else {
+            imprimirRetiro('RETIRO - CONSULTAR PAGO EN CAJA');
+            setTimeout(() => onLogout(), 20000);
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [pagoMp]);
 
     const NON_EXTERNAL_PREFIXES = ['PRO', 'VEN', 'DEV'];
     const fullCode = prefix ? `${externalMode && !NON_EXTERNAL_PREFIXES.includes(prefix) ? externalMode : ''}${prefix}-${number}` : number;
@@ -186,8 +417,9 @@ export const TotemDashboard = ({ onLogout }) => {
     scanRef.current = handleQrScan;
     const blockScanRef = useRef(false);
     useEffect(() => {
-        blockScanRef.current = searching || creating || announcing || success || !!announceSuccess;
-    }, [searching, creating, announcing, success, announceSuccess]);
+        // Durante el cobro con tarjeta no se lee otro QR: abriría otra búsqueda encima del cobro.
+        blockScanRef.current = searching || creating || announcing || success || !!announceSuccess || !!cobro || pagando || !!sinPosMotivo || !!pagoMp;
+    }, [searching, creating, announcing, success, announceSuccess, cobro, pagando, sinPosMotivo, pagoMp]);
 
     // Lector IR = teclado: teclea el contenido del QR muy rápido y cierra con Enter.
     // Acumulamos ráfagas de teclas físicas (el teclado en pantalla usa clicks, no keydown,
@@ -352,6 +584,136 @@ export const TotemDashboard = ({ onLogout }) => {
         }
     };
 
+    // ── Cobro con tarjeta: no se pudo cobrar acá → ticket y a la caja ──
+    if (sinPosMotivo) {
+        return (
+            <div className="flex flex-col items-center justify-center min-h-screen text-center gap-4 uppercase relative px-8">
+                <Package size={80} strokeWidth={1.5} className="text-custom-cyan" />
+                <h2 className="text-4xl font-extrabold text-custom-cyan">¡Retiro creado!</h2>
+                {retiroPos?.codigo && <p className="text-3xl font-black text-white">{retiroPos.codigo}</p>}
+                <p className="text-xl text-white/70 mt-2 normal-case">{sinPosMotivo}</p>
+                <p className="text-base text-white/40 normal-case">Llevate el ticket y pagá en la caja.</p>
+            </div>
+        );
+    }
+
+    // ── Pago con MercadoPago: QR en pantalla ──
+    if (pagoMp) {
+        const pagado = pagoMp.estado === 'REGISTRADO';
+        const enDuda = pagoMp.estado === 'EN_DUDA';
+        const aprobado = pagoMp.estado === 'APROBADO';
+        const rechazado = pagoMp.estado === 'RECHAZADO';
+        return (
+            <div className="flex flex-col items-center justify-center min-h-screen text-center gap-5 relative px-8">
+                {pagado && (
+                    <div className="absolute inset-0 pointer-events-none">
+                        <Lottie animationData={confettiAnim} loop={2} style={{ width: '100%', height: '100%' }} />
+                    </div>
+                )}
+                <h2 className={`text-4xl font-extrabold uppercase ${pagado ? 'text-emerald-400' : enDuda ? 'text-amber-400' : 'text-white'}`}>
+                    {pagado ? '¡Pago aprobado!' : enDuda ? 'No pudimos confirmar el pago' : aprobado ? 'Pago aprobado, confirmando…' : 'Pagá con Mercado Pago'}
+                </h2>
+                <p className="text-5xl font-black text-white">{fmtImporte(pagoMp.moneda, pagoMp.monto)}</p>
+                {retiroPos?.codigo && <p className="text-lg text-white/50 uppercase">Retiro {retiroPos.codigo}</p>}
+
+                {!pagado && !enDuda && !aprobado && (
+                    <>
+                        <div className="bg-white p-5 rounded-2xl">
+                            <QRCodeSVG value={pagoMp.url} size={300} level="M" />
+                        </div>
+                        <p className="text-xl text-white/80 max-w-2xl">Escaneá el código con la cámara del celular y pagá desde Mercado Pago.</p>
+                        {rechazado
+                            ? <p className="text-lg text-red-400 max-w-2xl">El pago fue rechazado. Podés intentar de nuevo desde el celular o pagar en la caja.</p>
+                            : <p className="text-sm text-white/30 flex items-center gap-2"><Loader2 size={14} className="animate-spin" /> Esperando el pago · el código vence en {pagoMp.expiraEnMinutos || 15} minutos</p>}
+                        <button onClick={pagarEnCaja}
+                            className="mt-2 px-10 py-4 rounded-xl text-lg font-bold bg-white/[0.06] border border-white/15 text-white/70 transition-all active:scale-[0.97] uppercase">
+                            Pagar en la caja
+                        </button>
+                    </>
+                )}
+                {aprobado && <Loader2 size={64} strokeWidth={1.5} className="text-custom-cyan animate-spin" />}
+                {pagado && <p className="text-xl text-white/70">Ya podés retirar: llevate el ticket.</p>}
+                {enDuda && (
+                    <p className="text-xl text-white/80 max-w-2xl">
+                        Mercado Pago aprobó el pago pero todavía no nos llegó la confirmación. <b>No vuelvas a pagar.</b> Acercate a la caja con el ticket.
+                    </p>
+                )}
+            </div>
+        );
+    }
+
+    // ── Cobro con tarjeta en curso o con resultado ──
+    if (cobro) {
+        const sinCobro = POS_SIN_COBRO.includes(cobro.estado);
+        const enDuda = POS_EN_DUDA.includes(cobro.estado);
+        const pagado = cobro.estado === 'REGISTRADA';
+        const cancelable = ['CREADA', 'ENVIADA', 'ESPERANDO_POS'].includes(cobro.estado);
+        const titulo = pagado ? '¡Pago aprobado!'
+            : enDuda ? 'Hubo un problema con el pago'
+            : sinCobro ? 'No se pudo cobrar'
+            : cobro.estado === 'CAPTURADA' ? 'Pasá o acercá tu tarjeta al POS'
+            : cobro.estado === 'APROBADA' ? 'Aprobado, registrando…'
+            : 'Preparando el POS…';
+        return (
+            <div className="flex flex-col items-center justify-center min-h-screen text-center gap-5 relative px-8">
+                {pagado && (
+                    <div className="absolute inset-0 pointer-events-none">
+                        <Lottie animationData={confettiAnim} loop={2} style={{ width: '100%', height: '100%' }} />
+                    </div>
+                )}
+                {pagado ? <CheckCircle size={88} strokeWidth={1.5} className="text-emerald-400" />
+                    : enDuda ? <AlertTriangle size={88} strokeWidth={1.5} className="text-amber-400" />
+                    : sinCobro ? <XCircle size={88} strokeWidth={1.5} className="text-red-400" />
+                    : cobro.estado === 'CAPTURADA' ? <CreditCard size={88} strokeWidth={1.5} className="text-custom-cyan animate-pulse" />
+                    : <Loader2 size={88} strokeWidth={1.5} className="text-custom-cyan animate-spin" />}
+
+                <h2 className={`text-4xl font-extrabold uppercase ${pagado ? 'text-emerald-400' : enDuda ? 'text-amber-400' : sinCobro ? 'text-red-400' : 'text-white'}`}>{titulo}</h2>
+                <p className="text-5xl font-black text-white">{fmtImporte(cobro.moneda, cobro.monto)}</p>
+                {retiroPos?.codigo && <p className="text-lg text-white/50 uppercase">Retiro {retiroPos.codigo}</p>}
+
+                {pagado && (
+                    <p className="text-xl text-white/70">Ya podés retirar: llevate el ticket.{cobro.rebajaIva ? ` Se te descontaron ${fmtImporte(cobro.moneda, cobro.rebajaIva)} de IVA.` : ''}</p>
+                )}
+                {enDuda && (
+                    <p className="text-xl text-white/80 max-w-2xl">
+                        {cobro.estado === 'REVERSA_PENDIENTE'
+                            ? 'El POS no respondió a tiempo: si se te debitó, se devuelve solo. '
+                            : 'No sabemos si el pago se completó. '}
+                        <b>No vuelvas a pagar.</b> Acercate a la caja con el ticket y lo resolvemos.
+                    </p>
+                )}
+                {sinCobro && (
+                    <p className="text-lg text-white/60 max-w-2xl">{cobro.estado === 'REVERSADA' ? 'El POS no respondió a tiempo y el pago se anuló. Si se te llegó a debitar, se te devuelve solo (puede tardar hasta 24 h).' : 'No se te cobró nada.'}{cobro.detalle && cobro.estado === 'RECHAZADA' ? ` (${cobro.detalle})` : ''}</p>
+                )}
+                {!terminoParaElTotem(cobro) && cobro.segundosRestantes > 0 && cobro.estado !== 'APROBADA' && (
+                    <p className="text-sm text-white/30">Quedan {cobro.segundosRestantes} s</p>
+                )}
+
+                {cancelable && (
+                    <button onClick={cancelarCobro} disabled={pagando}
+                        className="mt-4 px-10 py-4 rounded-xl text-lg font-bold bg-white/[0.06] border border-white/15 text-white/70 transition-all active:scale-[0.97] disabled:opacity-40 uppercase">
+                        {pagando ? 'Cancelando…' : 'Cancelar'}
+                    </button>
+                )}
+                {cobro.estado === 'CAPTURADA' && (
+                    <p className="text-sm text-white/30">Para cancelar, usá la tecla roja del POS.</p>
+                )}
+                {sinCobro && (
+                    <div className="mt-6 flex gap-4">
+                        <button onClick={reintentarCobro} disabled={pagando}
+                            className="px-10 py-4 rounded-xl text-xl font-bold bg-brand-cyan text-white transition-all active:scale-[0.97] disabled:opacity-40 flex items-center gap-3 uppercase">
+                            <CreditCard size={24} /> {pagando ? 'Preparando…' : 'Probar de nuevo'}
+                        </button>
+                        <button onClick={pagarEnCaja} disabled={pagando}
+                            className="px-10 py-4 rounded-xl text-xl font-bold bg-white/[0.08] border border-white/15 text-white transition-all active:scale-[0.97] disabled:opacity-40 uppercase">
+                            Pagar en la caja
+                        </button>
+                    </div>
+                )}
+            </div>
+        );
+    }
+
     // Announce success screen
     if (announceSuccess) {
         return (
@@ -391,6 +753,14 @@ export const TotemDashboard = ({ onLogout }) => {
             if (b.id === fullCode) return 1;
             return 0;
         });
+
+        // Lo que falta pagar de lo elegido (el importe que se cobra lo recalcula el servidor).
+        const aPagar = orders.filter(o => selectedOrders.includes(o.id) && !o.isPaid && Number(o.amount) > 0);
+        const monedasAPagar = [...new Set(aPagar.map(o => monedaDe(o.currency)))];
+        const totalAPagar = aPagar.reduce((s, o) => s + Number(o.amount), 0);
+        const puedePagarConTarjeta = !!posInfo && aPagar.length > 0 && monedasAPagar.length === 1;
+        const puedePagarConMp = mpDisponible && aPagar.length > 0 && monedasAPagar.length === 1;
+        const hayPagoEnTotem = puedePagarConTarjeta || puedePagarConMp;
 
         return (
             <div className="min-h-screen flex flex-col">
@@ -501,20 +871,52 @@ export const TotemDashboard = ({ onLogout }) => {
                                 <ArrowLeft size={16} /> Buscar otra orden
                             </button>
 
-                            {/* Retirar button */}
-                            <button
-                                className="mt-6 w-1/2 mx-auto flex items-center justify-center gap-3 px-8 py-4 rounded-xl text-xl font-bold bg-brand-cyan text-white transition-all active:scale-[0.97] disabled:opacity-30 uppercase"
-                                onClick={createPickup}
-                                disabled={creating || selectedOrders.length === 0}
-                            >
-                                <Package size={24} />
-                                {creating
-                                    ? 'Creando...'
-                                    : selectedOrders.length > 0
-                                        ? `Retirar (${selectedOrders.length})`
-                                        : 'Seleccioná órdenes para retirar'
-                                }
-                            </button>
+                            {/* Pagar acá (tarjeta en el POS de este tótem y/o MercadoPago con QR) + Retirar (paga en la caja, como siempre) */}
+                            {hayPagoEnTotem && (
+                                <div className="mt-6 w-[80%] mx-auto flex gap-4">
+                                    {puedePagarConTarjeta && (
+                                        <button
+                                            className="flex-1 flex items-center justify-center gap-3 px-6 py-4 rounded-xl text-xl font-bold bg-[#722efa] text-white transition-all active:scale-[0.97] disabled:opacity-30 uppercase"
+                                            onClick={pagarConTarjeta}
+                                            disabled={pagando || creating}
+                                        >
+                                            {/* Mismos colores y logos que los botones de pago de la tienda del portal */}
+                                            <img src={handyLogo} alt="" className="h-7 object-contain" />
+                                            {pagando ? 'Preparando…' : `Tarjeta ${fmtImporte(monedasAPagar[0], totalAPagar)}`}
+                                        </button>
+                                    )}
+                                    {puedePagarConMp && (
+                                        <button
+                                            className="flex-1 flex items-center justify-center gap-3 px-6 py-4 rounded-xl text-xl font-bold bg-[#ffe600] text-[#1a1a1a] transition-all active:scale-[0.97] disabled:opacity-30 uppercase"
+                                            onClick={pagarConMp}
+                                            disabled={pagando || creating}
+                                        >
+                                            <img src={mpLogo} alt="" className="h-7 object-contain" />
+                                            {pagando ? 'Preparando…' : `Mercado Pago ${fmtImporte(monedasAPagar[0], totalAPagar)}`}
+                                        </button>
+                                    )}
+                                </div>
+                            )}
+                            <div className={`${hayPagoEnTotem ? 'mt-3 w-[80%]' : 'mt-6 w-1/2'} mx-auto flex`}>
+                                <button
+                                    className={`flex-1 flex items-center justify-center gap-3 px-8 py-4 rounded-xl text-xl font-bold transition-all active:scale-[0.97] disabled:opacity-30 uppercase ${hayPagoEnTotem
+                                        ? 'bg-white/[0.08] border border-white/15 text-white'
+                                        : 'bg-brand-cyan text-white'}`}
+                                    onClick={createPickup}
+                                    disabled={creating || pagando || selectedOrders.length === 0}
+                                >
+                                    <Package size={24} />
+                                    {creating
+                                        ? 'Creando...'
+                                        : selectedOrders.length > 0
+                                            ? (hayPagoEnTotem ? `Retirar y pagar en caja` : `Retirar (${selectedOrders.length})`)
+                                            : 'Seleccioná órdenes para retirar'
+                                    }
+                                </button>
+                            </div>
+                            {(posInfo || mpDisponible) && aPagar.length > 0 && monedasAPagar.length > 1 && (
+                                <p className="mt-3 text-center text-sm text-white/40">Hay órdenes en pesos y en dólares: para pagar acá, elegí las de una sola moneda.</p>
+                            )}
                         </div>
                     )}
                 </div>

@@ -210,6 +210,8 @@ const OrderForm = ({ serviceId: propServiceId }) => {
     // Sublimación con Tela de Cliente: el cliente elige su bobina (mismo flujo que Corte tela cliente:
     // ancho/metros de la bobina validan el archivo y sus metros se descuentan al confirmar).
     const isSubliTelaCliente = svcId === 'sublimacion' && /tela de cliente/i.test(serviceSubType || '');
+    // DTF con variante UV ("DTF UV"): pide la terminación (con barniz / mate). Ver terminacionUV.
+    const esDtfUV = svcId === 'df' && /\bUV\b/i.test(serviceSubType || '');
 
     // ECOUV: comportamiento por VARIANTE VIRTUAL elegida (services.js → variantsInfo).
     // Material Impreso     → impresión por m2. Las terminaciones que se ofrecen las
@@ -246,6 +248,9 @@ const OrderForm = ({ serviceId: propServiceId }) => {
     // Tinta de impresión (ECOUV: Ecosolvente/UV — el magic sort rutea el lote por Tinta).
     // Default: la primera opción del servicio (Ecosolvente).
     const [tintaSeleccionada, setTintaSeleccionada] = useState(config?.tintaOptions?.[0] || '');
+    // DTF UV: terminación con barniz o mate (sin barniz). Sin valor por defecto: el cliente
+    // tiene que elegir. Viaja al principio de la nota de la orden, que es lo que ve planta.
+    const [terminacionUV, setTerminacionUV] = useState('');
 
     // FORMA DE ENVÍO del pedido (mismo nomenclador FormasEnvio que usa el retiro:
     // Retiro en el Local / Encomienda / Envío a Domicilio / Entrega Coordinada).
@@ -1485,6 +1490,9 @@ const OrderForm = ({ serviceId: propServiceId }) => {
             && !String(globalMaterial || '').trim()) {
             return addToast('Seleccioná el material antes de confirmar el pedido.', 'error');
         }
+        if (esDtfUV && !terminacionUV) {
+            return addToast('Elegí la terminación del DTF UV: con barniz o mate (sin barniz).', 'error');
+        }
 
         // Material obligatorio: en modo "multiple" (material por archivo) cada archivo debe tener
         // su material elegido — no se autocompleta, así que validamos antes de confirmar.
@@ -2212,9 +2220,14 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                 // la lee el detalle de orden. Abajo también se agrega a la nota del ÍTEM, pero esa
                 // termina en ArchivosOrden.Observaciones y un pedido de TPU no tiene archivo al
                 // crearse (el boceto va a Referencias): por ese camino la medida se perdía.
-                notasGenerales: (serviceId === 'tpu' && tpuAlto && tpuAncho)
-                    ? `${generalNote || ''} [Medida: ${tpuAlto} x ${tpuAncho} cm]`.trim()
-                    : generalNote,
+                // DTF UV: la terminación va al principio de la nota, en mayúsculas, para que planta
+                // la vea primero (el backend la guarda como "OBS: …" en Ordenes.Nota).
+                notasGenerales: [
+                    esDtfUV && terminacionUV ? `TERMINACIÓN: ${terminacionUV === 'MATE' ? 'MATE (SIN BARNIZ)' : 'CON BARNIZ'}` : '',
+                    (serviceId === 'tpu' && tpuAlto && tpuAncho)
+                        ? `${generalNote || ''} [Medida: ${tpuAlto} x ${tpuAncho} cm]`.trim()
+                        : (generalNote || ''),
+                ].filter(Boolean).join(' | '),
 
                 // Forma de envío elegida (FormasEnvio.ID) — el backend la guarda en Ordenes.ModoRetiro
                 formaEnvioId: formaEnvioId || null,
@@ -2484,6 +2497,22 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                     </div>
                                     );
                                 })()}
+
+                                {/* DTF UV: terminación con barniz o mate (sin barniz). Obligatoria, sin default. */}
+                                {esDtfUV && (
+                                    <div className="md:col-span-2">
+                                        <p className="block text-xs font-bold uppercase text-zinc-400 mb-2">Terminación *</p>
+                                        <div className="flex bg-brand-dark p-1 rounded-lg gap-1 border border-zinc-700 max-w-xl">
+                                            {[{ v: 'BARNIZ', label: 'Con barniz' }, { v: 'MATE', label: 'Mate (sin barniz)' }].map(o => (
+                                                <button key={o.v} type="button" onClick={() => setTerminacionUV(o.v)}
+                                                    className={`flex-1 py-1.5 px-3 rounded-md text-sm font-medium transition-all ${terminacionUV === o.v ? 'shadow-sm bg-cyan-400/20 text-cyan-300 border border-cyan-500/30' : 'text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200'}`}
+                                                >
+                                                    {o.label}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
 
                                 {/* Producto Terminado: el material lo define la FICHA (no editable);
                                     la TINTA arranca en la de la ficha pero el cliente PUEDE cambiarla

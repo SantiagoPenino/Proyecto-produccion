@@ -67,6 +67,13 @@ const { resolverCuentaDineroCliente } = require('./cuentaDineroCliente');
 const { absorberSobregiroEnPlan } = require('./planSobregiroService');
 const { esDeadlock } = require('../utils/reintentarDeadlock');
 
+// Rebaja de IVA de la Ley 19.210 en un cobro con débito por POS: el cliente paga el neto y el Estado
+// devuelve la diferencia como crédito fiscal (Decreto 203/014, arts. 9 y 10). Se registra como un pago
+// más, con el método «Reducción IVA Ley 19.210» (inactivo: la cajera no lo ve en la lista), y va a la
+// cuenta de crédito fiscal en vez de a Caja. Ver _metodoReduccionIva y services/poslink/poslinkService.js.
+const METODO_REDUCCION_IVA_NOMBRE = 'Reducción IVA Ley 19.210';
+const CUENTA_REDUCCION_IVA = process.env.CUENTA_REDUCCION_IVA || '1.2.4'; // IVA Compras (Crédito Fiscal)
+
 
 // ─────────────────────────────────────────────────────────────────────────
 // FUNCIÓN VENTAS DIRECTAS (COMPRA DE RECURSOS, FACTURAS A CRÉDITO, ETC)
@@ -892,9 +899,12 @@ async function procesarTransaccion(payload) {
   // ── Inicio de transacción SQL ─────────────────────────────────────────
   const pool        = await getPool();
   
-  // Obtener Sesión Activa
+  // Obtener Sesión Activa. Se mira esAdministrativa (arriba ya absorbe `admin`): los webhooks de Handy y
+  // MercadoPago mandan solo esAdministrativa, y con `!header.admin` sus cobros quedaban pegados al turno abierto
+  // de la cajera con EsCajaAdmin = 1. El arqueo los excluía (EsCajaAdmin = 0), pero el resumen de la sesión y
+  // el PDF de cierre (filtran solo por StuIdSesion) los sumaban. Admin = sesión NULL, igual que reclasificar.
   let stuIdSesion = null;
-  if (!header?.admin) {
+  if (!header?.esAdministrativa) {
     const sesRes = await pool.request().query("SELECT TOP 1 StuIdSesion FROM dbo.SesionesTurno WITH(NOLOCK) WHERE StuEstado = 'ABIERTA'");
     if (sesRes.recordset.length > 0) stuIdSesion = sesRes.recordset[0].StuIdSesion;
   }
@@ -1484,6 +1494,8 @@ async function procesarTransaccion(payload) {
       const evtCodigoConfigurado = 'PAGO';
       const lineasMotor = await contabilidadCore.resolverLineasDesdeMotor(evtCodigoConfigurado, ctxMotor);
       const idsMetodosCheque = await _metodosCheque(transaction);
+      const idReduccionIva = await _metodoReduccionIva(transaction);
+      const esReduccionIva = (pago) => idReduccionIva != null && parseInt(pago.metodoPagoId, 10) === idReduccionIva;
 
       if (lineasMotor.length >= 2) {
         // Motor tiene reglas → combinar con los pagos reales por moneda
@@ -1511,6 +1523,8 @@ async function procesarTransaccion(payload) {
           if (idsMetodosCheque.has(parseInt(pago.metodoPagoId, 10))) {
             codigoCajaReal = contabilidadCore.CUENTAS.VALORES_DEPOSITAR;
           }
+          // Rebaja de IVA Ley 19.210: crédito fiscal, no Caja.
+          if (esReduccionIva(pago)) codigoCajaReal = CUENTA_REDUCCION_IVA;
 
           lineasContables.push({
             codigoCuenta: codigoCajaReal,
@@ -1529,9 +1543,11 @@ async function procesarTransaccion(payload) {
         for (const pago of pagosNorm) {
           const isUSD = pago.moneda === 'USD';
           // Igual que arriba: el cheque va a Valores a Depositar, no a Caja.
-          const cuentaDebe = idsMetodosCheque.has(parseInt(pago.metodoPagoId, 10))
-            ? contabilidadCore.CUENTAS.VALORES_DEPOSITAR
-            : (isUSD ? contabilidadCore.CUENTAS.CAJA_USD : contabilidadCore.CUENTAS.CAJA_UYU);
+          const cuentaDebe = esReduccionIva(pago)
+            ? CUENTA_REDUCCION_IVA
+            : idsMetodosCheque.has(parseInt(pago.metodoPagoId, 10))
+              ? contabilidadCore.CUENTAS.VALORES_DEPOSITAR
+              : (isUSD ? contabilidadCore.CUENTAS.CAJA_USD : contabilidadCore.CUENTAS.CAJA_UYU);
           lineasContables.push({
             codigoCuenta: cuentaDebe,
             debeBase:  pago.montoOriginal,
@@ -1977,6 +1993,27 @@ async function procesarTransaccion(payload) {
     // hasta acá, y además este flujo puede generar documento + recibo.
     await estamparAreaLineas(null, transaction);
 
+    // ── ENSAYO (cobro con POS) ──────────────────────────────────────────
+    // `simular`: corre el cobro entero (controles, documento, imputación, asiento) y lo DESHACE en vez de
+    // confirmarlo. Lo usa POSLink antes de mandar el importe a la tarjeta: si la caja lo va a rechazar
+    // (orden ya facturada, datos inválidos), mejor saberlo antes de cobrarle al cliente. Adentro de la
+    // transacción solo se toca la base, así que deshacer no deja nada (los IDENTITY quedan con saltos).
+    if (payload.simular) {
+      // El documento que generaría: el cobro con POS lo necesita para pedir la rebaja de IVA (Ley 19.210):
+      // tipo, total, moneda, receptor y monto gravado (suma de los netos de las líneas con IVA).
+      const docSim = (await new sql.Request(transaction).input('T', sql.Int, tcaIdTransaccion).query(`
+        SELECT TOP 1 dc.DocTipo, dc.DocTotal, dc.MonIdMoneda, dc.DocCliDocumento, c.CioRuc AS CliRUT,
+               (SELECT SUM(d.DcdSubtotal) FROM dbo.DocumentosContablesDetalle d
+                 WHERE d.DocIdDocumento = dc.DocIdDocumento AND ISNULL(d.DcdImpuestos, 0) > 0) AS Gravado
+        FROM dbo.DocumentosContables dc
+        LEFT JOIN dbo.Clientes c ON c.CliIdCliente = dc.CliIdCliente
+        WHERE dc.TcaIdTransaccion = @T
+        ORDER BY dc.DocIdDocumento`)).recordset[0] || null;
+      await transaction.rollback();
+      logger.info(`[CAJA] Ensayo de cobro con POS OK: lo de arriba (Tca ${tcaIdTransaccion}, documento, asiento) se DESHIZO, no quedó nada.`);
+      return { success: true, simulado: true, totalBruto, totalAjuste, totalNeto, totalCobrado, documento: docSim };
+    }
+
     // ── COMMIT ────────────────────────────────────────────────────────
     await transaction.commit();
     logger.info(`[CAJA] ✅ Transaccion ${tcaIdTransaccion} completada. Pagos: ${pagosCreados.length}`);
@@ -2302,6 +2339,19 @@ async function _metodosCheque(transaction = null) {
   } catch (e) {
     logger.warn(`[CAJA] No se pudo resolver los métodos de tipo cheque: ${e.message}`);
     return new Set();
+  }
+}
+
+/** Id del método «Reducción IVA Ley 19.210», o null si no existe (entonces nadie lo usa). */
+async function _metodoReduccionIva(transaction = null) {
+  try {
+    const req = transaction ? new sql.Request(transaction) : (await getPool()).request();
+    const r = await req.input('N', sql.VarChar(100), METODO_REDUCCION_IVA_NOMBRE)
+      .query(`SELECT TOP 1 MPaIdMetodoPago FROM dbo.MetodosPagos WITH(NOLOCK) WHERE MPaDescripcionMetodo = @N`);
+    return r.recordset[0]?.MPaIdMetodoPago ?? null;
+  } catch (e) {
+    logger.warn(`[CAJA] No se pudo resolver el método de la rebaja de IVA: ${e.message}`);
+    return null;
   }
 }
 

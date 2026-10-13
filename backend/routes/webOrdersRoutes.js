@@ -247,6 +247,18 @@ router.post('/tienda/init-pago', verifyToken, impersonarCliente, tiendaControlle
 // solo calcula si alcanza.
 router.post('/tienda/pagar-con-billetera', verifyToken, impersonarCliente, tiendaController.pagarTiendaConBilletera);
 
+// [CONFECCIONADOS 09/10] Pedido de una prenda confeccionada con molde de TIZADA PRO: el cliente elige modelo
+// y telas, sube su arte y carga la lista de talles; se revisa (nuestras reglas + TIZADA) ANTES de pagar.
+// Todo sobre un borrador propio del cliente (TiendaConfecciones): ver services/tiendaConfeccionService.js.
+const tiendaConfeccion = require('../controllers/tiendaConfeccionController');
+const uploadArteTienda = require('../middleware/multerSolicitudesConfig');   // uploads/tmp → Drive (lo borra el service)
+router.get('/tienda/confeccion/producto/:proId', verifyToken, impersonarCliente, tiendaConfeccion.opciones);
+router.post('/tienda/confeccion', verifyToken, impersonarCliente, tiendaConfeccion.crear);
+router.get('/tienda/confeccion/:id', verifyToken, impersonarCliente, tiendaConfeccion.ver);
+router.put('/tienda/confeccion/:id', verifyToken, impersonarCliente, tiendaConfeccion.guardar);
+router.post('/tienda/confeccion/:id/artes', verifyToken, impersonarCliente, uploadArteTienda.single('file'), tiendaConfeccion.subirArte);
+router.post('/tienda/confeccion/:id/revisar', verifyToken, impersonarCliente, tiendaConfeccion.revisar);
+
 // TPU: "Mis matrices" — pedidos TPU finalizados del cliente con arte, para reusar.
 router.get('/mis-matrices', verifyToken, impersonarCliente, webOrdersController.getMisMatrices);
 // TPU: reusar una matriz — crea el pedido copiando el arte, directo a producción, sin cobrar la matriz.

@@ -1598,6 +1598,51 @@ const getFallasImagenes = async (req, res) => {
     }
 };
 
+// Imágenes de falla (zona marcada) de TODAS las reposiciones -F de un lote, en una sola consulta:
+// { [OrdenID de la -F]: [{ FallaID, ImagenFalla, FechaFalla, TipoFalla, NombreArchivo }] }.
+// La falla se registra contra la MADRE; cada -F se asocia a las fallas de los archivos que repone por el
+// NOMBRE del archivo (la -F clona NombreArchivo de la madre). Si ninguna coincide, van todas las de la
+// madre. Para el detalle del lote (13/10/2026): ahí no se veía dónde estaba la falla.
+const getFallasImagenesLote = async (req, res) => {
+    try {
+        const rolloId = parseInt(req.params.rolloId, 10);
+        if (!(rolloId > 0)) return res.status(400).json({ error: 'rolloId requerido' });
+        const pool = await getPool();
+        await ensureFallaColumn(pool);
+        const result = await pool.request()
+            .input('R', sql.Int, rolloId)
+            .query(`
+                ;WITH F AS (
+                    SELECT o.OrdenID, LEFT(o.CodigoOrden, CHARINDEX('-F', o.CodigoOrden) - 1) AS Madre
+                    FROM Ordenes o WITH(NOLOCK)
+                    WHERE o.RolloID = @R AND o.CodigoOrden LIKE '%-F[0-9]%'
+                )
+                SELECT F.OrdenID, fp.FallaID, fp.ImagenFalla, fp.FechaFalla, tf.Titulo AS TipoFalla, ao.NombreArchivo,
+                       CASE WHEN EXISTS (SELECT 1 FROM ArchivosOrden af WITH(NOLOCK)
+                                         WHERE af.OrdenID = F.OrdenID AND af.NombreArchivo = ao.NombreArchivo)
+                            THEN 1 ELSE 0 END AS MismoArchivo
+                FROM F
+                JOIN Ordenes om WITH(NOLOCK) ON om.CodigoOrden = F.Madre
+                JOIN FallasProduccion fp WITH(NOLOCK) ON fp.OrdenID = om.OrdenID
+                LEFT JOIN TiposFallas tf WITH(NOLOCK) ON tf.FallaID = fp.TipoFalla
+                LEFT JOIN ArchivosOrden ao WITH(NOLOCK) ON ao.ArchivoID = fp.ArchivoID
+                WHERE LTRIM(RTRIM(ISNULL(fp.ImagenFalla, ''))) <> ''
+                ORDER BY F.OrdenID, fp.FechaFalla DESC
+            `);
+        const porOrden = {};
+        for (const r of result.recordset) (porOrden[r.OrdenID] = porOrden[r.OrdenID] || []).push(r);
+        const data = {};
+        for (const [oid, filas] of Object.entries(porOrden)) {
+            const propias = filas.filter(f => f.MismoArchivo === 1);
+            data[oid] = (propias.length ? propias : filas).map(({ MismoArchivo, OrdenID, ...f }) => f);
+        }
+        res.json({ success: true, data });
+    } catch (err) {
+        logger.error("Error getFallasImagenesLote:", err);
+        res.status(500).json({ error: err.message });
+    }
+};
+
 const getMotivosCancelacion = async (req, res) => {
     // Filtro por área via flags BIT de MotivosCancelacion: DF/DTF → columna DF, SB/SUB → columna SB.
     // Sin área (u otra área sin columna propia) → lista completa (comportamiento histórico).
@@ -2825,6 +2870,7 @@ module.exports = {
     postControlArchivo,
     getTiposFalla,
     getFallasImagenes,
+    getFallasImagenesLote,
     regenerateEtiquetas,
     updateFileCopyCount,
     getCompletedOrdersForReplacement,

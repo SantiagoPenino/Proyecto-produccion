@@ -7,7 +7,9 @@ import FallaZoomModal from './FallaZoomModal';
  * Al guardar, llama onAnnotated(dataUrl|null) con la imagen compuesta (thumbnail + recuadros)
  * en resolución natural, lista para persistir.
  */
-export default function FallaAnnotator({ thumbUrl, onAnnotated }) {
+// onDisponible(true|false): avisa si hay vista previa para marcar. Con ella, el modal de falla de
+// Sublimación exige marcar la zona (13/10/2026: solo 202 de 459 fallas del último mes la tenían).
+export default function FallaAnnotator({ thumbUrl, onAnnotated, onDisponible }) {
     const [imgOk, setImgOk] = useState(true);
     const [annotated, setAnnotated] = useState(null);   // dataURL compuesto
     const [rects, setRects] = useState([]);             // zonas (coords naturales) para reeditar
@@ -17,6 +19,7 @@ export default function FallaAnnotator({ thumbUrl, onAnnotated }) {
     useEffect(() => {
         setImgOk(true); setAnnotated(null); setRects([]); setOpen(false);
         onAnnotated && onAnnotated(null);
+        onDisponible && onDisponible(false);   // hasta que la vista previa cargue
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [thumbUrl]);
 
@@ -48,7 +51,8 @@ export default function FallaAnnotator({ thumbUrl, onAnnotated }) {
                     src={annotated || thumbUrl}
                     alt="archivo"
                     className="max-w-full max-h-[240px] mx-auto block object-contain"
-                    onError={() => setImgOk(false)}
+                    onLoad={() => { if (!annotated) onDisponible && onDisponible(true); }}
+                    onError={() => { setImgOk(false); onDisponible && onDisponible(false); }}
                     draggable={false}
                 />
                 <span className="absolute inset-0 flex items-center justify-center bg-black/0 group-hover:bg-black/30 transition-colors">

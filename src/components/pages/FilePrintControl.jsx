@@ -124,6 +124,8 @@ const FilePrintControl = ({ areaCode }) => {
   const [reponerCompleto, setReponerCompleto] = useState(false);
   const [actionReason, setActionReason] = useState('');
   const [annotatedImage, setAnnotatedImage] = useState(null); // dataURL del thumbnail con el recuadro de falla
+  // ¿El archivo tiene vista previa para marcar la zona? Con ella, en Sublimación la zona es obligatoria.
+  const [zonaMarcable, setZonaMarcable] = useState(false);
   const [submittingControl, setSubmittingControl] = useState(false); // request en vuelo: bloquea el Confirmar (evita fallas duplicadas por doble click)
   // En SB no se piden "metros a reponer": la falla (-F) arranca en 0m. Se oculta el campo + el check.
   const isSB = String(areaCode || '').toUpperCase() === 'SB';
@@ -952,6 +954,7 @@ const FilePrintControl = ({ areaCode }) => {
     setFailureType('');
     setReponerCompleto(false);
     setAnnotatedImage(null);
+    setZonaMarcable(false);
     setCopiasFalladas('1');
     // Metros sugeridos = 1 copia (metros por copia del archivo); el operario puede corregirlos.
     const mCopia = parseFloat(file?.Metros || file?.Alto || 0);
@@ -1096,6 +1099,12 @@ const FilePrintControl = ({ areaCode }) => {
 
     if (controlAction === 'FALLA' && !failureType) {
       setToast({ visible: true, message: 'Seleccioná el tipo de falla antes de confirmar', type: 'error' });
+      return;
+    }
+    // Sublimación: la zona marcada es la referencia que ve la reposición en el detalle del lote. Solo se exige si
+    // el archivo tiene vista previa (sin ella no hay dónde marcar) y no en servicios (no se muestra el marcador).
+    if (controlAction === 'FALLA' && isSB && zonaMarcable && !annotatedImage && !selectedFileForAction?.isService) {
+      setToast({ visible: true, message: 'Marcá en la imagen dónde está la falla antes de confirmar', type: 'error' });
       return;
     }
 
@@ -1641,6 +1650,7 @@ const FilePrintControl = ({ areaCode }) => {
                   <FallaAnnotator
                     thumbUrl={`/thumbnails/${selectedOrder?.code}/${selectedFileForAction.ArchivoID || selectedFileForAction.id}.jpg`}
                     onAnnotated={setAnnotatedImage}
+                    onDisponible={setZonaMarcable}
                   />
                 </div>
               )}

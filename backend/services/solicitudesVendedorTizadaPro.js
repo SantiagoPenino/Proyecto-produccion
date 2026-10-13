@@ -957,5 +957,7 @@ async function envioAutomatico(pool, user, base, solicitudId, productoSolId) {
   }
 }
 
-module.exports = { validarParaDiseno, leerEditables, ver, guardar, enviar, actualizar, reintentarAplicar, procesarEstado, aplicarResultado, recibirAviso, iniciarSondeo, sondear, envioAutomatico, estructura, revisar, armarPedidoJson, MODO_ENVIO };
+module.exports = { validarParaDiseno, leerEditables, ver, guardar, enviar, actualizar, reintentarAplicar, procesarEstado, aplicarResultado, recibirAviso, iniciarSondeo, sondear, envioAutomatico, estructura, revisar, armarPedidoJson, MODO_ENVIO,
+  // Para la tienda del portal (services/tiendaConfeccionService.js): revisa un pedido de confección antes de que exista la solicitud
+  conPiezas, bajarDeDrive, zipEnMemoria };
 // Configuración actualizada: TIZADAPRO_SI_PIEZAS_EN_BLANCO=seguir
