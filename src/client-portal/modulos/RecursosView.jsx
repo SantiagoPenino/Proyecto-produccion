@@ -4,7 +4,7 @@ import { Layers, History, X, Loader2, Package, ChevronDown, ChevronRight, Wallet
 import { fmtFechaCorta } from '../../utils/fechas';
 import { codigoCuenta } from '../../utils/cuentaCodigo';
 import { validarDocumentoUY, normalizarDocumento } from '../../utils/documentoUY';
-import { generarPdfFacturaDGI } from '../../utils/pdfGenerator';
+import { generarPdfFacturaDGI, generarPdfReciboCobro } from '../../utils/pdfGenerator';
 
 /**
  * RecursosView — "Mis Recursos" del portal del cliente. Ruta: /portal/recursos
@@ -688,6 +688,8 @@ function SeccionBeneficios() {
     const descargarComprobante = async (b, docId) => {
         try {
             const data = await apiClient.get(`/web-orders/mis-cuentas/${b.cuentaId}/comprobantes/${docId}`);
+            // Recibo interno (no CFE) → mismo recibo A4 que entrega la caja; CFE → factura
+            if (data?.recibo) { await generarPdfReciboCobro(data.recibo, { descargar: true }); return; }
             if (!data?.doc) throw new Error('No se pudo leer el comprobante.');
             await generarPdfFacturaDGI(data.doc, data.detalles || []);
         } catch (e) { setMsg({ tipo: 'err', texto: e?.response?.data?.error || e.message || 'No se pudo descargar el comprobante.' }); }
@@ -1008,6 +1010,8 @@ function SeccionCuentasSaldo() {
         setMsg(null);
         try {
             const data = await apiClient.get(`/web-orders/mis-cuentas/${cuenta.CueIdCuenta}/comprobantes/${docId}`);
+            // Recibo interno (no CFE) → mismo recibo A4 que entrega la caja; CFE → factura
+            if (data?.recibo) { await generarPdfReciboCobro(data.recibo, { descargar: true }); return; }
             if (!data?.doc) throw new Error('No se pudo leer el comprobante.');
             await generarPdfFacturaDGI(data.doc, data.detalles || []);
         } catch (e) {

@@ -120,6 +120,9 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
   const location = useLocation();
   const [locationCliente, setLocationCliente] = useState(null);
   const [locationDocumento, setLocationDocumento] = useState(null);
+  // Lo que el cliente entregó, cargado en "Saldo a favor" antes de pasar a "Pago de deudas"
+  const [pagoDeudaInicial, setPagoDeudaInicial] = useState(null);
+  useEffect(() => { if (subTabIngreso !== 'PAGO_DEUDAS') setPagoDeudaInicial(null); }, [subTabIngreso]);
 
   useEffect(() => {
     if (location.state) {
@@ -2704,6 +2707,8 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                       cotizacion={cotizacion}
                       onCobroCompletado={() => {}}
                       initialCliente={locationCliente}
+                      // Debe en la otra moneda y paga con esta → al cobro de deudas, con el cliente ya elegido
+                      onIrACobrarDeudas={(cli, pago) => { setLocationCliente(cli); setLocationDocumento(null); setPagoDeudaInicial(pago || null); setSubTabIngreso('PAGO_DEUDAS'); }}
                     />
                   )}
                   {subTabIngreso === 'OTROS_INGRESOS' && (
@@ -2720,7 +2725,8 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
                       sesion={sesion}
                       metodosPago={metodosPago}
                       cotizacion={cotizacion}
-                      onPagoCompletado={() => { fetchRetiros(); }}
+                      pagoInicial={pagoDeudaInicial}
+                      onPagoCompletado={() => { setPagoDeudaInicial(null); fetchRetiros(); }}
                       isAdminCaja={isAdminCaja}
                       initialCliente={locationCliente}
                       initialDocumento={locationDocumento}

@@ -2891,6 +2891,8 @@ async function reponerDeudasDeTransaccion({ tcaId, motivo }, transaction) {
                           AND dd.DDeImportePendiente > 0.01)`);
     }
   }
+  // Lo repuesto (una fila por deuda: { DDeIdDocumento, DocIdDocumento, Repone }), para el mensaje del llamador.
+  return impRes.recordset;
 }
 
 /**
@@ -3004,7 +3006,7 @@ async function anularReciboInterno({ tcaId, usuarioId, motivo, transaction: txEx
     }
 
     // 5.b DEVOLVERLE LA DEUDA A LOS DOCUMENTOS QUE ESTE COBRO HABÍA PAGADO.
-    await reponerDeudasDeTransaccion({ tcaId, motivo }, transaction);
+    const deudasRepuestas = await reponerDeudasDeTransaccion({ tcaId, motivo }, transaction);
 
     // 6. Anular el asiento contable del ingreso (excluye el asiento de egresos por seguridad)
     await new sql.Request(transaction)
@@ -3024,8 +3026,10 @@ async function anularReciboInterno({ tcaId, usuarioId, motivo, transaction: txEx
         WHERE TcaIdTransaccion = @TcaId AND ISNULL(DocEstado,'') <> 'ANULADO'`);
 
     if (!txExterna) await transaction.commit();
-    const nDeudas = impRes.recordset.length;
-    const impRepuesto = impRes.recordset.reduce((s, i) => s + Number(i.Repone || 0), 0);
+    // (Antes leía `impRes`, que quedó adentro de reponerDeudasDeTransaccion al separarla:
+    // ReferenceError DESPUÉS del commit → la bandeja mostraba error aunque anulaba, 12-10-2026.)
+    const nDeudas = deudasRepuestas.length;
+    const impRepuesto = deudasRepuestas.reduce((s, i) => s + Number(i.Repone || 0), 0);
     logger.info(`[CAJA] 🔄 Recibo interno ${tcaId} anulado por usuario ${usuarioId} (${movsRes.recordset.length} movs revertidos, ${nDeudas} deuda(s) repuesta(s) por ${impRepuesto.toFixed(2)}).`);
     return {
       success: true,

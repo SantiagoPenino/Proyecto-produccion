@@ -563,9 +563,14 @@ async function enviarADiseno(pool, user, parteId, b) {
     await cambiarEstadoParte(transaction, user, pa, 'ENVIADO_DISENO', 'UsuarioEnvioDiseno = @U',
       tipoTrabajo === 'REVISAR' ? 'para revisar el arte del cliente' : 'para diseñar desde cero');
     await transaction.commit();
-    // TIZADA PRO: con TIZADAPRO_ENVIO_MODO=AL_ENVIAR_A_DISENO la principal sale sola a TIZADA (si tiene diseños y lista
-    // de talles cargados). Después de responder: si falla, el envío a Diseño ya quedó hecho (queda en el log).
-    if (pa.Tipo === 'PRINCIPAL') {
+    // TIZADA PRO: con el tilde "Generar la tizada en TIZADA PRO" (b.Tizada = true) la principal sale a TIZADA ya, y se
+    // devuelve cómo salió (si falla, el envío a Diseño ya quedó hecho). Sin tilde (b.Tizada = false) no sale. Sin el dato
+    // (pantallas viejas): como antes, sale sola solo con TIZADAPRO_ENVIO_MODO=AL_ENVIAR_A_DISENO, después de responder.
+    if (pa.Tipo === 'PRINCIPAL' && b.Tizada === true) {
+      const r = await require('./solicitudesVendedorTizadaPro').envioAutomatico(pool, user, baseTizadaPro(), pa.SolicitudID, pa.ProductoSolID, true);
+      return { ok: true, tizada: r ? { Estado: r.Estado, Referencia: r.Referencia || null, mensaje: r.mensaje || r.ErrorTexto || null } : null };
+    }
+    if (pa.Tipo === 'PRINCIPAL' && b.Tizada === undefined) {
       setImmediate(() => require('./solicitudesVendedorTizadaPro').envioAutomatico(pool, user, baseTizadaPro(), pa.SolicitudID, pa.ProductoSolID));
     }
     return { ok: true };
@@ -661,6 +666,8 @@ async function subirArchivo(pool, user, solicitudId, b, file) {
   try {
     const rol = String(b.Rol || '').toUpperCase();
     if (!ROLES_ARCHIVO.includes(rol)) throw fallo(400, 'Indicá qué es el archivo (arte del cliente, referencia, boceto, planilla, tizada, diseño pronto o comprobante de pago).');
+    // [PORTAL] el cliente que arma su pedido en la Tienda sube lo suyo: arte, referencias, bocetos y planillas
+    if (user?.portal && !['ARTE_CLIENTE', 'REFERENCIA', 'BOCETO', 'PLANILLA'].includes(rol)) throw fallo(403, 'Desde el portal se sube el arte, referencias, bocetos o la planilla.');
     if (rol === 'COMPROBANTE' && (entero(b.ParteID) || entero(b.ProductoSolID) || entero(b.EventoID))) throw fallo(400, 'El comprobante de pago es de toda la solicitud: no va en un producto ni en un servicio.');
     const parteId = entero(b.ParteID);
     const reemplazaA = entero(b.ReemplazaA);
@@ -881,9 +888,12 @@ async function listar(pool, user, f) {
   if (f.desde) { req.input('Desde', sql.Date, f.desde); where.push('s.FechaSolicitud >= @Desde'); }
   if (f.hasta) { req.input('Hasta', sql.Date, f.hasta); where.push('s.FechaSolicitud < DATEADD(DAY, 1, @Hasta)'); }
   if (txt(f.q)) { req.input('Q', sql.NVarChar(120), `%${txt(f.q, 100)}%`); where.push('(s.NombreTrabajo LIKE @Q OR c.Nombre LIKE @Q OR c.NombreFantasia LIKE @Q OR CAST(s.SolicitudID AS varchar(12)) LIKE @Q OR EXISTS (SELECT 1 FROM dbo.SolicitudesVendedorProductos pq WHERE pq.SolicitudID = s.SolicitudID AND pq.Activo = 1 AND CAST(pq.PedidoNoDocERP AS varchar(12)) LIKE @Q))'); }
+  // [PORTAL] los pedidos que el cliente arma en la Tienda aparecen cuando los confirma (scripts/add_solicitudes_portal.sql)
+  const conPortal = (await pool.request().query("SELECT COL_LENGTH('dbo.SolicitudesVendedor', 'PortalConfirmado') AS c")).recordset[0].c != null;
+  if (conPortal) where.push("NOT (s.Origen = 'PORTAL' AND s.PortalConfirmado IS NULL)");
 
   const r = await req.query(`
-    SELECT TOP 500 s.SolicitudID, s.PreNumero, s.FechaSolicitud, ${(await tieneFicha(pool)) ? 's.FechaEntrega, s.FechaEntregaHasta, s.FichaJson' : 'NULL AS FechaEntrega, NULL AS FechaEntregaHasta, NULL AS FichaJson'}, s.CodCliente, LTRIM(RTRIM(c.Nombre)) AS ClienteNombre, s.NombreTrabajo, s.Estado,
+    SELECT TOP 500 s.SolicitudID, s.PreNumero, s.FechaSolicitud, ${conPortal ? 's.Origen' : "'VENDEDOR' AS Origen"}, ${(await tieneFicha(pool)) ? 's.FechaEntrega, s.FechaEntregaHasta, s.FichaJson' : 'NULL AS FechaEntrega, NULL AS FechaEntregaHasta, NULL AS FichaJson'}, s.CodCliente, LTRIM(RTRIM(c.Nombre)) AS ClienteNombre, s.NombreTrabajo, s.Estado,
            s.VendedorID, u.Nombre AS VendedorNombre, s.ModoCobro, s.PrecioPactado, s.MonIdMoneda, s.RequiereSena, s.SenaConfirmada,
            x.Productos, x.Convertidos,
            -- Números de los pedidos de producción creados desde esta solicitud (uno por producto convertido)
@@ -977,10 +987,15 @@ async function obtener(pool, user, solicitudId) {
         FROM dbo.ProductoVentaConfig WHERE COL_LENGTH('dbo.ProductoVentaConfig', 'TecnicaPrincipal') IS NOT NULL AND ProIdProducto IN (${idsCat.join(',')})`);
       c.recordset.forEach(x => cfgPorId.set(x.ProIdProducto, x));
     } catch (e) { logger.warn(`[SOLICITUDES] config F1 de productos: ${e.message}`); }
+    // [A MEDIDA] productos a medida de TIZADA (sin docs/migrations/configurador_a_medida.sql, ninguno)
+    try {
+      const am = await pool.request().query(`SELECT ProIdProducto FROM dbo.ProductoVentaConfig WHERE AMedidaJson IS NOT NULL AND ProIdProducto IN (${idsCat.join(',')})`);
+      am.recordset.forEach(x => { const c = cfgPorId.get(x.ProIdProducto); if (c) c.AMedida = true; });
+    } catch (_) { /* falta la columna */ }
   }
   for (const p of sol.Productos) {
     const c = p.ProIdProducto ? cfgPorId.get(Number(p.ProIdProducto)) : null;
-    p.Config = c ? { TecnicaPrincipal: c.TecnicaPrincipal || 'SB', Molde: c.Molde || 'OBLIGATORIO', UM: c.UM || 'u', AnchoM: c.AnchoM, AltoM: c.AltoM, BordeCm: c.BordeCm, TizadaProMoldeRef: c.TizadaProMoldeRef || null } : null;
+    p.Config = c ? { TecnicaPrincipal: c.TecnicaPrincipal || 'SB', Molde: c.Molde || 'OBLIGATORIO', UM: c.UM || 'u', AnchoM: c.AnchoM, AltoM: c.AltoM, BordeCm: c.BordeCm, TizadaProMoldeRef: c.TizadaProMoldeRef || null, AMedida: !!c.AMedida } : null;
     const nombreArea = { DIRECTA: 'impresión directa', ECOUV: 'gran formato', DF: 'DTF' }[p.Config?.TecnicaPrincipal];
     if (nombreArea) p.Partes.forEach(pa => { if (pa.Tipo === 'PRINCIPAL') pa.Nombre = `Producción principal (${nombreArea})`; });
   }
@@ -1188,7 +1203,13 @@ const vincularTizada = (pool, user, parteId, b) => require('./solicitudesVendedo
 const baseTizadaPro = () => ({ ...baseTizadas(), cambiarEstadoParte });
 const tizadaProVer = (pool, user, solicitudId, productoSolId) => require('./solicitudesVendedorTizadaPro').ver(pool, user, baseTizadaPro(), solicitudId, productoSolId);
 const tizadaProEditables = (pool, user, solicitudId, productoSolId, b) => require('./solicitudesVendedorTizadaPro').leerEditables(pool, user, baseTizadaPro(), solicitudId, productoSolId, b && b.arteArchivoId);
+const piezasDelArte = (pool, user, solicitudId, archivoId) => require('./solicitudesVendedorTizadaPro').piezasDelArte(pool, user, baseTizadaPro(), solicitudId, archivoId);
 const tizadaProGuardar = (pool, user, solicitudId, productoSolId, b) => require('./solicitudesVendedorTizadaPro').guardar(pool, user, baseTizadaPro(), solicitudId, productoSolId, b);
+// [A MEDIDA] cuentas en vivo de la medida de un diseño + plantilla con la medida para el diseñador
+const tizadaProCalcular = (pool, user, solicitudId, productoSolId, b) => require('./solicitudesVendedorTizadaPro').calcularMedida(pool, user, baseTizadaPro(), solicitudId, productoSolId, b);
+const tizadaProPlantillaPedir = (pool, user, solicitudId, productoSolId) => require('./solicitudesVendedorTizadaPro').pedirPlantilla(pool, user, baseTizadaPro(), solicitudId, productoSolId);
+const tizadaProPlantillaEstado = (pool, user, solicitudId, productoSolId) => require('./solicitudesVendedorTizadaPro').estadoPlantilla(pool, user, baseTizadaPro(), solicitudId, productoSolId);
+const tizadaProPlantillaBajar = (pool, user, solicitudId, productoSolId, nombre) => require('./solicitudesVendedorTizadaPro').bajarPlantilla(pool, user, baseTizadaPro(), solicitudId, productoSolId, nombre);
 const tizadaProEnviar = (pool, user, solicitudId, productoSolId, b) => require('./solicitudesVendedorTizadaPro').enviar(pool, user, baseTizadaPro(), solicitudId, productoSolId, b);
 async function tizadaProActualizar(pool, user, solicitudId, envioId, b) {
   if (!esVendedor(user) && !(await esDisenador(pool, user))) throw fallo(403, 'Esto lo hace el vendedor o un diseñador habilitado.');
@@ -1249,7 +1270,7 @@ const reintentarArchivos = (pool, user, solicitudId, productoSolId, app) => requ
 const recuperarArchivos = (pool, user, solicitudId, productoSolId, app) => require('./solicitudesVendedorRecuperar').recuperar(pool, user, baseConversion(), solicitudId, productoSolId, app);
 
 module.exports = {
-  tizadaProVer, tizadaProEditables, tizadaProGuardar, tizadaProEnviar, tizadaProActualizar, _baseTizadaPro: () => baseTizadaPro(),
+  tizadaProVer, tizadaProEditables, piezasDelArte, tizadaProGuardar, tizadaProCalcular, tizadaProPlantillaPedir, tizadaProPlantillaEstado, tizadaProPlantillaBajar, tizadaProEnviar, tizadaProActualizar, _baseTizadaPro: () => baseTizadaPro(),
   materialesPrincipal, definirProduccionArchivo, tizadasTizadaPro, vincularTizada, moldeDelProducto, guardarSublimacion, guardarTalles, convertir, reintentarArchivos, recuperarArchivos, bobinasDelCliente, disenosEnProduccion, estimarPlazo, calendario,
   crear, actualizar, listar, obtener, guardarPrecio, confirmarSena, agregarInteraccion,
   enviarADiseno, bandeja, tomarParte, aceptarCambio, subirArchivo, quitarArchivo, cancelar,

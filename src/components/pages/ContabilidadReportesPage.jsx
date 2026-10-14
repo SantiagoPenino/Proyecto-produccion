@@ -1286,13 +1286,19 @@ function EvolucionAnual({ anio, meses, mesEnCurso, mesSel, onMesSel, unif, tcRef
     );
 }
 
-// Visual 2: año actual contra año anterior, mes a mes, más la tabla editable del año anterior
+// Visual 2: año actual contra año anterior, mes a mes, más la tabla de carga manual.
+// Carga manual (12-oct-2026, pedido de administración): se puede cargar CUALQUIER mes de los dos
+// años, en $ y en US$, porque el sistema arrancó en junio-2026 y de enero a mayo no hay ventas
+// cargadas. Lo cargado a mano MANDA sobre lo que tenga el sistema para ese mes (el backend
+// devuelve igual lo que tiene el sistema, y acá se muestra al lado para que se vea qué se pisa).
 function ComparacionAnual({ anio, meses, mesesAnt, mesEnCurso, mesSel, onMesSel, unif, tcRef, tcRefAnt, ambitoParams, etiqAmbito, onGuardado }) {
     const [tip, setTip] = useState(null);
     const boxRef = useRef(null);
-    const [edit, setEdit] = useState(Array(12).fill(''));   // montos USD del año anterior en edición
+    const [anioEdit, setAnioEdit] = useState(anio - 1);     // qué año se está cargando a mano
+    const [edit, setEdit] = useState({ uyu: Array(12).fill(''), usd: Array(12).fill('') });
     const [sucio, setSucio] = useState(false);
     const [pegar, setPegar] = useState(null);                // null = cerrado; string = texto del textarea
+    const [pegarMon, setPegarMon] = useState('usd');
     const [msg, setMsg] = useState('');
     const [guardando, setGuardando] = useState(false);
     const sym = unif === 'UYU' ? '$' : 'US$';
@@ -1300,12 +1306,14 @@ function ComparacionAnual({ anio, meses, mesesAnt, mesEnCurso, mesSel, onMesSel,
     const a = (meses || []).map(m => unifMes(m, unif, tcRef));
     const b = (mesesAnt || []).map(m => unifMes(m, unif, tcRefAnt));
     const enCurso = mesEnCurso ? mesEnCurso - 1 : 12;
+    const serieEdit = anioEdit === anio ? (meses || []) : (mesesAnt || []);
 
-    // Lo cargado (en USD) alimenta la tabla editable
+    // Lo ya cargado a mano del año elegido alimenta los campos
     useEffect(() => {
-        setEdit((mesesAnt || []).map(m => (m && m.origen === 'historico' && m.usd ? String(m.usd) : '')));
+        const h = (k) => serieEdit.map(m => (m && m.origen === 'historico' && Number(m[k]) ? String(m[k]) : ''));
+        setEdit({ uyu: h('uyu'), usd: h('usd') });
         setSucio(false);
-    }, [mesesAnt]);
+    }, [meses, mesesAnt, anioEdit]); // eslint-disable-line react-hooks/exhaustive-deps
 
     const { W, H, L, T, B } = EJE;
     const vals = [...a, ...b].filter(v => v != null);
@@ -1323,36 +1331,49 @@ function ComparacionAnual({ anio, meses, mesesAnt, mesEnCurso, mesSel, onMesSel,
             filas: [[String(anio), a[i] == null ? '—' : `${sym} ${fmtMoney(a[i])}`], [String(anioAnt), b[i] == null ? '—' : `${sym} ${fmtMoney(b[i])}`], ['Variación', p == null ? 'sin dato' : fmtPct(p)]] });
     };
 
+    const setCelda = (k, i, v) => { setEdit(prev => ({ ...prev, [k]: prev[k].map((x, j) => (j === i ? v : x)) })); setSucio(true); setMsg('Cambios sin guardar'); };
+    // Flechita: copia lo que tiene el sistema ($ y US$) a los campos de carga manual del mes
+    const copiarSistema = (i) => {
+        const me = serieEdit[i] || {};
+        setEdit(prev => ({
+            uyu: prev.uyu.map((x, j) => (j === i ? String(Number(me.sistemaUyu || 0).toFixed(2)) : x)),
+            usd: prev.usd.map((x, j) => (j === i ? String(Number(me.sistemaUsd || 0).toFixed(2)) : x)),
+        }));
+        setSucio(true); setMsg(`${MESES_LARGO[i]}: copiado lo del sistema. Editá si hace falta y apretá "Guardar ventas ${anioEdit}".`);
+    };
     const guardar = async () => {
         setGuardando(true); setMsg('');
         try {
-            const mesesBody = edit.map((v, i) => ({ mes: i + 1, monto: String(v).trim() === '' ? null : Number(v) }));
-            if (mesesBody.some(m => m.monto != null && !(m.monto >= 0))) { setMsg('Revisá los montos: tienen que ser números mayores o iguales a 0.'); return; }
-            const r = await api.put('/contabilidad/reportes/ventas-historicas', { anio: anioAnt, ...ambitoParams, moneda: 'USD', meses: mesesBody });
-            setMsg(`Ventas ${anioAnt} guardadas (${r.data.guardados} meses).`); setSucio(false);
+            const aMeses = (k) => edit[k].map((v, i) => ({ mes: i + 1, monto: String(v).trim() === '' ? null : Number(v) }));
+            const mu = aMeses('uyu'), md = aMeses('usd');
+            if ([...mu, ...md].some(m => m.monto != null && !(m.monto >= 0))) { setMsg('Revisá los montos: tienen que ser números mayores o iguales a 0.'); return; }
+            const r1 = await api.put('/contabilidad/reportes/ventas-historicas', { anio: anioEdit, ...ambitoParams, moneda: 'UYU', meses: mu });
+            const r2 = await api.put('/contabilidad/reportes/ventas-historicas', { anio: anioEdit, ...ambitoParams, moneda: 'USD', meses: md });
+            setMsg(`Ventas ${anioEdit} guardadas (${r1.data.guardados} meses en $, ${r2.data.guardados} en US$).`); setSucio(false);
             onGuardado && onGuardado();
         } catch (e) {
-            setMsg(e.response?.status === 403 ? 'Solo un usuario de administración puede cargar las ventas del año anterior.' : (e.response?.data?.error || e.message));
+            setMsg(e.response?.status === 403 ? 'Solo un usuario de administración puede cargar ventas a mano.' : (e.response?.data?.error || e.message));
         } finally { setGuardando(false); }
     };
     const aplicarPegado = () => {
         const parts = String(pegar || '').split(/[\t\n;]+/).map(x => x.trim()).filter(Boolean);
         const nums = parts.map(x => { const c = x.replace(/[^\d,.\-]/g, ''); const norm = /,\d{1,2}$/.test(c) ? c.replace(/\./g, '').replace(',', '.') : c.replace(/[.,](?=\d{3}(\D|$))/g, ''); return parseFloat(norm); });
         if (!nums.length || nums.some(isNaN)) { setMsg('Revisá los datos pegados: se esperan números, uno por mes (enero a diciembre).'); return; }
-        setEdit(prev => prev.map((v, i) => (i < nums.length ? String(nums[i]) : v)));
+        setEdit(prev => ({ ...prev, [pegarMon]: prev[pegarMon].map((v, i) => (i < nums.length ? String(nums[i]) : v)) }));
         setSucio(true); setPegar(null);
-        setMsg(`Se cargaron ${Math.min(nums.length, 12)} meses. Apretá "Guardar ventas ${anioAnt}" para conservarlos.`);
+        setMsg(`Se cargaron ${Math.min(nums.length, 12)} meses en ${pegarMon === 'usd' ? 'US$' : '$'}. Apretá "Guardar ventas ${anioEdit}" para conservarlos.`);
     };
     let t26 = 0, t25 = 0;
     for (let i = 0; i < 12; i++) if (i < enCurso && a[i] != null && b[i] != null) { t26 += a[i]; t25 += b[i]; }
     const tp = t25 ? (t26 - t25) / t25 * 100 : null;
+    const inputCls = 'w-28 text-right font-mono text-xs border border-slate-300 rounded-lg px-2 py-1 outline-none focus:ring-2 focus:ring-brand-cyan/30';
 
     return (
         <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-4">
             <div className="flex items-start justify-between gap-3 flex-wrap mb-1">
                 <div>
                     <h3 className="font-bold text-slate-700 text-sm">Comparación con el año anterior <span className="ml-1 px-1.5 py-0.5 rounded text-[10px] font-extrabold uppercase border border-brand-cyan text-brand-cyan align-middle">Nueva</span></h3>
-                    <p className="text-[11px] text-slate-400">{anio} contra {anioAnt}, mes a mes, en {unif === 'UYU' ? 'pesos' : 'dólares'}{etiqAmbito ? ` · ${etiqAmbito}` : ''}. Las ventas {anioAnt} se cargan en la tabla de abajo (en US$).</p>
+                    <p className="text-[11px] text-slate-400">{anio} contra {anioAnt}, mes a mes, en {unif === 'UYU' ? 'pesos' : 'dólares'}{etiqAmbito ? ` · ${etiqAmbito}` : ''}. Los meses que el sistema no tiene (antes de junio-{anio} y todo {anioAnt}) se cargan a mano en la tabla de abajo.</p>
                 </div>
                 <div className="flex items-center gap-4 text-[11px] text-slate-500">
                     <span className="flex items-center gap-1.5"><i className="w-2.5 h-2.5 rounded-sm" style={{ background: '#0b7fa0' }} />Ventas {anio}</span>
@@ -1388,12 +1409,22 @@ function ComparacionAnual({ anio, meses, mesesAnt, mesEnCurso, mesSel, onMesSel,
                 <StatBox k="Mayor crecimiento">{mejor ? `${MESES_LARGO[mejor.i]} · ${fmtPct(mejor.p * 100)}` : '—'}</StatBox>
             </div>
 
-            <div className="mt-3 border border-slate-100 rounded-lg overflow-x-auto">
-                <table className="w-full text-xs min-w-[640px]">
+            {/* ── Carga manual ── */}
+            <div className="flex items-center gap-2 flex-wrap mt-4">
+                <span className="text-[11px] font-bold text-slate-500 tracking-wide">CARGAR A MANO EL AÑO</span>
+                {[anioAnt, anio].map(y => (
+                    <Chip key={y} active={anioEdit === y} onClick={() => { if (sucio && !window.confirm('Hay cambios sin guardar. ¿Cambiar de año igual?')) return; setAnioEdit(y); setMsg(''); }}>{y}</Chip>
+                ))}
+                <span className="text-[11px] text-slate-400">Se escribe el total facturado del mes en cada moneda, con IVA. Lo cargado a mano manda sobre lo que tenga el sistema para ese mes.</span>
+            </div>
+            <div className="mt-2 border border-slate-100 rounded-lg overflow-x-auto">
+                <table className="w-full text-xs min-w-[760px]">
                     <thead className="bg-slate-50 border-b border-slate-200 text-slate-500">
                         <tr>
                             <th className="px-3 py-2 text-left font-semibold">Mes</th>
-                            <th className="px-3 py-2 text-right font-semibold">Ventas {anioAnt} (US$, se carga acá)</th>
+                            <th className="px-3 py-2 text-right font-semibold bg-cyan-50/60">Carga manual {anioEdit} · $</th>
+                            <th className="px-3 py-2 text-right font-semibold bg-cyan-50/60">Carga manual {anioEdit} · US$</th>
+                            <th className="px-3 py-2 text-left font-semibold bg-cyan-50/60">Lo que tiene el sistema en {anioEdit} <span className="font-normal text-slate-400">(← lo copia a la carga manual)</span></th>
                             <th className="px-3 py-2 text-right font-semibold">Ventas {anio} ({unif})</th>
                             <th className="px-3 py-2 text-right font-semibold">Ventas {anioAnt} ({unif})</th>
                             <th className="px-3 py-2 text-right font-semibold">Diferencia</th>
@@ -1404,13 +1435,30 @@ function ComparacionAnual({ anio, meses, mesesAnt, mesEnCurso, mesSel, onMesSel,
                         {Array.from({ length: 12 }, (_, i) => {
                             const dif = a[i] != null && b[i] != null ? a[i] - b[i] : null;
                             const p = dif != null && b[i] ? dif / b[i] * 100 : null;
+                            const me = serieEdit[i] || {};
+                            const sis = Number(me.docs) > 0;
                             return (
                                 <tr key={i} className={i === mesSel ? 'bg-cyan-50/40' : ''}>
-                                    <td className="px-3 py-1.5 font-semibold text-slate-700">{MESES_LARGO[i]}{i === enCurso && <span className="text-slate-400 font-normal"> (en curso)</span>}</td>
-                                    <td className="px-3 py-1.5 text-right">
-                                        <input type="number" min="0" step="1" value={edit[i]} placeholder="—" aria-label={`Ventas ${anioAnt} ${MESES_LARGO[i]} en US$`}
-                                            onChange={e => { const v = e.target.value; setEdit(prev => prev.map((x, j) => (j === i ? v : x))); setSucio(true); setMsg('Cambios sin guardar'); }}
-                                            className="w-32 text-right font-mono text-xs border border-slate-300 rounded-lg px-2 py-1 outline-none focus:ring-2 focus:ring-brand-cyan/30" />
+                                    <td className="px-3 py-1.5 font-semibold text-slate-700">{MESES_LARGO[i]}{anioEdit === anio && i === enCurso && <span className="text-slate-400 font-normal"> (en curso)</span>}</td>
+                                    <td className="px-3 py-1.5 text-right bg-cyan-50/30">
+                                        <input type="number" min="0" step="1" value={edit.uyu[i]} placeholder="—" aria-label={`Ventas ${anioEdit} ${MESES_LARGO[i]} en pesos`}
+                                            onChange={e => setCelda('uyu', i, e.target.value)} className={inputCls} />
+                                    </td>
+                                    <td className="px-3 py-1.5 text-right bg-cyan-50/30">
+                                        <input type="number" min="0" step="1" value={edit.usd[i]} placeholder="—" aria-label={`Ventas ${anioEdit} ${MESES_LARGO[i]} en dólares`}
+                                            onChange={e => setCelda('usd', i, e.target.value)} className={inputCls} />
+                                    </td>
+                                    <td className="px-3 py-1.5 bg-cyan-50/30 text-[11px] whitespace-nowrap">
+                                        {sis
+                                            ? <span className="inline-flex items-center gap-1.5">
+                                                <button type="button" onClick={() => copiarSistema(i)}
+                                                    title="Copiar lo que tiene el sistema a los campos de carga manual de este mes ($ y US$)"
+                                                    className="px-1.5 py-0.5 rounded border border-cyan-200 bg-white text-brand-cyan font-bold hover:bg-cyan-50 leading-none">←</button>
+                                                <span className={me.origen === 'historico' ? 'text-amber-600' : 'text-slate-500'} title={me.origen === 'historico' ? 'Este mes está cargado a mano: el reporte usa lo cargado, no esto' : 'Documentos emitidos en el sistema'}>
+                                                    $ {fmtMoney(me.sistemaUyu)} · US$ {fmtMoney(me.sistemaUsd)}
+                                                </span>
+                                              </span>
+                                            : <span className="text-slate-300">sin documentos</span>}
                                     </td>
                                     <td className="px-3 py-1.5 text-right font-mono tabular-nums">{a[i] == null ? '—' : `${sym} ${fmtMoney(a[i])}`}</td>
                                     <td className="px-3 py-1.5 text-right font-mono tabular-nums">{b[i] == null ? '—' : `${sym} ${fmtMoney(b[i])}`}</td>
@@ -1421,7 +1469,7 @@ function ComparacionAnual({ anio, meses, mesesAnt, mesEnCurso, mesSel, onMesSel,
                         })}
                         <tr className="bg-slate-100 border-t-2 border-slate-300 font-bold">
                             <td className="px-3 py-2 text-slate-800">Acumulado meses cerrados</td>
-                            <td></td>
+                            <td></td><td></td><td></td>
                             <td className="px-3 py-2 text-right font-mono tabular-nums">{sym} {fmtMoney(t26)}</td>
                             <td className="px-3 py-2 text-right font-mono tabular-nums">{sym} {fmtMoney(t25)}</td>
                             <td className="px-3 py-2 text-right font-mono tabular-nums">{sym} {fmtMoney(t26 - t25)}</td>
@@ -1432,16 +1480,21 @@ function ComparacionAnual({ anio, meses, mesesAnt, mesEnCurso, mesSel, onMesSel,
             </div>
             <div className="flex items-center gap-2 flex-wrap mt-2">
                 <button onClick={guardar} disabled={guardando || !sucio}
-                    className="px-3 py-1.5 bg-brand-cyan text-white text-xs font-semibold rounded-lg disabled:opacity-40">{guardando ? 'Guardando…' : `Guardar ventas ${anioAnt}`}</button>
+                    className="px-3 py-1.5 bg-brand-cyan text-white text-xs font-semibold rounded-lg disabled:opacity-40">{guardando ? 'Guardando…' : `Guardar ventas ${anioEdit}`}</button>
                 <button onClick={() => setPegar(p => (p == null ? '' : null))}
                     className="px-3 py-1.5 bg-white border border-slate-300 text-slate-700 text-xs font-semibold rounded-lg">Pegar desde Excel</button>
                 <span className={`text-xs font-semibold ${sucio ? 'text-amber-600' : 'text-emerald-600'}`}>{msg}</span>
-                <span className="text-[11px] text-slate-400 ml-auto">Solo administración puede guardar. Se guarda para {etiqAmbito || 'toda la empresa'}.</span>
+                <span className="text-[11px] text-slate-400 ml-auto">Solo administración puede guardar. Se guarda para {etiqAmbito || 'toda la empresa'}. Vacío = borra lo cargado de ese mes.</span>
             </div>
             {pegar != null && (
                 <div className="mt-2">
+                    <div className="flex items-center gap-2 mb-1 text-[11px] text-slate-500">
+                        <span className="font-bold tracking-wide">PEGAR EN</span>
+                        <Chip active={pegarMon === 'uyu'} onClick={() => setPegarMon('uyu')}>$ pesos</Chip>
+                        <Chip active={pegarMon === 'usd'} onClick={() => setPegarMon('usd')}>US$ dólares</Chip>
+                    </div>
                     <textarea value={pegar} onChange={e => setPegar(e.target.value)} rows={4}
-                        placeholder={`Pegá acá los 12 montos de ${anioAnt} en US$, uno por línea o separados por tabulación (enero a diciembre).`}
+                        placeholder={`Pegá acá los 12 montos de ${anioEdit} en ${pegarMon === 'usd' ? 'US$' : '$'}, uno por línea o separados por tabulación (enero a diciembre).`}
                         className="w-full font-mono text-xs border border-slate-300 rounded-lg px-2 py-1.5 outline-none focus:ring-2 focus:ring-brand-cyan/30" />
                     <button onClick={aplicarPegado} className="mt-1 px-3 py-1.5 bg-brand-cyan text-white text-xs font-semibold rounded-lg">Aplicar</button>
                 </div>

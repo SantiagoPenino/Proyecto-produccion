@@ -18,6 +18,9 @@ router.get('/dynamic', verifyToken, soloAdmin, adminController.getDynamicData);
 
 // Configuración General (tabla ConfiguracionGlobal) — la usa ConfigGlobalModal.jsx
 router.get('/config-global', verifyToken, soloAdmin, configGlobalController.getAll);
+// Registro del intercambio con TIZADA PRO (llamadas, avisos y pedidos) — lo usa ConfigTizadaProLogModal.jsx
+router.get('/tizadapro/registro', verifyToken, soloAdmin, require('../controllers/tizadaProRegistroController').getRegistro);
+router.get('/tizadapro/envios/:id', verifyToken, soloAdmin, require('../controllers/tizadaProRegistroController').getEnvio);
 router.put('/config-global', verifyToken, soloAdmin, configGlobalController.upsert);
 
 module.exports = router;

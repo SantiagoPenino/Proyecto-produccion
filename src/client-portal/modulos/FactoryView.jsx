@@ -484,6 +484,18 @@ export const FactoryView = () => {
         }
     });
 
+    // El código que se MUESTRA en la card (14/10): un pedido de producto con varias órdenes se ve por su orden madre (PRO-…);
+    // órdenes DISTINTAS sin PRO (ej. DTF + SUB), por el número de pedido; una sola orden (aunque esté partida en telas:
+    // SUB-10118 (1/2) y (2/2)), su código. project.id (reclamo, borrar) no cambia.
+    const sinParte = (c) => String(c || '').replace(/\s*\(\d+\/\d+\)\s*$/, '').trim().toUpperCase();
+    Object.values(projects).forEach(p => {
+        const pro = p.subOrders.find(o => /^PRO-/i.test(o.CodigoOrden || ''));
+        const doc = p.subOrders.find(o => o.NoDocERP)?.NoDocERP;
+        const distintas = new Set(p.subOrders.map(o => sinParte(o.CodigoOrden)).filter(Boolean)).size;
+        p.codigoVisible = pro ? pro.CodigoOrden
+            : (distintas > 1 && doc && !/-R\d+$/i.test(p.id || '') ? `Pedido ${String(doc).trim()}` : p.id);
+    });
+
     // Filtrado por estado + orden por fecha desc (más nuevo primero). El texto del buscador NO se
     // filtra acá: lo hace el servidor sobre la lista entera (ver fetchOrders / ?q=).
     const filteredProjects = Object.values(projects).filter(p => {
@@ -706,7 +718,7 @@ export const FactoryView = () => {
                                     <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
                                         <div className={`w-2 h-2 rounded-full ${statusConf.dot} shrink-0 ${projectStatus === 'activo' ? 'animate-pulse' : ''}`} />
                                         <span className="text-lg font-black text-zinc-100 tracking-tight font-barlow shrink-0">
-                                            {(project.id || '').replace(/\s*\(\d+\/\d+\)\s*$/, '')}
+                                            {(project.codigoVisible || project.id || '').replace(/\s*\(\d+\/\d+\)\s*$/, '')}
                                         </span>
 
                                         {/* Medio: badge "N telas" en multitela; si no, el material */}

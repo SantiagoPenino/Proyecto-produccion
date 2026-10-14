@@ -1500,41 +1500,51 @@ exports.setMaterialesPlan = async (req, res) => {
 };
 
 exports.desactivarPlan = async (req, res) => {
+  const PlaIdPlan = parseInt(req.params.PlaIdPlan);
+  const UsuarioBaja = req.user?.id ?? 1;
+  const pool = await getPool();
+  // Baja del plan y ajuste del restante van juntos: si el ajuste falla, el plan no
+  // puede quedar cerrado con los metros todavía en la cuenta.
+  const transaction = new sql.Transaction(pool);
   try {
-    const PlaIdPlan = parseInt(req.params.PlaIdPlan);
-    const UsuarioBaja = req.user?.id ?? 1;
-    const pool = await getPool();
-    
+    await transaction.begin();
+
     // 1. Obtener datos del plan para ver si sobra algo
-    const planRes = await pool.request()
+    const planRes = await new sql.Request(transaction)
       .input('P', sql.Int, PlaIdPlan)
-      .query(`SELECT CueIdCuenta, PlaCantidadTotal, PlaCantidadUsada FROM dbo.PlanesMetros WHERE PlaIdPlan = @P AND PlaActivo = 1`);
-      
-    if (planRes.recordset.length > 0) {
-      const p = planRes.recordset[0];
-      const restante = p.PlaCantidadTotal - p.PlaCantidadUsada;
+      .query(`SELECT CueIdCuenta, PlaCantidadTotal, PlaCantidadUsada FROM dbo.PlanesMetros WITH(UPDLOCK, ROWLOCK) WHERE PlaIdPlan = @P AND PlaActivo = 1`);
 
-      // 2. Desactivar
-      await pool.request()
-        .input('PlaIdPlan',    sql.Int, PlaIdPlan)
-        .input('UsuarioBaja',  sql.Int, UsuarioBaja)
-        .query(`UPDATE dbo.PlanesMetros SET PlaActivo = 0, PlaFechaBaja = GETDATE(), PlaUsuarioBaja = @UsuarioBaja WHERE PlaIdPlan = @PlaIdPlan`);
-
-      // 3. Ajuste negativo por lo que se pierde al cerrar
-      if (restante > 0) {
-        await svc.registrarMovimiento({
-          CueIdCuenta: p.CueIdCuenta,
-          MovTipo: 'AJUSTE_NEG',
-          MovConcepto: `Cierre Plan #${PlaIdPlan} (Pérdida de saldo restante)`,
-          MovImporte: -restante,
-          MovUsuarioAlta: UsuarioBaja,
-          MovObservaciones: 'Cierre manual de plan'
-        });
-      }
+    if (!planRes.recordset.length) {
+      await transaction.rollback();
+      return res.status(409).json({ success: false, error: `El plan #${PlaIdPlan} no existe o ya está cerrado.` });
     }
-    
-    res.json({ success: true, message: 'Plan desactivado correctamente.' });
+
+    const p = planRes.recordset[0];
+    const restante = Math.round((Number(p.PlaCantidadTotal) - Number(p.PlaCantidadUsada)) * 10000) / 10000;
+
+    // 2. Desactivar
+    await new sql.Request(transaction)
+      .input('PlaIdPlan',    sql.Int, PlaIdPlan)
+      .input('UsuarioBaja',  sql.Int, UsuarioBaja)
+      .query(`UPDATE dbo.PlanesMetros SET PlaActivo = 0, PlaFechaBaja = GETDATE(), PlaUsuarioBaja = @UsuarioBaja WHERE PlaIdPlan = @PlaIdPlan`);
+
+    // 3. Ajuste negativo por lo que se pierde al cerrar
+    if (restante > 0) {
+      await svc.registrarMovimiento({
+        CueIdCuenta: p.CueIdCuenta,
+        MovTipo: 'AJUSTE_NEG',
+        MovConcepto: `Cierre Plan #${PlaIdPlan} (Pérdida de saldo restante)`,
+        MovImporte: -restante,
+        MovUsuarioAlta: UsuarioBaja,
+        MovObservaciones: 'Cierre manual de plan'
+      }, transaction);
+    }
+
+    await transaction.commit();
+    logger.info(`[CONTABILIDAD] desactivarPlan Plan #${PlaIdPlan} cerrado (restante descontado: ${restante > 0 ? restante : 0}) usr ${UsuarioBaja}`);
+    res.json({ success: true, message: 'Plan desactivado correctamente.', data: { restanteDescontado: restante > 0 ? restante : 0 } });
   } catch (err) {
+    try { await transaction.rollback(); } catch (_) { /* ya cerrada */ }
     logger.error('[CONTABILIDAD] desactivarPlan:', err.message);
     res.status(500).json({ success: false, error: err.message });
   }
@@ -2548,7 +2558,7 @@ async function armarReciboCobro(pool, tcaId) {
     .query(`
       SELECT t.TcaIdTransaccion, t.TcaFecha, t.TcaTipoDocumento, t.TcaSerieDoc, t.TcaNumeroDoc,
              t.TcaEstado, t.TcaTotalNeto, t.TcaTotalCobrado, t.TcaMonedaBase, t.TcaObservaciones,
-             t.EsCajaAdmin, t.StuIdSesion,
+             t.EsCajaAdmin, t.StuIdSesion, t.TcaUsuarioId,
              ISNULL(ct.Detalle, t.TcaTipoDocumento) AS TipoComprobante,
              COALESCE(u.Nombre, u.Usuario) AS Cajero,
              ${SQL_CLIENTE_COLS}
@@ -2657,8 +2667,10 @@ async function armarReciboCobro(pool, tcaId) {
     // del recibo / de lo aplicado.
     monedaBase: t.TcaMonedaBase ? (String(t.TcaMonedaBase).trim() === 'USD' ? 'US$' : '$') : null,
     observaciones: _txt(t.TcaObservaciones),
-    caja: t.EsCajaAdmin ? 'Caja Administrativa' : (t.StuIdSesion ? `Caja Central · sesión #${t.StuIdSesion}` : 'Caja Central'),
-    cajero: _txt(t.Cajero),
+    // 999 = operación del propio cliente en el portal (recarga / pago online)
+    caja: Number(t.TcaUsuarioId) === 999 ? 'Portal del cliente (pago electrónico)'
+      : t.EsCajaAdmin ? 'Caja Administrativa' : (t.StuIdSesion ? `Caja Central · sesión #${t.StuIdSesion}` : 'Caja Central'),
+    cajero: Number(t.TcaUsuarioId) === 999 ? null : _txt(t.Cajero),
     recibo: recibo ? {
       tipo: _txt(recibo.DocTipo),
       numero: _ref(recibo.DocSerie, recibo.DocNumero),
@@ -2829,6 +2841,9 @@ exports.getReciboCobro = async (req, res) => {
  * Datos del recibo de un movimiento (anticipo recién cargado en Caja, botón de imprimir
  * de los movimientos de cuenta). Solo lectura.
  */
+// El portal del cliente arma el mismo recibo (webOrdersController.getMiComprobante)
+exports.armarReciboCobro = armarReciboCobro;
+
 exports.getReciboMovimiento = async (req, res) => {
   try {
     const movId = parseInt(req.params.MovIdMovimiento, 10);

@@ -7,7 +7,10 @@ import NuevoProductoTerminadoModal from '../modals/config/NuevoProductoTerminado
 import Selector from '../ui/Selector';
 import { PasosCosturaEditor, TablaPasosCostura } from './ConfiguradorPasosCostura';   // [PASO A PASO]
 import { GrillaAvioTalles, TablaAviosTalle, resumenPorTalle, esMedida } from './ConfiguradorAviosTalle';   // [AVÍOS POR TALLE]
-import { PaintBucket, Flag, Image as IconoImagen, Scissors, Shirt, Spool, Sticker, Palette, Factory, Check, ChevronDown, Pencil, Save, Star, Store, Handshake, Shuffle, TriangleAlert, X, RefreshCw, FolderOpen, CircleCheck, Lock, Upload, Printer, RotateCcw, Package, Boxes, SlidersHorizontal, Tag, ChevronRight, Box, Info, Copy } from 'lucide-react';
+import PasoVariantes from './ConfiguradorVariantes';   // [VARIANTES] producto padre + variantes (12/10)
+import ConfiguradorAMedida, { IconoForma } from './ConfiguradorAMedida';   // [A MEDIDA] pañuelos, toallas, banderas (13/10)
+import { useConfirmar } from './ventas/solicitudesComunes';   // ventana de confirmar (en vez de window.confirm)
+import { PaintBucket, Flag, Image as IconoImagen, Scissors, Shirt, Spool, Sticker, Palette, Factory, Check, ChevronDown, Pencil, Save, Star, Store, Handshake, Shuffle, TriangleAlert, X, RefreshCw, FolderOpen, CircleCheck, Lock, Upload, Printer, RotateCcw, Package, Boxes, SlidersHorizontal, Tag, ChevronRight, Box, Info, Copy, Trash2 } from 'lucide-react';
 
 /*
  * CONFIGURAR PRODUCTOS — /configurar-productos (F3 del configurador)
@@ -365,6 +368,14 @@ const fichaToForm = (d) => ({
     origenProIdProducto: d.config?.OrigenProIdProducto || null,
     origenNombre: d.origen?.Descripcion || null,
     tizadaProMoldeRef: d.config?.TizadaProMoldeRef || '',
+    // [A MEDIDA] tipo de molde: con talles (prendas) o a medida (una pieza cuya medida dice cada pedido). Sin el SQL
+    // (config sin la clave AMedida) no se ofrece.
+    aMedida: d.config?.AMedida || null,
+    aMedidaDisponible: !d.config || d.config.AMedida !== undefined,
+    modoMolde: d.config?.AMedida ? 'A_MEDIDA' : 'TALLES',
+    // Cómo arma TIZADA los archivos: '' = automático (lo del .env), 'normal', 'una_por_fila' (un archivo por fila con sus copias)
+    tizadaMesasModo: d.config?.TizadaMesasModo || '',
+    mesasModoDisponible: !d.config || d.config.TizadaMesasModo !== undefined,
     // F1: producción principal, molde, medida fija, unidad y canales
     tecnicaPrincipal: d.config?.TecnicaPrincipal || 'SB',
     molde: d.config?.Molde || 'OBLIGATORIO',
@@ -441,10 +452,16 @@ const fichaToForm = (d) => ({
         };
     }),
     aviosPorTalleOk: d.aviosPorTalle === true,   // ¿se corrió configurador_ficha_avios_talle.sql?
+    // [VARIANTES] { padre, modeloClave, modeloNombre, permitido: { tecnicas, opciones, telas, accesorios } } si es variante
+    variante: d.variante || null,
+    cantidadVariantes: d.cantidadVariantes || 0,
 });
 
 const formToPayload = (f) => ({
-    ...(f.esCombo ? {} : { tizadaProMoldeRef: f.tizadaProMoldeRef || null }),
+    ...(f.esCombo ? {} : { tizadaProMoldeRef: (f.modoMolde === 'A_MEDIDA' ? f.aMedida?.molde : f.tizadaProMoldeRef) || null }),
+    // [A MEDIDA] null = no es a medida (o dejó de serlo)
+    ...(f.esCombo || !f.aMedidaDisponible ? {} : { aMedida: f.modoMolde === 'A_MEDIDA' && f.aMedida?.variable ? f.aMedida : null }),
+    ...(f.esCombo || !f.mesasModoDisponible ? {} : { tizadaMesasModo: f.tizadaMesasModo || null }),
     ...(f.esCombo ? {} : { tecnicaPrincipal: f.tecnicaPrincipal || 'SB', molde: f.molde || 'OBLIGATORIO', um: f.um || 'u', anchoM: f.anchoM === '' ? null : Number(f.anchoM), altoM: f.altoM === '' ? null : Number(f.altoM), bordeCm: f.bordeCm === '' ? null : Number(f.bordeCm) }),
     visiblePortal: !!f.visiblePortal, visibleTienda: !!f.visibleTienda, visibleInterno: f.visibleInterno !== false,
     origenTipo: f.origenTipo,
@@ -625,6 +642,100 @@ function CopiarProductoModal({ form, productos, hayCambios, onClose, onCopiado }
     );
 }
 
+// Ventana "Borrar producto" (12/10): primero pregunta al servidor si el producto se usó en algún lado
+// (órdenes, pedidos, facturas, solicitudes, planes, precios de clientes, combos, stock…). Si se usó, NO
+// deja borrar y dice dónde; si no, muestra qué se borra con él y pide escribir el código para confirmar.
+// Backend: configuradorController.revisarBorrarProducto / borrarProducto (guarda un respaldo JSON).
+function BorrarProductoModal({ form, onClose, onBorrado }) {
+    const [revision, setRevision] = useState(null);     // { producto, frena, seBorra }
+    const [error, setError] = useState(null);
+    const [confirmacion, setConfirmacion] = useState('');
+    const [borrando, setBorrando] = useState(false);
+    const que = form.esCombo ? 'combo' : 'producto';
+    useEffect(() => {
+        api.get(`${API}/productos/${form.proId}/borrar`).then(({ data }) => setRevision(data.data)).catch(e => setError(e.response?.data?.error || e.message));
+    }, [form.proId]);
+    useEffect(() => {
+        const alTeclear = (e) => { if (e.key === 'Escape' && !borrando) onClose(); };
+        window.addEventListener('keydown', alTeclear);
+        return () => window.removeEventListener('keydown', alTeclear);
+    }, [onClose, borrando]);
+    const codigo = revision?.producto?.codArticulo || '';
+    const puede = revision && !revision.frena.length;
+    const confirmado = puede && confirmacion.trim().toUpperCase() === codigo.toUpperCase();
+    const borrar = async () => {
+        if (!confirmado) return;
+        setBorrando(true); setError(null);
+        try { const { data } = await api.delete(`${API}/productos/${form.proId}`); onBorrado(data.data); }
+        catch (e) { setError(e.response?.data?.error || e.message); if (e.response?.data?.frena) setRevision(r => ({ ...r, frena: e.response.data.frena })); }
+        finally { setBorrando(false); }
+    };
+
+    return (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={() => !borrando && onClose()}>
+            <div role="dialog" aria-modal="true" aria-labelledby="borrar-producto-titulo"
+                className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+                <div className="px-6 pt-6 flex items-start gap-4">
+                    <div className="w-11 h-11 rounded-full bg-rose-100 text-rose-600 flex items-center justify-center shrink-0"><Trash2 size={20} /></div>
+                    <div className="min-w-0 flex-1">
+                        <h3 id="borrar-producto-titulo" className="text-lg font-black text-slate-800">Borrar {que}</h3>
+                        <p className="text-sm text-slate-500 truncate"><b className="text-slate-700">{form.descripcion}</b> <span className="font-mono text-xs">[{form.codArticulo}]</span></p>
+                    </div>
+                    <button type="button" onClick={onClose} disabled={borrando} title="Cerrar" className="p-1.5 rounded-lg text-slate-400 hover:bg-slate-100"><X size={18} /></button>
+                </div>
+
+                <div className="px-6 pt-5 space-y-4 text-sm">
+                    {!revision && !error && <p className="text-slate-500 flex items-center gap-2"><RefreshCw size={14} className="animate-spin" /> Revisando si este {que} se usó en algún lado…</p>}
+
+                    {revision && revision.frena.length > 0 && (
+                        <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-rose-800">
+                            <p className="font-black mb-1.5 flex items-center gap-1.5"><Lock size={14} /> No se puede borrar: ya se usó en</p>
+                            <ul className="list-disc pl-5 space-y-0.5">{revision.frena.map(f => <li key={f.texto}>{f.texto}: <b>{f.cantidad}</b></li>)}</ul>
+                            <p className="mt-2 text-xs text-rose-700">Borrarlo dejaría esos registros apuntando a un {que} que no existe. Si ya no se vende, dejalo en borrador.</p>
+                        </div>
+                    )}
+
+                    {puede && (
+                        <>
+                            <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-emerald-800 flex items-start gap-2">
+                                <CircleCheck size={15} className="shrink-0 mt-px" />
+                                <span>No se usó en ninguna orden, pedido, factura, solicitud, plan, precio de cliente, combo ni stock.</span>
+                            </div>
+                            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-xs text-slate-600">
+                                <p className="font-bold text-slate-700 mb-1.5">Se borra el artículo y, con él:</p>
+                                {revision.seBorra.length
+                                    ? <ul className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1">{revision.seBorra.map(t => <li key={t.texto}>· {t.texto} ({t.cantidad})</li>)}</ul>
+                                    : <p>Nada más: no tiene configuración cargada.</p>}
+                                {revision.producto.estado === 'PUBLICADO' && <p className="mt-2 font-bold text-amber-700">Ojo: está PUBLICADO. Deja de aparecer para vender.</p>}
+                                <p className="mt-3 flex items-start gap-1.5 text-slate-700"><Info size={13} className="text-brand-cyan mt-px shrink-0" />
+                                    <span>No se puede deshacer desde acá. Queda un respaldo de todo lo borrado en el servidor.</span></p>
+                            </div>
+                            <div>
+                                <label className="block text-[11px] font-black uppercase tracking-wider text-slate-400 mb-1">Para confirmar, escribí el código <span className="font-mono normal-case text-slate-600">{codigo}</span></label>
+                                <input value={confirmacion} autoFocus onChange={e => { setConfirmacion(e.target.value); setError(null); }}
+                                    onKeyDown={e => { if (e.key === 'Enter') borrar(); }}
+                                    className="w-48 border border-slate-300 rounded-xl px-3.5 py-2.5 text-sm font-mono outline-none focus:border-rose-400 focus:ring-2 focus:ring-rose-100" />
+                            </div>
+                        </>
+                    )}
+                    {error && <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-rose-700">{error}</div>}
+                </div>
+
+                <div className="px-6 py-4 mt-5 border-t border-slate-100 flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
+                    <button type="button" onClick={onClose} disabled={borrando}
+                        className="px-4 py-2.5 rounded-xl font-bold text-sm text-slate-600 border border-slate-200 hover:bg-slate-50 disabled:opacity-50">{puede ? 'Cancelar' : 'Cerrar'}</button>
+                    {puede && (
+                        <button type="button" onClick={borrar} disabled={borrando || !confirmado}
+                            className="px-4 py-2.5 rounded-xl font-bold text-sm text-white bg-rose-600 hover:bg-rose-700 disabled:opacity-50 inline-flex items-center justify-center gap-2">
+                            <Trash2 size={16} /> {borrando ? 'Borrando…' : `Borrar ${que} definitivamente`}
+                        </button>
+                    )}
+                </div>
+            </div>
+        </div>
+    );
+}
+
 // ═════════════════════════════════════════════════════════════════════════
 export default function ConfigurarProductosPage() {
     // Pestaña abierta: 'confeccionados' | 'combos' | 'ecouv' | 'tecnicas' | 'avios' | 'costuras'. EcoUV era
@@ -667,8 +778,19 @@ export default function ConfigurarProductosPage() {
     const [busca, setBusca] = useState('');
     const [filtroEstado, setFiltroEstado] = useState('');
     const [nuevoNombre, setNuevoNombre] = useState('');
+    // [CÓDIGOS 12/10] el alta pide familia y etiqueta: el código sale de ahí (CAM-BAS-01; combo CMB-01)
+    const [nuevaFamilia, setNuevaFamilia] = useState('');
+    const [nuevaEtiqueta, setNuevaEtiqueta] = useState('');
+    const [codigoNuevo, setCodigoNuevo] = useState('');
+    // Alta: crear una familia o una etiqueta nueva sin salir del formulario ('familia' | 'etiqueta' | null)
+    const [altaNueva, setAltaNueva] = useState(null);
+    const [altaNuevaNombre, setAltaNuevaNombre] = useState('');
+    const [altaNuevaGuardando, setAltaNuevaGuardando] = useState(false);
     const [creando, setCreando] = useState(false);
     const [copiando, setCopiando] = useState(false);   // ventana "Copiar producto" abierta
+    const [borrandoProd, setBorrandoProd] = useState(false);   // ventana "Borrar producto" abierta
+    const [dialogoConfirmar, preguntar] = useConfirmar();
+    const [recopiando, setRecopiando] = useState(false);   // [VARIANTES] "Copiar de nuevo todo del padre"
     const [showNuevo, setShowNuevo] = useState(false);
     const [moviendoFamilia, setMoviendoFamilia] = useState(false);
     const [showNuevaFamilia, setShowNuevaFamilia] = useState(false);
@@ -801,6 +923,29 @@ export default function ConfigurarProductosPage() {
         const maxN = Math.max(...codes.map(c => parseInt(c.split('.').pop()) || 0));
         return `${base}.${maxN + 1}`;
     };
+    // Desde el formulario de alta: crea la familia o la etiqueta y la deja elegida para el producto nuevo
+    const crearEnAlta = async () => {
+        const nombre = altaNuevaNombre.trim();
+        if (!nombre) return toast.error(altaNueva === 'familia' ? 'Poné el nombre de la familia.' : 'Poné el nombre de la etiqueta.');
+        setAltaNuevaGuardando(true);
+        try {
+            if (altaNueva === 'familia') {
+                const codStock = sugerirCodStockFamilia();
+                await api.post('/stockart', { grupo: GRUPO_PRENDAS, codStock, articulo: nombre, um: 'U', tipoStock: 'PRODUCTO_TERMINADO' });
+                await loadFamilias();
+                setNuevaFamilia(codStock);
+                toast.success(`Familia "${nombre}" creada y elegida para el producto nuevo.`);
+            } else {
+                const { data } = await api.post(`${API}/etiquetas`, { nombre });
+                await loadEtiquetas();
+                setNuevaEtiqueta(String(data.data.EtiquetaID));
+                toast.success(`Etiqueta "${nombre}" creada y elegida para el producto nuevo.`);
+            }
+            setAltaNueva(null); setAltaNuevaNombre('');
+        } catch (e) {
+            toast.error(`No se pudo crear la ${altaNueva === 'familia' ? 'familia' : 'etiqueta'}: ` + (e.response?.data?.error || e.message));
+        } finally { setAltaNuevaGuardando(false); }
+    };
     const crearFamiliaNueva = async () => {
         if (!nuevaFamiliaNombre.trim()) return toast.error('Poné el nombre de la familia.');
         setCreandoFamilia(true);
@@ -829,7 +974,7 @@ export default function ConfigurarProductosPage() {
 
     // Lo último leído del servidor por producto, para marcar los cambios sin guardar (ver firmaForm).
     const leidoRef = useRef({});
-    const abrirProducto = async (proId) => {
+    const abrirProducto = async (proId, pasoInicial = null) => {
         setFichaLoading(true);
         try {
             const { data } = await api.get(`${API}/productos/${proId}`);
@@ -837,7 +982,7 @@ export default function ConfigurarProductosPage() {
             leidoRef.current[f.proId] = { form: f, firma: firmaForm(f) };
             setForm(f);
             // El origen ya no es un paso (02/10): se abre en el primero de los que quedan
-            setPaso(f.esCombo ? 'combo' : f.origenTipo === 'CONFECCIONADO' ? 'principal' : 'tecnicas');
+            setPaso(pasoInicial || (f.esCombo ? 'combo' : f.origenTipo === 'CONFECCIONADO' && !f.variante ? 'principal' : 'tecnicas'));
         } catch (e) {
             toast.error('Error abriendo la ficha: ' + (e.response?.data?.error || e.message));
         } finally { setFichaLoading(false); }
@@ -942,8 +1087,10 @@ export default function ConfigurarProductosPage() {
         }
         setSaving(true);
         try {
-            await api.put(`${API}/productos/${form.proId}`, formToPayload(form));
+            const { data: resGuardar } = await api.put(`${API}/productos/${form.proId}`, formToPayload(form));
             toast.success(`✅ Guardado — ${form.descripcion} (${form.estado === 'PUBLICADO' ? 'publicado' : 'borrador'})`);
+            // [VARIANTES] lo que el padre dejó de tener se les sacó a sus variantes
+            if (resGuardar?.variantesAjustadas?.length) toast.info(`También se les sacó a las variantes lo que el producto ya no tiene: ${resGuardar.variantesAjustadas.join(', ')}.`);
             loadProductos();
             abrirProducto(form.proId); // re-lee para reflejar lo persistido
         } catch (e) {
@@ -951,15 +1098,25 @@ export default function ConfigurarProductosPage() {
         } finally { setSaving(false); }
     };
 
+    useEffect(() => {
+        if (!showNuevo) return;
+        let vivo = true;
+        const q = vista === 'combos' ? 'esCombo=1' : `codStock=${encodeURIComponent(nuevaFamilia)}&etiquetaId=${encodeURIComponent(nuevaEtiqueta)}`;
+        api.get(`${API}/codigo-nuevo?${q}`).then(({ data }) => { if (vivo) setCodigoNuevo(data.data.codArticulo); }).catch(() => { if (vivo) setCodigoNuevo(''); });
+        return () => { vivo = false; };
+    }, [showNuevo, vista, nuevaFamilia, nuevaEtiqueta]);
+
     // La pestaña activa decide qué se crea — Confeccionados o Combos y Promos.
     const crearProducto = async () => {
         if (!nuevoNombre.trim()) return toast.error(vista === 'combos' ? 'Poné el nombre del combo.' : 'Poné el nombre del producto.');
         const esComboNuevo = vista === 'combos';
+        if (!esComboNuevo && !nuevaFamilia) return toast.error('Elegí la familia (Camisetas, Shorts…): el código sale de la familia y la etiqueta.');
         setCreando(true);
         try {
-            const { data } = await api.post(`${API}/productos`, { descripcion: nuevoNombre.trim(), esCombo: esComboNuevo });
+            const { data } = await api.post(`${API}/productos`, { descripcion: nuevoNombre.trim(), esCombo: esComboNuevo,
+                ...(esComboNuevo ? {} : { codStock: nuevaFamilia, etiquetaId: nuevaEtiqueta ? Number(nuevaEtiqueta) : null }) });
             toast.success(`✅ ${esComboNuevo ? 'Combo creado' : 'Creado'} con código ${data.codArticulo}`);
-            setNuevoNombre(''); setShowNuevo(false);
+            setNuevoNombre(''); setNuevaEtiqueta(''); setShowNuevo(false);
             await loadProductos();
             abrirProducto(data.proIdProducto);
         } catch (e) {
@@ -982,7 +1139,7 @@ export default function ConfigurarProductosPage() {
     // Contadores del filtro por estado: lo de la pestaña abierta, con la búsqueda y el área ya aplicadas
     // (cada número es lo que muestra la lista al tocarlo).
     const conteoEstados = useMemo(() => {
-        const base = productos.filter(p => (vista === 'combos' ? esCombo(p) : !esCombo(p)) && pasaBusquedaYArea(p));
+        const base = productos.filter(p => !p.PadreProIdProducto && (vista === 'combos' ? esCombo(p) : !esCombo(p)) && pasaBusquedaYArea(p));
         return {
             '': base.length,
             PUBLICADO: base.filter(p => p.Estado === 'PUBLICADO').length,
@@ -991,12 +1148,20 @@ export default function ConfigurarProductosPage() {
         };
     }, [productos, vista, busca, filtroArea]);
 
+    // [VARIANTES] variantes por padre: en la lista cuelgan de su padre, no van sueltas
+    const variantesPorPadre = useMemo(() => {
+        const m = {};
+        productos.forEach(p => { if (p.PadreProIdProducto) (m[p.PadreProIdProducto] = m[p.PadreProIdProducto] || []).push(p); });
+        Object.values(m).forEach(l => l.sort((a, b) => String(a.CodArticulo).localeCompare(String(b.CodArticulo))));
+        return m;
+    }, [productos]);
     const productosFiltrados = useMemo(() => productos.filter(p => {
-        if (!pasaBusquedaYArea(p)) return false;
+        if (p.PadreProIdProducto) return false;
+        if (!pasaBusquedaYArea(p) && !(variantesPorPadre[p.ProIdProducto] || []).some(pasaBusquedaYArea)) return false;
         if (filtroEstado === 'PUBLICADO' || filtroEstado === 'BORRADOR') return p.Estado === filtroEstado;
         if (filtroEstado === 'SIN') return !p.Estado;
         return true;
-    }), [productos, busca, filtroEstado, filtroArea]);
+    }), [productos, busca, filtroEstado, filtroArea, variantesPorPadre]);
     // Áreas del filtro: las que pueden ser producción principal, más las que ya tiene algún producto
     const areasFiltro = areasPrincipales.filter(a => AREAS_PRINCIPAL.includes(a.AreaID) || productos.some(p => p.TecnicaPrincipal === a.AreaID));
 
@@ -1123,6 +1288,30 @@ export default function ConfigurarProductosPage() {
         );
     };
     const filaProducto = (p, anidado = false) => {
+        const vars = variantesPorPadre[p.ProIdProducto] || [];
+        if (!vars.length) return filaProductoSola(p, anidado);
+        return (
+            <div key={p.ProIdProducto}>
+                {filaProductoSola(p, anidado)}
+                {/* [VARIANTES] cuelgan del padre; al tocarlas se abre el padre en el paso "Variantes" */}
+                <div className="ml-9 border-l-2 border-brand-cyan/20">
+                    {vars.map(v => (
+                        <button key={v.ProIdProducto} onClick={() => abrirProducto(v.ProIdProducto)} aria-current={form?.proId === v.ProIdProducto ? 'true' : undefined}
+                            className={`w-full text-left pl-3 pr-3 py-1.5 border-l-4 ${form?.proId === v.ProIdProducto ? 'bg-brand-cyan/5 border-brand-cyan' : 'border-transparent hover:bg-slate-50'}`}>
+                            {/* Nombre entero (sin cortar; puede ir en 2 renglones) y abajo código · precio · estado */}
+                            <span className="block text-[12px] font-semibold leading-snug text-slate-600 break-words">{String(v.Descripcion || '').startsWith(`${p.Descripcion} · `) ? String(v.Descripcion).slice(p.Descripcion.length + 3) : v.Descripcion}</span>
+                            <span className="mt-0.5 flex items-center gap-2">
+                                <span className="font-mono text-[10px] text-slate-400">{v.CodArticulo}</span>
+                                <span className="text-[10px] font-bold text-slate-600">{v.Precio == null ? 'sin precio' : fmtPrecio(v.Precio, v.Moneda)}</span>
+                                <span className="ml-auto">{estadoFila(v.Estado)}</span>
+                            </span>
+                        </button>
+                    ))}
+                </div>
+            </div>
+        );
+    };
+    const filaProductoSola = (p, anidado = false) => {
         const sel = form?.proId === p.ProIdProducto;
         const combo = esCombo(p);
         return (
@@ -1132,6 +1321,7 @@ export default function ConfigurarProductosPage() {
                 <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between gap-2">
                         <span className={`truncate text-[13px] font-bold ${sel ? 'text-brand-cyan' : 'text-slate-700'}`}>{p.Descripcion}</span>
+                        {p.Variantes > 0 && <span className="shrink-0 rounded-full bg-brand-cyan/10 px-1.5 py-0.5 text-[10px] font-bold text-brand-cyan" title="Variantes (modelos del molde)">{p.Variantes} var.</span>}
                         {estadoFila(p.Estado)}
                     </div>
                     <div className="flex items-center gap-2 mt-0.5 text-[11px] text-slate-400">
@@ -1162,13 +1352,15 @@ export default function ConfigurarProductosPage() {
         const conf = form.origenTipo === 'CONFECCIONADO';
         // El origen ya no es un paso (02/10): se elige en el encabezado
         return [
-            ...(conf ? [{ id: 'principal', label: 'Producción principal' }] : []),
+            ...(conf && !form.variante ? [{ id: 'principal', label: 'Producción principal' }] : []),
             { id: 'tecnicas', label: 'Técnicas' },
             // 02/10: el precio pasó al encabezado y la política de cantidad, a Cantidad y accesorios
             { id: 'accesorios', label: 'Cantidad y accesorios' },   // [ACCESORIOS] artículos de stock que salen con el producto
             // Sin molde ("No lleva") no hay piezas ni telas del molde: el paso se salta (los materiales van en Producción principal)
             ...(conf && form.molde !== 'NO' ? [{ id: 'molde', label: form.molde === 'OPCIONAL' ? 'Molde (opcional), telas y apliques' : 'Molde, telas y apliques' }] : []),
             ...(conf ? [{ id: 'ficha', label: 'Ficha de diseño' }] : []),
+            // [VARIANTES] un artículo por modelo del molde que se vende
+            ...(conf && form.tizadaProMoldeRef && !form.variante && form.modoMolde !== 'A_MEDIDA' ? [{ id: 'variantes', label: 'Variantes' }] : []),
             { id: 'resumen', label: 'Revisar y publicar' },
         ].map((p, i) => ({ ...p, n: i + 1 }));
     }, [form]);
@@ -1211,7 +1403,8 @@ export default function ConfigurarProductosPage() {
             if (form.politica === 'MINIMA' && !(Number(form.cantidadMinima) > 0)) falta('accesorios', 'la cantidad mínima');
             if (form.politica === 'PAQUETE' && !(Number(form.cantidadFija) > 0)) falta('accesorios', 'la cantidad fija del paquete');
             if (form.tizadaProMoldeRef && form.apliques.some(ap => !ap.pieza)) falta('molde', 'la pieza del molde de cada aplique');
-            if (conf && form.molde === 'OBLIGATORIO' && !form.tizadaProMoldeRef) falta('molde', 'vincular el molde de TizadaPro (o marcar en Producción principal que es opcional o que no lleva)');
+            if (conf && form.modoMolde === 'A_MEDIDA' && !form.aMedida?.variable) falta('molde', 'elegir la variable a medida de TIZADA PRO');
+            else if (conf && form.molde === 'OBLIGATORIO' && !form.tizadaProMoldeRef) falta('molde', 'vincular el molde de TizadaPro (o marcar en Producción principal que es opcional o que no lleva)');
             if (conf && form.molde !== 'OBLIGATORIO' && !form.tizadaProMoldeRef && !(Number(form.anchoM) > 0 && Number(form.altoM) > 0)) falta('principal', 'la medida fija (ancho × alto en metros)');
             const apagadas = conf ? [...new Set(form.apliques.filter(ap => ap.areaId !== 'ETIQUETA' && !form.tecnicas[ap.areaId]?.on).map(ap => areaMeta(ap.areaId).label))] : [];
             if (apagadas.length) falta('tecnicas', `activar ${apagadas.join(', ')}, que ${apagadas.length > 1 ? 'tienen' : 'tiene'} apliques (o quitar esos apliques)`);
@@ -1332,12 +1525,13 @@ export default function ConfigurarProductosPage() {
     // Piezas donde puede ir un aplique: las de los modelos que se venden (unión), por su nombre
     // genérico (Frente, Cuello…). Si todavía no se marcó ningún modelo, todas las del molde.
     const piezasParaApliques = useMemo(() => {
+        if (form?.modoMolde === 'A_MEDIDA') return [form.aMedida?.pieza || 'Pieza'];   // [A MEDIDA] una sola pieza
         if (!moldeSel) return [];
         const vendidos = (moldeSel.modelos || []).filter(m => form?.modelos?.has(m.clave));
         const ids = new Set(vendidos.flatMap(m => m.piezasIds || []));
         const det = (moldeSel.piezasDetalle || []).filter(d => !vendidos.length || ids.has(d.idEnMolde));
         return [...new Set(det.map(d => d.generico || d.nombre))];
-    }, [moldeSel, form?.modelos]);
+    }, [moldeSel, form?.modelos, form?.modoMolde, form?.aMedida?.pieza]);
     // [AVÍOS POR TALLE] talles del molde por curva y en orden real: las columnas de la grilla de avíos
     const gruposTalles = useMemo(() => agruparTalles(moldeSel?.talles), [moldeSel]);
     // Técnicas que admiten aplique: las de decoración activas en el paso Técnicas, más Etiqueta (siempre)
@@ -1652,6 +1846,37 @@ export default function ConfigurarProductosPage() {
                                                     {creando ? '…' : 'Crear'}
                                                 </button>
                                             </div>
+                                            {vista !== 'combos' && (
+                                                <div className="flex flex-wrap gap-2">
+                                                    <Selector value={nuevaFamilia} onChange={e => { if (e.target.value === '__nueva__') { setAltaNueva('familia'); setAltaNuevaNombre(''); } else setNuevaFamilia(e.target.value); }} anchoLista={240} aria-label="Familia del producto nuevo"
+                                                        claseBoton={claseSel('flex-1 min-w-[140px] border border-indigo-300 rounded-lg px-2.5 py-1.5 text-xs font-bold')}>
+                                                        <option value="">Familia…</option>
+                                                        {familiasCat.map(fm => <option key={fm.CodStock} value={fm.CodStock}>{fm.Articulo}</option>)}
+                                                        <option value="__nueva__">+ Nueva familia</option>
+                                                    </Selector>
+                                                    <Selector value={nuevaEtiqueta} onChange={e => { if (e.target.value === '__nueva__') { setAltaNueva('etiqueta'); setAltaNuevaNombre(''); } else setNuevaEtiqueta(e.target.value); }} anchoLista={220} aria-label="Etiqueta del producto nuevo"
+                                                        claseBoton={claseSel('flex-1 min-w-[120px] border border-indigo-300 rounded-lg px-2.5 py-1.5 text-xs font-bold')}>
+                                                        <option value="">Sin etiqueta</option>
+                                                        {etiquetasCat.map(et => <option key={et.EtiquetaID} value={String(et.EtiquetaID)}>{et.Nombre}</option>)}
+                                                        <option value="__nueva__">+ Nueva etiqueta</option>
+                                                    </Selector>
+                                                </div>
+                                            )}
+                                            {vista !== 'combos' && altaNueva && (
+                                                <div className="flex gap-2">
+                                                    <input value={altaNuevaNombre} onChange={e => setAltaNuevaNombre(e.target.value)} autoFocus
+                                                        onKeyDown={e => { if (e.key === 'Enter') crearEnAlta(); if (e.key === 'Escape') setAltaNueva(null); }}
+                                                        placeholder={altaNueva === 'familia' ? 'Familia nueva (ej. Toallas)' : 'Etiqueta nueva (ej. Playa)'}
+                                                        aria-label={altaNueva === 'familia' ? 'Nombre de la familia nueva' : 'Nombre de la etiqueta nueva'}
+                                                        className="flex-1 min-w-0 border border-indigo-300 rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-300" />
+                                                    <button type="button" onClick={crearEnAlta} disabled={altaNuevaGuardando}
+                                                        className="bg-indigo-600 text-white rounded-lg px-3 text-xs font-bold hover:bg-indigo-500 disabled:opacity-50">
+                                                        {altaNuevaGuardando ? '…' : (altaNueva === 'familia' ? 'Crear familia' : 'Crear etiqueta')}
+                                                    </button>
+                                                    <button type="button" onClick={() => setAltaNueva(null)} className="rounded p-1 text-slate-400 hover:text-slate-600" title="Cancelar" aria-label="Cancelar"><X size={14} /></button>
+                                                </div>
+                                            )}
+                                            {codigoNuevo && (vista === 'combos' || nuevaFamilia) && <p className="text-[11px] text-slate-500">Código: <b className="font-mono text-slate-700">{codigoNuevo}</b> <span className="text-slate-400">(familia{vista === 'combos' ? '' : ' - etiqueta'} - número)</span></p>}
                                             {vista === 'combos' && <p className="text-[10px] text-slate-400">El combo es su propia categoría de artículos: le agregás productos y a cada uno sus servicios, con precio cerrado del paquete.</p>}
                                         </div>
                                     )}
@@ -1686,7 +1911,7 @@ export default function ConfigurarProductosPage() {
                                                                 // Nodo etiqueta (Básquet, Fútbol…): se despliega con sus productos.
                                                                 // Abierto si lo abrió el usuario, si hay búsqueda, o si contiene el producto abierto.
                                                                 const clave = `${g.nombre}|${n.id}`;
-                                                                const abierta = !!busca || etiquetasAbiertas.has(clave) || n.items.some(p => p.ProIdProducto === form?.proId);
+                                                                const abierta = !!busca || etiquetasAbiertas.has(clave) || n.items.some(p => p.ProIdProducto === form?.proId || (variantesPorPadre[p.ProIdProducto] || []).some(v => v.ProIdProducto === form?.proId));
                                                                 const pubEt = n.items.filter(p => p.Estado === 'PUBLICADO').length;
                                                                 return (
                                                                     <div key={`etq-${n.id}`}>
@@ -1742,6 +1967,30 @@ export default function ConfigurarProductosPage() {
                                 )}
                                 {!fichaLoading && form && (
                                     <div>
+                                        {/* [VARIANTES] aviso: de quién es y qué no se cambia */}
+                                        {form.variante && (
+                                            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-brand-cyan/20 bg-brand-cyan/5 px-5 py-2.5 text-[12px] text-slate-600">
+                                                <span>Variante de <button type="button" onClick={() => abrirProducto(form.variante.padre.proId)} className="font-black text-brand-cyan hover:underline">{form.variante.padre.descripcion}</button>
+                                                    <span className="font-mono text-[11px] text-slate-400"> [{form.variante.padre.codArticulo}]</span></span>
+                                                <span>· modelo <b className="text-slate-800">{form.variante.modeloNombre || form.variante.modeloClave}</b></span>
+                                                <span className="text-[11px] text-slate-500">El molde, el modelo y la producción principal son los del padre. Técnicas, telas y accesorios: solo de los que tiene el padre.</span>
+                                                <button type="button" disabled={recopiando} className="ml-auto inline-flex items-center gap-1.5 rounded-lg border border-brand-cyan bg-white px-2.5 py-1 text-[11px] font-bold text-brand-cyan hover:bg-brand-cyan/5 disabled:opacity-50"
+                                                    title="La variante vuelve a quedar igual al padre: técnicas, telas, apliques, accesorios, ficha, avíos, costuras y precio"
+                                                    onClick={async () => {
+                                                        const ok = await preguntar({ Icono: RotateCcw, titulo: 'Copiar de nuevo todo del padre', boton: 'Copiar del padre', peligro: true,
+                                                            texto: `"${form.descripcion}" vuelve a quedar igual a "${form.variante.padre.descripcion}": técnicas, telas, apliques, accesorios, ficha de diseño, avíos, pasos de costura, cantidad y precio.\n\nSe quedan su nombre, su código (${form.codArticulo}), su estado y su foto.`,
+                                                            nota: hayCambios ? 'Tiene cambios sin guardar: se pierden.' : 'Lo que le hayas cambiado a esta variante se pierde.' });
+                                                        if (!ok) return;
+                                                        setRecopiando(true);
+                                                        try { await api.post(`${API}/variantes/${form.proId}/recopiar`); toast.success('✅ La variante quedó igual al padre'); await loadProductos(); abrirProducto(form.proId, paso); }
+                                                        catch (e) { toast.error(e.response?.data?.error || e.message); }
+                                                        finally { setRecopiando(false); }
+                                                    }}>
+                                                    <RotateCcw size={12} aria-hidden="true" /> {recopiando ? 'Copiando…' : 'Copiar de nuevo todo del padre'}
+                                                </button>
+                                            </div>
+                                        )}
+                                        {dialogoConfirmar}
                                         {/* Encabezado del editor (02/10): foto, nombre y, abajo, código · familia › etiqueta ·
                                             origen · precio (las funciones meta* de arriba). */}
                                         <div className="flex items-center gap-3 px-5 py-4 border-b border-slate-100 flex-wrap">
@@ -1766,6 +2015,10 @@ export default function ConfigurarProductosPage() {
                                                         <button onClick={guardarIdentidad} disabled={guardandoIdent}
                                                             className="bg-indigo-600 text-white rounded-lg px-3 py-1.5 text-xs font-bold disabled:opacity-50">{guardandoIdent ? '…' : 'Guardar nombre y código'}</button>
                                                         <button onClick={() => setEditIdent(null)} className="text-slate-400 text-xs px-1" title="Cancelar">×</button>
+                                                        <button type="button" className="text-[11px] font-bold text-brand-cyan hover:underline" title="Código según la familia y la etiqueta (o el del padre + número, si es variante)"
+                                                            onClick={async () => { try { const { data } = await api.get(`${API}/productos/${form.proId}/codigo-sugerido`); setEditIdent(ei => ({ ...ei, codArticulo: data.data.codArticulo })); } catch (e) { toast.error(e.response?.data?.error || e.message); } }}>
+                                                            Usar el código nuevo (familia-etiqueta-número)
+                                                        </button>
                                                         <span className="w-full text-[10px] text-slate-400">El código solo se puede cambiar si el producto todavía no tiene pedidos. Se aplica al instante.</span>
                                                     </div>
                                                 ) : (
@@ -1797,11 +2050,28 @@ export default function ConfigurarProductosPage() {
                                             <span className={`px-3 py-1 rounded-full text-[11px] font-black ${form.estado === 'PUBLICADO' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
                                                 {form.estado === 'PUBLICADO' ? '● PUBLICADO' : '○ BORRADOR'}
                                             </span>
-                                            <button type="button" onClick={() => setCopiando(true)}
+                                            {!form.variante && <button type="button" onClick={() => setCopiando(true)}
                                                 title={`Crear una copia de este ${form.esCombo ? 'combo' : 'producto'} con otro nombre (sin precio y en borrador)`}
                                                 className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-bold text-slate-500 transition-colors hover:border-brand-cyan hover:text-brand-cyan">
                                                 <Copy size={15} aria-hidden="true" /> Copiar
+                                            </button>}
+                                            <button type="button" onClick={() => setBorrandoProd(true)}
+                                                title={`Borrar este ${form.esCombo ? 'combo' : 'producto'} (antes se revisa que no se haya usado en ningún lado)`}
+                                                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-bold text-slate-500 transition-colors hover:border-rose-400 hover:text-rose-600">
+                                                <Trash2 size={15} aria-hidden="true" /> Borrar
                                             </button>
+                                            {borrandoProd && (
+                                                <BorrarProductoModal form={form}
+                                                    onClose={() => setBorrandoProd(false)}
+                                                    onBorrado={async (data) => {
+                                                        setBorrandoProd(false);
+                                                        toast.success(`🗑 Borrado: "${data.descripcion}" [${data.codArticulo}]`);
+                                                        delete leidoRef.current[form.proId];
+                                                        if (vista === 'confeccionados' || vista === 'combos') abiertoPorVista.current[vista] = null;
+                                                        setForm(null);
+                                                        await loadProductos();
+                                                    }} />
+                                            )}
                                             {botonGuardar()}
                                             {copiando && (
                                                 <CopiarProductoModal form={form} productos={productos} hayCambios={hayCambios}
@@ -1985,7 +2255,11 @@ export default function ConfigurarProductosPage() {
                                             {paso === 'tecnicas' && (() => {
                                                 const renderTecnicaCard = (a) => {
                                                         const t = form.tecnicas[a.id];
-                                                        const opcionesArea = tecnicasCat.filter(o => o.AreaID === a.id && o.Activo);
+                                                        // [VARIANTES] lo que permite el padre: la técnica, y si el padre restringe opciones, solo esas
+                                                        const delPadre = form.variante ? form.variante.permitido.tecnicas.find(x => x.areaId === a.id) : null;
+                                                        const noPermitida = !!form.variante && !delPadre;
+                                                        const opcionesArea = tecnicasCat.filter(o => o.AreaID === a.id && o.Activo
+                                                            && (!delPadre || delPadre.modo === 'LIBRE' || form.variante.permitido.opciones.includes(o.TecnicaOpcionID)));
                                                         return (
                                                             <div key={a.id} className={`border rounded-xl overflow-hidden ${t.on ? 'border-slate-300' : 'border-slate-200 opacity-60'}`}>
                                                                 {(() => {
@@ -2019,7 +2293,8 @@ export default function ConfigurarProductosPage() {
                                                                                 </label>
                                                                             )}
                                                                         </>)}
-                                                                        <div className="ml-auto"><Toggle on={t.on} onChange={v => setF({ tecnicas: { ...form.tecnicas, [a.id]: { ...t, on: v } } })} /></div>
+                                                                        {noPermitida && <span className="text-[11px] text-slate-400">El producto padre no la tiene</span>}
+                                                                        <div className="ml-auto"><Toggle on={t.on} disabled={noPermitida && !t.on} onChange={v => setF({ tecnicas: { ...form.tecnicas, [a.id]: { ...t, on: v } } })} /></div>
                                                                     </div>
                                                                     {eligiendo && (
                                                                         <div className="border-t border-slate-100 bg-slate-50/60 px-4 py-3">
@@ -2182,6 +2457,31 @@ export default function ConfigurarProductosPage() {
                                                 const faltaMolde = form.molde === 'OBLIGATORIO' && !form.tizadaProMoldeRef;
                                                 return (
                                                 <div className="space-y-4">
+                                                    {/* [A MEDIDA] tipo de molde: con talles (prendas) o a medida (pañuelos, toallas, banderas) */}
+                                                    {form.aMedidaDisponible && !form.variante && (
+                                                        <div className="border border-slate-200 rounded-xl p-4">
+                                                            {tituloSeccion('Tipo de molde', 'Con talles: una prenda de varias piezas (camiseta, short…). A medida: una sola pieza sin talles cuya medida dice cada pedido; TIZADA PRO arma el molde con esa medida.')}
+                                                            <div className="flex flex-wrap gap-2" role="radiogroup">
+                                                                {[['TALLES', 'Con talles', 'Prendas: camiseta, short, buzo…', 'rectangulo'], ['A_MEDIDA', 'A medida', 'Pañuelo, toalla, bandera, banderín…', 'triangulo']].map(([k, t, a, ic]) => {
+                                                                    const sel = form.modoMolde === k;
+                                                                    return (
+                                                                        <button key={k} type="button" role="radio" aria-checked={sel}
+                                                                            onClick={() => { if (sel) return; setF(k === 'A_MEDIDA' ? { modoMolde: k, tizadaProMoldeRef: form.aMedida?.molde || '', modelos: new Map(), telas: new Map() } : { modoMolde: k, aMedida: null, tizadaProMoldeRef: '' }); }}
+                                                                            className={`flex items-start gap-3 rounded-xl border-2 p-3 text-left transition-colors min-w-[240px] ${sel ? 'border-emerald-500 bg-emerald-50/40' : 'border-slate-200 hover:border-slate-300'}`}>
+                                                                            {k === 'A_MEDIDA' ? <IconoForma forma="triangulo" className={sel ? 'text-emerald-600' : 'text-slate-400'} /> : <Shirt size={24} className={sel ? 'text-emerald-600' : 'text-slate-400'} aria-hidden="true" />}
+                                                                            <span><span className="block font-black text-sm text-slate-800">{t}</span><span className="block text-[11px] text-slate-500 mt-0.5">{a}</span></span>
+                                                                        </button>
+                                                                    );
+                                                                })}
+                                                            </div>
+                                                            {form.modoMolde === 'A_MEDIDA' && form.cantidadVariantes > 0 && <p className="text-[11px] font-bold text-amber-600 mt-2">Este producto tiene variantes de un molde con talles: revisalas antes de guardar.</p>}
+                                                        </div>
+                                                    )}
+                                                    {form.modoMolde === 'A_MEDIDA' && (
+                                                        <ConfiguradorAMedida valor={form.aMedida} deshabilitado={!!form.variante} tituloSeccion={tituloSeccion}
+                                                            onChange={v => setF({ aMedida: v, tizadaProMoldeRef: v?.molde || '' })} />
+                                                    )}
+                                                    {form.modoMolde !== 'A_MEDIDA' && (<>
                                                     {/* Molde de TizadaPro (solo lectura): el molde, sus piezas, talles y modelos viven allá */}
                                                     <div className="border border-slate-200 rounded-xl p-4">
                                                         {tituloSeccion('Molde de TizadaPro',
@@ -2189,7 +2489,7 @@ export default function ConfigurarProductosPage() {
                                                             faltaMolde ? <span className="normal-case font-bold text-amber-600"> (obligatorio para publicar)</span> : null)}
                                                         {moldesTpError && <div className="bg-rose-50 border border-rose-200 text-rose-700 rounded-lg px-3 py-2 text-xs font-bold mb-3">No se pudo leer TizadaPro: {moldesTpError}</div>}
                                                         <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-                                                            <Selector value={form.tizadaProMoldeRef || ''} disabled={!!moldesTpError}
+                                                            <Selector value={form.tizadaProMoldeRef || ''} disabled={!!moldesTpError || !!form.variante}
                                                                 onChange={e => setF({ tizadaProMoldeRef: e.target.value, modelos: new Map(), telas: new Map() })}
                                                                 claseBoton={claseSel(`min-w-[280px] border rounded-lg px-2.5 py-2 text-sm font-bold text-slate-800 ${faltaMolde ? 'border-amber-300' : 'border-slate-200'}`)} anchoLista={340}>
                                                                 <option value="">Sin molde vinculado</option>
@@ -2206,16 +2506,19 @@ export default function ConfigurarProductosPage() {
 
                                                     {moldeSel && (
                                                         <div className="border border-slate-200 rounded-xl p-4">
-                                                            {tituloSeccion('Modelos que se venden', 'Cada modelo es una combinación de piezas armada en TizadaPro (ej. cuello V con costadillo fino). Marcá los que el cliente puede pedir: un clic lo vende, el segundo lo pone primero (la estrella) y el tercero lo quita.')}
+                                                            {form.variante
+                                                                ? tituloSeccion('Modelo de esta variante', 'La variante es este modelo del molde del producto padre: no se cambia. Para otro modelo, creá otra variante desde el padre.')
+                                                                : tituloSeccion('Modelos que se venden', 'Cada modelo es una combinación de piezas armada en TizadaPro (ej. cuello V con costadillo fino). Marcá los que el cliente puede pedir: un clic lo vende, el segundo lo pone primero (la estrella) y el tercero lo quita.')}
                                                             {moldeSel.modelos.length === 0 ? (
                                                                 <p className="text-xs text-amber-600 font-bold">Este molde no tiene modelos cargados en TizadaPro: el producto se vende con su única forma.</p>
                                                             ) : (
                                                                 <div className="grid gap-2" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(230px, 1fr))' }}>
-                                                                    {moldeSel.modelos.map(m => {
-                                                                        const sel = form.modelos.has(m.clave);
+                                                                    {moldeSel.modelos.filter(m => !form.variante || m.clave === form.variante.modeloClave).map(m => {
+                                                                        // [VARIANTES] la variante ve solo su modelo, marcado
+                                                                        const sel = form.variante ? true : form.modelos.has(m.clave);
                                                                         const def = form.modelos.get(m.clave)?.esDefault === true;
                                                                         return (
-                                                                            <button key={m.clave} type="button" title={m.piezas.join(' · ')} aria-pressed={sel}
+                                                                            <button key={m.clave} type="button" title={m.piezas.join(' · ')} aria-pressed={sel} disabled={!!form.variante}
                                                                                 onClick={() => {
                                                                                     const next = new Map(form.modelos);
                                                                                     if (!sel) next.set(m.clave, { nombre: m.nombre, esDefault: false });
@@ -2254,7 +2557,7 @@ export default function ConfigurarProductosPage() {
                                                                 <p className="text-xs text-amber-600 font-bold">El molde no tiene telas permitidas cargadas en TizadaPro. Cargalas allá y tocá Actualizar.</p>
                                                             ) : (
                                                                 <div className="space-y-1.5">
-                                                                    {moldeSel.telas.map(t => {
+                                                                    {moldeSel.telas.filter(t => !form.variante || form.variante.permitido.telas.includes(t.proIdProducto)).map(t => {
                                                                         const id = t.proIdProducto;
                                                                         const sel = id != null && form.telas.has(id);
                                                                         const v = sel ? form.telas.get(id) : null;
@@ -2284,6 +2587,31 @@ export default function ConfigurarProductosPage() {
                                                             {Object.keys(moldeSel.telasPorPieza || {}).length > 0 && (
                                                                 <p className="text-[11px] text-slate-500 mt-3">Las telas de arriba son para el cuerpo. {Object.keys(moldeSel.telasPorPieza).join(', ')} van en la tela fija que dice el molde (ver Piezas y talles, más arriba). Eso se cambia en TizadaPro.</p>
                                                             )}
+                                                        </div>
+                                                    )}
+
+                                                    </>)}
+
+                                                    {/* Cómo arma TIZADA PRO los archivos de este producto y las copias (pedido → mesas.modo) */}
+                                                    {form.mesasModoDisponible && (form.tizadaProMoldeRef || form.modoMolde === 'A_MEDIDA') && (
+                                                        <div className="border border-slate-200 rounded-xl p-4">
+                                                            {tituloSeccion('Archivos de impresión', 'Cómo arma TIZADA PRO los archivos que van a producción y cuántas copias lleva cada uno.')}
+                                                            <div className="grid gap-2" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))' }} role="radiogroup">
+                                                                {[
+                                                                    ['una_por_fila', 'Un archivo por diseño, con copias', form.modoMolde === 'A_MEDIDA' ? 'Cada diseño sale en UN archivo y la cantidad va como copias (ej. 15 toallas → 1 archivo × 15). Las banderas chicas van de a una por archivo.' : 'Una mesa por fila de la lista, con la cantidad de esa fila como copias.'],
+                                                                    ['normal', 'TIZADA acomoda todo', 'Aprovecha el ancho de la tela poniendo varias piezas juntas: un archivo por mesa (si salen mesas iguales, vienen repetidas).'],
+                                                                    ['', 'Automático', form.modoMolde === 'A_MEDIDA' ? 'Lo que diga la configuración general para productos a medida.' : 'Lo que diga la configuración general para prendas.'],
+                                                                ].map(([k, t, a]) => {
+                                                                    const sel = (form.tizadaMesasModo || '') === k;
+                                                                    return (
+                                                                        <button key={k || 'auto'} type="button" role="radio" aria-checked={sel} onClick={() => setF({ tizadaMesasModo: k })}
+                                                                            className={`rounded-xl border-2 p-3 text-left transition-colors ${sel ? 'border-emerald-500 bg-emerald-50/40' : 'border-slate-200 hover:border-slate-300'}`}>
+                                                                            <span className="block font-black text-sm text-slate-800">{t}</span>
+                                                                            <span className="block text-[11px] text-slate-500 mt-0.5">{a}</span>
+                                                                        </button>
+                                                                    );
+                                                                })}
+                                                            </div>
                                                         </div>
                                                     )}
 
@@ -2489,6 +2817,10 @@ export default function ConfigurarProductosPage() {
                                             {/* ── PASO FICHA DE DISEÑO ── (02/10: mismo estilo que los otros pasos: secciones a todo el ancho con
                                                 el título y la ayuda arriba, campos y renglones como en los otros pasos, íconos en vez de emojis y
                                                 "+ Agregar…" a todo el ancho) */}
+                                            {/* ── [VARIANTES] PASO VARIANTES (12/10) ── */}
+                                            {paso === 'variantes' && (
+                                                <PasoVariantes proId={form.proId} hayCambios={hayCambios} onCambio={loadProductos} onEditar={(id) => abrirProducto(id)} BorrarModal={BorrarProductoModal} />
+                                            )}
                                             {paso === 'ficha' && (
                                                 <div className="space-y-4">
                                                     <div className="border border-slate-200 rounded-xl p-4">
@@ -2893,7 +3225,8 @@ export default function ConfigurarProductosPage() {
                                                                 {!form.esCombo && form.origenTipo === 'CONFECCIONADO' && fila('Producción principal',
                                                                     `${(() => { const a = areasPrincipales.find(x => x.AreaID === form.tecnicaPrincipal); return a ? capitalizar(a.Nombre) : form.tecnicaPrincipal; })()}${form.molde !== 'OBLIGATORIO' && form.anchoM && form.altoM ? ` · medida fija ${Number(form.anchoM).toFixed(2)} × ${Number(form.altoM).toFixed(2)} m` : ''} · por ${form.um === 'm2' ? 'm²' : form.um === 'm' ? 'metro' : 'unidad'}`)}
                                                                 {!form.esCombo && form.origenTipo === 'CONFECCIONADO' && fila('Molde (TizadaPro)',
-                                                                    form.tizadaProMoldeRef ? `${moldeSel?.nombre || form.tizadaProMoldeRef} · ${form.modelos.size} modelos · ${form.telas.size} telas · ${form.apliques.length} apliques`
+                                                                    form.modoMolde === 'A_MEDIDA' ? (form.aMedida?.variable ? `A medida: ${form.aMedida.variableNombre || form.aMedida.variable} · ${form.aMedida.formas.length} forma(s) · medida ${form.aMedida.medidas.modo === 'FIJAS' ? `fija (${form.aMedida.medidas.fijas.length})` : `libre de ${form.aMedida.medidas.minimo_m} a ${form.aMedida.medidas.maximo_m} m`} · ${form.aMedida.telas.length || 'todas las'} telas · ${form.aMedida.tiras.lleva ? 'con tiras' : 'sin tiras'}` : 'a medida, sin variable de TIZADA PRO')
+                                                                    : form.tizadaProMoldeRef ? `${moldeSel?.nombre || form.tizadaProMoldeRef} · ${form.modelos.size} modelos · ${form.telas.size} telas · ${form.apliques.length} apliques`
                                                                         : form.molde === 'NO' ? `no lleva · ${form.telas.size} materiales ofrecidos`
                                                                         : form.molde === 'OPCIONAL' ? `opcional, sin vincular · ${form.telas.size} materiales ofrecidos`
                                                                         : 'sin molde vinculado', faltaMolde)}

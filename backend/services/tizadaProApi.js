@@ -8,6 +8,8 @@
 //   TIZADAPRO_API_URL=https://…/api/externo/v1
 //   TIZADAPRO_API_LLAVE=tzp_…          la llave que crea TIZADA (Integraciones › Llaves del otro sistema)
 //   TIZADAPRO_API_TIMEOUT_MS=60000
+//   TIZADAPRO_SOLO_LECTURA=1           solo se LEE de TIZADA (catálogo, estado, cuentas y revisiones que no guardan nada):
+//                                      no se manda ningún pedido ni plantilla y no se cancela nada
 // La llave solo vive en el servidor: nunca se manda al navegador.
 // =====================================================================
 const crypto = require('crypto');
@@ -29,34 +31,70 @@ function estadoConfig() {
   return { ok: true, motivo: null };
 }
 
+// ── Registro del intercambio (Administración › TIZADA PRO): las últimas 300 llamadas y avisos, en memoria (se
+// pierde al reiniciar; los pedidos quedan además en dbo.TizadaProEnvios). Nunca guarda la llave.
+const MAX_REGISTRO = 300;
+const MAX_TEXTO = 20000;
+const _registro = [];
+let _sec = 0;
+const recortar = (v) => {
+  if (v == null) return null;
+  const t = typeof v === 'string' ? v : JSON.stringify(v);
+  return t.length > MAX_TEXTO ? `${t.slice(0, MAX_TEXTO)}… (${t.length - MAX_TEXTO} caracteres más)` : t;
+};
+function registrar(e) {
+  _registro.unshift({ id: ++_sec, fecha: new Date().toISOString(), ...e });
+  if (_registro.length > MAX_REGISTRO) _registro.length = MAX_REGISTRO;
+}
+const registro = () => _registro.slice();
+
 class ErrorTizada extends Error {
   constructor(mensaje, status, cuerpo) { super(mensaje); this.status = status; this.cuerpo = cuerpo; this.alarmas = cuerpo?.alarmas || []; }
 }
+
+// Con TIZADAPRO_SOLO_LECTURA=1 solo pasan las lecturas y los POST que TIZADA documenta como "no guarda nada"
+const SIN_GUARDAR = ['/pedidos/validar', '/a_medida/calcular'];
+const soloLectura = () => process.env.TIZADAPRO_SOLO_LECTURA === '1';
 
 async function llamar(metodo, ruta, { json, cuerpo, tipo, crudo } = {}) {
   const c = cfg();
   const est = estadoConfig();
   if (!est.ok) throw new ErrorTizada(est.motivo, 503);
+  if (soloLectura() && metodo !== 'GET' && !SIN_GUARDAR.includes(ruta)) {
+    registrar({ sentido: 'SALE', metodo, ruta, status: null, ms: 0, enviado: null, respuesta: null, error: 'Frenado: SOLO LECTURA (no salió hacia TIZADA)' });
+    throw new ErrorTizada('TIZADA PRO está en SOLO LECTURA (TIZADAPRO_SOLO_LECTURA=1 en el .env): no se manda nada que se guarde allá (pedidos, plantillas, cancelaciones).', 409);
+  }
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), c.timeoutMs);
   const headers = { 'X-Api-Key': c.llave, Accept: crudo ? '*/*' : 'application/json' };
   let body;
   if (json !== undefined) { headers['Content-Type'] = 'application/json; charset=utf-8'; body = JSON.stringify(json); }
   else if (cuerpo !== undefined) { headers['Content-Type'] = tipo || 'application/octet-stream'; body = cuerpo; }
+  const t0 = Date.now();
+  // Lo que se mandó: el JSON (recortado) o, si es un .zip, su tamaño
+  const enviado = json !== undefined ? recortar(json) : (cuerpo !== undefined ? `(${tipo || 'binario'}, ${Buffer.byteLength(cuerpo)} bytes)` : null);
+  const anotar = (status, respuesta, error) => registrar({ sentido: 'SALE', metodo, ruta, status, ms: Date.now() - t0, enviado, respuesta, error: error || null });
   try {
     const r = await fetch(`${c.url}${ruta}`, { method: metodo, headers, body, signal: ctrl.signal });
-    if (crudo && r.ok) return { status: r.status, buffer: Buffer.from(await r.arrayBuffer()), tipo: r.headers.get('content-type') };
+    if (crudo && r.ok) {
+      const buf = Buffer.from(await r.arrayBuffer());
+      anotar(r.status, `(${r.headers.get('content-type') || 'archivo'}, ${buf.length} bytes)`);
+      return { status: r.status, buffer: buf, tipo: r.headers.get('content-type') };
+    }
     const texto = await r.text();
     let data = null;
     try { data = texto ? JSON.parse(texto) : null; } catch (_) { data = { error: texto.slice(0, 300) }; }
     if (!r.ok) {
       const msg = data?.error || data?.mensaje || (r.status === 401 ? 'TIZADA PRO rechazó la llave (X-Api-Key): falta o fue anulada.' : `TIZADA PRO respondió ${r.status}.`);
+      anotar(r.status, recortar(data), msg);
       throw new ErrorTizada(msg, r.status, data);
     }
+    anotar(r.status, recortar(data));
     return data;
   } catch (e) {
     if (e instanceof ErrorTizada) throw e;
     const msg = e.name === 'AbortError' ? `TIZADA PRO no contestó en ${Math.round(c.timeoutMs / 1000)} s.` : `No se pudo llegar a TIZADA PRO (${c.url}): ${e.message}`;
+    anotar(null, null, msg);
     throw new ErrorTizada(msg, 502);
   } finally { clearTimeout(t); }
 }
@@ -64,8 +102,23 @@ async function llamar(metodo, ruta, { json, cuerpo, tipo, crudo } = {}) {
 // ── Catálogo ──
 const variables = () => llamar('GET', '/variables');
 const molde = (codigo) => llamar('GET', `/moldes/${encodeURIComponent(codigo)}`);
+/** "Foto" del molde: { img_w, img_h, piezas: [{ idx, path_svg, px, py, pw, ph }] } — el contorno de cada pieza
+ *  (idx = pieza_talle.pieza_idx de TizadaPro). */
+const fotoMolde = (codigo) => llamar('GET', `/moldes/${encodeURIComponent(codigo)}/foto`);
 const telas = () => llamar('GET', '/telas');
 const tipografias = () => llamar('GET', '/tipografias');
+
+// ── A medida (pañuelos, toallas, banderas, banderines) ──
+/** Las cuentas de una prenda a medida ANTES de mandar (no guarda nada): total con el margen, si entra en cada
+ *  tela, las tiras por lado y la ficha. body: { variable, forma?, orientacion?, ancho_m, alto_m | diametro_m,
+ *  terminacion?, tela?, tiras? } → 200 { … } · 422 { alarmas } (lanza). */
+const aMedidaCalcular = (body) => llamar('POST', '/a_medida/calcular', { json: body });
+
+// ── Plantillas para el diseñador (Illustrator, CorelDRAW y la guía .ai) ──
+/** Pide la base: { referencia, disenos: [{ nombre, variables: ["v_…" | { variable, medida }] }], talles, escala } → 202. */
+const plantillaPedir = (body) => llamar('POST', '/plantillas', { json: body });
+/** Estado y archivos de una plantilla pedida. */
+const plantillaEstado = (referencia) => llamar('GET', `/plantillas/${encodeURIComponent(referencia)}`);
 
 // ── Pedidos ──
 /** Revisa sin guardar. zipBuffer: el .zip completo (o null para mandar solo el JSON). → 200 { … } · 422 con alarmas (lanza). */
@@ -99,6 +152,6 @@ function firmaValida(cuerpoCrudo, firma) {
 
 const sha256 = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
 
-if (estadoConfig().ok) logger.info(`[TIZADAPRO-API] Integración prendida → ${cfg().url}`);
+if (estadoConfig().ok) logger.info(`[TIZADAPRO-API] Integración prendida → ${cfg().url}${soloLectura() ? ' (SOLO LECTURA)' : ''}`);
 
-module.exports = { estadoConfig, ErrorTizada, variables, molde, telas, tipografias, validar, enviar, estado, bajarArchivo, cancelar, firmaValida, sha256 };
+module.exports = { registrar, registro, soloLectura, estadoConfig, ErrorTizada, variables, molde, fotoMolde, telas, tipografias, aMedidaCalcular, plantillaPedir, plantillaEstado, validar, enviar, estado, bajarArchivo, cancelar, firmaValida, sha256 };

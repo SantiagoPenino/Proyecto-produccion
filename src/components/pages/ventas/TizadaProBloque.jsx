@@ -1,11 +1,13 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { REFRESCAR_SI_MAS_DE_MS, tomarTizadaPrecargada, verTizadaPrecargada } from './solicitudPrecarga';
 import { toast } from 'sonner';
-import { AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, ClipboardPaste, FileSpreadsheet, Loader2, Plus, RefreshCw, Trash2, Wand2 } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, ClipboardPaste, Download, FileSpreadsheet, Loader2, Plus, RefreshCw, Trash2, Wand2 } from 'lucide-react';
 import { solicitudesVendedorService as svc } from '../../../services/modules/solicitudesVendedorService';
 import { fmtFechaHora } from '../../../utils/fechas';
-import { BTN_PRIMARIO, BTN_SECUNDARIO, INPUT, SEL_CAMPO, claseSel, errorDe } from './solicitudesComunes';
+import { BTN_PRIMARIO, BTN_SECUNDARIO, INPUT, Miniatura, PiezaConArte, SEL_CAMPO, TarjetaPieza, claseSel, errorDe, piezaDelArte, useConfirmar, usePiezasArte } from './solicitudesComunes';
 import Selector from '../../ui/Selector';
+import ArteExtrasTabla from './ArteExtrasTabla';   // [EXTRAS EN LA TABLA 14/10] qué lleva cada diseño, en una sola tabla
+import { MedidaDiseno, PlantillaAMedida } from './TizadaProAMedida';   // [A MEDIDA] pañuelos, toallas, banderas (13/10)
 
 /**
  * TIZADA PRO (por API) en la solicitud: los DISEÑOS del producto (jugador, golero…: nombre + arte; el modelo
@@ -41,7 +43,79 @@ const miniatura = (src, max = 100) => new Promise((ok) => {
     img.onerror = () => ok(null);
     img.src = src;
 });
+// [ARTE ARRIBA 12/10] De quién es un arte recién subido: lo dice el nombre del archivo, o el primero libre.
+const DUENOS = ['JUGADOR', 'GOLERO', 'ALTERNATIVA', 'ARQUERO'];
+// La lista manda: las variantes son las de la columna Variante de la lista de jugadores.
+const variantesDeLista = (fs) => [...new Set(fs.map(f => String(f.diseno || '').trim().toUpperCase()).filter(Boolean))];
+// Nunca se inventa una variante: con lista, la primera de la lista que no tiene arte (o la que nombra el archivo);
+// sin lista, la que nombra el archivo, o JUGADOR si es el primer arte. Si no hay ninguna, null = el arte queda sin
+// asignar y el usuario elige de quién es (o que reemplaza al arte de una variante).
+const duenoSugerido = (nombreArchivo, usados, deLista) => {
+    const n = sinTilde(nombreArchivo);
+    if (deLista.length) {
+        const libres = deLista.filter(x => !usados.includes(x));
+        return libres.find(x => n.includes(sinTilde(x))) || libres[0] || null;
+    }
+    const porNombre = /golero|arquero|portero/.test(n) ? 'GOLERO' : /jugador/.test(n) ? 'JUGADOR' : /altern/.test(n) ? 'ALTERNATIVA' : null;
+    if (porNombre && !usados.includes(porNombre)) return porNombre;
+    return usados.length ? null : 'JUGADOR';
+};
 const filaVacia = (columnas, diseno) => ({ diseno: diseno || '', ...Object.fromEntries(columnas.map(c => [c.id, ''])) });
+
+// Portal: piezas y telas de UN arte (su pestaña). La tela de cada pieza es la de "Piezas y telas" salvo que este arte
+// tenga la suya (telasPropias); tocar la pieza deja elegirla ahí mismo y se guarda sola (onCambiar).
+function PiezasArte({ id, d, molde, subl, puede, onCambiar }) {
+    const vistas = usePiezasArte(id, d?.arteArchivoId);
+    const [abierta, setAbierta] = useState(null);
+    const modelo = (molde?.modelos || []).find(m => m.clave === subl?.modeloClave);
+    if (!modelo) return null;
+    const telas = molde?.telas || [];
+    const base = new Map((subl?.piezas || []).map(x => [x.pieza, x]));
+    const nombreTela = (tid) => telas.find(t => String(t.proIdProducto) === String(tid))?.nombre || null;
+    return (
+        <div className="px-3 pb-3 pt-1">
+            <div className="text-[10px] font-black uppercase tracking-wide text-slate-400 mb-1.5">Piezas y telas de {d.nombre} <span className="normal-case font-normal">tocá una pieza para cambiarle la tela</span></div>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+                {modelo.piezas.map(z => {
+                    const v = piezaDelArte(vistas, z.pieza, z.generico);
+                    const telaId = z.telaFija ? z.telaFija.proIdProducto : (d.telasPropias?.[z.pieza] || base.get(z.pieza)?.telaProIdProducto || '');
+                    const tocable = puede && !z.telaFija && telas.length > 0;
+                    const on = tocable && abierta === z.pieza;
+                    return (
+                        <TarjetaPieza key={z.pieza} titulo={z.generico || z.pieza} detalle={z.generico && z.generico !== z.pieza ? z.pieza : null}
+                            figura={v || z.svgPath ? <PiezaConArte svgPath={z.svgPath} vista={v?.vista} alt={z.pieza} /> : <span className="w-10 h-12 shrink-0 rounded border border-dashed border-slate-300 inline-block" />}
+                            telaNombre={z.telaFija ? z.telaFija.nombre : (nombreTela(telaId) || base.get(z.pieza)?.telaNombre)} fija={!!z.telaFija}
+                            tocable={tocable} abierta={on} onAbrir={() => setAbierta(on ? null : z.pieza)} telas={telas} telaId={telaId}
+                            onElegir={(t) => { setAbierta(null); if (String(t) !== String(telaId)) onCambiar(z.pieza, t); }}
+                            extra={d.telasPropias?.[z.pieza] ? <div className="text-[10px] text-brand-cyan font-bold">propia de {d.nombre}</div> : null} />
+                    );
+                })}
+            </div>
+        </div>
+    );
+}
+
+// Vista previa de un arte: el frente y la espalda con el diseño del cliente (las dibuja el servidor desde el .ai / .pdf).
+// Mientras llega, "Dibujando…"; si no se pudo, la miniatura de Drive.
+function VistaArte({ id, arte, piezasModelo = [] }) {
+    const piezas = usePiezasArte(id, arte.ArchivoID);
+    // el contorno de cada pieza mostrada: la pieza del modelo con el mismo nombre (Frente ↔ Frente 3)
+    const contornoDe = (x) => piezasModelo.find(z => piezaDelArte([x], z.pieza, z.generico))?.svgPath || null;
+    const principales = (piezas || []).filter(x => /frente|espalda/i.test(x.pieza)).slice(0, 2);
+    const mostrar = principales.length ? principales : (piezas || []).slice(0, 2);
+    if (piezas === null) return <div className="w-[150px] h-[120px] shrink-0 rounded-lg border border-slate-200 bg-slate-50 flex items-center justify-center text-[11px] text-slate-400 gap-1"><Loader2 size={12} className="animate-spin" /> Dibujando…</div>;
+    if (!mostrar.length) return <Miniatura a={{ UrlDrive: arte.url, NombreOriginal: arte.nombre }} tam={120} entera />;
+    return (
+        <a href={arte.url} target="_blank" rel="noreferrer" title={`Abrir "${arte.nombre}"`} className="flex shrink-0 gap-1.5">
+            {mostrar.map(x => (
+                <span key={x.pagina} className="flex flex-col items-center gap-0.5">
+                    <PiezaConArte svgPath={contornoDe(x)} vista={x.vista} alt={x.pieza} className="h-[104px] w-[72px]" />
+                    <span className="text-[10px] text-slate-500">{x.pieza}</span>
+                </span>
+            ))}
+        </a>
+    );
+}
 
 // Qué le falta a una fila (lo mismo que revisa el servidor)
 function problemaFila(f, columnas, disenos) {
@@ -51,7 +125,8 @@ function problemaFila(f, columnas, disenos) {
         if (v && (c.tipo === 'talle' || c.tipo === 'lista') && c.opciones.length && !c.opciones.some(o => sinTilde(o) === sinTilde(v)) && !(c.tipo === 'lista' && v.includes('+'))) return `${c.label} "${v}" no existe`;
         if (v && c.tipo === 'numero' && !(Number(v) > 0)) return `${c.label} tiene que ser un número`;
     }
-    if (disenos.length > 1 && !disenos.some(d => sinTilde(d.nombre) === sinTilde(f.diseno))) return 'Falta la variante';
+    if (String(f.diseno || '').trim() && !disenos.some(d => sinTilde(d.nombre) === sinTilde(f.diseno))) return `${String(f.diseno).toUpperCase()} no tiene arte`;
+    if (!String(f.diseno || '').trim() && disenos.length > 1) return 'Falta la variante';
     return null;
 }
 
@@ -79,7 +154,12 @@ function leerPegado(texto, columnas) {
 
 // modo 'carga' (solicitud, vendedor): diseños + lista + Revisar. modo 'diseno' (pantalla de Diseño): además la letra
 // de nombre y número y "Generar tizada" (puedeGenerar lo decide la pantalla: diseñador y ya enviado a Diseño).
-export default function TizadaProBloque({ id, p, puede, onCargado, numero = null, extra = null, modo = 'carga', puedeGenerar = false, motivoNoGenerar = null }) {
+// medio: lo que va entre el arte y la lista ("2 · Piezas y telas"). archivosArte: los otros archivos de la producción
+// principal (bocetos, referencias) y el botón de subir. onQuitarArte(archivo): quitar un arte. onPlanillaArchivo(file): el
+// Excel con el que se cargó la lista queda adjunto como planilla del cliente.
+// cliente: el pedido que arma el cliente en la Tienda del portal (sin el aviso de cómo se genera la tizada en Diseño)
+// porArte(diseño, { disenos, guardarDisenos, ocupado }): lo que el portal pone dentro de la pestaña de cada arte (sus extras).
+export default function TizadaProBloque({ id, p, puede, onCargado, numero = null, extra = null, modo = 'carga', puedeGenerar = false, motivoNoGenerar = null, medio = null, archivosArte = null, onQuitarArte = null, onPlanillaArchivo = null, cliente = false, porArte = null, subirArchivos = null, extrasPortal = null }) {
     const enDiseno = modo === 'diseno';
     // Lo que la lista de solicitudes adelantó al pasar el mouse (solicitudPrecarga.js): si ya llegó, el bloque
     // se arma completo desde el primer cuadro, sin "Leyendo el molde…" (ni spinner) y sin aparecer después.
@@ -96,8 +176,15 @@ export default function TizadaProBloque({ id, p, puede, onCargado, numero = null
     const [abiertos, setAbiertos] = useState(() => new Set());   // envíos con el detalle abierto (arrancan cerrados)
     const [verAnteriores, setVerAnteriores] = useState(false);    // los envíos viejos, ocultos detrás del último
     const alternar = (envioId) => setAbiertos(s => { const n = new Set(s); if (n.has(envioId)) n.delete(envioId); else n.add(envioId); return n; });
-    const [vistas, setVistas] = useState({});        // miniaturas de los editables leídos: { "<diseño>|<objeto>": dataURL } (no se guardan)
-    const [leyendo, setLeyendo] = useState(null);    // índice del diseño cuyo arte se está leyendo
+    const [leyendo, setLeyendo] = useState(() => new Set());   // artes cuyos editables se están leyendo (ArchivoID)
+    const [sincronizando, setSincronizando] = useState(false);
+    const fallidos = useRef(new Set());              // artes que no se pudieron leer (no se reintenta solo)
+    const [errorArte, setErrorArte] = useState({});   // por qué no se pudo leer cada arte (se muestra en su tarjeta)
+    const [arteSel, setArteSel] = useState(null);     // portal: la pestaña de arte abierta (ArchivoID)
+    const [bajandoPlantilla, setBajandoPlantilla] = useState(false);   // portal: la plantilla del producto para armar el arte
+    const [disenoSel, setDisenoSel] = useState(null); // portal a medida: la pestaña de diseño abierta (nombre)
+    const [calcs, setCalcs] = useState({});           // portal a medida: las cuentas de TIZADA de cada diseño (para dibujarlo)
+    const [dialogo, preguntar] = useConfirmar();
 
     const aplicar = useCallback((v, m) => {
         setInfo(v); setMolde(m);
@@ -127,10 +214,11 @@ export default function TizadaProBloque({ id, p, puede, onCargado, numero = null
     }, [id, p, cargar, aplicar]);
 
     const columnas = info?.estructura?.columnas || [];
+    // Columnas que se ven en la tabla. En el portal (cliente) no va la manga, salvo que el molde la pida obligatoria;
+    // el Excel y las validaciones siguen usando todas.
+    const colsTabla = cliente ? columnas.filter(c => c.obligatoria || !/manga/i.test(`${c.label} ${c.id}`)) : columnas;
     const modelos = molde?.modelos || [];
     const nombreModelo = (clave) => modelos.find(m => m.clave === clave)?.nombre || info?.piezas?.variableNombre || clave;
-    // El arte que nombra al diseño (GOES_JUGADOR.pdf → JUGADOR)
-    const arteDe = (nombre) => (nombre ? (info?.artes || []).find(a => sinTilde(a.nombre).includes(sinTilde(nombre)))?.ArchivoID || null : null);
     const envioActivo = (info?.envios || []).find(e => ['EN_COLA', 'PROCESANDO', 'LISTO', 'APLICANDO'].includes(e.Estado));
 
     // Mientras TIZADA trabaja, la pantalla pregunta sola cada 15 s
@@ -151,57 +239,266 @@ export default function TizadaProBloque({ id, p, puede, onCargado, numero = null
         return s + (col && Number(f[col.id]) > 0 ? Number(f[col.id]) : 1);
     }, 0), [filas, columnas]);
 
+    // [A MEDIDA · PORTAL] El cliente arma una toalla, bandera…: mandan los DISEÑOS (medida + cantidad + su arte o su
+    // imagen), en el orden de TIZADA: primero la medida y después el arte. Un diseño existe antes que su arte.
+    const porDisenos = cliente && !!info?.aMedida;
+    // Lo que el producto define y el diseño guardado todavía no tiene (la medida única, la forma por defecto…) llega
+    // completo del servidor: se guarda solo una vez, para que el pedido (y el resumen de la derecha) lo tengan.
+    const completado = useRef(false);
+    useEffect(() => {
+        if (!porDisenos || completado.current || sucio) return;
+        completado.current = true;
+        const guardadas = p.Datos?.tizadaPro?.disenos || [];
+        if (disenos.some((d, i) => JSON.stringify(d.medida || null) !== JSON.stringify(guardadas[i]?.medida || null))) setSucio(true);
+    }, [porDisenos]);   // eslint-disable-line react-hooks/exhaustive-deps
+    // [ARTE ARRIBA] Cuando hay un arte sin diseño, un diseño sin arte o editables sin leer, se pone al día solo.
+    const firmaArte = info?.aplica ? JSON.stringify([
+        (info.artes || []).filter(a => a.rol === 'ARTE_CLIENTE').map(a => a.ArchivoID),
+        disenos.map(d => [d.nombre, d.arteArchivoId, d.editablesLeidoDe === d.arteArchivoId]),
+        variantesDeLista(filas),
+    ]) : '';
+    const sincronizarRef = useRef(null);
+    useEffect(() => {
+        if (!firmaArte || !puede || sincronizando) return;
+        const principal = (p.Partes || []).find(x => x.Tipo === 'PRINCIPAL')?.ParteID;
+        const cards = (info.artes || []).filter(a => a.rol === 'ARTE_CLIENTE' && /\.(ai|pdf)$/i.test(a.nombre || '') && (!a.parteId || a.parteId === principal)
+            && (porDisenos || !disenos.some(d => d.archivoCliente === a.ArchivoID)));   // [A MEDIDA] el original del cliente no es otro diseño
+        const vig = new Set(cards.map(a => a.ArchivoID));
+        const falta = porDisenos
+            // a medida en el portal: solo un arte que ya no está, o editables sin leer del arte de un diseño
+            ? disenos.some(d => (d.archivoCliente && !vig.has(d.archivoCliente)) || (d.arteArchivoId && (!vig.has(d.arteArchivoId) || (d.editablesLeidoDe !== d.arteArchivoId && !fallidos.current.has(d.arteArchivoId)))))
+            : cards.some(a => !disenos.some(d => d.arteArchivoId === a.ArchivoID))
+            || disenos.some(d => !d.arteArchivoId || !vig.has(d.arteArchivoId))
+            || (!cliente && !info?.aMedida && variantesDeLista(filas).length > 0 && disenos.some(d => !variantesDeLista(filas).includes(String(d.nombre || '').toUpperCase())))
+            || disenos.some(d => d.arteArchivoId && vig.has(d.arteArchivoId) && d.editablesLeidoDe !== d.arteArchivoId && !fallidos.current.has(d.arteArchivoId));
+        if (!falta || sincronizarRef.current === firmaArte) return;
+        sincronizarRef.current = firmaArte;
+        setSincronizando(true);
+        sincronizar(disenos, filas).catch(e => toast.error(errorDe(e))).finally(() => setSincronizando(false));
+    }, [firmaArte, puede]);   // eslint-disable-line react-hooks/exhaustive-deps
+
+    // Portal (cliente): la lista se guarda sola un momento después del último cambio (sin botón). No mientras haya una
+    // fila en blanco recién agregada: el servidor descarta las vacías y desaparecería antes de que la escriba.
+    const guardarRef = useRef(null);
+    const ultimas = useRef({ filas, disenos, sucio });
+    ultimas.current = { filas, disenos, sucio };
+    // "Confirmar pedido" (PedidoTiendaView) pide guardar YA lo que quede pendiente y espera a que termine
+    useEffect(() => {
+        if (!cliente) return undefined;
+        const alConfirmar = (e) => { if (ultimas.current.sucio && guardarRef.current) e.detail?.pendientes?.push(guardarRef.current(true)); };
+        window.addEventListener('pedido-tienda:guardar', alConfirmar);
+        return () => window.removeEventListener('pedido-tienda:guardar', alConfirmar);
+    }, [cliente]);
+    useEffect(() => {
+        if (!cliente || !sucio || !puede || !info?.aplica) return undefined;
+        const cols = info?.estructura?.columnas || [];
+        if (!info.aMedida && filas.some(f => !cols.some(c => String(f[c.id] || '').trim()))) return undefined;   // a medida la lista la arma el servidor
+        const t = setTimeout(() => guardarRef.current?.(true), 1200);
+        return () => clearTimeout(t);
+    }, [cliente, sucio, puede, filas, disenos, info]);
+
     // Mientras llega, nada (antes: "Leyendo el molde en TIZADA PRO…" con spinner, que se veía girar al abrir).
     if (!info || !info.aplica) return null;
-
-    const cambiarDiseno = (i, cambios) => {
-        setDisenos(ds => ds.map((d, k) => {
-            if (k !== i) return d;
-            const n = { ...d, ...cambios };
-            if ('nombre' in cambios && !d.arteArchivoId) n.arteArchivoId = arteDe(n.nombre);
-            if ('arteArchivoId' in cambios && cambios.arteArchivoId !== d.arteArchivoId) { n.editables = {}; n.editablesDetalle = []; }   // otro arte: hay que volver a leerlo
-            return n;
-        }));
-        setSucio(true);
+    const am = info.aMedida || null;   // [A MEDIDA] { config, telas, nombres, lados, plantilla… } o null
+    // [PLANTILLA 14/10] Portal, prenda con talles: la plantilla de TIZADA del producto (molde + modelo), la misma de la
+    // foto de la Tienda, para que el cliente arme su arte sobre ella. La primera vez TIZADA la arma en unos segundos.
+    const bajarPlantillaProducto = async () => {
+        if (bajandoPlantilla || !p.ProIdProducto) return;
+        setBajandoPlantilla(true);
+        try {
+            const r = await svc.plantillaDelProducto(p.ProIdProducto);
+            const blob = await svc.plantillaDelProductoArchivo(p.ProIdProducto);
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a'); a.href = url; a.download = r?.nombre || 'Plantilla.ai'; document.body.appendChild(a); a.click(); a.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 5000);
+            toast.success('Plantilla descargada: abrila en Illustrator, armá tu diseño sobre cada pieza y subí ese archivo acá.');
+        } catch (e) { toast.error(errorDe(e)); } finally { setBajandoPlantilla(false); }
     };
-    // Editables del arte (capas "Editable …"): se leen del PDF y se elige el proceso de cada objeto. Queda SOLO de
-    // nuestro lado (DTF → pliego; TPU y Bordado → referencia del servicio); a TIZADA no se le manda nada extra.
+
+    // ── [ARTE ARRIBA 12/10] Un arte (.ai/.pdf de la producción principal) = un diseño. Al subirlo se le pone dueño
+    // (JUGADOR, GOLERO…) y se leen sus editables solos; todo se guarda solo. Sin botones ni pasos aparte.
     const serviciosDelProducto = (p.Partes || []).map(x => x.Tipo);
-    const leerEditables = async (i) => {
-        const d = disenos[i];
-        if (!d?.arteArchivoId) return;
-        setLeyendo(i);
+    const principalId = (p.Partes || []).find(x => x.Tipo === 'PRINCIPAL')?.ParteID;
+    // [EXTRAS EN LA TABLA 14/10] Los extras que puede llevar cada diseño: en el portal, los del producto (extrasPortal, con
+    // su cobro, si es obligatorio y sus opciones); para el vendedor, los servicios que ya tiene la solicitud.
+    const serviciosExtra = extrasPortal
+        ? (extrasPortal.lista || []).map(e => ({ tipo: e.tipo, nombre: e.nombre, cobro: e.cobro || null, obligatorio: !!e.obligatorio, opciones: e.opciones || [], opcionId: e.opcionId || null, parteId: e.parteId || null }))
+        : (p.Partes || []).filter(x => ['BORDADO', 'DTF', 'TPU'].includes(x.Tipo)).map(x => ({ tipo: x.Tipo, nombre: x.Nombre || (x.Tipo === 'BORDADO' ? 'Bordado' : x.Tipo), cobro: x.IncluidoEnProducto ? 'INCLUIDA' : null, obligatorio: false, opciones: [], opcionId: null, parteId: x.ParteID }));
+    // Las piezas del modelo (para ubicar lo que va aparte del arte); sin modelo, las del molde
+    const modeloSel = (molde?.modelos || []).find(m => m.clave === p.Datos?.sublimacion?.modeloClave) || null;
+    const piezasMolde = [...new Set(((modeloSel?.piezas || []).map(z => z.generico || z.pieza)).concat(modeloSel ? [] : (info?.estructura?.piezas || [])).filter(Boolean))];
+    // Lo subido aparte para un diseño: los archivos de sus filas (o subidos con el prefijo "<DISEÑO>__", como antes)
+    const deDisenoArch = (a, d) => String(a.nombre || '').toUpperCase().startsWith(`${String(d.nombre || '').toUpperCase()}__`);
+    const filasArchivoDe = (d) => (info?.artesExtras || [])
+        .filter(a => (d.extrasArchivos || []).some(x => x.archivoId === a.ArchivoID) || deDisenoArch(a, d))
+        .map(a => { const x = (d.extrasArchivos || []).find(y => y.archivoId === a.ArchivoID) || {}; return { archivo: { ArchivoID: a.ArchivoID, NombreOriginal: a.nombre, UrlDrive: a.url }, tipo: x.tipo || a.tipo, pieza: x.pieza || null, detalle: x.detalle || null }; });
+    const conFilas = (ds) => ds.map(x => ({ ...x, extrasArchivos: filasArchivoDe(x).map(f => ({ archivoId: f.archivo.ArchivoID, tipo: f.tipo, pieza: f.pieza, detalle: f.detalle })) }));
+    // [A MEDIDA] Fuera del portal, el .ai/.pdf que subió el cliente para un diseño no es otro diseño: ese diseño ya tiene
+    // su arte armado para TIZADA (arteArchivoId). En el portal sí cuenta (es el arte que el cliente ve y cambia).
+    const artesCards = (info?.artes || []).filter(a => a.rol === 'ARTE_CLIENTE' && /\.(ai|pdf)$/i.test(a.nombre || '') && (!a.parteId || a.parteId === principalId)
+        && (porDisenos || !disenos.some(d => d.archivoCliente === a.ArchivoID)))
+        .sort((a, b) => a.ArchivoID - b.ArchivoID);
+    // Portal: se ve un arte por vez (su pestaña); si la elegida ya no está, el primero
+    const arteActivo = artesCards.some(x => x.ArchivoID === arteSel) ? arteSel : artesCards[0]?.ArchivoID;
+    const artesVisibles = cliente ? artesCards.filter(a => a.ArchivoID === arteActivo) : artesCards;
+    const guardarCon = async (ds, fs) => {
+        const v = await svc.tizadaProGuardar(id, p.ProductoSolID, { disenos: ds.map(d => ({ ...d, variableNombre: nombreModelo(d.variable) })), planilla: fs });
+        setInfo(v); setDisenos(v.datos?.disenos || []); setFilas(v.datos?.planilla || []); setSucio(false);
+        if (v.avisoEditables) toast.error(v.avisoEditables);
+        onCargado?.();   // los editables en DTF / TPU / Bordado quedan como arte del cliente de cada servicio: refresca los archivos
+        return v;
+    };
+    // Lee los editables de un arte (miniaturas chicas para guardarlas con lo leído)
+    const leerDe = async (d) => {
+        setLeyendo(x => new Set(x).add(d.arteArchivoId));
         try {
             const r = await svc.tizadaProEditables(id, p.ProductoSolID, d.arteArchivoId);
-            setVistas(v => ({ ...v, ...Object.fromEntries(r.objetos.map(o => [`${d.nombre}|${o.objeto}`, o.vista])) }));
             const minis = await Promise.all(r.objetos.map(o => (o.vista ? miniatura(o.vista) : null)));
-            cambiarDiseno(i, {
+            return { ...d, editablesLeidoDe: d.arteArchivoId,
                 editablesDetalle: r.objetos.map(({ vista, ...o }, k) => ({ ...o, vista: minis[k] })),
-                editables: Object.fromEntries(r.objetos.map(o => [o.objeto, (d.editables || {})[o.objeto] || o.sugerido])),
-            });
-            toast.success(r.objetos.length ? `${r.objetos.length} objeto(s) editable(s) en "${r.arte}". Revisá el proceso de cada uno y guardá.` : `"${r.arte}" no tiene capas "Editable …" con algo dibujado.`);
-        } catch (e) { toast.error(errorDe(e)); } finally { setLeyendo(null); }
+                editables: Object.fromEntries(r.objetos.map(o => [o.objeto, (d.editables || {})[o.objeto] || o.sugerido])) };
+        } finally { setLeyendo(x => { const n = new Set(x); n.delete(d.arteArchivoId); return n; }); }
     };
+    // Pone los diseños al día con los artes: uno por arte (dueño propuesto), sin los de artes quitados, y con los
+    // editables leídos. Si algo cambió, guarda.
+    const sincronizar = async (base, baseFilas, forzar = false) => {
+        const vigentes = new Set(artesCards.map(a => a.ArchivoID));
+        if (porDisenos) {
+            // [A MEDIDA · PORTAL] ningún diseño se crea ni se borra por los artes: el que perdió su arte queda sin arte
+            // (y con su medida); el arte de cada diseño lo asigna la pantalla al subirlo. Solo se leen sus editables.
+            let ds = base.map(d => (d.archivoCliente && !vigentes.has(d.archivoCliente) ? { ...d, archivoCliente: null } : d))
+                .map(d => (d.arteArchivoId && !vigentes.has(d.arteArchivoId) ? { ...d, arteArchivoId: null, arteAuto: null, editablesLeidoDe: null, editablesDetalle: [], editables: {} } : d));
+            let cambio = forzar || ds.some((d, i) => d !== base[i]);
+            for (const d of ds.filter(x => x.arteArchivoId && x.editablesLeidoDe !== x.arteArchivoId && !fallidos.current.has(x.arteArchivoId))) {
+                try { const leido = await leerDe(d); ds = ds.map(x => (x === d ? leido : x)); cambio = true; }
+                catch (e) { fallidos.current.add(d.arteArchivoId); setErrorArte(m => ({ ...m, [d.arteArchivoId]: errorDe(e) })); }
+            }
+            if (cambio) await guardarCon(ds, baseFilas);
+            return;
+        }
+        // Portal: mandan los artes (cada arte es una referencia: JUGADOR, GOLERO…; la lista solo puede usar esas).
+        // Vendedor: manda la lista (un diseño de una variante que la lista no tiene, sale).
+        const deLista = (cliente || info?.aMedida) ? [] : variantesDeLista(baseFilas);
+        // fuera: diseños sin arte vigente, o (con lista) de una variante que la lista no tiene
+        let ds = base.filter(d => d.arteArchivoId && vigentes.has(d.arteArchivoId) && (!deLista.length || deLista.includes(String(d.nombre || '').toUpperCase())));
+        const fs = baseFilas;   // la lista no se toca: manda ella
+        let cambio = forzar || ds.length !== base.length;
+        for (const a of artesCards) {
+            if (ds.some(d => d.arteArchivoId === a.ArchivoID)) continue;
+            // [A MEDIDA] cada arte es un diseño con su medida: DISEÑO 1, DISEÑO 2… (se puede renombrar)
+            const libre = () => { let k = ds.length + 1; while (ds.some(d => d.nombre === `DISEÑO ${k}`)) k++; return `DISEÑO ${k}`; };
+            const nombre = info?.aMedida ? libre() : duenoSugerido(a.nombre, ds.map(d => d.nombre), deLista)
+                || (cliente ? DUENOS.find(x => !ds.some(d => d.nombre === x)) || `DISEÑO ${ds.length + 1}` : null);
+            if (!nombre) continue;   // sin variante libre: que el usuario diga de quién es
+            ds = [...ds, { nombre, arteArchivoId: a.ArchivoID }];
+            cambio = true;
+        }
+        const pendientes = ds.filter(d => d.editablesLeidoDe !== d.arteArchivoId && !fallidos.current.has(d.arteArchivoId));
+        for (const d of pendientes) {
+            try { const leido = await leerDe(d); ds = ds.map(x => (x === d ? leido : x)); cambio = true; }
+            catch (e) { fallidos.current.add(d.arteArchivoId); setErrorArte(m => ({ ...m, [d.arteArchivoId]: errorDe(e) })); }
+        }
+        if (cambio) await guardarCon(ds, fs);
+    };
+    const correr = async (fn) => {
+        setSincronizando(true);
+        try { await fn(); } catch (e) { toast.error(errorDe(e)); } finally { setSincronizando(false); }
+    };
+    // Cambiar el "De": qué variante de la lista imprime este arte. La lista no cambia.
+    const cambiarDueno = (arteId, nombre) => correr(async () => {
+        const d = disenos.find(x => x.arteArchivoId === arteId);
+        if (!nombre || (d && nombre === d.nombre)) return;
+        // si esa variante ya tenía otro arte, este lo reemplaza (el otro queda sin asignar)
+        let ds = disenos.filter(x => x === d || x.nombre !== nombre);
+        ds = d ? ds.map(x => (x === d ? { ...x, nombre } : x)) : [...ds, { nombre, arteArchivoId: arteId }];
+        await sincronizar(ds, filas, true);   // lee los editables si hace falta y guarda
+        toast.success(`"${artesCards.find(a => a.ArchivoID === arteId)?.nombre}" es el arte de ${nombre}.`);
+    });
+    // Portal: renombrar la referencia de un arte (JUGADOR → TITULAR). Las filas de la lista con ese nombre pasan al nuevo.
+    const renombrar = (arteId, texto) => correr(async () => {
+        const nuevo = String(texto || '').trim().toUpperCase().slice(0, 40);
+        const d = disenos.find(x => x.arteArchivoId === arteId);
+        if (!nuevo || (d && nuevo === d.nombre)) return;
+        if (disenos.some(x => x !== d && x.nombre === nuevo)) { toast.error(`Ya hay un arte con la referencia ${nuevo}.`); return; }
+        const fs = d ? filas.map(f => (String(f.diseno || '').toUpperCase() === d.nombre ? { ...f, diseno: nuevo } : f)) : filas;
+        const ds = d ? disenos.map(x => (x === d ? { ...x, nombre: nuevo } : x)) : [...disenos, { nombre: nuevo, arteArchivoId: arteId }];
+        await sincronizar(ds, fs, true);
+    });
+    // Portal: la tela de una pieza en ESTE arte. Igual a la de "Piezas y telas" = sin tela propia.
+    const cambiarTelaArte = (arteId, pieza, telaId) => correr(async () => {
+        const base = (p.Datos?.sublimacion?.piezas || []).find(x => x.pieza === pieza)?.telaProIdProducto;
+        await guardarCon(disenos.map(x => {
+            if (x.arteArchivoId !== arteId) return x;
+            const tp = { ...(x.telasPropias || {}) };
+            if (String(base) === String(telaId)) delete tp[pieza]; else tp[pieza] = String(telaId);
+            return { ...x, telasPropias: tp };
+        }), filas);
+    });
+    const cambiarProceso = (arteId, objeto, valor) => correr(async () => {
+        await guardarCon(disenos.map(x => {
+            if (x.arteArchivoId !== arteId) return x;
+            const n = { ...x, editables: { ...(x.editables || {}), [objeto]: valor } };
+            // Portal: marcar un editable en DTF / TPU / Bordado = este arte lleva ese extra
+            if (cliente && valor !== 'sublimado') { const T = valor.toUpperCase(); n.extras = { ...(x.extras || {}), [T]: { ...(x.extras?.[T] || {}), activo: true } }; }
+            return n;
+        }), filas);
+    });
+    // [EXTRAS EN LA TABLA] La parte del servicio donde va el archivo; en el portal, si el extra todavía no está en el
+    // pedido, se prende (extrasPortal.activar devuelve su parte).
+    const parteDeExtra = async (T) => {
+        const s = serviciosExtra.find(x => x.tipo === T);
+        if (s?.parteId) return s.parteId;
+        return extrasPortal?.activar ? extrasPortal.activar(T) : null;
+    };
+    const procesoTabla = (arteId, objeto, valor) => correr(async () => {
+        const T = { dtf: 'DTF', tpu: 'TPU', bordado: 'BORDADO' }[valor];
+        if (T && extrasPortal) await parteDeExtra(T);
+        await guardarCon(conFilas(disenos).map(x => (x.arteArchivoId !== arteId ? x : { ...x, editables: { ...(x.editables || {}), [objeto]: valor } })), filas);
+    });
+    const agregarExtra = (d, T, file) => correr(async () => {
+        const parteId = await parteDeExtra(T);
+        if (!parteId) throw new Error(`Esta solicitud no tiene ${T === 'BORDADO' ? 'Bordado' : T}: agregalo como servicio y volvé a intentar.`);
+        const [hecho] = await subirArchivos([new File([file], `${d.nombre}__${file.name}`, { type: file.type })], { Rol: 'ARTE_CLIENTE', ParteID: parteId }, T);
+        if (!hecho?.ArchivoID) return;
+        await guardarCon(conFilas(disenos).map(x => (x.nombre !== d.nombre ? x : {
+            ...x, extrasArchivos: [...x.extrasArchivos.filter(y => y.archivoId !== hecho.ArchivoID), { archivoId: hecho.ArchivoID, tipo: T, pieza: piezasMolde[0] || null, detalle: null }],
+        })), filas);
+        toast.success('Agregado. Elegí en qué pieza va y, si querés, el detalle (ej. pecho izquierdo, 8 cm).');
+    });
+    const cambiarFilaExtra = (d, aid, cambio) => correr(() => guardarCon(conFilas(disenos).map(x => (x.nombre !== d.nombre ? x
+        : { ...x, extrasArchivos: x.extrasArchivos.map(y => (y.archivoId === aid ? { ...y, ...cambio } : y)) })), filas));
+    const quitarFilaExtra = (d, aid) => correr(async () => {
+        if (!(await preguntar({ Icono: Trash2, titulo: 'Quitar el extra', texto: 'Se quita este extra y su archivo de la solicitud.', boton: 'Quitar', peligro: true }))) return;
+        await svc.quitarArchivo(id, aid);
+        await guardarCon(conFilas(disenos).map(x => (x.nombre !== d.nombre ? x : { ...x, extrasArchivos: x.extrasArchivos.filter(y => y.archivoId !== aid) })), filas);
+    });
+    // Portal: lo que pone la pantalla dentro de la pestaña de cada arte (sus extras) guarda con esto: fn(diseño) → diseño
+    const guardarDisenos = (fn) => correr(() => guardarCon(disenos.map(fn), filas));
+    const volverALeer = (arteId) => correr(async () => {
+        fallidos.current.delete(arteId);
+        setErrorArte(m => { const n = { ...m }; delete n[arteId]; return n; });
+        await sincronizar(disenos.map(x => (x.arteArchivoId === arteId ? { ...x, editablesLeidoDe: null } : x)), filas);
+    });
+    // [A MEDIDA] la medida, la tela o la cantidad de un diseño (queda sin guardar hasta "Guardar medidas")
+    const cambiarDiseno = (arteId, patch) => { setDisenos(ds => ds.map(x => (x.arteArchivoId === arteId ? { ...x, ...patch } : x))); setSucio(true); };
     const cambiarFila = (i, col, v) => { setFilas(fs => fs.map((f, k) => (k === i ? { ...f, [col]: v } : f))); setSucio(true); };
     const agregarFila = () => { setFilas(fs => [...fs, filaVacia(columnas, disenos.length === 1 ? disenos[0].nombre : '')]); setSucio(true); };
-    const agregarDiseno = () => {
-        // modelo y telas los pone el servidor desde "Piezas y telas"; acá solo nombre y arte
-        const usado = new Set(disenos.map(d => d.arteArchivoId));
-        const libre = (info?.artes || []).find(a => !usado.has(a.ArchivoID));
-        setDisenos(ds => [...ds, { nombre: ds.length === 1 ? 'GOLERO' : `DISEÑO ${ds.length + 1}`, arteArchivoId: libre ? libre.ArchivoID : null }]);
-        setSucio(true);
-    };
 
-    const guardar = async () => {
+    // solo = guardado automático del portal: sin aviso, y si la lista cambió mientras se guardaba, no se pisa lo nuevo
+    const guardar = async (solo = false) => {
+        const enviadas = { filas, disenos };
         setOcupado('guardar');
         try {
             const v = await svc.tizadaProGuardar(id, p.ProductoSolID, { disenos: disenos.map(d => ({ ...d, variableNombre: nombreModelo(d.variable) })), planilla: filas });
-            setInfo(v); setDisenos(v.datos?.disenos || []); setFilas(v.datos?.planilla || []); setSucio(false);
-            toast.success(v.errores?.length ? `Guardado. Para mandar a TIZADA falta: ${v.errores.length} cosa(s).` : 'Diseños y lista de talles guardados.');
+            setInfo(v);
+            const cambio = solo && (ultimas.current.filas !== enviadas.filas || ultimas.current.disenos !== enviadas.disenos);
+            if (!cambio) { setDisenos(v.datos?.disenos || []); setFilas(v.datos?.planilla || []); setSucio(false); }
+            if (!solo) toast.success(v.errores?.length ? `Guardado. Para mandar a TIZADA falta: ${v.errores.length} cosa(s).` : (v.aMedida ? 'Medidas guardadas.' : 'Diseños y lista de talles guardados.'));
             if (v.avisoEditables) toast.error(v.avisoEditables);
             onCargado?.();   // los editables en DTF / TPU / Bordado quedaron como arte del cliente de cada servicio: refresca los archivos
         } catch (e) { toast.error(errorDe(e)); } finally { setOcupado(''); }
     };
+    guardarRef.current = guardar;
     const enviar = async (soloRevisar) => {
         setOcupado(soloRevisar ? 'revisar' : 'enviar');
         try {
@@ -220,13 +517,18 @@ export default function TizadaProBloque({ id, p, puede, onCargado, numero = null
             await cargar();
         } catch (e) { toast.error(errorDe(e)); } finally { setOcupado(''); }
     };
-    const agregarDesdeTexto = (texto, origen) => {
+    // Lo que se agrega desde Excel se guarda en el momento; si vino de un archivo, el archivo queda adjunto como
+    // planilla del cliente (12/10: ya no hace falta la sección "Planilla original del cliente").
+    const agregarDesdeTexto = (texto, origen, archivo = null) => {
         const nuevas = leerPegado(texto, columnas).map(f => ({ ...f, diseno: f.diseno || (disenos.length === 1 ? disenos[0].nombre : '') }));
         if (!nuevas.length) return toast.warning(`No se encontró ninguna fila para agregar${origen ? ` en "${origen}"` : ''}.`);
-        setFilas(fs => [...fs.filter(f => columnas.some(c => String(f[c.id] || '').trim())), ...nuevas]);
-        setSucio(true); setPegando(false); setPegado('');
-        toast.success(`${nuevas.length} fila(s) agregadas desde ${origen ? `"${origen}"` : 'Excel'}. Revisalas y tocá "Guardar diseños y lista".`);
-        return undefined;
+        const todas = [...filas.filter(f => columnas.some(c => String(f[c.id] || '').trim())), ...nuevas];
+        setFilas(todas); setPegando(false); setPegado('');
+        return correr(async () => {
+            await guardarCon(disenos, todas);
+            toast.success(`${nuevas.length} fila(s) agregadas desde ${origen ? `"${origen}"` : 'Excel'} y guardadas.`);
+            if (archivo && onPlanillaArchivo) await onPlanillaArchivo(archivo);
+        });
     };
     const aplicarPegado = () => agregarDesdeTexto(pegado, null);
     // Buscar el archivo: Excel (.xlsx/.xls, primera hoja) o texto (.csv/.txt); se lee igual que lo pegado
@@ -242,7 +544,7 @@ export default function TizadaProBloque({ id, p, puede, onCargado, numero = null
                 const wb = XLSX.read(await file.arrayBuffer(), { type: 'array' });
                 texto = XLSX.utils.sheet_to_csv(wb.Sheets[wb.SheetNames[0]], { FS: '\t', blankrows: false });
             }
-            agregarDesdeTexto(texto, file.name);
+            agregarDesdeTexto(texto, file.name, file);
         } catch (e) { toast.error(`No se pudo leer "${file.name}": ${e.message}`); }
     };
 
@@ -255,110 +557,213 @@ export default function TizadaProBloque({ id, p, puede, onCargado, numero = null
                 : errores.length ? 'Completá lo que falta (abajo).'
                     : envioActivo ? `Ya hay un pedido en curso (${envioActivo.Referencia}).` : null;
 
+    // ── [A MEDIDA · PORTAL] Una pestaña por diseño (cada uno con SU medida y SU cantidad: 10 de 70 × 140 y 5 de 50 × 100 son
+    // dos diseños) y "+ Otro diseño". Adentro: la medida (MedidaDiseno, lo mismo que el vendedor, solo con lo que el producto
+    // ofrece) y lo que pone el portal (porArte: su arte o su imagen, y sus extras). Todo se guarda solo.
+    if (porDisenos) {
+        const activo = disenos.find(d => d.nombre === disenoSel) || disenos[0] || null;
+        const unidades = disenos.reduce((t, d) => t + (Number(d.cantidad) > 0 ? Number(d.cantidad) : 0), 0);
+        const libre = () => { let k = disenos.length + 1; while (disenos.some(d => d.nombre === `DISEÑO ${k}`)) k++; return `DISEÑO ${k}`; };
+        // el nuevo arranca con la medida y la tela del último (lo más común: otra imagen u otra cantidad de lo mismo)
+        const agregarDiseno = () => correr(async () => {
+            const ult = disenos[disenos.length - 1];
+            const nombre = libre();
+            await guardarCon([...disenos, { nombre, cantidad: 1, medida: ult?.medida || {}, tela: ult?.tela || null }], filas);
+            setDisenoSel(nombre);
+        });
+        const quitarDiseno = async (d) => {
+            if (!(await preguntar({ Icono: Trash2, titulo: 'Quitar el diseño', texto: `Se quita ${d.nombre} del pedido (su medida, su cantidad y su arte).`, boton: 'Quitar', peligro: true }))) return;
+            correr(async () => { await guardarCon(disenos.filter(x => x !== d), filas); setDisenoSel(null); });
+        };
+        const renombrarDiseno = (d, texto) => correr(async () => {
+            const nuevo = String(texto || '').trim().toUpperCase().slice(0, 40);
+            if (!nuevo || nuevo === d.nombre) return;
+            if (disenos.some(x => x !== d && x.nombre === nuevo)) { toast.error(`Ya hay un diseño ${nuevo}.`); return; }
+            await guardarCon(disenos.map(x => (x === d ? { ...x, nombre: nuevo } : x)), filas);
+            setDisenoSel(nuevo);
+        });
+        const cambiarMedida = (d, patch) => { setDisenos(ds => ds.map(x => (x.nombre === d.nombre ? { ...x, ...patch } : x))); setSucio(true); };
+        return (
+            <div className="text-xs space-y-3">
+                <div className="flex flex-wrap items-center gap-1.5">
+                    {disenos.map(d => (
+                        <button key={d.nombre} type="button" onClick={() => setDisenoSel(d.nombre)}
+                            className={`px-3 py-1.5 rounded-lg border text-xs font-black transition-colors ${activo?.nombre === d.nombre ? 'border-brand-cyan bg-brand-cyan/10 text-brand-cyan' : 'border-slate-200 text-slate-500 hover:text-slate-700'}`}>
+                            {d.nombre} <span className="font-bold opacity-70">× {Number(d.cantidad) > 0 ? d.cantidad : 0}</span>
+                        </button>
+                    ))}
+                    {puede && <button type="button" disabled={sincronizando} onClick={agregarDiseno} className="px-2.5 py-1.5 rounded-lg border border-dashed border-slate-300 text-xs font-bold text-slate-500 hover:text-brand-cyan hover:border-brand-cyan inline-flex items-center gap-1"><Plus size={12} /> Otro diseño</button>}
+                    <span className="ml-auto text-[11px] text-slate-600"><b>{unidades}</b> unidad{unidades === 1 ? '' : 'es'}
+                        {(sincronizando || ocupado === 'guardar') && <span className="ml-1.5 text-slate-400 inline-flex items-center gap-1"><Loader2 size={11} className="animate-spin" /> guardando…</span>}</span>
+                </div>
+                {activo && (
+                    <div className="border border-slate-200 rounded-xl overflow-hidden">
+                        <div className="flex flex-wrap items-center gap-2 px-3 py-2 bg-slate-50 border-b border-slate-100">
+                            <span className="text-[11px] font-bold text-slate-500">Diseño</span>
+                            <input key={activo.nombre} defaultValue={activo.nombre} placeholder="DISEÑO 1, ESCUDO…" disabled={!puede || sincronizando}
+                                onBlur={e => renombrarDiseno(activo, e.target.value)} onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+                                className={`${INPUT} !w-44 !py-1 font-black uppercase`} title="El nombre de este diseño (para reconocerlo en el pedido)" />
+                            {puede && disenos.length > 1 && <button type="button" disabled={sincronizando} onClick={() => quitarDiseno(activo)} title="Quitar este diseño" className="ml-auto text-slate-400 hover:text-rose-600"><Trash2 size={14} /></button>}
+                        </div>
+                        {/* primero el arte (y cómo queda: la forma con el arte y las tiras), después la medida, la tela y la cantidad */}
+                        {porArte && <div className="px-3 pt-3">{porArte(activo, { disenos, guardarDisenos, ocupado: sincronizando, aMedida: am, seccion: 'arte', calc: calcs[activo.nombre] || null })}</div>}
+                        <MedidaDiseno key={activo.nombre} id={id} p={p} d={activo} am={am} cliente puede={puede && !sincronizando} onCambiar={patch => cambiarMedida(activo, patch)}
+                            onCalc={c => setCalcs(m => ({ ...m, [activo.nombre]: c?.ok ? c : null }))} />
+                        {errorArte[activo.arteArchivoId] && <div className="px-3 py-2 text-[11px] text-rose-800 bg-rose-50 flex items-start gap-1.5"><AlertTriangle size={12} className="mt-0.5 shrink-0" /><span>{errorArte[activo.arteArchivoId]}</span></div>}
+                        {/* [EXTRAS EN LA TABLA 14/10] los extras de este diseño en la misma tabla que las prendas con talles */}
+                        {extrasPortal ? (serviciosExtra.length > 0 && <div className="px-3 pb-3"><ArteExtrasTabla d={activo} objetos={activo.editablesDetalle || []} servicios={serviciosExtra} filasArchivo={filasArchivoDe(activo)} piezas={piezasMolde}
+                            puede={puede} ocupado={sincronizando} onProceso={(objeto, valor) => procesoTabla(activo.arteArchivoId, objeto, valor)}
+                            onAgregar={subirArchivos ? (T, file) => agregarExtra(activo, T, file) : null} onCambiarFila={(aid, cambio) => cambiarFilaExtra(activo, aid, cambio)}
+                            onQuitarFila={(aid) => quitarFilaExtra(activo, aid)} onOpcion={extrasPortal.opcion || null} /></div>)
+                            : porArte && <div className="px-3 pb-3">{porArte(activo, { disenos, guardarDisenos, ocupado: sincronizando, aMedida: am, seccion: 'extras' })}</div>}
+                    </div>
+                )}
+                {dialogo}
+            </div>
+        );
+    }
+
     return (
         <div className="pt-3 mt-3 border-t border-slate-200 text-xs space-y-4">
+            {/* ── [ARTE ARRIBA 12/10] 1 · Arte del cliente: un .ai/.pdf por diseño. Arriba dice de quién es; los
+                editables se leen solos al subirlo y se elige el proceso de cada uno. Todo se guarda solo. ── */}
+            <div>
+                <div className="text-[10px] font-black uppercase tracking-wide text-slate-400 mb-1.5 flex items-center gap-2">1 · Arte del cliente
+                    <span className="normal-case font-normal">un archivo .ai o .pdf por diseño, con todas las piezas</span>
+                    {sincronizando && <span className="normal-case font-bold text-brand-cyan inline-flex items-center gap-1"><Loader2 size={11} className="animate-spin" /> guardando…</span>}
+                    {cliente && !am && p.ProIdProducto && (
+                        <button type="button" onClick={bajarPlantillaProducto} disabled={bajandoPlantilla} title="La base del molde para armar tu arte en Illustrator: una mesa por pieza, a tamaño real"
+                            className={`${BTN_SECUNDARIO} ml-auto normal-case tracking-normal`}>
+                            {bajandoPlantilla ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />} {bajandoPlantilla ? 'Preparando la plantilla…' : 'Bajar la plantilla para tu arte'}
+                        </button>
+                    )}</div>
+                {/* Portal: una pestaña por arte (su referencia: JUGADOR, GOLERO…) y se ve uno por vez, con sus piezas y telas */}
+                {cliente && artesCards.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5 mb-2">
+                        {artesCards.map(a => {
+                            const d = disenos.find(x => x.arteArchivoId === a.ArchivoID);
+                            const on = artesVisibles[0]?.ArchivoID === a.ArchivoID;
+                            return (
+                                <button key={a.ArchivoID} type="button" onClick={() => setArteSel(a.ArchivoID)}
+                                    className={`px-3 py-1.5 rounded-lg border text-xs font-black transition-colors ${on ? 'border-brand-cyan bg-brand-cyan/10 text-brand-cyan' : 'border-slate-200 text-slate-500 hover:text-slate-700'}`}>
+                                    {d?.nombre || 'Sin referencia'}
+                                </button>
+                            );
+                        })}
+                    </div>
+                )}
+                <div className="space-y-2">
+                    {artesVisibles.map(a => {
+                        const d = disenos.find(x => x.arteArchivoId === a.ArchivoID);
+                        const deLista = variantesDeLista(filas);
+                        const opciones = [...new Set([...(d ? [d.nombre] : []), ...(deLista.length ? deLista : DUENOS)])];
+                        const arteDeOtro = (n) => disenos.find(x => x !== d && x.nombre === n);
+                        const lee = leyendo.has(a.ArchivoID);
+                        const objetos = d?.editablesDetalle || [];
+                        return (
+                            <div key={a.ArchivoID} className="border border-slate-200 rounded-xl overflow-hidden">
+                                <div className="flex flex-wrap items-center gap-2 px-3 py-2 bg-slate-50 border-b border-slate-100">
+                                    {(cliente || am) ? <>
+                                        {/* Portal: la referencia se escribe (JUGADOR, GOLERO, TITULAR…); la lista solo puede usar estas.
+                                            [A MEDIDA] el nombre del diseño (DISEÑO 1, ESCUDO, BANDERÍN…): cada uno lleva su medida */}
+                                        <span className="text-[11px] font-bold text-slate-500">{am ? 'Diseño' : 'Referencia'}</span>
+                                        <input key={d?.nombre || 'sin'} defaultValue={d?.nombre || ''} placeholder={am ? 'DISEÑO 1, ESCUDO…' : 'JUGADOR, GOLERO…'} disabled={!puede || sincronizando}
+                                            onBlur={e => renombrar(a.ArchivoID, e.target.value)} onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+                                            className={`${INPUT} !w-40 !py-1 font-black uppercase`} title="El nombre de esta variante. Las filas de la lista con este nombre usan este arte." />
+                                    </> : <>
+                                    <span className="text-[11px] font-bold text-slate-500">De</span>
+                                    <Selector value={d ? d.nombre : ''} disabled={!puede || sincronizando} onChange={e => cambiarDueno(a.ArchivoID, e.target.value)} claseBoton={claseSel(`border rounded-lg px-2.5 py-1 text-xs font-black bg-white min-w-[130px] ${d ? 'border-slate-300 text-slate-800' : 'border-amber-400 text-amber-700'}`)} anchoLista={280}>
+                                        {!d && <option value="">— elegí de quién es —</option>}
+                                        {opciones.map(n => <option key={n} value={n}>{arteDeOtro(n) ? `${n} (reemplaza al otro arte)` : n}</option>)}
+                                    </Selector>
+                                    </>}
+                                    <a href={a.url} target="_blank" rel="noreferrer" className="text-[12px] font-bold text-slate-700 hover:text-brand-cyan hover:underline truncate max-w-[340px]" title={a.nombre}>{a.nombre}</a>
+                                    <span className="ml-auto flex items-center gap-2">
+                                        {lee && <span className="text-[11px] font-bold text-brand-cyan inline-flex items-center gap-1"><Loader2 size={12} className="animate-spin" /> Leyendo los editables…</span>}
+                                        {puede && d && !lee && <button type="button" disabled={sincronizando} onClick={() => volverALeer(a.ArchivoID)} className="text-[11px] font-bold text-slate-400 hover:text-brand-cyan" title="Volver a leer los editables de este arte"><RefreshCw size={12} /></button>}
+                                        {puede && onQuitarArte && <button type="button" disabled={sincronizando} title="Quitar este arte" className="text-slate-400 hover:text-rose-600"
+                                            onClick={async () => { if (await preguntar({ Icono: Trash2, titulo: 'Quitar el arte', texto: `Se quita "${a.nombre}"${d ? ` (el arte de ${d.nombre})` : ''} de la solicitud.`, boton: 'Quitar', peligro: true })) onQuitarArte(a); }}><Trash2 size={14} /></button>}
+                                    </span>
+                                </div>
+                                {/* Portal: la vista previa del arte (miniatura de Drive) a la izquierda de sus editables */}
+                                <div className={cliente ? 'flex items-start gap-3 p-2' : ''}>
+                                {cliente && <VistaArte id={id} arte={a} piezasModelo={(molde?.modelos || []).find(m => m.clave === p.Datos?.sublimacion?.modeloClave)?.piezas || []} />}
+                                <div className={cliente ? 'flex-1 min-w-0' : ''}>
+                                {/* [EXTRAS EN LA TABLA 14/10] Qué lleva este diseño: los objetos del arte (medida debajo de la imagen,
+                                    cómo se hace y el cobro en la misma fila) y lo que va en bordado / DTF / TPU aparte del arte */}
+                                {d && (objetos.length > 0 || serviciosExtra.length > 0 || filasArchivoDe(d).length > 0) && (
+                                    <ArteExtrasTabla d={d} objetos={objetos} servicios={serviciosExtra} filasArchivo={filasArchivoDe(d)} piezas={piezasMolde}
+                                        puede={puede} ocupado={sincronizando} todosLosProcesos={!cliente}
+                                        onProceso={(objeto, valor) => procesoTabla(a.ArchivoID, objeto, valor)}
+                                        onAgregar={subirArchivos ? (T, file) => agregarExtra(d, T, file) : null}
+                                        onCambiarFila={(aid, cambio) => cambiarFilaExtra(d, aid, cambio)}
+                                        onQuitarFila={(aid) => quitarFilaExtra(d, aid)}
+                                        onOpcion={extrasPortal?.opcion || null} />
+                                )}
+                                {d && !lee && d.editablesLeidoDe === a.ArchivoID && !objetos.length && <div className="px-3 py-1.5 text-[11px] text-slate-400">Sin editables: todo va sublimado.</div>}
+                                {errorArte[a.ArchivoID] && !lee && <div className="px-3 py-2 text-[11px] text-rose-800 bg-rose-50 flex items-start gap-1.5"><AlertTriangle size={12} className="mt-0.5 shrink-0" /><span>{errorArte[a.ArchivoID]}</span></div>}
+                                {/* [A MEDIDA] forma → punta → medida → terminación → tela → tiras, con las cuentas de TIZADA en vivo */}
+                                {am && d && <MedidaDiseno id={id} p={p} d={d} am={am} puede={puede && !sincronizando} onCambiar={patch => cambiarDiseno(a.ArchivoID, patch)} />}
+                                {!d && am && <div className="px-3 py-2 text-[11px] text-amber-800 bg-amber-50">Escribí el nombre de este diseño: después se carga su medida.</div>}
+                                {!d && !cliente && !am && <div className="px-3 py-2 text-[11px] text-amber-800 bg-amber-50">Este arte no es de ninguna variante de la lista{deLista.length ? ` (${deLista.join(', ')}${deLista.every(n => arteDeOtro(n)) ? ': todas ya tienen arte' : ''})` : ''}. Elegí de quién es; si es una versión nueva, elegí esa variante y reemplaza al arte anterior. Si no va, quitalo.</div>}
+                                {!d && cliente && <div className="px-3 py-2 text-[11px] text-amber-800 bg-amber-50">Escribí la referencia de este arte (JUGADOR, GOLERO…).</div>}
+                                </div>
+                                </div>
+                                {/* Portal: los extras de ESTE arte (cada camiseta puede llevar distintos), los arma la pantalla */}
+                                {cliente && d && porArte && <div className="px-3 pb-3">{porArte(d, { disenos, guardarDisenos, ocupado: sincronizando })}</div>}
+                                {cliente && d && <PiezasArte id={id} d={d} molde={molde} subl={p.Datos?.sublimacion} puede={puede && !sincronizando}
+                                    onCambiar={(pieza, telaId) => cambiarTelaArte(a.ArchivoID, pieza, telaId)} />}
+                            </div>
+                        );
+                    })}
+                    {!artesCards.length && <div className="text-slate-400">{am ? 'Todavía no hay arte. Subí un .ai o .pdf por diseño (cada uno con su medida), armado sobre la plantilla de TIZADA de ESA medida.' : 'Todavía no hay arte. Subí un .ai o .pdf por diseño (jugador, golero…) armado sobre la base de TIZADA.'}</div>}
+                </div>
+                {archivosArte}
+            </div>
+
+            {medio}
+
             <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="text-[10px] font-black uppercase tracking-wide text-slate-400 flex items-center gap-1"><Wand2 size={12} /> {numero ? `${numero} · ` : ''}{enDiseno ? 'Tizada automática · TIZADA PRO' : 'Diseños y lista de jugadores · TIZADA PRO'}
-                    <span className="normal-case font-normal">— molde {molde?.moldeNombre || info.moldeRef}{info.estructura?.plantilla ? ` · ${info.estructura.plantilla}` : ''}</span></div>
-                <span className={`px-2 py-0.5 rounded-full border text-[10px] font-black ${info.apiActiva ? 'bg-emerald-100 text-emerald-700 border-emerald-200' : 'bg-slate-100 text-slate-600 border-slate-200'}`}
-                    title={info.motivo || ''}>{info.apiActiva ? `Conectado · envío ${info.modoEnvio === 'AL_ENVIAR_A_DISENO' ? 'automático al enviar a Diseño' : 'con el botón'}` : 'Sin conexión con TIZADA'}</span>
+                <div className="text-[10px] font-black uppercase tracking-wide text-slate-400 flex items-center gap-1"><Wand2 size={12} /> {numero ? `${numero} · ` : ''}{enDiseno ? 'Tizada automática · TIZADA PRO' : am ? 'A medida · TIZADA PRO' : cliente ? 'Lista de jugadores' : 'Lista de jugadores · TIZADA PRO'}
+                    {!cliente && <span className="normal-case font-normal">— {am ? `${am.config.variableNombre || am.config.variable}${am.config.pieza ? ` (${am.config.pieza})` : ''}` : `molde ${molde?.moldeNombre || info.moldeRef}${info.estructura?.plantilla ? ` · ${info.estructura.plantilla}` : ''}`}</span>}</div>
+                {!cliente && <span className={`px-2 py-0.5 rounded-full border text-[10px] font-black ${info.apiActiva ? 'bg-emerald-100 text-emerald-700 border-emerald-200' : 'bg-slate-100 text-slate-600 border-slate-200'}`}
+                    title={info.motivo || ''}>{info.apiActiva ? `Conectado · envío ${info.modoEnvio === 'AL_ENVIAR_A_DISENO' ? 'automático al enviar a Diseño' : 'con el botón'}` : 'Sin conexión con TIZADA'}</span>}
             </div>
             {!info.apiActiva && <p className="text-[11px] text-amber-700">{info.motivo} Se puede cargar todo igual; se manda cuando esté prendida.</p>}
             {info.errorEstructura && <p className="text-[11px] text-rose-700">No se pudo leer la planilla del molde: {info.errorEstructura}</p>}
+            {am && (am.avisos || []).length > 0 && <p className="text-[11px] text-amber-700">{am.avisos.join(' ')}</p>}
 
-            {/* ── Diseños ── */}
-            <div>
-                <div className="flex items-center justify-between mb-1">
-                    <div className="text-[11px] font-black text-slate-700">Diseños <span className="font-normal text-slate-500">· uno por variante (jugador, golero…): su nombre y su arte (un archivo con todas las piezas, subido en "1 · Arte del cliente")</span></div>
-                    {puede && <button type="button" onClick={agregarDiseno} className={BTN_SECUNDARIO}><Plus size={12} /> Agregar diseño</button>}
+            {/* [A MEDIDA] sin lista de jugadores: una fila por diseño con su cantidad, armada sola al guardar */}
+            {am && (
+                <div className="space-y-2">
+                    <div className="text-slate-600">
+                        <b>{disenos.reduce((t, d) => t + (Number(d.cantidad) > 0 ? Number(d.cantidad) : 0), 0)}</b> unidad(es) en {disenos.length} diseño{disenos.length === 1 ? '' : 's'}
+                        {p.Cantidad ? <> · el producto pide {p.Cantidad}</> : null}
+                        <span className="text-slate-400"> — la lista para TIZADA se arma sola: una fila por diseño con su cantidad (sin talles).</span>
+                    </div>
+                    {!cliente && <PlantillaAMedida id={id} p={p} am={am} puede={puede || (enDiseno && puedeGenerar)} sucio={sucio} onPedida={cargar} />}
+                    {!cliente && extra}
                 </div>
-                {info.piezas
-                    ? <div className="text-[11px] text-slate-600 mb-1.5">Modelo y telas (de <b>2 · Piezas y telas</b>, para todos los diseños): <b>{info.piezas.variableNombre || nombreModelo(info.piezas.variable)}</b> · {info.piezas.telaNombre || 'sin tela'}{info.piezas.porPieza.length ? <> · {info.piezas.porPieza.map(x => `${x.pieza} → ${x.tela}`).join(' · ')}</> : null}{!info.piezas.completo && <span className="text-amber-700 font-bold"> · faltan telas en el paso 2</span>}</div>
-                    : <div className="text-[11px] text-amber-700 font-bold mb-1.5">Primero elegí el modelo y la tela de cada pieza en "2 · Piezas y telas" y tocá "Guardar piezas y telas": valen para todos los diseños.</div>}
-                <div className="overflow-x-auto border border-slate-200 rounded-xl">
-                    <table className="w-full min-w-[480px]">
-                        <thead><tr className="bg-slate-50 text-[9px] font-black uppercase tracking-wide text-slate-500 text-left">
-                            <th className="px-2 py-2 w-[30%]">Nombre</th><th className="px-2 py-2">Arte para TIZADA (.ai / .pdf)</th><th className="px-2 py-2 w-10" />
-                        </tr></thead>
-                        <tbody>
-                            {disenos.map((d, i) => (
-                                <React.Fragment key={i}>
-                                <tr className="border-t border-slate-200 align-top">
-                                    <td className="px-2 py-1.5"><input value={d.nombre} disabled={!puede} onChange={e => cambiarDiseno(i, { nombre: e.target.value.toUpperCase() })} className={INPUT} placeholder="JUGADOR" /></td>
-                                    <td className="px-2 py-1.5"><Selector value={d.arteArchivoId || ''} disabled={!puede} onChange={e => cambiarDiseno(i, { arteArchivoId: Number(e.target.value) || null })} claseBoton={claseSel(SEL_CAMPO)} anchoLista={280}>
-                                        <option value="">— elegir el archivo —</option>{(info.artes || []).map(a => <option key={a.ArchivoID} value={a.ArchivoID}>{a.nombre}</option>)}
-                                    </Selector>
-                                        {!(info.artes || []).length && <div className="text-[10px] text-amber-700 mt-0.5">Subí el arte (.ai o .pdf armado sobre la base de TIZADA) en "Arte del cliente".</div>}
-                                    </td>
-                                    <td className="px-2 py-1.5 text-right">{puede && disenos.length > 1 && <button type="button" title="Quitar este diseño" onClick={() => {
-                                        // las filas de este diseño pasan al que queda (si queda uno solo) o quedan sin variante para elegir
-                                        const quitado = d.nombre, quedan = disenos.filter((_, k) => k !== i);
-                                        setDisenos(quedan);
-                                        setFilas(fs => fs.map(f => (quedan.length === 1 || sinTilde(f.diseno) === sinTilde(quitado) ? { ...f, diseno: quedan.length === 1 ? quedan[0].nombre : '' } : f)));
-                                        setSucio(true);
-                                    }} className="p-1 text-slate-400 hover:text-rose-600"><Trash2 size={14} /></button>}</td>
-                                </tr>
-                                {/* Editables del arte de este diseño: qué proceso lleva cada objeto (solo de nuestro lado) */}
-                                <tr><td colSpan={3} className="px-2 pb-2">
-                                    <div className="border border-dashed border-slate-200 rounded-lg p-2 text-[11px] space-y-1.5">
-                                        <div className="flex flex-wrap items-center justify-between gap-2">
-                                            <span className="font-bold text-slate-700">Editables del arte <span className="font-normal text-slate-500">· capas "Editable …" · DTF → se arma el pliego · TPU y Bordado → quedan como referencia del servicio · Sublimado → va en la tizada. A TIZADA no se le manda nada extra.</span></span>
-                                            {puede && <button type="button" disabled={!d.arteArchivoId || leyendo !== null} onClick={() => leerEditables(i)} className={BTN_SECUNDARIO}>
-                                                {leyendo === i ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />} {(d.editablesDetalle || []).length ? 'Volver a leer' : 'Leer los editables del arte'}
-                                            </button>}
-                                        </div>
-                                        {(d.editablesDetalle || []).length ? (
-                                            <table className="w-full">
-                                                <thead><tr className="text-[9px] font-black uppercase tracking-wide text-slate-500 text-left"><th className="py-1 w-16">Vista</th><th className="py-1">Objeto</th><th className="py-1">Pieza</th><th className="py-1">Medida</th><th className="py-1">Dónde</th><th className="py-1 w-40">Proceso</th></tr></thead>
-                                                <tbody>{d.editablesDetalle.map(o => {
-                                                    const proc = (d.editables || {})[o.objeto] || o.sugerido || 'sublimado';
-                                                    const sinServicio = proc !== 'sublimado' && !serviciosDelProducto.includes(proc.toUpperCase());
-                                                    const vista = vistas[`${d.nombre}|${o.objeto}`] || o.vista;
-                                                    return (
-                                                        <tr key={o.objeto} className="border-t border-slate-100 align-middle">
-                                                            <td className="py-1">{vista ? <img src={vista} alt="" className="h-10 max-w-[56px] object-contain" style={{ background: 'repeating-conic-gradient(#e5e7eb 0 25%, #fff 0 50%) 0/10px 10px' }} /> : <span className="text-slate-400">—</span>}</td>
-                                                            <td className="py-1 font-bold text-slate-800">{o.objeto}</td>
-                                                            <td className="py-1 text-slate-600">{o.pieza || '—'}</td>
-                                                            <td className="py-1 text-slate-600">{o.anchoCm && o.altoCm ? `${o.anchoCm} × ${o.altoCm} cm` : '—'}</td>
-                                                            <td className="py-1 text-slate-500">{o.posicion || '—'}</td>
-                                                            <td className="py-1">
-                                                                <Selector value={proc} disabled={!puede} onChange={e => cambiarDiseno(i, { editables: { ...(d.editables || {}), [o.objeto]: e.target.value } })} claseBoton={claseSel(SEL_CAMPO)} anchoLista={170}>
-                                                                    <option value="sublimado">Sublimado (en la tizada)</option><option value="dtf">DTF (pliego)</option><option value="tpu">TPU (referencia)</option><option value="bordado">Bordado (referencia)</option>
-                                                                </Selector>
-                                                                {o.sugerido && proc !== o.sugerido && <div className="text-[10px] text-slate-500">sugerido: {o.sugerido}</div>}
-                                                                {sinServicio && <div className="text-[10px] text-amber-700 font-bold">El producto no tiene {proc.toUpperCase()}: no se carga en ningún lado.</div>}
-                                                            </td>
-                                                        </tr>
-                                                    );
-                                                })}</tbody>
-                                            </table>
-                                        ) : (
-                                            <div className="text-slate-500">{d.arteArchivoId ? 'Todavía no se leyeron. Si no los leés, al mandar a TIZADA se usa la sugerencia automática (por el nombre de la capa y los extras de la solicitud).' : 'Elegí el arte de este diseño primero.'}</div>
-                                        )}
-                                    </div>
-                                </td></tr>
-                                </React.Fragment>
-                            ))}
-                            {!disenos.length && <tr><td colSpan={3} className="px-3 py-3 text-slate-500">Sin diseños. {puede && <button type="button" onClick={agregarDiseno} className="font-bold text-brand-cyan hover:underline">Agregar el primero</button>}</td></tr>}
-                        </tbody>
-                    </table>
-                </div>
-            </div>
+            )}
 
             {/* ── Lista de talles ── */}
-            <div>
+            {!am && <div>
                 <div className="flex flex-wrap items-end justify-between gap-2 mb-1">
-                    <div>
+                    {!cliente && <div>
                         <div className="text-[13px] font-black text-slate-800">Lista de talles</div>
                         <div className="text-[11px] text-slate-500">Una fila por prenda. La variante (jugador, golero…) indica qué diseño la imprime.</div>
-                    </div>
-                    {puede && <div className="flex gap-2">
-                        <label className={`${BTN_SECUNDARIO} cursor-pointer`} title="Elegí el Excel del cliente (.xlsx, .xls, .csv): se lee la primera hoja; si la primera fila tiene los títulos, cada columna se ubica sola">
+                    </div>}
+                    {(puede || cliente) && <div className="flex flex-wrap items-center gap-2">
+                        {puede && <label className={`${BTN_SECUNDARIO} cursor-pointer`} title="Elegí el Excel del cliente (.xlsx, .xls, .csv): se lee la primera hoja; si la primera fila tiene los títulos, cada columna se ubica sola">
                             <FileSpreadsheet size={12} /> Buscar archivo Excel
                             <input type="file" accept=".xlsx,.xls,.csv,.txt" className="hidden" onChange={leerArchivo} />
-                        </label>
-                        <button type="button" onClick={() => setPegando(v => !v)} className={BTN_SECUNDARIO}><ClipboardPaste size={12} /> Pegar desde Excel</button>
-                        <button type="button" onClick={agregarFila} disabled={!columnas.length} className={BTN_SECUNDARIO}><Plus size={12} /> Agregar fila</button>
+                        </label>}
+                        {/* Portal: la planilla adjunta y cuántas prendas suma la lista, al lado del botón (no abajo de la tabla) */}
+                        {cliente && extra}
+                        {puede && !cliente && <button type="button" onClick={() => setPegando(v => !v)} className={BTN_SECUNDARIO}><ClipboardPaste size={12} /> Pegar desde Excel</button>}
+                        {puede && <button type="button" onClick={agregarFila} disabled={!columnas.length} className={BTN_SECUNDARIO}><Plus size={12} /> Agregar fila</button>}
+                        {cliente && <span className="text-[11px] text-slate-600" title="Cada fila es un jugador; las prendas suman la columna Cantidad (vacía = 1)"><b>{filas.length}</b> jugador{filas.length === 1 ? '' : 'es'} · <b>{cantidadTotal}</b> prenda{cantidadTotal === 1 ? '' : 's'}
+                            {ocupado === 'guardar' && <span className="ml-1.5 text-slate-400 inline-flex items-center gap-1"><Loader2 size={11} className="animate-spin" /> guardando…</span>}</span>}
                     </div>}
                 </div>
                 {pegando && (
@@ -372,8 +777,8 @@ export default function TizadaProBloque({ id, p, puede, onCargado, numero = null
                     <table className="w-full min-w-[640px]">
                         <thead><tr className="bg-slate-50 text-[9px] font-black uppercase tracking-wide text-slate-500 text-left">
                             <th className="px-2 py-2 w-8">#</th>
-                            {columnas.map(c => <th key={c.id} className="px-2 py-2">{c.label}{c.obligatoria ? ' *' : ''}</th>)}
-                            <th className="px-2 py-2">Variante</th><th className="px-2 py-2">Se imprime en</th><th className="px-2 py-2 w-12" />
+                            {colsTabla.map(c => <th key={c.id} className="px-2 py-2">{c.label}{c.obligatoria ? ' *' : ''}</th>)}
+                            <th className="px-2 py-2">Variante</th>{!cliente && <th className="px-2 py-2">Se imprime en</th>}<th className="px-2 py-2 w-12" />
                         </tr></thead>
                         <tbody>
                             {filas.map((f, i) => {
@@ -381,45 +786,52 @@ export default function TizadaProBloque({ id, p, puede, onCargado, numero = null
                                 const dis = disenos.find(d => sinTilde(d.nombre) === sinTilde(f.diseno)) || (disenos.length === 1 ? disenos[0] : null);
                                 return (
                                     <tr key={i} className="border-t border-slate-200">
+                                        {/* Portal: sin la columna "Se imprime en"; lo que falta se valida al confirmar el pedido */}
                                         <td className="px-2 py-1 text-slate-400">{i + 1}</td>
-                                        {columnas.map(c => (
+                                        {colsTabla.map(c => (
                                             <td key={c.id} className="px-2 py-1">
                                                 {(c.tipo === 'talle' || c.tipo === 'lista') && c.opciones.length
                                                     ? <Selector value={f[c.id] || ''} disabled={!puede} onChange={e => cambiarFila(i, c.id, e.target.value)} claseBoton={claseSel(SEL_CAMPO)} anchoLista={200}><option value="">—</option>{c.opciones.map(o => <option key={o} value={o}>{o}</option>)}{f[c.id] && !c.opciones.includes(f[c.id]) && <option value={f[c.id]}>{f[c.id]}</option>}</Selector>
-                                                    : <input value={f[c.id] || ''} disabled={!puede} type={c.tipo === 'numero' ? 'number' : 'text'} min={c.tipo === 'numero' ? 1 : undefined} onChange={e => cambiarFila(i, c.id, c.rol === 'nombre' ? e.target.value.toUpperCase() : e.target.value)} className={INPUT} />}
+                                                    : <input value={f[c.id] || ''} disabled={!puede} type={c.tipo === 'numero' ? 'number' : 'text'} min={c.tipo === 'numero' ? 1 : undefined} placeholder={cliente && c.rol === 'cantidad' ? '1' : undefined} onChange={e => cambiarFila(i, c.id, c.rol === 'nombre' ? e.target.value.toUpperCase() : e.target.value)} className={INPUT} />}
                                             </td>
                                         ))}
-                                        <td className="px-2 py-1">{disenos.length > 1
-                                            ? <Selector value={f.diseno || ''} disabled={!puede} onChange={e => cambiarFila(i, 'diseno', e.target.value)} claseBoton={claseSel(SEL_CAMPO)} anchoLista={220}><option value="">—</option>{disenos.map(d => <option key={d.nombre} value={d.nombre}>{d.nombre}</option>)}</Selector>
-                                            : <span className="text-slate-700">{disenos[0]?.nombre || '—'}</span>}</td>
-                                        <td className="px-2 py-1">{prob ? <span className="font-bold text-rose-600">{prob}</span> : <span className="text-emerald-700">{dis ? `${dis.nombre} · ${nombreModelo(dis.variable)}` : 'OK'}</span>}</td>
+                                        <td className="px-2 py-1"><Selector value={(f.diseno || '').toUpperCase()} disabled={!puede} onChange={e => cambiarFila(i, 'diseno', e.target.value)} claseBoton={claseSel(SEL_CAMPO)} anchoLista={220}>
+                                            {/* Portal: solo las referencias de los artes cargados (+ la de la fila si vino de otro lado, para no perderla) */}
+                                            <option value="">—</option>{(cliente
+                                                ? [...new Set([...disenos.map(d => d.nombre), ...(f.diseno ? [String(f.diseno).toUpperCase()] : [])])]
+                                                : [...new Set([...variantesDeLista(filas), ...disenos.map(d => d.nombre), ...DUENOS])]).map(n => <option key={n} value={n}>{n}</option>)}
+                                        </Selector></td>
+                                        {!cliente && <td className="px-2 py-1">{prob ? <span className="font-bold text-rose-600">{prob}</span> : <span className="text-emerald-700">{dis ? `${dis.nombre} · ${nombreModelo(dis.variable)}` : 'OK'}</span>}</td>}
                                         <td className="px-2 py-1 text-right">{puede && <button type="button" onClick={() => { setFilas(fs => fs.filter((_, k) => k !== i)); setSucio(true); }} className="text-[11px] font-bold text-slate-400 hover:text-rose-600">Quitar</button>}</td>
                                     </tr>
                                 );
                             })}
-                            {!filas.length && <tr><td colSpan={columnas.length + 4} className="px-3 py-3 text-slate-500">Todavía no hay prendas en la lista.</td></tr>}
+                            {!filas.length && <tr><td colSpan={colsTabla.length + (cliente ? 3 : 4)} className="px-3 py-3 text-slate-500">Todavía no hay prendas en la lista.</td></tr>}
                         </tbody>
                     </table>
                 </div>
-                <div className="mt-1 text-slate-600"><b>{cantidadTotal}</b> prenda{cantidadTotal === 1 ? '' : 's'} en la lista{p.Cantidad ? ` · el producto pide ${p.Cantidad}` : ''}{p.Cantidad && cantidadTotal !== Number(p.Cantidad) && filas.length ? <span className="text-amber-700 font-bold"> · no coincide</span> : null}</div>
-                {extra}
-            </div>
+                {!cliente && <div className="mt-1 text-slate-600"><b>{cantidadTotal}</b> prenda{cantidadTotal === 1 ? '' : 's'} en la lista{p.Cantidad ? ` · el producto pide ${p.Cantidad}` : ''}{p.Cantidad && cantidadTotal !== Number(p.Cantidad) && filas.length ? <span className="text-amber-700 font-bold"> · no coincide</span> : null}</div>}
+                {!cliente && extra}
+            </div>}
 
+            {dialogo}
             {/* ── Guardar y mandar ── */}
-            {errores.length > 0 && !sucio && (
+            {/* Portal: lo que falta se valida al final, en "Confirmar pedido" */}
+            {errores.length > 0 && !sucio && !cliente && (
                 <div className="border border-rose-200 bg-rose-50 rounded-lg p-2 text-[11px] text-rose-800">
                     <div className="font-black mb-0.5">Para mandar a TIZADA falta:</div>
                     <ul className="list-disc pl-4 space-y-0.5">{errores.slice(0, 15).map((e, k) => <li key={k}>{e.mensaje}</li>)}</ul>
                     {errores.length > 15 && <div>… y {errores.length - 15} más.</div>}
                 </div>
             )}
-            {(puede || (enDiseno && puedeGenerar)) && (
+            {/* Portal: sin esta fila. Se guarda solo y "Confirmar pedido" revisa y manda a TIZADA */}
+            {!cliente && (puede || (enDiseno && puedeGenerar)) && (
                 <div className="flex flex-wrap items-center gap-2">
-                    <button type="button" onClick={guardar} disabled={!sucio || !!ocupado} className={BTN_SECUNDARIO}>{ocupado === 'guardar' ? <Loader2 size={12} className="animate-spin" /> : <CheckCircle2 size={12} />} Guardar diseños y lista</button>
+                    {!cliente && <button type="button" onClick={() => guardar()} disabled={!sucio || !!ocupado} className={BTN_SECUNDARIO}>{ocupado === 'guardar' ? <Loader2 size={12} className="animate-spin" /> : <CheckCircle2 size={12} />} {am ? 'Guardar medidas' : 'Guardar diseños y lista'}</button>}
                     <button type="button" onClick={() => enviar(true)} disabled={!puedeMandar || !!ocupado} className={BTN_SECUNDARIO} title="Pregunta a TIZADA si lo aceptaría, sin generar nada">{ocupado === 'revisar' ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />} Revisar en TIZADA</button>
                     {(motivoNoMandar || (enDiseno && !puedeGenerar && motivoNoGenerar)) && <span className="text-[11px] text-slate-500">{motivoNoMandar || motivoNoGenerar}</span>}
                     {enDiseno && <span className="text-[11px] text-sky-300 font-bold">Para mandarla: guardá y tocá "Enviar a TIZADA PRO" en la tarjeta de la producción principal (arriba).</span>}
-                    {!enDiseno && <span className="text-[11px] text-sky-300 font-bold">La tizada la genera Diseño: tocá "Enviar a Diseño" (abajo) y el diseñador la manda a TIZADA PRO desde su pantalla.</span>}
+                    {!enDiseno && !cliente && <span className="text-[11px] text-sky-300 font-bold">La tizada la genera Diseño: tocá "Enviar a Diseño" (abajo) y el diseñador la manda a TIZADA PRO desde su pantalla.</span>}
                 </div>
             )}
 

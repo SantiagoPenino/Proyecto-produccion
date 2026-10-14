@@ -407,7 +407,9 @@ exports.getTiendaCatalogo = async (req, res) => {
                 proIdProducto: p.ProIdProducto,
                 codArticulo: p.CodArticulo,
                 tipo: (p.TipoVitrina || 'TERMINADO').trim().toUpperCase(),
-                titulo: (p.TituloVenta || '').trim() || p.Descripcion,
+                // Siempre SIN la familia ("Camisetas Basquet · Cuello Redondo…" → "Cuello Redondo…"), también en el título de
+                // venta: al publicar desde el configurador se copia el nombre completo y queda así aunque después se renombre
+                titulo: String(p.TituloVenta || '').split(' · ').pop().trim() || String(p.Descripcion || '').split(' · ').pop().trim() || p.Descripcion,
                 descripcion: p.DescripcionVenta || null,
                 categoria: p.CategoriaVitrina || null,
                 orden: p.Orden || 0,

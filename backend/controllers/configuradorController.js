@@ -1,6 +1,8 @@
 const { sql, getPool } = require('../config/db');
 const logger = require('../utils/logger');
 const { upsertPrecioBase } = require('./stockArtController');
+const variantesSvc = require('../services/productoVariantes');   // [VARIANTES] padre + variantes y códigos nuevos (12/10)
+const aMedidaSvc = require('../services/tizadaProAMedida');   // [A MEDIDA] pañuelos, toallas, banderas (13/10)
 
 /*
  * ══════════════════════════════════════════════════════════════════════════
@@ -121,6 +123,25 @@ async function tieneF1(pool) {
 }
 const F1_COLS = 'TecnicaPrincipal, AnchoM, AltoM, BordeCm, UM, Molde, VisiblePortal, VisibleTienda, VisibleInterno';
 
+// ¿Ya se corrió docs/migrations/configurador_tizadapro_mesas.sql? (ProductoVentaConfig.TizadaMesasModo: cómo arma TIZADA los archivos)
+const MESAS_MODOS = ['normal', 'una_por_fila'];
+let _tieneMesasModo = false;
+async function tieneMesasModo(pool) {
+    if (_tieneMesasModo) return true;
+    const r = await pool.request().query(`SELECT COL_LENGTH('dbo.ProductoVentaConfig', 'TizadaMesasModo') AS c`);
+    _tieneMesasModo = r.recordset[0].c != null;
+    return _tieneMesasModo;
+}
+
+// [A MEDIDA] ¿Ya se corrió docs/migrations/configurador_a_medida.sql? (ProductoVentaConfig.AMedidaJson)
+let _tieneAMedida = false;
+async function tieneAMedida(pool) {
+    if (_tieneAMedida) return true;
+    const r = await pool.request().query(`SELECT COL_LENGTH('dbo.ProductoVentaConfig', 'AMedidaJson') AS c`);
+    _tieneAMedida = r.recordset[0].c != null;
+    return _tieneAMedida;
+}
+
 // [ACCESORIOS] ¿Ya se corrió docs/migrations/configurador_accesorios.sql? (ProductoAccesorios: artículos de
 // stock que salen con un producto fabricado — mástil, base… — con Obligatorio y Cobro). Tabla propia, NO
 // ProductoComboItems, para que un producto con accesorios no se trate como combo.
@@ -225,6 +246,7 @@ exports.getProductos = async (req, res) => {
         const pool = await getPool();
         const conEtiqueta = await tieneEtiquetas(pool);
         const conF1 = await tieneF1(pool);
+        const conVar = await variantesSvc.tieneVariantes(pool);   // [VARIANTES]
         const area = String(req.query.area || '').trim().toUpperCase();   // solo los productos que produce ese área
         const r = await pool.request().input('Area', sql.VarChar(20), area || null).query(`
             SELECT
@@ -235,6 +257,7 @@ exports.getProductos = async (req, res) => {
                 LTRIM(RTRIM(sa.Articulo))   AS Categoria,
                 ISNULL(a.Mostrar, 1)        AS Mostrar,
                 pb.Precio, pb.Moneda,
+                ${conVar ? 'vc.PadreProIdProducto, vc.ModeloClave, (SELECT COUNT(*) FROM dbo.ProductoVentaConfig hv WHERE hv.PadreProIdProducto = a.ProIdProducto) AS Variantes,' : ''}
                 img.url_imagen AS Imagen,
                 vc.OrigenTipo, vc.OrigenProIdProducto, vc.CantidadMinima, vc.CantidadFija,
                 vc.ValidarStock, vc.Estado, vc.EsCombo,
@@ -255,6 +278,9 @@ exports.getProductos = async (req, res) => {
                              UNION ALL
                              -- [FOTO ÚNICA] sin foto de catálogo, vale el dibujo de la ficha técnica
                              SELECT f.DibujoUrl, 9999 FROM dbo.ProductoFichaDiseno f WHERE f.ProIdProducto = a.ProIdProducto AND f.DibujoUrl IS NOT NULL
+                             ${conVar ? `UNION ALL
+                             -- [VARIANTES] la variante sin foto propia muestra la del padre
+                             SELECT i.url_imagen, 99999 FROM dbo.Articulos_Imagenes i WHERE i.Idproid = vc.PadreProIdProducto` : ''}
                          ) x ORDER BY x.orden) img
             OUTER APPLY (SELECT STRING_AGG(s.AreaID, ',') AS Lista
                          FROM dbo.ProductoTerminadoServicios s
@@ -281,17 +307,16 @@ exports.getProductos = async (req, res) => {
     }
 };
 
-// GET /api/configurador/productos/:proId — ficha completa
-exports.getProductoFicha = async (req, res) => {
-    const proId = parseInt(req.params.proId, 10);
-    if (!Number.isInteger(proId)) return res.status(400).json({ error: 'ProIdProducto inválido.' });
-    try {
-        const pool = await getPool();
+// Ficha completa de un producto tal cual está guardada (sin herencia). null si no existe.
+async function leerFicha(pool, proId) {
+    {
         const conTizada = await tieneTizadaPro(pool);
         const conAcc = await tieneAccesorios(pool);   // [ACCESORIOS]
         const conF1 = await tieneF1(pool);
         const conPaso = await tieneCosturasPaso(pool);   // [PASO A PASO]
         const conTalle = conTizada && await tieneAviosTalle(pool);   // [AVÍOS POR TALLE]
+        const conAM = await tieneAMedida(pool);   // [A MEDIDA]
+        const conMesas = await tieneMesasModo(pool);   // cómo arma TIZADA los archivos
         const rq = () => pool.request().input('PID', sql.Int, proId);
 
         const datos = await rq().query(`
@@ -311,13 +336,14 @@ exports.getProductoFicha = async (req, res) => {
                              SELECT f.DibujoUrl, 9999 FROM dbo.ProductoFichaDiseno f WHERE f.ProIdProducto = a.ProIdProducto AND f.DibujoUrl IS NOT NULL
                          ) x ORDER BY x.orden) img
             WHERE a.ProIdProducto = @PID AND ISNULL(a.borrar, 0) = 0`);
-        if (!datos.recordset.length) return res.status(404).json({ error: 'Producto no encontrado.' });
+        if (!datos.recordset.length) return null;
 
         const [config, tecnicas, opciones, surtido, modelos, telas, avios, apliques, comboItems, comboSrv, fichaDiseno, fdAnot, fdExtra, fdCost, accesorios, aviosTalle] = await Promise.all([
             rq().query(`SELECT OrigenTipo, OrigenProIdProducto, CantidadMinima, CantidadFija,
                                ValidarStock, Estado, EsCombo, FechaRegistro, FechaModif,
+                               ${await variantesSvc.tieneVariantes(pool) ? 'PadreProIdProducto, ModeloClave,' : ''}
                                ${conTizada ? 'TizadaProMoldeRef' : 'CAST(NULL AS NVARCHAR(128)) AS TizadaProMoldeRef'}
-                               ${conF1 ? ', ' + F1_COLS : ''}
+                               ${conF1 ? ', ' + F1_COLS : ''}${conAM ? ', AMedidaJson' : ''}${conMesas ? ', TizadaMesasModo' : ''}
                         FROM dbo.ProductoVentaConfig WHERE ProIdProducto = @PID`),
             rq().query(`SELECT AreaID, Obligatorio, Modo, Cobro
                         FROM dbo.ProductoTerminadoServicios WHERE ProIdProducto = @PID`),
@@ -387,11 +413,12 @@ exports.getProductoFicha = async (req, res) => {
             origen = o.recordset[0] || null;
         }
 
-        res.json({
-            success: true,
-            data: {
+        // [A MEDIDA] la configuración a medida va como objeto (null = no es a medida)
+        const cfg = config.recordset[0] || null;
+        if (cfg) { try { cfg.AMedida = cfg.AMedidaJson ? JSON.parse(cfg.AMedidaJson) : null; } catch (_) { cfg.AMedida = null; } delete cfg.AMedidaJson; }
+        return {
                 ...datos.recordset[0],
-                config: config.recordset[0] || null,
+                config: cfg,
                 origen,
                 tecnicas: tecnicas.recordset,
                 opcionesPermitidas: opciones.recordset,
@@ -410,8 +437,19 @@ exports.getProductoFicha = async (req, res) => {
                 fichaDisenoAnotaciones: fdAnot.recordset,
                 fichaDisenoExtra: fdExtra.recordset,
                 fichaDisenoCosturas: fdCost.recordset
-            }
-        });
+        };
+    }
+}
+
+// GET /api/configurador/productos/:proId — ficha completa (una variante trae de quién es y qué le permite el padre)
+exports.getProductoFicha = async (req, res) => {
+    const proId = parseInt(req.params.proId, 10);
+    if (!Number.isInteger(proId)) return res.status(400).json({ error: 'ProIdProducto inválido.' });
+    try {
+        const pool = await getPool();
+        const data = await leerFicha(pool, proId);
+        if (!data) return res.status(404).json({ error: 'Producto no encontrado.' });
+        res.json({ success: true, data: await variantesSvc.datosParaFicha(pool, data) });
     } catch (e) {
         logger.error('[Configurador] getProductoFicha:', e);
         res.status(500).json({ error: e.message });
@@ -719,7 +757,7 @@ async function aplicarSetsHijos(transaction, proId, body, conTizada = false, con
 exports.guardarProductoConfig = async (req, res) => {
     const proId = parseInt(req.params.proId, 10);
     if (!Number.isInteger(proId)) return res.status(400).json({ error: 'ProIdProducto inválido.' });
-    const body = req.body || {};
+    let body = req.body || {};
     const errores = validarVenta(body);
     if (errores.length) return res.status(400).json({ error: errores.join(' ') });
     try {
@@ -728,6 +766,16 @@ exports.guardarProductoConfig = async (req, res) => {
         const existe = await pool.request().input('PID', sql.Int, proId)
             .query(`SELECT 1 FROM dbo.Articulos WHERE ProIdProducto = @PID AND ISNULL(borrar,0) = 0`);
         if (!existe.recordset.length) return res.status(404).json({ error: 'Producto no encontrado.' });
+        // [VARIANTES] la variante se guarda como un artículo más, sin lo que es del padre (molde, modelo, producción
+        // principal…) y con técnicas / opciones / telas / accesorios de los que el padre tiene. El padre no puede
+        // cambiar el molde ni sacar un modelo con variante; lo que deja de tener se les saca a sus variantes.
+        let padreId = null;
+        let ajustadas = [];
+        try {
+            padreId = await variantesSvc.padreDe(pool, proId);
+            if (padreId) body = await variantesSvc.prepararGuardarVariante(pool, proId, padreId, body);
+            else await variantesSvc.validarGuardarPadre(pool, proId, body);
+        } catch (e) { return res.status(e.status || 500).json({ error: e.message }); }
 
         if (body.origenProIdProducto != null) {
             const o = await pool.request().input('OID', sql.Int, Number(body.origenProIdProducto))
@@ -741,6 +789,23 @@ exports.guardarProductoConfig = async (req, res) => {
         if (conF1 && body.tecnicaPrincipal !== undefined && !(await areaPrincipalValida(pool, body.tecnicaPrincipal)))
             return res.status(400).json({ error: `La producción principal '${body.tecnicaPrincipal}' no es un área de producción (ConfigMapeoERP).` });
         const dec = (v) => (v === undefined || v === null || v === '' ? null : Number(v));
+        // [A MEDIDA] la variable a medida de TIZADA manda: lo elegido se recorta a lo que ella acepta. El molde del
+        // producto pasa a ser el de esa variable (así la solicitud lo trata como producto con TIZADA PRO).
+        let aMedida;   // undefined = no viene · null = deja de ser a medida
+        if (body.aMedida !== undefined && await tieneAMedida(pool)) {
+            if (!body.aMedida || !body.aMedida.variable) aMedida = null;
+            else {
+                let v = null;
+                try { v = await aMedidaSvc.variableAMedida(String(body.aMedida.variable)); }
+                catch (e) { logger.warn(`[Configurador] a medida sin TIZADA (${e.message}): se guarda lo elegido sin recortar`); }
+                if (!v && require('../services/tizadaProApi').estadoConfig().ok) {
+                    try { if (!(await aMedidaSvc.variablesAMedida({ forzar: true })).some(x => x.clave === body.aMedida.variable)) return res.status(400).json({ error: `La variable ${body.aMedida.variable} no es a medida en TIZADA PRO (o ya no existe).` }); }
+                    catch (_) { /* TIZADA no contesta: se guarda igual */ }
+                }
+                aMedida = aMedidaSvc.normalizarConfig(body.aMedida, v);
+                if (!aMedida.molde) return res.status(400).json({ error: 'No se sabe el molde de esa variable a medida: TIZADA PRO no contestó. Probá de nuevo en un rato.' });
+            }
+        }
         const transaction = new sql.Transaction(pool);
         await transaction.begin();
         try {
@@ -824,7 +889,20 @@ exports.guardarProductoConfig = async (req, res) => {
                     `);
             }
 
+            // Cómo arma TIZADA los archivos de este producto (null = automático, lo del .env)
+            if (body.tizadaMesasModo !== undefined && await tieneMesasModo(pool)) {
+                const modo = MESAS_MODOS.includes(body.tizadaMesasModo) ? body.tizadaMesasModo : null;
+                await new sql.Request(transaction).input('PID', sql.Int, proId).input('M', sql.VarChar(20), modo)
+                    .query('UPDATE dbo.ProductoVentaConfig SET TizadaMesasModo = @M WHERE ProIdProducto = @PID');
+            }
+            if (aMedida !== undefined) {
+                await new sql.Request(transaction).input('PID', sql.Int, proId)
+                    .input('J', sql.NVarChar(sql.MAX), aMedida ? JSON.stringify(aMedida) : null)
+                    .input('M', sql.NVarChar(128), aMedida ? aMedida.molde : null)
+                    .query(`UPDATE dbo.ProductoVentaConfig SET AMedidaJson = @J${conTizada ? ', TizadaProMoldeRef = CASE WHEN @J IS NULL THEN TizadaProMoldeRef ELSE @M END' : ''}${conF1 ? ", Molde = CASE WHEN @J IS NULL THEN Molde ELSE 'OBLIGATORIO' END" : ''} WHERE ProIdProducto = @PID`);
+            }
             await aplicarSetsHijos(transaction, proId, body, conTizada, conAcc);
+            if (!padreId) ajustadas = await variantesSvc.podarVariantes(transaction, proId);
 
             // Para PUBLICAR un confeccionado: molde de TizadaPro definido y cada aplique sobre una
             // técnica que el producto tiene activa (se valida contra lo que quedó guardado).
@@ -862,8 +940,8 @@ exports.guardarProductoConfig = async (req, res) => {
             await upsertPrecioBase(pool, cod.recordset[0].Cod, parseFloat(body.precio) || 0, body.moneda);
         }
 
-        logger.info(`[Configurador] Config guardada para ProIdProducto ${proId} por ${req.user?.username || 'N/A'}`);
-        res.json({ success: true });
+        logger.info(`[Configurador] Config guardada para ProIdProducto ${proId} por ${req.user?.username || 'N/A'}${ajustadas.length ? ` — variantes ajustadas: ${ajustadas.join(', ')}` : ''}`);
+        res.json({ success: true, ...(ajustadas.length ? { variantesAjustadas: ajustadas } : {}) });
     } catch (e) {
         if (e.status) return res.status(e.status).json({ error: e.message });   // regla de negocio (ej. no se puede publicar)
         logger.error('[Configurador] guardarProductoConfig:', e);
@@ -875,7 +953,7 @@ exports.guardarProductoConfig = async (req, res) => {
 // Patrón del gestor de PT de ECOUV (CodArticulo = IDProdReact = ProIdProducto)
 // pero con el grupo de PRENDAS: SupFlia '2', Grupo '2.1', CodStock '2.2.1.3'.
 exports.crearProducto = async (req, res) => {
-    const { descripcion, codStock, mostrar, precio, moneda, esCombo } = req.body || {};
+    const { descripcion, codStock, mostrar, precio, moneda, esCombo, etiquetaId } = req.body || {};
     if (!descripcion || !descripcion.trim()) return res.status(400).json({ error: 'El nombre es obligatorio.' });
     const errores = validarVenta(req.body || {});
     if (errores.length) return res.status(400).json({ error: errores.join(' ') });
@@ -897,6 +975,7 @@ exports.crearProducto = async (req, res) => {
         const transaction = new sql.Transaction(pool);
         await transaction.begin();
         let proId;
+        let codNuevo;
         try {
             const ins = await new sql.Request(transaction)
                 .input('Desc',  sql.VarChar(255), descripcion.trim())
@@ -912,9 +991,11 @@ exports.crearProducto = async (req, res) => {
                     VALUES ('CFG-TMP', NULL, @Desc, @Stock, @Gru, @Sup, @Mos, @MonId, 0)
                 `);
             proId = ins.recordset[0].ProIdProducto;
+            // [CÓDIGOS 12/10] FAMILIA-ETIQUETA-NN (ej. CAM-BAS-01); combo CMB-NN. Antes: el ProIdProducto.
+            codNuevo = await variantesSvc.codigoNuevoProducto(transaction, { codStock: stock, etiquetaId: etiquetaId || null, esCombo: !!esCombo });
             await new sql.Request(transaction)
-                .input('PID', sql.Int, proId)
-                .query(`UPDATE dbo.Articulos SET CodArticulo = CAST(ProIdProducto AS VARCHAR(50)),
+                .input('PID', sql.Int, proId).input('Cod', sql.VarChar(20), codNuevo)
+                .query(`UPDATE dbo.Articulos SET CodArticulo = @Cod,
                         IDProdReact = ProIdProducto WHERE ProIdProducto = @PID`);
 
             // Config inicial (BORRADOR salvo que venga otra cosa)
@@ -934,6 +1015,11 @@ exports.crearProducto = async (req, res) => {
                             (ProIdProducto, OrigenTipo, OrigenProIdProducto, CantidadMinima, CantidadFija, ValidarStock, Estado, EsCombo${conF1 ? ', TecnicaPrincipal, Molde, UM' : ''})
                         VALUES (@PID, @Ori, @OriPID, @Min, @Fija, @VStock, @Est, @Combo${conF1 ? ', @TP, @Mol, @UMv' : ''})`);
 
+            // Etiqueta elegida en el alta (Básquet, Fútbol…)
+            if (etiquetaId && await tieneEtiquetas(pool)) {
+                await new sql.Request(transaction).input('PID', sql.Int, proId).input('E', sql.Int, Number(etiquetaId))
+                    .query('UPDATE dbo.ProductoVentaConfig SET EtiquetaID = @E WHERE ProIdProducto = @PID AND EXISTS (SELECT 1 FROM dbo.ProductoEtiqueta WHERE EtiquetaID = @E)');
+            }
             await aplicarSetsHijos(transaction, proId, req.body);
             // Un confeccionado nuevo nace con las técnicas de CONSTRUCCIÓN (sublimación, corte y
             // costura) obligatorias e incluidas en el precio (decisión del usuario, 28-sep). Solo si
@@ -952,11 +1038,11 @@ exports.crearProducto = async (req, res) => {
         }
 
         if (precio !== undefined && precio !== null && precio !== '') {
-            await upsertPrecioBase(pool, String(proId), parseFloat(precio) || 0, moneda);
+            await upsertPrecioBase(pool, codNuevo, parseFloat(precio) || 0, moneda);
         }
 
-        logger.info(`[Configurador] Producto creado: '${descripcion.trim()}' (cod/id ${proId}) por ${req.user?.username || 'N/A'}`);
-        res.json({ success: true, codArticulo: String(proId), proIdProducto: proId });
+        logger.info(`[Configurador] Producto creado: '${descripcion.trim()}' [${codNuevo}] (id ${proId}) por ${req.user?.username || 'N/A'}`);
+        res.json({ success: true, codArticulo: codNuevo, proIdProducto: proId });
     } catch (e) {
         logger.error('[Configurador] crearProducto:', e);
         res.status(500).json({ error: e.message });
@@ -1063,6 +1149,7 @@ exports.copiarProducto = async (req, res) => {
             SELECT LTRIM(RTRIM(CodArticulo)) AS Cod, LTRIM(RTRIM(Descripcion)) AS Descripcion
             FROM dbo.Articulos WHERE ProIdProducto = @PID AND ISNULL(borrar, 0) = 0`)).recordset[0];
         if (!orig) { await transaction.rollback(); return res.status(404).json({ error: 'Producto no encontrado.' }); }
+        if (await variantesSvc.padreDe(transaction, origenId)) { await transaction.rollback(); return res.status(409).json({ error: 'Es una variante: copiá el producto padre (las variantes se crean en su paso "Variantes").' }); }
 
         const repetido = await new sql.Request(transaction).input('Desc', sql.VarChar(100), descripcion).input('PID', sql.Int, origenId).query(`
             SELECT TOP 1 1 AS x FROM dbo.Articulos a
@@ -1503,6 +1590,20 @@ exports.getTizadaProMoldes = async (req, res) => {
     }
 };
 
+// [A MEDIDA] GET /api/configurador/tizadapro/a-medida — las variables a medida de TIZADA (pañuelos, toallas, banderas…)
+// con lo que cada una permite: formas, punta, terminaciones, medidas mínima y máxima, telas y tiras.
+exports.getTizadaProAMedida = async (req, res) => {
+    const conf = require('../services/tizadaProApi').estadoConfig();
+    if (!conf.ok) return res.json({ success: true, data: { apiActiva: false, motivo: conf.motivo, variables: [] } });
+    try {
+        const vs = await aMedidaSvc.variablesAMedida({ forzar: req.query.refrescar === '1' });
+        res.json({ success: true, data: { apiActiva: true, variables: vs.map(v => ({ clave: v.clave, nombre: v.nombre, molde: v.molde, moldeNombre: v.moldeNombre, foto: v.foto, permitido: aMedidaSvc.permitido(v.aMedida) })) } });
+    } catch (e) {
+        logger.warn(`[Configurador] getTizadaProAMedida: ${e.message}`);
+        res.json({ success: true, data: { apiActiva: true, motivo: `TIZADA PRO no contestó: ${e.message}`, variables: [] } });
+    }
+};
+
 // POST /api/configurador/tizadapro/moldes/:ref/pdf — sube el PDF del molde y arma las siluetas de
 // sus piezas cruzando los contornos del PDF con las cajas por pieza/talle de TizadaPro.
 exports.subirPdfMoldeTizadaPro = async (req, res) => {
@@ -1771,4 +1872,234 @@ exports.updateMaquinaCostura = async (req, res) => {
         if (String(e.message).includes('UQ_MaquinasCostura_Nombre')) return res.status(409).json({ error: 'Ya existe otra máquina con ese nombre.' });
         logger.error('[Configurador] updateMaquinaCostura:', e); res.status(500).json({ error: e.message });
     }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BORRAR UN PRODUCTO (12/10). Primero se valida: si el producto se USÓ en algún lado (órdenes,
+// pedidos, facturas, solicitudes, planes, precios de clientes, combos, stock del WMS…) NO se borra
+// y se dice dónde. Si solo tiene su configuración, se borra el artículo con toda su configuración,
+// y antes se guarda un respaldo en JSON (backend/respaldos/productos_borrados/).
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Lo que FRENA el borrado. ids = columnas con el ProIdProducto; cods = columnas con el código del artículo.
+const USOS_QUE_FRENAN = [
+    { tabla: 'Ordenes', ids: ['ProIdProducto', 'ProdIdProducto'], cods: ['CodArticulo', 'CodArt'], texto: 'órdenes de producción' },
+    { tabla: 'ArchivosOrden', cods: ['CodigoArticulo'], texto: 'archivos de órdenes' },
+    { tabla: 'OrdenesDeposito', ids: ['ProIdProducto'], texto: 'órdenes de depósito' },
+    { tabla: 'PedidosCobranzaDetalle', ids: ['ProIdProducto'], cods: ['CodArticulo'], texto: 'líneas de cobranza de pedidos' },
+    { tabla: 'DocumentosContablesDetalle', ids: ['DcdProIdProducto'], texto: 'líneas de facturas o documentos' },
+    { tabla: 'ServiciosExtraOrden', cods: ['CodArt'], texto: 'servicios extra de órdenes' },
+    { tabla: 'SolicitudesVendedorProductos', ids: ['ProIdProducto'], texto: 'solicitudes de vendedores' },
+    { tabla: 'PlanesMetros', ids: ['ProIdProducto'], texto: 'planes de metros (rollo / semanal)' },
+    { tabla: 'PlanesMetrosArticulosPermitidos', ids: ['ProIdProducto'], texto: 'artículos permitidos de planes' },
+    { tabla: 'PerfilesItems', ids: ['ProIdProducto'], cods: ['CodArticulo'], texto: 'perfiles de precios' },
+    { tabla: 'PreciosEspecialesItems', ids: ['ProIdProducto'], cods: ['CodArticulo'], texto: 'precios especiales de clientes' },
+    { tabla: 'HistoricoPreciosProductos', ids: ['ProIdProducto'], texto: 'historial de precios' },
+    { tabla: 'ProductoComboItems', ids: ['ItemProIdProducto'], texto: 'combos que lo llevan adentro' },
+    { tabla: 'ProductoVentaConfig', ids: ['OrigenProIdProducto'], texto: 'productos que lo usan como origen' },
+    { tabla: 'ProductoVentaConfig', ids: ['PadreProIdProducto'], texto: 'variantes de este producto (borralas primero)' },
+    { tabla: 'Articulos_Wms', ids: ['Idproid'], texto: 'vínculo con el WMS (stock)' },
+    { tabla: 'Articulos_WMS_Variantes', ids: ['Idproid'], texto: 'variantes del WMS (stock)' },
+    { tabla: 'Wms_Variantes', ids: ['ProIdProducto'], texto: 'variantes del WMS (stock)' },
+    { tabla: 'Articulos_UbicacionLocal', ids: ['Idproid'], texto: 'ubicación en el local' },
+    { tabla: 'ProductosTerminados', cods: ['CodArticulo'], texto: 'producto terminado de EcoUV (se borra desde la pestaña EcoUV)' },
+    { tabla: 'CuentasCliente', ids: ['ProIdProducto'], texto: 'cuentas de clientes (billetera / planes)' },
+    { tabla: 'CuentasClienteArticulosPermitidos', ids: ['ProIdProducto'], texto: 'artículos permitidos en cuentas de clientes' },
+    { tabla: 'SINCRO-ARTICULOS', ids: ['ProIdProducto'], texto: 'sincronización de artículos' },
+];
+
+// Lo que se BORRA con el producto (su configuración), en este orden. donde = condición SQL con @Id / @Cod.
+const SE_BORRA_CON_EL_PRODUCTO = [
+    ...TABLAS_COPIA.map(t => ({ tabla: t, donde: '[ProIdProducto] = @Id' })),
+    { tabla: 'ProductoVariantes', donde: '[ProIdProducto] = @Id', texto: 'variantes armadas' },
+    { tabla: 'ProductoComboItemServicios', donde: '[ComboItemID] IN (SELECT ID FROM dbo.ProductoComboItems WHERE ProIdProducto = @Id)', texto: 'servicios de los productos del combo' },
+    { tabla: 'ProductoComboItems', donde: '[ProIdProducto] = @Id', texto: 'productos del combo' },
+    { tabla: 'ProductoFichaDiseno', donde: '[ProIdProducto] = @Id', texto: 'ficha de diseño' },
+    { tabla: 'ArticuloClasificacion', donde: '[ProIdProducto] = @Id', texto: 'clasificación' },
+    { tabla: 'Articulos_Imagenes', donde: '[Idproid] = @Id', texto: 'fotos' },
+    { tabla: 'PreciosBase', donde: '([ProIdProducto] = @Id OR LTRIM(RTRIM([CodArticulo])) = @Cod)', texto: 'precio de catálogo' },
+    { tabla: 'PreciosListaPublica', donde: '[ProIdProducto] = @Id', texto: 'lista de precios pública' },
+    { tabla: 'TiendaProductos', donde: '[ProIdProducto] = @Id', texto: 'ficha de la tienda (sin publicar)' },
+    { tabla: 'ProductoVentaConfig', donde: '[ProIdProducto] = @Id', texto: 'configuración del producto' },
+];
+const TEXTO_TABLA = {
+    ProductoTerminadoServicios: 'técnicas', ProductoTecnicaOpciones: 'opciones de técnicas', ProductoOrigenVariantes: 'surtido del origen',
+    ProductoModelos: 'modelos del molde', ProductoTelas: 'telas', ProductoAvios: 'avíos', ProductoAviosTalle: 'avíos por talle',
+    ProductoApliques: 'apliques', ProductoAccesorios: 'accesorios', ProductoComponentes: 'componentes',
+    ProductoFichaDisenoAnotaciones: 'anotaciones de la ficha', ProductoFichaDisenoExtra: 'datos extra de la ficha', ProductoFichaDisenoCosturas: 'pasos de costura',
+};
+
+async function columnaExiste(rq, tabla, col) {
+    const r = await rq().input('T', sql.NVarChar(260), `dbo.${tabla}`).input('C', sql.NVarChar(128), col)
+        .query('SELECT COL_LENGTH(@T, @C) AS c');
+    return r.recordset[0].c != null;
+}
+
+// Revisa un producto: { producto, frena: [{ texto, cantidad }], seBorra: [{ texto, cantidad }] }
+async function revisarBorrado(rq, proId) {
+    const art = (await rq().input('Id', sql.Int, proId).query(`
+        SELECT a.ProIdProducto, LTRIM(RTRIM(a.CodArticulo)) AS CodArticulo, LTRIM(RTRIM(a.Descripcion)) AS Descripcion, a.IDProdReact,
+               vc.Estado, ISNULL(vc.EsCombo, 0) AS EsCombo
+        FROM dbo.Articulos a LEFT JOIN dbo.ProductoVentaConfig vc ON vc.ProIdProducto = a.ProIdProducto
+        WHERE a.ProIdProducto = @Id`)).recordset[0];
+    if (!art) return null;
+    const cod = art.CodArticulo || '';
+    const frena = [];
+    const contar = async (tabla, where, extra = (r) => r) => {
+        const r = await extra(rq().input('Id', sql.Int, proId).input('Cod', sql.NVarChar(100), cod))
+            .query(`SELECT COUNT(*) AS n FROM dbo.[${tabla}] WHERE ${where}`);
+        return r.recordset[0].n;
+    };
+
+    for (const u of USOS_QUE_FRENAN) {
+        const condiciones = [];
+        for (const c of u.ids || []) if (await columnaExiste(rq, u.tabla, c)) condiciones.push(`[${c}] = @Id`);
+        if (cod) for (const c of u.cods || []) if (await columnaExiste(rq, u.tabla, c)) condiciones.push(`LTRIM(RTRIM(CAST([${c}] AS NVARCHAR(100)))) = @Cod`);
+        if (!condiciones.length) continue;
+        const n = await contar(u.tabla, `(${condiciones.join(' OR ')})`);
+        if (n) frena.push({ texto: u.texto, cantidad: n });
+    }
+    // Órdenes que lo guardan por el número de producto de la web (IDProdReact)
+    if (art.IDProdReact != null && await columnaExiste(rq, 'Ordenes', 'IdProductoReact')) {
+        const n = await contar('Ordenes', '[IdProductoReact] = @R', (r) => r.input('R', sql.Decimal(18, 0), art.IDProdReact));
+        if (n && !frena.some(f => f.texto === 'órdenes de producción')) frena.push({ texto: 'órdenes de producción (por su número web)', cantidad: n });
+    }
+    // Publicado en la tienda
+    if (await columnaExiste(rq, 'TiendaProductos', 'Publicado')) {
+        const n = await contar('TiendaProductos', '[ProIdProducto] = @Id AND [Publicado] = 1');
+        if (n) frena.push({ texto: 'está publicado en la tienda (despublicalo primero)', cantidad: n });
+    }
+    // Red de seguridad: cualquier otra tabla con ProIdProducto que no esté en las listas
+    const conocidas = new Set([...USOS_QUE_FRENAN.map(u => u.tabla), ...SE_BORRA_CON_EL_PRODUCTO.map(t => t.tabla), 'Articulos']);
+    const otras = (await rq().query(`
+        SELECT t.name AS tabla FROM sys.columns c JOIN sys.tables t ON t.object_id = c.object_id
+        WHERE c.name = 'ProIdProducto' AND t.name NOT LIKE '[_]%' AND t.schema_id = SCHEMA_ID('dbo')`)).recordset.map(x => x.tabla).filter(t => !conocidas.has(t));
+    for (const t of otras) {
+        const n = await contar(t, '[ProIdProducto] = @Id');
+        if (n) frena.push({ texto: `otros registros (tabla ${t})`, cantidad: n });
+    }
+
+    const seBorra = [];
+    for (const t of SE_BORRA_CON_EL_PRODUCTO) {
+        const existe = (await rq().input('T', sql.NVarChar(260), `dbo.${t.tabla}`).query("SELECT OBJECT_ID(@T, 'U') AS o")).recordset[0].o;
+        if (!existe) continue;
+        let n = 0;
+        try { n = await contar(t.tabla, t.donde); } catch (_) { continue; }   // columna que falta en esta base
+        if (n) seBorra.push({ tabla: t.tabla, donde: t.donde, texto: t.texto || TEXTO_TABLA[t.tabla] || t.tabla, cantidad: n });
+    }
+    return {
+        producto: { proId: art.ProIdProducto, codArticulo: cod, descripcion: art.Descripcion, estado: art.Estado || null, esCombo: !!art.EsCombo },
+        frena, seBorra,
+    };
+}
+
+// GET /api/configurador/productos/:proId/borrar → qué impide borrarlo y qué se borraría
+exports.revisarBorrarProducto = async (req, res) => {
+    const proId = parseInt(req.params.proId, 10);
+    if (!Number.isInteger(proId)) return res.status(400).json({ error: 'ProIdProducto inválido.' });
+    try {
+        const pool = await getPool();
+        const r = await revisarBorrado(() => pool.request(), proId);
+        if (!r) return res.status(404).json({ error: 'Producto no encontrado.' });
+        res.json({ success: true, data: { ...r, seBorra: r.seBorra.map(({ texto, cantidad }) => ({ texto, cantidad })) } });
+    } catch (e) {
+        logger.error('[Configurador] revisarBorrarProducto:', e); res.status(500).json({ error: e.message });
+    }
+};
+
+// DELETE /api/configurador/productos/:proId → vuelve a validar dentro de la transacción y borra
+exports.borrarProducto = async (req, res) => {
+    const proId = parseInt(req.params.proId, 10);
+    if (!Number.isInteger(proId)) return res.status(400).json({ error: 'ProIdProducto inválido.' });
+    let transaction;
+    try {
+        const pool = await getPool();
+        transaction = new sql.Transaction(pool);
+        await transaction.begin();
+        const rq = () => new sql.Request(transaction);
+        const r = await revisarBorrado(rq, proId);
+        if (!r) { await transaction.rollback(); return res.status(404).json({ error: 'Producto no encontrado.' }); }
+        if (r.frena.length) {
+            await transaction.rollback();
+            return res.status(409).json({ error: `No se puede borrar "${r.producto.descripcion}": ya se usó en ${r.frena.map(f => `${f.texto} (${f.cantidad})`).join(', ')}.`, frena: r.frena });
+        }
+        // Respaldo: todas las filas que se van a borrar, en un JSON
+        const respaldo = { fecha: new Date().toISOString(), usuario: req.user?.username || null, producto: r.producto, tablas: {} };
+        for (const t of r.seBorra) {
+            respaldo.tablas[t.tabla] = (await rq().input('Id', sql.Int, proId).input('Cod', sql.NVarChar(100), r.producto.codArticulo)
+                .query(`SELECT * FROM dbo.[${t.tabla}] WHERE ${t.donde}`)).recordset;
+        }
+        respaldo.tablas.Articulos = (await rq().input('Id', sql.Int, proId).query('SELECT * FROM dbo.Articulos WHERE ProIdProducto = @Id')).recordset;
+        const fs = require('fs');
+        const path = require('path');
+        const dir = path.join(__dirname, '..', 'respaldos', 'productos_borrados');
+        fs.mkdirSync(dir, { recursive: true });
+        const archivo = path.join(dir, `${new Date().toISOString().replace(/[:.]/g, '-')}_${proId}_${String(r.producto.codArticulo || 'sin-codigo').replace(/[^A-Za-z0-9_-]/g, '_')}.json`);
+        fs.writeFileSync(archivo, JSON.stringify(respaldo, null, 2));
+
+        for (const t of r.seBorra) {
+            await rq().input('Id', sql.Int, proId).input('Cod', sql.NVarChar(100), r.producto.codArticulo).query(`DELETE FROM dbo.[${t.tabla}] WHERE ${t.donde}`);
+        }
+        await rq().input('Id', sql.Int, proId).query('DELETE FROM dbo.Articulos WHERE ProIdProducto = @Id');
+        await transaction.commit();
+        logger.info(`[Configurador] Producto BORRADO: '${r.producto.descripcion}' [${r.producto.codArticulo}] (id ${proId}) por ${req.user?.username || 'N/A'} — respaldo ${archivo}`);
+        res.json({ success: true, data: { ...r.producto, borrado: r.seBorra.map(({ texto, cantidad }) => ({ texto, cantidad })), respaldo: path.basename(archivo) } });
+    } catch (e) {
+        if (transaction) { try { await transaction.rollback(); } catch (_) { /* ya cerrada */ } }
+        logger.error('[Configurador] borrarProducto:', e); res.status(500).json({ error: e.message });
+    }
+};
+
+// ═════════════════════════════════════════════════════════════════════════
+//  [VARIANTES] PRODUCTO PADRE Y VARIANTES + CÓDIGOS (12/10) — services/productoVariantes.js
+// ═════════════════════════════════════════════════════════════════════════
+const responder = (res, nombre) => (e) => {
+    if (e.status) return res.status(e.status).json({ error: e.message });
+    logger.error(`[Configurador] ${nombre}:`, e); res.status(500).json({ error: e.message });
+};
+
+// GET /api/configurador/productos/:proId/variantes — variantes del padre + modelos que todavía no tienen
+exports.getVariantes = async (req, res) => {
+    const proId = parseInt(req.params.proId, 10);
+    if (!Number.isInteger(proId)) return res.status(400).json({ error: 'ProIdProducto inválido.' });
+    try { res.json({ success: true, data: await variantesSvc.variantesDe(await getPool(), proId) }); }
+    catch (e) { responder(res, 'getVariantes')(e); }
+};
+
+// POST /api/configurador/productos/:proId/variantes { modeloClave } — crea la variante de ese modelo
+exports.crearVariante = async (req, res) => {
+    const proId = parseInt(req.params.proId, 10);
+    if (!Number.isInteger(proId)) return res.status(400).json({ error: 'ProIdProducto inválido.' });
+    try {
+        const v = await variantesSvc.crearVariante(await getPool(), req.user, proId, req.body?.modeloClave, { copiarFilas, columnasCopiables, TABLAS_COPIA, upsertPrecioBase });
+        logger.info(`[Configurador] Variante creada: "${v.descripcion}" [${v.codArticulo}] (id ${v.proId}) del padre ${proId} por ${req.user?.username || 'N/A'}`);
+        res.json({ success: true, data: v });
+    } catch (e) { responder(res, 'crearVariante')(e); }
+};
+
+// POST /api/configurador/variantes/:proId/recopiar — la variante vuelve a quedar igual al padre
+exports.recopiarVariante = async (req, res) => {
+    const proId = parseInt(req.params.proId, 10);
+    if (!Number.isInteger(proId)) return res.status(400).json({ error: 'ProIdProducto inválido.' });
+    try {
+        const v = await variantesSvc.recopiarDelPadre(await getPool(), req.user, proId, { copiarFilas, columnasCopiables, TABLAS_COPIA, upsertPrecioBase });
+        logger.info(`[Configurador] Variante ${v.codArticulo} (id ${proId}) copiada de nuevo del padre por ${req.user?.username || 'N/A'}`);
+        res.json({ success: true, data: v });
+    } catch (e) { responder(res, 'recopiarVariante')(e); }
+};
+
+// GET /api/configurador/codigo-nuevo?codStock=&etiquetaId=&esCombo=1 — el código que tendría un producto nuevo
+exports.getCodigoNuevo = async (req, res) => {
+    try {
+        const cod = await variantesSvc.codigoNuevoProducto(await getPool(), { codStock: req.query.codStock || null, etiquetaId: req.query.etiquetaId || null, esCombo: req.query.esCombo === '1' });
+        res.json({ success: true, data: { codArticulo: cod } });
+    } catch (e) { responder(res, 'getCodigoNuevo')(e); }
+};
+
+// GET /api/configurador/productos/:proId/codigo-sugerido — su código según familia y etiqueta (o el del padre + NN)
+exports.getCodigoSugerido = async (req, res) => {
+    const proId = parseInt(req.params.proId, 10);
+    if (!Number.isInteger(proId)) return res.status(400).json({ error: 'ProIdProducto inválido.' });
+    try { res.json({ success: true, data: { codArticulo: await variantesSvc.codigoSugerido(await getPool(), proId) } }); }
+    catch (e) { responder(res, 'getCodigoSugerido')(e); }
 };

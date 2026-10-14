@@ -21,6 +21,7 @@ import ConfigSincroArticulosModal from '../modals/config/ConfigSincroArticulosMo
 import StockArtEditModal from '../modals/config/StockArtEditModal';
 import ConfigUrgenciaDescuentoRolloModal from '../modals/config/ConfigUrgenciaDescuentoRolloModal';
 import ConfigGlobalModal from '../modals/config/ConfigGlobalModal';
+import ConfigTizadaProLogModal from '../modals/config/ConfigTizadaProLogModal';   // registro del intercambio con TIZADA PRO
 import EmpresasAdminPanel from './admin/EmpresasAdminPanel';
 
 export default function ConfigPage({ onBack }) {
@@ -45,7 +46,9 @@ export default function ConfigPage({ onBack }) {
     });
 
     const { user } = useAuth();
-    const isAdmin = user?.role === 'admin' || user?.rol === 'admin' || user?.perfil === 'admin' || user?.usuario === 'admin';
+    // Igual que el servidor (authMiddleware.esAdmin): rol 1 o "admin" sin importar mayúsculas (llega "ADMIN")
+    const rolTexto = String(user?.role || user?.rol || user?.perfil || '').trim().toLowerCase();
+    const isAdmin = Number(user?.idRol) === 1 || rolTexto === 'admin' || user?.usuario === 'admin';
 
     // SOCKET LISTENER FOR LOGS
     useEffect(() => {
@@ -327,6 +330,13 @@ export default function ConfigPage({ onBack }) {
                             colorClass="from-amber-500 to-orange-600"
                             onClick={() => setActiveModal('urgencia-descuento-rollo')}
                         />
+                        <ConfigCard
+                            title="TIZADA PRO"
+                            subtitle="Registro: pedidos, llamadas y avisos"
+                            icon="fa-right-left"
+                            colorClass="from-sky-500 to-indigo-600"
+                            onClick={() => setActiveModal('tizadapro-registro')}
+                        />
                     </div>
                 </div>
             )}
@@ -391,6 +401,7 @@ export default function ConfigPage({ onBack }) {
             {activeModal === 'stockart' && <StockArtEditModal isOpen={true} onClose={() => setActiveModal(null)} />}
             {activeModal === 'urgencia-descuento-rollo' && <ConfigUrgenciaDescuentoRolloModal isOpen={true} onClose={() => setActiveModal(null)} />}
             {activeModal === 'config-global' && <ConfigGlobalModal isOpen={true} onClose={() => setActiveModal(null)} />}
+            {activeModal === 'tizadapro-registro' && <ConfigTizadaProLogModal isOpen={true} onClose={() => setActiveModal(null)} />}
 
             <ImportLogModal
                 isOpen={isLogModalOpen}

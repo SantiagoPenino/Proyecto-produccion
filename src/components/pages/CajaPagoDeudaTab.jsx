@@ -17,7 +17,10 @@ const hoyISO = () => { const d = new Date(); const p = (n) => String(n).padStart
 const TIPOS_DOC_PAGO = [
   { value: '05', label: 'Recibo' },
 ];
-export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion = 1, tiposDocDisponibles = TIPOS_DOC_PAGO, onPagoCompletado, isAdminCaja, initialCliente, initialDocumento, empresaId = null, clienteFijo = false, deudaLayout = 'cards', pasoExterno = undefined, onPasoExterno = undefined }) {
+// pagoInicial (opcional): { monto, moneda: 'UYU'|'USD', concepto } — lo que el cliente ENTREGÓ,
+// cargado antes en el anticipo. El cobro parte de ese importe (no del total de lo seleccionado)
+// y la diferencia se resuelve al registrar: sobra → otras deudas / a favor; falta → parcial.
+export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion = 1, tiposDocDisponibles = TIPOS_DOC_PAGO, onPagoCompletado, isAdminCaja, initialCliente, initialDocumento, empresaId = null, clienteFijo = false, deudaLayout = 'cards', pasoExterno = undefined, onPasoExterno = undefined, pagoInicial = null }) {
 
   // ─── Estado ─────────────────────────────────────────────────────────────
   const [qCliente, setQCliente]         = useState('');
@@ -93,6 +96,20 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
         : p
     ));
   }, [monedaDeuda]);
+
+  // ─── Monto entregado (viene del anticipo) ──────────────────────────────────
+  // Fija la línea de pago en lo que el cliente entregó. Va DESPUÉS del efecto de arriba
+  // (que vacía el monto al cambiar la moneda de la deuda) para quedar como último valor.
+  // En el 360 se aplica al pasar al paso de pago; en Caja (una sola pantalla), enseguida.
+  const montoEntregado = Number(pagoInicial?.monto) > 0 ? Number(pagoInicial.monto) : 0;
+  useEffect(() => {
+    if (!montoEntregado || (deudaLayout === 'tabla' && paso !== 'pago')) return;
+    const contado = metodosPago.find(m => /contado|efectivo/i.test(m.MPaDescripcionMetodo)) || metodosPago[0];
+    const mon = pagoInicial.moneda === 'USD' ? 'USD' : 'UYU';
+    setPagos([{ id: Date.now(), metodoPagoId: contado?.MPaIdMetodoPago || '', moneda: mon, monedaId: mon === 'USD' ? 2 : 1, monto: montoEntregado.toFixed(2) }]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [paso, pagoInicial, monedaDeuda, metodosPago.length]);
+  useEffect(() => { if (pagoInicial?.concepto) setObservaciones(pagoInicial.concepto); }, [pagoInicial]);
 
   // ─── Cargar TODAS las deudas inicialmente ──────────────────────────────────
   const cargarDeudas = async () => {
@@ -295,6 +312,103 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
     ? [{ value: '40', label: 'Pedido Caja' }]   // orden sin factura → genera PEDIDO CAJA
     : [{ value: '05', label: 'Recibo' }];         // deuda ya facturada → solo RECIBO
 
+  // ── Excedente → otras deudas del cliente ─────────────────────────────────
+  // Antes de dejar un pago de más como saldo a favor, se ofrece imputarlo a las OTRAS
+  // deudas pendientes del mismo cliente, moneda y tipo (documentos con documentos,
+  // órdenes con órdenes: mezclarlas cambiaría el comprobante que genera el cobro), de la
+  // más vieja a la más nueva: completas mientras alcance, la última en parte.
+  const [excluidasExc, setExcluidasExc] = useState([]); // deudas que el cajero destildó del reparto
+  useEffect(() => { setExcluidasExc([]); }, [excedentePago]);
+  const otrasDeudas = useMemo(() => {
+    if (!seleccionadas.length) return [];
+    const esUSD = (d) => (d.MonSimbolo || '').includes('US') || d.CueTipo === 'DINERO_USD' || d.MonIdMoneda === 2;
+    return deudas
+      .filter(d => !seleccionadas.includes(d.DDeIdDocumento)
+        && Number(d.DDeImportePendiente) > 0.005
+        && (esUSD(d) ? 'USD' : 'UYU') === monedaDeuda
+        // El endpoint del 360 no trae CliIdCliente (son todas del cliente); el de Caja sí.
+        && (!d.CliIdCliente || !clientePrincipalId || d.CliIdCliente === clientePrincipalId)
+        && !!d.DocIdDocumento === !tieneOrdenSinFactura)
+      .sort(porFechaDesc(d => d.DDeFechaEmision))
+      .reverse(); // la más vieja primero
+  }, [deudas, seleccionadas, monedaDeuda, clientePrincipalId, tieneOrdenSinFactura]);
+  // Cuánto del excedente va a cada deuda (las destildadas se saltean).
+  const planExcedente = useMemo(() => {
+    if (!excedentePago || !otrasDeudas.length) return null;
+    let resto = excedentePago.excedente;
+    const aplica = {};
+    for (const d of otrasDeudas) {
+      if (excluidasExc.includes(d.DDeIdDocumento) || resto <= 0.005) continue;
+      const pend = Number(d.DDeImportePendiente);
+      aplica[d.DDeIdDocumento] = Math.min(resto, pend);
+      resto -= aplica[d.DDeIdDocumento];
+    }
+    const extras = otrasDeudas.filter(d => aplica[d.DDeIdDocumento] > 0.005);
+    return { aplica, extras, resto: Math.max(0, resto) };
+  }, [excedentePago, otrasDeudas, excluidasExc]);
+  const toggleExcluida = (id) => setExcluidasExc(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+
+  // Lo entregado (anticipo) contra lo seleccionado, en la moneda de la deuda, al TC del cobro.
+  const monEntregado = pagoInicial?.moneda === 'USD' ? 'USD' : 'UYU';
+  const entregadoEnDeuda = !montoEntregado ? 0
+    : monEntregado === monedaDeuda ? montoEntregado
+    : (monedaDeuda === 'USD' ? montoEntregado / (tcCobro || 1) : montoEntregado * (tcCobro || 1));
+  const difEntregado = entregadoEnDeuda - totalAPagar;
+  const bannerEntregado = montoEntregado > 0 && (
+    <div className="bg-violet-50 border border-violet-300 rounded-lg px-3 py-2 text-[11px] text-violet-900 flex flex-wrap items-center gap-x-3 gap-y-1">
+      <span className="font-black">
+        Entregó {monEntregado === 'USD' ? 'US$' : '$'} {fmt(montoEntregado)}
+        {monEntregado !== monedaDeuda && ` ≈ ${simboloDeuda} ${fmt(entregadoEnDeuda)} (TC ${fmt(tcCobro)})`}
+      </span>
+      {seleccionadas.length === 0 ? (
+        <span>Elegí las deudas a pagar con ese importe.</span>
+      ) : Math.abs(difEntregado) < 0.01 ? (
+        <span className="font-bold text-emerald-700">Cubre justo lo seleccionado.</span>
+      ) : difEntregado > 0 ? (
+        <span>Seleccionado {simboloDeuda} {fmt(totalAPagar)} · <b>sobran {simboloDeuda} {fmt(difEntregado)}</b>: al registrar se imputan a otras deudas o quedan a favor.</span>
+      ) : (
+        <span>Seleccionado {simboloDeuda} {fmt(totalAPagar)} · <b className="text-amber-700">faltan {simboloDeuda} {fmt(-difEntregado)}</b>: la última deuda queda con pago parcial.</span>
+      )}
+    </div>
+  );
+
+  // Bloque del banner de exceso: lista de las otras deudas con lo que recibiría cada una.
+  const bloqueImputarExcedente = planExcedente && (
+    <div className="border-t border-sky-200 pt-2 flex flex-col gap-2">
+      <p className="text-[11px] font-bold text-sky-800">
+        El cliente tiene {otrasDeudas.length} deuda{otrasDeudas.length !== 1 ? 's' : ''} más pendiente{otrasDeudas.length !== 1 ? 's' : ''}
+        {' '}({simboloDeuda} {fmt(otrasDeudas.reduce((s, d) => s + Number(d.DDeImportePendiente), 0))}). ¿Imputar el excedente?
+      </p>
+      <div className="max-h-40 overflow-y-auto rounded-lg border border-sky-200 bg-white divide-y divide-sky-50">
+        {otrasDeudas.map(d => {
+          const excluida = excluidasExc.includes(d.DDeIdDocumento);
+          const monto = planExcedente.aplica[d.DDeIdDocumento] || 0;
+          const pend = Number(d.DDeImportePendiente);
+          return (
+            <label key={d.DDeIdDocumento} className={`flex items-center gap-2 px-2.5 py-1.5 text-[11px] cursor-pointer ${excluida ? 'opacity-50' : ''}`}>
+              <input type="checkbox" checked={!excluida} onChange={() => toggleExcluida(d.DDeIdDocumento)} style={{ accentColor: '#0284c7' }} />
+              <span className="font-black font-mono text-slate-700">{d.Documento || d.CodigoOrden || `#${d.DDeIdDocumento}`}</span>
+              <span className="text-slate-400">{fmtFecha(d.DDeFechaEmision)}</span>
+              <span className="ml-auto text-slate-500">debe {simboloDeuda} {fmt(pend)}</span>
+              <span className={`w-36 text-right font-black ${monto > 0.005 ? (monto < pend - 0.005 ? 'text-amber-600' : 'text-emerald-700') : 'text-slate-300'}`}>
+                {excluida ? 'no imputar'
+                  : monto > 0.005 ? (monto < pend - 0.005 ? `parcial ${simboloDeuda} ${fmt(monto)}` : `total ${simboloDeuda} ${fmt(monto)}`)
+                  : 'no alcanza'}
+              </span>
+            </label>
+          );
+        })}
+      </div>
+      {planExcedente.extras.length > 0 && (
+        <button onClick={() => handleProcesar({ extras: planExcedente.extras })} disabled={procesando}
+          className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-black py-2 rounded-lg disabled:opacity-50">
+          Imputar a {planExcedente.extras.length} deuda{planExcedente.extras.length !== 1 ? 's' : ''} y registrar
+          {planExcedente.resto > 0.005 ? ` (quedan ${simboloDeuda} ${fmt(planExcedente.resto)} a favor)` : ''}
+        </button>
+      )}
+    </div>
+  );
+
   // tipoDoc: en tabla+docs SIEMPRE Recibo; en tabla+ordenes lo elige el usuario (default al cambiar de tab).
   // Fuera de tabla (Caja): según lo seleccionado, como antes.
   useEffect(() => {
@@ -310,6 +424,19 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
     }
   }, [tieneOrdenSinFactura, subTab, deudaLayout, tipoDoc]);
 
+  // Deuda con una parte ya cobrada (ej. imputación parcial de un excedente): sigue en la
+  // lista porque todavía debe, pero se aclara cuánto pagó — si no, solo se deducía
+  // comparando "Deuda original" con "Pendiente".
+  const chipParcial = (d, esUSD) => {
+    const pagado = Number(d.DDeImporteOriginal ?? d.DDeImportePendiente) - Number(d.DDeImportePendiente);
+    if (!(pagado > 0.005)) return null;
+    return (
+      <div className="mt-1 text-[9px] font-black text-amber-700 whitespace-nowrap" title="Pagada en parte: el pendiente es lo que falta">
+        Parcial · pagó {esUSD ? 'US$' : '$'} {fmt(pagado)}
+      </div>
+    );
+  };
+
   // ─── Badge de estado ─────────────────────────────────────────────────────
   const badgeEstado = (d) => {
     const dias = Number(d.DiasVencido || 0);
@@ -321,8 +448,16 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
   // ─── Procesar pago ────────────────────────────────────────────────────────
   const handleProcesar = async (opts = {}) => {
     // opts puede ser: {forzarParcial}/{forzarExcedente}, `true` (compat) o un evento de click.
-    const forzarParcial   = opts === true || opts?.forzarParcial === true;
-    const forzarExcedente = opts?.forzarExcedente === true;
+    // opts.extras: otras deudas del cliente a las que se imputa el EXCEDENTE (de la más vieja
+    // a la más nueva). Van DESPUÉS de las elegidas: el backend reparte el pago en ese orden,
+    // así las elegidas se cancelan enteras y, si no alcanza, la parcial es la última extra.
+    // El cajero ya confirmó ese reparto en el banner, así que no se vuelve a preguntar.
+    const extras = Array.isArray(opts?.extras) ? opts.extras : [];
+    const conExtras = extras.length > 0;
+    const forzarParcial   = opts === true || opts?.forzarParcial === true || conExtras;
+    const forzarExcedente = opts?.forzarExcedente === true || conExtras;
+    const selDeudas = [...deudasSeleccionadas, ...extras];
+    const totalSel  = selDeudas.reduce((s, d) => s + Number(d.DDeImportePendiente), 0);
     // El cajero resolvió la diferencia como fluctuación del TC: la deuda se cancela
     // entera y la diferencia va a resultado en vez de al cliente.
     const aCambioMonetario = opts?.aCambioMonetario === true;
@@ -364,7 +499,7 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
       }
     }, 0);
 
-    const diferencia = totalPagado - totalAPagar;
+    const diferencia = totalPagado - totalSel;
 
     // Pago de más → confirmar que el excedente queda como saldo a favor del cliente
     if (diferencia > 0.01 && !forzarExcedente && !aCambioMonetario) {
@@ -396,7 +531,7 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
           observaciones: observaciones || `Pago de deudas combinadas`,
           admin: isAdminCaja,
           // Si alguna deuda no tiene DocIdDocumento → es una orden sin facturar → el backend genera PEDIDO CAJA
-          tieneOrdenSinFactura: deudasSeleccionadas.some(d => !d.DocIdDocumento),
+          tieneOrdenSinFactura: selDeudas.some(d => !d.DocIdDocumento),
           // Crédito: genera el comprobante y deja la deuda viva (sin cobro)
           esCredito: esCreditoCobro,
           // Destino de la diferencia entre lo pagado y la deuda:
@@ -404,7 +539,7 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
           // 'CLIENTE' → como siempre: deuda parcial (de menos) o saldo a favor (de más)
           destinoDiferencia: aCambioMonetario ? 'CAMBIO' : 'CLIENTE',
         },
-        aplicaciones: deudasSeleccionadas.map(d => ({
+        aplicaciones: selDeudas.map(d => ({
           tipo: 'PAGO_DEUDA',
           codigoRef: `${d.CodigoOrden || d.OrdIdOrden || `Deuda #${d.DDeIdDocumento}`} ${d.NombreTrabajo || ''}`.trim(),
           descripcion: d.DocIdDocumento 
@@ -444,7 +579,7 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
         : '';
       toast.success(esCreditoCobro
         ? 'Comprobante a crédito generado — la deuda queda en cuenta corriente.'
-        : `Pago registrado: ${seleccionadas.length} deuda(s) por ${simboloDeuda}${fmt(totalPagado)}${excedenteMsg}${difMsg}`);
+        : `Pago registrado: ${selDeudas.length} deuda(s) por ${simboloDeuda}${fmt(totalPagado)}${excedenteMsg}${difMsg}`);
       setSeleccionadas([]); setObservaciones(''); setPendienteParcial(null); setExcedentePago(null); setFechaCobro(hoyISO()); setCondicion('CONTADO'); setPaso('seleccion');
       setPagos([{ id: Date.now(), metodoPagoId: metodosPago[0]?.MPaIdMetodoPago || '', moneda: 'UYU', monedaId: 1, monto: '' }]);
       cargarDeudas();
@@ -625,7 +760,10 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
                       </td>
                       <td className="py-2.5 pr-2 text-slate-500 font-semibold whitespace-nowrap align-middle">{fmtFecha(d.DDeFechaEmision)}</td>
                       <td className="py-2.5 pr-2 text-slate-500 font-semibold whitespace-nowrap align-middle">{fmtFecha(d.DDeFechaVencimiento)}</td>
-                      <td className="py-2.5 text-center align-middle"><span className={`text-[8px] font-black px-1.5 py-0.5 rounded border uppercase tracking-widest ${badge.cls}`}>{badge.label}</span></td>
+                      <td className="py-2.5 text-center align-middle">
+                        <span className={`text-[8px] font-black px-1.5 py-0.5 rounded border uppercase tracking-widest ${badge.cls}`}>{badge.label}</span>
+                        {chipParcial(d, esUSD)}
+                      </td>
                       <td className={`py-2.5 pr-2 text-right font-black whitespace-nowrap align-middle ${esUSD ? 'text-blue-700' : 'text-emerald-700'}`}>{(esUSD ? 'US$ ' : '$ ') + fmt(d.DDeImporteOriginal ?? d.DDeImportePendiente)}</td>
                       <td className="py-2.5 pl-2 text-right font-black whitespace-nowrap align-middle text-blue-700">{esUSD ? `US$ ${fmt(d.DDeImportePendiente)}` : <span className="text-slate-300">—</span>}</td>
                       <td className="py-2.5 pl-2 text-right font-black whitespace-nowrap align-middle text-emerald-700">{!esUSD ? `$ ${fmt(d.DDeImportePendiente)}` : <span className="text-slate-300">—</span>}</td>
@@ -657,6 +795,7 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
 
         {/* PASO 1 — Monto a cobrar + botón Pagar */}
         <div className="shrink-0 border-t border-slate-200 bg-white px-4 py-3 flex flex-col gap-2.5">
+          {bannerEntregado}
           {clientesInvolucrados.length > 1 && (
             <div className="bg-rose-50 border border-rose-200 text-rose-700 px-3 py-2 rounded-lg text-[11px] font-bold flex items-center gap-2">
               <AlertTriangle size={14} /> Seleccionaste deudas de más de un cliente. Cobrá de a un cliente.
@@ -691,6 +830,7 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
         <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3 bg-slate-100">
           <CajaPanelPago
             cuentasBilletera={cuentasBilletera}
+            autoCompletarMonto={!montoEntregado}
             onNumDocPredict={setNumDocFmt}
             hideDocTitle={true}
             hideTC={true}
@@ -723,6 +863,7 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
 
         {/* PASO 2 — Resumen + Registrar */}
         <div className="shrink-0 border-t border-slate-200 bg-white px-4 py-3 flex flex-col gap-2.5">
+          {bannerEntregado}
           {pendienteParcial && (
             <div className="bg-amber-50 border border-amber-300 rounded-lg p-3 text-[11px] text-amber-800 flex flex-col gap-2">
               <span className="font-black">Pago parcial — falta {simboloDeuda} {pendienteParcial.falta.toFixed(2)}. La deuda queda parcialmente pagada.</span>
@@ -746,9 +887,15 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
           )}
           {excedentePago && (
             <div className="bg-sky-50 border border-sky-300 rounded-lg p-3 text-[11px] text-sky-800 flex flex-col gap-2">
-              <span className="font-black">Pago en exceso — {simboloDeuda} {excedentePago.excedente.toFixed(2)} quedará como saldo a favor del cliente.</span>
+              <span className="font-black">
+                Pago en exceso — {simboloDeuda} {excedentePago.excedente.toFixed(2)}
+                {planExcedente ? ' por encima de lo seleccionado.' : ' quedará como saldo a favor del cliente.'}
+              </span>
+              {bloqueImputarExcedente}
               <div className="flex gap-2">
-                <button onClick={() => handleProcesar({ forzarExcedente: true })} disabled={procesando} className="flex-1 bg-sky-500 hover:bg-sky-600 text-white font-black py-1.5 rounded-lg">Cobrar y dejar a favor</button>
+                <button onClick={() => handleProcesar({ forzarExcedente: true })} disabled={procesando} className="flex-1 bg-sky-500 hover:bg-sky-600 text-white font-black py-1.5 rounded-lg">
+                  {planExcedente ? 'No imputar: dejar todo a favor' : 'Cobrar y dejar a favor'}
+                </button>
                 <button onClick={() => setExcedentePago(null)} className="flex-1 bg-white border border-sky-300 text-sky-700 font-black py-1.5 rounded-lg">Cancelar</button>
               </div>
               {esDifDeCambio(excedentePago.excedente) && (
@@ -885,7 +1032,10 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
                       </td>
                       <td className="py-2.5 pr-2 text-slate-500 font-semibold whitespace-nowrap align-middle">{fmtFecha(d.DDeFechaEmision)}</td>
                       <td className="py-2.5 pr-2 text-slate-500 font-semibold whitespace-nowrap align-middle">{fmtFecha(d.DDeFechaVencimiento)}</td>
-                      <td className="py-2.5 text-center align-middle"><span className={`text-[8px] font-black px-1.5 py-0.5 rounded border uppercase tracking-widest ${badge.cls}`}>{badge.label}</span></td>
+                      <td className="py-2.5 text-center align-middle">
+                        <span className={`text-[8px] font-black px-1.5 py-0.5 rounded border uppercase tracking-widest ${badge.cls}`}>{badge.label}</span>
+                        {chipParcial(d, esUSD)}
+                      </td>
                       <td className={`py-2.5 pr-2 text-right font-black whitespace-nowrap align-middle ${esUSD ? 'text-blue-700' : 'text-emerald-700'}`}>{(esUSD ? 'US$ ' : '$ ') + fmt(d.DDeImporteOriginal ?? d.DDeImportePendiente)}</td>
                       <td className="py-2.5 pl-2 text-right font-black whitespace-nowrap align-middle text-blue-700">{esUSD ? `US$ ${fmt(d.DDeImportePendiente)}` : <span className="text-slate-300">—</span>}</td>
                       <td className="py-2.5 pl-2 text-right font-black whitespace-nowrap align-middle text-emerald-700">{!esUSD ? `$ ${fmt(d.DDeImportePendiente)}` : <span className="text-slate-300">—</span>}</td>
@@ -1007,8 +1157,10 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
       {/* ─── 2. ÁREA CENTRAL: Resumen ───────────────────────────────────────────── */}
       <div className="flex-1 flex flex-col min-w-0 bg-slate-100 p-6 gap-4 overflow-y-auto">
         {fechaField}
+        {bannerEntregado}
         <CajaPanelPago
           cuentasBilletera={cuentasBilletera}
+          autoCompletarMonto={!montoEntregado}
           layout="horizontal"
           mode="VENTA"
           labelBoton="REGISTRAR PAGO"
@@ -1120,13 +1272,15 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
                 </div>
                 <p className="text-xs font-medium text-sky-700">
                   El monto ingresado ({simboloDeuda} {fmt(excedentePago.totalPagado)}) supera el total de la deuda ({simboloDeuda} {fmt(totalAPagar)}).
-                  La deuda se cancela y el excedente de <strong>{simboloDeuda} {excedentePago.excedente.toFixed(2)}</strong> quedará como <strong>SALDO A FAVOR</strong> del cliente en su cuenta corriente.
+                  La deuda se cancela y el excedente de <strong>{simboloDeuda} {excedentePago.excedente.toFixed(2)}</strong>
+                  {planExcedente ? ' se puede imputar a otras deudas del cliente o quedar' : ' quedará'} como <strong>SALDO A FAVOR</strong> del cliente en su cuenta corriente.
                 </p>
+                {bloqueImputarExcedente}
                 <div className="flex gap-2">
                   <button
                     onClick={() => { handleProcesar({ forzarExcedente: true }); }} disabled={procesando}
                     className="flex-1 bg-sky-500 hover:bg-sky-600 text-white font-black py-2 px-4 rounded-xl text-sm transition-colors">
-                    ✓ Cobrar y dejar saldo a favor
+                    {planExcedente ? '✓ No imputar: dejar todo a favor' : '✓ Cobrar y dejar saldo a favor'}
                   </button>
                   <button
                     onClick={() => setExcedentePago(null)}

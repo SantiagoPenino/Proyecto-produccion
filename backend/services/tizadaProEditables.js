@@ -72,6 +72,47 @@ window.extraer = async (pagina, capa, dpi) => {
   const px = 2.54 / dpi;
   return { png: f.toDataURL('image/png'), anchoCm: f.width * px, altoCm: f.height * px, xCm: (ox + b.x0) * px, yCm: (oy + b.y0) * px };
 };
+// Vista de una mesa entera (la pieza con su diseño y su contorno), recortada a lo dibujado, de "ancho" px
+window.vista = async (pagina, ancho) => {
+  const pg = await doc.getPage(pagina);
+  const v = pg.getViewport({ scale: ancho / pg.getViewport({ scale: 1 }).width });
+  const c = document.createElement('canvas'); c.width = Math.ceil(v.width); c.height = Math.ceil(v.height);
+  await pg.render({ canvasContext: c.getContext('2d'), viewport: v, background: 'rgba(0,0,0,0)' }).promise;
+  const b = recorte(c); if (!b) return null;
+  const f = document.createElement('canvas'); f.width = b.x1 - b.x0 + 1; f.height = b.y1 - b.y0 + 1;
+  f.getContext('2d').drawImage(c, b.x0, b.y0, f.width, f.height, 0, 0, f.width, f.height);
+  return f.toDataURL('image/webp', 0.85);
+};
+// [PORTAL · A MEDIDA] Calidad de impresión de una página: texto vivo (fuera de "guias"), trazos vectoriales y cada imagen con
+// sus píxeles y el tamaño al que está dibujada (pt, siguiendo la matriz de transformación) → con eso se saca su resolución
+window.calidad = async (pagina) => {
+  const pg = await doc.getPage(pagina); const ol = await pg.getOperatorList(); const oc = await doc.getOptionalContentConfig();
+  const O = pdfjs.OPS; const pila = []; const marcas = []; let m = [1, 0, 0, 1, 0, 0]; let texto = 0, trazos = 0; const imagenes = [];
+  const por = (a, b) => [a[0] * b[0] + a[1] * b[2], a[0] * b[1] + a[1] * b[3], a[2] * b[0] + a[3] * b[2], a[2] * b[1] + a[3] * b[3], a[4] * b[0] + a[5] * b[2] + b[4], a[4] * b[1] + a[5] * b[3] + b[5]];
+  const imagen = (w, h) => imagenes.push({ px: w, py: h, wPt: Math.hypot(m[0], m[1]), hPt: Math.hypot(m[2], m[3]) });
+  ol.fnArray.forEach((fn, k) => { const a = ol.argsArray[k];
+    if (fn === O.save) pila.push(m);
+    else if (fn === O.restore) m = pila.pop() || m;
+    else if (fn === O.transform) m = por(a, m);
+    else if (fn === O.paintFormXObjectBegin) { pila.push(m); if (a && a[0]) m = por(Array.from(a[0]), m); }
+    else if (fn === O.paintFormXObjectEnd) m = pila.pop() || m;
+    else if (fn === O.beginMarkedContentProps || fn === O.beginMarkedContent) marcas.push(a && a[1] && a[1].id ? (oc.getGroup(a[1].id) || {}).name : null);
+    else if (fn === O.endMarkedContent) marcas.pop();
+    else if (fn === O.constructPath) trazos++;
+    else if (fn === O.paintImageXObject) imagen(a[1], a[2]);
+    else if (fn === O.paintInlineImageXObject) imagen(a[0].width, a[0].height);
+    else if ((fn === O.showText || fn === O.showSpacedText) && [...marcas].reverse().find(Boolean) !== 'guias') texto++; });
+  const v = pg.view;
+  return { texto, trazos, imagenes, anchoPt: v[2] - v[0], altoPt: v[3] - v[1] };
+};
+// La página ENTERA (sin recortar a lo dibujado), de "ancho" px: la vista previa del arte sobre la forma
+window.pagina = async (pagina, ancho) => {
+  const pg = await doc.getPage(pagina);
+  const v = pg.getViewport({ scale: ancho / pg.getViewport({ scale: 1 }).width });
+  const c = document.createElement('canvas'); c.width = Math.ceil(v.width); c.height = Math.ceil(v.height);
+  await pg.render({ canvasContext: c.getContext('2d'), viewport: v, background: 'rgba(0,0,0,0)' }).promise;
+  return c.toDataURL('image/webp', 0.85);
+};
 document.title = 'listo';
 </script></body></html>`;
 
@@ -79,7 +120,9 @@ document.title = 'listo';
  * Extrae los objetos editables de los artes. artes: [{ clave, buffer }] → { [clave]: [{ objeto, capa, pieza, pagina,
  * anchoCm, altoCm, xCm, yCm, posicion, png (Buffer) }] }. Solo capas "Editable …" con algo dibujado.
  */
-async function extraer(artes) {
+// Abre los artes en Chrome (puppeteer) con pdfjs servido desde un server efímero en 127.0.0.1 y corre fn(pagina);
+// al terminar cierra todo. Lo usan extraer (editables) y vistasPiezas (vista de cada mesa).
+async function enNavegador(artes, fn) {
   const dirPdfjs = path.dirname(require.resolve('pdfjs-dist/build/pdf.mjs'));
   const srv = http.createServer((q, r) => {
     const u = decodeURIComponent(q.url.split('?')[0]);
@@ -90,11 +133,20 @@ async function extraer(artes) {
   await new Promise(res => srv.listen(0, '127.0.0.1', res));
   const puppeteer = require('puppeteer');
   const browser = await puppeteer.launch({ headless: 'new', args: ['--no-sandbox', '--disable-setuid-sandbox'] });
-  const out = {};
   try {
     const pg = await browser.newPage();
     await pg.goto(`http://127.0.0.1:${srv.address().port}/`, { timeout: 30000 });
     await pg.waitForFunction(() => document.title === 'listo', { timeout: 30000 });
+    return await fn(pg);
+  } finally {
+    await browser.close().catch(() => { });
+    srv.close();
+  }
+}
+
+async function extraer(artes) {
+  return enNavegador(artes, async (pg) => {
+    const out = {};
     for (const [i, a] of artes.entries()) {
       out[a.clave] = [];
       await pg.evaluate(n => window.abrir(n), i);
@@ -110,11 +162,25 @@ async function extraer(artes) {
         });
       }
     }
-  } finally {
-    await browser.close().catch(() => { });
-    srv.close();
-  }
-  return out;
+    return out;
+  });
+}
+
+/**
+ * Vista de cada mesa (pieza) de UN arte armado sobre la base de TIZADA: [{ pagina, pieza, vista }], con la pieza
+ * leída de la capa "guias" (la misma lectura que la de los editables) y la vista en data URL (webp, `ancho` px).
+ */
+async function vistasPiezas(buffer, ancho = 260) {
+  return enNavegador([{ buffer }], async (pg) => {
+    await pg.evaluate(() => window.abrir(0));
+    const mesas = await pg.evaluate(() => window.analizar());
+    const out = [];
+    for (const m of mesas) {
+      const vista = await pg.evaluate((p, a) => window.vista(p, a), m.pagina, ancho);
+      if (vista) out.push({ pagina: m.pagina, pieza: m.pieza || `Mesa ${m.pagina}`, vista });
+    }
+    return out;
+  });
 }
 
 /** Pliego de DTF: items [{ png, anchoCm, altoCm, cantidad }] acomodados por estantes en el ancho útil del film. */
@@ -145,4 +211,19 @@ async function armarPliego(items) {
   return { buffer: Buffer.from(await doc.save()), anchoCm: ancho, largoCm: +largo.toFixed(1), transfers: copias.length, filas: filas.length };
 }
 
-module.exports = { extraer, armarPliego, procesoDe };
+/**
+ * [PORTAL · A MEDIDA] El arte que sube el cliente (.ai compatible con PDF o .pdf): sus mesas (pieza de "guias", por si ya
+ * está armado sobre la plantilla de TIZADA), la calidad de la primera página (texto vivo, trazos, imágenes con su tamaño)
+ * y su vista entera (webp, `ancho` px) para dibujarla sobre la forma.
+ */
+async function analizarArte(buffer, ancho = 600) {
+  return enNavegador([{ buffer }], async (pg) => {
+    await pg.evaluate(() => window.abrir(0));
+    const mesas = await pg.evaluate(() => window.analizar());
+    const calidad = await pg.evaluate(() => window.calidad(1));
+    const vista = await pg.evaluate((a) => window.pagina(1, a), ancho);
+    return { paginas: mesas.map(x => ({ pagina: x.pagina, pieza: x.pieza || null })), calidad, vista };
+  });
+}
+
+module.exports = { extraer, armarPliego, procesoDe, vistasPiezas, analizarArte };

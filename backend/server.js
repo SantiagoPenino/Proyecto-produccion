@@ -129,6 +129,7 @@ const nomenclatorsRoutes = require('./routes/nomenclatorsRoutes');
 
 app.use('/api/web-auth', webAuthRoutes); // RUTAS AUTH CLIENTE WEB
 app.use('/api/web-designer', require('./routes/webDesignerRoutes')); // DISEÑADORES (suben pedidos en nombre de clientes)
+app.use('/api/web-orders/tienda/pedidos', require('./routes/tiendaPedidosRoutes')); // PEDIDO QUE ARMA EL CLIENTE EN LA TIENDA (Solicitud de origen PORTAL → TIZADA PRO → pedido)
 app.use('/api/web-orders', webOrdersRoutes); // RUTAS PEDIDOS CLIENTE WEB (DTF, Etc)
 app.use('/api/totem-pos', require('./routes/poslinkTotemRoutes')); // cobro con tarjeta en el tótem (POSLink)
 app.use('/api/totem-mp', require('./routes/totemMpRoutes'));        // pago con MercadoPago (QR) en el tótem

@@ -1,15 +1,17 @@
 'use strict';
-// /api/solicitudes-vendedor — captación de solicitudes de vendedores (specs/41). Solo usuarios internos.
+// /api/solicitudes-vendedor — captación de solicitudes de vendedores (specs/41). Usuarios internos.
 // Quién puede qué (vendedor / diseñador habilitado / admin) lo decide el service:
 // "diseñador" no es un rol de login, es la tabla SolicitudesVendedorDisenadores.
+// [PORTAL] Un cliente del portal entra SOLO a unas pocas rutas, sobre los pedidos que arma en la Tienda
+// (middleware/solicitudesClientePortal.js); para los internos sigue siendo soloInternoConRol().
 const express = require('express');
 const router = express.Router();
 const ctrl = require('../controllers/solicitudesVendedorController');
 const upload = require('../middleware/multerSolicitudesConfig');
-const { verifyToken, soloInternoConRol } = require('../middleware/authMiddleware');
+const { verifyToken } = require('../middleware/authMiddleware');
 
 router.use(verifyToken);
-router.use(soloInternoConRol());
+router.use(require('../middleware/solicitudesClientePortal'));
 
 // Catálogos del módulo
 router.get('/mi-perfil', ctrl.miPerfil);
@@ -43,6 +45,10 @@ router.get('/:id/productos/:productoSolId/tizadapro', ctrl.tizadaProVer);
 router.post('/:id/productos/:productoSolId/tizadapro/editables', ctrl.tizadaProEditables);   // leer los editables de un arte (con el proceso sugerido)
 router.put('/:id/productos/:productoSolId/tizadapro', ctrl.tizadaProGuardar);
 router.post('/:id/productos/:productoSolId/tizadapro/enviar', ctrl.tizadaProEnviar);
+router.post('/:id/productos/:productoSolId/tizadapro/calcular', ctrl.tizadaProCalcular);          // [A MEDIDA] cuentas de TIZADA para una medida (no guarda)
+router.post('/:id/productos/:productoSolId/tizadapro/plantilla', ctrl.tizadaProPlantillaPedir);   // [A MEDIDA] pedir la plantilla con la medida de cada diseño
+router.get('/:id/productos/:productoSolId/tizadapro/plantilla', ctrl.tizadaProPlantillaEstado);   // estado y archivos
+router.get('/:id/productos/:productoSolId/tizadapro/plantilla/archivo', ctrl.tizadaProPlantillaBajar);   // ?nombre=… (pasa por acá: la llave no sale)
 router.post('/:id/tizadapro/envios/:envioId/actualizar', ctrl.tizadaProActualizar);   // ficha del pedido en PDF (la misma que se adjunta al pedido al convertir)   // ¿se llega a la fecha de entrega? (sobre la cola real de cada sector)
 router.put('/:id', ctrl.actualizar);
 router.put('/:id/precio', ctrl.guardarPrecio);
@@ -51,6 +57,7 @@ router.post('/:id/interacciones', ctrl.agregarInteraccion);
 router.post('/:id/cancelar', ctrl.cancelar);
 router.post('/:id/archivos', upload.single('file'), ctrl.subirArchivo);
 router.delete('/:id/archivos/:archivoId', ctrl.quitarArchivo);
+router.get('/:id/archivos/:archivoId/piezas', ctrl.piezasDelArte);   // vista de cada pieza (mesa) de un arte .ai / .pdf
 router.put('/:id/archivos/:archivoId/produccion', ctrl.definirProduccionArchivo);   // tela + copias de un diseño pronto
 
 // Sublimación: modelo + tela y arte por pieza (producto del catálogo con molde de TizadaPro)

@@ -1570,7 +1570,8 @@ const cfeOficialDoc = (d) => {
 // es un recibo interno. Lo abre con el diálogo de impresión (opciones.abrir = false
 // para no abrirlo) y devuelve { base64, nombreArchivo } para guardar la copia.
 export const generarPdfReciboCobro = async (r, opciones = {}) => {
-    const { abrir = true } = opciones;
+    // descargar: baja el archivo en vez de abrir la impresión (portal del cliente)
+    const { abrir = true, descargar = false } = opciones;
     const pdf = new jsPDF({ format: 'a4' });
     const fmt = (n) => new Intl.NumberFormat('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Number(n) || 0);
     const aplicaciones = r.aplicaciones || [];
@@ -1930,7 +1931,9 @@ export const generarPdfReciboCobro = async (r, opciones = {}) => {
     // La copia para guardar sale antes del autoPrint (si no, abre la impresión al abrirla).
     const base64 = pdf.output('datauristring').split(',')[1];
     let url = null, abierto = false;
-    if (abrir) {
+    if (descargar) {
+        pdf.save(`Recibo_${nroRecibo}.pdf`);
+    } else if (abrir) {
         pdf.autoPrint();
         url = URL.createObjectURL(pdf.output('blob'));
         // Si se abre después de esperar al servidor, el navegador puede bloquear la ventana:

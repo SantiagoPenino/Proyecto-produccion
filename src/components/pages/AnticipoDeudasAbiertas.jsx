@@ -3,79 +3,63 @@ import { AlertCircle, Loader2 } from 'lucide-react';
 import api from '../../services/apiClient';
 
 /**
- * Al cargar un anticipo (saldo a favor), muestra las deudas ABIERTAS de la cuenta a la que
- * entra la plata y pregunta si el anticipo las paga o queda entero a favor.
- * Antes el anticipo se aplicaba solo, sin avisar, y además salteaba las deudas VENCIDO:
- * quedaban "deuda viva + saldo a favor" conviviendo (caso Angel Carballo, 09-10-2026).
+ * Pantallas de anticipo (saldo a favor): el anticipo es SOLO plata a favor del cliente,
+ * NO paga deudas. Si el cliente debe (en $ o en US$), se avisa siempre que este saldo no
+ * las rebaja y que, si el dinero es para pagarlas, va por "Registrar pago" (13-10-2026:
+ * se sacó la imputación desde el anticipo para que haya un solo camino para cobrar deudas).
  *
- * Props: clienteId, monedaId (1 $ / 2 US$), cuentaId (opcional; sin él, la principal),
- *        importe (número), value (true = aplicar a deudas), onChange(bool).
- * El backend usa el MISMO criterio (GET /contabilidad/caja/anticipo/deudas).
+ * Props: clienteId, onIrACobrar() opcional — botón que lleva al cobro de deudas.
+ * Lee GET /contabilidad/caja/anticipo/deudas (mismo criterio de "deuda abierta" del backend).
  */
-export default function AnticipoDeudasAbiertas({ clienteId, monedaId, cuentaId, importe, value, onChange }) {
-  const [estado, setEstado] = useState({ cargando: false, deudas: [], total: 0 });
+export default function AnticipoDeudasAbiertas({ clienteId, onIrACobrar }) {
+  const [estado, setEstado] = useState({ cargando: false, porMoneda: [] });
 
   useEffect(() => {
-    if (!clienteId) { setEstado({ cargando: false, deudas: [], total: 0 }); return; }
+    if (!clienteId) { setEstado({ cargando: false, porMoneda: [] }); return; }
     let vivo = true;
-    setEstado(e => ({ ...e, cargando: true }));
-    const qs = new URLSearchParams({ clienteId: String(clienteId), monedaId: String(monedaId || 1) });
-    if (cuentaId) qs.append('cuentaId', String(cuentaId));
-    api.get(`/contabilidad/caja/anticipo/deudas?${qs}`)
-      .then(r => { if (vivo) setEstado({ cargando: false, deudas: r.data?.deudas || [], total: Number(r.data?.total) || 0 }); })
-      .catch(() => { if (vivo) setEstado({ cargando: false, deudas: [], total: 0 }); });
+    setEstado({ cargando: true, porMoneda: [] });
+    const pedir = (monedaId) => api.get(`/contabilidad/caja/anticipo/deudas?${new URLSearchParams({ clienteId: String(clienteId), monedaId: String(monedaId) })}`)
+      .then(r => ({ sim: monedaId === 2 ? 'US$' : '$', deudas: r.data?.deudas || [], total: Number(r.data?.total) || 0 }))
+      .catch(() => ({ sim: monedaId === 2 ? 'US$' : '$', deudas: [], total: 0 }));
+    Promise.all([pedir(1), pedir(2)]).then(res => { if (vivo) setEstado({ cargando: false, porMoneda: res.filter(m => m.deudas.length) }); });
     return () => { vivo = false; };
-  }, [clienteId, monedaId, cuentaId]);
+  }, [clienteId]);
 
-  const sim = Number(monedaId) === 2 ? 'US$' : '$';
   const fmt = (n) => Number(n || 0).toLocaleString('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  const imp = Math.max(0, Number(importe) || 0);
 
   if (!clienteId) return null;
   if (estado.cargando) {
-    return <p className="text-xs text-slate-400 flex items-center gap-1.5"><Loader2 size={12} className="animate-spin" /> Buscando deudas abiertas…</p>;
+    return <p className="text-xs text-slate-400 flex items-center gap-1.5"><Loader2 size={12} className="animate-spin" /> Buscando deudas pendientes…</p>;
   }
-  if (!estado.deudas.length) {
-    return <p className="text-[11px] text-slate-500">Sin deudas abiertas en esta cuenta: el anticipo queda entero como saldo a favor.</p>;
+  if (!estado.porMoneda.length) {
+    return <p className="text-[11px] text-slate-500">El cliente no tiene deudas pendientes: el anticipo queda como saldo a favor.</p>;
   }
-
-  const aplica = Math.min(imp, estado.total);
-  const quedaAFavor = Math.max(0, imp - aplica);
-  const quedaDebiendo = Math.max(0, estado.total - aplica);
-  const visibles = estado.deudas.slice(0, 5);
 
   return (
-    <div className="rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 space-y-2.5">
-      <p className="text-xs font-bold text-amber-800 flex items-start gap-1.5">
+    <div className="rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 space-y-2">
+      <p className="text-xs font-bold text-amber-900 flex items-start gap-1.5">
         <AlertCircle size={14} className="mt-0.5 shrink-0" />
-        Este cliente debe {sim} {fmt(estado.total)} en {estado.deudas.length} {estado.deudas.length === 1 ? 'documento' : 'documentos'} de esta cuenta.
-        ¿Qué hacemos con el anticipo?
+        <span>
+          El cliente tiene deudas pendientes:{' '}
+          {estado.porMoneda.map((m, i) => (
+            <span key={m.sim}>
+              {i > 0 && ' · '}
+              {m.sim} {fmt(m.total)} en {m.deudas.length} {m.deudas.length === 1 ? 'documento' : 'documentos'}
+              {' '}({m.deudas.slice(0, 3).map(d => d.documento).join(', ')}{m.deudas.length > 3 ? '…' : ''})
+            </span>
+          ))}.
+        </span>
       </p>
-      <ul className="text-[11px] text-amber-900 space-y-0.5 pl-5">
-        {visibles.map(d => (
-          <li key={d.id} className="flex justify-between gap-3">
-            <span className="truncate">{d.documento} <span className="text-amber-700/70">· {String(d.estado || '').toLowerCase()}</span></span>
-            <span className="font-mono shrink-0">{sim} {fmt(d.pendiente)}</span>
-          </li>
-        ))}
-        {estado.deudas.length > visibles.length && <li className="text-amber-700/70">+ {estado.deudas.length - visibles.length} más</li>}
-      </ul>
-      <label className="flex items-start gap-2 cursor-pointer text-xs text-slate-800">
-        <input type="radio" className="mt-0.5" checked={value !== false} onChange={() => onChange(true)} />
-        <span>
-          <b>Aplicar el anticipo a estas deudas</b> (las más viejas primero).
-          {imp > 0 && <span className="block text-[11px] text-slate-600">
-            Paga {sim} {fmt(aplica)}{quedaAFavor > 0.004 ? ` · quedan ${sim} ${fmt(quedaAFavor)} a favor` : ''}{quedaDebiendo > 0.004 ? ` · sigue debiendo ${sim} ${fmt(quedaDebiendo)}` : ''}.
-          </span>}
-        </span>
-      </label>
-      <label className="flex items-start gap-2 cursor-pointer text-xs text-slate-800">
-        <input type="radio" className="mt-0.5" checked={value === false} onChange={() => onChange(false)} />
-        <span>
-          <b>Dejar todo como saldo a favor.</b>
-          <span className="block text-[11px] text-slate-600">Las deudas siguen pendientes por {sim} {fmt(estado.total)}.</span>
-        </span>
-      </label>
+      <p className="text-[11px] text-amber-900">
+        <b>Este anticipo NO rebaja esas deudas:</b> queda como saldo a favor en la cuenta del cliente.
+        Si el dinero es para pagar deudas, usá <b>Registrar pago</b>.
+      </p>
+      {onIrACobrar && (
+        <button type="button" onClick={() => onIrACobrar()}
+          className="text-[11px] font-black px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white">
+          Ir a Registrar pago →
+        </button>
+      )}
     </div>
   );
 }

@@ -18,6 +18,16 @@ const tizadaPro = require('./tizadaProService');
 const fallo = (status, mensaje) => { const e = new Error(mensaje); e.status = status; return e; };
 const jsonObj = (s) => { try { return s ? JSON.parse(s) : {}; } catch (_) { return {}; } };
 
+// [A MEDIDA] ¿El producto del catálogo es a medida (ProductoVentaConfig.AMedidaJson)? Sin la columna, no.
+async function esAMedida(cx, proIdProducto) {
+  if (!proIdProducto) return false;
+  const c = (await new sql.Request(cx).query("SELECT COL_LENGTH('dbo.ProductoVentaConfig', 'AMedidaJson') AS c")).recordset[0].c;
+  if (c == null) return false;
+  const r = await new sql.Request(cx).input('PID', sql.Int, proIdProducto).query('SELECT CASE WHEN AMedidaJson IS NULL THEN 0 ELSE 1 END AS a FROM dbo.ProductoVentaConfig WHERE ProIdProducto = @PID');
+  return !!r.recordset[0]?.a;
+}
+const MOTIVO_A_MEDIDA = 'Producto a medida: la medida, la forma, la tela y las tiras se eligen por diseño en el bloque TIZADA PRO (no hay piezas ni talles).';
+
 async function productoSol(pool, solicitudId, productoSolId) {
   const r = await pool.request().input('Sol', sql.Int, solicitudId).input('P', sql.Int, productoSolId).query(`
     SELECT p.ProductoSolID, p.ProIdProducto, p.TipoFabricacion, p.DatosJson, p.PedidoNoDocERP,
@@ -45,6 +55,7 @@ async function moldeDelProducto(pool, user, base, solicitudId, productoSolId) {
   const p = await productoSol(pool, solicitudId, productoSolId);
   const elegido = jsonObj(p.DatosJson).sublimacion || null;
   if (p.TipoFabricacion !== 'PRODUCTO_TERMINADO' || !p.ProIdProducto) return { aplica: false, motivo: 'Es un producto del cliente: no tiene molde en el catálogo.', elegido };
+  if (await esAMedida(pool, p.ProIdProducto)) return { aplica: false, aMedida: true, motivo: MOTIVO_A_MEDIDA, elegido, molde: p.Molde || 'OBLIGATORIO', tecnicaPrincipal: p.TecnicaPrincipal || 'SB' };
   if (!p.MoldeRef) {
     // F1: sin molde. Si el producto lo exige (prendas) es un faltante del configurador; si el molde es
     // opcional o no lleva (windflag, funda, cuadro), la producción principal va con archivo a medida fija.
@@ -150,7 +161,7 @@ async function guardarSublimacion(pool, user, base, solicitudId, productoSolId, 
 // nombres (salvo que el producto se defina por medidas, que van escritas en la solicitud).
 async function faltaSublimacion(cx, productoSolId) {
   const r = await new sql.Request(cx).input('P', sql.Int, productoSolId).query(`
-    SELECT p.TipoFabricacion, p.DatosJson,
+    SELECT p.TipoFabricacion, p.DatosJson, p.ProIdProducto,
            CASE WHEN COL_LENGTH('dbo.ProductoVentaConfig', 'TizadaProMoldeRef') IS NULL THEN NULL
                 ELSE (SELECT vc.TizadaProMoldeRef FROM dbo.ProductoVentaConfig vc WHERE vc.ProIdProducto = p.ProIdProducto) END AS MoldeRef,
            CASE WHEN COL_LENGTH('dbo.ProductoVentaConfig', 'Molde') IS NULL THEN NULL
@@ -161,6 +172,10 @@ async function faltaSublimacion(cx, productoSolId) {
   if (!p) return null;
   const datos = jsonObj(p.DatosJson);
   const esCatalogo = p.TipoFabricacion === 'PRODUCTO_TERMINADO';
+  // [A MEDIDA] sin piezas ni talles: alcanza con un diseño (su medida y cantidad las revisa TIZADA antes de pasar a Diseño)
+  if (esCatalogo && p.MoldeRef && await esAMedida(cx, p.ProIdProducto)) {
+    return Array.isArray(datos.tizadaPro?.disenos) && datos.tizadaPro.disenos.length ? null : 'Antes de enviar a Diseño, cargá en TIZADA PRO el arte, la medida y la cantidad de cada diseño.';
+  }
   const molde = esCatalogo ? (p.Molde || 'OBLIGATORIO') : null;
   if (esCatalogo && molde === 'OBLIGATORIO' && !p.MoldeRef) return 'El producto del catálogo exige molde de TizadaPro y no tiene ninguno vinculado: vinculalo en Configurar productos (o marcá el molde como opcional).';
   if (esCatalogo && p.MoldeRef) {

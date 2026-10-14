@@ -47,7 +47,9 @@ function MonedaSwitch({ value, onChange }) {
  * La moneda se elige UNA sola vez con el pill-switch; el panel de pago
  * hereda esa moneda y no muestra el selector por-línea (lockMoneda).
  */
-export default function CajaSaldoAnticipoTab({ sesion, metodosPago, cotizacion, onCobroCompletado, initialCliente, empresaId = null, isAdminCaja = false, hideClienteSelector = false, hideBilletera = false, pasoExterno = undefined, onPasoExterno = undefined }) {
+// onIrACobrarDeudas (opcional): el dinero es para pagar deudas → se pasa a "Registrar pago"
+// (cobro de deudas) con el importe cargado, en vez de cargar un anticipo.
+export default function CajaSaldoAnticipoTab({ sesion, metodosPago, cotizacion, onCobroCompletado, initialCliente, empresaId = null, isAdminCaja = false, hideClienteSelector = false, hideBilletera = false, pasoExterno = undefined, onPasoExterno = undefined, onIrACobrarDeudas = undefined }) {
   /* ── cliente ─────────────────────────────────────────────────────────────── */
   const [qCliente, setQCliente]             = useState('');
   const [buscandoCli, setBuscandoCli]       = useState(false);
@@ -79,8 +81,6 @@ export default function CajaSaldoAnticipoTab({ sesion, metodosPago, cotizacion, 
 
   /* ── formulario ──────────────────────────────────────────────────────────── */
   const [importe, setImporte]       = useState('');
-  // ¿El anticipo paga las deudas abiertas de la cuenta o queda entero a favor? (lo elige el operador)
-  const [imputarDeudas, setImputarDeudas] = useState(true);
   const [moneda, setMoneda]         = useState('UYU');
   const [concepto, setConcepto]     = useState('');
   const [numDocFmt, setNumDocFmt]   = useState(''); // número del recibo (cabecera del 360)
@@ -200,7 +200,6 @@ export default function CajaSaldoAnticipoTab({ sesion, metodosPago, cotizacion, 
         cotizacion:   moneda === 'USD' ? (Number(cotizacion) > 0 ? Number(cotizacion) : 1) : 1,
         concepto:     observaciones || concepto || 'Ingreso de saldo anticipado',
         fecha:        fechaRegistro, // fecha de registro (el backend debe honrarla; si no, usa hoy)
-        imputarDeudas,                // true: paga las deudas abiertas de la cuenta · false: todo a favor
       });
 
       toast.success(res.data?.message || '✅ Anticipo registrado como saldo a favor.');
@@ -224,7 +223,6 @@ export default function CajaSaldoAnticipoTab({ sesion, metodosPago, cotizacion, 
       }
 
       setImporte('');
-      setImputarDeudas(true);
       setConcepto('');
       setObservaciones('');
       setPaso('operacion');
@@ -280,10 +278,12 @@ export default function CajaSaldoAnticipoTab({ sesion, metodosPago, cotizacion, 
     </div>
   ) : null;
 
-  // Deudas abiertas de la cuenta destino: el operador elige si el anticipo las paga.
+  // Aviso: si el cliente debe, este anticipo NO rebaja esas deudas (para eso, Registrar pago).
   const avisoDeudasAnticipo = clienteSel ? (
-    <AnticipoDeudasAbiertas clienteId={clienteSel.CliIdCliente} monedaId={moneda === 'USD' ? 2 : 1} cuentaId={cuentaId}
-      importe={importeNum} value={imputarDeudas} onChange={setImputarDeudas} />
+    <AnticipoDeudasAbiertas clienteId={clienteSel.CliIdCliente}
+      // Lo cargado acá (importe y moneda) es lo que el cliente ENTREGA: el cobro parte de eso
+      onIrACobrar={onIrACobrarDeudas ? () => onIrACobrarDeudas(clienteSel,
+        importeNum > 0 ? { monto: importeNum, moneda, concepto: concepto || null } : null) : undefined} />
   ) : null;
 
   // ─── Panel 360 (cliente fijo): flujo en 2 pasos, homogéneo con el cobro ───
