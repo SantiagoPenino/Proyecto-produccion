@@ -5493,7 +5493,19 @@ exports.getMiComprobante = async (req, res) => {
                           WHERE m.CueIdCuenta = @C AND m.DocIdDocumento = @D
                             AND (m.MovAnulado IS NULL OR m.MovAnulado = 0))`)).recordset.length;
         if (!ok) return res.status(403).json({ error: 'Ese comprobante no es de tu cuenta.' });
-        // Mismo payload { doc, detalles } que usa la bandeja para dibujar el PDF
+        // Recibo interno (RA de una recarga, RC de un cobro): no es un CFE, así que va con el
+        // MISMO recibo A4 que Caja y el Panel 360 ({ recibo }), no con el formato de factura
+        // (mostraba "CAE pendiente / no enviado a DGI" y parecía una factura trabada).
+        const d = (await pool.request().input('D', sql.Int, docId).query(`
+            SELECT RTRIM(DocSerie) AS Serie, DocTipo, CfeEstado, TcaIdTransaccion
+            FROM dbo.DocumentosContables WITH(NOLOCK) WHERE DocIdDocumento = @D`)).recordset[0];
+        const esReciboInterno = d && d.TcaIdTransaccion && d.CfeEstado !== 'ACEPTADO_DGI'
+            && (['RA', 'RC'].includes(d.Serie) || /recibo/i.test(String(d.DocTipo || '')));
+        if (esReciboInterno) {
+            const recibo = await require('./contabilidadController').armarReciboCobro(pool, d.TcaIdTransaccion);
+            if (recibo) return res.json({ recibo: { ...recibo, observaciones: null } }); // las observaciones son internas
+        }
+        // CFE (factura de una recarga prepago…): mismo payload { doc, detalles } que usa la bandeja
         return require('./cfeController').getDetalleFactura({ params: { id: docId } }, res);
     } catch (err) {
         logger.error('[BILLETERA PORTAL] comprobante:', err.message);

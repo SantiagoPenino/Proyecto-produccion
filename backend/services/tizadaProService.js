@@ -26,11 +26,33 @@ const fallo = (status, mensaje) => { const e = new Error(mensaje); e.status = st
 const norm = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
 const jsonObj = (s) => { try { return s ? JSON.parse(s) : {}; } catch (_) { return {}; } };
 
+// La base de TIZADA PRO: por defecto en el MISMO servidor SQL que la nuestra ([TizadaPro].dbo…). Con
+// TIZADAPRO_DB_SERVER en el .env se lee de OTRO servidor, con su propio usuario. Siempre SOLO LECTURA: acá
+// nunca se escribe en la base de TIZADA (ApplicationIntent=ReadOnly y solo SELECT).
+//   TIZADAPRO_DB_SERVER, TIZADAPRO_DB_PORT (o TIZADAPRO_DB_INSTANCE), TIZADAPRO_DB (nombre de la base),
+//   TIZADAPRO_DB_USER, TIZADAPRO_DB_PASSWORD, TIZADAPRO_DB_ENCRYPT=1 si el servidor exige conexión cifrada.
+let _poolTz = null;
+async function poolTz(pool) {
+    if (!process.env.TIZADAPRO_DB_SERVER) return pool;
+    if (!_poolTz) {
+        const servidor = process.env.TIZADAPRO_DB_SERVER;
+        _poolTz = new sql.ConnectionPool({
+            server: servidor, port: process.env.TIZADAPRO_DB_PORT ? parseInt(process.env.TIZADAPRO_DB_PORT, 10) : undefined,
+            database: DB, user: process.env.TIZADAPRO_DB_USER, password: process.env.TIZADAPRO_DB_PASSWORD,
+            requestTimeout: 60000, connectionTimeout: 15000,
+            options: { instanceName: process.env.TIZADAPRO_DB_INSTANCE || undefined, encrypt: process.env.TIZADAPRO_DB_ENCRYPT === '1', trustServerCertificate: true, enableArithAbort: true, readOnlyIntent: true },
+            pool: { max: 5, min: 0, idleTimeoutMillis: 30000 },
+        }).connect().then(p => { logger.info(`[TizadaPro] base ${DB} en ${servidor} (solo lectura)`); return p; })
+            .catch(e => { _poolTz = null; throw fallo(503, `No se pudo conectar a la base de TIZADA PRO en ${servidor}: ${e.message}`); });
+    }
+    return _poolTz;
+}
+
 // ¿Se puede leer TizadaPro desde este servidor? Mensaje claro si falta la base o el permiso.
 async function exigir(pool) {
-    const r = await pool.request().input('Db', sql.NVarChar(128), DB).query('SELECT DB_ID(@Db) AS id');
+    const r = await (await poolTz(pool)).request().input('Db', sql.NVarChar(128), DB).query('SELECT DB_ID(@Db) AS id');
     if (r.recordset[0].id == null) throw fallo(503, `La base ${DB} no está en este servidor SQL.`);
-    try { await pool.request().query(`SELECT TOP 0 id FROM [${DB}].dbo.trabajo`); }
+    try { await (await poolTz(pool)).request().query(`SELECT TOP 0 id FROM [${DB}].dbo.trabajo`); }
     catch (e) { throw fallo(503, `No se puede leer TizadaPro (${e.message}). Falta darle permiso de lectura al usuario del sistema sobre la base ${DB}.`); }
 }
 
@@ -38,7 +60,7 @@ async function exigir(pool) {
 let _cat = { t: 0, v: null };
 async function catalogo(pool) {
     if (_cat.v && Date.now() - _cat.t < 60000) return _cat.v;
-    const r = await pool.request().query(`SELECT valor FROM [${DB}].dbo.config WHERE clave = 'catalogo'`);
+    const r = await (await poolTz(pool)).request().query(`SELECT valor FROM [${DB}].dbo.config WHERE clave = 'catalogo'`);
     _cat = { t: Date.now(), v: jsonObj(r.recordset[0]?.valor) };
     return _cat.v;
 }
@@ -54,6 +76,35 @@ async function telas(pool) {
     return { porNombre, porId };
 }
 
+// Contorno de cada pieza desde la "foto" del molde de TIZADA (API GET /moldes/{ref}/foto: piezas[{ idx, path_svg, px,
+// py, pw, ph }], idx = pieza_talle.pieza_idx de TizadaPro). Sirve cuando no hay silueta procesada del PDF
+// (TizadaProMoldePiezas). Se cachea 10 min por molde; si la API no está o falla, no hay contorno y sigue todo igual.
+const _fotos = new Map();
+async function fotoDeMolde(ref) {
+    const c = _fotos.get(ref);
+    if (c && Date.now() - c.t < 600000) return c.v;
+    let v = null;
+    try { const api = require('./tizadaProApi'); if (api.estadoConfig().ok) v = await api.fotoMolde(ref); }
+    catch (e) { logger.warn(`[TizadaPro] foto del molde ${ref}: ${e.message}`); }
+    _fotos.set(ref, { t: Date.now(), v });
+    return v;
+}
+// El path de la foto (coordenadas de la imagen) → el formato de nuestras siluetas: centrado en un viewBox 0 0 100 100
+// (como moldeContornoService.aSvgPath). Absolutos se trasladan y escalan; relativos (minúscula) solo se escalan.
+function pathNormalizado(d, px, py, pw, ph) {
+    const s = 100 / Math.max(pw, ph), ox = (100 - pw * s) / 2, oy = (100 - ph * s) / 2;
+    const r = n => Math.round(n * 100) / 100;
+    const out = []; let cmd = ''; let k = 0;
+    for (const tok of String(d || '').match(/[a-zA-Z]|-?\d*\.?\d+(?:e[-+]?\d+)?/gi) || []) {
+        if (/^[a-zA-Z]$/.test(tok)) { cmd = tok; k = 0; out.push(tok); continue; }
+        const n = parseFloat(tok), rel = cmd === cmd.toLowerCase(), C = cmd.toUpperCase();
+        const esY = C === 'V' || (C !== 'H' && k % 2 === 1);
+        out.push(r(rel ? n * s : esY ? oy + (n - py) * s : ox + (n - px) * s));
+        k++;
+    }
+    return out.join(' ');
+}
+
 // ---------------------------------------------------------------------
 // Moldes (productos de TizadaPro) con piezas, talles, modelos y telas permitidas
 // ---------------------------------------------------------------------
@@ -61,23 +112,27 @@ async function moldes(pool, { ref = null, soloActivos = true } = {}) {
     await exigir(pool);
     const [cat, tl, filas, piezas, tallesR] = await Promise.all([
         catalogo(pool), telas(pool),
-        pool.request().query(`SELECT id, nombre, legacy_id, variante_guia, activo, creado_en, modificado_en FROM [${DB}].dbo.producto ${soloActivos ? 'WHERE activo = 1' : ''} ORDER BY nombre`),
-        pool.request().query(`SELECT id, producto_id, id_en_molde, nombre, nombre_generico FROM [${DB}].dbo.pieza ORDER BY producto_id, id_en_molde`),
-        pool.request().query(`SELECT producto_id, nombre, orden FROM [${DB}].dbo.talle ORDER BY producto_id, orden`),
+        (await poolTz(pool)).request().query(`SELECT id, nombre, legacy_id, variante_guia, activo, creado_en, modificado_en FROM [${DB}].dbo.producto ${soloActivos ? 'WHERE activo = 1' : ''} ORDER BY nombre`),
+        (await poolTz(pool)).request().query(`SELECT id, producto_id, id_en_molde, nombre, nombre_generico FROM [${DB}].dbo.pieza ORDER BY producto_id, id_en_molde`),
+        (await poolTz(pool)).request().query(`SELECT producto_id, nombre, orden FROM [${DB}].dbo.talle ORDER BY producto_id, orden`),
     ]);
     // Medidas (cm) de cada pieza en el talle guía del molde, para dibujar una silueta a escala.
     // TizadaPro no guarda el contorno de la pieza en su base (solo el PDF en su disco): se muestra
     // el rectángulo que ocupa, no la forma real.
     const medidas = new Map();   // pieza_id → { anchoCm, altoCm }
+    const idxEnMolde = new Map();   // pieza_id → pieza_idx (su lugar en el archivo del molde = idx de la "foto" de la API)
     try {
-        const md = await pool.request().query(`
-            SELECT pt.pieza_id, MAX(pt.ancho_cm) AS ancho_cm, MAX(pt.alto_cm) AS alto_cm
+        const md = await (await poolTz(pool)).request().query(`
+            SELECT pt.pieza_id, MAX(pt.ancho_cm) AS ancho_cm, MAX(pt.alto_cm) AS alto_cm, MIN(pt.pieza_idx) AS pieza_idx
             FROM [${DB}].dbo.pieza_talle pt
             INNER JOIN [${DB}].dbo.talle t ON t.id = pt.talle_id
             INNER JOIN [${DB}].dbo.producto p ON p.id = t.producto_id
             WHERE t.nombre = p.variante_guia
             GROUP BY pt.pieza_id`);
-        md.recordset.forEach(x => medidas.set(x.pieza_id, { anchoCm: x.ancho_cm != null ? Number(x.ancho_cm) : null, altoCm: x.alto_cm != null ? Number(x.alto_cm) : null }));
+        md.recordset.forEach(x => {
+            medidas.set(x.pieza_id, { anchoCm: x.ancho_cm != null ? Number(x.ancho_cm) : null, altoCm: x.alto_cm != null ? Number(x.alto_cm) : null });
+            if (x.pieza_idx != null) idxEnMolde.set(x.pieza_id, Number(x.pieza_idx));
+        });
     } catch (e) { logger.warn(`[TizadaPro] sin medidas de piezas: ${e.message}`); }
     const catPorRef = new Map((cat.productos || []).map(p => [p.id, p]));
     const piezasPor = new Map(); piezas.recordset.forEach(p => { if (!piezasPor.has(p.producto_id)) piezasPor.set(p.producto_id, []); piezasPor.get(p.producto_id).push(p); });
@@ -141,7 +196,7 @@ async function moldes(pool, { ref = null, soloActivos = true } = {}) {
                     const svgs = svgPor.get(p.legacy_id) || [];
                     const buscar = (n) => svgs.find(s => s.Pieza === n && s.Talle === p.variante_guia) || svgs.find(s => s.Pieza === n) || null;
                     const svg = buscar(nombre) || (nombre !== generico ? buscar(generico) : null);
-                    return { idEnMolde: x.id_en_molde, nombre, generico, ...(medidas.get(x.id) || { anchoCm: null, altoCm: null }), svgPath: svg ? svg.SvgPath : null };
+                    return { idEnMolde: x.id_en_molde, nombre, generico, ...(medidas.get(x.id) || { anchoCm: null, altoCm: null }), svgPath: svg ? svg.SvgPath : null, piezaIdx: idxEnMolde.has(x.id) ? idxEnMolde.get(x.id) : null };
                 }),
                 siluetas: (svgPor.get(p.legacy_id) || []).length > 0,
                 talles: tallesPor.get(p.id) || [],
@@ -151,6 +206,20 @@ async function moldes(pool, { ref = null, soloActivos = true } = {}) {
                 completo: pz.length > 0 && (tallesPor.get(p.id) || []).length > 0,
             };
         });
+    // Un molde pedido por su ref: las piezas sin silueta procesada toman el contorno de la foto del molde de TIZADA
+    if (ref) {
+        for (const m of lista) {
+            if (!m.piezasDetalle.some(x => !x.svgPath)) continue;
+            const foto = await fotoDeMolde(m.ref);
+            if (!Array.isArray(foto?.piezas)) continue;
+            m.piezasDetalle.forEach((x) => {
+                // idx de la foto = pieza_idx de TizadaPro (no el orden por id_en_molde: Frente 1 / Espalda 1 / Frente 3 van en otro orden)
+                const f = x.svgPath || x.piezaIdx == null ? null : foto.piezas.find(z => z.idx === x.piezaIdx);
+                if (f?.path_svg && f.pw > 0 && f.ph > 0) x.svgPath = pathNormalizado(f.path_svg, f.px, f.py, f.pw, f.ph);
+            });
+            m.siluetas = m.siluetas || m.piezasDetalle.some(x => x.svgPath);
+        }
+    }
     return lista;
 }
 
@@ -183,7 +252,7 @@ function resumirTrabajo(t, tl, materiales) {
 async function trabajos(pool, materiales, { dias = 15, moldeRef = null } = {}) {
     await exigir(pool);
     const d = Math.min(Math.max(parseInt(dias, 10) || 15, 1), 120);
-    const r = await pool.request().input('Dias', sql.Int, d).query(`
+    const r = await (await poolTz(pool)).request().input('Dias', sql.Int, d).query(`
         SELECT TOP 100 id, legacy_id, estado, moldes, molde_nombre, creado_en, resultado
         FROM [${DB}].dbo.trabajo
         WHERE estado = 'listo' AND creado_en >= DATEADD(DAY, -@Dias, SYSUTCDATETIME())
@@ -194,7 +263,7 @@ async function trabajos(pool, materiales, { dias = 15, moldeRef = null } = {}) {
 
 async function trabajo(pool, materiales, id) {
     await exigir(pool);
-    const r = await pool.request().input('T', sql.Int, id)
+    const r = await (await poolTz(pool)).request().input('T', sql.Int, id)
         .query(`SELECT id, legacy_id, estado, moldes, molde_nombre, creado_en, resultado FROM [${DB}].dbo.trabajo WHERE id = @T`);
     const t = r.recordset[0];
     if (!t) return null;
@@ -221,11 +290,11 @@ async function siluetas(pool, ref, talleGuia) {
 async function procesarPdfMolde(pool, ref, rutaPdf, nombreArchivo) {
     await exigir(pool);
     const contorno = require('./moldeContornoService');
-    const prod = await pool.request().input('Ref', sql.NVarChar(128), ref)
+    const prod = await (await poolTz(pool)).request().input('Ref', sql.NVarChar(128), ref)
         .query(`SELECT id, nombre, variante_guia FROM [${DB}].dbo.producto WHERE legacy_id = @Ref`);
     if (!prod.recordset.length) throw fallo(404, 'Ese molde no está en TizadaPro.');
     const molde = prod.recordset[0];
-    const cajas = await pool.request().input('P', sql.Int, molde.id).query(`
+    const cajas = await (await poolTz(pool)).request().input('P', sql.Int, molde.id).query(`
         SELECT pz.nombre AS pieza, t.nombre AS talle, pt.bbox_mu, pt.ancho_cm, pt.alto_cm
         FROM [${DB}].dbo.pieza_talle pt
         INNER JOIN [${DB}].dbo.pieza pz ON pz.id = pt.pieza_id
@@ -287,4 +356,4 @@ async function procesarCarpetaMoldes(pool) {
     return resultado;
 }
 
-module.exports = { DB, exigir, moldes, trabajos, trabajo, telas, siluetas, procesarPdfMolde, procesarCarpetaMoldes, getPool };
+module.exports = { DB, poolTz, exigir, moldes, trabajos, trabajo, telas, siluetas, procesarPdfMolde, procesarCarpetaMoldes, getPool };

@@ -77,9 +77,12 @@ function datosProducto(p) {
     ${F('Producto nuevo', d.productoNuevo ? 'Sí' : '')}
     ${F('Producción grande', d.produccionGrande ? 'Sí' : '')}
     ${F('Muestra', d.requiereMuestra ? `Requiere confección · ${d.muestraAprobada ? 'aprobada por el cliente' : 'SIN aprobar'}` : '')}
-    ${F('Cómo se define', d.comoSeDefine === 'MEDIDA' ? 'Por medidas en cm' : 'Por talle')}
-    ${d.comoSeDefine === 'MEDIDA' ? F('Medidas y cantidad por medida', d.medidas) + F('Terminación / costura', d.terminacion)
-      : F('Talles', d.notaTalles) + F('Medidas de la prenda', d.medidasPrenda || (d.tablaEstandar ? 'Tabla estándar del taller, confirmada con el cliente' : ''))}
+    ${p.Config?.AMedida
+      // [A MEDIDA] no hay talles: va la medida de cada diseño (la que se mandó a TIZADA PRO)
+      ? F('Cómo se define', 'A medida (TIZADA PRO)') + F('Medida de cada diseño', medidasAMedida(d))
+      : F('Cómo se define', d.comoSeDefine === 'MEDIDA' ? 'Por medidas en cm' : 'Por talle')
+        + (d.comoSeDefine === 'MEDIDA' ? F('Medidas y cantidad por medida', d.medidas) + F('Terminación / costura', d.terminacion)
+          : F('Talles', d.notaTalles) + F('Medidas de la prenda', d.medidasPrenda || (d.tablaEstandar ? 'Tabla estándar del taller, confirmada con el cliente' : '')))}
     ${d.personalizacion ? F('Nombres y números', d.listaCerrada ? 'Lista completa y cerrada' : 'LISTA SIN CERRAR') : ''}
     ${F('Corte', d.corte?.activo ? `${d.corte.tipoMolde || ''} · ${d.corte.origenTela || ''}` : 'No lleva')}
     ${F('Costura', d.costura?.activo ? (d.costura.instrucciones || 'Sin instrucciones especiales') : 'No lleva')}
@@ -149,6 +152,12 @@ function aviosPorTalle(avios) {
   </tbody></table>`;
 }
 
+// [A MEDIDA] "DISEÑO 1 × 12: Rectángulo · 1,5 × 0,96 m · Dobladillo · sin tiras · DISEÑO 2 × 3: …"
+function medidasAMedida(d) {
+  const { resumen } = require('./tizadaProAMedida');
+  return (d.tizadaPro?.disenos || []).filter(x => x.medida).map(x => `${x.nombre} × ${x.cantidad || 0}: ${resumen(x.medida)}`).join(' · ');
+}
+
 // Ficha técnica del producto del catálogo (Configurar productos → Ficha de diseño): avíos, costuras, material, tallas, notas, dibujo
 function fichaTecnica(p) {
   const f = p.FichaProducto;
@@ -157,7 +166,7 @@ function fichaTecnica(p) {
   const dib = dibujoDataUri(f.dibujoUrl);
   return `${H3('Ficha técnica del producto', 'del configurador · informativa para Diseño y producción')}
     <div class="grid">
-      ${F('Referencia', f.ref)}${F('Marca', f.marca)}${F('Material', f.material)}${F('Tallas', f.tallas)}${F('Marcación', f.marcacion)}
+      ${F('Referencia', f.ref)}${F('Marca', f.marca)}${F('Material', f.material)}${p.Config?.AMedida ? '' : F('Tallas', f.tallas)}${F('Marcación', f.marcacion)}
     </div>
     ${dib ? `<figure style="margin:6px 0"><div class="img" style="max-width:260px"><img src="${dib}" alt="" style="max-width:100%;max-height:220px"></div><figcaption>Dibujo de la ficha</figcaption></figure>` : ''}
     ${f.avios.length ? `<table><thead><tr><th>Avío</th><th>Por prenda</th><th>Medida</th><th>Nota</th></tr></thead><tbody>${f.avios.map(a => `<tr><td><b>${esc(a.nombre)}</b></td><td>${(a.porTalle || []).length && ['u', 'par'].includes(a.unidad) ? 'según talle' : `${esc(a.cantidad ?? '')} ${esc(a.unidad)}`}</td><td>${esc(a.medida || '')}</td><td>${esc(a.nota || '')}</td></tr>`).join('')}</tbody></table>${aviosPorTalle(f.avios)}` : '<p class="nota">Sin avíos cargados en el configurador.</p>'}

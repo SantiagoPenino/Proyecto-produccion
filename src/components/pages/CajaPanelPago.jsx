@@ -82,6 +82,9 @@ export default function CajaPanelPago({
   // Billetera: cuentas SECUNDARIAS LIBRES del cliente para el medio "Saldo de cuenta"
   // [{CueIdCuenta, CueNombre, CueTipo, CueSaldoActual, CuePuedeNegativo}]
   cuentasBilletera = [],
+  // false = el monto de la línea lo fija el que llama (ej. lo que el cliente entregó, traído
+  // del anticipo) y NO se pisa con el total a cubrir; la diferencia se resuelve al registrar.
+  autoCompletarMonto = true,
   // Billetera: el medio de pago viene FIJO (Facturar consumos / Venta de saldo desde saldo
   // a favor): la plata ya salió de la cuenta al consumir — cambiar el medio cobraría dos veces.
   lockMedioPago = false,
@@ -263,7 +266,7 @@ export default function CajaPanelPago({
 
   // ── Auto-rellenar cuando cambia el total o la moneda base ──
   useEffect(() => {
-    if (pagos.length === 1 && totalACubrir > 0 && derivedCondicion === 'CONTADO') {
+    if (autoCompletarMonto && pagos.length === 1 && totalACubrir > 0 && derivedCondicion === 'CONTADO') {
       const p = pagos[0];
       const contadoId = metodosPago.find(m => /(contado|efectivo)/i.test(m.MPaDescripcionMetodo))?.MPaIdMetodoPago || metodosPago[0]?.MPaIdMetodoPago || '';
 
@@ -288,7 +291,7 @@ export default function CajaPanelPago({
         }]);
       }
     }
-  }, [totalACubrir, moneda, cotizacion, metodosPago, derivedCondicion]); // Solo variables externas para no loopear
+  }, [totalACubrir, moneda, cotizacion, metodosPago, derivedCondicion, autoCompletarMonto]); // Solo variables externas para no loopear
 
   // ── Label botón por defecto ────────────────────────────────────────
   const defaultLabel = {
@@ -665,7 +668,7 @@ export default function CajaPanelPago({
                           onClick={() => {
                             const newMoneda = 'UYU';
                             if (p.moneda === newMoneda) return;
-                            if (pagos.length === 1 && totalACubrir > 0) {
+                            if (autoCompletarMonto && pagos.length === 1 && totalACubrir > 0) {
                               let fill = totalACubrir;
                               if (moneda === 'USD') fill = totalACubrir * (cotizacion || 1);
                               onPagosChange([{ ...p, moneda: newMoneda, monto: fill.toFixed(2) }]);
@@ -684,7 +687,7 @@ export default function CajaPanelPago({
                           onClick={() => {
                             const newMoneda = 'USD';
                             if (p.moneda === newMoneda) return;
-                            if (pagos.length === 1 && totalACubrir > 0) {
+                            if (autoCompletarMonto && pagos.length === 1 && totalACubrir > 0) {
                               let fill = totalACubrir;
                               if (moneda === 'UYU') fill = totalACubrir / (cotizacion || 1);
                               onPagosChange([{ ...p, moneda: newMoneda, monto: fill.toFixed(2) }]);
@@ -1033,7 +1036,7 @@ export default function CajaPanelPago({
                     value={p.moneda}
                     onChange={(e) => {
                       const newMoneda = e.target.value;
-                      if (pagos.length === 1 && totalACubrir > 0) {
+                      if (autoCompletarMonto && pagos.length === 1 && totalACubrir > 0) {
                         let fill = totalACubrir;
                         if (moneda === 'UYU' && newMoneda === 'USD') fill = totalACubrir / (cotizacion || 1);
                         if (moneda === 'USD' && newMoneda === 'UYU') fill = totalACubrir * (cotizacion || 1);

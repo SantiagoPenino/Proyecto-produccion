@@ -27,6 +27,8 @@ import { TicketsClienteView } from './modulos/tickets/TicketsClienteView';
 import { TicketThreadWindow } from './modulos/tickets/TicketThreadWindow';
 import { DesignerHomeView } from './modulos/DesignerHomeView';
 import { DesignerOrderPage } from './modulos/DesignerOrderPage';
+// [TIENDA · ARMAR PEDIDO] usa los bloques de la Solicitud (app interna): se carga recién al entrar
+const PedidoTiendaView = React.lazy(() => import('./modulos/PedidoTiendaView'));
 
 export const ClientPortalApp = () => {
     return (
@@ -77,6 +79,17 @@ export const ClientPortalApp = () => {
                         <ProtectedRoute>
                             <MainLayout>
                                 <TiendaView />
+                            </MainLayout>
+                        </ProtectedRoute>
+                    } />
+
+                    {/* El cliente arma su pedido de un producto con molde de TIZADA PRO (es una Solicitud de origen PORTAL) */}
+                    <Route path="/tienda/pedido/:id" element={
+                        <ProtectedRoute>
+                            <MainLayout>
+                                <React.Suspense fallback={null}>
+                                    <PedidoTiendaView />
+                                </React.Suspense>
                             </MainLayout>
                         </ProtectedRoute>
                     } />

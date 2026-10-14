@@ -3627,8 +3627,9 @@ async function _metodosChequeIds(transaction = null) {
 }
 
 /**
- * Deudas a las que se aplicaría un anticipo que entra a la cuenta `cueId`, más viejas
- * primero. MISMO criterio en la vista previa (GET .../anticipo/deudas) y en el alta:
+ * Deudas abiertas de la cuenta `cueId`, más viejas primero. Solo para el AVISO de la
+ * pantalla del anticipo (GET .../anticipo/deudas): el anticipo ya no las paga (13-10-2026),
+ * pero se le muestra al operador que siguen pendientes. Criterio de "abierta":
  *   · PENDIENTE / PARCIAL / VENCIDO — antes se salteaban las VENCIDO (y la deuda de una
  *     orden vence el mismo día que nace), así que el anticipo quedaba a favor con la
  *     deuda viva al lado;
@@ -3699,19 +3700,16 @@ const deudasParaAnticipo = async (req, res) => {
 
 // ─────────────────────────────────────────────
 // POST /contabilidad/caja/pago-anticipo
-// Body: { clienteId, cuentaId, importe, metodoPagoId, monedaId, concepto, imputarDeudas }
-//   imputarDeudas: true (por defecto) aplica el anticipo a las deudas abiertas de la cuenta
-//   (más viejas primero); false lo deja ENTERO como saldo a favor. Lo elige el operador en
-//   la pantalla, que antes no avisaba que el anticipo iba a pagar deudas.
+// Body: { clienteId, cuentaId, importe, metodoPagoId, monedaId, concepto }
+//   El anticipo es SOLO plata a favor: entra entero a la cuenta y NO paga deudas (para eso
+//   está "Registrar pago"). Una sola regla para Caja, Panel 360, Cuentas y la recarga de
+//   billetera del portal (13-10-2026). Las pantallas avisan si el cliente tiene deudas.
 const registrarPagoAnticipo = async (req, res) => {
   const usuarioId = req.user.id;
   // Multiempresa: empresa a la que se atribuye el anticipo (null => la BD aplica el DEFAULT)
   const empresaId = req.body?.empresaId || req.user?.empresaId || null;
   try {
-    const { clienteId, cuentaId, importe, metodoPagoId, monedaId, concepto, admin, fecha, cotizacion, imputarDeudas } = req.body;
-    // Por defecto SÍ se aplica a deudas (lo de siempre, para cualquier llamador viejo); solo un
-    // false explícito de la pantalla lo deja entero a favor.
-    const aplicarADeudas = !(imputarDeudas === false || imputarDeudas === 'false' || imputarDeudas === 0);
+    const { clienteId, cuentaId, importe, metodoPagoId, monedaId, concepto, admin, fecha, cotizacion } = req.body;
     if (!clienteId || !importe)
       return res.status(400).json({ error: 'Faltan parámetros: clienteId, importe' });
     const montoNum = Number(importe);
@@ -3823,9 +3821,8 @@ const registrarPagoAnticipo = async (req, res) => {
       const tcaId = tcaR.recordset[0].TcaIdTransaccion;
 
       // ─────────────────────────────────────────────
-      let pagIdAnticipo = null;   // rastro pago→deuda en ImputacionPago (ver imputación más abajo)
       if (metodoPagoId) {
-        const pagR = await new sql.Request(transaction)
+        await new sql.Request(transaction)
           .input('Tca',  sql.Int,          tcaId)
           .input('Met',  sql.Int,          parseInt(metodoPagoId))
           .input('MonId',sql.Int,          monId)
@@ -3835,9 +3832,7 @@ const registrarPagoAnticipo = async (req, res) => {
           .input('Cotiz',sql.Decimal(18,4),cotizNum)
           .input('Conv', sql.Decimal(18,4),montoNum * cotizNum)
           .query(`INSERT INTO dbo.Pagos(PagTcaIdTransaccion,MPaIdMetodoPago,PagIdMonedaPago,PagMontoPago,PagFechaPago,PagUsuarioAlta,PagCotizacion,PagMontoConvertido,PagTipoMovimiento)
-                  OUTPUT INSERTED.PagIdPago
                   VALUES(@Tca,@Met,@MonId,@Monto,ISNULL(@FEmis,GETDATE()),@Usr,@Cotiz,@Conv,'INGRESO')`);
-        pagIdAnticipo = pagR.recordset[0]?.PagIdPago || null;
       }
 
       // ─────────────────────────────────────────────
@@ -3932,67 +3927,11 @@ const registrarPagoAnticipo = async (req, res) => {
       }, transaction);
 
       // ─────────────────────────────────────────────
-      // Imputar el anticipo a las deudas pendientes del cliente (PEPS).
-      // Se hace ANTES del asiento para saber cuánto cancela deuda y cuánto
-      // queda como saldo a favor, y así separar las patas del HABER.
-      let deudasImputadas = 0;
-      let montoImputado = 0;
-      let deudasDejadas = 0;   // deudas abiertas que el operador eligió NO pagar con este anticipo
-      try {
-        const deudasCuenta = await _deudasParaAnticipo(cueId, transaction);
-        if (!aplicarADeudas) {
-          deudasDejadas = deudasCuenta.length;
-          if (deudasDejadas) logger.info(`[ANTICIPO] Cli=${cliId}: el operador eligió dejarlo a favor (${deudasDejadas} deuda(s) abiertas sin tocar).`);
-        }
-
-        let saldoDisponible = montoNum;
-        for (const d of (aplicarADeudas ? deudasCuenta : [])) {
-          if (saldoDisponible <= 0) break;
-          const pendiente = Number(d.DDeImportePendiente);
-          const aplicar = Math.min(saldoDisponible, pendiente);
-          const nuevoPend = Math.max(0, pendiente - aplicar);
-          const nuevoEstado = nuevoPend < 0.01 ? 'COBRADO' : 'PARCIAL';
-
-          // Imputar anticipo a deuda: centralizado. La imputación automática (en la
-          // misma operación en que entra el anticipo) NO descuenta el libro — el
-          // anticipo queda entero como billetera; DeudaDocumento es quien dice qué
-          // factura está paga. (Distinto del botón manual "Imputar anticipo", que sí
-          // resta: ahí la plata YA estaba contada como disponible antes de gastarla).
-          await contabilidadSvc.reducirDeuda({ ddeId: d.DDeIdDocumento, monto: aplicar }, transaction);
-
-          // Rastro pago→deuda: sin esto, anular el RA (anularReciboInterno → reponerDeudasDeTransaccion)
-          // no sabía qué deudas había pagado y las dejaba cobradas sin plata.
-          if (pagIdAnticipo && aplicar > 0.001) {
-            await new sql.Request(transaction)
-              .input('pagId', sql.Int,           pagIdAnticipo)
-              .input('ddeId', sql.Int,           d.DDeIdDocumento)
-              .input('cueId', sql.Int,           cueId)
-              .input('monto', sql.Decimal(18,4), aplicar)
-              .input('usr',   sql.Int,           usuarioId)
-              .input('FEmis', sql.DateTime,      fechaAnticipo)
-              .query(`
-                INSERT INTO dbo.ImputacionPago
-                  (PagIdPago, DDeIdDocumento, CueIdCuenta, ImpImporte, ImpFecha, ImpUsuarioAlta)
-                VALUES (@pagId, @ddeId, @cueId, @monto, ISNULL(@FEmis, GETDATE()), @usr)
-              `);
-          }
-
-          saldoDisponible -= aplicar;
-          montoImputado += aplicar;
-          deudasImputadas++;
-          logger.info(`[ANTICIPO] Imputado ${aplicar.toFixed(2)} a deuda #${d.DDeIdDocumento} -> pendiente: ${nuevoPend.toFixed(2)} (${nuevoEstado})`);
-        }
-      } catch (eDeu) {
-        logger.warn(`[ANTICIPO] Error al imputar deudas: ${eDeu.message}`);
-      }
-
-      // ─────────────────────────────────────────────
-      // ASIENTO CONTABLE
+      // ASIENTO CONTABLE — el anticipo es SOLO saldo a favor (no paga deudas: eso es
+      // "Registrar pago"; 13-10-2026), así que entra entero a Anticipos.
       //   DEBE:  Caja       — el dinero que entra
-      //   HABER: Deudores   — la parte que cancela deudas ya existentes
-      //   HABER: Anticipos  — el remanente que queda como saldo a favor (2.3.1)
+      //   HABER: Anticipos  — saldo a favor del cliente (2.3.1)
       try {
-        const remanente = Math.max(0, montoNum - montoImputado);
         const lineasAsiento = [{
           // Cheque → Valores a Depositar (1.1.5). Efectivo/otros → Caja.
           codigoCuenta: codCuentaIngreso,
@@ -4000,29 +3939,15 @@ const registrarPagoAnticipo = async (req, res) => {
           haberBase: 0,
           monedaId: monId,
           cotizacion: cotizNum,
+        }, {
+          codigoCuenta: contabilidadCore.CUENTAS.ANTICIPOS,
+          debeBase:  0,
+          haberBase: montoNum,
+          monedaId: monId,
+          cotizacion: cotizNum,
+          entidadId:   cliId,
+          entidadTipo: 'CLIENTE',
         }];
-        if (montoImputado > 0.001) {
-          lineasAsiento.push({
-            codigoCuenta: monStr === 'USD' ? contabilidadCore.CUENTAS.CLIENTE_USD : contabilidadCore.CUENTAS.CLIENTE_UYU,
-            debeBase:  0,
-            haberBase: montoImputado,
-            monedaId: monId,
-            cotizacion: cotizNum,
-            entidadId:   cliId,
-            entidadTipo: 'CLIENTE',
-          });
-        }
-        if (remanente > 0.001) {
-          lineasAsiento.push({
-            codigoCuenta: contabilidadCore.CUENTAS.ANTICIPOS,
-            debeBase:  0,
-            haberBase: remanente,
-            monedaId: monId,
-            cotizacion: cotizNum,
-            entidadId:   cliId,
-            entidadTipo: 'CLIENTE',
-          });
-        }
         await contabilidadCore.generarAsientoCompleto({
           concepto:         ('Anticipo #' + cliId + ' - ' + conceptoFull).substring(0, 200),
           fecha:            fechaAnticipo || new Date(), // retrofecha; null => hoy
@@ -4036,14 +3961,11 @@ const registrarPagoAnticipo = async (req, res) => {
       }
 
       await transaction.commit();
-      const msgImputado = deudasImputadas > 0
-        ? ` Se imputó ${monStr} ${montoImputado.toFixed(2)} contra ${deudasImputadas} deuda(s) pendiente(s).`
-        : (deudasDejadas > 0 ? ` Quedó entero como saldo a favor; las ${deudasDejadas} deuda(s) abiertas siguen pendientes.` : '');
-      logger.info(`[ANTICIPO] Cli=${cliId} Cue=${cueId} Monto=${montoNum} DocId=${docId} TcaId=${tcaId}${msgImputado}`);
+      logger.info(`[ANTICIPO] Cli=${cliId} Cue=${cueId} Monto=${montoNum} DocId=${docId} TcaId=${tcaId} (todo a favor)`);
       const s = io(req); if (s) s.emit('actualizado', { type: 'anticipo' });
       return res.status(201).json({
         success: true, tcaId, docId, movId,
-        message: `Anticipo ${monStr} ${montoNum.toFixed(2)} registrado correctamente.${msgImputado}`
+        message: `Anticipo ${monStr} ${montoNum.toFixed(2)} registrado como saldo a favor.`
       });
     } catch (errTx) { await rollbackSeguro(transaction, 'caja'); throw errTx; }
   } catch (err) {

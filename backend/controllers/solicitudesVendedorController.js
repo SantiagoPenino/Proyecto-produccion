@@ -65,7 +65,20 @@ exports.fichaPdf = async (req, res) => {
 // TIZADA PRO por API (diseños + lista de talles → tizada automática)
 exports.tizadaProVer        = accion('tizadaProVer',        (pool, req) => svc.tizadaProVer(pool, req.user, id(req.params.id), id(req.params.productoSolId)));
 exports.tizadaProEditables = accion('tizadaProEditables', (pool, req) => svc.tizadaProEditables(pool, req.user, id(req.params.id), id(req.params.productoSolId), req.body || {}));
+exports.piezasDelArte = accion('piezasDelArte', (pool, req) => svc.piezasDelArte(pool, req.user, id(req.params.id), id(req.params.archivoId)));
 exports.tizadaProGuardar    = accion('tizadaProGuardar',    (pool, req) => svc.tizadaProGuardar(pool, req.user, id(req.params.id), id(req.params.productoSolId), req.body || {}));
+// [A MEDIDA]
+exports.tizadaProCalcular   = accion('tizadaProCalcular',   (pool, req) => svc.tizadaProCalcular(pool, req.user, id(req.params.id), id(req.params.productoSolId), req.body || {}));
+exports.tizadaProPlantillaPedir  = accion('tizadaProPlantillaPedir',  (pool, req) => svc.tizadaProPlantillaPedir(pool, req.user, id(req.params.id), id(req.params.productoSolId)));
+exports.tizadaProPlantillaEstado = accion('tizadaProPlantillaEstado', (pool, req) => svc.tizadaProPlantillaEstado(pool, req.user, id(req.params.id), id(req.params.productoSolId)));
+exports.tizadaProPlantillaBajar = async (req, res) => {
+  try {
+    const a = await svc.tizadaProPlantillaBajar(await getPool(), req.user, id(req.params.id), id(req.params.productoSolId), req.query.nombre);
+    res.setHeader('Content-Type', a.tipo);
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(a.nombre)}`);
+    res.send(a.buffer);
+  } catch (e) { manejar(res, e, 'tizadaProPlantillaBajar'); }
+};
 exports.tizadaProEnviar     = accion('tizadaProEnviar',     (pool, req) => svc.tizadaProEnviar(pool, req.user, id(req.params.id), id(req.params.productoSolId), req.body || {}));
 exports.tizadaProActualizar = accion('tizadaProActualizar', (pool, req) => svc.tizadaProActualizar(pool, req.user, id(req.params.id), id(req.params.envioId), req.body || {}));
 exports.estimarPlazo      = accion('estimarPlazo',      (pool, req) => svc.estimarPlazo(pool, req.user, id(req.params.id)));

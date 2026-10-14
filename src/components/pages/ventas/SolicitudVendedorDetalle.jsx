@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { toast } from 'sonner';
-import { AlertTriangle, ArrowLeft, Ban, CalendarClock, CheckCircle2, ClipboardList, Factory, FileText, History, Loader2, MessageSquare, Paperclip, Pencil, Printer, RefreshCw, RotateCcw, Send, Trash2, Upload } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, Ban, CalendarClock, CheckCircle2, ClipboardList, Factory, FileText, History, Loader2, MessageSquare, Paperclip, Pencil, Printer, RefreshCw, RotateCcw, Send, Trash2, Upload, X } from 'lucide-react';
 import { useAuth } from '../../../context/AuthContext';
 import { fileService } from '../../../client-portal/api/fileService';
 import api from '../../../services/apiClient';
@@ -12,6 +12,7 @@ import OrderDetailModal from '../../production/components/OrderDetailModal';
 import {
     BTN_PELIGRO, BTN_PRIMARIO, BTN_SECUNDARIO, Campo, ESTADO_PARTE, ESTADO_SOLICITUD, INPUT, Info, MONEDA, MotivoModal,
     NOMBRE_PARTE, ROL_ARCHIVO, Checklist, SEL_CAMPO, TIPO_TRABAJO, VisorPdf, claseSel, errorDe, plata, useConfirmar,
+    Ventana, BTN_GRANDE_SI, BTN_GRANDE_NO, Miniatura, usePiezasArte, piezaDelArte, TarjetaPieza, PiezaConArte,
 } from './solicitudesComunes';
 import Selector from '../../ui/Selector';
 import EstadoProduccionPanel from './EstadoProduccionPanel';
@@ -68,6 +69,37 @@ export async function medirDisenoPronto(file, tipo) {
     return { AnchoM: m.width, AltoM: m.height };
 }
 
+// Hacer una acción o subir archivos sobre la solicitud, con el aviso y la recarga de siempre. Lo usan el detalle y el
+// pedido que el cliente arma en la Tienda del portal (client-portal/modulos/PedidoTiendaView.jsx).
+export function useAccionesSolicitud(id, cargar) {
+    const [busy, setBusy] = useState(false);
+    const [subida, setSubida] = useState(null);           // { nombre, pct }
+    const hacer = async (fn, okMsg) => {
+        setBusy(true);
+        try { await fn(); if (okMsg) toast.success(okMsg); await cargar(); return true; }
+        catch (e) { toast.error(errorDe(e)); return false; }
+        finally { setBusy(false); }
+    };
+    // Devuelve lo que se subió ({ ArchivoID, … } de cada archivo), por si quien llama tiene que usarlo (portal a medida)
+    const subir = async (files, campos, tipoParte) => {
+        const lista = Array.from(files || []);
+        if (!lista.length) return [];
+        setBusy(true);
+        const hechos = [];
+        try {
+            for (const f of lista) {
+                const medida = campos.Rol === 'DISENO_PRONTO' && !campos.TizadaID ? await medirDisenoPronto(f, tipoParte) : {};
+                setSubida({ nombre: f.name, pct: 0 });
+                hechos.push(await svc.subirArchivo(id, f, { ...campos, ...medida }, (loaded, total) => setSubida({ nombre: f.name, pct: total ? Math.round((loaded / total) * 100) : 0 })));
+            }
+            toast.success(lista.length === 1 ? 'Archivo guardado.' : `${lista.length} archivos guardados.`);
+        } catch (e) { toast.error(errorDe(e)); }
+        finally { setSubida(null); setBusy(false); await cargar(); }
+        return hechos;
+    };
+    return { busy, subida, hacer, subir };
+}
+
 const ESTADO_PEDIDO = {
     PROCESANDO: 'Creando el pedido…',
     PASANDO_ARCHIVOS: 'Pedido creado · pasando los archivos a producción',
@@ -88,8 +120,6 @@ export default function SolicitudVendedorDetalle() {
     // Si abrió sin datos (entrada directa por la URL), el contenido entra con un fundido después del esqueleto.
     const conEsqueleto = useRef(!s);
     const precargaUsada = useRef(false);
-    const [busy, setBusy] = useState(false);
-    const [subida, setSubida] = useState(null);           // { nombre, pct }
     const [cancelando, setCancelando] = useState(false);
     const [tab, setTab] = useState(null);                 // 'resumen' | 'prod-<id>' | 'precio' | 'interacciones' | 'historial'
     const [telas, setTelas] = useState([]);               // telas de sublimación (las elige el diseñador por archivo)
@@ -134,27 +164,7 @@ export default function SolicitudVendedorDetalle() {
         return () => clearInterval(t);
     }, [pasando, cargar]);
 
-    const hacer = async (fn, okMsg) => {
-        setBusy(true);
-        try { await fn(); if (okMsg) toast.success(okMsg); await cargar(); return true; }
-        catch (e) { toast.error(errorDe(e)); return false; }
-        finally { setBusy(false); }
-    };
-
-    const subir = async (files, campos, tipoParte) => {
-        const lista = Array.from(files || []);
-        if (!lista.length) return;
-        setBusy(true);
-        try {
-            for (const f of lista) {
-                const medida = campos.Rol === 'DISENO_PRONTO' && !campos.TizadaID ? await medirDisenoPronto(f, tipoParte) : {};
-                setSubida({ nombre: f.name, pct: 0 });
-                await svc.subirArchivo(id, f, { ...campos, ...medida }, (loaded, total) => setSubida({ nombre: f.name, pct: total ? Math.round((loaded / total) * 100) : 0 }));
-            }
-            toast.success(lista.length === 1 ? 'Archivo guardado.' : `${lista.length} archivos guardados.`);
-        } catch (e) { toast.error(errorDe(e)); }
-        finally { setSubida(null); setBusy(false); await cargar(); }
-    };
+    const { busy, subida, hacer, subir } = useAccionesSolicitud(id, cargar);
 
     if (!s) return <EsqueletoDetalle />;
 
@@ -373,6 +383,9 @@ export function ProductoTab({ s, p, n, id, user, perfil, busy, abierta, puedeVen
         ? (p.Datos?.sublimacion?.modeloClave ? 'Faltan telas en "Piezas y telas".' : 'Primero elegí el modelo y la tela de cada pieza en "Piezas y telas".')
         : (!planillas.length && !String(p.Datos?.notaTalles || '').trim() && !(p.Datos?.tizadaPro?.planilla?.length > 0) && p.Datos?.comoSeDefine !== 'MEDIDA' && p.Config?.Molde !== 'NO' ? 'Falta la planilla de talles y nombres (o la nota de talles).' : null);
     const principal = p.Partes.find(pa => pa.Tipo === 'PRINCIPAL');
+    // [ENVIAR A DISEÑO 12/10] un solo botón por producto: ventana con lo que se envía (todo tildado)
+    const [enviandoDiseno, setEnviandoDiseno] = useState(false);
+    const sinEnviar = p.Partes.filter(pa => pa.Estado === 'INGRESADO');
 
     return (
         // Producto a la izquierda y "Estado para producción" a la derecha, pegado al bajar; hasta 1100 px, uno abajo del otro
@@ -412,6 +425,17 @@ export function ProductoTab({ s, p, n, id, user, perfil, busy, abierta, puedeVen
                 <PiezasTelasBloque id={id} p={p} busy={busy} puede={puedeVender && !p.PedidoNoDocERP} hacer={hacer} artes={[]} onEstado={setSubl} />
             )}
 
+            {/* [ENVIAR A DISEÑO 12/10] UN botón para todo el producto (antes, uno por servicio) */}
+            {puedeVender && !p.PedidoNoDocERP && sinEnviar.length > 0 && (
+                <section className={`${ZONA} flex flex-wrap items-center justify-between gap-3`}>
+                    <div className="text-xs text-slate-600">Sin enviar a Diseño: <b>{sinEnviar.map(pa => NOMBRE_PARTE[pa.Tipo] || pa.Tipo).join(' · ')}</b></div>
+                    <button type="button" disabled={busy} onClick={() => setEnviandoDiseno(true)} className={BTN_PRIMARIO}><Send size={12} /> Enviar a Diseño…</button>
+                </section>
+            )}
+            {enviandoDiseno && (
+                <EnviarADisenoModal p={p} partes={sinEnviar} faltaSubl={faltaSubl} hacer={hacer} onClose={() => setEnviandoDiseno(false)} />
+            )}
+
         </div>
             <aside className="min-[1101px]:sticky min-[1101px]:top-4 min-[1101px]:max-h-[calc(100vh-2rem)] min-[1101px]:overflow-y-auto">
                 <Conversion s={s} p={p} pedido={conv.pedido} faltantes={faltantes} avisos={conv.avisos || []} checklist={conv.checklist} puedeVender={perfil.esVendedor} busy={busy} hacer={hacer} id={id} />
@@ -427,11 +451,101 @@ const ETAPA_PRODUCCION = {
     APROBADO_FALTA_ARTE: { txt: 'Aprobado · falta el arte', cls: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
 };
 
+/* [ENVIAR A DISEÑO 12/10] Ventana del botón único: cada servicio sin enviar, tildado, con su tipo de trabajo. La
+   sublimación con molde de TIZADA PRO trae además "Generar la tizada" (tildado): sale ya a TIZADA y arma el PDF.
+   Se envían de a uno; si alguno no puede, se dice por qué y los demás igual salen. */
+function EnviarADisenoModal({ p, partes, faltaSubl, hacer, onClose }) {
+    const conTizada = p.TipoFabricacion === 'PRODUCTO_TERMINADO' && !!p.Config?.TizadaProMoldeRef;
+    const [sel, setSel] = useState(() => Object.fromEntries(partes.map(pa => [pa.ParteID, {
+        on: !(pa.Tipo === 'PRINCIPAL' && faltaSubl), tipo: pa.ArteOrigen === 'CLIENTE' ? 'REVISAR' : 'DESDE_CERO', tizada: true,
+    }])));
+    const [enviando, setEnviando] = useState(false);
+    const [resultado, setResultado] = useState(null);   // [{ nombre, ok, texto }]
+    const set = (id, c) => setSel(x => ({ ...x, [id]: { ...x[id], ...c } }));
+    // la principal primero (si TIZADA no la acepta, se ve arriba)
+    const orden = [...partes].sort((a, b) => (a.Tipo === 'PRINCIPAL' ? -1 : b.Tipo === 'PRINCIPAL' ? 1 : 0));
+    const elegidas = orden.filter(pa => sel[pa.ParteID]?.on);
+    const enviar = async () => {
+        setEnviando(true);
+        const res = [];
+        for (const pa of elegidas) {
+            const nombre = NOMBRE_PARTE[pa.Tipo] || pa.Tipo;
+            const s = sel[pa.ParteID];
+            const conTz = pa.Tipo === 'PRINCIPAL' && conTizada;
+            try {
+                const r = await svc.enviarADiseno(pa.ParteID, s.tipo, conTz ? !!s.tizada : undefined);
+                let texto = 'Enviado a la bandeja de Diseño.';
+                if (conTz && s.tizada) texto += r?.tizada && r.tizada.Estado !== 'ERROR' && r.tizada.Estado !== 'RECHAZADO'
+                    ? ` Mandado a TIZADA PRO (${r.tizada.Referencia}): el PDF de la tizada vuelve solo cuando termine.`
+                    : ` Pero NO salió a TIZADA PRO: ${r?.tizada?.mensaje || 'sin respuesta'}. El diseñador lo puede mandar desde su pantalla.`;
+                res.push({ nombre, ok: !(conTz && s.tizada && (!r?.tizada || ['ERROR', 'RECHAZADO'].includes(r.tizada.Estado))), texto });
+            } catch (e) { res.push({ nombre, ok: false, error: true, texto: errorDe(e) }); }
+        }
+        setResultado(res);
+        setEnviando(false);
+        await hacer(async () => { });   // recarga la solicitud
+    };
+    const pie = resultado
+        ? <button type="button" data-autofocus onClick={onClose} className={BTN_GRANDE_SI}>Listo</button>
+        : <>
+            <button type="button" onClick={onClose} disabled={enviando} className={BTN_GRANDE_NO}>Cancelar</button>
+            <button type="button" data-autofocus onClick={enviar} disabled={enviando || !elegidas.length} className={BTN_GRANDE_SI}>
+                {enviando ? <><Loader2 size={14} className="animate-spin" /> Enviando…</> : <><Send size={14} /> Enviar {elegidas.length === 1 ? '1 servicio' : `${elegidas.length} servicios`} a Diseño</>}
+            </button>
+        </>;
+    return (
+        <Ventana Icono={Send} titulo="Enviar a Diseño" onClose={() => !enviando && onClose()} pie={pie}>
+            {resultado ? (
+                <ul className="space-y-2 text-sm">
+                    {resultado.map((r, k) => (
+                        <li key={k} className={`flex items-start gap-2 rounded-xl border px-3 py-2 ${r.error ? 'border-rose-200 bg-rose-50' : r.ok ? 'border-emerald-200 bg-emerald-50' : 'border-amber-200 bg-amber-50'}`}>
+                            {r.ok ? <CheckCircle2 size={16} className="text-emerald-600 mt-0.5 shrink-0" /> : <AlertTriangle size={16} className={`${r.error ? 'text-rose-600' : 'text-amber-600'} mt-0.5 shrink-0`} />}
+                            <span><b>{r.nombre}</b>{r.error ? ': no se envió. ' : ': '}{r.texto}</span>
+                        </li>
+                    ))}
+                </ul>
+            ) : (
+                <div className="space-y-2 text-sm">
+                    <p className="text-slate-600">Tildá lo que se envía a la bandeja de Diseño.</p>
+                    {orden.map(pa => {
+                        const s = sel[pa.ParteID];
+                        const falta = pa.Tipo === 'PRINCIPAL' ? faltaSubl : null;
+                        return (
+                            <div key={pa.ParteID} className={`rounded-xl border px-3 py-2.5 ${s.on ? 'border-brand-cyan/40 bg-brand-cyan/5' : 'border-slate-200'}`}>
+                                <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+                                    <label className="flex items-center gap-2 font-bold text-slate-800 min-w-[220px] cursor-pointer">
+                                        <input type="checkbox" checked={s.on} disabled={enviando || !!falta} onChange={e => set(pa.ParteID, { on: e.target.checked })} className="h-4 w-4 accent-brand-cyan" />
+                                        {NOMBRE_PARTE[pa.Tipo] || pa.Tipo}
+                                    </label>
+                                    {s.on && (
+                                        <Selector value={s.tipo} disabled={enviando} onChange={e => set(pa.ParteID, { tipo: e.target.value })} claseBoton={claseSel('border border-slate-200 rounded-lg px-2 py-1.5 text-xs bg-white')} anchoLista={240}>
+                                            {Object.entries(TIPO_TRABAJO).map(([k, t]) => <option key={k} value={k}>{t}</option>)}
+                                        </Selector>
+                                    )}
+                                </div>
+                                {falta && <div className="mt-1 text-[11px] font-bold text-amber-700 flex items-center gap-1"><AlertTriangle size={12} /> Todavía no se puede: {falta}</div>}
+                                {pa.Tipo === 'PRINCIPAL' && conTizada && s.on && (
+                                    <label className="mt-2 ml-6 flex items-start gap-2 text-xs text-slate-700 cursor-pointer">
+                                        <input type="checkbox" checked={s.tizada} disabled={enviando} onChange={e => set(pa.ParteID, { tizada: e.target.checked })} className="mt-0.5 h-4 w-4 accent-brand-cyan" />
+                                        <span><b>Generar ya la tizada en TIZADA PRO</b> (arma el PDF con el arte y la lista de jugadores; vuelve solo como diseño pronto). Si TIZADA no lo acepta, igual queda enviado a Diseño.</span>
+                                    </label>
+                                )}
+                            </div>
+                        );
+                    })}
+                </div>
+            )}
+        </Ventana>
+    );
+}
+
 /* Producción principal (sublimación) en la pestaña del producto: UN contenedor con todo lo que
    Diseño necesita, en el orden en que el vendedor lo carga: arte del cliente → piezas y telas →
    planilla de talles y nombres → Enviar a Diseño (al final, y trabado hasta que esté todo). */
-function PrincipalBloque({ p, pa, id, perfil, busy, abierta, puedeVender, arte, planillas, artes, faltaEnvio, onEstadoSubl, hacer, subir }) {
-    const [tipoTrabajo, setTipoTrabajo] = useState(pa.ArteOrigen === 'CLIENTE' ? 'REVISAR' : 'DESDE_CERO');
+// cliente = el pedido que arma el cliente en la Tienda del portal (PedidoTiendaView): sin lo interno de Diseño.
+// extraMedio = lo que esa pantalla pone entre el arte y la lista de jugadores. porArte = lo que pone dentro de la
+// pestaña de cada arte (los extras de esa camiseta), ver TizadaProBloque.
+export function PrincipalBloque({ p, pa, id, perfil, busy, abierta, puedeVender, arte, planillas, artes, faltaEnvio, onEstadoSubl, hacer, subir, cliente = false, extraMedio = null, porArte = null, extrasPortal = null }) {
     const bloqueada = !abierta || !!p.PedidoNoDocERP;
     const puede = puedeVender && !p.PedidoNoDocERP;
     const d = pa.Datos || {};
@@ -440,30 +554,31 @@ function PrincipalBloque({ p, pa, id, perfil, busy, abierta, puedeVender, arte, 
     const conTizada = p.TipoFabricacion === 'PRODUCTO_TERMINADO' && !!p.Config?.TizadaProMoldeRef;
     return (
         <section className={ZONA}>
-            <div className={`${TIT_ZONA} flex flex-wrap items-center justify-between gap-2`}>
+            {/* Portal (cliente): sin el encabezado interno (estado, diseñador, indicaciones para Diseño) */}
+            {!cliente && <div className={`${TIT_ZONA} flex flex-wrap items-center justify-between gap-2`}>
                 <span>Producción principal ({nombrePrincipal(p)}) <small>{p.Config?.Molde === 'NO' ? 'arte → con eso se envía a Diseño' : conTizada ? 'arte · telas por pieza · diseños y lista de jugadores → TIZADA PRO arma la tizada' : 'arte · telas por pieza · planilla de talles → con eso se envía a Diseño'}</small></span>
                 <span className="flex items-center gap-1.5"><Pastilla e={pa.Estado} mapa={ESTADO_PARTE} />{pa.Modificada ? <PastillaModificada /> : null}
                     {d.disenoAutomatico ? <span className="px-2 py-0.5 rounded-full border text-[10px] font-black bg-emerald-100 text-emerald-700 border-emerald-200 normal-case tracking-normal" title={`Lo hizo ${d.disenoAutomatico.sistema} (${d.disenoAutomatico.referencia})`}>Diseño automático · {d.disenoAutomatico.sistema}</span> : null}
-                    {pa.DisenadorNombre ? <span className="text-[11px] font-bold text-slate-600 normal-case tracking-normal">{pa.Estado === 'DISENADO' ? 'Diseñó' : 'Lo tiene'} <b>{pa.DisenadorNombre}</b></span>
+                    {cliente ? null : pa.DisenadorNombre ? <span className="text-[11px] font-bold text-slate-600 normal-case tracking-normal">{pa.Estado === 'DISENADO' ? 'Diseñó' : 'Lo tiene'} <b>{pa.DisenadorNombre}</b></span>
                         : pa.Estado === 'ENVIADO_DISENO' ? <span className="text-[11px] font-bold text-slate-500 normal-case tracking-normal">nadie lo tomó todavía</span> : null}</span>
-            </div>
-            <div className="grid md:grid-cols-2 gap-3 text-xs">
+            </div>}
+            {!cliente && <div className="grid md:grid-cols-2 gap-3 text-xs">
                 <div className="space-y-0.5">
                     {pa.IncluidoEnProducto ? <div className="text-[10px] font-bold text-slate-400">Incluido en el producto</div> : null}
                     {d.variante && <div className="text-slate-600">{d.variante}</div>}
                     {d.material && <div className="text-slate-600">{d.material}</div>}
                     {pa.Observaciones ? <div className="text-slate-500 whitespace-pre-line">Indicaciones: {pa.Observaciones}</div> : <div className="text-slate-400">Sin indicaciones para Diseño.</div>}
                 </div>
-                <div>
+                {!conTizada && <div>
                     <Sub>1 · Arte del cliente <span className="normal-case font-normal">{conTizada
                         ? '(UN archivo .ai o .pdf por diseño — jugador, alternativa… — con todas las piezas: se elige en el paso 3)'
                         : '(escudos, logos, bocetos: después se asigna a cada pieza)'}</span></Sub>
                     <ArchivosCelda archivos={arte} vacio="Sin archivos" puedeQuitar={puede} onQuitar={(a) => hacer(() => svc.quitarArchivo(id, a.ArchivoID), 'Archivo quitado.')} conRol />
                     {puede && <div className="mt-1.5"><BotonSubir busy={busy} roles={ROLES_PARTE} onFiles={(files, Rol) => subir(files, { Rol, ParteID: pa.ParteID }, pa.Tipo)} /></div>}
-                </div>
-            </div>
+                </div>}
+            </div>}
 
-            {p.TipoFabricacion === 'PRODUCTO_TERMINADO' && <PiezasTelasBloque plano id={id} p={p} busy={busy} puede={puede} hacer={hacer} artes={artes} onEstado={onEstadoSubl} conTizada={conTizada} />}
+            {p.TipoFabricacion === 'PRODUCTO_TERMINADO' && !conTizada && <PiezasTelasBloque plano id={id} p={p} busy={busy} puede={puede} hacer={hacer} artes={artes} onEstado={onEstadoSubl} conTizada={conTizada} cliente={cliente} />}
 
             {p.Config?.Molde !== 'NO' && !conTizada && <div className="pt-3 mt-3 border-t border-slate-200 text-xs">
                 <Sub>{p.TipoFabricacion === 'PRODUCTO_TERMINADO' ? '3' : '2'} · Planilla de talles y nombres <span className="normal-case font-normal">(cuántas prendas de cada talle, nombres y números) y referencias</span></Sub>
@@ -480,32 +595,50 @@ function PrincipalBloque({ p, pa, id, perfil, busy, abierta, puedeVender, arte, 
                 vuelve sola como diseño pronto (diseño automático). La planilla original del cliente y los datos de
                 nombres y números quedan adentro, como opcionales. */}
             {conTizada && (
-                <TizadaProBloque id={id} p={p} puede={puede && !bloqueada} onCargado={() => hacer(async () => { })} numero={3}
-                    extra={(
-                        <details className="mt-3 border border-slate-200 rounded-xl px-3 py-2" open={planillas.length > 0}>
-                            <summary className="cursor-pointer text-[11px] font-bold text-slate-600">Planilla original del cliente y datos de nombres y números (opcional){planillas.length ? ` · ${planillas.length} archivo(s)` : ''}</summary>
-                            <div className="grid md:grid-cols-2 gap-4 mt-2">
-                                <div>
-                                    <ArchivosCelda archivos={planillas} vacio="Sin archivos" puedeQuitar={puede} onQuitar={(a) => hacer(() => svc.quitarArchivo(id, a.ArchivoID), 'Archivo quitado.')} conRol />
-                                    {puede && <div className="mt-1.5"><BotonSubir busy={busy} roles={ROLES_PRODUCTO} onFiles={(files, Rol) => subir(files, { Rol, ProductoSolID: p.ProductoSolID })} /></div>}
-                                </div>
-                                <TallesCampos id={id} p={p} puede={puede} busy={busy} hacer={hacer} />
+                <TizadaProBloque id={id} p={p} puede={puede && !bloqueada} onCargado={() => hacer(async () => { })} numero={3} cliente={cliente} porArte={porArte}
+                    subirArchivos={subir} extrasPortal={extrasPortal}
+                    // [ARTE ARRIBA 12/10] arriba el arte (de quién es + editables, se leen solos), en el medio Piezas y telas
+                    // Portal: las telas van en la pestaña de cada arte; "Piezas y telas" aparece solo si falta completar la base
+                    medio={<>
+                        {p.TipoFabricacion === 'PRODUCTO_TERMINADO' && (!cliente || !p.Datos?.sublimacion?.completo) ? <PiezasTelasBloque plano id={id} p={p} busy={busy} puede={puede} hacer={hacer} artes={artes} onEstado={onEstadoSubl} conTizada cliente={cliente} /> : null}
+                        {extraMedio}
+                    </>}
+                    onQuitarArte={(a) => hacer(() => svc.quitarArchivo(id, a.ArchivoID), 'Arte quitado.')}
+                    onPlanillaArchivo={(file) => subir([file], { Rol: 'PLANILLA', ProductoSolID: p.ProductoSolID })}
+                    archivosArte={(() => {
+                        // los demás archivos de la producción principal (bocetos, referencias…) y el botón de subir
+                        const otros = arte.filter(a => !(a.Rol === 'ARTE_CLIENTE' && /\.(ai|pdf)$/i.test(a.NombreOriginal || '')));
+                        return (
+                            <div className="mt-2 space-y-1.5">
+                                {otros.length > 0 && <ArchivosCelda archivos={otros} vacio="" puedeQuitar={puede} onQuitar={(a) => hacer(() => svc.quitarArchivo(id, a.ArchivoID), 'Archivo quitado.')} conRol />}
+                                {puede && <BotonSubir busy={busy} roles={ROLES_PARTE} onFiles={(files, Rol) => subir(files, { Rol, ParteID: pa.ParteID }, pa.Tipo)} />}
                             </div>
-                        </details>
-                    )} />
+                        );
+                    })()}
+                    // La lista de jugadores reemplaza la nota de talles y "lleva nombres y números" (12/10). El Excel con el
+                    // que se carga la lista queda adjunto solo; acá se ven las planillas del cliente que haya.
+                    extra={planillas.length > 0 ? (cliente
+                        // Portal: al lado de "Buscar archivo Excel", chico: el nombre (abre el archivo) y la ✕ para quitarlo
+                        ? planillas.map(a => (
+                            <span key={a.ArchivoID} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-[11px]">
+                                <FileText size={12} className="text-slate-400" />
+                                <a href={a.UrlDrive} target="_blank" rel="noreferrer" className="font-bold text-brand-cyan hover:underline max-w-[220px] truncate" title={a.NombreOriginal}>{a.NombreOriginal}</a>
+                                {puede && <button type="button" disabled={busy} title="Quitar la planilla adjunta (la lista no cambia)" onClick={() => hacer(() => svc.quitarArchivo(id, a.ArchivoID), 'Planilla quitada.')} className="text-slate-400 hover:text-rose-600"><X size={12} /></button>}
+                            </span>
+                        ))
+                        : (
+                        <div className="mt-2 text-[11px]">
+                            <div className="font-bold text-slate-500 mb-1">Planilla del cliente adjunta</div>
+                            <ArchivosCelda archivos={planillas} vacio="" puedeQuitar={puede} onQuitar={(a) => hacer(() => svc.quitarArchivo(id, a.ArchivoID), 'Archivo quitado.')} conRol />
+                        </div>
+                    )) : null} />
             )}
 
-            <div className="pt-3 mt-3 border-t border-slate-200 flex flex-wrap items-center gap-2 text-xs">
+            {!cliente && <div className="pt-3 mt-3 border-t border-slate-200 flex flex-wrap items-center gap-2 text-xs">
                 {pa.Estado === 'INGRESADO' ? (
-                    !bloqueada && perfil.esVendedor ? (faltaEnvio
+                    !bloqueada && perfil.esVendedor && faltaEnvio
                         ? <span className="text-[11px] font-bold text-amber-700 inline-flex items-center gap-1"><AlertTriangle size={12} /> Todavía no se puede enviar a Diseño: {faltaEnvio}</span>
-                        : <>
-                            <Selector value={tipoTrabajo} onChange={e => setTipoTrabajo(e.target.value)} claseBoton={claseSel('border border-slate-200 rounded-lg px-2 py-1.5 text-xs')} anchoLista={240}>
-                                {Object.entries(TIPO_TRABAJO).map(([k, t]) => <option key={k} value={k}>{t}</option>)}
-                            </Selector>
-                            <button disabled={busy} onClick={() => hacer(() => svc.enviarADiseno(pa.ParteID, tipoTrabajo), 'Producción principal enviada a la bandeja de Diseño.')} className={BTN_PRIMARIO}><Send size={12} /> Enviar a Diseño</button>
-                        </>)
-                    : <span className="text-slate-500">Todavía no se envió a Diseño.</span>
+                        : <span className="text-slate-500">Todavía no se envió a Diseño{!bloqueada && perfil.esVendedor ? ' (botón "Enviar a Diseño…", abajo)' : ''}.</span>
                 ) : (
                     <span className="text-slate-600">
                         {pa.TipoTrabajo ? <>{TIPO_TRABAJO[pa.TipoTrabajo]} · </> : null}
@@ -514,7 +647,7 @@ function PrincipalBloque({ p, pa, id, perfil, busy, abierta, puedeVender, arte, 
                         <span className="text-slate-400"> · el trabajo lo sigue Diseño desde su bandeja</span>
                     </span>
                 )}
-            </div>
+            </div>}
         </section>
     );
 }
@@ -578,12 +711,35 @@ function TallesCampos({ id, p, puede, busy, hacer }) {
 export function DisenoTab({ s, id, user, perfil, busy, abierta, telas, archivosDe, hacer, subir, onAbrirFicha }) {
     return (
         <div className="space-y-6">
-            {s.Productos.map((p, i) => {
-                const conv = s.Conversion.find(c => c.ProductoSolID === p.ProductoSolID) || {};
-                const bloqueada = !abierta || !!p.PedidoNoDocERP;
-                const artes = archivosDe(a => a.Rol === 'ARTE_CLIENTE' && (a.ProductoSolID === p.ProductoSolID || p.Partes.some(pa => pa.ParteID === a.ParteID)));
-                return (
-                    <div key={p.ProductoSolID} className="space-y-3">
+            {s.Productos.map((p, i) => (
+                <DisenoProducto key={p.ProductoSolID} s={s} p={p} i={i} id={id} user={user} perfil={perfil} busy={busy} abierta={abierta} telas={telas}
+                    archivosDe={archivosDe} hacer={hacer} subir={subir} onAbrirFicha={onAbrirFicha} />
+            ))}
+        </div>
+    );
+}
+
+/* [DISEÑO POR PESTAÑAS 12/10] Un producto en la pantalla de Diseño: arriba, siempre a la vista, el estado de cada
+   servicio con sus acciones; abajo, en pestañas: TIZADA (arte, lista, envíos) · Archivos (de cada servicio) ·
+   Piezas y telas · Ficha técnica (avíos, costuras) · Crear pedido. Abre en TIZADA si el producto tiene molde. */
+function DisenoProducto({ s, p, i, id, user, perfil, busy, abierta, telas, archivosDe, hacer, subir, onAbrirFicha }) {
+    const conv = s.Conversion.find(c => c.ProductoSolID === p.ProductoSolID) || {};
+    const bloqueada = !abierta || !!p.PedidoNoDocERP;
+    const artes = archivosDe(a => a.Rol === 'ARTE_CLIENTE' && (a.ProductoSolID === p.ProductoSolID || p.Partes.some(pa => pa.ParteID === a.ParteID)));
+    const conTizada = p.TipoFabricacion === 'PRODUCTO_TERMINADO' && !!p.Config?.TizadaProMoldeRef;
+    const deCatalogo = p.TipoFabricacion === 'PRODUCTO_TERMINADO';
+    const prontos = archivosDe(a => a.Rol === 'DISENO_PRONTO' && p.Partes.some(pa => pa.ParteID === a.ParteID)).length;
+    const pestanas = [
+        ...(conTizada ? [['tizada', 'TIZADA PRO']] : []),
+        ['archivos', `Archivos${prontos ? ` · ${prontos} pronto${prontos === 1 ? '' : 's'}` : ''}`],
+        ...(deCatalogo && !p.Config?.AMedida ? [['piezas', 'Piezas y telas']] : []),   // [A MEDIDA] una sola pieza: la medida va en TIZADA PRO
+        ...(p.FichaProducto ? [['ficha', 'Ficha técnica']] : []),
+        ['pedido', p.PedidoNoDocERP ? `Pedido ${p.PedidoNoDocERP}` : 'Crear pedido'],
+    ];
+    const [tab, setTab] = useState(pestanas[0][0]);
+    const actual = pestanas.some(([k]) => k === tab) ? tab : pestanas[0][0];
+    return (
+                    <div className="space-y-3">
                         {/* Banda superior: el producto y, por cada servicio, su estado, el diseñador y las acciones (tomar, aceptar cambio) */}
                         <div className="border border-slate-200 rounded-xl p-3 bg-slate-50 space-y-2">
                             <h2 className="text-sm font-black text-slate-800">Producto {i + 1}: {p.TipoFabricacion === 'PRODUCTO_TERMINADO' ? (p.ProductoNombre || `Producto ${p.ProIdProducto}`) : 'Producto personalizado del cliente'} <span className="font-bold text-slate-500">· {p.Cantidad} prendas</span>
@@ -605,30 +761,41 @@ export function DisenoTab({ s, id, user, perfil, busy, abierta, telas, archivosD
                                 ))}
                             </div>
                         </div>
-                        {p.FichaProducto && <FichaProductoBloque f={p.FichaProducto} />}
-                        {p.TipoFabricacion === 'PRODUCTO_TERMINADO' && <PiezasTelasBloque id={id} p={p} busy={busy} puede={false} hacer={hacer} artes={artes} />}
-                        {/* TIZADA PRO: el diseñador elige la letra de nombre y número y genera la tizada (vuelve sola como diseño pronto) */}
-                        {p.TipoFabricacion === 'PRODUCTO_TERMINADO' && p.Config?.TizadaProMoldeRef && (() => {
-                            const pa = p.Partes.find(x => x.Tipo === 'PRINCIPAL');
-                            const esDis = perfil.esDisenador || perfil.esAdmin;
-                            const enviada = pa && pa.Estado !== 'INGRESADO';
-                            return (
-                                <section className={ZONA}>
-                                    <TizadaProBloque id={id} p={p} modo="diseno" puede={esDis && !bloqueada} puedeGenerar={esDis && !bloqueada && enviada}
-                                        motivoNoGenerar={!esDis ? 'La tizada la genera un diseñador.' : !enviada ? 'El vendedor todavía no tocó "Enviar a Diseño" en la solicitud.' : bloqueada ? 'La solicitud está cerrada o ya es pedido.' : null}
-                                        onCargado={() => hacer(async () => { })} />
-                                </section>
-                            );
-                        })()}
-                        <TablaServicios vista="diseno" s={s} p={p} id={id} user={user} perfil={perfil} busy={busy} abierta={abierta} telas={telas} archivosDe={archivosDe} hacer={hacer} subir={subir} onAbrirFicha={onAbrirFicha} />
-                        {/* El pedido de producción lo crea el diseñador desde acá, con la tizada y los archivos ya cargados */}
-                        <div className="max-w-3xl">
-                            <Conversion s={s} p={p} pedido={conv.pedido} faltantes={conv.faltantes || []} avisos={conv.avisos || []} checklist={conv.checklist} puedeVender={perfil.esDisenador || perfil.esVendedor} busy={busy} hacer={hacer} id={id} />
+                        <div className="border border-slate-200 rounded-xl bg-white">
+                            <div className="flex flex-wrap gap-1 border-b border-slate-200 px-2" role="tablist">
+                                {pestanas.map(([k, t]) => (
+                                    <button key={k} type="button" role="tab" aria-selected={actual === k} onClick={() => setTab(k)}
+                                        className={`-mb-px border-b-2 px-3 py-2 text-[13px] font-bold transition-colors ${actual === k ? 'border-brand-cyan text-brand-cyan' : 'border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-700'}`}>{t}</button>
+                                ))}
+                            </div>
+                            <div className="p-3">
+                                {actual === 'tizada' && (<>
+                                    {/* TIZADA PRO: el diseñador elige la letra de nombre y número y genera la tizada (vuelve sola como diseño pronto) */}
+                                    {p.TipoFabricacion === 'PRODUCTO_TERMINADO' && p.Config?.TizadaProMoldeRef && (() => {
+                                        const pa = p.Partes.find(x => x.Tipo === 'PRINCIPAL');
+                                        const esDis = perfil.esDisenador || perfil.esAdmin;
+                                        const enviada = pa && pa.Estado !== 'INGRESADO';
+                                        return (
+                                            <section className={ZONA}>
+                                                <TizadaProBloque id={id} p={p} modo="diseno" puede={esDis && !bloqueada} puedeGenerar={esDis && !bloqueada && enviada}
+                                                    motivoNoGenerar={!esDis ? 'La tizada la genera un diseñador.' : !enviada ? 'El vendedor todavía no tocó "Enviar a Diseño" en la solicitud.' : bloqueada ? 'La solicitud está cerrada o ya es pedido.' : null}
+                                                    onCargado={() => hacer(async () => { })} />
+                                            </section>
+                                        );
+                                    })()}
+                                </>)}
+                                {actual === 'archivos' && <TablaServicios vista="diseno" s={s} p={p} id={id} user={user} perfil={perfil} busy={busy} abierta={abierta} telas={telas} archivosDe={archivosDe} hacer={hacer} subir={subir} onAbrirFicha={onAbrirFicha} />}
+                                {actual === 'piezas' && <PiezasTelasBloque id={id} p={p} busy={busy} puede={false} hacer={hacer} artes={artes} />}
+                                {actual === 'ficha' && <FichaProductoBloque f={p.FichaProducto} />}
+                                {/* El pedido de producción lo crea el diseñador desde acá, con la tizada y los archivos ya cargados */}
+                                {actual === 'pedido' && (
+                                    <div className="max-w-3xl">
+                                        <Conversion s={s} p={p} pedido={conv.pedido} faltantes={conv.faltantes || []} avisos={conv.avisos || []} checklist={conv.checklist} puedeVender={perfil.esDisenador || perfil.esVendedor} busy={busy} hacer={hacer} id={id} />
+                                    </div>
+                                )}
+                            </div>
                         </div>
                     </div>
-                );
-            })}
-        </div>
     );
 }
 
@@ -735,7 +902,7 @@ function EstadoParteDiseno({ pa, user, perfil, busy, bloqueada, enProduccion = [
 /* Tabla de servicios de UN producto. vista "cliente" (pestaña del producto): servicio, archivos
    del cliente y estado con "Enviar a Diseño". vista "diseno" (pantalla de Diseño): además la
    columna del diseño pronto, y los archivos del cliente en solo lectura. */
-function TablaServicios({ vista, s, p, id, user, perfil, busy, abierta, telas: telasSB, archivosDe, hacer, subir, onAbrirFicha, faltaSubl = null, partes = null, titulo = null }) {
+export function TablaServicios({ vista, s, p, id, user, perfil, busy, abierta, telas: telasSB, archivosDe, hacer, subir, onAbrirFicha, faltaSubl = null, partes = null, titulo = null, subtitulo = null }) {
     // F1: si la producción principal del producto no es sublimación, las telas de cada archivo son las del área del producto
     const areaPrincipal = p.Config?.TecnicaPrincipal || 'SB';
     const [telasArea, setTelasArea] = useState(null);
@@ -764,7 +931,7 @@ function TablaServicios({ vista, s, p, id, user, perfil, busy, abierta, telas: t
                     <tr className="bg-slate-50 text-left [&>th]:px-3 [&>th]:py-2.5 [&>th]:text-sm [&>th]:font-black [&>th]:text-slate-800 [&_small]:ml-2 [&_small]:text-xs [&_small]:font-medium [&_small]:text-slate-400">
                         {esDiseno
                             ? <><th>Solicitud del cliente <small>solo lectura</small></th><th className="border-l border-slate-200">Diseñador <small>lo que va a producción</small></th></>
-                            : <th colSpan={2}>{titulo || 'Producción principal'} <small>lo que pidió y mandó · el diseño lo sigue Diseño desde su bandeja</small></th>}
+                            : <th colSpan={2}>{titulo || 'Producción principal'} <small>{subtitulo ?? 'lo que pidió y mandó · el diseño lo sigue Diseño desde su bandeja'}</small></th>}
                     </tr>
                     <tr className="border-t border-slate-200 text-[10px] font-black uppercase tracking-wider text-slate-400 text-left">
                         <th className={`px-3 py-2 ${esDiseno ? 'w-[34%]' : 'w-[45%]'}`}>{esDiseno ? 'Servicio y archivos del cliente' : 'Servicio'}</th>
@@ -823,7 +990,7 @@ function FilaServicio({ vista = 'cliente', pa, user, perfil, busy, bloqueada, te
                 <div className="pt-1.5 flex flex-wrap items-center gap-1.5">
                     <Pastilla e={pa.Estado} mapa={ESTADO_PARTE} />{pa.Modificada ? <PastillaModificada /> : null}
                     {pa.DisenadorNombre && <span className="text-[10px] text-slate-500">{pa.DisenadorNombre}</span>}
-                    {!bloqueada && perfil.esVendedor && pa.Estado === 'INGRESADO' && (faltaEnvio
+                    {!bloqueada && perfil.esVendedor && pa.Estado === 'INGRESADO' && vista !== 'cliente' && (faltaEnvio
                         ? <span className="text-[10px] font-bold text-amber-700 inline-flex items-center gap-1" title={faltaEnvio}><AlertTriangle size={11} /> Para enviar a Diseño, completá "Piezas y telas"</span>
                         : <>
                             <Selector value={tipoTrabajo} onChange={e => setTipoTrabajo(e.target.value)} claseBoton={claseSel('border border-slate-200 rounded-lg px-1.5 py-1 text-[11px]')} anchoLista={240}>
@@ -940,7 +1107,8 @@ function FilaServicio({ vista = 'cliente', pa, user, perfil, busy, bloqueada, te
    (entre las que el producto ofrece; una pieza con tela fija en el molde no se elige) y el
    ARTE del cliente que va en esa pieza. Es lo que el diseñador necesita para armar la tizada;
    hasta que está completo, la producción principal no se manda a Diseño. */
-function PiezasTelasBloque({ id, p, busy, puede, hacer, artes = [], onEstado, plano = false, conTizada = false }) {
+// cliente (pedido de la Tienda del portal): sin botón de guardar, cada cambio se guarda solo
+function PiezasTelasBloque({ id, p, busy, puede, hacer, artes = [], onEstado, plano = false, conTizada = false, cliente = false }) {
     const zona = plano ? 'pt-3 mt-3 border-t border-slate-200' : ZONA;
     const tit = plano ? SUBTIT : TIT_ZONA;
     const [info, setInfo] = useState(null);      // respuesta de moldeDelProducto
@@ -958,11 +1126,18 @@ function PiezasTelasBloque({ id, p, busy, puede, hacer, artes = [], onEstado, pl
             setModelo(m);
             const ini = {};
             (r.elegido?.piezas || []).forEach(z => { ini[z.pieza] = { telaProIdProducto: z.telaProIdProducto || '', archivoId: z.archivoId || '', nota: z.nota || '' }; });
+            // Portal: sin nada elegido, cada pieza arranca con la tela del producto (la única o la marcada por defecto)
+            const telaInicial = r.telas?.length === 1 ? r.telas[0] : r.telas?.find(t => t.esDefault);
+            if (cliente && !r.elegido && telaInicial) (r.modelos?.find(x => x.clave === m)?.piezas || []).forEach(z => { if (!z.telaFija) ini[z.pieza] = { telaProIdProducto: telaInicial.proIdProducto }; });
             setPiezas(ini);
-            setEditando(!r.elegido);
+            // Portal: lo que el cliente está cambiando queda abierto aunque se recargue al guardar solo
+            setEditando(e => (cliente && e ? true : !r.elegido));
         }).catch(() => { if (vivo) { setInfo({ aplica: false }); onEstado?.({ aplica: false }); } });
         return () => { vivo = false; };
     }, [id, p.ProductoSolID, guardado?.fecha]);   // eslint-disable-line react-hooks/exhaustive-deps
+    // Portal: cada pieza con su vista del arte del cliente (el del primer diseño) y su tela a un toque
+    const vistasArte = usePiezasArte(cliente ? id : null, cliente ? (p.Datos?.tizadaPro?.disenos || []).find(d => d.arteArchivoId)?.arteArchivoId : null);
+    const [piezaAbierta, setPiezaAbierta] = useState(null);
 
     if (!info) return null;
     if (!info.aplica) {
@@ -976,8 +1151,31 @@ function PiezasTelasBloque({ id, p, busy, puede, hacer, artes = [], onEstado, pl
     }
     const mod = info.modelos.find(m => m.clave === modelo) || info.modelos[0];
     const telaDefault = info.telas.find(t => t.esDefault) || info.telas[0];
-    const set = (pieza, campo, v) => setPiezas(prev => ({ ...prev, [pieza]: { ...(prev[pieza] || {}), [campo]: v } }));
-    const todasEn = (v) => setPiezas(prev => { const n = { ...prev }; (mod?.piezas || []).forEach(z => { if (!z.telaFija) n[z.pieza] = { ...(n[z.pieza] || {}), telaProIdProducto: v }; }); return n; });
+    // Portal: se guarda solo (parcial: lo que falte se ve como "Faltan telas")
+    const autoguardar = (clave, pzs) => cliente && hacer(() => svc.guardarSublimacion(id, p.ProductoSolID, {
+        modeloClave: clave, parcial: true,
+        piezas: (info.modelos.find(m => m.clave === clave)?.piezas || []).map(z => ({ pieza: z.pieza, ...(pzs[z.pieza] || {}) })),
+    }));
+    const set = (pieza, campo, v, guardarYa = true) => {
+        const n = { ...piezas, [pieza]: { ...(piezas[pieza] || {}), [campo]: v } };
+        setPiezas(n);
+        if (guardarYa) autoguardar(mod?.clave, n);
+    };
+    const todasEn = (v) => {
+        const n = { ...piezas };
+        (mod?.piezas || []).forEach(z => { if (!z.telaFija) n[z.pieza] = { ...(n[z.pieza] || {}), telaProIdProducto: v }; });
+        setPiezas(n);
+        autoguardar(mod?.clave, n);
+    };
+    // Portal: al cambiar de modelo, las piezas nuevas arrancan con la tela del producto y se guarda solo
+    const cambiarModelo = (clave) => {
+        setModelo(clave);
+        if (!cliente) return;
+        const n = { ...piezas };
+        if (telaDefault) (info.modelos.find(m => m.clave === clave)?.piezas || []).forEach(z => { if (!z.telaFija && !n[z.pieza]?.telaProIdProducto) n[z.pieza] = { ...(n[z.pieza] || {}), telaProIdProducto: telaDefault.proIdProducto }; });
+        setPiezas(n);
+        autoguardar(clave, n);
+    };
     const guardar = () => hacer(() => svc.guardarSublimacion(id, p.ProductoSolID, {
         modeloClave: mod.clave,
         piezas: (mod?.piezas || []).map(z => ({ pieza: z.pieza, ...(piezas[z.pieza] || {}) })),
@@ -1001,15 +1199,17 @@ function PiezasTelasBloque({ id, p, busy, puede, hacer, artes = [], onEstado, pl
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
                     {guardado.piezas.map(z => {
                         const det = mod?.piezas.find(x => x.pieza === z.pieza);
+                        const vista = cliente ? piezaDelArte(vistasArte, z.pieza, z.generico) : null;
+                        // Portal: tocar la pieza abre su tela ahí mismo (se guarda sola); las de tela fija del molde no
+                        const tocable = cliente && puede && !z.fija && info.telas.length > 0;
+                        const abierta = tocable && piezaAbierta === z.pieza;
                         return (
-                            <div key={z.pieza} className="flex items-center gap-2 border border-slate-200 rounded-lg px-2 py-1.5 bg-white">
-                                {(() => { const arte = z.archivoId ? artes.find(a => a.ArchivoID === z.archivoId) : null; return arte ? <Miniatura a={arte} tam={40} /> : det ? <Silueta z={det} /> : null; })()}
-                                <div className="min-w-0">
-                                    <div className="font-black text-slate-800 truncate">{z.generico || z.pieza}{z.generico && z.generico !== z.pieza ? <span className="font-normal text-slate-400"> · {z.pieza}</span> : null}</div>
-                                    <div className={z.telaNombre ? 'text-slate-700' : 'text-rose-600 font-bold'}>{z.telaNombre || 'Sin tela'}{z.fija ? <span className="text-[10px] text-slate-400"> · fija del molde</span> : null}</div>
-                                    {(!conTizada || z.archivoNombre || z.nota) && <div className="text-[10px] text-slate-500 truncate">{z.archivoNombre ? <>Arte: {z.archivoNombre}</> : conTizada ? null : 'Sin arte asignado'}{z.nota ? <>{z.archivoNombre ? ' · ' : ''}{z.nota}</> : null}</div>}
-                                </div>
-                            </div>
+                            <TarjetaPieza key={z.pieza} titulo={z.generico || z.pieza} detalle={z.generico && z.generico !== z.pieza ? z.pieza : null}
+                                figura={vista ? <PiezaConArte svgPath={det?.svgPath} vista={vista.vista} alt={z.pieza} />
+                                    : (() => { const arte = z.archivoId ? artes.find(a => a.ArchivoID === z.archivoId) : null; return arte ? <Miniatura a={arte} tam={40} /> : det ? <Silueta z={det} /> : null; })()}
+                                telaNombre={z.telaNombre} fija={z.fija} tocable={tocable} abierta={abierta} onAbrir={() => setPiezaAbierta(abierta ? null : z.pieza)}
+                                telas={info.telas} telaId={piezas[z.pieza]?.telaProIdProducto} onElegir={(v) => { set(z.pieza, 'telaProIdProducto', v); setPiezaAbierta(null); }}
+                                extra={(!conTizada || z.archivoNombre || z.nota) && <div className="text-[10px] text-slate-500 truncate">{z.archivoNombre ? <>Arte: {z.archivoNombre}</> : conTizada ? null : 'Sin arte asignado'}{z.nota ? <>{z.archivoNombre ? ' · ' : ''}{z.nota}</> : null}</div>} />
                         );
                     })}
                 </div>
@@ -1032,7 +1232,7 @@ function PiezasTelasBloque({ id, p, busy, puede, hacer, artes = [], onEstado, pl
             <div className="flex flex-wrap items-end gap-3 mb-3 text-xs">
                 <label className="min-w-[220px]">
                     <div className="text-[9px] font-black uppercase tracking-wide text-slate-400">Modelo <span className="font-normal normal-case">(molde {info.moldeNombre})</span></div>
-                    <Selector value={mod?.clave || ''} onChange={e => setModelo(e.target.value)} claseBoton={claseSel(SEL_CAMPO)} disabled={info.modelos.length <= 1} anchoLista={300}>
+                    <Selector value={mod?.clave || ''} onChange={e => cambiarModelo(e.target.value)} claseBoton={claseSel(SEL_CAMPO)} disabled={info.modelos.length <= 1} anchoLista={300}>
                         {info.modelos.map(m => <option key={m.clave} value={m.clave}>{m.nombre}{m.esDefault ? ' ★' : ''} · {m.piezas.length} piezas</option>)}
                     </Selector>
                 </label>
@@ -1088,7 +1288,7 @@ function PiezasTelasBloque({ id, p, busy, puede, hacer, artes = [], onEstado, pl
                                             {artes.map(a => <option key={a.ArchivoID} value={a.ArchivoID}>{a.NombreOriginal}</option>)}
                                         </Selector>
                                     </td>}
-                                    <td className="px-2 py-1.5"><input value={v.nota || ''} onChange={e => set(z.pieza, 'nota', e.target.value)} placeholder="Ej: color, ubicación del arte" className={INPUT} maxLength={200} /></td>
+                                    <td className="px-2 py-1.5"><input value={v.nota || ''} onChange={e => set(z.pieza, 'nota', e.target.value, false)} onBlur={() => autoguardar(mod?.clave, piezas)} placeholder="Ej: color, ubicación del arte" className={INPUT} maxLength={200} /></td>
                                 </tr>
                             );
                         })}
@@ -1096,11 +1296,12 @@ function PiezasTelasBloque({ id, p, busy, puede, hacer, artes = [], onEstado, pl
                 </table>
             </div>
             {!conTizada && !artes.length && <div className="text-[10px] text-slate-500 mt-1">Para asignar un arte por pieza, subilo primero como "Arte del cliente" en el paso 1 de la producción principal (arriba).</div>}
+            {cliente ? (guardado && <div className="mt-2"><button type="button" disabled={busy} onClick={() => setEditando(false)} className={BTN_SECUNDARIO}>Listo</button></div>) : (
             <div className="mt-2 flex flex-wrap items-center gap-2">
                 <button type="button" disabled={busy || !mod} onClick={guardar} className={BTN_PRIMARIO}><CheckCircle2 size={12} /> Guardar piezas y telas</button>
                 {guardado && <button type="button" disabled={busy} onClick={() => setEditando(false)} className={BTN_SECUNDARIO}>Cancelar</button>}
                 <span className="text-[10px] text-slate-500">Hasta que cada pieza tenga su tela, la producción principal no se puede enviar a Diseño.</span>
-            </div>
+            </div>)}
         </section>
     );
 }
@@ -1230,22 +1431,7 @@ function TelaCopias({ a, telas, puede, busy, onGuardar, soloCopias }) {
     );
 }
 
-// Miniatura de un archivo de Drive. Si Drive no la da (archivo sin compartir, formato sin vista previa
-// o todavía subiendo), muestra la extensión. El clic abre SIEMPRE el archivo real.
-const driveIdDe = (url) => { const m = String(url || '').match(/\/d\/([a-zA-Z0-9_-]{10,})|[?&]id=([a-zA-Z0-9_-]{10,})/); return m ? (m[1] || m[2]) : null; };
-function Miniatura({ a, tam = 64 }) {
-    const [error, setError] = useState(false);
-    const idDrive = driveIdDe(a.UrlDrive);
-    const src = idDrive && !error ? `https://drive.google.com/thumbnail?id=${idDrive}&sz=w300` : null;
-    const ext = (String(a.NombreOriginal || '').split('.').pop() || '').toUpperCase().slice(0, 4);
-    return (
-        // Tema claro (06/10): antes fp-mini / fp-mini-ext de fichaPedido.css, con los colores del tema oscuro
-        <a href={a.UrlDrive} target="_blank" rel="noreferrer" style={{ width: tam, height: tam }} title={`Abrir "${a.NombreOriginal}"`}
-            className="inline-flex shrink-0 items-center justify-center overflow-hidden rounded-lg border border-slate-200 bg-slate-50 transition-colors hover:border-brand-cyan">
-            {src ? <img src={src} alt="" loading="lazy" onError={() => setError(true)} className="h-full w-full bg-white object-cover" /> : <span className="text-[11px] font-black text-slate-400">{ext || <FileText size={16} />}</span>}
-        </a>
-    );
-}
+// La miniatura de un archivo de Drive (Miniatura) está en solicitudesComunes: la usa también TizadaProBloque.
 
 // Quitar un archivo de la solicitud: la confirmación (06/10; antes window.confirm)
 const quitarArchivo = (a) => ({ Icono: Trash2, titulo: 'Quitar el archivo', peligro: true, boton: 'Quitar', texto: `"${a.NombreOriginal}" sale de la solicitud. Queda registrado en el historial.` });

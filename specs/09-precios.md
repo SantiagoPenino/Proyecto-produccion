@@ -126,7 +126,9 @@ combo, y líneas 100% cubiertas por plan prepago.
   recargos **se suman** entre sí (no se encadenan): lista 10, descuento 25 % → 7,50; tinta
   25 % → +1,875; unitario 9,375. Hasta esa fecha se calculaban sobre la lista; las líneas
   congeladas con la regla vieja no se recalculan solas, solo si alguien edita su descuento
-  o su recargo. La regla vive en `src/utils/desglosePrecio.js` y su espejo en
+  o su recargo. Excepción aceptada (12-oct-2026): al guardar una factura abierta en "Editar
+  factura" o copiada (también la factura corregida después de una NC), sus líneas con
+  descuento y recargo pasan a la regla nueva aunque no se toquen. La regla vive en `src/utils/desglosePrecio.js` y su espejo en
   `backend/services/desgloseLineaPedido.js`. Un
   precio tipeado a mano conserva la lista y deja la diferencia como descuento o recargo
   **manual**; una reposición sin cargo es lista + descuento 100 % con origen

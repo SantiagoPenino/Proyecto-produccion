@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import {
     ShoppingCart, Search, Package, Plus, Minus, Trash2, X,
     Store, ArrowRight, ImageOff, Sparkles, Scissors,
-    CheckCircle2, Loader2, MapPin, Truck, CreditCard, Wallet, ArrowLeft
+    CheckCircle2, Loader2, MapPin, Truck, CreditCard, Wallet, ArrowLeft, Download
 } from 'lucide-react';
 import { apiClient } from '../api/apiClient';
 import { useToast } from '../pautas/Toast';
@@ -438,7 +438,46 @@ export const TiendaView = () => {
 
     // Personalizados/confeccionados: inician un pedido normal (precio por cotización).
     // F3: precargar el producto elegido en el form vía location.state.
-    const iniciarPedido = () => { setFicha(null); navigate('/portal'); };
+    // [ARMAR PEDIDO 12/10] Con molde de TIZADA PRO el cliente lo arma acá mismo (PedidoTiendaView): se crea
+    // (o se retoma el que dejó a medio armar) y se abre. Los demás siguen yendo al catálogo de servicios.
+    const [armables, setArmables] = useState(() => new Set());
+    // [PLANTILLA 14/10] Productos con molde y modelo de TIZADA PRO: el cliente baja la plantilla (guía .ai) desde la
+    // foto, arma su arte sobre ella y después lo sube en "Armar mi pedido".
+    const [conPlantilla, setConPlantilla] = useState(() => new Set());
+    const [bajandoPlantilla, setBajandoPlantilla] = useState(false);
+    const bajarPlantilla = async (producto) => {
+        if (bajandoPlantilla) return;
+        setBajandoPlantilla(true);
+        try {
+            // 1) que TIZADA la tenga lista (la primera vez se arma en unos segundos)  2) el archivo
+            const r = await apiClient.get(`/web-orders/tienda/pedidos/plantillas/${producto.proIdProducto}`);
+            const blob = await apiClient.getBlob(`/web-orders/tienda/pedidos/plantillas/${producto.proIdProducto}/archivo`);
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a'); a.href = url; a.download = r?.data?.nombre || 'Plantilla.ai'; document.body.appendChild(a); a.click(); a.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 5000);
+            addToast('Plantilla descargada. Abrila en Illustrator, armá tu arte sobre ella y subilo en "Armar mi pedido".', 'success');
+        } catch (e) {
+            addToast(e.message || 'No se pudo bajar la plantilla. Probá de nuevo en un rato.', 'error');
+        } finally { setBajandoPlantilla(false); }
+    };
+    const [misPedidos, setMisPedidos] = useState([]);
+    useEffect(() => {
+        apiClient.get('/web-orders/tienda/pedidos/armables').then(r => setArmables(new Set(r?.data || []))).catch(() => { });
+        apiClient.get('/web-orders/tienda/pedidos/plantillas').then(r => setConPlantilla(new Set(r?.data || []))).catch(() => { });
+        apiClient.get('/web-orders/tienda/pedidos').then(r => setMisPedidos(r?.data || [])).catch(() => { });
+    }, []);
+    const [iniciando, setIniciando] = useState(false);
+    const iniciarPedido = async (producto) => {
+        if (!producto || !armables.has(producto.proIdProducto)) { setFicha(null); navigate('/portal'); return; }
+        if (iniciando) return;
+        setIniciando(true);
+        try {
+            const r = await apiClient.post('/web-orders/tienda/pedidos', { proIdProducto: producto.proIdProducto });
+            navigate(`/portal/tienda/pedido/${r.data.SolicitudID}`);
+        } catch (e) {
+            addToast(e.message || 'No pudimos empezar el pedido. Probá de nuevo.', 'error');
+        } finally { setIniciando(false); }
+    };
 
     // [BIFURCACIÓN 18/08] El camino del checkout depende de la forma de envío elegida:
     // RETIRO → pago online obligatorio (abre el sheet Handy/MP); ENCOMIENDA → se
@@ -471,6 +510,31 @@ export const TiendaView = () => {
                     )}
                 </button>
             </div>
+
+            {/* [ARMAR PEDIDO] Pedidos de la tienda en curso: el que está armando (para seguirlo) y los confirmados */}
+            {misPedidos.length > 0 && (
+                <div className="flex gap-2 overflow-x-auto no-scrollbar -mx-4 px-4 md:mx-0 md:px-0">
+                    {misPedidos.map(x => {
+                        const etapa = {
+                            ARMANDO: { dot: 'bg-amber-400', txt: 'Sin confirmar · continuar' },
+                            TIZADA: { dot: 'bg-brand-cyan animate-pulse', txt: 'TIZADA PRO arma la tizada' },
+                            LISTO: { dot: 'bg-brand-cyan animate-pulse', txt: 'Armando tu pedido' },
+                            PEDIDO: { dot: 'bg-emerald-400', txt: `Pedido ${x.pedido} en producción` },
+                        }[x.etapa] || { dot: 'bg-zinc-500', txt: '' };
+                        return (
+                            <button key={x.id} onClick={() => navigate(`/portal/tienda/pedido/${x.id}`)}
+                                className="shrink-0 flex items-center gap-2.5 rounded-xl border border-zinc-800 bg-[#202024] px-3 py-2 text-left hover:border-brand-cyan/40 transition-colors">
+                                <span className={`w-2 h-2 rounded-full shrink-0 ${etapa.dot}`} />
+                                <span className="min-w-0">
+                                    <span className="block text-[11px] font-bold text-zinc-200 uppercase max-w-[220px] truncate">{x.nombre || x.producto}</span>
+                                    <span className="block text-[10px] text-zinc-500">{etapa.txt}{x.prendas ? ` · ${x.prendas} ${x.aMedida ? (x.prendas === 1 ? 'unidad' : 'unidades') : (x.prendas === 1 ? 'prenda' : 'prendas')}` : ''}</span>
+                                </span>
+                                <ArrowRight size={13} className="text-zinc-600 shrink-0" />
+                            </button>
+                        );
+                    })}
+                </div>
+            )}
 
             {/* Solapas + búsqueda */}
             <div className="flex flex-col md:flex-row md:items-center gap-3">
@@ -589,6 +653,11 @@ export const TiendaView = () => {
                     onCerrar={() => setFicha(null)}
                     onAgregar={agregarAlCarrito}
                     onIniciarPedido={iniciarPedido}
+                    armable={armables.has(ficha.proIdProducto)}
+                    iniciando={iniciando}
+                    conPlantilla={conPlantilla.has(ficha.proIdProducto)}
+                    onBajarPlantilla={bajarPlantilla}
+                    bajandoPlantilla={bajandoPlantilla}
                 />
             )}
 
@@ -917,7 +986,7 @@ export const TiendaView = () => {
 };
 
 // ── Ficha de producto (modal) ────────────────────────────────────────────────
-const FichaProducto = ({ producto, onCerrar, onAgregar, onIniciarPedido }) => {
+const FichaProducto = ({ producto, onCerrar, onAgregar, onIniciarPedido, armable = false, iniciando = false, conPlantilla = false, onBajarPlantilla = null, bajandoPlantilla = false }) => {
     // Sin mapeo WMS no hay variantes: se ofrece una "Única" apoyada en el precio base —
     // mismo fallback que usa el catálogo interno (wms_variante_id = ProIdProducto).
     // Combos: el stock que se muestra es el ARMABLE (min de componentes, viene en
@@ -1059,6 +1128,15 @@ const FichaProducto = ({ producto, onCerrar, onAgregar, onIniciarPedido }) => {
                                 <ImageOff size={48} className="text-zinc-300" />
                             )}
                             <style>{`@keyframes tienda-fade-img { from { opacity: 0 } to { opacity: 1 } }`}</style>
+                            {/* [PLANTILLA] la base de TIZADA PRO para armar el arte (guía .ai, se abre en Illustrator) */}
+                            {conPlantilla && onBajarPlantilla && (
+                                <button type="button" onClick={() => onBajarPlantilla(producto)} disabled={bajandoPlantilla}
+                                    title="La base del molde para armar tu arte en Illustrator: una mesa por pieza, a tamaño real"
+                                    className="absolute left-2 bottom-2 z-10 inline-flex items-center gap-1.5 rounded-lg bg-zinc-900/85 hover:bg-zinc-900 text-white text-xs font-bold px-3 py-2 shadow-lg transition-colors disabled:opacity-80">
+                                    {bajandoPlantilla ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
+                                    {bajandoPlantilla ? 'Preparando la plantilla…' : 'Plantilla para tu arte'}
+                                </button>
+                            )}
                         </div>
                         {/* Miniaturas: solo la galería común — las fotos de color ya se eligen
                             con el selector de COLOR y acá abajo quedaban duplicadas. */}
@@ -1220,7 +1298,9 @@ const FichaProducto = ({ producto, onCerrar, onAgregar, onIniciarPedido }) => {
                                             <PrecioFicha precio={producto.precio} moneda={producto.moneda} /> <span className="text-xs font-bold text-zinc-500">por unidad</span>
                                         </p>
                                         <p className="text-xs text-zinc-500 leading-relaxed">
-                                            Se fabrica a pedido con tu diseño. Iniciá el pedido, elegí la cantidad y subí el archivo; el total sale con ese precio por unidad.
+                                            {armable
+                                                ? 'Se fabrica a pedido con tu diseño. Subí tu arte, elegí la tela y cargá la lista de jugadores: la tizada se arma sola y el total sale con ese precio por unidad.'
+                                                : 'Se fabrica a pedido con tu diseño. Iniciá el pedido, elegí la cantidad y subí el archivo; el total sale con ese precio por unidad.'}
                                         </p>
                                     </div>
                                 ) : (
@@ -1236,11 +1316,19 @@ const FichaProducto = ({ producto, onCerrar, onAgregar, onIniciarPedido }) => {
                                     </p>
                                 </div>
                                 )}
+                                {conPlantilla && (
+                                    <p className="text-xs text-zinc-400 leading-relaxed">
+                                        <b className="text-zinc-200">¿Cómo armo mi arte?</b> Bajá la <b className="text-zinc-200">plantilla</b> (el botón sobre la foto), abrila en Illustrator, armá tu diseño sobre cada pieza y guardalo. Después tocá <b className="text-zinc-200">{armable ? 'Armar mi pedido' : 'Iniciar pedido'}</b> y subí ese archivo.
+                                    </p>
+                                )}
                                 <button
-                                    onClick={onIniciarPedido}
-                                    className="w-full py-3 rounded-xl bg-brand-cyan text-zinc-900 text-sm font-black uppercase tracking-wide hover:bg-brand-cyan/90 transition-colors"
+                                    onClick={() => onIniciarPedido(producto)}
+                                    disabled={iniciando}
+                                    className="w-full py-3 rounded-xl bg-brand-cyan text-zinc-900 text-sm font-black uppercase tracking-wide hover:bg-brand-cyan/90 transition-colors disabled:opacity-60"
                                 >
-                                    <span className="inline-flex items-center gap-2">Iniciar pedido <ArrowRight size={16} /></span>
+                                    <span className="inline-flex items-center gap-2">
+                                        {iniciando ? <><Loader2 size={16} className="animate-spin" /> Abriendo…</> : <>{armable ? 'Armar mi pedido' : 'Iniciar pedido'} <ArrowRight size={16} /></>}
+                                    </span>
                                 </button>
                             </>
                         )}

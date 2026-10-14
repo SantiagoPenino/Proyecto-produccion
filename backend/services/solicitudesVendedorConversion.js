@@ -159,8 +159,11 @@ function armarPedido(sol, p, bobinaId) {
   // lleva las prendas de ESE diseño (las filas de la lista de talles con ese diseño).
   const slug = (x) => String(x || '').normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 60) || 'x';
   const tz = p.Datos?.tizadaPro;
+  // Un archivo es de un diseño si es un editable suyo (EDITABLE_<diseño>_…) o si se subió para ese diseño desde el portal
+  // (<DISEÑO>__<archivo>, en la pestaña de ese arte): lleva las prendas de ESE diseño, no las de todo el producto.
   const prendasDelDiseno = (nombreArchivo) => {
-    const d = (tz?.disenos || []).find(x => String(nombreArchivo).startsWith(`EDITABLE_${slug(x.nombre)}_`));
+    const d = (tz?.disenos || []).find(x => String(nombreArchivo).startsWith(`EDITABLE_${slug(x.nombre)}_`)
+      || String(nombreArchivo).toUpperCase().startsWith(`${String(x.nombre || '').toUpperCase()}__`));
     if (!d) return null;
     const filas = (tz.planilla || []).filter(f => tz.disenos.length === 1 || String(f.diseno || '').toUpperCase() === d.nombre);
     return filas.reduce((t, f) => t + (Number(f.cantidad) > 0 ? Number(f.cantidad) : 1), 0) || null;

@@ -46,9 +46,19 @@ export const solicitudesVendedorService = {
     /** TIZADA PRO por API: estructura de la planilla del molde, diseños, lista de talles, artes y envíos del producto. */
     tizadaProVer: (id, productoSolId) => dato(api.get(`${BASE}/${id}/productos/${productoSolId}/tizadapro`)),
     tizadaProEditables: (id, productoSolId, arteArchivoId) => dato(api.post(`${BASE}/${id}/productos/${productoSolId}/tizadapro/editables`, { arteArchivoId })),
+    /** Vista de cada pieza (mesa) de un arte .ai / .pdf: [{ pagina, pieza, vista }] (vista = data URL). */
+    piezasDelArte: (id, archivoId) => dato(api.get(`${BASE}/${id}/archivos/${archivoId}/piezas`)),
     /** payload: { disenos: [{ nombre, variable, variableNombre, tela, telasPorPieza, arteArchivoId }], planilla: [{ diseno, <columna>: valor }] } */
     tizadaProGuardar: (id, productoSolId, payload) => dato(api.put(`${BASE}/${id}/productos/${productoSolId}/tizadapro`, payload)),
     /** Arma el .zip y lo manda a TIZADA PRO. soloRevisar = solo POST /pedidos/validar (no genera nada). */
+    // [A MEDIDA] cuentas de TIZADA para la medida de un diseño (no guarda) y plantilla con la medida para el diseñador
+    tizadaProCalcular: (id, productoSolId, medida, tela) => dato(api.post(`${BASE}/${id}/productos/${productoSolId}/tizadapro/calcular`, { medida, tela })),
+    tizadaProPlantillaPedir: (id, productoSolId) => dato(api.post(`${BASE}/${id}/productos/${productoSolId}/tizadapro/plantilla`)),
+    tizadaProPlantillaEstado: (id, productoSolId) => dato(api.get(`${BASE}/${id}/productos/${productoSolId}/tizadapro/plantilla`)),
+    // Plantilla del PRODUCTO (molde + modelo, la misma que baja la Tienda): 1) que esté lista y cómo se llama 2) el archivo
+    plantillaDelProducto: (proId) => dato(api.get(`/web-orders/tienda/pedidos/plantillas/${proId}`)),
+    plantillaDelProductoArchivo: async (proId) => (await api.get(`/web-orders/tienda/pedidos/plantillas/${proId}/archivo`, { responseType: 'blob' })).data,
+    tizadaProPlantillaBajar: async (id, productoSolId, nombre) => (await api.get(`${BASE}/${id}/productos/${productoSolId}/tizadapro/plantilla/archivo`, { params: { nombre }, responseType: 'blob' })).data,
     tizadaProEnviar: (id, productoSolId, soloRevisar) => dato(api.post(`${BASE}/${id}/productos/${productoSolId}/tizadapro/enviar`, { soloRevisar: !!soloRevisar })),
     /** Pregunta a TIZADA por un envío (y si está listo carga la tizada). reintentar = volver a cargar un resultado que falló. */
     tizadaProActualizar: (id, envioId, reintentar) => dato(api.post(`${BASE}/${id}/tizadapro/envios/${envioId}/actualizar`, { reintentar: !!reintentar })),
@@ -73,7 +83,8 @@ export const solicitudesVendedorService = {
     bandeja: () => dato(api.get(`${BASE}/bandeja-diseno`)),
     /** Órdenes de Bordado y TPU que ya están en producción y todavía esperan su diseño (solo lectura). */
     disenosEnProduccion: () => dato(api.get(`${BASE}/disenos-en-produccion`)),
-    enviarADiseno: (parteId, TipoTrabajo) => dato(api.post(`${BASE}/partes/${parteId}/enviar-diseno`, { TipoTrabajo })),
+    // Tizada: true = la principal sale ya a TIZADA PRO (arma el PDF); false = no; sin dato = como diga el .env
+    enviarADiseno: (parteId, TipoTrabajo, Tizada) => dato(api.post(`${BASE}/partes/${parteId}/enviar-diseno`, { TipoTrabajo, ...(Tizada !== undefined ? { Tizada } : {}) })),
     tomar: (parteId) => dato(api.post(`${BASE}/partes/${parteId}/tomar`)),
     aceptarCambio: (parteId) => dato(api.post(`${BASE}/partes/${parteId}/aceptar-cambio`)),
 };

@@ -223,6 +223,7 @@ export default function SolicitudesVendedorPage() {
                                     <td className={TD}>
                                         <div className="font-bold text-slate-800">{s.ClienteNombre || `Cliente ${s.CodCliente}`}</div>
                                         <div className="text-slate-500">{s.NombreTrabajo}</div>
+                                        {s.Origen === 'PORTAL' && <div className="mt-0.5"><PastillaEstado txt="Desde el portal" cls="bg-sky-50 text-sky-700" title="La armó el cliente en la Tienda del portal" /></div>}
                                         {s.PreNumero ? <div className="text-xs text-slate-400">presupuesto {s.PreNumero}</div> : null}
                                     </td>
                                     <td className={`${TD} text-slate-700`}>{capitalizar(s.VendedorNombre) || '—'}</td>
@@ -262,6 +263,7 @@ function Ficha({ s, onAbrir, onPrecargar }) {
     const convertida = s.Estado === 'PEDIDO_SOLICITADO';
     const franja = s.Estado === 'CANCELADA' ? 'border-l-slate-300 opacity-60' : convertida && !(s.DisenoPendProd > 0) ? 'border-l-slate-400' : s.Listo ? 'border-l-emerald-500' : 'border-l-rose-500';
     const datos = [
+        s.Origen === 'PORTAL' && ['Desde el portal', 'bg-sky-50 text-sky-700'],   // la armó el cliente en la Tienda
         s.Unidades > 0 && [`${s.Unidades} unidades`, 'bg-slate-100 text-slate-600'],
         f.dondeSeCose === 'EXTERNO' && [`Taller ${f.tallerExterno || 'externo'}`, 'bg-slate-100 text-slate-600'],
         s.NumerosPedido && [`Pedido ${s.NumerosPedido}`, 'bg-emerald-50 text-emerald-700'],

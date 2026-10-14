@@ -1547,6 +1547,10 @@ export default function ClienteVista360() {
 
   // Fase 2 — operación de dinero (Caja Administrativa, sin sesión de mostrador)
   const [opModal, setOpModal]         = useState(null); // 'COBRO' | 'ANTICIPO' | 'VENTA'
+  // Lo que el cliente entregó, cargado en el anticipo antes de pasar al cobro de deudas
+  // ({ monto, moneda, concepto }). Solo vive mientras el modal sigue en COBRO.
+  const [cobroPagoInicial, setCobroPagoInicial] = useState(null);
+  useEffect(() => { if (opModal !== 'COBRO') setCobroPagoInicial(null); }, [opModal]);
   const [cobroPaso, setCobroPaso]     = useState('seleccion'); // paso del cobro, controlado desde acá para el botón Cerrar
   const [anticipoPaso, setAnticipoPaso] = useState('operacion'); // paso del anticipo (mismo patrón que el cobro)
   const [ventaPaso, setVentaPaso]     = useState('conceptos');   // paso de la venta (mismo patrón)
@@ -2347,7 +2351,8 @@ export default function ClienteVista360() {
                   metodosPago={metodosPago}
                   cotizacion={cotizacion || 1}
                   initialCliente={clienteSel}
-                  onPagoCompletado={onCobroDeudaOk}
+                  pagoInicial={cobroPagoInicial}
+                  onPagoCompletado={(d) => { setCobroPagoInicial(null); onCobroDeudaOk(d); }}
                 />
               ) : opModal === 'VENTA' ? (
                 <CajaVentaDirectaTab
@@ -2375,6 +2380,7 @@ export default function ClienteVista360() {
                   cotizacion={cotizacion || 1}
                   initialCliente={clienteSel}
                   onCobroCompletado={onOperacionOk}
+                  onIrACobrarDeudas={(_cli, pago) => { setCobroPagoInicial(pago || null); setCobroPaso('seleccion'); setOpModal('COBRO'); }}
                 />
               )}
             </div>

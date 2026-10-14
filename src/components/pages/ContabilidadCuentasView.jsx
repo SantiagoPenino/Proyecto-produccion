@@ -385,7 +385,6 @@ const ModalAnticipo = ({ cuenta, cliente, onClose, onSuccess }) => {
   const [metodoId, setMetodoId] = useState('');
   const [monedaId, setMonedaId] = useState(cuenta?.MonIdMoneda||1);
   const [concepto, setConcepto] = useState('');
-  const [imputarDeudas, setImputarDeudas] = useState(true); // ¿paga las deudas abiertas o queda todo a favor?
   const [saving, setSaving] = useState(false);
   useEffect(()=>{api.get('/contabilidad/metodos-pago').then(r=>{const l=r.data?.data||r.data||[];setMetodos(l);if(l.length)setMetodoId(String(l[0].MPaIdMetodoPago));}).catch(()=>{});},[]);
   const submit = async (e) => {
@@ -394,7 +393,7 @@ const ModalAnticipo = ({ cuenta, cliente, onClose, onSuccess }) => {
     setSaving(true);
     try {
       const r = await fetchAPI('/api/contabilidad/caja/pago-anticipo',{method:'POST',body:JSON.stringify({
-        clienteId:cliente?.CliIdCliente, cuentaId:cuenta?.CueIdCuenta, importe:Number(importe), metodoPagoId:metodoId, monedaId, concepto, imputarDeudas,
+        clienteId:cliente?.CliIdCliente, cuentaId:cuenta?.CueIdCuenta, importe:Number(importe), metodoPagoId:metodoId, monedaId, concepto,
       })});
       toast.success(r.message||'Anticipo registrado'); onSuccess?.(); onClose();
     }catch(err){toast.error(err.message);}finally{setSaving(false);}
@@ -426,9 +425,7 @@ const ModalAnticipo = ({ cuenta, cliente, onClose, onSuccess }) => {
           <div><label className="block text-xs font-semibold text-slate-600 mb-1">Concepto (opcional)</label>
             <input type="text" value={concepto} onChange={e=>setConcepto(e.target.value)} placeholder="Ej: Anticipo cuota marzo..." className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-sm"/>
           </div>
-          <AnticipoDeudasAbiertas clienteId={cliente?.CliIdCliente} monedaId={monedaId}
-            cuentaId={Number(cuenta?.MonIdMoneda||1)===Number(monedaId) ? cuenta?.CueIdCuenta : null}
-            importe={Number(importe)||0} value={imputarDeudas} onChange={setImputarDeudas}/>
+          <AnticipoDeudasAbiertas clienteId={cliente?.CliIdCliente}/>
           <div className="flex gap-3 pt-1">
             <button type="button" onClick={onClose} className="flex-1 py-2.5 border border-slate-200 rounded-lg text-sm text-slate-600">Cancelar</button>
             <button type="submit" disabled={saving} className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-bold disabled:opacity-50 flex items-center justify-center gap-2">
@@ -3638,6 +3635,25 @@ export const PlanesPanel = ({ cuenta, CliIdCliente, cliente, desde, hasta, onClo
     finally { setMatGuardando(false); }
   };
 
+  // Cerrar rollo: da de baja el plan. Si al rollo le quedaban metros, el backend los
+  // saca de la cuenta con un AJUSTE_NEG (se pierden), así que se avisa antes.
+  const [cerrandoPlanId, setCerrandoPlanId] = useState(null);
+  const cerrarRollo = async (p, nomMat, unidad) => {
+    const restante = Number(p.PlaCantidadRestante ?? (p.PlaCantidadTotal - p.PlaCantidadUsada));
+    const aviso = restante > 0.009
+      ? `Al rollo le quedan ${fmtNum(restante)} ${unidad}: se DESCUENTAN de la cuenta con un ajuste negativo y se pierden.`
+      : 'El rollo está agotado: se cierra sin tocar el saldo de la cuenta.';
+    if (!window.confirm(`Cerrar el rollo "${nomMat}" (Plan #${p.PlaIdPlan}).\n\n• ${aviso}\n• Las órdenes nuevas de este material ya no descuentan de este plan.\n• El historial se conserva (queda en "cerrados").\n\n¿Confirmás?`)) return;
+    setCerrandoPlanId(p.PlaIdPlan);
+    try {
+      await fetchAPI(`/api/contabilidad/planes/${p.PlaIdPlan}/desactivar`, { method: 'PATCH' });
+      toast.success(`Rollo "${nomMat}" (Plan #${p.PlaIdPlan}) cerrado`);
+      await cargar();
+      onChanged?.();
+    } catch (e) { toast.error(e.message); }
+    finally { setCerrandoPlanId(null); }
+  };
+
   const unidadLabel = cuenta.UnidadLabel || cuenta.CueTipo || '';
 
   // Recargos de urgencia que se borran junto con una ENTREGA: los RECARGO_URGENCIA de la
@@ -3891,9 +3907,24 @@ export const PlanesPanel = ({ cuenta, CliIdCliente, cliente, desde, hasta, onClo
                               {!p.PlaActivo && <span className="text-[9px] font-bold text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded">CERRADO</span>}
                               {p.PlaImportePagado > 0 && <span className="text-[10px] text-slate-400">· Pagó: {fmt(p.PlaImportePagado, cuenta.MonSimbolo)}</span>}
                             </div>
-                            <span className={`text-xs font-bold ${restante < 0 ? 'text-rose-600' : agotado ? 'text-rose-500' : 'text-violet-700'}`}>
-                              {fmtNum(restante)} / {fmtNum(p.PlaCantidadTotal)} {p.PlaUnidad}
-                            </span>
+                            <div className="flex items-center gap-2">
+                              <span className={`text-xs font-bold ${restante < 0 ? 'text-rose-600' : agotado ? 'text-rose-500' : 'text-violet-700'}`}>
+                                {fmtNum(restante)} / {fmtNum(p.PlaCantidadTotal)} {p.PlaUnidad}
+                              </span>
+                              {!!p.PlaActivo && (
+                                <button
+                                  type="button"
+                                  onClick={() => cerrarRollo(p, nomMat, p.PlaUnidad || unidadMat)}
+                                  disabled={cerrandoPlanId === p.PlaIdPlan}
+                                  title={restante > 0.009
+                                    ? `Cerrar este rollo: los ${fmtNum(restante)} ${p.PlaUnidad || unidadMat} que le quedan se descuentan de la cuenta`
+                                    : 'Cerrar este rollo (agotado): pasa a "cerrados" y deja de recibir órdenes'}
+                                  className="flex items-center gap-1 px-2 py-0.5 text-[10px] font-semibold text-slate-600 bg-white border border-slate-200 hover:border-rose-300 hover:text-rose-600 rounded-md transition-colors disabled:opacity-50"
+                                >
+                                  {cerrandoPlanId === p.PlaIdPlan ? <RefreshCw size={10} className="animate-spin" /> : <Lock size={10} />} Cerrar rollo
+                                </button>
+                              )}
+                            </div>
                           </div>
                           <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
                             <div className={`h-full rounded-full transition-all ${agotado ? 'bg-rose-500' : alerta ? 'bg-amber-400' : 'bg-emerald-500'}`}

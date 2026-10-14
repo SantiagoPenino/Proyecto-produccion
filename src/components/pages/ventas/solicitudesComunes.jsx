@@ -1,7 +1,9 @@
-import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Ban, Loader2, Search, X } from 'lucide-react';
+import { Ban, FileText, Loader2, Search, X } from 'lucide-react';
 import api from '../../../services/apiClient';
+import { solicitudesVendedorService } from '../../../services/modules/solicitudesVendedorService';
+import Selector from '../../ui/Selector';
 import { fmtFecha } from '../../../utils/fechas';
 
 // Spec 41 — piezas compartidas por las pantallas de Solicitudes de vendedores.
@@ -353,4 +355,97 @@ export function useConfirmar() {
         </Ventana>
     );
     return [dialogo, preguntar];
+}
+
+// Vista de cada pieza de un arte (.ai / .pdf armado sobre la base de TIZADA): la dibuja el servidor una vez y queda acá
+// en memoria para todas las pantallas (tarjeta del arte y Piezas y telas). Devuelve null mientras llega.
+const piezasArteCache = new Map();
+export function usePiezasArte(id, archivoId) {
+    const clave = id && archivoId ? `${id}:${archivoId}` : null;
+    const [piezas, setPiezas] = useState(() => (clave && piezasArteCache.get(clave)?.data) || null);
+    useEffect(() => {
+        if (!clave) { setPiezas(null); return undefined; }
+        let vivo = true;
+        let e = piezasArteCache.get(clave);
+        if (!e) {
+            e = { data: null, p: null };
+            e.p = svcPiezasArte(id, archivoId).then(r => { e.data = r?.piezas || []; return e.data; }).catch(() => { piezasArteCache.delete(clave); return []; });
+            piezasArteCache.set(clave, e);
+        }
+        if (e.data) setPiezas(e.data); else e.p.then(d => { if (vivo) setPiezas(d); });
+        return () => { vivo = false; };
+    }, [clave]);   // eslint-disable-line react-hooks/exhaustive-deps
+    return piezas;
+}
+const svcPiezasArte = (id, archivoId) => solicitudesVendedorService.piezasDelArte(id, archivoId);
+// Nombre de pieza comparable entre el molde ("Sisa Derecha", "Frente 3") y la capa "guias" del arte ("Sisa der", "Frente")
+const clavePieza = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
+    .replace(/\bder(echo|echa)?\b/g, 'der').replace(/\bizq(uierdo|uierda)?\b/g, 'izq').replace(/[^a-z]/g, '');
+export const piezaDelArte = (piezas, pieza, generico) => {
+    const a = clavePieza(pieza), g = clavePieza(generico);
+    return (piezas || []).find(x => { const k = clavePieza(x.pieza); return k && (k === a || k === g || (g && k.startsWith(g)) || (a && a.startsWith(k))); }) || null;
+};
+
+// Una pieza con su CONTORNO (svgPath del molde: silueta procesada o la foto del molde de TIZADA) y, si hay, el arte del
+// cliente recortado con esa forma. Sin contorno: el arte solo (o nada).
+export function PiezaConArte({ svgPath, vista, className = 'h-12 w-10', alt = '' }) {
+    const uid = useId().replace(/[^a-zA-Z0-9]/g, '');
+    const forma = useRef(null);
+    const [caja, setCaja] = useState(null);   // la caja de la pieza dentro del 0..100, para que llene el espacio
+    useLayoutEffect(() => {
+        try { const b = forma.current?.getBBox(); if (b && b.width > 0 && b.height > 0) setCaja({ x: b.x, y: b.y, w: b.width, h: b.height }); }
+        catch (_) { /* sin medida: el viewBox entero */ }
+    }, [svgPath]);
+    if (!svgPath) return vista ? <img src={vista} alt={alt} className={`${className} shrink-0 object-contain`} /> : null;
+    const c = caja || { x: 0, y: 0, w: 100, h: 100 };
+    const m = Math.max(c.w, c.h) * 0.02;
+    return (
+        <svg viewBox={`${c.x - m} ${c.y - m} ${c.w + 2 * m} ${c.h + 2 * m}`} className={`${className} shrink-0`} role="img" aria-label={alt}>
+            <defs><clipPath id={`pz${uid}`}><path d={svgPath} /></clipPath></defs>
+            <path ref={forma} d={svgPath} fill={vista ? '#ffffff' : '#c7d2fe'} />
+            {vista && <image href={vista} x={c.x} y={c.y} width={c.w} height={c.h} preserveAspectRatio="xMidYMid slice" clipPath={`url(#pz${uid})`} />}
+            <path d={svgPath} fill="none" stroke="#94a3b8" strokeWidth="1" vectorEffect="non-scaling-stroke" />
+        </svg>
+    );
+}
+
+// Tarjeta de una pieza con su tela ("Piezas y telas" y la pestaña de cada arte en el portal): figura (vista del arte o
+// silueta), nombre y tela. tocable = al tocarla aparece la tela para elegir ahí mismo (onElegir con el id de la tela).
+export function TarjetaPieza({ titulo, detalle, figura, telaNombre, fija, extra, tocable = false, abierta = false, onAbrir, telas = [], telaId = '', onElegir }) {
+    return (
+        <div onClick={tocable ? onAbrir : undefined} title={tocable ? 'Tocá para cambiar la tela de esta pieza' : undefined}
+            className={`flex items-center gap-2 border rounded-lg px-2 py-1.5 bg-white ${abierta ? 'border-brand-cyan' : 'border-slate-200'} ${tocable ? 'cursor-pointer hover:border-brand-cyan/60' : ''}`}>
+            {figura}
+            <div className="min-w-0 flex-1">
+                <div className="font-black text-slate-800 truncate">{titulo}{detalle ? <span className="font-normal text-slate-400"> · {detalle}</span> : null}</div>
+                {abierta
+                    ? <div onClick={e => e.stopPropagation()}>
+                        <Selector value={telaId || ''} onChange={e => onElegir?.(e.target.value)} claseBoton={claseSel(SEL_CAMPO)} anchoLista={260}>
+                            {telas.map(t => <option key={t.proIdProducto} value={t.proIdProducto}>{t.nombre}</option>)}
+                        </Selector>
+                    </div>
+                    : <div className={telaNombre ? 'text-slate-700' : 'text-rose-600 font-bold'}>{telaNombre || 'Sin tela'}{fija ? <span className="text-[10px] text-slate-400"> · fija del molde</span> : null}</div>}
+                {extra}
+            </div>
+        </div>
+    );
+}
+
+// Miniatura de un archivo de Drive. Si Drive no la da (archivo sin compartir, formato sin vista previa
+// o todavía subiendo), muestra la extensión. El clic abre SIEMPRE el archivo real.
+// (12/10: vino de SolicitudVendedorDetalle para usarla también en TizadaProBloque.) entera = la imagen completa
+// (vista previa del arte) en vez de recortada al cuadrado.
+export const driveIdDe = (url) => { const m = String(url || '').match(/\/d\/([a-zA-Z0-9_-]{10,})|[?&]id=([a-zA-Z0-9_-]{10,})/); return m ? (m[1] || m[2]) : null; };
+export function Miniatura({ a, tam = 64, entera = false }) {
+    const [error, setError] = useState(false);
+    const idDrive = driveIdDe(a.UrlDrive);
+    const src = idDrive && !error ? `https://drive.google.com/thumbnail?id=${idDrive}&sz=w${tam > 120 ? 600 : 300}` : null;
+    const ext = (String(a.NombreOriginal || '').split('.').pop() || '').toUpperCase().slice(0, 4);
+    return (
+        // Tema claro (06/10): antes fp-mini / fp-mini-ext de fichaPedido.css, con los colores del tema oscuro
+        <a href={a.UrlDrive} target="_blank" rel="noreferrer" style={{ width: tam, height: tam }} title={`Abrir "${a.NombreOriginal}"`}
+            className="inline-flex shrink-0 items-center justify-center overflow-hidden rounded-lg border border-slate-200 bg-slate-50 transition-colors hover:border-brand-cyan">
+            {src ? <img src={src} alt="" loading="lazy" onError={() => setError(true)} className={`h-full w-full bg-white ${entera ? 'object-contain' : 'object-cover'}`} /> : <span className="text-[11px] font-black text-slate-400">{ext || <FileText size={16} />}</span>}
+        </a>
+    );
 }

@@ -19,6 +19,14 @@ router.get('/productos/:proId', configuradorController.getProductoFicha);
 router.put('/productos/:proId', configuradorController.guardarProductoConfig);
 router.put('/productos/:proId/identidad', configuradorController.actualizarIdentidad);   // nombre y código del artículo
 router.post('/productos/:proId/copiar', configuradorController.copiarProducto);          // copia igual, sin precio y en borrador
+router.get('/productos/:proId/borrar', configuradorController.revisarBorrarProducto);    // validación previa: qué impide borrarlo y qué se borra
+router.delete('/productos/:proId', configuradorController.borrarProducto);              // borra (si nunca se usó) con respaldo JSON
+// [VARIANTES] producto padre + variantes (un artículo por modelo del molde) y códigos nuevos (12/10)
+router.get('/productos/:proId/variantes', configuradorController.getVariantes);
+router.post('/productos/:proId/variantes', configuradorController.crearVariante);         // { modeloClave }
+router.post('/variantes/:proId/recopiar', configuradorController.recopiarVariante);      // la variante vuelve a quedar igual al padre
+router.get('/productos/:proId/codigo-sugerido', configuradorController.getCodigoSugerido); // según familia y etiqueta
+router.get('/codigo-nuevo', configuradorController.getCodigoNuevo);                      // ?codStock=&etiquetaId=&esCombo=1
 
 // Etiquetas (árbol: Familia → Etiqueta → Producto)
 router.get('/etiquetas', configuradorController.getEtiquetas);
@@ -43,6 +51,7 @@ router.get('/materiales-area/:areaId', configuradorController.getMaterialesArea)
 
 // Moldes de TizadaPro (solo lectura): modelos, piezas, talles y telas permitidas
 router.get('/tizadapro/moldes', configuradorController.getTizadaProMoldes);
+router.get('/tizadapro/a-medida', configuradorController.getTizadaProAMedida);   // [A MEDIDA] variables a medida de TIZADA
 router.post('/tizadapro/moldes/procesar-carpeta', configuradorController.procesarCarpetaMoldes);   // siluetas desde la carpeta de PDFs
 router.get('/tizadapro/moldes/:ref', configuradorController.getTizadaProMolde);
 // PDF del molde (una vez por molde) → siluetas de las piezas
