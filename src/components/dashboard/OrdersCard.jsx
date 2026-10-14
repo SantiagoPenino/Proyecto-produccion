@@ -1,8 +1,7 @@
 import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { io } from "socket.io-client";
 import { useAuth } from "../../context/AuthContext";
-import { SOCKET_URL } from "../../services/apiClient";
+import { socket } from "../../services/socketService";
 
 export default function OrdersCard({ title, icon, bgColor, borderColor = "border-slate-100", numberColor = "text-slate-800", zeroColor, queryKey, queryFn, decorativeIcon }) {
     const { user } = useAuth();
@@ -18,24 +17,17 @@ export default function OrdersCard({ title, icon, bgColor, borderColor = "border
     const displaySummary = summary || { totalGeneral: 0, perArea: {} };
 
     useEffect(() => {
-        const socket = io(SOCKET_URL, { reconnectionAttempts: 5 });
-
-        // Handlers con nombre para poder quitarlos en el cleanup. Antes eran anónimos +
-        // socket.disconnect(): el socket es el singleton compartido (socket.io multiplexa
-        // por URL), así que disconnect() bajaba el socket de TODA la app y dejaba los
-        // listeners colgados → se acumulaban en cada montaje (fuga → N refetches por evento).
-        const handleConnectError = (err) => {
-            console.error("🔴 Connection Error Socket.io:", err);
-        };
+        // Socket único de la app (services/socketService). Antes hacía io(SOCKET_URL) acá: como el
+        // singleton ya tiene el namespace "/", socket.io-client abre una conexión NUEVA (no multiplexa)
+        // y el cleanup solo quitaba listeners → cada montaje dejaba una conexión abierta (13/10).
+        // Solo quitar los listeners de ESTE componente; nunca disconnect() (baja el de toda la app).
         const handleOrderUpdated = () => {
             refetch();
         };
 
-        socket.on("connect_error", handleConnectError);
         socket.on("server:order_updated", handleOrderUpdated);
 
         return () => {
-            socket.off("connect_error", handleConnectError);
             socket.off("server:order_updated", handleOrderUpdated);
         };
     }, [refetch]);

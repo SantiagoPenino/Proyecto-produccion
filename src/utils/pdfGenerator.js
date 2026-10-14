@@ -72,6 +72,9 @@ function numeroALetras(monto) {
 
 // Carga una imagen (logo del emisor) y la convierte a dataURL PNG para jsPDF.addImage.
 // Resuelve null ante cualquier error (se usa el wordmark "user" como fallback).
+// Logo de user (marca 2026) para la cabecera cuando la empresa no tiene logo propio.
+const LOGO_USER = '/assets/images/logo.png';
+
 const cargarImagenBase64 = (src) => new Promise((resolve) => {
     try {
         const img = new Image();
@@ -248,10 +251,10 @@ export const generarPdfFacturaDGI = async (doc, detalles, opciones = {}) => {
         logoUrl:  doc.EmpLogoUrl || '',
     };
 
-    // Logo del emisor: si la empresa tiene imagen configurada se usa; si no, se dibuja el wordmark "user"+CMYK.
+    // Logo del emisor: el de la empresa si tiene; si no, el de user (PNG). Si no carga, el wordmark dibujado.
     let logoDibujado = false;
-    if (emisor.logoUrl) {
-        const logoData = await cargarImagenBase64(emisor.logoUrl);
+    {
+        const logoData = await cargarImagenBase64(emisor.logoUrl || LOGO_USER);
         if (logoData && logoData.dataUrl) {
             const hMM = 18;
             const ratio = (logoData.width && logoData.height) ? (logoData.width / logoData.height) : 2.5;
@@ -1611,8 +1614,8 @@ export const generarPdfReciboCobro = async (r, opciones = {}) => {
 
     // ── Cabecera: emisor (izquierda) ────────────────────────────────────────
     let logoDibujado = false;
-    if (emisor.logoUrl) {
-        const logoData = await cargarImagenBase64(emisor.logoUrl);
+    {
+        const logoData = await cargarImagenBase64(emisor.logoUrl || LOGO_USER);
         if (logoData && logoData.dataUrl) {
             const hMM = 14;
             const ratio = (logoData.width && logoData.height) ? (logoData.width / logoData.height) : 2.5;

@@ -16,7 +16,7 @@
  *  - PDF vectorial como entrada; sin revisión ni aprobación; entra a producción como llega.
  *  - Nombres: tpu<NoDocERP>-cmyk-spots.pdf / -corte.pdf / -boceto.pdf (los filtros %cmyk% /
  *    %corte% / %boceto% del resto del sistema los reconocen).
- *  - Imposición (decidida 04/09): UNA plancha de 30 cm de ancho y hasta 50 cm de alto, 0 mm
+ *  - Imposición (decidida 04/09; ancho 27,5 cm desde el 13/10, antes 30): UNA plancha de 27,5 cm de ancho y hasta 50 cm de alto, 0 mm
  *    entre copias, 5 mm entre filas, SIEMPRE filas completas (sobran hasta columnas−1 parches).
  *    Si ni la plancha más alta alcanza la cantidad pedida, los archivos de impresión y corte
  *    llevan el sufijo "-<N>copias" (N = VECES que hay que imprimir la plancha para cubrir el pedido).
@@ -41,7 +41,8 @@ const MAX_PDF_BYTES = 50 * 1024 * 1024;
 // sep_mm / sep_filas_mm se miden entre LÍNEAS DE CORTE (08/09): 5 mm entre parches vecinos, o sea
 // 2,5 mm que aporta cada uno; contra el borde de la plancha no se agrega margen. El generador les
 // descuenta el sangrado de los dos parches.
-const IMPOSICION = { plancha_mm: 300, sep_mm: 5, sep_filas_mm: 5, max_alto_mm: 500, completar_filas: true };
+// Ancho de la plancha: 275 mm desde el 13/10/2026 (pedido de Santiago; antes 300).
+const IMPOSICION = { plancha_mm: 275, sep_mm: 5, sep_filas_mm: 5, max_alto_mm: 500, completar_filas: true };
 const SANGRADO_MM = 1.0;
 // PDF de control de capas (una página por capa del parche): temporal, para verificar el generador.
 const CAPAS_CONTROL = true;

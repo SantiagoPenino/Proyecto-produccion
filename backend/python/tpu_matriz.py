@@ -47,7 +47,7 @@ Formato de job.json:
        "doble": false,                              # true = tambien en Spot 2 (doble altura)
        "barniz": true}                              # true = zona entera en Spot 3
     ],
-    "imposicion": {"cantidad": 40, "plancha_mm": 300, "sep_mm": 5, "sep_filas_mm": 5,   # entre CORTES
+    "imposicion": {"cantidad": 40, "plancha_mm": 275, "sep_mm": 5, "sep_filas_mm": 5,   # entre CORTES
                    "max_alto_mm": 500, "completar_filas": true},
     "aplanar": true,                                # spots inline en la pagina (default; ver APLANAR_*)
     "spots_raster": false,                          # true = capas de relieve como IMAGEN con su tinta
@@ -103,7 +103,7 @@ MARGEN_EXTRA_MM = 5.0           # mesa = contenido + este margen
 # contra el borde de la plancha no se agrega nada, porque ahi no hay vecino.
 SEP_CORTES_DEFAULT_MM = 5.0
 SEP_FILAS_DEFAULT_MM = 5.0
-PLANCHA_DEFAULT_MM = 300.0
+PLANCHA_DEFAULT_MM = 275.0     # ancho de la plancha: 275 mm desde el 13/10/2026 (antes 300)
 MAX_ALTO_DEFAULT_MM = 500.0     # alto maximo de la plancha (decision del usuario 04/09)
 REPETICIONES_DEFAULT = 2        # espeja REPETICIONES_DEFAULT de webOrdersController.getTexturasTpu
 CAPAS_BANDA_MM = 12.0           # banda superior con el rotulo en el PDF de control de capas
@@ -1854,7 +1854,17 @@ def _boceto(ruta, ruta_arte, cm_arte, Wp, Hp, lista_islas, H_px, ppmm):
 # ── analizar ─────────────────────────────────────────────────────────────────
 
 def analizar(ruta_pdf):
-    doc, page, formas, avisos, motivo = leer_vector(ruta_pdf)
+    import pikepdf
+    try:
+        doc, page, formas, avisos, motivo = leer_vector(ruta_pdf)
+    except pikepdf.PasswordError:
+        # PDF que pide clave para ABRIRSE: no se puede leer. Es del archivo, no una falla del sistema:
+        # vuelve como rechazo con su motivo (como un PDF con imagenes), no como error 500.
+        # La proteccion de solo permisos (no editar / no copiar) abre bien y no pasa por aca.
+        return {"ok": True, "vector": False,
+                "motivo": "El PDF esta protegido con clave y no se puede abrir. Exportalo de nuevo sin clave "
+                          "para abrir el documento.",
+                "pagina": None, "bbox": None, "bbox_mm": None, "formas": [], "colores": [], "avisos": []}
     pr = page.rect
     utiles = [f for f in formas if not f.es_fondo]
 

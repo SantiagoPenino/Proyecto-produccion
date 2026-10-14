@@ -148,7 +148,9 @@ app.use('/api/delivery-times', require('./routes/deliveryTimesRoutes'));
 app.use('/api/horario-laboral', require('./routes/horarioLaboralRoutes'));
 app.use('/api/planificacion', require('./routes/planificacionRoutes'));
 app.use('/api/feriados', require('./routes/feriadosRoutes'));
-app.get('/api/debug/reprocess/:id', require('./controllers/debugController').reprocessOrder);
+// SIN USO (13/10): nadie lo llama (ni el front ni scripts). Era un GET sin login que borra las medidas
+// de los archivos de una orden y los reprocesa: queda solo para Admin. Confirmar con Yoania si se usa o se borra.
+app.get('/api/debug/reprocess/:id', require('./middleware/authMiddleware').verifyToken, require('./middleware/authMiddleware').soloAdmin, require('./controllers/debugController').reprocessOrder);
 app.use('/api/insumos', require('./routes/insumosRoutes'));
 app.use('/api/reception', require('./routes/receptionRoutes'));
 app.use('/api/tela-cliente', require('./routes/telaClienteRoutes')); // Módulo Tela de Cliente

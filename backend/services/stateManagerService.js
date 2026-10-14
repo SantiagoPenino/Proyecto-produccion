@@ -110,6 +110,49 @@ async function insertarHistorial(transaction, ordenId, estado, userName, detalle
 }
 
 /**
+ * Avisos por socket DESPUÉS del commit (13/10). Antes se emitían dentro de la transacción:
+ * las pantallas recargaban antes de que el cambio fuera visible, o avisaban de un cambio que
+ * después se deshacía con rollback. Si varias llamadas comparten la transacción (lotes, cascadas)
+ * se junta todo: un order_updated por orden (con el último estado) y un solo ordersUpdated.
+ * Con pool o request (sin transacción) se avisa en el momento, como antes.
+ */
+const avisosPendientes = new WeakMap();
+
+function emitirAvisos(io, porOrden) {
+    for (const [oid, d] of porOrden) {
+        io.emit('server:order_updated', { orderId: oid, status: d.status, estadoenArea: d.estadoenArea });
+    }
+    io.emit('server:ordersUpdated', { count: porOrden.size });
+}
+
+function avisarCambio(transaction, io, ordenes, status, estadoenArea) {
+    const esTransaccion = transaction && typeof transaction.commit === 'function' && typeof transaction.once === 'function';
+    if (!esTransaccion) {
+        emitirAvisos(io, new Map(ordenes.map(oid => [oid, { status, estadoenArea }])));
+        return;
+    }
+    let pend = avisosPendientes.get(transaction);
+    if (!pend) {
+        pend = { io, porOrden: new Map() };
+        avisosPendientes.set(transaction, pend);
+        // El listener corre dentro del callback de mssql: si tirara, tumbaría el proceso.
+        const alCommit = () => {
+            avisosPendientes.delete(transaction);
+            transaction.removeListener('rollback', alRollback);
+            try { emitirAvisos(pend.io, pend.porOrden); }
+            catch (e) { logger.warn(`[StateManager] Aviso por socket después del commit: ${e.message}`); }
+        };
+        const alRollback = () => {
+            avisosPendientes.delete(transaction);
+            transaction.removeListener('commit', alCommit);
+        };
+        transaction.once('commit', alCommit);
+        transaction.once('rollback', alRollback);
+    }
+    for (const oid of ordenes) pend.porOrden.set(oid, { status, estadoenArea });
+}
+
+/**
  * changeOrderState  -  Funcion principal del servicio
  *
  * @param {object}  transaction  - Transaccion SQL activa.
@@ -237,10 +280,7 @@ async function changeOrderState(transaction, opts) {
     logger.info(`[StateManager] ${target.type} ${target.id} => ${estado} (General: ${estadoGeneral || 'sin cambio'}) | Usuario: ${userName} | Ordenes: ${ordenesAfectadas.length}`);
 
     if (io && ordenesAfectadas.length > 0) {
-        for (const oid of ordenesAfectadas) {
-            io.emit('server:order_updated', { orderId: oid, status: estadoGeneral || estado, estadoenArea: estado });
-        }
-        io.emit('server:ordersUpdated', { count: ordenesAfectadas.length });
+        avisarCambio(transaction, io, ordenesAfectadas, estadoGeneral || estado, estado);
     }
 
     return { userName, userIdNum, estadoGeneral, ordenesAfectadas };

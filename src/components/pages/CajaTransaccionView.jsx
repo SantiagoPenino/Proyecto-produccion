@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { io } from 'socket.io-client';
+import { socket } from '../../services/socketService';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import api, { SOCKET_URL } from '../../services/apiClient';
+import api from '../../services/apiClient';
 import useRecargaConFreno from '../../hooks/useRecargaConFreno';
 import { toast } from 'sonner';
 import Swal from 'sweetalert2';
@@ -881,14 +881,18 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
   }, [filtroTipo]);
 
   useEffect(() => {
-    const socket = io(SOCKET_URL, { transports: ['websocket', 'polling'] });
+    // Socket único de la app (services/socketService): antes abría una conexión propia mientras estaba abierta.
     // Con freno: el server manda los dos avisos juntos y en ráfagas, y /caja es de las consultas más caras.
     // Lo que hace la caja misma (cobrar, vender, autorizar) sigue recargando en el momento.
     socket.on('retiros:update', avisarRetiros);
     socket.on('actualizado', avisarRetiros);
     verificarSesion();
     cargarDatosBasicos();
-    return () => socket.disconnect();
+    // Solo los listeners de esta vista: disconnect() bajaría el socket de toda la app
+    return () => {
+      socket.off('retiros:update', avisarRetiros);
+      socket.off('actualizado', avisarRetiros);
+    };
   }, []);
 
   const verificarSesion = async () => {

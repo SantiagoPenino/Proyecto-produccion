@@ -4100,8 +4100,16 @@ exports.emitirFacturaAnticipo = async (req, res) => {
 
     res.json({ success: true, data: result });
   } catch (err) {
-    logger.error('Error emitirFacturaAnticipo:', err);
-    res.status(500).json({ success: false, error: err.message });
+    // Un control que frenó la factura (ej. pre-factura desactualizada: statusCode 409) va como
+    // aviso, con el ciclo y los totales; solo una falla de verdad es error 500 (13/10/2026).
+    const status = err.statusCode || 500;
+    if (status < 500) {
+      const d = err.detalleCiclo;
+      logger.warn(`[FACT-ANTICIPO] Cliente ${req.params.CliIdCliente} rechazado: ${err.message}${d ? ` (ciclo ${d.CicIdCiclo}, ${d.lineas} líneas)` : ''}`);
+    } else {
+      logger.error('Error emitirFacturaAnticipo:', err);
+    }
+    res.status(status).json({ success: false, error: err.message });
   }
 };
 

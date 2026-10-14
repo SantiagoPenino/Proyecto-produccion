@@ -1,3 +1,4 @@
+// SIN USO (13/10): AreaView lo importa pero nunca lo abre (setIsCartOpen(true) no existe). Además llama logisticsService.getCandidates, que no existe: si algún día se reactiva, hay que darle un endpoint. Ver docs/auditoria-limpieza-2026-10-09.md.
 import React, { useState, useEffect } from 'react';
 import { logisticsService, ordersService } from '../../services/api';
 

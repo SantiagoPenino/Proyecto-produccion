@@ -3707,10 +3707,12 @@ async function cerrarCicloCompleto({
       if (mappedLineas.length > 0 && !(montoDescuentoCalculado > 0)) {
         const sumLineas = mappedLineas.reduce((acc, l) => acc + (l.total || 0), 0);
         if (Math.abs(sumLineas - docTotal) > 1) {
-          throw new Error(
+          // statusCode 409: el control funcionó (frena una factura descuadrada); el controlador
+          // lo registra como aviso, con el ciclo y los dos totales para poder investigarlo.
+          throw Object.assign(new Error(
             `El total del ciclo (${docTotal.toFixed(2)}) no coincide con la suma de las líneas de la pre-factura (${sumLineas.toFixed(2)}). ` +
             `Cerrá y volvé a abrir la pre-factura para refrescar las órdenes/precios del ciclo antes de facturar.`
-          );
+          ), { statusCode: 409, detalleCiclo: { CicIdCiclo, docTotal, sumLineas, lineas: mappedLineas.length } });
         }
       }
 

@@ -1159,7 +1159,9 @@ const editarCostoOrden = async (req, res) => {
     const ordenRes = await transaction.request()
       .input('OrderId', sql.Int, orderId)
       .query('SELECT OrdCostoFinal, OrdCantidad, MonIdMoneda, OrdCodigoOrden, OrdEstadoActual, PagIdPago FROM dbo.OrdenesDeposito WHERE OrdIdOrden = @OrderId');
-    if (!ordenRes.recordset.length) throw new Error('Orden no encontrada.');
+    // Rechazos esperados con su código (404/409): el catch los registra como aviso, no como error.
+    const rechazo = (status, msg) => Object.assign(new Error(msg), { statusCode: status });
+    if (!ordenRes.recordset.length) throw rechazo(404, 'Orden no encontrada.');
     const costoAnterior    = parseFloat(ordenRes.recordset[0].OrdCostoFinal || 0);
     const codigoOrden      = ordenRes.recordset[0].OrdCodigoOrden || '';
     const monedaOrdenActual = nuevaMonedaId !== null ? nuevaMonedaId : (Number(ordenRes.recordset[0].MonIdMoneda) === 2 ? 2 : 1);
@@ -1169,10 +1171,10 @@ const editarCostoOrden = async (req, res) => {
     // en silencio si estaba facturada, pero OrdCostoFinal se pisaba igual). Mismo criterio
     // que detectarEstadosSensibles (quotationController.js) y propagarCotizacionADeposito.
     if (ordenRes.recordset[0].OrdEstadoActual === 9) {
-      throw new Error(`${codigoOrden || 'La orden'} ya fue entregada — no se puede editar el precio desde acá.`);
+      throw rechazo(409, `${codigoOrden || 'La orden'} ya fue entregada — no se puede editar el precio desde acá.`);
     }
     if (ordenRes.recordset[0].PagIdPago) {
-      throw new Error(`${codigoOrden || 'La orden'} ya fue cobrada (pago #${ordenRes.recordset[0].PagIdPago}) — no se puede editar el precio desde acá.`);
+      throw rechazo(409, `${codigoOrden || 'La orden'} ya fue cobrada (pago #${ordenRes.recordset[0].PagIdPago}) — no se puede editar el precio desde acá.`);
     }
     const ordenIdErpChk = await buscarOrdenErpId(transaction, orderId);
     const factChkRes = await transaction.request()
@@ -1183,7 +1185,7 @@ const editarCostoOrden = async (req, res) => {
           AND (MovAnulado IS NULL OR MovAnulado=0) AND DocIdDocumento IS NOT NULL
       `);
     if (factChkRes.recordset.length) {
-      throw new Error(`${codigoOrden || 'La orden'} ya fue facturada (documento ${factChkRes.recordset[0].DocIdDocumento}) — no se puede editar el precio desde acá.`);
+      throw rechazo(409, `${codigoOrden || 'La orden'} ya fue facturada (documento ${factChkRes.recordset[0].DocIdDocumento}) — no se puede editar el precio desde acá.`);
     }
 
     // Actualizar OrdenesDeposito con los campos que cambiaron
@@ -1496,8 +1498,12 @@ const editarCostoOrden = async (req, res) => {
     });
   } catch (err) {
     if (transaction) try { await transaction.rollback(); } catch (e) {}
-    logger.error('[EDITAR COSTO ORDEN ERROR]', err);
-    res.status(500).json({ error: err.message });
+    // Un rechazo de los controles (orden entregada, cobrada o facturada) va como aviso y con su
+    // código; solo una falla de verdad es error 500 (13/10/2026).
+    const status = err.statusCode || 500;
+    if (status < 500) logger.warn('[EDITAR COSTO ORDEN] rechazado:', err.message);
+    else logger.error('[EDITAR COSTO ORDEN ERROR]', err);
+    res.status(status).json({ error: err.message });
   }
 };
 

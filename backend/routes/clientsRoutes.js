@@ -1,6 +1,17 @@
 const express = require('express');
 const router = express.Router();
 const controller = require('../controllers/clientsController');
+const { verifyToken, soloInternoConRol } = require('../middleware/authMiddleware');
+
+// ── Sistema externo: protegido por x-api-key (EXTERNAL_API_KEY), sin JWT ─────
+// Va ANTES del router.use de abajo para que no le pida login.
+router.post('/external-create', controller.createExternalClient);
+
+// Todo lo demás es del sistema interno (13/10): no tenía auth y cualquiera sin login podía
+// listar, editar o borrar clientes. Todos los que lo llaman están en la app interna y mandan
+// token (revisado ruta por ruta). Este router se monta dos veces en server.js: por eso la
+// auth va acá y no en el app.use.
+router.use(verifyToken, soloInternoConRol());
 
 // ── Lectura general ──────────────────────────────────────────────────────────
 router.get('/',                    controller.getAllClients);
@@ -25,8 +36,6 @@ router.get('/sheets/search', controller.sheetsSearch);   // ?idreact=123
 router.post('/sheets/update',controller.sheetsUpdate);   // { idreact, data }
 
 // ── Crear ────────────────────────────────────────────────────────────────────
-// Endpoint público (protegido por x-api-key header, sin JWT)
-router.post('/external-create', controller.createExternalClient);
 router.post('/',                controller.createClient);
 router.post('/import-react',    controller.importReactClient);
 router.post('/export-react',    controller.createReactClient);

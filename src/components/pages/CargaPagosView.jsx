@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../context/AuthContext';
-import api, { SOCKET_URL } from '../../services/apiClient';
-import { io } from 'socket.io-client';
+import api from '../../services/apiClient';
+import { socket } from '../../services/socketService';
 import useRecargaConFreno from '../../hooks/useRecargaConFreno';
 import {
     DollarSign, CreditCard, Search, X, CheckCircle, AlertTriangle,
@@ -63,15 +63,16 @@ export const CargaGestionPagosView = () => {
 
     // ─── SOCKET ───────────────────────────────────────────
     useEffect(() => {
-        const socket = io(SOCKET_URL, { transports: ["websocket", "polling"] });
-        socket.on("connect", () => console.log("Caja conectada a Sockets:", socket.id));
+        // Socket único de la app (services/socketService): antes abría una conexión propia mientras estaba abierta.
         // Con freno: el server manda los dos avisos juntos y en ráfagas, y /caja es de las consultas más caras.
         socket.on("retiros:update", avisarOrders);
         socket.on("actualizado", avisarOrders);
         setSocketInstance(socket);
         fetchData();
         return () => {
-            socket.disconnect();
+            // Solo los listeners de esta vista: disconnect() bajaría el socket de toda la app
+            socket.off("retiros:update", avisarOrders);
+            socket.off("actualizado", avisarOrders);
             if (selectedRetiro) unlockOrder(selectedRetiro.ordenDeRetiro);
         };
     }, []);

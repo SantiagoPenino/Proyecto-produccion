@@ -816,9 +816,12 @@ async function procesarTransaccion(payload) {
 
   // ── Validaciones básicas ──────────────────────────────────────────────
   if (header?.admin) header.esAdministrativa = true;
-  if (!header?.clienteId)        throw new Error('clienteId es obligatorio.');
-  if (!header?.tipoDocumento)    throw new Error('tipoDocumento es obligatorio.');
-  if (!aplicaciones?.length)     throw new Error('Debe incluir al menos una orden o ítem.');
+  // statusCode 400: son datos que faltan en el pedido, no una falla. El controlador los
+  // registra como aviso y contesta 400 (antes salían como error 500 en el log, 13/10/2026).
+  const faltaDato = (msg) => Object.assign(new Error(msg), { statusCode: 400 });
+  if (!header?.clienteId)        throw faltaDato('clienteId es obligatorio.');
+  if (!header?.tipoDocumento)    throw faltaDato('tipoDocumento es obligatorio.');
+  if (!aplicaciones?.length)     throw faltaDato('Debe incluir al menos una orden o ítem.');
 
   // ── GUARD ANTI-DOBLE-FACTURACIÓN (caso SUB-12304: ET-4059 por cierre + ET-4060
   // por cobro de retiro, 24-ago-2026). Una orden cuyo ORDEN ya tiene documento

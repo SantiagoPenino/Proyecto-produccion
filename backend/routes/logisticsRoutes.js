@@ -1,6 +1,12 @@
 const express = require('express');
 const router = express.Router();
 const logisticsController = require('../controllers/logisticsController');
+const { verifyToken, soloInternoConRol } = require('../middleware/authMiddleware');
+
+// Todo el router es del sistema interno (13/10): no tenía auth y cualquiera sin login podía crear
+// remitos, recibir bultos o mover stock. Todos los que lo llaman están en la app interna y mandan
+// token (revisado ruta por ruta). Va antes que todo, también antes del multer de confirm-delivery.
+router.use(verifyToken, soloInternoConRol());
 
 // --- LEGACY ---
 // Validar lote antes de procesar
@@ -71,9 +77,9 @@ router.get('/dashboard', logisticsController.getDashboard);
 router.get('/history', logisticsController.getHistory);
 router.get('/stock', logisticsController.getAreaStock); // NEW
 router.get('/lost', logisticsController.getLostItems);
-// verifyToken: la recuperación cambia estados de órdenes (gancho TERMINAC) y el
-// historial debe firmarse con el operario logueado, no con "Sistema".
-router.post('/recover', require('../middleware/authMiddleware').verifyToken, logisticsController.recoverItem);
+// La recuperación cambia estados de órdenes (gancho TERMINAC) y el historial debe firmarse con
+// el operario logueado, no con "Sistema" (el token lo exige el router.use de arriba).
+router.post('/recover', logisticsController.recoverItem);
 
 // Stock Deposito & Sync
 router.get('/deposit-stock', logisticsController.getDepositStock);

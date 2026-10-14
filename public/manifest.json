@@ -12,31 +12,31 @@
     "theme_color": "#19181B",
     "icons": [
         {
-            "src": "/favicon.svg?v=20260429",
+            "src": "/favicon.svg?v=20261014",
             "sizes": "any",
             "type": "image/svg+xml",
             "purpose": "any"
         },
         {
-            "src": "/web-app-manifest-192x192.png?v=20260429",
+            "src": "/web-app-manifest-192x192.png?v=20261014",
             "sizes": "192x192",
             "type": "image/png",
             "purpose": "any"
         },
         {
-            "src": "/web-app-manifest-512x512.png?v=20260429",
+            "src": "/web-app-manifest-512x512.png?v=20261014",
             "sizes": "512x512",
             "type": "image/png",
             "purpose": "any"
         },
         {
-            "src": "/maskable_icon_x192.png",
+            "src": "/maskable_icon_x192.png?v=20261014",
             "sizes": "192x192",
             "type": "image/png",
             "purpose": "maskable"
         },
         {
-            "src": "/maskable_icon_x512.png",
+            "src": "/maskable_icon_x512.png?v=20261014",
             "sizes": "512x512",
             "type": "image/png",
             "purpose": "maskable"

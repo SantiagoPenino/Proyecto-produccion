@@ -1,6 +1,13 @@
 const express = require('express');
 const router = express.Router();
 const tesoreriaController = require('../controllers/tesoreriaController');
+const { verifyToken, soloInternoConRol } = require('../middleware/authMiddleware');
+
+// Todo el router es del sistema interno (13/10): no tenía auth y cualquiera sin login podía
+// recibir, emitir o anular cheques. Todos los que lo llaman están en la app interna y mandan
+// token (revisado ruta por ruta). De paso, el controller ahora registra el usuario real
+// (req.user) en vez del 1 por defecto.
+router.use(verifyToken, soloInternoConRol());
 
 // Catálogo de Bancos
 router.get('/bancos', tesoreriaController.getBancos);

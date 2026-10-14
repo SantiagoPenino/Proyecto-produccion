@@ -1,12 +1,17 @@
 const express = require('express');
 const router = express.Router();
 const controller = require('../controllers/rollsController'); // 👈 Aquí se llama "controller"
-const { verifyToken } = require('../middleware/authMiddleware');
+const { verifyToken, soloInternoConRol } = require('../middleware/authMiddleware');
+
+// Todo el router es del sistema interno (13/10): no tenía auth (solo 3 rutas pedían token) y
+// cualquiera sin login podía mover órdenes entre lotes o marcarlas impresas. Todos los que lo
+// llaman están en la app interna y mandan token (revisado ruta por ruta).
+router.use(verifyToken, soloInternoConRol());
 
 router.get('/board', controller.getBoardData);
 router.get('/list', controller.getRollosActivos); // Endpoint específico para combo
 router.post('/move', controller.moveOrder);
-router.post('/create', verifyToken, controller.createRoll);
+router.post('/create', controller.createRoll);
 router.post('/reorder', controller.reorderOrders);
 router.post('/order-printed', controller.setOrderPrinted); // Marcar impreso (todas las áreas)
 router.post('/orders-printed-bulk', controller.setOrdersPrintedBulk); // Marcar impreso un GRUPO, en orden
@@ -35,7 +40,7 @@ router.get('/next-name', controller.getNextRollName);
 router.post('/magic', controller.magicRollAssignment);
 
 // Coordinación
-router.post('/reorder-pending', verifyToken, controller.reorderPendingOrders);
-router.post('/reorder-rolls',   verifyToken, controller.reorderRolls);
+router.post('/reorder-pending', controller.reorderPendingOrders);
+router.post('/reorder-rolls',   controller.reorderRolls);
 
 module.exports = router;

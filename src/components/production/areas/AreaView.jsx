@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback } from "react";
 import { Routes, Route, useNavigate, useLocation, Navigate } from "react-router-dom";
-import { io } from "socket.io-client";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { CirclePile, AlertTriangle } from "lucide-react";
 import { LayoutGrid, CalendarCheck, ScanLine, Truck, ListChecks, CalendarClock } from "lucide-react";
@@ -37,7 +36,7 @@ import RollSidebar from "../../layout/RollSidebar";
 import MatrixSidebar from "../../layout/MatrixSidebar";
 
 import { ordersService, rollsService, areasService } from '../../../services/api';
-import { SOCKET_URL } from '../../../services/apiClient';
+import { socket } from '../../../services/socketService';
 import useRecargaConFreno from '../../../hooks/useRecargaConFreno';
 import { useAuth } from '../../../context/AuthContext';
 
@@ -351,9 +350,10 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
     });
 
     // Socket.io: escuchar actualizaciones en tiempo real
+    // Usa el socket único de la app (services/socketService). Antes hacía io(SOCKET_URL) acá: como el
+    // singleton ya tiene el namespace "/", socket.io-client abría una conexión NUEVA (no multiplexa) y
+    // el cleanup solo quitaba listeners → cada montaje o cambio de área dejaba una conexión abierta (13/10).
     useEffect(() => {
-        const socket = io(SOCKET_URL);
-
         const handleSocketUpdate = (payload) => {
             console.log('🔔 Evento socket update:', payload);
             
@@ -412,7 +412,7 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
 
         return () => {
             toast.dismiss(); // al salir de la vista de área, descolgar toasts de orden que sigan en pantalla (no deben verse fuera de /area/df)
-            // socket es el singleton compartido (socket.io multiplexa por URL): NO hacer
+            // socket es el singleton compartido: NO hacer
             // socket.disconnect() — eso baja el socket de TODA la app y deja los listeners
             // colgados, que se acumulan en cada montaje → un evento dispara N refetches
             // (degradación progresiva). Solo quitar los listeners de ESTE componente.

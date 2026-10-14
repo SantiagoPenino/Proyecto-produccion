@@ -277,7 +277,8 @@ export default function LandingNavbar({ onOpenLoginModal }) {
 
   const handleSessionBtn = () => {
     if (sessionType === 'production') {
-      navigate('/retiros');
+      // El interno va al inicio de la app (antes iba a /retiros, ruta que no existe y rebotaba a /)
+      navigate('/');
     } else if (sessionType === 'client') {
       navigate('/portal/profile');
     } else {

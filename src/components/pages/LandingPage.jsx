@@ -119,7 +119,8 @@ export default function LandingPage() {
 
   const sessionLabel = sessionType === 'production' ? 'Producción' : sessionType === 'client' ? 'Mi Portal' : 'Iniciar sesión';
   const handleSessionBtn = () => {
-    if (sessionType === 'production') navigate('/retiros');
+    // El interno va al inicio de la app (antes iba a /retiros, ruta que no existe y rebotaba a /)
+    if (sessionType === 'production') navigate('/');
     else if (sessionType === 'client') navigate('/portal');
     else {
       if (isMobile) navigate('/login');

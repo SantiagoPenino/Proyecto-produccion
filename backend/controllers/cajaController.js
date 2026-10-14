@@ -4171,7 +4171,6 @@ const anularFactura = async (req, res) => {
         const cicloActivoR = await new sql.Request(transaction)
           .input('Cue', sql.Int, cueId)
           .input('CicAnulado', sql.Int, parseInt(cicId))
-        .input('CicAnulado', sql.Int, parseInt(cicId))
         .query(`SELECT TOP 1 CicIdCiclo FROM dbo.CiclosCredito
                 WHERE CueIdCuenta=@Cue AND CicEstado='ABIERTO' AND CicIdCiclo<>@CicAnulado
                 ORDER BY CicFechaInicio DESC`);

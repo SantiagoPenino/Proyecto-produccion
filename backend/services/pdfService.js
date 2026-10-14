@@ -63,6 +63,8 @@ const dibujarCabecera = async (page, { doc, fantasia, razon, dir, ciudad, ruc, l
   const logoTop = height - 20;   // borde superior del logo
   const logoH   = 40;            // alto del logo/wordmark
   let logoDibujado = false;
+  // Sin logo propio de la empresa: el de user (marca 2026, PNG del build). Si no está, el wordmark dibujado.
+  if (!(typeof logoUrl === 'string' && logoUrl.trim())) logoUrl = '/assets/images/logo.png';
 
   if (logoUrl && typeof logoUrl === 'string' && logoUrl.trim() && doc) {
     try {

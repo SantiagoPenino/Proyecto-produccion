@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import api from '../../services/api'; // Axios instance base
+import { socket } from '../../services/socketService';
 
 // [25/09] Entregar con aviso: si algún bulto de las órdenes figura en tránsito en un remito de
 // Logística (nunca se escaneó al llegar a Depósito), el server frena con 409 BULTOS_SIN_RECIBIR.
@@ -1007,13 +1008,12 @@ const WebRetirosPage = () => {
 
   // ─── SOCKET: actualizar en tiempo real ───
   useEffect(() => {
-    let socket;
-    const initSocket = async () => {
-      const { io } = await import('socket.io-client');
-      const { SOCKET_URL } = await import('../../services/apiClient');
-      socket = io(SOCKET_URL, { transports: ["websocket", "polling"] });
-      socket.on("connect", () => console.log("WebRetiros conectado a Sockets:", socket.id));
-      socket.on("retiros:update", (data) => {
+    // Socket único de la app (services/socketService): antes abría una conexión propia mientras
+    // estaba abierta. Se anotan los handlers para quitar solo los de esta vista (nunca disconnect()).
+    const handlers = [];
+    const on = (ev, fn) => { socket.on(ev, fn); handlers.push([ev, fn]); };
+    const initSocket = () => {
+      on("retiros:update", (data) => {
         fetchPendingUpdate();
         // Cualquier evento de retiros recalcula otrosRetiros para evitar estado obsoleto
         // (ej. cancelaciones que cambian estado 1→5 y deben desaparecer de empaques)
@@ -1081,8 +1081,8 @@ const WebRetirosPage = () => {
           }).catch(e => console.warn('[socket] Error refrescando estantes:', e));
         }
       });
-      socket.on("actualizado", () => { fetchPendingUpdate(); });
-      socket.on("totem:cliente-anunciado", (data) => {
+      on("actualizado", () => { fetchPendingUpdate(); });
+      on("totem:cliente-anunciado", (data) => {
         console.log('[WebRetiros] 📢 Cliente anunciado desde tótem:', data);
         // Buscar todas las variantes posibles del ID del retiro (RT-123, RW-123, RL-123)
         const numId = data.ordenRetiro;
@@ -1104,7 +1104,7 @@ const WebRetirosPage = () => {
       });
     };
     initSocket();
-    return () => { if (socket) socket.disconnect(); };
+    return () => { handlers.forEach(([ev, fn]) => socket.off(ev, fn)); };
   }, [fetchAllData, fetchPendingUpdate]);
 
   // 3. Acciones del Operario
