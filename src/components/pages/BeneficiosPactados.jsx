@@ -8,7 +8,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { ListChecks, RefreshCw, AlertTriangle, CheckCircle2 } from 'lucide-react';
 import { toast } from 'sonner';
-import { ModalVentaSaldo } from './ContabilidadCuentasView';
+import { ModalVentaSaldo } from './cuentasComunes';
 import ModalPactarBeneficio from '../beneficios/ModalPactarBeneficio';
 import { benApi, sym, fmtN, fmtFecha, vigenciaTexto, EstadoBadge, Cargando } from '../beneficios/beneficiosUi';
 

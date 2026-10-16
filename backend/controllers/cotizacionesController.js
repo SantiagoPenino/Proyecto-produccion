@@ -27,41 +27,6 @@ const getCotizacionesHoy = async (req, res) => {
   }
 };
 
-// Inserta cotizacion de forma manual
-const insertCotizacion = async (req, res) => {
-  const { cotizacion } = req.body;
-
-  if (!cotizacion || isNaN(cotizacion)) {
-    return res.status(400).json({ error: 'Por favor, proporcione una cotización válida.' });
-  }
-
-  try {
-    const pool = await getPool();
-
-    const checkCotizacion = await pool.request().query(`
-      SELECT COUNT(*) AS count
-      FROM Cotizaciones WITH(NOLOCK)
-      WHERE CONVERT(DATE, CotFecha) = CONVERT(DATE, GETDATE())
-    `);
-
-    if (checkCotizacion.recordset[0].count > 0) {
-      return res.status(400).json({ error: 'Ya existe una cotización para el día de hoy.' });
-    }
-
-    await pool.request()
-      .input('cotizacion', sql.Float, cotizacion)
-      .query(`
-        INSERT INTO Cotizaciones (CotIdCotizacion, CotFecha, CotDolar)
-        VALUES ((SELECT ISNULL(MAX(CotIdCotizacion),0)+1 FROM Cotizaciones), GETDATE(), @cotizacion)
-      `);
-
-    res.status(201).json({ message: 'Cotización insertada exitosamente.' });
-  } catch (error) {
-    logger.error('Error al insertar la cotización:', error);
-    res.status(500).json({ error: 'Hubo un error al intentar insertar la cotización.' });
-  }
-};
-
 // Buscar cotización en vivo del BCU y guardarla si no existe hoy
 const fetchFromBCU = async (req, res) => {
   try {
@@ -125,4 +90,4 @@ const getCotizacionHasta = async (req, res) => {
   }
 };
 
-module.exports = { getCotizacionesHoy, insertCotizacion, fetchFromBCU, getCotizacionHasta };
+module.exports = { getCotizacionesHoy, fetchFromBCU, getCotizacionHasta };

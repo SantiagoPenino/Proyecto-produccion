@@ -1287,14 +1287,13 @@ exports.searchProducts = async (req, res) => {
  * el MISMO camino que corre solo al despachar/recibir un bulto) — en vez de que el usuario
  * tenga que ir agregando línea por línea a mano y adivinando la cantidad. Respeta el modo de
  * facturación GUARDADO (el marcador de la Nota de la orden madre PRO) — si el usuario cambió
- * el modo en la pantalla pero no lo guardó todavía, hay que guardar primero. skipDeposito:
- * true porque esto se dispara desde Producción, no desde un ingreso real a Depósito.
+ * el modo en la pantalla pero no lo guardó todavía, hay que guardar primero.
  */
 exports.reconstruirLineas = async (req, res) => {
     const { noDocERP } = req.params;
     try {
         const ERPSyncService = require('../services/erpSyncService');
-        await ERPSyncService.syncFinalOrderIntegration(noDocERP, req.user?.id || 1, req.user?.usuario || req.user?.nombre || 'Sistema', null, { skipDeposito: true });
+        await ERPSyncService.syncFinalOrderIntegration(noDocERP, req.user?.id || 1, req.user?.usuario || req.user?.nombre || 'Sistema');
         // Reusar la misma lectura que ya arma la respuesta completa (cabecera + detalle +
         // modo) para que el frontend recargue la pantalla con una sola llamada.
         req.params.noDocERP = noDocERP;

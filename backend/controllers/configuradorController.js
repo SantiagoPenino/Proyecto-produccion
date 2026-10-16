@@ -123,6 +123,16 @@ async function tieneF1(pool) {
 }
 const F1_COLS = 'TecnicaPrincipal, AnchoM, AltoM, BordeCm, UM, Molde, VisiblePortal, VisibleTienda, VisibleInterno';
 
+// ¿Ya se corrió docs/migrations/configurador_grupos_talle.sql? (ProductoVentaConfig.GruposTalle: talles que se venden)
+const GRUPOS_TALLE = ['Bebé', 'Niño', 'Adulto', 'Femenino', 'Otros'];
+let _tieneGruposTalle = false;
+async function tieneGruposTalle(pool) {
+    if (_tieneGruposTalle) return true;
+    const r = await pool.request().query(`SELECT COL_LENGTH('dbo.ProductoVentaConfig', 'GruposTalle') AS c`);
+    _tieneGruposTalle = r.recordset[0].c != null;
+    return _tieneGruposTalle;
+}
+
 // ¿Ya se corrió docs/migrations/configurador_tizadapro_mesas.sql? (ProductoVentaConfig.TizadaMesasModo: cómo arma TIZADA los archivos)
 const MESAS_MODOS = ['normal', 'una_por_fila'];
 let _tieneMesasModo = false;
@@ -175,6 +185,16 @@ async function tieneAviosTalle(poolOrTx) {
     const x = r.recordset[0];
     _tieneAviosTalle = x.v != null && x.t != null && x.c != null;
     return _tieneAviosTalle;
+}
+
+// [MEDIDAS] ¿Ya se corrió docs/migrations/configurador_medidas_prenda.sql? (nomenclador, medidas del producto
+// por talle y el dibujo con letras en la ficha). Sin el script, el bloque de medidas no aparece.
+let _tieneMedidas = false;
+async function tieneMedidas(poolOrTx) {
+    if (_tieneMedidas) return true;
+    const r = await new sql.Request(poolOrTx).query(`SELECT OBJECT_ID('dbo.ProductoMedidasTalle', 'U') AS t, COL_LENGTH('dbo.ProductoFichaDiseno', 'MedidasImagenUrl') AS n`);
+    _tieneMedidas = r.recordset[0].t != null && r.recordset[0].n != null;
+    return _tieneMedidas;
 }
 
 // Áreas que pueden ser producción principal de un producto: las áreas de producción de ConfigMapeoERP
@@ -317,6 +337,8 @@ async function leerFicha(pool, proId) {
         const conTalle = conTizada && await tieneAviosTalle(pool);   // [AVÍOS POR TALLE]
         const conAM = await tieneAMedida(pool);   // [A MEDIDA]
         const conMesas = await tieneMesasModo(pool);   // cómo arma TIZADA los archivos
+        const conGrupos = await tieneGruposTalle(pool);   // talles que se venden
+        const conMed = await tieneMedidas(pool);   // [MEDIDAS]
         const rq = () => pool.request().input('PID', sql.Int, proId);
 
         const datos = await rq().query(`
@@ -338,12 +360,12 @@ async function leerFicha(pool, proId) {
             WHERE a.ProIdProducto = @PID AND ISNULL(a.borrar, 0) = 0`);
         if (!datos.recordset.length) return null;
 
-        const [config, tecnicas, opciones, surtido, modelos, telas, avios, apliques, comboItems, comboSrv, fichaDiseno, fdAnot, fdExtra, fdCost, accesorios, aviosTalle] = await Promise.all([
+        const [config, tecnicas, opciones, surtido, modelos, telas, avios, apliques, comboItems, comboSrv, fichaDiseno, fdAnot, fdExtra, fdCost, accesorios, aviosTalle, medidas, medidasTalle] = await Promise.all([
             rq().query(`SELECT OrigenTipo, OrigenProIdProducto, CantidadMinima, CantidadFija,
                                ValidarStock, Estado, EsCombo, FechaRegistro, FechaModif,
                                ${await variantesSvc.tieneVariantes(pool) ? 'PadreProIdProducto, ModeloClave,' : ''}
                                ${conTizada ? 'TizadaProMoldeRef' : 'CAST(NULL AS NVARCHAR(128)) AS TizadaProMoldeRef'}
-                               ${conF1 ? ', ' + F1_COLS : ''}${conAM ? ', AMedidaJson' : ''}${conMesas ? ', TizadaMesasModo' : ''}
+                               ${conF1 ? ', ' + F1_COLS : ''}${conAM ? ', AMedidaJson' : ''}${conMesas ? ', TizadaMesasModo' : ''}${conGrupos ? ', GruposTalle' : ''}
                         FROM dbo.ProductoVentaConfig WHERE ProIdProducto = @PID`),
             rq().query(`SELECT AreaID, Obligatorio, Modo, Cobro
                         FROM dbo.ProductoTerminadoServicios WHERE ProIdProducto = @PID`),
@@ -382,7 +404,7 @@ async function leerFicha(pool, proId) {
                         INNER JOIN dbo.ProductoComboItems ci ON ci.ID = s.ComboItemID
                         LEFT JOIN dbo.TecnicaOpciones t ON t.TecnicaOpcionID = s.TecnicaOpcionID
                         WHERE ci.ProIdProducto = @PID`),
-            rq().query(`SELECT Ref, Marca, Material, Tallas, Marcacion, Colores, Proveedor, DibujoUrl
+            rq().query(`SELECT Ref, Marca, Material, Tallas, Marcacion, Colores, Proveedor, DibujoUrl${conMed ? ', MedidasImagenUrl' : ''}
                         FROM dbo.ProductoFichaDiseno WHERE ProIdProducto = @PID`),
             // [ACCESORIOS] al final de la lista para no mover los índices anteriores
             rq().query(`SELECT AnotacionID, PosX, PosY, Texto FROM dbo.ProductoFichaDisenoAnotaciones
@@ -400,7 +422,14 @@ async function leerFicha(pool, proId) {
                                  WHERE ac.ProIdProducto = @PID ORDER BY ISNULL(ac.Orden, 999), ac.ID`) : { recordset: [] },
             // [AVÍOS POR TALLE] valor de cada talle, por el Orden de la línea del avío
             conTalle ? rq().query(`SELECT AvioOrden, Talle, Valor, AvioID FROM dbo.ProductoAviosTalle
-                                   WHERE ProIdProducto = @PID ORDER BY AvioOrden, ISNULL(Orden, 999), ID`) : { recordset: [] }
+                                   WHERE ProIdProducto = @PID ORDER BY AvioOrden, ISNULL(Orden, 999), ID`) : { recordset: [] },
+            // [MEDIDAS] medidas de la prenda (cómo medir: el propio del producto o, si no tiene, el del nomenclador)
+            conMed ? rq().query(`SELECT pm.Orden, pm.MedidaID, pm.Letra, pm.Nombre, pm.Principal, pm.ComoMedir,
+                                         c.ComoMedir AS ComoMedirNomenclador, c.Referencia
+                                  FROM dbo.ProductoMedidas pm LEFT JOIN dbo.CatalogoMedidas c ON c.MedidaID = pm.MedidaID
+                                  WHERE pm.ProIdProducto = @PID ORDER BY pm.Orden`) : { recordset: [] },
+            conMed ? rq().query(`SELECT MedidaOrden, Talle, Valor FROM dbo.ProductoMedidasTalle
+                                  WHERE ProIdProducto = @PID ORDER BY MedidaOrden, ISNULL(Orden, 999), ID`) : { recordset: [] }
         ]);
 
         // Nombre del producto de origen (si hay)
@@ -427,6 +456,8 @@ async function leerFicha(pool, proId) {
                 telas: telas.recordset,
                 avios: avios.recordset.map(a => ({ ...a, talles: aviosTalle.recordset.filter(t => t.AvioOrden === a.Orden) })),
                 aviosPorTalle: conTalle,   // false = falta el SQL de avíos por talle (la pantalla avisa)
+                medidas: medidas.recordset.map(m => ({ ...m, talles: medidasTalle.recordset.filter(t => t.MedidaOrden === m.Orden).map(t => ({ talle: t.Talle, valor: t.Valor == null ? null : Number(t.Valor) })) })),
+                medidasPrenda: conMed,   // false = falta configurador_medidas_prenda.sql (el bloque no aparece)
                 apliques: apliques.recordset,
                 accesorios: accesorios.recordset,   // [ACCESORIOS]
                 comboItems: comboItems.recordset.map(ci => ({
@@ -607,6 +638,37 @@ async function aplicarSetsHijos(transaction, proId, body, conTizada = false, con
                     .input('AvioID', sql.Int, t.avioId).input('Ord', sql.Int, i + 1)
                     .query(`INSERT INTO dbo.ProductoAviosTalle (ProIdProducto, AvioOrden, Talle, Valor, AvioID, Orden)
                             VALUES (@PID, @AvOrd, @Talle, @Val, @AvioID, @Ord)`);
+            }
+            orden++;
+        }
+    }
+    // [MEDIDAS] medidas de la prenda: letra + medida del nomenclador + principal + valor en cm por talle
+    if (body.medidas !== undefined && await tieneMedidas(transaction)) {
+        await del('ProductoMedidasTalle');
+        await del('ProductoMedidas');
+        const idOk = (v) => (Number.isInteger(Number(v)) && Number(v) > 0 ? Number(v) : null);
+        let orden = 1;
+        for (const m of (body.medidas || [])) {
+            const nombre = String(m.nombre || '').trim().slice(0, 120);
+            if (!nombre) continue;
+            const vistos = new Set();
+            const talles = (Array.isArray(m.talles) ? m.talles : [])
+                .map(t => ({ talle: String(t.talle || '').trim().slice(0, 96), valor: t.valor === '' || t.valor == null ? null : Number(String(t.valor).replace(',', '.')) }))
+                .filter(t => t.talle && Number.isFinite(t.valor) && t.valor >= 0 && !vistos.has(t.talle.toLowerCase()) && vistos.add(t.talle.toLowerCase()));
+            await new sql.Request(transaction)
+                .input('PID', sql.Int, proId).input('Ord', sql.Int, orden).input('Med', sql.Int, idOk(m.medidaId))
+                .input('Let', sql.NVarChar(4), m.letra ? String(m.letra).trim().toUpperCase().slice(0, 4) : null)
+                .input('Nom', sql.NVarChar(120), nombre)
+                .input('Como', sql.NVarChar(400), m.comoMedir && String(m.comoMedir).trim() ? String(m.comoMedir).trim().slice(0, 400) : null)
+                .input('Pri', sql.Bit, m.principal ? 1 : 0)
+                .query(`INSERT INTO dbo.ProductoMedidas (ProIdProducto, Orden, MedidaID, Letra, Nombre, ComoMedir, Principal)
+                        VALUES (@PID, @Ord, @Med, @Let, @Nom, @Como, @Pri)`);
+            for (const [i, t] of talles.entries()) {
+                await new sql.Request(transaction)
+                    .input('PID', sql.Int, proId).input('MOrd', sql.Int, orden).input('Talle', sql.NVarChar(96), t.talle)
+                    .input('Val', sql.Decimal(10, 2), t.valor).input('Ord', sql.Int, i + 1)
+                    .query(`INSERT INTO dbo.ProductoMedidasTalle (ProIdProducto, MedidaOrden, Talle, Valor, Orden)
+                            VALUES (@PID, @MOrd, @Talle, @Val, @Ord)`);
             }
             orden++;
         }
@@ -887,8 +949,20 @@ exports.guardarProductoConfig = async (req, res) => {
                                 (ProIdProducto, Ref, Marca, Material, Tallas, Marcacion, Colores, Proveedor)
                             VALUES (@PID, @Ref, @Marca, @Material, @Tallas, @Marcacion, @Colores, @Proveedor)
                     `);
+                // [MEDIDAS] el dibujo con letras (se sube aparte; acá solo se quita = null)
+                if ('medidasImagenUrl' in fd && await tieneMedidas(transaction)) {
+                    await new sql.Request(transaction).input('PID', sql.Int, proId)
+                        .input('MImg', sql.NVarChar(500), fd.medidasImagenUrl ? String(fd.medidasImagenUrl).trim().slice(0, 500) : null)
+                        .query('UPDATE dbo.ProductoFichaDiseno SET MedidasImagenUrl = @MImg WHERE ProIdProducto = @PID');
+                }
             }
 
+            // Talles que se venden: grupos del molde ('Niño,Adulto'); vacío = todos
+            if (body.gruposTalle !== undefined && await tieneGruposTalle(pool)) {
+                const lista = (Array.isArray(body.gruposTalle) ? body.gruposTalle : String(body.gruposTalle || '').split(',')).map(x => String(x).trim()).filter(x => GRUPOS_TALLE.includes(x));
+                await new sql.Request(transaction).input('PID', sql.Int, proId).input('G', sql.NVarChar(120), lista.length ? [...new Set(lista)].join(',') : null)
+                    .query('UPDATE dbo.ProductoVentaConfig SET GruposTalle = @G WHERE ProIdProducto = @PID');
+            }
             // Cómo arma TIZADA los archivos de este producto (null = automático, lo del .env)
             if (body.tizadaMesasModo !== undefined && await tieneMesasModo(pool)) {
                 const modo = MESAS_MODOS.includes(body.tizadaMesasModo) ? body.tizadaMesasModo : null;
@@ -1094,7 +1168,8 @@ async function copiarFilas(tx, tabla, clave, origen, destino, pisar = {}, entrad
 const TABLAS_COPIA = [
     'ProductoTerminadoServicios', 'ProductoTecnicaOpciones', 'ProductoOrigenVariantes',
     'ProductoModelos', 'ProductoTelas', 'ProductoAvios', 'ProductoAviosTalle', 'ProductoApliques', 'ProductoAccesorios',
-    'ProductoComponentes', 'ProductoFichaDisenoAnotaciones', 'ProductoFichaDisenoExtra', 'ProductoFichaDisenoCosturas'
+    'ProductoComponentes', 'ProductoFichaDisenoAnotaciones', 'ProductoFichaDisenoExtra', 'ProductoFichaDisenoCosturas',
+    'ProductoMedidas', 'ProductoMedidasTalle'
 ];
 // Del artículo se copian solo estas columnas (si existen). El resto se arma acá o queda vacío:
 // CodArticulo, IDProdReact, Descripcion, borrar; ProCodigoOdooProducto y DescripcionLista no.
@@ -1701,6 +1776,82 @@ exports.actualizarIdentidad = async (req, res) => {
         res.status(500).json({ error: e.message });
     }
 };
+// POST /api/configurador/productos/:proId/ficha-diseno/medidas-imagen — [MEDIDAS] el dibujo con las letras
+// (A, B, C…) de la tabla de medidas. Queda guardado al subirlo, como el dibujo de la ficha.
+exports.subirMedidasImagen = async (req, res) => {
+    const proId = parseInt(req.params.proId, 10);
+    if (!Number.isInteger(proId)) return res.status(400).json({ error: 'ProIdProducto inválido.' });
+    if (!req.file) return res.status(400).json({ error: 'No se subió ninguna imagen.' });
+    try {
+        const pool = await getPool();
+        if (!(await tieneMedidas(pool))) return res.status(409).json({ error: 'Falta correr docs/migrations/configurador_medidas_prenda.sql en esta base.' });
+        const url = `/uploads/fichas-diseno/${req.file.filename}`;
+        await pool.request().input('PID', sql.Int, proId).input('Url', sql.NVarChar(500), url).query(`
+            IF EXISTS (SELECT 1 FROM dbo.ProductoFichaDiseno WHERE ProIdProducto = @PID)
+                UPDATE dbo.ProductoFichaDiseno SET MedidasImagenUrl = @Url, FechaModif = GETDATE() WHERE ProIdProducto = @PID
+            ELSE
+                INSERT INTO dbo.ProductoFichaDiseno (ProIdProducto, MedidasImagenUrl) VALUES (@PID, @Url);`);
+        res.json({ success: true, url });
+    } catch (e) {
+        logger.error('[Configurador] subirMedidasImagen:', e);
+        res.status(500).json({ error: e.message });
+    }
+};
+
+// ═════════════════════════════════════════════════════════════════════════
+//  CATÁLOGO DE MEDIDAS (dbo.CatalogoMedidas — configurador_medidas_prenda.sql)
+//  El nomenclador: Largo total, Ancho de pecho… con su referencia y cómo se mide.
+// ═════════════════════════════════════════════════════════════════════════
+const FALTA_SQL_MEDIDAS = 'Falta correr docs/migrations/configurador_medidas_prenda.sql en esta base.';
+const errDupMedida = (e) => { if (/UQ_CatalogoMedidas/.test(e.message)) { const x = new Error('Ya hay una medida con ese nombre.'); x.status = 409; throw x; } throw e; };
+const txtMed = (v, n) => (v != null && String(v).trim() ? String(v).trim().slice(0, n) : null);
+// GET /api/configurador/medidas (?all=1 incluye inactivas)
+exports.getMedidas = async (req, res) => {
+    try {
+        const pool = await getPool();
+        if (!(await tieneMedidas(pool))) return res.json({ success: true, data: [], faltaSql: true });
+        const r = await pool.request().query(`
+            SELECT m.MedidaID, m.Nombre, m.Referencia, m.ComoMedir, m.Activo, m.Orden,
+                   (SELECT COUNT(DISTINCT pm.ProIdProducto) FROM dbo.ProductoMedidas pm WHERE pm.MedidaID = m.MedidaID) AS Usos
+            FROM dbo.CatalogoMedidas m
+            ${req.query.all === '1' ? '' : 'WHERE m.Activo = 1'} ORDER BY ISNULL(m.Orden, 999), m.Nombre`);
+        res.json({ success: true, data: r.recordset });
+    } catch (e) { logger.error('[Configurador] getMedidas:', e); res.status(500).json({ error: e.message }); }
+};
+// POST /api/configurador/medidas — { nombre, referencia?, comoMedir? }
+exports.crearMedida = async (req, res) => {
+    const nombre = txtMed(req.body?.nombre, 120);
+    if (!nombre) return res.status(400).json({ error: 'Poné el nombre de la medida.' });
+    try {
+        const pool = await getPool();
+        if (!(await tieneMedidas(pool))) return res.status(409).json({ error: FALTA_SQL_MEDIDAS });
+        const r = await pool.request().input('Nom', sql.NVarChar(120), nombre)
+            .input('Ref', sql.NVarChar(120), txtMed(req.body?.referencia, 120)).input('Como', sql.NVarChar(400), txtMed(req.body?.comoMedir, 400))
+            .query(`INSERT INTO dbo.CatalogoMedidas (Nombre, Referencia, ComoMedir, Orden)
+                    OUTPUT INSERTED.MedidaID VALUES (@Nom, @Ref, @Como, (SELECT ISNULL(MAX(Orden), 0) + 1 FROM dbo.CatalogoMedidas))`)
+            .catch(errDupMedida);
+        res.json({ success: true, data: { MedidaID: r.recordset[0].MedidaID } });
+    } catch (e) { if (e.status) return res.status(e.status).json({ error: e.message }); logger.error('[Configurador] crearMedida:', e); res.status(500).json({ error: e.message }); }
+};
+// PUT /api/configurador/medidas/:id — { nombre?, referencia?, comoMedir?, activo?, orden? }
+// (los productos guardan su copia del nombre: renombrar acá no cambia las fichas ya armadas)
+exports.updateMedida = async (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isInteger(id)) return res.status(400).json({ error: 'Medida inválida.' });
+    const b = req.body || {}; const sets = [];
+    const rq = (await getPool()).request().input('ID', sql.Int, id);
+    if (b.nombre !== undefined) { const n = txtMed(b.nombre, 120); if (!n) return res.status(400).json({ error: 'El nombre no puede quedar vacío.' }); sets.push('Nombre = @Nom'); rq.input('Nom', sql.NVarChar(120), n); }
+    if (b.referencia !== undefined) { sets.push('Referencia = @Ref'); rq.input('Ref', sql.NVarChar(120), txtMed(b.referencia, 120)); }
+    if (b.comoMedir !== undefined) { sets.push('ComoMedir = @Como'); rq.input('Como', sql.NVarChar(400), txtMed(b.comoMedir, 400)); }
+    if (b.activo !== undefined) { sets.push('Activo = @Act'); rq.input('Act', sql.Bit, b.activo ? 1 : 0); }
+    if (b.orden !== undefined) { sets.push('Orden = @Ord'); rq.input('Ord', sql.Int, Number.isInteger(Number(b.orden)) ? Number(b.orden) : null); }
+    if (!sets.length) return res.status(400).json({ error: 'Nada para cambiar.' });
+    try {
+        const r = await rq.query(`UPDATE dbo.CatalogoMedidas SET ${sets.join(', ')} WHERE MedidaID = @ID; SELECT @@ROWCOUNT AS n;`).catch(errDupMedida);
+        if (!r.recordset[0].n) return res.status(404).json({ error: 'Medida no encontrada.' });
+        res.json({ success: true });
+    } catch (e) { if (e.status) return res.status(e.status).json({ error: e.message }); logger.error('[Configurador] updateMedida:', e); res.status(500).json({ error: e.message }); }
+};
 
 // ═════════════════════════════════════════════════════════════════════════
 //  CATÁLOGO DE AVÍOS (dbo.CatalogoAvios — sección H de configurador_tizadapro.sql)
@@ -1927,6 +2078,7 @@ const TEXTO_TABLA = {
     ProductoModelos: 'modelos del molde', ProductoTelas: 'telas', ProductoAvios: 'avíos', ProductoAviosTalle: 'avíos por talle',
     ProductoApliques: 'apliques', ProductoAccesorios: 'accesorios', ProductoComponentes: 'componentes',
     ProductoFichaDisenoAnotaciones: 'anotaciones de la ficha', ProductoFichaDisenoExtra: 'datos extra de la ficha', ProductoFichaDisenoCosturas: 'pasos de costura',
+    ProductoMedidas: 'medidas de la prenda', ProductoMedidasTalle: 'medidas por talle',
 };
 
 async function columnaExiste(rq, tabla, col) {

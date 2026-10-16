@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Guía para vendedores · Solicitudes</title>
+<link rel="stylesheet" href="guias.css">
+</head>
+<body>
+
+<!-- ───────────── Portada ───────────── -->
+<section class="portada">
+  <div>
+    <div class="eyebrow">USER · GESTIÓN DE PRODUCCIÓN</div>
+    <h1>Guía para vendedores<br>Solicitudes</h1>
+    <div class="sub">Cómo cargar lo que pide el cliente, mandarlo a Diseño y seguirlo hasta que es pedido de producción.</div>
+    <div class="franja"></div>
+  </div>
+  <div class="como-usar">
+    <b>Cómo usar esta guía.</b> El <b>índice</b> de la página siguiente es clickeable: tocá un tema y vas directo.
+    En cada capítulo, <b>"↑ Índice"</b> te vuelve. El panel de <b>marcadores</b> del visor de PDF también tiene todos los temas.
+    Esta guía se abre desde el botón <span class="ayuda-icono">?</span> de las pantallas de Solicitudes.
+  </div>
+  <table class="meta">
+    <tr><td>Para quién</td><td>Vendedores (y Admin) que cargan solicitudes</td></tr>
+    <tr><td>Pantallas</td><td>Ventas › Solicitudes · Nueva solicitud · la solicitud</td></tr>
+    <tr><td>Versión</td><td>1.0 · 15/10/2026</td></tr>
+    <tr><td>Preparado por</td><td>Área de Sistemas</td></tr>
+  </table>
+</section>
+
+<!-- ───────────── Índice ───────────── -->
+<section class="indice" id="indice">
+  <h2>Índice</h2>
+  <ol>
+    <li><a href="#c1">Qué es una solicitud y cómo sigue</a>
+      <ul><li><a href="#c1-flujo">El camino completo</a></li></ul></li>
+    <li><a href="#c2">La lista de solicitudes</a>
+      <ul><li><a href="#c2-estados">Pestañas de estado</a></li><li><a href="#c2-filtros">Buscar y filtrar</a></li><li><a href="#c2-vistas">Fichas, Tabla y Calendario</a></li><li><a href="#c2-pastillas">Qué dice cada etiqueta</a></li></ul></li>
+    <li><a href="#c3">Nueva solicitud</a>
+      <ul><li><a href="#c3-pasos">Paso a paso</a></li><li><a href="#c3-cantidad">Cantidad mínima y paquetes</a></li></ul></li>
+    <li><a href="#c4">La pantalla de la solicitud</a>
+      <ul><li><a href="#c4-encabezado">Encabezado y tarjetas</a></li><li><a href="#c4-pestanas">Las pestañas</a></li><li><a href="#c4-guardado">Todo se guarda solo</a></li></ul></li>
+    <li><a href="#c5">Resumen: identificación y plazo</a></li>
+    <li><a href="#c6">El producto</a>
+      <ul><li><a href="#c6-tarjeta">Tarjeta, cantidad y cambiar producto</a></li><li><a href="#c6-otro">Agregar otro producto</a></li></ul></li>
+    <li><a href="#c7">Arte, telas y lista de jugadores (TIZADA PRO)</a>
+      <ul><li><a href="#c7-arte">El arte del cliente</a></li><li><a href="#c7-telas">Piezas y telas</a></li><li><a href="#c7-lista">La lista de jugadores</a></li><li><a href="#c7-extras">Bordado, DTF y TPU en la tabla del arte</a></li></ul></li>
+    <li><a href="#c8">Estado para producción</a></li>
+    <li><a href="#c9">Enviar a Diseño</a></li>
+    <li><a href="#c10">Precio y seña</a></li>
+    <li><a href="#c11">Interacciones, historial y ficha PDF</a></li>
+    <li><a href="#c12">Cuando ya es pedido</a></li>
+    <li><a href="#c13">Preguntas frecuentes</a></li>
+  </ol>
+</section>
+
+<!-- ───────────── 1 ───────────── -->
+<section class="cap" id="c1">
+  <h2><span class="num">1</span>Qué es una solicitud y cómo sigue</h2>
+  <p class="bajada">La solicitud es todo lo que pide el cliente <b>antes</b> de ser pedido de producción.</p>
+  <p>En la solicitud vos cargás quién es el cliente, qué producto quiere, cuántos, para cuándo, el arte, la lista de jugadores y el precio pactado.
+     Desde la solicitud <b>no se crea ninguna orden de producción</b>: eso lo hace Diseño cuando termina su parte.</p>
+
+  <h3 id="c1-flujo">El camino completo</h3>
+  <div class="flujo">
+    <div class="e yo"><b>1 · Vendedor</b>Carga la solicitud, el arte, la lista y el precio.</div><div class="f">›</div>
+    <div class="e yo"><b>2 · Vendedor</b>Toca <span class="btn p">Enviar a Diseño…</span></div><div class="f">›</div>
+    <div class="e"><b>3 · Diseño</b>Toma el trabajo, arma la tizada (TIZADA PRO) y los archivos.</div><div class="f">›</div>
+    <div class="e"><b>4 · Diseño</b>Crea el pedido de producción.</div><div class="f">›</div>
+    <div class="e"><b>5 · Planta</b>Produce las órdenes del pedido.</div>
+  </div>
+  <div class="regla"><span class="t">Regla</span>El vendedor <b>solo envía a Diseño</b>. No entra a la pantalla de Diseño, no manda nada a TIZADA PRO y no crea el pedido.</div>
+
+  <div class="volver"><a href="#indice">↑ Índice</a></div>
+</section>
+
+<!-- ───────────── 2 ───────────── -->
+<section class="cap" id="c2">
+  <h2><span class="num">2</span>La lista de solicitudes</h2>
+  <p class="bajada">Ventas › Solicitudes. Arriba a la derecha: <span class="btn p">+ Nueva solicitud</span> y el botón de ayuda <span class="ayuda-icono">?</span>.</p>
+
+  <h3 id="c2-estados">Pestañas de estado</h3>
+  <table class="t">
+    <tr><th style="width:42mm">Pestaña</th><th>Qué muestra</th></tr>
+    <tr><td><span class="tab">Abiertas (falta algo)</span></td><td>Las que todavía no son pedido: ingresadas o en Diseño. Es la que se abre por defecto.</td></tr>
+    <tr><td><span class="tab">Ingresadas</span></td><td>Cargadas, todavía sin nada en Diseño.</td></tr>
+    <tr><td><span class="tab">En diseño</span></td><td>Algún servicio ya está en la bandeja de Diseño.</td></tr>
+    <tr><td><span class="tab">Pedido solicitado</span></td><td>Todos sus productos ya son pedido de producción.</td></tr>
+    <tr><td><span class="tab">Canceladas</span> · <span class="tab">Todas</span></td><td>Las canceladas, o todas juntas.</td></tr>
+  </table>
+  <p>A la derecha, dos botones con contador filtran rápido: <span class="pill verde">Listas para ingresar</span> y <span class="pill rosa">Con requisitos pendientes</span>. Al lado, cuántas hay en curso y cuántas unidades suman.</p>
+
+  <h3 id="c2-filtros">Buscar y filtrar</h3>
+  <ul>
+    <li><span class="campo">Buscar por cliente, trabajo o número</span>: escribí parte del nombre del cliente, del trabajo o el número de solicitud.</li>
+    <li><b>Vendedor</b>: para ver solo las tuyas o las de otro vendedor.</li>
+    <li><b>Desde / Hasta</b>: la fecha en que se cargó la solicitud.</li>
+  </ul>
+
+  <h3 id="c2-vistas">Fichas, Tabla y Calendario</h3>
+  <ul>
+    <li><b>Fichas</b>: una tarjeta por solicitud.</li>
+    <li><b>Tabla</b>: columnas Estado, Cliente / trabajo, Vendedor, Diseño, Precio pactado, Seña y Pedidos.</li>
+    <li><b>Calendario</b>: las solicitudes por la fecha en que el cliente necesita el trabajo.</li>
+  </ul>
+  <p>Tocá una solicitud (o <span class="btn s">Abrir</span>) para entrar.</p>
+
+  <h3 id="c2-pastillas">Qué dice cada etiqueta</h3>
+  <table class="t">
+    <tr><th style="width:50mm">Etiqueta</th><th>Qué significa</th></tr>
+    <tr><td><span class="pill celeste">Ingresada</span> <span class="pill ambar">En diseño</span> <span class="pill verde">Pedido solicitado</span> <span class="pill gris">Cancelada</span></td><td>El estado de la solicitud.</td></tr>
+    <tr><td><span class="pill verde">Lista para ingresar</span></td><td>Tiene todo lo necesario para que Diseño cree el pedido.</td></tr>
+    <tr><td><span class="pill rosa">Faltan 2 cosas</span></td><td>Le falta algo. Pasá el mouse para ver qué, o abrila y mirá "Estado para producción".</td></tr>
+    <tr><td><span class="pill fucsia">Modificada · falta aceptar</span></td><td>Cambiaste algo de un servicio que ya estaba en Diseño: el diseñador tiene que aceptar el cambio.</td></tr>
+    <tr><td>"La armó el cliente en la Tienda"</td><td>No la cargó un vendedor: el cliente la armó en la Tienda del portal.</td></tr>
+  </table>
+  <div class="volver"><a href="#indice">↑ Índice</a></div>
+</section>
+
+<!-- ───────────── 3 ───────────── -->
+<section class="cap" id="c3">
+  <h2><span class="num">3</span>Nueva solicitud</h2>
+  <p class="bajada">Se carga en la <b>misma pantalla</b> de la solicitud: primero el cliente y el producto, después todo lo demás.</p>
+
+  <h3 id="c3-pasos">Paso a paso</h3>
+  <ol class="pasos">
+    <li>En la lista tocá <span class="btn p">+ Nueva solicitud</span>.</li>
+    <li><b>Cliente</b>: buscalo por nombre, fantasía o código (mínimo 3 letras) y elegilo de la lista.</li>
+    <li><b>Nombre del trabajo</b> (ej.: "Buzos egresados 3ºB") y <b>Detalle</b>: qué pide el cliente, con tus palabras.</li>
+    <li><b>Fecha que necesita el cliente</b>. Si es un rango (un torneo, un viaje), también <b>Hasta</b>: el último día posible.</li>
+    <li><b>Producto</b>: elegí la familia y tocá la tarjeta del producto del catálogo. Cargá la <b>cantidad total de unidades</b>.</li>
+    <li>Tocá <span class="btn p">Crear solicitud</span>. Quedás en la solicitud ya creada: ahí se carga el arte, la lista de jugadores, los extras y el precio.</li>
+  </ol>
+
+  <h3 id="c3-cantidad">Cantidad mínima y paquetes</h3>
+  <p>Algunos productos tienen <b>mínimo</b> (ej.: "Mínimo 10 unidades") o se venden en <b>paquetes</b> (ej.: "Se vende en paquetes de 6"). El sistema no deja guardar una cantidad que no cumpla y te dice por qué.</p>
+  <div class="volver"><a href="#indice">↑ Índice</a></div>
+</section>
+
+<!-- ───────────── 4 ───────────── -->
+<section class="cap" id="c4">
+  <h2><span class="num">4</span>La pantalla de la solicitud</h2>
+
+  <h3 id="c4-encabezado">Encabezado y tarjetas</h3>
+  <ul>
+    <li><b>Arriba</b>: el estado, el número de solicitud y la fecha, el nombre del trabajo, el cliente y el vendedor.</li>
+    <li><b>Indicador de guardado</b>: <span class="pill verde">✓ Guardado</span>, <span class="pill gris">Guardando…</span> o <span class="pill rosa">No se guardó: motivo</span>.</li>
+    <li><b>Botones</b>: <span class="btn s">← Volver</span>, actualizar, <span class="btn p">Ficha del pedido (PDF)</span>, <span class="btn r">Cancelar solicitud</span> y <span class="ayuda-icono">?</span>.</li>
+    <li><b>Tres tarjetas</b>: <b>Precio</b> (cómo se cobra, el precio y la seña), <b>Entrega que necesita el cliente</b> y <b>Servicios diseñados</b> (o el número de pedido, si ya es pedido).</li>
+  </ul>
+
+  <h3 id="c4-pestanas">Las pestañas</h3>
+  <table class="t">
+    <tr><th style="width:38mm">Pestaña</th><th>Qué tiene</th></tr>
+    <tr><td><span class="tab">Resumen</span></td><td>Identificación (cliente, trabajo, fechas, detalle) y si se llega a la fecha. <a href="#c5">Ver capítulo 5</a>.</td></tr>
+    <tr><td><span class="tab">Producto 1 · 10 prendas</span></td><td>Una por producto: la tarjeta del producto, el arte, las telas, la lista de jugadores, los extras y "Enviar a Diseño". <a href="#c6">Capítulos 6 a 9</a>.</td></tr>
+    <tr><td><span class="tab">Precio y seña</span></td><td>Cómo se cobra, el precio pactado y la seña. <a href="#c10">Capítulo 10</a>.</td></tr>
+    <tr><td><span class="tab">Interacciones</span> · <span class="tab">Historial</span></td><td>Lo que se habló con el cliente y todo lo que pasó. <a href="#c11">Capítulo 11</a>.</td></tr>
+  </table>
+  <p>A la derecha de las pestañas: <span class="btn s">+ Agregar producto</span>.</p>
+
+  <h3 id="c4-guardado">Todo se guarda solo</h3>
+  <p>No hay botón "Guardar". Cada dato se guarda cuando salís del campo (o apretás Enter); una fecha, al elegirla.
+     El arte, las telas, la lista de jugadores y los tipos de extra también se guardan solos.</p>
+  <div class="ojo"><span class="t">Si no se guarda</span>Arriba aparece <span class="pill rosa">No se guardó: motivo</span> y el campo vuelve a lo que estaba guardado. Ejemplos: el detalle vacío, una cantidad debajo del mínimo, la fecha "hasta" antes que la fecha.</div>
+  <p>Los únicos botones que quedan son para lo que no es "un dato": <span class="btn s">Cambiar producto</span>, <span class="btn p">Confirmar seña</span>, <span class="btn p">Enviar a Diseño…</span> y <span class="btn r">Cancelar solicitud</span>.</p>
+  <div class="volver"><a href="#indice">↑ Índice</a></div>
+</section>
+
+<!-- ───────────── 5 ───────────── -->
+<section class="cap" id="c5">
+  <h2><span class="num">5</span>Resumen: identificación y plazo</h2>
+  <h3>Identificación</h3>
+  <ul>
+    <li><b>Cliente</b>: <span class="btn s">Cambiar cliente</span> abre el buscador; el que elijas se guarda en el momento. "Dejar a …" vuelve al anterior.</li>
+    <li><b>Nombre del trabajo</b> y <b>Qué pide el cliente</b>: se guardan al salir del campo. No pueden quedar vacíos.</li>
+    <li><b>Fecha que necesita el cliente</b> y <b>Hasta</b>: se guardan al elegirlas. "Hasta" no puede ser antes que la fecha.</li>
+    <li><b>Vendedor</b>: es quien cargó la solicitud; no se cambia.</li>
+  </ul>
+  <h3>¿Se llega a la fecha?</h3>
+  <p>Debajo, el sistema calcula solo si con la carga de cada sector se llega a la fecha del cliente. Es una referencia: se vuelve a calcular cuando cambian las fechas, los productos o las cantidades.</p>
+  <div class="consejo"><span class="t">Consejo</span>Pedí siempre una fecha concreta ("el 24/10"), no "para fin de mes". Sin fecha, el plazo no se puede calcular y la solicitud no queda lista para ingresar.</div>
+  <div class="volver"><a href="#indice">↑ Índice</a></div>
+</section>
+
+<!-- ───────────── 6 ───────────── -->
+<section class="cap" id="c6">
+  <h2><span class="num">6</span>El producto</h2>
+  <h3 id="c6-tarjeta">Tarjeta, cantidad y cambiar producto</h3>
+  <p>Arriba de la pestaña del producto está su tarjeta: la foto, el nombre, el código y la familia, y el precio de catálogo por unidad.</p>
+  <ul>
+    <li><b>Cantidad de prendas</b>: se cambia ahí mismo y se guarda al salir del campo. Respeta el mínimo o el paquete del producto.</li>
+    <li><span class="btn s">Cambiar producto</span>: para elegir otro producto del catálogo, los accesorios o quién aporta el diseño. Si cambiás el producto, el sistema te avisa antes:
+      <ul>
+        <li>los extras que el producto nuevo no admite (y no están en Diseño) salen de la solicitud;</li>
+        <li>las piezas y telas, el arte y la lista de jugadores quedan como están: revisalos.</li>
+      </ul></li>
+    <li>En ese mismo editor está "Quitar este producto de la solicitud" (si la solicitud tiene más de uno).</li>
+  </ul>
+  <div class="ojo"><span class="t">La cantidad y la lista</span>Si el producto tiene lista de jugadores, la cantidad tiene que coincidir con lo que suma la lista. Si no coincide, lo vas a ver en la lista ("el producto pide 15 · no coincide") y en "Estado para producción".</div>
+
+  <h3 id="c6-otro">Agregar otro producto</h3>
+  <p>Tocá <span class="btn s">+ Agregar producto</span> (a la derecha de las pestañas), elegilo y tocá "Agregar el producto". Aparece su pestaña y ahí cargás su arte y su lista.</p>
+  <div class="volver"><a href="#indice">↑ Índice</a></div>
+</section>
+
+<!-- ───────────── 7 ───────────── -->
+<section class="cap" id="c7">
+  <h2><span class="num">7</span>Arte, telas y lista de jugadores (TIZADA PRO)</h2>
+  <p class="bajada">Los productos con molde de TIZADA PRO se cargan igual que en la Tienda del portal. Todo se guarda solo.</p>
+
+  <h3 id="c7-arte">El arte del cliente</h3>
+  <ul>
+    <li>Subí el arte del cliente (PDF o AI). Cada arte es un <b>diseño</b> y tiene su pestaña (ej.: JUGADOR, GOLERO).</li>
+    <li>En la pestaña del arte ves la vista del diseño y las piezas de la prenda.</li>
+    <li><span class="btn s">Bajar la plantilla para el arte</span>: la base del molde para armar el arte en Illustrator (una mesa por pieza, a tamaño real). Mandásela al cliente para que arme su arte sobre ella. La primera vez tarda unos segundos.</li>
+  </ul>
+
+  <h3 id="c7-telas">Piezas y telas</h3>
+  <p>Elegí la tela de cada pieza. El sistema propone el modelo y la tela por defecto del producto; si ya está todo, se ve una línea "Completo" con <span class="btn s">Cambiar</span>.</p>
+
+  <h3 id="c7-lista">La lista de jugadores</h3>
+  <ul>
+    <li>Una fila por prenda: talle, nombre, número… (las columnas las pone el molde) y la <b>variante</b>, que dice qué diseño lleva esa prenda.</li>
+    <li><span class="btn s">Buscar archivo Excel</span>: elegí el Excel del cliente (.xlsx, .xls, .csv). Si la primera fila tiene los títulos, cada columna se ubica sola.</li>
+    <li><span class="btn s">+ Agregar fila</span>: para cargar a mano.</li>
+    <li>La columna <b>Cantidad</b> vacía cuenta como 1. Arriba se ve cuántos jugadores y cuántas prendas suma, y si no coincide con la cantidad del producto.</li>
+  </ul>
+
+  <h3 id="c7-extras">Bordado, DTF y TPU en la tabla del arte</h3>
+  <p>El arte trae sus <b>objetos</b> (escudo, sponsor, número…). En la tabla del arte elegís, objeto por objeto, cómo va cada uno: sublimado, bordado, DTF o TPU.</p>
+  <ul>
+    <li><b>El tipo va por objeto</b>: un escudo en DTF dorado y un sponsor en DTF común, o un logo bordado 100% hilo y otro con tafeta.</li>
+    <li><b>Los extras se agregan solos</b>: si un objeto va en bordado y el producto lo admite, el bordado se suma a la solicitud. Si después ningún objeto lo usa, se quita solo (si es opcional y todavía no está en Diseño).</li>
+    <li><b>Las cantidades salen de la lista</b>: cuántos bordados o transfers hacen falta = los objetos de ese diseño × las prendas de la lista que llevan ese diseño. No hace falta cargar "cantidad total" ni "por prenda".</li>
+    <li>Con objetos en más de un film de DTF, Diseño arma un pliego por film.</li>
+  </ul>
+  <div class="volver"><a href="#indice">↑ Índice</a></div>
+</section>
+
+<!-- ───────────── 8 ───────────── -->
+<section class="cap" id="c8">
+  <h2><span class="num">8</span>Estado para producción</h2>
+  <p class="bajada">El recuadro de la derecha de cada producto: qué falta para que Diseño pueda crear el pedido.</p>
+  <p>Arriba dice cuántos puntos están listos (ej.: "4 de 6 listos") y una etiqueta <span class="pill rosa">Faltan 2 cosas</span> o <span class="pill verde">Listo</span>. Cada renglón dice qué falta, en rojo:</p>
+  <table class="t">
+    <tr><th style="width:40mm">Renglón</th><th>Qué pide</th></tr>
+    <tr><td>Identificación</td><td>Cliente, nombre del trabajo, detalle y una fecha concreta.</td></tr>
+    <tr><td>Producto</td><td>Producto, cantidad (que coincida con la lista) y lo que pida ese producto.</td></tr>
+    <tr><td>Lista de talles</td><td>La lista de jugadores (o la planilla / nota de talles en productos sin TIZADA PRO).</td></tr>
+    <tr><td>Servicios y extras</td><td>Lo que piden los extras (tipo de bordado, film de DTF…).</td></tr>
+    <tr><td>Pago y seña</td><td>Cómo se cobra y, si se pide seña, que esté confirmada.</td></tr>
+    <tr><td>Diseño y archivos</td><td>Que cada servicio esté diseñado. Esto lo completa Diseño.</td></tr>
+  </table>
+  <div class="volver"><a href="#indice">↑ Índice</a></div>
+</section>
+
+<!-- ───────────── 9 ───────────── -->
+<section class="cap" id="c9">
+  <h2><span class="num">9</span>Enviar a Diseño</h2>
+  <ol class="pasos">
+    <li>Cuando tengas el arte y la lista, al final de la pestaña del producto tocá <span class="btn p">Enviar a Diseño…</span>.</li>
+    <li>Se abre una ventana con cada servicio que todavía no se envió (producción principal, bordado, DTF, TPU), todos tildados.</li>
+    <li>Para cada uno elegí el <b>tipo de trabajo</b>: <b>Revisar el arte del cliente</b> o <b>Diseñar desde cero</b>.</li>
+    <li>Tocá <span class="btn p">Enviar N servicios a Diseño</span>. La ventana te dice cómo salió cada uno.</li>
+  </ol>
+  <div class="no"><span class="t">No se puede enviar</span>
+    <ul style="margin:0">
+      <li>La producción principal sin modelo y tela de cada pieza, o sin lista de jugadores.</li>
+      <li>Un bordado, DTF o TPU <b>sin arte</b>: subí el arte del producto y elegí qué objetos van en ese extra (o subí su archivo aparte). Aparece destildado con el motivo.</li>
+      <li>Con TIZADA PRO, si TIZADA no acepta los datos o el arte usa una letra que TIZADA no tiene: el mensaje dice qué corregir.</li>
+    </ul></div>
+  <div class="regla"><span class="t">Qué pasa después</span>Queda en la bandeja de Diseño. <b>El diseñador</b> revisa y manda la tizada a TIZADA PRO: el vendedor no la manda. Cuando todo está diseñado, Diseño crea el pedido de producción.</div>
+  <div class="ojo"><span class="t">Si cambiás algo después de enviar</span>El servicio queda marcado <span class="pill fucsia">Modificada · falta aceptar</span> y el diseñador tiene que aceptar el cambio antes de seguir.</div>
+  <div class="volver"><a href="#indice">↑ Índice</a></div>
+</section>
+
+<!-- ───────────── 10 ───────────── -->
+<section class="cap" id="c10">
+  <h2><span class="num">10</span>Precio y seña</h2>
+  <p class="bajada">Pestaña <span class="tab">Precio y seña</span>. Se guarda solo; la seña se confirma con un botón.</p>
+  <ol class="pasos">
+    <li><b>Cómo se cobra</b>: <b>Precio establecido</b> (un total, todo incluido) o <b>Facturar por cada área</b>.</li>
+    <li><b>Moneda</b> y, con precio establecido, el <b>precio de la solicitud entera</b>. Se guarda al salir del campo.</li>
+    <li><b>Requiere seña inicial</b>: tildalo si se pide seña y cargá el <b>monto de la seña</b>.</li>
+    <li>Cuando el cliente pagó: completá <b>Vía de entrada del dinero</b>, <b>Monto</b> y <b>Referencia del pago</b>, y tocá <span class="btn p">Confirmar seña</span>.</li>
+  </ol>
+  <div class="ojo"><span class="t">Ojo</span>Si falta el precio o el monto de la seña, se avisa ahí mismo y no se guarda hasta que lo completes. Una seña sin confirmar frena la conversión a pedido.</div>
+  <div class="no"><span class="t">La seña no es plata en la cuenta</span>Confirmar la seña es solo un dato de la solicitud: <b>no ingresa plata en la cuenta del cliente</b>. El saldo lo ingresan Administración y Caja.</div>
+  <div class="volver"><a href="#indice">↑ Índice</a></div>
+</section>
+
+<!-- ───────────── 11 ───────────── -->
+<section class="cap" id="c11">
+  <h2><span class="num">11</span>Interacciones, historial y ficha PDF</h2>
+  <ul>
+    <li><span class="tab">Interacciones</span>: registrá lo que hablaste con el cliente (con archivos, si hace falta). Lo ven vendedores y diseñadores.</li>
+    <li><span class="tab">Historial</span>: todo lo que pasó en la solicitud, con fecha y usuario. No se edita ni se borra.</li>
+    <li><span class="btn p">Ficha del pedido (PDF)</span>: todo lo de la solicitud y de Diseño en un PDF, con los archivos en miniatura. Es la misma ficha que se adjunta al pedido.</li>
+  </ul>
+  <h3>Cancelar una solicitud</h3>
+  <p><span class="btn r">Cancelar solicitud</span> pide un motivo. La solicitud queda cancelada: no se puede reabrir ni convertir en pedido, y lo que estaba en Diseño sale de la bandeja.</p>
+  <div class="ojo"><span class="t">Con seña</span>Si tenía una seña registrada, cancelar no devuelve ni mueve esa plata: lo resuelve Administración.</div>
+  <div class="volver"><a href="#indice">↑ Índice</a></div>
+</section>
+
+<!-- ───────────── 12 ───────────── -->
+<section class="cap" id="c12">
+  <h2><span class="num">12</span>Cuando ya es pedido</h2>
+  <ul>
+    <li>Cuando Diseño crea el pedido, la solicitud pasa a <span class="pill verde">Pedido solicitado</span> y la tarjeta muestra el número de pedido.</li>
+    <li>Desde ahí el producto ya <b>no se edita desde la solicitud</b>: lo que se cambie, se cambia en producción.</li>
+    <li>En la lista, una solicitud puede avisar que el pedido ya está en producción pero <b>Bordado o TPU todavía esperan su diseño</b>.</li>
+  </ul>
+  <div class="consejo"><span class="t">Si algo salió mal</span>Si la tizada o el DTF del pedido están mal, avisale a Diseño: el diseñador tiene <b>"Corregir el diseño"</b>, que cambia el archivo en el mismo pedido.</div>
+  <div class="volver"><a href="#indice">↑ Índice</a></div>
+</section>
+
+<!-- ───────────── 13 ───────────── -->
+<section class="cap" id="c13">
+  <h2><span class="num">13</span>Preguntas frecuentes</h2>
+  <h4>¿Dónde está el botón Guardar?</h4>
+  <p>No hay: todo se guarda solo. Mirá el indicador de arriba: <span class="pill verde">✓ Guardado</span>.</p>
+  <h4>Cambié un dato y volvió a lo de antes.</h4>
+  <p>No se pudo guardar: arriba dice el motivo (ej.: el mínimo del producto, o el detalle vacío). Corregilo y salí del campo.</p>
+  <h4>"Estado para producción" dice que la lista no coincide.</h4>
+  <p>La cantidad del producto no es igual a lo que suma la lista de jugadores. Corregí la cantidad en la tarjeta del producto o la lista.</p>
+  <h4>No me deja enviar el bordado a Diseño.</h4>
+  <p>Le falta el arte: subí el arte del producto y elegí qué objetos van en bordado en la tabla del arte, o subí su archivo aparte.</p>
+  <h4>¿Puedo mandar la tizada a TIZADA PRO?</h4>
+  <p>No: la manda el diseñador desde su pantalla, después de revisarla.</p>
+  <h4>Confirmé la seña: ¿ya está pagado?</h4>
+  <p>No: es un dato de la solicitud. El cobro lo registran Caja y Administración.</p>
+  <div class="volver"><a href="#indice">↑ Índice</a></div>
+</section>
+
+</body>
+</html>

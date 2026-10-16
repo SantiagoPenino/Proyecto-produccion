@@ -32,6 +32,9 @@ export function dpiImpreso(a, anchoCm, altoCm, ajuste = 'llenar') {
 // para TIZADA), la línea de doblez (la medida del diseño) y las tiras en su lugar, con las mismas cuentas de TIZADA
 // (calc = POST /a_medida/calcular: por_lado con cuántas y cada cuánto). Las marcas negras son las que TIZADA imprime
 // (con dobladillo, la de la esquina o la punta no se imprime: el corte ya la marca). Sin calc: la forma con la medida.
+// [16/10] El arte entero se ve tenue afuera del corte: si no coincide con la forma (un triángulo con la punta para otro lado),
+// se nota lo que se pierde. Abajo, el aviso de hacia dónde va la punta.
+const HACIA = { abajo: 'hacia abajo', arriba: 'hacia arriba', izq: 'a la izquierda', der: 'a la derecha' };
 export function VistaAMedida({ calc, medida, vista, ajuste = 'llenar', ancho = 240 }) {
     const forma = calc?.forma || medida?.forma || 'rectangulo';
     const punta = calc?.orientacion || medida?.orientacion || 'abajo';
@@ -88,10 +91,11 @@ export function VistaAMedida({ calc, medida, vista, ajuste = 'llenar', ancho = 2
     };
     const largoTira = Math.max(W, H) * 0.09, pad = tiras.length ? largoTira + 1 : 1;
     const pts = (ps) => ps.map(p => p.join(',')).join(' ');
-    const id = `am${Math.round(W * 10)}x${Math.round(H * 10)}${forma[0]}${punta[0]}`;
+    // la punta entera: con la inicial, "abajo" y "arriba" chocaban (dos vistas en la pantalla usaban el mismo recorte)
+    const id = `am${Math.round(W * 10)}x${Math.round(H * 10)}${forma[0]}${punta}`;
     const k = ancho / (W + 2 * pad);
     const linea = Math.max(W, H) / 220;
-    return (
+    const dibujo = (
         <svg width={ancho} height={Math.min(260, (H + 2 * pad) * k)} viewBox={`${-pad} ${-pad} ${W + 2 * pad} ${H + 2 * pad}`} className="shrink-0" role="img" aria-label="Cómo queda">
             <defs>
                 <clipPath id={`${id}c`}>{forma === 'circulo' ? <circle cx={cx} cy={cy} r={W / 2} /> : <polygon points={pts(corte)} />}</clipPath>
@@ -101,6 +105,8 @@ export function VistaAMedida({ calc, medida, vista, ajuste = 'llenar', ancho = 2
                 const c = hastaCorte(t), x0 = t.x + t.nx * c, y0 = t.y + t.ny * c;
                 return <line key={`t${i}`} x1={x0} y1={y0} x2={x0 + t.nx * largoTira} y2={y0 + t.ny * largoTira} stroke="#d4d4d8" strokeWidth={linea * 3.2} strokeLinecap="round" />;
             })}
+            {/* el arte entero, tenue: lo que queda afuera del corte se pierde */}
+            {vista && <image href={vista} x={0} y={0} width={W} height={H} opacity={0.25} preserveAspectRatio={ajuste === 'entera' ? 'xMidYMid meet' : 'xMidYMid slice'} />}
             <g clipPath={`url(#${id}c)`}>
                 <rect x={0} y={0} width={W} height={H} fill="#fff" />
                 {vista && <image href={vista} x={0} y={0} width={W} height={H} preserveAspectRatio={ajuste === 'entera' ? 'xMidYMid meet' : 'xMidYMid slice'} />}
@@ -123,13 +129,23 @@ export function VistaAMedida({ calc, medida, vista, ajuste = 'llenar', ancho = 2
             })}
         </svg>
     );
+    if (!vista || forma === 'rectangulo') return dibujo;
+    return (
+        <div className="shrink-0" style={{ width: ancho }}>
+            {dibujo}
+            <p className="mt-1 text-[10px] leading-snug text-slate-500">
+                Lo tenue queda <b>afuera del corte</b>.{forma === 'triangulo' && <> La punta va <b>{HACIA[punta] || punta}</b>: si la del arte va para otro lado, se pierde parte del diseño.</>}
+            </p>
+        </div>
+    );
 }
 
 // Editor de la medida de UN diseño. onCambiar(patch) junta { medida?, tela?, cantidad? } en el diseño (sin guardar).
 // cliente (portal): una sola tela se muestra sin elegir; sin tela, se pone sola la primera donde entra (guía TIZADA §5.7);
 // tiras fijas que no van, no se muestran.
 // onCalc(calc): las cuentas de TIZADA cada vez que cambian (el portal dibuja con eso la forma con el arte y las tiras).
-export function MedidaDiseno({ id, p, d, am, puede, onCambiar, cliente = false, onCalc = null }) {
+// arteId (pantalla interna): el arte de este diseño, que se dibuja sobre la forma cortada (VistaAMedida).
+export function MedidaDiseno({ id, p, d, am, puede, onCambiar, cliente = false, onCalc = null, arteId = null }) {
     const cfg = am.config;
     const N = am.nombres || {};
     const m = d.medida || {};
@@ -158,6 +174,14 @@ export function MedidaDiseno({ id, p, d, am, puede, onCambiar, cliente = false, 
     }, [firma, id, p.ProductoSolID]);   // eslint-disable-line react-hooks/exhaustive-deps
 
     useEffect(() => { onCalc?.(calc); }, [calc]);   // eslint-disable-line react-hooks/exhaustive-deps
+    // [16/10] La vista del arte (la calcula el servidor una vez por archivo)
+    const [vistaArte, setVistaArte] = useState(null);
+    useEffect(() => {
+        if (cliente || !arteId) { setVistaArte(null); return undefined; }
+        let vivo = true;
+        svc.tizadaProArteVista(id, p.ProductoSolID, arteId).then(r => { if (vivo) setVistaArte(r); }).catch(() => { if (vivo) setVistaArte(null); });
+        return () => { vivo = false; };
+    }, [cliente, arteId, id, p.ProductoSolID]);
     const telaCalc = calc?.ok ? (calc.telas || []).find(t => String(t.id) === String(d.tela)) : null;
     // Portal: sin tela elegida, la primera del producto donde entra la medida
     const primeraQueEntra = cliente && puede && !d.tela && calc?.ok ? (calc.telas || []).find(t => t.entra && (am.telas || []).some(x => String(x.id) === String(t.id))) : null;
@@ -273,6 +297,14 @@ export function MedidaDiseno({ id, p, d, am, puede, onCambiar, cliente = false, 
                 </>)}
             </div>}
 
+            {/* [16/10] Cómo queda: el arte sobre la forma cortada (lo de afuera, tenue) */}
+            {!cliente && arteId && (
+                <div className="flex flex-wrap items-start gap-3">
+                    <VistaAMedida calc={calc?.ok ? calc : null} medida={{ ...m, forma, orientacion: punta, terminacion }} vista={vistaArte?.ok ? vistaArte.vista : null} ajuste={d.ajuste === 'entera' ? 'entera' : 'llenar'} ancho={220} />
+                    {!vistaArte && <span className="text-[11px] text-slate-400 inline-flex items-center gap-1"><Loader2 size={11} className="animate-spin" /> Leyendo el arte…</span>}
+                    {vistaArte && !vistaArte.ok && <span className="text-[11px] text-amber-700">No se pudo dibujar el arte sobre el corte{vistaArte.problemas?.length ? `: ${vistaArte.problemas.join(' ')}` : '.'}</span>}
+                </div>
+            )}
             {/* Lo que dice TIZADA */}
             <div className={`rounded-lg border px-2.5 py-1.5 text-[11px] ${calc?.ok ? (calc.entra_en_alguna === false || (telaCalc && !telaCalc.entra) ? 'border-rose-200 bg-rose-50' : 'border-emerald-200 bg-emerald-50/60') : 'border-slate-200 bg-slate-50'}`}>
                 {calculando && <span className="inline-flex items-center gap-1 text-slate-500"><Loader2 size={11} className="animate-spin" /> TIZADA está haciendo las cuentas…</span>}

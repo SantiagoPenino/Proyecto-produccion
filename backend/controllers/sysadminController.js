@@ -63,16 +63,21 @@ exports.getSystemStatus = async (req, res) => {
             pm2Restarts = processes.reduce((acc, p) => acc + (p.pm2_env?.restart_time || 0), 0);
         } catch (e) { /* ignore */ }
 
-        // 3. Disk Space (Windows)
+        // 3. Espacio en disco del volumen donde corre el backend. Antes se medía con PowerShell
+        // (solo Windows) y el servidor es Linux: siempre daba 0. fs.statfs anda en Linux y en
+        // Windows (Node 18.15+); con un Node más viejo, en Linux se lee `df -kP`.
         let disk = { total: 0, free: 0 };
         try {
-            const driveLetter = path.parse(__dirname).root.substring(0, 2); // e.g., 'C:'
-            const psCommand = `powershell -NoProfile -Command "Get-CimInstance Win32_LogicalDisk | Where-Object DeviceID -eq '${driveLetter}' | Select-Object Size, FreeSpace | ConvertTo-Json"`;
-            const output = execSync(psCommand, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'] });
-            const parsed = JSON.parse(output);
-            if (parsed && parsed.Size && parsed.FreeSpace) {
-                disk.total = parsed.Size;
-                disk.free = parsed.FreeSpace;
+            if (typeof fs.promises.statfs === 'function') {
+                const st = await fs.promises.statfs(__dirname);
+                disk.total = st.blocks * st.bsize;
+                disk.free = st.bavail * st.bsize;   // lo disponible, igual que la columna "Available" de df
+            } else if (os.platform() !== 'win32') {
+                // df -kP: Filesystem 1024-blocks Used Available Capacity Mounted-on
+                const out = execSync(`df -kP "${__dirname}"`, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'] });
+                const cols = out.trim().split('\n').pop().split(/\s+/);
+                disk.total = Number(cols[1]) * 1024;
+                disk.free = Number(cols[3]) * 1024;
             }
         } catch (e) { /* ignore */ }
 

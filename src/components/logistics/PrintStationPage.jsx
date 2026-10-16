@@ -145,8 +145,8 @@ const PrintStationPage = () => {
     // también los imprime: escucha 'wms:pedido' (emitido al confirmar la venta en
     // wmsController.createOrder) y carga la hoja A4 del backend en un iframe propio,
     // encolada en la misma cola para no pisarse con los tickets de retiro. Aditivo:
-    // no toca en nada el flujo de retiros de arriba. También existe /wms-remito-station
-    // como estación dedicada, por si algún día el A4 sale por otra impresora.
+    // no toca en nada el flujo de retiros de arriba. (Las estaciones aparte /encomienda-station
+    // y /wms-remito-station se borraron el 16/10: todo sale por la misma impresora.)
     const wmsIframeRef = useRef(null);
     const printRemitoWms = useCallback((job) => {
         if (!wmsIframeRef.current || !job?.pedidoId) return Promise.resolve();

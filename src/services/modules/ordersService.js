@@ -54,10 +54,6 @@ export const ordersService = {
         return response.data;
     },
 
-    assignFabricBobbin: async (orderId, bobinaId) => {
-        const response = await api.post('/orders/assign-fabric-bobbin', { orderId, bobinaId });
-        return response.data;
-    },
     updateFile: async (fileData) => {
         const response = await api.put('/orders/file/update', fileData);
         return response.data;
@@ -190,10 +186,6 @@ export const ordersService = {
     },
     reactivateRequest: async (payload) => {
         const response = await api.post('/orders/reactivate-request', payload);
-        return response.data;
-    },
-    reactivateFile: async (payload) => {
-        const response = await api.post('/orders/file/reactivate', payload);
         return response.data;
     },
     advancedSearch: async (filters) => {

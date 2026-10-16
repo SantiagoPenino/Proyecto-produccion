@@ -245,15 +245,11 @@ export default function LandingPage() {
             </button>
           </div>
 
-
         </div>
       </section>
 
       {/* ══════════ PROCESS FLOW ══════════ */}
       <ProcessFlow isMobile={isMobile} isTablet={isTablet} />
-
-      {/* ══════════ STATS COUNTER ══════════ */}
-      {/* <StatsCounter isMobile={isMobile} /> */}
 
       {/* ══════════ SERVICES (INFINITE CAROUSEL) ══════════ */}
       <section style={{
@@ -336,164 +332,6 @@ export default function LandingPage() {
         )}
       </AnimatePresence>
     </div>
-  );
-}
-
-// SIN USO (13/10): useCountUp, StatCard y StatsCounter (hasta antes de la siguiente sección): el único <StatsCounter /> está comentado. Pide /api/stats/public. Ver docs/auditoria-limpieza-2026-10-09.md.
-function useCountUp(target, duration = 2000, started = false) {
-  const [count, setCount] = useState(0);
-  const raf = useRef(null);
-  useEffect(() => {
-    if (!started || target === 0) return;
-    const start = performance.now();
-    const animate = (now) => {
-      const progress = Math.min((now - start) / duration, 1);
-      // Easing: ease-out cubic
-      const eased = 1 - Math.pow(1 - progress, 3);
-      setCount(Math.floor(eased * target));
-      if (progress < 1) raf.current = requestAnimationFrame(animate);
-      else setCount(target);
-    };
-    raf.current = requestAnimationFrame(animate);
-    return () => cancelAnimationFrame(raf.current);
-  }, [target, started, duration]);
-  return count;
-}
-
-function StatCard({ value, label, prefix = '', suffix = '', accent, started, isMobile }) {
-  const safeValue = typeof value === 'number' && isFinite(value) ? value : 0;
-  const count = useCountUp(safeValue, 2200, started);
-  const formatted = Number.isFinite(count) ? count.toLocaleString('es-UY') : '0';
-  return (
-    <div style={{
-      flex: 1,
-      minWidth: isMobile ? '100%' : 220,
-      background: 'transparent',
-      border: 'none',
-      borderRadius: 20,
-      padding: isMobile ? '28px 24px' : '36px 32px',
-      display: 'flex',
-      flexDirection: 'column',
-      alignItems: 'center',
-      gap: 8,
-      position: 'relative',
-      overflow: 'hidden',
-    }}>
-      {/* Glow */}
-      <div style={{
-        position: 'absolute',
-        bottom: 0, left: '50%', transform: 'translateX(-50%)',
-        width: 100, height: 100,
-        background: `radial-gradient(circle, ${accent}28 0%, transparent 70%)`,
-        pointerEvents: 'none',
-      }} />
-      <div style={{
-        fontSize: isMobile ? 48 : 64,
-        fontWeight: 900,
-        letterSpacing: '-0.03em',
-        lineHeight: 1,
-        background: `linear-gradient(135deg, #fff 30%, ${accent} 100%)`,
-        WebkitBackgroundClip: 'text',
-        WebkitTextFillColor: 'transparent',
-        fontVariantNumeric: 'tabular-nums',
-      }}>
-        {prefix}{formatted}{suffix}
-      </div>
-      <div style={{
-        fontSize: 13, fontWeight: 600,
-        color: 'rgba(255,255,255,0.45)',
-        textTransform: 'uppercase',
-        letterSpacing: '0.1em',
-        textAlign: 'center',
-      }}>
-        {label}
-      </div>
-    </div>
-  );
-}
-
-function StatsCounter({ isMobile }) {
-  const ref = useRef(null);
-  const [started, setStarted] = useState(false);
-  const [stats, setStats] = useState({ totalOrdenes: 0, totalClientes: 0 });
-
-  useEffect(() => {
-    fetch('/api/stats/public')
-      .then(r => r.json())
-      .then(data => {
-        setStats({
-          totalOrdenes: Number(data?.totalOrdenes) || 0,
-          totalClientes: Number(data?.totalClientes) || 0,
-        });
-      })
-      .catch(() => {});
-  }, []);
-
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const observer = new IntersectionObserver(
-      ([entry]) => { if (entry.isIntersecting) { setStarted(true); observer.disconnect(); } },
-      { threshold: 0.3 }
-    );
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, []);
-
-  return (
-    <section ref={ref} style={{
-      padding: isMobile ? '48px 24px' : '72px 80px',
-      background: '#111',
-      position: 'relative',
-      overflow: 'hidden',
-      borderTop: '1px solid rgba(255,255,255,0.07)',
-      borderBottom: '1px solid rgba(255,255,255,0.07)',
-    }}>
-
-
-      <div style={{
-        maxWidth: 900,
-        margin: '0 auto',
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 40,
-        alignItems: 'center',
-      }}>
-        <div style={{ textAlign: 'center' }}>
-          <p style={{
-            fontSize: 12, fontWeight: 700, letterSpacing: '0.15em',
-            textTransform: 'uppercase', color: '#00AEEF',
-            margin: '0 0 10px',
-          }}>En números</p>
-          <h2 style={{
-            fontSize: isMobile ? 24 : 32, fontWeight: 900,
-            color: '#fff', margin: 0, letterSpacing: '-0.02em',
-          }}>Lo que hacemos, en tiempo real</h2>
-        </div>
-
-        <div style={{
-          display: 'flex',
-          flexDirection: isMobile ? 'column' : 'row',
-          gap: 16,
-          width: '100%',
-        }}>
-          <StatCard
-            value={stats.totalOrdenes}
-            label="Órdenes procesadas"
-            accent="#00AEEF"
-            started={started}
-            isMobile={isMobile}
-          />
-          <StatCard
-            value={stats.totalClientes}
-            label="Clientes activos"
-            accent="#EC008C"
-            started={started}
-            isMobile={isMobile}
-          />
-        </div>
-      </div>
-    </section>
   );
 }
 
@@ -792,7 +630,6 @@ function ProcessFlow({ isMobile, isTablet }) {
       description: 'Coordinamos el envío o retiro de tu pedido con total transparencia. Te mantenemos informado en cada etapa, desde que el producto sale de producción hasta que llega a tus manos. Trabajamos con logística confiable para que recibas tu pedido en tiempo y forma, donde estés.',
     },
   ];
-
 
   return (
     <section style={{

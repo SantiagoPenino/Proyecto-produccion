@@ -517,7 +517,19 @@ async function agregarInteraccion(pool, user, solicitudId, b) {
 // ---------------------------------------------------------------------
 // Diseño: enviar, bandeja común, tomar, aceptar cambio (spec §6)
 // ---------------------------------------------------------------------
-async function parteConContexto(cx, parteId) {
+// [CORREGIR EL DISEÑO 15/10] Producto ya convertido en pedido con una corrección abierta (solicitudesVendedorCorreccion):
+// Diseño vuelve a trabajar SU arte, su lista, su tizada y sus diseños prontos (principal y DTF). Los candados de
+// "ya es pedido" dejan pasar solo eso mientras la corrección está abierta.
+async function enCorreccion(cx, productoSolId) {
+  if (!productoSolId) return false;
+  const r = await new sql.Request(cx).input('P', sql.Int, productoSolId).query(`
+    SELECT CASE WHEN ISJSON(DatosJson) = 1 THEN JSON_VALUE(DatosJson, '$.correccion.activa') END AS A
+    FROM dbo.SolicitudesVendedorProductos WHERE ProductoSolID = @P AND PedidoNoDocERP IS NOT NULL`);
+  return r.recordset[0]?.A === 'true';
+}
+
+// opts.permitirCorreccion: la principal o el DTF de un producto en corrección no se frenan por "ya es pedido" (pa.EnCorreccion)
+async function parteConContexto(cx, parteId, opts = {}) {
   const r = await new sql.Request(cx).input('P', sql.Int, parteId).query(`
     SELECT pa.*, s.Estado AS SolEstado, p.PedidoNoDocERP, p.Activo AS ProdActivo
     FROM dbo.SolicitudesVendedorPartes pa
@@ -527,7 +539,10 @@ async function parteConContexto(cx, parteId) {
   const pa = r.recordset[0];
   if (!pa || !pa.Activo || !pa.ProdActivo) throw fallo(404, 'El servicio no existe o fue quitado de la solicitud.');
   if (pa.SolEstado === 'CANCELADA') throw fallo(409, 'La solicitud está cancelada.');
-  if (pa.PedidoNoDocERP) throw fallo(409, 'Este producto ya se convirtió en pedido.');
+  if (pa.PedidoNoDocERP) {
+    if (opts.permitirCorreccion && ['PRINCIPAL', 'DTF'].includes(pa.Tipo) && await enCorreccion(cx, pa.ProductoSolID)) pa.EnCorreccion = true;
+    else throw fallo(409, 'Este producto ya se convirtió en pedido.');
+  }
   return pa;
 }
 
@@ -557,6 +572,19 @@ async function enviarADiseno(pool, user, parteId, b) {
     if (pa.Tipo === 'PRINCIPAL') {
       const falta = await require('./solicitudesVendedorSublimacion').faltaSublimacion(transaction, pa.ProductoSolID);
       if (falta) throw fallo(409, falta);
+    }
+    // [15/10] Con molde de TIZADA PRO, el arte de bordado / DTF / TPU sale del arte del producto (sus objetos) o se sube
+    // aparte: sin ningún archivo de arte, el servicio no sale a Diseño (llegaría vacío a la bandeja).
+    if (['BORDADO', 'DTF', 'TPU'].includes(pa.Tipo)) {
+      const r = await new sql.Request(transaction).input('P', sql.Int, pa.ProductoSolID).input('Pa', sql.Int, parteId).query(`
+        SELECT CASE WHEN COL_LENGTH('dbo.ProductoVentaConfig', 'TizadaProMoldeRef') IS NULL THEN NULL
+                    ELSE (SELECT NULLIF(LTRIM(RTRIM(vc.TizadaProMoldeRef)), '') FROM dbo.ProductoVentaConfig vc WHERE vc.ProIdProducto = p.ProIdProducto) END AS MoldeRef,
+               (SELECT COUNT(*) FROM dbo.SolicitudesVendedorArchivos a WHERE a.ParteID = @Pa AND a.Rol = 'ARTE_CLIENTE' AND a.Vigente = 1) AS Artes
+        FROM dbo.SolicitudesVendedorProductos p WHERE p.ProductoSolID = @P`);
+      const x = r.recordset[0];
+      if (x?.MoldeRef && !(x.Artes > 0)) {
+        throw fallo(409, `${NOMBRE_PARTE[pa.Tipo]} todavía no tiene arte: subí el arte del producto y elegí qué objetos van en ${NOMBRE_PARTE[pa.Tipo].toLowerCase()} (o subí su archivo aparte en la tabla del arte).`);
+      }
     }
     await new sql.Request(transaction).input('P', sql.Int, parteId).input('TT', sql.VarChar(12), tipoTrabajo)
       .query('UPDATE dbo.SolicitudesVendedorPartes SET TipoTrabajo = @TT, FechaEnvioDiseno = GETDATE() WHERE ParteID = @P');
@@ -605,7 +633,89 @@ async function bandeja(pool, user) {
   const mias = (await pool.request().input('U', sql.Int, user.id)
     .query(`${SQL_BANDEJA} AND pa.DisenadorID = @U AND pa.Estado IN ('DISENO_INICIADO','DISENADO')
             ORDER BY CASE WHEN pa.Estado = 'DISENO_INICIADO' THEN 0 ELSE 1 END, pa.Modificada DESC, pa.FechaInicioDiseno ASC`)).recordset;
+  await completarBandeja(pool, [...disponibles, ...mias]);
   return { disponibles, mias };
+}
+
+// [BANDEJA · HECHOS 15/10] Lo que Diseño ya terminó: todo servicio "Diseñado" entre b.desde y b.hasta ('AAAA-MM-DD', los
+// dos incluidos; sin fechas, HOY; un año como máximo), sea o no pedido todavía. Por fila: quién lo hizo (Quien: DISENADOR con su nombre, TIZADA = lo hizo TIZADA
+// PRO sola, VENDEDOR = el vendedor adjuntó el arte listo del cliente), cuándo, y del pedido cuántas órdenes ya terminó la
+// planta. EsMia: lo tenía tomado quien mira. Solo lectura.
+async function disenosHechos(pool, user, b = {}) {
+  if (!(await esDisenador(pool, user))) throw fallo(403, 'La bandeja de Diseño es solo para diseñadores habilitados.');
+  const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const dia = (v) => (/^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? String(v) : null);
+  const desde = dia(b.desde) || iso(new Date()), hasta = dia(b.hasta) || iso(new Date());
+  if (hasta < desde) throw fallo(400, 'La fecha "hasta" no puede ser anterior a "desde".');
+  if ((new Date(hasta) - new Date(desde)) / 86400000 > 366) throw fallo(400, 'Elegí un período de un año como máximo.');
+  const filas = (await pool.request().input('De', sql.Date, desde).input('Ha', sql.Date, hasta).query(`
+    SELECT TOP 500 pa.ParteID, pa.SolicitudID, pa.ProductoSolID, pa.Tipo, pa.TipoTrabajo, pa.FechaDisenado, pa.DisenadorID,
+           LTRIM(RTRIM(ud.Nombre)) AS DisenadorNombre, LTRIM(RTRIM(uu.Nombre)) AS HizoNombre, pa.DatosJson AS ParteDatos,
+           s.NombreTrabajo, LTRIM(RTRIM(c.Nombre)) AS ClienteNombre, uv.Nombre AS VendedorNombre,
+           p.ProductoNombre, p.TipoFabricacion, p.Cantidad AS CantidadPrendas, p.PedidoNoDocERP, p.FechaConversion
+    FROM dbo.SolicitudesVendedorPartes pa
+    JOIN dbo.SolicitudesVendedor s          ON s.SolicitudID = pa.SolicitudID AND s.Estado <> 'CANCELADA'
+    JOIN dbo.SolicitudesVendedorProductos p ON p.ProductoSolID = pa.ProductoSolID AND p.Activo = 1
+    LEFT JOIN dbo.Clientes c  ON c.CodCliente = s.CodCliente
+    LEFT JOIN dbo.Usuarios uv ON uv.IdUsuario = s.VendedorID
+    LEFT JOIN dbo.Usuarios ud ON ud.IdUsuario = pa.DisenadorID
+    LEFT JOIN dbo.Usuarios uu ON uu.IdUsuario = pa.UsuarioDisenado
+    WHERE pa.Activo = 1 AND pa.Estado = 'DISENADO' AND pa.FechaDisenado >= @De AND pa.FechaDisenado < DATEADD(day, 1, @Ha)
+    ORDER BY pa.FechaDisenado DESC`)).recordset;
+  // Del pedido: cuántas órdenes tiene (sin las canceladas) y cuántas ya terminó la planta. Una sola lectura de Ordenes.
+  const pedidos = [...new Set(filas.map(x => x.PedidoNoDocERP).filter(Boolean).map(Number))];
+  const ped = new Map();
+  if (pedidos.length) {
+    const r = await pool.request().query(`
+      SELECT LTRIM(RTRIM(CAST(o.NoDocERP AS varchar(50)))) AS NoDocERP, COUNT(*) AS Ordenes,
+             SUM(CASE WHEN o.Estado IN ('Finalizado', 'Entregado', 'Pronto', 'Cerrado') THEN 1 ELSE 0 END) AS Terminadas
+      FROM dbo.Ordenes o
+      WHERE LTRIM(RTRIM(CAST(o.NoDocERP AS varchar(50)))) IN (${pedidos.map(n => `'${n}'`).join(',')}) AND ISNULL(o.Estado, '') <> 'Cancelado'
+      GROUP BY LTRIM(RTRIM(CAST(o.NoDocERP AS varchar(50))))`);
+    r.recordset.forEach(x => ped.set(String(x.NoDocERP), { Ordenes: x.Ordenes, Terminadas: x.Terminadas }));
+  }
+  return filas.map(({ ParteDatos, ...x }) => {
+    let auto = null;
+    try { auto = JSON.parse(ParteDatos || '{}').disenoAutomatico || null; } catch (_) { /* sin datos */ }
+    const Quien = x.DisenadorID ? 'DISENADOR' : auto ? 'TIZADA' : 'VENDEDOR';
+    return {
+      ...x, Quien, Automatico: auto ? { referencia: auto.referencia || null, detalle: auto.detalle || null } : null,
+      EsMia: !!x.DisenadorID && Number(x.DisenadorID) === Number(user.id),
+      Pedido: x.PedidoNoDocERP ? { NoDocERP: x.PedidoNoDocERP, ...(ped.get(String(x.PedidoNoDocERP)) || { Ordenes: 0, Terminadas: 0 }) } : null,
+    };
+  });
+}
+
+// [BANDEJA 15/10] Productos con TIZADA PRO: las cantidades salen de la lista de jugadores, no de "cantidad total / por
+// prenda" del formulario viejo. Cada fila trae ListaPrendas (lo que suma la lista; a medida, las unidades de los diseños;
+// null sin lista) y la principal, TizadaEnCurso ({ Referencia, Estado, Etapa }) si hay un pedido en TIZADA trabajando.
+async function completarBandeja(pool, filas) {
+  const ids = [...new Set(filas.filter(x => x.TizadaProMoldeRef).map(x => Number(x.ProductoSolID)))];
+  if (!ids.length) return;
+  const prods = (await pool.request().query(`SELECT ProductoSolID, DatosJson FROM dbo.SolicitudesVendedorProductos WHERE ProductoSolID IN (${ids.join(',')})`)).recordset;
+  const lista = new Map(prods.map(r => {
+    let tz = null;
+    try { tz = JSON.parse(r.DatosJson || '{}').tizadaPro || null; } catch (_) { /* JSON roto: sin lista */ }
+    const filasLista = tz?.planilla || [];
+    // misma cuenta que faltantesConversion: cada fila suma su Cantidad (vacía = 1); a medida, la cantidad de cada diseño
+    const unidades = filasLista.length ? filasLista.reduce((t, f) => t + (Number(f.cantidad) > 0 ? Number(f.cantidad) : 1), 0)
+      : (tz?.disenos || []).reduce((t, d) => t + (Number(d.cantidad) > 0 ? Number(d.cantidad) : 0), 0);
+    return [r.ProductoSolID, unidades || null];
+  }));
+  let enCurso = new Map();
+  try {
+    const r = await pool.request().query(`
+      SELECT e.OrigenItemID AS ProductoSolID, e.Referencia, e.Estado, e.Etapa
+      FROM dbo.TizadaProEnvios e
+      WHERE e.Origen = 'SOLICITUD' AND e.OrigenItemID IN (${ids.join(',')}) AND e.Estado IN ('EN_COLA','PROCESANDO','LISTO','APLICANDO')
+        AND e.EnvioID = (SELECT MAX(x.EnvioID) FROM dbo.TizadaProEnvios x WHERE x.Origen = 'SOLICITUD' AND x.OrigenItemID = e.OrigenItemID AND ISNULL(x.SoloRevision, 0) = 0)`);
+    enCurso = new Map(r.recordset.map(x => [x.ProductoSolID, { Referencia: x.Referencia, Estado: x.Estado, Etapa: x.Etapa }]));
+  } catch (_) { /* sin la tabla de envíos (scripts/add_tizadapro_envios.sql): no se muestra */ }
+  for (const x of filas) {
+    if (!x.TizadaProMoldeRef) continue;
+    x.ListaPrendas = lista.get(Number(x.ProductoSolID)) ?? null;
+    x.TizadaEnCurso = x.Tipo === 'PRINCIPAL' ? (enCurso.get(Number(x.ProductoSolID)) || null) : null;
+  }
 }
 
 async function tomarParte(pool, user, parteId) {
@@ -677,18 +787,22 @@ async function subirArchivo(pool, user, solicitudId, b, file) {
     const ext = (nombre.split('.').pop() || '').toLowerCase();
 
     const sol = await cabecera(pool, solicitudId);
-    exigirAbierta(sol);
 
     let pa = null;
     if (parteId) {
-      pa = await parteConContexto(pool, parteId);
+      // [CORREGIR EL DISEÑO 15/10] con una corrección abierta se vuelve a subir el diseño pronto de la principal y del DTF
+      pa = await parteConContexto(pool, parteId, { permitirCorreccion: rol === 'DISENO_PRONTO' });
       if (pa.SolicitudID !== solicitudId) throw fallo(400, 'El servicio no pertenece a esta solicitud.');
       productoSolId = pa.ProductoSolID;
     }
+    if (!pa?.EnCorreccion || sol.Estado === 'CANCELADA') exigirAbierta(sol);
 
     if (rol === 'DISENO_PRONTO') {
       if (!pa) throw fallo(400, 'El diseño pronto se sube sobre un servicio concreto.');
-      const soyElDisenador = pa.DisenadorID && (pa.DisenadorID === user.id || esAdmin(user));
+      // en una corrección lo sube cualquier diseñador (el trabajo ya estaba hecho y puede no tener dueño)
+      const corrigiendo = !!pa.EnCorreccion && await esDisenador(pool, user);
+      if (pa.EnCorreccion && !corrigiendo) throw fallo(403, 'Durante la corrección del diseño, los archivos los sube un diseñador.');
+      const soyElDisenador = corrigiendo || (pa.DisenadorID && (pa.DisenadorID === user.id || esAdmin(user)));
       // RN-SOL.20: arte listo del cliente en un servicio adicional → lo adjunta el vendedor, sin pasar por Diseño.
       const vendedorDirecto = !pa.DisenadorID && TIPOS_ADICIONAL.includes(pa.Tipo) && ['INGRESADO', 'DISENADO'].includes(pa.Estado) && esVendedor(user);
       if (!soyElDisenador && !vendedorDirecto) {
@@ -696,7 +810,7 @@ async function subirArchivo(pool, user, solicitudId, b, file) {
           ? 'El arte de la producción principal siempre pasa por Diseño: lo sube el diseñador que tomó el trabajo.'
           : 'El diseño pronto lo sube el diseñador que tomó el trabajo (o el vendedor, si el arte vino listo del cliente y no se envió a Diseño).');
       }
-      if (soyElDisenador && !['DISENO_INICIADO', 'DISENADO'].includes(pa.Estado)) throw fallo(409, 'Primero tomá el trabajo de la bandeja.');
+      if (soyElDisenador && !corrigiendo && !['DISENO_INICIADO', 'DISENADO'].includes(pa.Estado)) throw fallo(409, 'Primero tomá el trabajo de la bandeja.');
       const f = FORMATOS_DISENO[pa.Tipo];
       if (f && !f.ext.includes(ext)) throw fallo(400, `Formato inválido para ${NOMBRE_PARTE[pa.Tipo]}. Solo se permite ${f.txt}.`);
     } else if (!esVendedor(user) && !(pa && pa.DisenadorID === user.id) && !(eventoId && await esDisenador(pool, user))) {
@@ -736,7 +850,10 @@ async function subirArchivo(pool, user, solicitudId, b, file) {
     }
     if (rol === 'DISENO_PRONTO' && pa.Tipo === 'DTF') {
       await require('./solicitudesVendedorConversion').exigirMedidaDtf(pool, pa, b, nombre);
-      produccion = { Material: null, CodArticulo: null, CodStock: null, Copias: parseInt(b.Copias, 10) >= 1 ? parseInt(b.Copias, 10) : (viejo?.Copias || 1) };   // DTF: solo copias
+      // DTF: solo copias; el film vacío es el del servicio. [15/10] El pliego corregido hereda el film del que sustituye
+      // (con objetos en varios films cada pliego es de uno; sin esto, el corregido quedaba en el film del servicio).
+      produccion = { Material: viejo?.Material || null, CodArticulo: viejo?.CodArticulo || null, CodStock: viejo?.CodStock || null,
+        Copias: parseInt(b.Copias, 10) >= 1 ? parseInt(b.Copias, 10) : (viejo?.Copias || 1) };
     }
 
     // 1. Fila pendiente → 2. Drive (fuera de transacción: es lento) → 3. cierre en transacción
@@ -801,19 +918,22 @@ async function quitarArchivo(pool, user, solicitudId, archivoId) {
   await transaction.begin();
   try {
     const sol = await cabecera(transaction, solicitudId);
-    exigirAbierta(sol);
     const r = await new sql.Request(transaction).input('A', sql.Int, archivoId).input('Sol', sql.Int, solicitudId)
       .query('SELECT * FROM dbo.SolicitudesVendedorArchivos WHERE ArchivoID = @A AND SolicitudID = @Sol AND Vigente = 1');
     const a = r.recordset[0];
     if (!a) throw fallo(404, 'El archivo no existe o ya fue quitado.');
+    // [CORREGIR EL DISEÑO 15/10] en una corrección abierta, un diseñador quita diseños prontos de más de la principal / DTF
+    const corrigiendo = a.Rol === 'DISENO_PRONTO' && !!a.ParteID && await enCorreccion(transaction, a.ProductoSolID) && await esDisenador(pool, user);
+    if (!corrigiendo || sol.Estado === 'CANCELADA') exigirAbierta(sol);
     if (a.Rol === 'DISENO_PRONTO') {
       // Un servicio puede llevar varios archivos de diseño pronto: uno de más se puede quitar.
       // El ÚLTIMO no: el servicio está "Diseñado" porque tiene archivo — ese se sustituye por el corregido.
-      const pa = await parteConContexto(transaction, a.ParteID);
-      const puede = esAdmin(user) || (pa.DisenadorID && pa.DisenadorID === user.id) || (!pa.DisenadorID && esVendedor(user));
+      const pa = await parteConContexto(transaction, a.ParteID, { permitirCorreccion: corrigiendo });
+      const puede = corrigiendo || esAdmin(user) || (pa.DisenadorID && pa.DisenadorID === user.id) || (!pa.DisenadorID && esVendedor(user));
       if (!puede) throw fallo(403, 'El diseño pronto lo quita el diseñador que tiene el trabajo (o el vendedor, si el servicio no pasó por Diseño).');
       const otros = await new sql.Request(transaction).input('P', sql.Int, a.ParteID).input('A', sql.Int, archivoId)
         .query("SELECT COUNT(*) AS n FROM dbo.SolicitudesVendedorArchivos WHERE ParteID = @P AND Rol = 'DISENO_PRONTO' AND Vigente = 1 AND ArchivoID <> @A");
+      if (!otros.recordset[0].n && corrigiendo) throw fallo(409, 'Es el único archivo de diseño pronto de este servicio: en la corrección se sustituye por el corregido, no se quita.');
       if (!otros.recordset[0].n) {
         // Si nunca pasó por Diseño (RN-SOL.20: el vendedor lo adjuntó directo), quitar el único archivo
         // deshace el "Diseñado": el servicio vuelve a Ingresado. Con diseñador, se sustituye, no se quita.
@@ -955,10 +1075,12 @@ async function obtener(pool, user, solicitudId) {
     WHERE pa.SolicitudID = @Sol AND pa.Activo = 1
     ORDER BY CASE pa.Tipo WHEN 'PRINCIPAL' THEN 0 WHEN 'BORDADO' THEN 1 WHEN 'DTF' THEN 2 ELSE 3 END`)).recordset;
 
-  // RN-SOL.31: quien no es vendedor solo entra si tiene (o puede tomar) algo de esta solicitud.
+  // RN-SOL.31: quien no es vendedor entra si es diseñador y algo de esta solicitud pasó por Diseño. [15/10] Antes solo si tenía
+  // (o podía tomar) un trabajo: desde "Hechos" no se abría lo que hizo otro o TIZADA solo, ni se podía corregir el diseño.
+  // Entrar no es poder editar: cada acción sigue pidiendo ser el diseñador del trabajo (salvo la corrección del diseño).
   if (!esVendedor(user)) {
-    const puede = (await esDisenador(pool, user)) && partes.some(p => p.Estado === 'ENVIADO_DISENO' || p.DisenadorID === user.id);
-    if (!puede) throw fallo(403, 'No tenés ningún trabajo de Diseño en esta solicitud.');
+    if (!(await esDisenador(pool, user))) throw fallo(403, 'No tenés permiso para ver esta solicitud.');
+    if (!partes.some(p => p.Estado === 'ENVIADO_DISENO' || p.FechaEnvioDiseno || p.DisenadorID === user.id)) throw fallo(403, 'Esta solicitud no tiene nada enviado a Diseño.');
   }
 
   const productos = (await pool.request().input('Sol', sql.Int, solicitudId)
@@ -993,9 +1115,33 @@ async function obtener(pool, user, solicitudId) {
       am.recordset.forEach(x => { const c = cfgPorId.get(x.ProIdProducto); if (c) c.AMedida = true; });
     } catch (_) { /* falta la columna */ }
   }
+  // [15/10] La tarjeta del producto en la solicitud (como la Tienda): foto (la del catálogo o el dibujo de la ficha), código,
+  // familia y precio de catálogo. Misma foto que el catálogo de la solicitud (routes/prendasOrdersRoutes productos-terminados).
+  const catPorId = new Map();
+  if (idsCat.length) {
+    try {
+      const r = await pool.request().query(`
+        SELECT a.ProIdProducto, LTRIM(RTRIM(a.CodArticulo)) AS CodArticulo, LTRIM(RTRIM(sa.Articulo)) AS Categoria,
+               pb.Precio, LTRIM(RTRIM(pb.Moneda)) AS Moneda, img.url_imagen AS Imagen, vc.CantidadMinima, vc.CantidadFija
+        FROM dbo.Articulos a
+        LEFT JOIN dbo.StockArt sa ON LTRIM(RTRIM(sa.CodStock)) = LTRIM(RTRIM(a.CodStock))
+        LEFT JOIN dbo.PreciosBase pb ON pb.ProIdProducto = a.ProIdProducto
+        LEFT JOIN dbo.ProductoVentaConfig vc ON vc.ProIdProducto = a.ProIdProducto
+        OUTER APPLY (SELECT TOP 1 url_imagen FROM (
+                         SELECT i.url_imagen, i.orden FROM dbo.Articulos_Imagenes i WHERE i.Idproid = a.ProIdProducto
+                         UNION ALL
+                         SELECT f.DibujoUrl, 9999 FROM dbo.ProductoFichaDiseno f WHERE f.ProIdProducto = a.ProIdProducto AND f.DibujoUrl IS NOT NULL
+                     ) x ORDER BY x.orden) img
+        WHERE a.ProIdProducto IN (${idsCat.join(',')})`);
+      r.recordset.forEach(x => catPorId.set(x.ProIdProducto, x));
+    } catch (e) { logger.warn(`[SOLICITUDES] foto / precio de catálogo de productos: ${e.message}`); }
+  }
   for (const p of sol.Productos) {
     const c = p.ProIdProducto ? cfgPorId.get(Number(p.ProIdProducto)) : null;
     p.Config = c ? { TecnicaPrincipal: c.TecnicaPrincipal || 'SB', Molde: c.Molde || 'OBLIGATORIO', UM: c.UM || 'u', AnchoM: c.AnchoM, AltoM: c.AltoM, BordeCm: c.BordeCm, TizadaProMoldeRef: c.TizadaProMoldeRef || null, AMedida: !!c.AMedida } : null;
+    const k = p.ProIdProducto ? catPorId.get(Number(p.ProIdProducto)) : null;
+    p.Catalogo = k ? { codigo: k.CodArticulo || null, familia: k.Categoria || null, foto: k.Imagen || null, precio: k.Precio != null ? Number(k.Precio) : null, moneda: k.Moneda || null,
+                             minima: Number(k.CantidadMinima) || null, fija: Number(k.CantidadFija) || null } : null;   // paquete fijo / mínimo (guardarDatos)
     const nombreArea = { DIRECTA: 'impresión directa', ECOUV: 'gran formato', DF: 'DTF' }[p.Config?.TecnicaPrincipal];
     if (nombreArea) p.Partes.forEach(pa => { if (pa.Tipo === 'PRINCIPAL') pa.Nombre = `Producción principal (${nombreArea})`; });
   }
@@ -1097,6 +1243,17 @@ function faltantesConversion(sol, p, archivos) {
   if (sol.RequiereSena && !sol.SenaConfirmada) f.push('La seña está sin confirmar (vía de entrada, monto y referencia del pago).');
   if (p.TipoFabricacion === 'PRODUCTO_TERMINADO' && !p.ProIdProducto) f.push('Falta elegir el producto terminado.');
   if (!(p.Cantidad > 0)) f.push('Falta la cantidad de prendas.');
+  // [15/10] Con TIZADA PRO la lista de jugadores (a medida: los diseños) dice cuántas van: tiene que dar la cantidad del producto
+  const tzl = p.Datos?.tizadaPro;
+  if (p.Config?.TizadaProMoldeRef && tzl && p.Cantidad > 0) {
+    const am = !!p.Config.AMedida;
+    const filas = am ? (tzl.disenos || []) : (tzl.planilla || []);
+    const suma = am ? filas.reduce((t, d) => t + (Number(d.cantidad) > 0 ? Number(d.cantidad) : 0), 0)
+      : filas.reduce((t, x) => t + (Number(x.cantidad) > 0 ? Number(x.cantidad) : 1), 0);
+    if (filas.length && suma !== Number(p.Cantidad)) {
+      f.push(`La lista de jugadores suma ${suma} ${am ? 'unidad(es)' : 'prenda(s)'} y el producto dice ${p.Cantidad}: corregí la cantidad (en la tarjeta del producto) o la lista.`);
+    }
+  }
   // P-14 sin resolver: el precio es UNO por solicitud y sale un pedido por producto.
   if (sol.ModoCobro === 'PRECIO_ESTABLECIDO' && p.TipoFabricacion === 'PERSONALIZADO' && sol.Productos.length > 1) f.push('Precio establecido con más de un producto: todavía no está definido cuánto del precio lleva cada pedido. Dejá un solo producto en la solicitud o cobrá "por cada área".');
 
@@ -1125,22 +1282,30 @@ function faltantesConversion(sol, p, archivos) {
         .forEach(a => f.push(`${n}: falta elegir la tela de "${a.NombreOriginal}" (la carga el diseñador).`));
     }
     const d = pa.Datos || {};
+    // [15/10] La cantidad total y las bajadas por prenda ya no frenan: salen de la lista de jugadores (cada objeto × las
+    // prendas de su diseño) y, sin lista, la cantidad del producto y 1 por prenda (solicitudesVendedorConversion.armarPedido).
+    // El tipo se elige por objeto en la tabla del arte (y queda en el servicio).
+    const conTabla = !!p.Config?.TizadaProMoldeRef;
     if (pa.Tipo === 'BORDADO') {
-      if (!d.variante) f.push('Bordado: falta dónde se borda (sobre la prenda / parche adhesivo).');
-      if (!d.material) f.push('Bordado: falta el tipo de bordado (100% hilo / con tafeta).');
-      if (!(pa.CantidadTotal > 0)) f.push('Bordado: falta la cantidad total.');
+      if (!d.variante) f.push(conTabla ? 'Bordado: falta el tipo de bordado (elegilo en la tabla del arte).' : 'Bordado: falta dónde se borda (sobre la prenda / parche adhesivo).');
+      else if (!d.material) f.push(conTabla ? 'Bordado: falta el tipo de bordado (elegilo en la tabla del arte).' : 'Bordado: falta el tipo de bordado (100% hilo / con tafeta).');
     }
     if (pa.Tipo === 'DTF') {
-      if (!d.material) f.push('Estampado DTF: falta el film / material.');
-      if (!(pa.CantidadTotal > 0)) f.push('Estampado DTF: falta la cantidad total.');
-      if (!(pa.PorPrenda > 0)) f.push('Estampado DTF: faltan los estampados por prenda.');
+      if (!d.material) f.push(conTabla ? 'Estampado DTF: falta el film (elegilo en la tabla del arte).' : 'Estampado DTF: falta el film / material.');
+      // [TIPO POR OBJETO] Cada film que usan los objetos necesita su pliego (y no sobra ninguno). Sin tipo propio = el del servicio.
+      const deLaParte = archivos.filter(a => a.Vigente && a.ParteID === pa.ParteID);
+      const usados = new Set(deLaParte.filter(a => a.Rol === 'ARTE_CLIENTE').map(a => a.Material || d.material).filter(Boolean));
+      const pliegos = deLaParte.filter(a => a.Rol === 'DISENO_PRONTO');
+      const conPliego = new Set(pliegos.map(a => a.Material || d.material).filter(Boolean));
+      if (pliegos.length && usados.size > 1) {
+        [...usados].filter(m => !conPliego.has(m)).forEach(m => f.push(`Estampado DTF: hay objetos en "${m}" y ningún pliego con ese film (va un pliego por film).`));
+        [...conPliego].filter(m => !usados.has(m)).forEach(m => f.push(`Estampado DTF: hay un pliego en "${m}" y ningún objeto usa ese film.`));
+      }
     }
     if (pa.Tipo === 'TPU') {
       if (!d.variante) f.push('Estampado TPU: falta el tipo / variante.');
       if (!d.material) f.push('Estampado TPU: falta el artículo de TPU (tipo y tamaño del parche).');
       if (!d.origenPrendas) f.push('Estampado TPU: falta el origen de las prendas.');
-      if (!(pa.CantidadTotal > 0)) f.push('Estampado TPU: falta la cantidad total.');
-      if (!(pa.PorPrenda > 0)) f.push('Estampado TPU: faltan los estampados por prenda.');
     }
   }
   return f;
@@ -1188,7 +1353,7 @@ async function miPerfil(pool, user) {
 // ---------------------------------------------------------------------
 // Conversión a pedido de producción (spec §9) — services/solicitudesVendedorConversion.js
 // ---------------------------------------------------------------------
-const baseConversion = () => ({ cabecera, exigirAbierta, exigirVendedor, esAdmin, esVendedor, esDisenador, registrarEvento, recalcularEstado, obtener });
+const baseConversion = () => ({ cabecera, exigirAbierta, exigirVendedor, esAdmin, esVendedor, esDisenador, registrarEvento, recalcularEstado, obtener, enCorreccion });
 const materialesPrincipal = (pool, areaId) => require('./solicitudesVendedorConversion').materialesPrincipal(pool, areaId);
 const definirProduccionArchivo = (pool, user, solicitudId, archivoId, b) => require('./solicitudesVendedorConversion').definirProduccionArchivo(pool, user, baseConversion(), solicitudId, archivoId, b);
 // Tizadas de TizadaPro (services/solicitudesVendedorTizadas.js)
@@ -1200,17 +1365,24 @@ const guardarSublimacion = (pool, user, solicitudId, productoSolId, b) => requir
 const guardarTalles = (pool, user, solicitudId, productoSolId, b) => require('./solicitudesVendedorSublimacion').guardarTalles(pool, user, baseTizadas(), solicitudId, productoSolId, b);
 const vincularTizada = (pool, user, parteId, b) => require('./solicitudesVendedorTizadas').vincular(pool, user, baseTizadas(), parteId, b);
 // TIZADA PRO por API: diseños + lista de talles → pedido a TIZADA → vuelve la tizada (services/solicitudesVendedorTizadaPro.js)
-const baseTizadaPro = () => ({ ...baseTizadas(), cambiarEstadoParte });
+const baseTizadaPro = () => ({ ...baseTizadas(), cambiarEstadoParte, enCorreccion });
 const tizadaProVer = (pool, user, solicitudId, productoSolId) => require('./solicitudesVendedorTizadaPro').ver(pool, user, baseTizadaPro(), solicitudId, productoSolId);
 const tizadaProEditables = (pool, user, solicitudId, productoSolId, b) => require('./solicitudesVendedorTizadaPro').leerEditables(pool, user, baseTizadaPro(), solicitudId, productoSolId, b && b.arteArchivoId);
 const piezasDelArte = (pool, user, solicitudId, archivoId) => require('./solicitudesVendedorTizadaPro').piezasDelArte(pool, user, baseTizadaPro(), solicitudId, archivoId);
 const tizadaProGuardar = (pool, user, solicitudId, productoSolId, b) => require('./solicitudesVendedorTizadaPro').guardar(pool, user, baseTizadaPro(), solicitudId, productoSolId, b);
 // [A MEDIDA] cuentas en vivo de la medida de un diseño + plantilla con la medida para el diseñador
 const tizadaProCalcular = (pool, user, solicitudId, productoSolId, b) => require('./solicitudesVendedorTizadaPro').calcularMedida(pool, user, baseTizadaPro(), solicitudId, productoSolId, b);
+const tizadaProArteVista = (pool, user, solicitudId, productoSolId, archivoId) => require('./solicitudesVendedorTizadaPro').vistaArte(pool, user, baseTizadaPro(), solicitudId, productoSolId, archivoId);
 const tizadaProPlantillaPedir = (pool, user, solicitudId, productoSolId) => require('./solicitudesVendedorTizadaPro').pedirPlantilla(pool, user, baseTizadaPro(), solicitudId, productoSolId);
 const tizadaProPlantillaEstado = (pool, user, solicitudId, productoSolId) => require('./solicitudesVendedorTizadaPro').estadoPlantilla(pool, user, baseTizadaPro(), solicitudId, productoSolId);
 const tizadaProPlantillaBajar = (pool, user, solicitudId, productoSolId, nombre) => require('./solicitudesVendedorTizadaPro').bajarPlantilla(pool, user, baseTizadaPro(), solicitudId, productoSolId, nombre);
 const tizadaProEnviar = (pool, user, solicitudId, productoSolId, b) => require('./solicitudesVendedorTizadaPro').enviar(pool, user, baseTizadaPro(), solicitudId, productoSolId, b);
+// [CORREGIR EL DISEÑO 15/10] corregir el diseño de un producto que ya es pedido (services/solicitudesVendedorCorreccion.js)
+const baseCorreccion = () => ({ esDisenador, registrarEvento });
+const correccionAbrir = (pool, user, solicitudId, productoSolId, b) => require('./solicitudesVendedorCorreccion').abrir(pool, user, baseCorreccion(), solicitudId, productoSolId, b);
+const correccionCancelar = (pool, user, solicitudId, productoSolId) => require('./solicitudesVendedorCorreccion').cancelar(pool, user, baseCorreccion(), solicitudId, productoSolId);
+const correccionPlan = (pool, user, solicitudId, productoSolId) => require('./solicitudesVendedorCorreccion').plan(pool, user, baseCorreccion(), solicitudId, productoSolId);
+const correccionAplicar = (pool, user, solicitudId, productoSolId, app) => require('./solicitudesVendedorCorreccion').aplicar(pool, user, baseCorreccion(), solicitudId, productoSolId, app);
 async function tizadaProActualizar(pool, user, solicitudId, envioId, b) {
   if (!esVendedor(user) && !(await esDisenador(pool, user))) throw fallo(403, 'Esto lo hace el vendedor o un diseñador habilitado.');
   const r = await pool.request().input('E', sql.Int, envioId).input('S', sql.Int, solicitudId).query("SELECT EnvioID FROM dbo.TizadaProEnvios WHERE EnvioID = @E AND Origen = 'SOLICITUD' AND OrigenID = @S");
@@ -1269,8 +1441,161 @@ const reintentarArchivos = (pool, user, solicitudId, productoSolId, app) => requ
 // Recuperar los archivos de un pedido ya creado (tizada rehecha → órdenes que los esperaban; services/solicitudesVendedorRecuperar.js)
 const recuperarArchivos = (pool, user, solicitudId, productoSolId, app) => require('./solicitudesVendedorRecuperar').recuperar(pool, user, baseConversion(), solicitudId, productoSolId, app);
 
+// [TIPO DEL EXTRA 14/10] Cómo se puede hacer cada bordado / DTF / TPU (la misma lista que ve el cliente en la Tienda,
+// pedidoPortalService.formasDeExtras), para elegir el tipo de CADA objeto en la tabla del arte (15/10: se guarda en el
+// diseño de TIZADA, solicitudesVendedorTizadaPro.sincronizarFormas). Cada forma trae su variante y su material.
+// Devuelve { formas: { BORDADO: [...], DTF: [...], TPU: [...] }, extras: los que admite el producto (con cobro y si va incluido) }.
+async function formasDeExtras(pool, user, solicitudId, productoSolId) {
+  if (!esVendedor(user) && !(await esDisenador(pool, user))) throw fallo(403, 'No tenés permiso para ver esta solicitud.');
+  const p = (await pool.request().input('S', sql.Int, solicitudId).input('P', sql.Int, productoSolId)
+    .query('SELECT ProIdProducto FROM dbo.SolicitudesVendedorProductos WHERE ProductoSolID = @P AND SolicitudID = @S AND Activo = 1')).recordset[0];
+  if (!p) throw fallo(404, 'El producto no existe en esta solicitud.');
+  if (!p.ProIdProducto) return { formas: {}, extras: [] };
+  const portal = require('./pedidoPortalService');
+  const [formas, extras] = await Promise.all([portal.formasDeExtras(pool, p.ProIdProducto), portal.extrasDelProducto(pool, p.ProIdProducto)]);
+  return { formas, extras: extras.map(e => ({ tipo: e.tipo, nombre: e.nombre, cobro: e.cobro, obligatorio: e.obligatorio })) };
+}
+
+// [GUARDADO AUTOMÁTICO 15/10] La solicitud del vendedor ya no tiene "Guardar": cada dato se guarda solo al dejar el campo.
+// Llega UN dato (cliente, nombre del trabajo, detalle, fechas o la cantidad de un producto) y se escribe SOLO esa columna,
+// en su transacción: no se pasa por actualizar con el cuerpo entero, que podría pisar lo que la tabla del arte de TIZADA
+// PRO guarda sola al mismo tiempo (DatosJson). Mismas reglas y mensajes que el formulario, mismo historial (EDICION) y la
+// misma marca "Modificada" para Diseño cuando cambia la cantidad de un producto que ya está en Diseño.
+// b: { CodCliente?, NombreTrabajo?, Detalle?, FechaEntrega?, FechaEntregaHasta?, Productos?: [{ ProductoSolID, Cantidad }] }
+async function guardarDatos(pool, user, solicitudId, b) {
+  exigirVendedor(user);
+  const conFicha = await tieneFicha(pool);
+  const transaction = new sql.Transaction(pool);
+  await transaction.begin();
+  try {
+    const sol = await cabecera(transaction, solicitudId);
+    exigirAbierta(sol);
+    const cambios = [];
+
+    // Cabecera: solo lo que llegó
+    const fechaBD = (v) => (v ? new Date(v).toISOString().slice(0, 10) : null);
+    const fecha = (v) => { const s = String(v || '').trim().slice(0, 10); if (!s) return null; if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) throw fallo(400, 'La fecha no es válida.'); return s; };
+    const antes = { CodCliente: sol.CodCliente, NombreTrabajo: sol.NombreTrabajo, Detalle: sol.Detalle, FechaEntrega: fechaBD(sol.FechaEntrega), FechaEntregaHasta: fechaBD(sol.FechaEntregaHasta) };
+    const ahora = { ...antes };
+    if (b.CodCliente !== undefined) {
+      ahora.CodCliente = entero(b.CodCliente);
+      if (!ahora.CodCliente) throw fallo(400, 'Elegí el cliente de la solicitud.');
+      const cli = await new sql.Request(transaction).input('Cod', sql.Int, ahora.CodCliente).query('SELECT 1 AS ok FROM dbo.Clientes WHERE CodCliente = @Cod');
+      if (!cli.recordset.length) throw fallo(400, 'El cliente elegido no existe.');
+    }
+    if (b.NombreTrabajo !== undefined) { ahora.NombreTrabajo = txt(b.NombreTrabajo, 200); if (!ahora.NombreTrabajo) throw fallo(400, 'Ingresá el nombre del trabajo.'); }
+    if (b.Detalle !== undefined) { ahora.Detalle = txt(b.Detalle); if (!ahora.Detalle) throw fallo(400, 'Escribí el detalle de la solicitud (qué pide el cliente).'); }
+    if (conFicha && b.FechaEntrega !== undefined) ahora.FechaEntrega = fecha(b.FechaEntrega);
+    if (conFicha && b.FechaEntregaHasta !== undefined) ahora.FechaEntregaHasta = fecha(b.FechaEntregaHasta);
+    if (ahora.FechaEntrega && ahora.FechaEntregaHasta && ahora.FechaEntregaHasta < ahora.FechaEntrega) throw fallo(400, 'La fecha "hasta" no puede ser anterior a la fecha que necesita el cliente.');
+    const difCab = diferencias([['CodCliente', 'Cliente'], ['NombreTrabajo', 'Nombre del trabajo'], ['Detalle', 'Detalle'], ['FechaEntrega', 'Fecha de entrega'], ['FechaEntregaHasta', 'Fecha de entrega (hasta)']], antes, ahora);
+    if (difCab.length) {
+      await new sql.Request(transaction)
+        .input('Sol', sql.Int, solicitudId).input('Cod', sql.Int, ahora.CodCliente).input('Nom', sql.NVarChar(200), ahora.NombreTrabajo)
+        .input('Det', sql.NVarChar(sql.MAX), ahora.Detalle).input('FE', sql.Date, ahora.FechaEntrega).input('FEH', sql.Date, ahora.FechaEntregaHasta).input('U', sql.Int, user.id)
+        .query(`UPDATE dbo.SolicitudesVendedor SET CodCliente = @Cod, NombreTrabajo = @Nom, Detalle = @Det,
+                       ${conFicha ? 'FechaEntrega = @FE, FechaEntregaHasta = @FEH,' : ''} UsuarioModif = @U, FechaModif = GETDATE()
+                 WHERE SolicitudID = @Sol`);
+      cambios.push(...difCab);
+    }
+
+    // Cantidad de un producto (las mismas reglas del producto que el formulario: paquete fijo / mínimo)
+    for (const x of (Array.isArray(b.Productos) ? b.Productos : [])) {
+      if (x.Cantidad === undefined) continue;
+      const p = (await new sql.Request(transaction).input('P', sql.Int, entero(x.ProductoSolID)).input('S', sql.Int, solicitudId)
+        .query('SELECT ProductoSolID, Orden, ProIdProducto, Cantidad, PedidoNoDocERP FROM dbo.SolicitudesVendedorProductos WHERE ProductoSolID = @P AND SolicitudID = @S AND Activo = 1')).recordset[0];
+      if (!p) throw fallo(404, 'El producto no existe en esta solicitud.');
+      if (p.PedidoNoDocERP) throw fallo(409, `Este producto ya se convirtió en el pedido ${p.PedidoNoDocERP}: no se puede editar desde la solicitud.`);
+      const cant = entero(x.Cantidad);
+      if (!cant || cant <= 0) throw fallo(400, 'La cantidad tiene que ser 1 o más.');
+      if (cant === Number(p.Cantidad)) continue;
+      if (p.ProIdProducto) {
+        const cfg = (await new sql.Request(transaction).input('Pro', sql.Int, p.ProIdProducto)
+          .query('SELECT CantidadMinima, CantidadFija FROM dbo.ProductoVentaConfig WHERE ProIdProducto = @Pro')).recordset[0] || {};
+        const fija = Number(cfg.CantidadFija) || 0, min = Number(cfg.CantidadMinima) || 0;
+        if (fija && cant % fija !== 0) throw fallo(400, `Se vende en paquetes de ${fija}: poné un múltiplo de ${fija}.`);
+        if (!fija && min && cant < min) throw fallo(400, `El mínimo de este producto es ${min} unidades.`);
+      }
+      await new sql.Request(transaction).input('P', sql.Int, p.ProductoSolID).input('C', sql.Int, cant)
+        .query('UPDATE dbo.SolicitudesVendedorProductos SET Cantidad = @C WHERE ProductoSolID = @P');
+      const difProd = `Cantidad de prendas: ${p.Cantidad} → ${cant}`;
+      const partes = (await new sql.Request(transaction).input('P', sql.Int, p.ProductoSolID)
+        .query('SELECT ParteID, Tipo, CantidadTotal, Estado, DisenadorID FROM dbo.SolicitudesVendedorPartes WHERE ProductoSolID = @P AND Activo = 1')).recordset;
+      for (const pa of partes) {
+        // los extras que tenían la cantidad del producto (la que pone el formulario si queda vacía) siguen a la nueva
+        const sigue = pa.Tipo !== 'PRINCIPAL' && (pa.CantidadTotal == null || Number(pa.CantidadTotal) === Number(p.Cantidad));
+        if (sigue) await new sql.Request(transaction).input('Id', sql.Int, pa.ParteID).input('C', sql.Int, cant).query('UPDATE dbo.SolicitudesVendedorPartes SET CantidadTotal = @C WHERE ParteID = @Id');
+        // como actualizar: se avisa a Diseño, salvo lo que no pasó por Diseño (arte listo del cliente, sin diseñador)
+        const sinPasarPorDiseno = pa.Estado === 'DISENADO' && !pa.DisenadorID;
+        if (pa.Estado !== 'INGRESADO' && !sinPasarPorDiseno) {
+          await marcarModificada(transaction, user, pa.ParteID, [...(sigue ? [`Cantidad total: ${ver(pa.CantidadTotal)} → ${cant}`] : []), `Producto: ${difProd}`].join('; '));
+        }
+      }
+      cambios.push(`Producto ${p.Orden}: ${difProd}`);
+    }
+
+    if (cambios.length) await registrarEvento(transaction, user, { solicitudId, tipo: 'EDICION', texto: cambios.join('\n') });
+    await transaction.commit();
+    return { SolicitudID: solicitudId, cambios: cambios.length };
+  } catch (err) {
+    await rollbackSeguro(transaction, `solicitudesVendedor.guardarDatos ${solicitudId}`);
+    throw err;
+  }
+}
+
+// [FASE 1 · 15/10] Sin "Servicios y extras" en el formulario (productos con TIZADA PRO): el bordado / DTF / TPU se agrega
+// desde la tabla del arte al usarlo y se quita cuando ningún objeto lo usa, como en la Tienda (pedidoPortalService.cambiarExtra).
+// Se arma el cuerpo con lo que hay y se cambia lo justo con actualizar (copia de pedidoPortalService.actualizarSolicitud).
+// Solo los que admite el producto (Configurar productos › Técnicas). Quitar: solo uno opcional, en Ingresado y sin archivos
+// subidos aparte (si no, { quitado: false, motivo }: no es un error, el extra queda).
+const fechaTxt = (v) => (v ? new Date(v).toISOString().slice(0, 10) : null);
+async function cambiarExtra(pool, user, solicitudId, productoSolId, tipo, b) {
+  exigirVendedor(user);
+  const T = String(tipo || '').toUpperCase();
+  if (!['BORDADO', 'DTF', 'TPU'].includes(T)) throw fallo(400, 'Solo se agrega bordado, DTF o TPU.');
+  const activo = b?.activo !== false;
+  const sol = await obtener(pool, user, solicitudId);
+  exigirAbierta(sol);
+  const p = sol.Productos.find(x => x.ProductoSolID === productoSolId);
+  if (!p) throw fallo(404, 'El producto no existe en esta solicitud.');
+  if (p.PedidoNoDocERP) throw fallo(409, `Este producto ya se convirtió en el pedido ${p.PedidoNoDocERP}.`);
+  const previa = p.Partes.find(x => x.Tipo === T);
+  if (activo) {
+    if (previa) return { ParteID: previa.ParteID };
+    const e = p.ProIdProducto ? (await require('./pedidoPortalService').extrasDelProducto(pool, p.ProIdProducto)).find(x => x.tipo === T) : null;
+    if (!e) throw fallo(400, `Este producto no lleva ${NOMBRE_PARTE[T]} (se habilita en Configurar productos › Técnicas).`);
+  } else {
+    if (!previa) return { quitado: false };
+    if (previa.IncluidoEnProducto) return { quitado: false, motivo: `${NOMBRE_PARTE[T]} viene incluido en el producto.` };
+    if (previa.Estado !== 'INGRESADO') return { quitado: false, motivo: `${NOMBRE_PARTE[T]} ya está en Diseño.` };
+    if (sol.Archivos.some(a => a.Vigente && a.ParteID === previa.ParteID && !/^EDITABLE_/i.test(a.NombreOriginal || ''))) return { quitado: false, motivo: `${NOMBRE_PARTE[T]} tiene archivos subidos.` };
+  }
+  const body = {
+    CodCliente: sol.CodCliente, NombreTrabajo: sol.NombreTrabajo, Detalle: sol.Detalle, Observaciones: sol.Observaciones, PreId: sol.PreId,
+    FechaEntrega: fechaTxt(sol.FechaEntrega), FechaEntregaHasta: fechaTxt(sol.FechaEntregaHasta), Ficha: sol.Ficha || {},
+    Productos: sol.Productos.map(x => ({
+      ProductoSolID: x.ProductoSolID, TipoFabricacion: x.TipoFabricacion, ProIdProducto: x.ProIdProducto, ProductoNombre: x.ProductoNombre,
+      Cantidad: x.Cantidad, Observaciones: x.Observaciones, Datos: x.Datos,
+      Partes: x.Partes.map(pa => ({ ParteID: pa.ParteID, Tipo: pa.Tipo, IncluidoEnProducto: pa.IncluidoEnProducto, CantidadTotal: pa.CantidadTotal, PorPrenda: pa.PorPrenda,
+        Ubicacion: pa.Ubicacion, ArteOrigen: pa.ArteOrigen, Datos: pa.Datos, Observaciones: pa.Observaciones })),
+    })),
+  };
+  const bp = body.Productos.find(x => x.ProductoSolID === productoSolId);
+  if (activo) {
+    // como el formulario (alternarServicio): la cantidad del producto, 1 por prenda; DTF textil y TPU con prendas de stock
+    bp.Partes.push({ Tipo: T, IncluidoEnProducto: false, CantidadTotal: p.Cantidad, PorPrenda: 1, Ubicacion: null, ArteOrigen: 'EMPRESA', Observaciones: null,
+      Datos: T === 'DTF' ? { variante: 'DTF Textil' } : T === 'TPU' ? { origenPrendas: 'Stock User' } : {} });
+  } else bp.Partes = bp.Partes.filter(x => x.Tipo !== T);
+  await actualizar(pool, user, solicitudId, body);
+  if (!activo) return { quitado: true };
+  const nueva = (await pool.request().input('P', sql.Int, productoSolId).input('T', sql.VarChar(12), T)
+    .query('SELECT TOP 1 ParteID FROM dbo.SolicitudesVendedorPartes WHERE ProductoSolID = @P AND Tipo = @T AND Activo = 1 ORDER BY ParteID DESC')).recordset[0];
+  return { ParteID: nueva?.ParteID || null };
+}
+
 module.exports = {
-  tizadaProVer, tizadaProEditables, piezasDelArte, tizadaProGuardar, tizadaProCalcular, tizadaProPlantillaPedir, tizadaProPlantillaEstado, tizadaProPlantillaBajar, tizadaProEnviar, tizadaProActualizar, _baseTizadaPro: () => baseTizadaPro(),
+  formasDeExtras, cambiarExtra, guardarDatos, disenosHechos, correccionAbrir, correccionCancelar, correccionPlan, correccionAplicar,
+  tizadaProVer, tizadaProEditables, piezasDelArte, tizadaProGuardar, tizadaProCalcular, tizadaProArteVista, tizadaProPlantillaPedir, tizadaProPlantillaEstado, tizadaProPlantillaBajar, tizadaProEnviar, tizadaProActualizar, _baseTizadaPro: () => baseTizadaPro(),
   materialesPrincipal, definirProduccionArchivo, tizadasTizadaPro, vincularTizada, moldeDelProducto, guardarSublimacion, guardarTalles, convertir, reintentarArchivos, recuperarArchivos, bobinasDelCliente, disenosEnProduccion, estimarPlazo, calendario,
   crear, actualizar, listar, obtener, guardarPrecio, confirmarSena, agregarInteraccion,
   enviarADiseno, bandeja, tomarParte, aceptarCambio, subirArchivo, quitarArchivo, cancelar,

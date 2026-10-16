@@ -70,8 +70,10 @@ export default function ContabilidadTesoreriaView() {
     if (!aAnular) return;
     setAccionando(aAnular.IdCheque);
     try {
-      await api.delete(`/tesoreria/cheques/${aAnular.IdCheque}`, { data: { Motivo: motivoAnular } });
-      toast.success(`Cheque N° ${aAnular.NumeroCheque} anulado — asiento revertido`);
+      const res = await api.delete(`/tesoreria/cheques/${aAnular.IdCheque}`, { data: { Motivo: motivoAnular } });
+      // El backend dice si revirtió el asiento o no (ej: cheque entrado por caja, sin asiento propio).
+      if (res.data?.asientoRevertido === false) toast.warning(res.data.message, { duration: 10000 });
+      else toast.success(res.data?.message || `Cheque N° ${aAnular.NumeroCheque} anulado`);
       setAAnular(null); setMotivoAnular('');
       fetchData();
     } catch (error) {
@@ -214,8 +216,9 @@ export default function ContabilidadTesoreriaView() {
                               Cobrado (Débito)
                             </button>
                           )}
-                          {/* Anular: para el cheque cargado por error. Revierte el asiento. */}
-                          {cheque.Estado !== 'ANULADO' && (
+                          {/* Anular: para el cheque cargado por error. Revierte el asiento. Solo en su
+                              estado inicial: depositado, endosado o cobrado ya existió afuera. */}
+                          {(cheque.Estado === 'EN_CARTERA' || cheque.Estado === 'EMITIDO') && (
                             <button onClick={() => { setAAnular(cheque); setMotivoAnular(''); }}
                               className="bg-slate-50 text-slate-500 border border-slate-200 px-3 py-2 rounded-lg hover:bg-red-50 hover:text-red-700 hover:border-red-200 font-bold text-sm"
                               title="Cargado por error: lo da de baja y revierte el asiento">

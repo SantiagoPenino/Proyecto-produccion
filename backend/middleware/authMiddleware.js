@@ -101,7 +101,7 @@ const soloInternoConRol = (rolesPermitidos = null) => (req, res, next) => {
 // MIDDLEWARE: SOLO ADMIN (usuario interno con rol Admin)
 // =====================================================================
 // Para administrar accesos y la configuración global: /api/users (alta, cambios y bajas),
-// /api/roles, /api/admin, el editor de /api/menu y los cambios de /api/configuraciones.
+// /api/roles, /api/admin y el editor de /api/menu.
 // Casi todas no tenían NINGÚN middleware: sin token se podía crear un usuario con IdRol 1
 // (28/09/2026).
 // Admin = Roles.NombreRol 'Admin' / IdRol 1. 'Administracion' (IdRol 8) NO entra (mismo

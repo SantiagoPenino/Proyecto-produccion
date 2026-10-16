@@ -1,12 +1,12 @@
 /**
  * ClienteVista360.jsx  —  Ruta: /contabilidad/cliente-360
  *
- * Vista unificada ("Panel 360") centrada en el cliente. CONVIVE con
- * /contabilidad/cuentas sin reemplazarla.
+ * Vista unificada ("Panel 360") centrada en el cliente. Desde el 16/10/2026 es LA
+ * vista de cuentas: la ventana vieja /contabilidad/cuentas se sacó y redirige acá.
  *
- * FASE 1 (esta entrega): solo lectura. Cabecera del cliente + KPIs + estado de
- * cuenta + movimientos + planes de recursos. NO reimplementa nada: reutiliza los
- * mismos componentes y endpoints de ContabilidadCuentasView.
+ * FASE 1: solo lectura. Cabecera del cliente + KPIs + estado de
+ * cuenta + movimientos + planes de recursos. NO reimplementa nada: reutiliza las
+ * piezas compartidas de cuentasComunes.jsx (antes ContabilidadCuentasView).
  *   - MovimientosPanel / PlanesPanel / FilaCliente   (importados)
  *   - ClienteBilletera                                (importado)
  *   - fetchAPI / fmt / fmtNum                         (importados)
@@ -22,7 +22,7 @@ import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import {
   Search, RefreshCw, Users, CreditCard, DollarSign, FileText, Wallet,
   ShoppingCart, Tag, FilePlus, MoreHorizontal, Download, Printer,
-  ArrowLeft, Zap, CheckCircle2, Calendar, TrendingDown, PlusCircle, X, Layers, Ban, Scale, ChevronDown,
+  Zap, CheckCircle2, Calendar, TrendingDown, PlusCircle, X, Layers, Ban, Scale, ChevronDown,
   Menu, Filter, ExternalLink, Scroll, Coins,
 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -38,7 +38,7 @@ import { codigoCuenta } from '../../utils/cuentaCodigo';
 import {
   fetchAPI, fmt, FilaCliente, MovimientosPanel, PlanesPanel, ModalSaldoInicial,
   ModalConsumirRecurso, ModalNuevaCuenta, ModalTransferirCuentas, ModalConfigCuenta, ModalConsumirSaldo, LibroCuentaDinero, ModalVentaSaldo, ModalCuentasCliente,
-} from './ContabilidadCuentasView';
+} from './cuentasComunes';
 // Fase 2: cobro y saldos — se montan tal cual (mismos componentes que Caja).
 import CajaPagoDeudaTab from './CajaPagoDeudaTab';
 import CajaSaldoAnticipoTab from './CajaSaldoAnticipoTab';
@@ -316,7 +316,7 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
   const [fFact, setFFact]   = useState('TODAS');   // TODAS | FACT | SINFACT
   const [fMon, setFMon]     = useState('TODAS');   // TODAS | $ | US$
   const [fSit, setFSit]     = useState('TODAS');   // TODAS | PAGADO | PENDIENTE | SIN_FACTURAR | ANULADO
-  // Acciones sobre órdenes pendientes de facturar (reuso de ContabilidadCuentasView)
+  // Acciones sobre órdenes pendientes de facturar (reuso de cuentasComunes)
   const [modalConsumir, setModalConsumir] = useState(null); // orden a consumir desde recurso
   const [modalSaldo, setModalSaldo]       = useState(null); // billetera: orden a pagar con saldo de una cuenta
   const pagadaConSaldo = (o) => /^CUBIERTO_CUENTA_\d+.*Ref#\d+/.test(o.MovObservaciones || '');
@@ -1160,7 +1160,7 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
             </div>
           )}
 
-          {/* ── Modales de acciones sobre órdenes pendientes de facturar (reuso de ContabilidadCuentasView) ── */}
+          {/* ── Modales de acciones sobre órdenes pendientes de facturar (reuso de cuentasComunes) ── */}
           {modalConsumir && (
             <ModalConsumirRecurso
               mov={{
@@ -1735,7 +1735,7 @@ export default function ClienteVista360() {
     finally { setLoadingCuentas(false); }
   };
 
-  // Preselección al llegar desde /contabilidad/cuentas (botón "Panel 360").
+  // Preselección al volver de la pre-factura (manda selectedClienteId en el state).
   useEffect(() => {
     if (location.state?.selectedClienteId && clientesActivos.length > 0 && !hasAutoSelected) {
       const targetId = Number(location.state.selectedClienteId);
@@ -1915,10 +1915,6 @@ export default function ClienteVista360() {
     <div className="bg-[#f1f5f9] min-h-full text-slate-700 font-sans">
       {/* Barra superior de la vista */}
       <div className="bg-white border-b border-slate-200 px-4 py-3 flex items-center gap-3 sticky top-0 z-10">
-        <button onClick={() => navigate('/contabilidad/cuentas')} title="Volver a Cuentas"
-          className="p-2 rounded-lg hover:bg-slate-100 text-slate-500 hover:text-slate-700 transition-colors">
-          <ArrowLeft size={16} />
-        </button>
         <div className="w-9 h-9 rounded-xl bg-cyan-700 flex items-center justify-center text-white shrink-0">
           <Zap size={16} />
         </div>

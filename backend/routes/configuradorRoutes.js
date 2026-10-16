@@ -72,6 +72,10 @@ router.put('/maquinas-costura/:id', configuradorController.updateMaquinaCostura)
 router.get('/avios', configuradorController.getAvios);                     // ?all=1 incluye inactivos
 router.post('/avios', configuradorController.crearAvio);
 router.put('/avios/:id', configuradorController.updateAvio);
+router.get('/medidas', configuradorController.getMedidas);                   // nomenclador de medidas (?all=1 incluye inactivas)
+router.post('/medidas', configuradorController.crearMedida);
+router.put('/medidas/:id', configuradorController.updateMedida);
 router.post('/productos/:proId/ficha-diseno/dibujo', uploadFichaDiseno.single('dibujo'), webpEnSubida, configuradorController.subirDibujoFicha);
+router.post('/productos/:proId/ficha-diseno/medidas-imagen', uploadFichaDiseno.single('imagen'), webpEnSubida, configuradorController.subirMedidasImagen);
 
 module.exports = router;

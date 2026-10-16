@@ -2,7 +2,6 @@ import { Listbox } from '@headlessui/react';
 
 const LogisticsLayout = ({ children, activeTab, setActiveTab, globalArea, setGlobalArea, areasList = [], disabled = false, isAreaContext = false }) => {
     let tabs = [
-        { id: 'import', label: 'Cargar Órdenes', icon: 'fa-file-import' },
         { id: 'quotation', label: 'Cotización', icon: 'fa-file-invoice-dollar' },
         { id: 'canastos', label: 'Canastos', icon: 'fa-basket-shopping' },
         { id: 'labels', label: 'Etiquetas', icon: 'fa-tags' },
@@ -17,11 +16,11 @@ const LogisticsLayout = ({ children, activeTab, setActiveTab, globalArea, setGlo
     ];
 
     if (isAreaContext) {
-        tabs = tabs.filter(t => !['import', 'quotation'].includes(t.id));
+        tabs = tabs.filter(t => !['quotation'].includes(t.id));
     }
 
     if (globalArea === 'DEPOSITO') {
-        tabs = tabs.filter(t => !['import', 'quotation', 'canastos', 'labels'].includes(t.id));
+        tabs = tabs.filter(t => !['quotation', 'canastos', 'labels'].includes(t.id));
     }
 
     // Pedido 06/08: en las áreas de producción estas pestañas no se usan — las

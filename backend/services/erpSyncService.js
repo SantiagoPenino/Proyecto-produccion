@@ -1,4 +1,3 @@
-const axios = require('axios');
 const { sql, getPool } = require('../config/db');
 const PricingService = require('./pricingService');
 const logger = require('../utils/logger');
@@ -7,35 +6,14 @@ const contabilidadSvc = require('./contabilidadService');
 class ERPSyncService {
 
     /**
-     * Sincroniza la "cotización" y el envío a los sistemas ERP y REACT.
-     * Este es el nuevo "punto logístico" robusto solicitado.
+     * Cotiza el pedido (todas las órdenes del NoDocERP) y guarda el resultado en
+     * Ordenes.CostoTotal, PedidosCobranza y PedidosCobranzaDetalle.
+     * El envío a React (OrdenesDeposito) y al ERP Macrosoft se eliminó el 15/10/2026:
+     * ya estaban apagados (scripts/sql/quitar_sync_planillas_react_erp_2026-10-15.sql).
      */
     static async syncFinalOrderIntegration(noDocERP, userId = 1, userName = 'Sistema', bultoCode = null, options = {}) {
-        const { onlyCalculate = false, userNotes = '', priceOverride = null, quantityOverride = null, profileOverride = null, syncTarget = null, forcedReactPayload = null, forcedErpPayload = null, skipDeposito = false } = options;
+        const { onlyCalculate = false, userNotes = '', priceOverride = null, quantityOverride = null, profileOverride = null } = options;
         if (!noDocERP) throw new Error("NoDocERP es requerido para la sincronización.");
-
-        // Interruptor global (tabla ConfiguracionesSync, procesos SYNC_REACT_CORE /
-        // SYNC_ERP_MACROSOFT — ya están en Activo=false, marcados obsoletos). Antes solo
-        // lo respetaba el flujo de despacho (que pasaba isReactEnabledGlobal/isErpEnabledGlobal
-        // a mano); el resto de los llamadores a esta función nunca lo consultaba, así que
-        // React/ERP real se seguían llamando igual. Ahora se resuelve acá adentro, una sola
-        // vez, para TODOS los llamadores — salvo que alguno pase el valor explícito (como ya
-        // hace logisticsController), en cuyo caso se respeta ese override.
-        let isReactEnabledGlobal = options.isReactEnabledGlobal;
-        let isErpEnabledGlobal = options.isErpEnabledGlobal;
-        if (isReactEnabledGlobal === undefined || isErpEnabledGlobal === undefined) {
-            try {
-                const { isProcessActive } = require('../controllers/configuracionesController');
-                if (isReactEnabledGlobal === undefined) isReactEnabledGlobal = await isProcessActive('SYNC_REACT_CORE');
-                if (isErpEnabledGlobal === undefined) isErpEnabledGlobal = await isProcessActive('SYNC_ERP_MACROSOFT');
-            } catch (eCfg) {
-                logger.warn('[ERPSync] No se pudo leer ConfiguracionesSync, se asume desactivado por seguridad:', eCfg.message);
-                if (isReactEnabledGlobal === undefined) isReactEnabledGlobal = false;
-                if (isErpEnabledGlobal === undefined) isErpEnabledGlobal = false;
-            }
-        }
-        options.isReactEnabledGlobal = isReactEnabledGlobal;
-        options.isErpEnabledGlobal = isErpEnabledGlobal;
 
         const pool = await getPool();
         logger.info(`[ERPSync] Iniciando integración final para NoDocERP: ${noDocERP}${bultoCode ? ' (Bulto: ' + bultoCode + ')' : ''}`);
@@ -779,7 +757,7 @@ class ERPSyncService {
             }
         }
 
-        // 4. Preparar Envío a REACT (Formato QR Exacto con $*)
+        // 4. String QR del pedido (formato $*), se guarda en PedidosCobranza.QR_*
         // [Bulto/Pedido]$*Cliente$*Trabajo$*Urgencia$*Producto$*Cantidad$*Importe
         const first = siblings[0];
         const rawCode = bultoCode || (first.CodigoOrden?.split('(')[0]?.trim() || first.CodigoOrden);
@@ -793,10 +771,10 @@ class ERPSyncService {
         const qrImporte = totalPriceSum.toFixed(2);
 
         const SEP = '$*';
-        const reactCode = `${qrPedido}${SEP}${qrCliente}${SEP}${qrTrabajo}${SEP}${qrUrgencia}${SEP}${qrProducto}${SEP}${qrCantidad}${SEP}${qrImporte}`;
+        const qrString = `${qrPedido}${SEP}${qrCliente}${SEP}${qrTrabajo}${SEP}${qrUrgencia}${SEP}${qrProducto}${SEP}${qrCantidad}${SEP}${qrImporte}`;
 
         const qrData = {
-             qrPedido, qrCliente, qrTrabajo, qrUrgencia, qrProducto, qrCantidad, qrImporte, qrString: reactCode
+             qrPedido, qrCliente, qrTrabajo, qrUrgencia, qrProducto, qrCantidad, qrImporte, qrString
         };
 
         // 5. Actualizar PedidosCobranza y PedidosCobranzaDetalle (siempre, independiente del destino)
@@ -822,261 +800,17 @@ class ERPSyncService {
         }
 
         if (onlyCalculate) {
-            // Reconstruct ERP Payload for preview
-            const lineasAgrupadas = {};
-            detallesCobranza.forEach(d => {
-                const cod = (d.CodArticulo || 'VAR').toString().trim();
-                lineasAgrupadas[cod] = (lineasAgrupadas[cod] || 0) + parseFloat(d.Cantidad);
-            });
-            const erpPayload = {
-                CodCliente: first.CodCliente ? first.CodCliente.toString().trim() : "100101",
-                Documento: "11",
-                Lineas: Object.entries(lineasAgrupadas).map(([cod, qty]) => ({ CodArticulo: cod, Cantidad: qty.toString() }))
-            };
-
-            return {
-                success: true,
-                totalPriceSum,
-                detallesCobranza,
-                targetCurrency,
-                reactPayload: { ordenString: reactCode, estado: "Ingresado" },
-                erpPayload: erpPayload
-            };
+            return { success: true, totalPriceSum, detallesCobranza, targetCurrency };
         }
 
-        // 5.5 Guardar Detalle para Etiquetas (Validación visual de costos)
+        // 6. Desglose en el log (validación visual de costos)
         const textBreakdown = detallesCobranza.map(d => `- ${d.CodArticulo}: ${d.Cantidad} x ${d.PrecioUnitario} = ${d.Subtotal} (${d.LogPrecioAplicado})`).join('\n');
 
         logger.info(`\n======================================================\n[ERPSync] DESGLOSE DE PRECIOS CALCULADOS PARA ${noDocERP}\n${textBreakdown}\n======================================================\n`);
 
-        logger.info(`[ERPSync] React Code ($*): ${reactCode}`);
+        logger.info(`[ERPSync] QR ($*): ${qrString}`);
 
-        // 6. Escribir en OrdenesDeposito directamente (migrado de API React)
-        // IMPORTANTE: skipDeposito=true cuando se llama desde el ingreso de órdenes (no desde el depósito)
-        // OrdenesDeposito solo debe ser escrito durante el Check-In del WMS.
-        let reactSuccess = false;
-        if (skipDeposito) {
-            logger.info(`[ERPSync] SKIP OrdenesDeposito (skipDeposito=true — solo se escribe en PedidosCobranza).`);
-            reactSuccess = true;
-        } else if (!syncTarget || syncTarget === 'REACT') {
-            if (options.isReactEnabledGlobal === false) {
-                logger.info(`[ERPSync] BYPASS REACT por configuración global (Desactivado).`);
-                reactSuccess = true;
-            } else {
-                // Resolver el string QR para parsear
-                let ordenString = forcedReactPayload;
-                if (typeof forcedReactPayload === 'object' && forcedReactPayload?.ordenString) {
-                    ordenString = forcedReactPayload.ordenString;
-                } else if (!forcedReactPayload) {
-                    ordenString = reactCode;
-                }
-
-                logger.info(`[ERPSync] --> INSERTANDO EN OrdenesDeposito directamente...`, ordenString);
-
-                try {
-                    // Parsear el string QR: $CodigoOrden$*CodigoCliente$*NombreTrabajo$*IdModo$*IdProducto$*Cantidad$*CostoFinal
-                    const parts = ordenString.split('$*');
-                    let CodigoOrden = (parts[0] || '').trim();
-                    // IMPORTANTE: Remover el $ del inicio para guardar en OrdenesDeposito
-                    if(CodigoOrden.startsWith('$')) CodigoOrden = CodigoOrden.substring(1);
-
-                    const CodigoCliente = parseInt(parts[1]) || 0;
-                    const NombreTrabajo = parts[2] || '';
-                    const IdModo = parseInt(parts[3]) || 1;
-                    const IdProducto = parseInt(parts[4]) || 0;
-                    const cantidadDecimal = parseFloat((parts[5] || '0').toString().replace(',', '.'));
-                    const costoFinalDecimal = parseFloat((parts[6] || '0').toString().replace(',', '.'));
-
-                    // Verificar si la orden ya existe
-                    const existCheck = await pool.request()
-                        .input('Cod', sql.VarChar(100), CodigoOrden)
-                        .query('SELECT OrdIdOrden, OrdEstadoActual, OReIdOrdenRetiro FROM OrdenesDeposito WITH(NOLOCK) WHERE OrdCodigoOrden = @Cod');
-
-                    if (existCheck.recordset.length > 0) {
-                        const existing = existCheck.recordset[0];
-
-                        // Si NO tiene orden de retiro, actualizar datos
-                        if (!existing.OReIdOrdenRetiro) {
-                            await pool.request()
-                                .input('Cod', sql.VarChar(100), CodigoOrden)
-                                .input('Cli', sql.Int, CodigoCliente)
-                                .input('Trab', sql.VarChar(255), NombreTrabajo)
-                                .input('Modo', sql.Int, IdModo)
-                                .input('Prod', sql.Int, IdProducto)
-                                .input('Cant', sql.Float, cantidadDecimal)
-                                .input('Costo', sql.Float, costoFinalDecimal)
-                                .input('Usr', sql.Int, userId)
-                                .query(`
-                                    UPDATE OrdenesDeposito SET
-                                        CliIdCliente = @Cli, OrdNombreTrabajo = @Trab, MOrIdModoOrden = @Modo,
-                                        ProIdProducto = @Prod, OrdCantidad = @Cant, OrdCostoFinal = @Costo,
-                                        OrdFechaEstadoActual = GETDATE(), OrdUsuarioAlta = @Usr
-                                    WHERE OrdCodigoOrden = @Cod
-                                `);
-                            logger.info(`[ERPSync] Orden existente actualizada: ${CodigoOrden}`);
-                        } else {
-                            // Tiene orden de retiro, verificar si fue entregada para re-ingresar
-                            const retiroCheck = await pool.request()
-                                .input('RID', sql.Int, existing.OReIdOrdenRetiro)
-                                .query('SELECT OReEstadoActual, OReFechaEstadoActual FROM OrdenesRetiro WITH(NOLOCK) WHERE OReIdOrdenRetiro = @RID');
-
-                            if (retiroCheck.recordset.length > 0 && retiroCheck.recordset[0].OReEstadoActual === 5) {
-                                // Re-ingresar la orden
-                                await pool.request()
-                                    .input('Cod', sql.VarChar(100), CodigoOrden)
-                                    .query('UPDATE OrdenesDeposito SET OrdEstadoActual = 1, OrdFechaEstadoActual = GETDATE() WHERE OrdCodigoOrden = @Cod');
-
-                                await pool.request()
-                                    .input('OID', sql.Int, existing.OrdIdOrden)
-                                    .input('Usr', sql.Int, userId)
-                                    .query(`INSERT INTO HistoricoEstadosOrdenes (OrdIdOrden, EOrIdEstadoOrden, HEOFechaEstado, HEOUsuarioAlta) VALUES (@OID, 1, GETDATE(), @Usr)`);
-
-                                logger.info(`[ERPSync] Orden re-ingresada: ${CodigoOrden}`);
-                            } else {
-                                logger.info(`[ERPSync] Orden ${CodigoOrden} ya existe con retiro activo, omitiendo.`);
-                            }
-                        }
-                    } else {
-                        // Orden nueva: INSERT
-                        // Resolver MonIdMoneda del producto
-                        const prodRes = await pool.request()
-                            .input('PID', sql.Int, IdProducto)
-                            .query('SELECT ISNULL(MonIdMoneda, 1) as MonIdMoneda FROM Articulos WITH(NOLOCK) WHERE IDProdReact = @PID OR ProIdProducto = @PID');
-                        const monedaId = prodRes.recordset[0]?.MonIdMoneda || 1;
-
-                        // Resolver LugarRetiro del cliente
-                        const cliRes = await pool.request()
-                            .input('CID', sql.Int, CodigoCliente)
-                            .query('SELECT FormaEnvioID FROM Clientes WITH(NOLOCK) WHERE CliIdCliente = @CID');
-                        const lugarRetiro = cliRes.recordset[0]?.FormaEnvioID ? parseInt(cliRes.recordset[0].FormaEnvioID) : null;
-
-                        // INSERT atómico anti-carrera: dos escaneos casi simultáneos del mismo pedido
-                        // (bultos seguidos / doble escaneo) pasaban ambos el check de existencia y
-                        // duplicaban la fila. El WHERE NOT EXISTS con UPDLOCK/HOLDLOCK serializa por
-                        // OrdCodigoOrden dentro del mismo statement: el perdedor inserta 0 filas.
-                        const insertResult = await pool.request()
-                            .input('Cod', sql.VarChar(100), CodigoOrden)
-                            .input('Cant', sql.Float, cantidadDecimal)
-                            .input('Cli', sql.Int, CodigoCliente)
-                            .input('Trab', sql.VarChar(255), NombreTrabajo)
-                            .input('Modo', sql.Int, IdModo)
-                            .input('Prod', sql.Int, IdProducto)
-                            .input('Mon', sql.Int, monedaId)
-                            .input('Costo', sql.Float, costoFinalDecimal)
-                            .input('Usr', sql.Int, userId)
-                            .input('Lugar', sql.Int, lugarRetiro)
-                            .query(`
-                                INSERT INTO OrdenesDeposito (
-                                    OrdCodigoOrden, OrdCantidad, CliIdCliente, OrdNombreTrabajo,
-                                    MOrIdModoOrden, ProIdProducto, MonIdMoneda, OrdCostoFinal,
-                                    OrdFechaIngresoOrden, OrdUsuarioAlta, OrdEstadoActual, OrdFechaEstadoActual, LReIdLugarRetiro
-                                )
-                                OUTPUT INSERTED.OrdIdOrden
-                                SELECT
-                                    @Cod, @Cant, @Cli, @Trab, @Modo, @Prod, @Mon, @Costo,
-                                    GETDATE(), @Usr, 1, GETDATE(), @Lugar
-                                WHERE NOT EXISTS (
-                                    SELECT 1 FROM OrdenesDeposito WITH (UPDLOCK, HOLDLOCK)
-                                    WHERE OrdCodigoOrden = @Cod
-                                )
-                            `);
-
-                        const newOrderId = insertResult.recordset[0]?.OrdIdOrden;
-                        if (newOrderId) {
-                            await pool.request()
-                                .input('OID', sql.Int, newOrderId)
-                                .input('Usr', sql.Int, userId)
-                                .query(`INSERT INTO HistoricoEstadosOrdenes (OrdIdOrden, EOrIdEstadoOrden, HEOFechaEstado, HEOUsuarioAlta) VALUES (@OID, 1, GETDATE(), @Usr)`);
-                            logger.info(`[ERPSync] Orden nueva creada: ${CodigoOrden} (ID: ${newOrderId})`);
-                        } else {
-                            logger.info(`[ERPSync] Orden ${CodigoOrden} ya existía (inserción concurrente evitada).`);
-                        }
-                    }
-
-                    reactSuccess = true;
-                } catch (eReact) {
-                    logger.error(`[ERPSync] Error al insertar en OrdenesDeposito: ${eReact.message}`);
-                }
-            }
-        } else {
-            logger.info(`[ERPSync] Omite REACT por filtro de target: ${syncTarget}`);
-        }
-
-        // 7. Enviar a ERP (Dev Macrosoft)
-        let erpSuccess = false;
-        let erpPayload = forcedErpPayload || null;
-
-        if (!syncTarget || syncTarget === 'ERP') {
-            if (options.isErpEnabledGlobal === false) {
-                logger.info(`[ERPSync] BYPASS ERP por configuración global (Desactivado).`);
-                erpSuccess = true;
-            } else {
-                logger.info(`[ERPSync] Iniciando envío selectivo a ERP para ${noDocERP}${forcedErpPayload ? ' (USANDO PAYLOAD FORZADO)' : ''}`);
-                try {
-                    const erpToken = await this.getMacrosoftToken();
-                    if (erpToken) {
-                        if (!erpPayload) {
-                            // Agrupar por CodArticulo
-                            const lineasAgrupadas = {};
-                            detallesCobranza.forEach(d => {
-                                const cod = (d.CodArticulo || 'VAR').toString().trim();
-                                lineasAgrupadas[cod] = (lineasAgrupadas[cod] || 0) + parseFloat(d.Cantidad);
-                            });
-
-                            erpPayload = {
-                                CodCliente: first.CodCliente ? first.CodCliente.toString().trim() : "100101",
-                                Documento: "11",
-                                Lineas: Object.entries(lineasAgrupadas).map(([cod, qty]) => ({ CodArticulo: cod, Cantidad: qty.toString() }))
-                            };
-                        }
-                        const erpBaseUrl = process.env.ERP_API_URL || 'https://api-user.devmacrosoft.com';
-                        const erpRes = await axios.post(`${erpBaseUrl}/pedidos`, erpPayload, {
-                            headers: { 'Authorization': `Bearer ${erpToken}`, 'Content-Type': 'application/json' }
-                        });
-
-                        logger.info(`[ERPSync] <-- RESPUESTA ERP Macrosoft: Status ${erpRes.status}`, erpRes.data);
-
-                        if ((erpRes.status === 200 || erpRes.status === 201) && erpRes.data?.success !== false && !erpRes.data?.error) {
-                            erpSuccess = true;
-                            logger.info(`[ERPSync] OK ERP Macrosoft para ${noDocERP}`);
-                        } else {
-                            throw new Error(erpRes.data?.error || erpRes.data?.message || JSON.stringify(erpRes.data));
-                        }
-                    } else {
-                        // Sin token no se envía nada: antes esto pasaba mudo y el pedido quedaba sin sincronizar.
-                        logger.error(`[ERPSync] Sin token de Macrosoft → NO se envió el pedido ${noDocERP} al ERP.`);
-                    }
-                } catch (eErp) {
-                    // El .message de axios es genérico ("Request failed with status code 500"): la causa real
-                    // la manda el ERP en response.data. Sin eso (y sin saber qué pedido/payload falló) el error
-                    // es indiagnosticable. Se recorta a 600 chars para no inundar el log si contesta un HTML.
-                    const corta = (v) => {
-                        const s = typeof v === 'string' ? v : JSON.stringify(v ?? {});
-                        return s.length > 600 ? s.slice(0, 600) + '…' : s;
-                    };
-                    const httpSt = eErp.response?.status;
-                    logger.error(
-                        `[ERPSync] Error al enviar a ERP Macrosoft (NoDocERP ${noDocERP}): ${eErp.message}` +
-                        (httpSt ? ` | HTTP ${httpSt}` : '') +
-                        ` | respuesta ERP: ${corta(eErp.response?.data)}` +
-                        ` | payload enviado: ${corta(erpPayload)}`
-                    );
-                }
-            } // Fin if/else desactivado global
-        } else {
-            logger.info(`[ERPSync] Omite ERP por filtro de target: ${syncTarget}`);
-        }
-
-        // 8. Marcar Órdenes como Sincronizadas
-        // Ya no se actualizan columnas obsoletas en Ordenes, el estado "Enviado_OK" de PedidosCobranza es la fuente de verdad.
-
-        return {
-            success: (syncTarget === 'REACT' ? reactSuccess : (syncTarget === 'ERP' ? erpSuccess : (reactSuccess && erpSuccess))),
-            totalPriceSum,
-            reactSuccess,
-            erpSuccess,
-            reactCode
-        };
+        return { success: true, totalPriceSum };
     }
 
     static async updatePedidosCobranza(pool, noDocERP, codCliente, totalGeneral, targetCurrency, detalles, userNotes = '', qrData = null) {
@@ -1250,35 +984,6 @@ class ERPSyncService {
             }
         }
 
-    }
-
-    // getExternalToken removido - ya no se necesita, se escribe directo en DB
-
-    static async getMacrosoftToken() {
-        try {
-            const erpBaseUrl = process.env.ERP_API_URL || 'https://api-user.devmacrosoft.com';
-            const res = await axios.post(`${erpBaseUrl}/authenticate`, { username: "user", password: "1234" });
-            const tk = res.data?.token || res.data?.accessToken;
-            if (!tk) logger.warn(`[ERPSync] /authenticate respondió ${res.status} pero sin token: ${JSON.stringify(res.data ?? {}).slice(0, 300)}`);
-            return tk;
-        } catch (e) {
-            // Antes devolvía null en silencio: si el login fallaba, el envío se salteaba sin dejar NINGÚN rastro
-            // en el log (parecía que el ERP simplemente no se llamaba).
-            logger.error(
-                `[ERPSync] No se pudo obtener token de Macrosoft: ${e.message}` +
-                (e.response?.status ? ` | HTTP ${e.response.status}` : '') +
-                ` | respuesta: ${JSON.stringify(e.response?.data ?? {}).slice(0, 300)}`
-            );
-            return null;
-        }
-    }
-
-    /**
-     * Legacy: Sincroniza magnitudes solamente.
-     */
-    static async syncOrderToERP(noDocERP) {
-        // Redirigir al nuevo flujo robusto si se desea una sync completa
-        return this.syncFinalOrderIntegration(noDocERP);
     }
 }
 

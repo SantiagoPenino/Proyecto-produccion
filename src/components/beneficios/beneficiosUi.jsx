@@ -3,7 +3,7 @@
 // internas: formato de montos, etiquetas de estado, badge y texto de vigencia.
 // ─────────────────────────────────────────────────────────────────────────────
 import React from 'react';
-import { fetchAPI } from '../pages/ContabilidadCuentasView';
+import { fetchAPI } from '../pages/cuentasComunes';
 
 export const benApi = {
   get: (url) => fetchAPI(`/api/beneficios${url}`),

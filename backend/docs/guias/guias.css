@@ -1,0 +1,86 @@
+/* Guías de ayuda de Solicitudes (vendedores y diseñadores). Las arma backend/scripts/generar_guias_solicitudes.js
+   con Chrome (puppeteer) en public/guias/. Mismos colores, botones y pastillas que el sistema. */
+@page { size: A4; }   /* los márgenes y el pie los pone el script (puppeteer) */
+* { box-sizing: border-box; }
+html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+body { font-family: 'Segoe UI', Calibri, Arial, sans-serif; font-size: 10.5pt; line-height: 1.5; color: #1e293b; margin: 0; }
+a { color: #006E97; text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Portada */
+.portada { height: 255mm; display: flex; flex-direction: column; justify-content: space-between; break-after: page; }
+.portada .eyebrow { font-size: 9pt; font-weight: 800; letter-spacing: .18em; color: #006E97; }
+.portada h1 { font-size: 30pt; line-height: 1.1; margin: 10mm 0 4mm; color: #0f172a; font-weight: 900; }
+.portada .sub { font-size: 13pt; color: #475569; max-width: 150mm; }
+.portada .franja { height: 6px; width: 60mm; background: #006E97; border-radius: 3px; margin-top: 8mm; }
+.portada .meta { width: 100%; border-collapse: collapse; font-size: 10pt; }
+.portada .meta td { padding: 2.2mm 3mm; border-bottom: 1px solid #e2e8f0; }
+.portada .meta td:first-child { width: 45mm; color: #64748b; font-weight: 700; }
+.como-usar { background: #ecfeff; border: 1px solid #a5f3fc; border-radius: 10px; padding: 4mm 5mm; font-size: 10pt; }
+.como-usar b { color: #0e7490; }
+
+/* Índice */
+.indice { break-after: page; }
+.indice h2 { margin-top: 0; }
+.indice ol { list-style: none; padding: 0; margin: 0; counter-reset: cap; }
+.indice > ol > li { counter-increment: cap; margin: 0 0 2.2mm; }
+.indice > ol > li > a { display: flex; gap: 3mm; font-weight: 800; font-size: 11pt; color: #0f172a; padding: 1.6mm 3mm; border-radius: 8px; background: #f8fafc; border: 1px solid #e2e8f0; }
+.indice > ol > li > a::before { content: counter(cap); min-width: 7mm; height: 7mm; border-radius: 99px; background: #006E97; color: #fff; font-size: 9pt; display: inline-flex; align-items: center; justify-content: center; }
+.indice ul { list-style: none; padding: 1mm 0 0 13mm; margin: 0; columns: 2; column-gap: 6mm; }
+.indice ul li { font-size: 9.5pt; margin: .6mm 0; break-inside: avoid; }
+.indice ul li a { color: #334155; }
+.indice ul li a::before { content: '› '; color: #006E97; font-weight: 800; }
+
+/* Capítulos */
+.cap { margin-top: 9mm; padding-top: 6mm; border-top: 1px solid #e2e8f0; }
+.indice + .cap { margin-top: 0; padding-top: 0; border-top: 0; }
+.cap > h2, .cap > .bajada { break-after: avoid; }
+h2 { font-size: 17pt; color: #0f172a; font-weight: 900; margin: 0 0 1mm; display: flex; align-items: center; gap: 3mm; }
+h2 .num { width: 9mm; height: 9mm; border-radius: 99px; background: #006E97; color: #fff; font-size: 11pt; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.bajada { color: #64748b; margin: 0 0 4mm; font-size: 10.5pt; }
+h3 { font-size: 12pt; color: #006E97; margin: 5mm 0 1.5mm; font-weight: 800; break-after: avoid; }
+h4 { font-size: 10.5pt; margin: 3mm 0 1mm; color: #0f172a; break-after: avoid; }
+p { margin: 0 0 2.5mm; }
+ul, ol { margin: 0 0 3mm; padding-left: 6mm; }
+li { margin: .8mm 0; }
+.volver { display: block; text-align: right; font-size: 8.5pt; margin-top: 4mm; }
+.volver a { color: #94a3b8; }
+
+/* Pasos numerados */
+.pasos { counter-reset: paso; list-style: none; padding: 0; }
+.pasos > li { counter-increment: paso; position: relative; padding: 2mm 3mm 2mm 12mm; margin: 0 0 2mm; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; break-inside: avoid; }
+.pasos > li::before { content: counter(paso); position: absolute; left: 3mm; top: 2mm; width: 6.5mm; height: 6.5mm; border-radius: 99px; background: #006E97; color: #fff; font-weight: 800; font-size: 9pt; display: flex; align-items: center; justify-content: center; }
+
+/* Recuadros */
+.consejo, .ojo, .regla, .no { border-radius: 10px; padding: 3mm 4mm; margin: 3mm 0; font-size: 10pt; break-inside: avoid; border: 1px solid; }
+:is(.consejo, .ojo, .regla, .no) > .t { font-weight: 900; display: block; margin-bottom: .8mm; font-size: 8.5pt; letter-spacing: .06em; text-transform: uppercase; }
+.consejo { background: #ecfeff; border-color: #a5f3fc; } .consejo > .t { color: #0e7490; }
+.ojo { background: #fffbeb; border-color: #fde68a; } .ojo > .t { color: #b45309; }
+.regla { background: #f0fdf4; border-color: #bbf7d0; } .regla > .t { color: #15803d; }
+.no { background: #fff1f2; border-color: #fecdd3; } .no > .t { color: #be123c; }
+
+/* Tablas */
+table.t { width: 100%; border-collapse: collapse; margin: 2mm 0 4mm; font-size: 9.5pt; break-inside: auto; }
+table.t th { background: #e0f2fe; color: #0c4a6e; text-align: left; padding: 1.8mm 2.5mm; border: 1px solid #cbd5e1; font-size: 8.5pt; text-transform: uppercase; letter-spacing: .04em; }
+table.t td { padding: 1.8mm 2.5mm; border: 1px solid #cbd5e1; vertical-align: top; }
+table.t tr { break-inside: avoid; }
+
+/* Lo que se ve en pantalla: botones, pestañas, pastillas */
+.btn { display: inline-flex; align-items: center; gap: 1.2mm; padding: .5mm 2.4mm; border-radius: 7px; font-size: 8.8pt; font-weight: 800; white-space: nowrap; vertical-align: baseline; }
+.btn.p { background: #006E97; color: #fff; }
+.btn.s { background: #fff; color: #475569; border: 1px solid #cbd5e1; }
+.btn.r { background: #e11d48; color: #fff; }
+.tab { display: inline-block; padding: .2mm 2mm; border-bottom: 2px solid #006E97; color: #006E97; font-weight: 800; font-size: 9pt; white-space: nowrap; }
+.pill { display: inline-block; padding: .2mm 2.2mm; border-radius: 9px; font-size: 8.5pt; font-weight: 700; white-space: nowrap; }
+.pill.gris { background: #f1f5f9; color: #475569; } .pill.celeste { background: #e0f2fe; color: #0369a1; }
+.pill.ambar { background: #fef3c7; color: #b45309; } .pill.verde { background: #dcfce7; color: #15803d; }
+.pill.rosa { background: #ffe4e6; color: #be123c; } .pill.fucsia { background: #fae8ff; color: #a21caf; }
+.campo { display: inline-block; border: 1px solid #cbd5e1; border-radius: 6px; padding: 0 2mm; font-size: 8.8pt; color: #64748b; background: #fff; }
+.ayuda-icono { display: inline-flex; width: 5.5mm; height: 5.5mm; border-radius: 99px; border: 1.5px solid #006E97; color: #006E97; font-weight: 900; font-size: 8.5pt; align-items: center; justify-content: center; }
+
+/* Esquema de flujo */
+.flujo { display: flex; align-items: stretch; gap: 2mm; margin: 3mm 0 4mm; break-inside: avoid; }
+.flujo .e { flex: 1; border: 1px solid #cbd5e1; border-radius: 9px; padding: 2.5mm; background: #fff; font-size: 9pt; }
+.flujo .e b { display: block; color: #006E97; font-size: 9.5pt; margin-bottom: .6mm; }
+.flujo .e.yo { background: #ecfeff; border-color: #67e8f9; }
+.flujo .f { align-self: center; color: #94a3b8; font-weight: 900; }

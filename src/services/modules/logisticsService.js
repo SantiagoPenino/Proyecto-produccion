@@ -57,11 +57,6 @@ const logisticsService = {
         return postRemitoConAviso('/logistics/remitos', data);
     },
 
-    validateDispatch: async (bultosIds) => {
-        const response = await api.post('/logistics/remitos/validate', { bultosIds });
-        return response.data;
-    },
-
     confirmDeliveryWithProof: async (code, fileFormData) => {
         const response = await api.post(`/logistics/remitos/${encodeURIComponent(code)}/confirm-delivery`, fileFormData, {
             headers: { 'Content-Type': 'multipart/form-data' }
@@ -140,12 +135,6 @@ const logisticsService = {
         return response.data;
     },
 
-    // --- DASHBOARD ---
-    getDashboard: async (areaId) => {
-        const response = await api.get('/logistics/dashboard', { params: { areaId } });
-        return response.data;
-    },
-
     // --- ACCIONES ADICIONALES ---
     addParcel: async (orderId) => {
         const response = await api.post('/logistics/add-parcel', { orderId });
@@ -157,11 +146,6 @@ const logisticsService = {
         return response.data;
     },
 
-    // Mapeando endpoints viejos si se usan en PackingView antiguo
-    getHistory: async (areaId) => {
-        const response = await api.get('/logistics/history', { params: { areaId } });
-        return response.data;
-    },
     createParcel: async (data) => api.post('/logistics/bultos', data).then(r => r.data),
     createDispatch: async (data) => postRemitoConAviso('/logistics/remitos', data),
 
@@ -189,12 +173,6 @@ const logisticsService = {
 
     recoverItem: async (data) => {
         const response = await api.post('/logistics/recover', data);
-        return response.data;
-    },
-
-    // --- DEPOSITO SYNC ---
-    syncDepositItems: async (items) => {
-        const response = await api.post('/logistics/deposit-sync', { items });
         return response.data;
     },
 };

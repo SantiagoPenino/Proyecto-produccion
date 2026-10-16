@@ -26,10 +26,6 @@ export const receptionService = {
         const response = await api.get(`/reception/orders-for-fabric?cliente=${encodeURIComponent(cliente)}&area=${encodeURIComponent(area || '')}&type=${encodeURIComponent(type || '')}`);
         return response.data;
     },
-    guardarComprobante: async (nombreDocumento, pdfBase64) => {
-        const response = await api.post('/reception/guardar-comprobante', { nombreDocumento, pdfBase64 });
-        return response.data;
-    },
 
     // Búsqueda full de clientes (devuelve objetos con Nombre, Email, Telefono, Direccion, etc.)
     searchClientes: async (q) => {

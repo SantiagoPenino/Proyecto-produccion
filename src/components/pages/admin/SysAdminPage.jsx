@@ -378,7 +378,6 @@ const SysAdminPage = () => {
         if (line.includes('[HTTP]')) return 'text-cyan-400';
         if (line.includes('[AUDIT]')) return 'text-purple-400';
         if (line.includes('[SOCKET]')) return 'text-green-400';
-        if (line.includes('[SLOW_QUERY]')) return 'text-orange-400';
         return 'text-zinc-300';
     };
 
@@ -507,7 +506,6 @@ const SysAdminPage = () => {
                             <option value="HTTP">HTTP</option>
                             <option value="AUDIT">AUDIT</option>
                             <option value="SOCKET">SOCKET</option>
-                            <option value="SLOW_QUERY">SLOW_QUERY</option>
                         </select>
                         <div className="flex items-center gap-1 flex-1 min-w-[200px]">
                             <div className="relative flex-1">

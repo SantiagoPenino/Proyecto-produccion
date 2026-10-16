@@ -123,6 +123,8 @@ function traducir(pedido) {
   // ── B) Servicios adicionales (jsx:1572-1623 cabeceras/archivos · 2145-2230 armado)
   const notaDe = (s) => [s.ubicacion ? `Ubicación: ${s.ubicacion}` : '', s.nota || ''].filter(Boolean).join('. ');
   const cabeceraDe = (s) => ({ variante: s.variante, material: { name: s.material.nombre, codArt: s.material.codArticulo, codStock: s.material.codStock } });
+  // [TIPO POR OBJETO 15/10] el tipo de UN archivo (el de su objeto / el film de su pliego); sin tipo propio, el del servicio
+  const tipoDe = (s, a) => (a?.material?.nombre ? { variante: a.variante || s.variante, material: a.material } : { variante: s.variante, material: s.material });
 
   const bordado = servicios.find(s => s.tipo === 'BORDADO');
   if (bordado) {
@@ -137,19 +139,21 @@ function traducir(pedido) {
       const compartidos = archivos.filter(x => x.tipo !== 'LOGO_BORDADO');
       logos.forEach((a, i) => {
         const nombre = reg.usar(a).name;
+        const t = tipoDe(bordado, a);   // cada logo con SU tipo de bordado (15/10)
         listaServicios.push({
-          esPrincipal: false, areaId: 'EMB', cabecera: cabeceraDe(bordado),
+          esPrincipal: false, areaId: 'EMB', cabecera: cabeceraDe(t),
           archivos: [{ name: nombre, tipo: 'LOGO_BORDADO' }, ...compartidos], items: [],
           notas: [notaDe(bordado), `[LOGO ${i + 1}/${logos.length}: ${nombre}]`].filter(Boolean).join(' '),
-          metadata: { prendas: parseInt(a.prendas, 10) || parseInt(bordado.prendas, 10), material: bordado.material.nombre, variante: bordado.variante },
+          metadata: { prendas: parseInt(a.prendas, 10) || parseInt(bordado.prendas, 10), material: t.material.nombre, variante: t.variante },
           chainedAfterAreaId: null, chainKey: `EMB#${i + 1}`, porArchivo: true,
         });
       });
     } else {
+      const t = tipoDe(bordado, logos[0]);
       listaServicios.push({
-        esPrincipal: false, areaId: 'EMB', cabecera: cabeceraDe(bordado), archivos, items: [],
+        esPrincipal: false, areaId: 'EMB', cabecera: cabeceraDe(t), archivos, items: [],
         notas: notaDe(bordado),
-        metadata: { prendas: parseInt(bordado.prendas, 10), material: bordado.material.nombre, variante: bordado.variante },
+        metadata: { prendas: parseInt(bordado.prendas, 10), material: t.material.nombre, variante: t.variante },
         chainedAfterAreaId: null,
       });
     }
@@ -184,7 +188,7 @@ function traducir(pedido) {
         const nombre = reg.usar(a).name;
         const prendas = parseInt(a.prendas, 10) || cantidadPrendas;
         listaServicios.push({
-          esPrincipal: false, areaId, cabecera: cabeceraDe(s),
+          esPrincipal: false, areaId, cabecera: cabeceraDe(tipoDe(s, a)),   // cada diseño de TPU con SU parche (15/10)
           archivos: [{ name: nombre, tipo: 'BOCETO' }, ...compartidos], items: [],
           notas: [notaDe(s), `[DISEÑO ${i + 1}/${disenos.length}: ${nombre}]`].filter(Boolean).join(' '),
           metadata: { prendas }, chainedAfterAreaId: null, chainKey: `TPU#${i + 1}`, porArchivo: true,
@@ -192,6 +196,43 @@ function traducir(pedido) {
         estampados.push({ areaId, s, chainKey: `TPU#${i + 1}`, prendas, nombre });
       });
       return;
+    }
+    // [TIPO POR OBJETO 15/10] DTF con pliegos de más de un film: UNA orden de DTF por film (con sus pliegos) y un
+    // Estampado encadenado a cada una, con los estampados de ese film (s.estampado.porMaterial, de la lista de jugadores).
+    if (tipo === 'DTF') {
+      const clave = (x) => String(x || '').trim().toUpperCase();
+      const grupos = new Map();   // film → { t, archivos: [índices de s.archivos] }
+      (s.archivos || []).forEach((a, k) => {
+        const t = tipoDe(s, a);
+        if (!grupos.has(clave(t.material.nombre))) grupos.set(clave(t.material.nombre), { t, idx: [] });
+        grupos.get(clave(t.material.nombre)).idx.push(k);
+      });
+      if (grupos.size > 1) {
+        const porMaterial = Object.fromEntries(Object.entries(s.estampado?.porMaterial || {}).map(([f, v]) => [clave(f), v]));
+        const compartidos = archivos.filter(x => x.tipo !== 'PRODUCCION');
+        [...grupos.values()].forEach((g, i) => {
+          const film = g.t.material.nombre;
+          const propios = g.idx.map(k => archivos[k]);   // los PRODUCCION se cargaron arriba en el orden de s.archivos
+          listaServicios.push({
+            esPrincipal: false, areaId, cabecera: cabeceraDe(g.t), archivos: [...propios, ...compartidos],
+            items: g.idx.map(k => items[k]),
+            notas: [notaDe(s), `[FILM ${i + 1}/${grupos.size}: ${film}]`].filter(Boolean).join(' '),
+            metadata: { prendas: cantidadPrendas }, chainedAfterAreaId: null, chainKey: `DF#${i + 1}`,
+          });
+          const e = porMaterial[clave(film)];
+          estampados.push({ areaId, s, chainKey: `DF#${i + 1}`, film, prendas: e?.prendas, porPrenda: e?.estampadosPorPrenda });
+        });
+        return;
+      }
+      if (grupos.size === 1) {
+        const [g] = grupos.values();
+        listaServicios.push({
+          esPrincipal: false, areaId, cabecera: cabeceraDe(g.t), archivos, items,
+          notas: notaDe(s), metadata: { prendas: cantidadPrendas }, chainedAfterAreaId: null,
+        });
+        estampados.push({ areaId, s });
+        return;
+      }
     }
     listaServicios.push({
       esPrincipal: false, areaId, cabecera: cabeceraDe(s), archivos, items,
@@ -201,15 +242,15 @@ function traducir(pedido) {
   });
 
   // Estampado: UNA orden por cada DTF/TPU, encadenada a la suya (jsx:2173-2208)
-  estampados.forEach(({ areaId, s, chainKey, prendas, nombre }) => {
+  estampados.forEach(({ areaId, s, chainKey, prendas, nombre, film, porPrenda }) => {
     listaServicios.push({
       esPrincipal: false, areaId: 'EST',
       // [ESTAMPADO] la variante dice QUÉ se estampa (DTF o TPU): se ve en la bandeja y en el listado
       cabecera: { variante: areaId === 'TPU' ? 'Estampado TPU' : 'Estampado DTF', material: 'Estampado (Servicio)', codArticulo: '110', codStock: '1.1.5.1' },
       archivos: (s.bocetos || []).map(a => ({ name: reg.usar(a).name, tipo: 'BOCETO_ESTAMPADO' })),
       items: [],
-      notas: [notaDe(s), nombre ? `[ESTAMPA EL DISEÑO TPU: ${nombre}]` : null].filter(Boolean).join(' '),
-      metadata: { prendas: prendas || parseInt(s.estampado.prendas, 10), estampadosPorPrenda: parseInt(s.estampado.estampadosPorPrenda, 10), origen: s.estampado.origen || 'Stock User' },
+      notas: [notaDe(s), nombre ? `[ESTAMPA EL DISEÑO TPU: ${nombre}]` : null, film ? `[ESTAMPA EL DTF ${film}]` : null].filter(Boolean).join(' '),
+      metadata: { prendas: prendas || parseInt(s.estampado.prendas, 10), estampadosPorPrenda: parseInt(porPrenda, 10) || parseInt(s.estampado.estampadosPorPrenda, 10), origen: s.estampado.origen || 'Stock User' },
       chainedAfterAreaId: areaId,
       chainedAfterKey: chainKey || null,
     });

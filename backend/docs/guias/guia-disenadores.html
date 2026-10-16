@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Guía para diseñadores · Bandeja de Diseño</title>
+<link rel="stylesheet" href="guias.css">
+</head>
+<body>
+
+<!-- ───────────── Portada ───────────── -->
+<section class="portada">
+  <div>
+    <div class="eyebrow">USER · GESTIÓN DE PRODUCCIÓN</div>
+    <h1>Guía para diseñadores<br>Bandeja de Diseño</h1>
+    <div class="sub">Cómo tomar los trabajos de las solicitudes, armar la tizada con TIZADA PRO, crear el pedido de producción y corregir un diseño que ya está en la planta.</div>
+    <div class="franja"></div>
+  </div>
+  <div class="como-usar">
+    <b>Cómo usar esta guía.</b> El <b>índice</b> de la página siguiente es clickeable: tocá un tema y vas directo.
+    En cada capítulo, <b>"↑ Índice"</b> te vuelve. El panel de <b>marcadores</b> del visor de PDF también tiene todos los temas.
+    Esta guía se abre desde el botón <span class="ayuda-icono">?</span> de la Bandeja de Diseño y de la pantalla de Diseño.
+  </div>
+  <table class="meta">
+    <tr><td>Para quién</td><td>Diseñadores (y Admin)</td></tr>
+    <tr><td>Pantallas</td><td>Ventas › Bandeja de Diseño · Diseño de una solicitud · ficha de la orden</td></tr>
+    <tr><td>Versión</td><td>1.0 · 15/10/2026</td></tr>
+    <tr><td>Preparado por</td><td>Área de Sistemas</td></tr>
+  </table>
+</section>
+
+<!-- ───────────── Índice ───────────── -->
+<section class="indice" id="indice">
+  <h2>Índice</h2>
+  <ol>
+    <li><a href="#c1">Cómo llega el trabajo a Diseño</a>
+      <ul><li><a href="#c1-flujo">El camino completo</a></li><li><a href="#c1-quien">Quién es diseñador</a></li></ul></li>
+    <li><a href="#c2">La Bandeja de Diseño</a>
+      <ul><li><a href="#c2-pestanas">Las cuatro pestañas</a></li><li><a href="#c2-filtros">Buscar y filtrar</a></li><li><a href="#c2-estados">Qué dice cada etiqueta</a></li></ul></li>
+    <li><a href="#c3">Tomar un trabajo</a></li>
+    <li><a href="#c4">La pantalla de Diseño de una solicitud</a></li>
+    <li><a href="#c5">TIZADA PRO: la tizada automática</a>
+      <ul><li><a href="#c5-revisar">Revisar y guardar</a></li><li><a href="#c5-mandar">Mandar y rehacer la tizada</a></li><li><a href="#c5-vuelve">Cuando vuelve la tizada</a></li></ul></li>
+    <li><a href="#c6">Archivos: diseño pronto, tela y copias</a></li>
+    <li><a href="#c7">Cambios del vendedor</a></li>
+    <li><a href="#c8">Crear el pedido de producción</a></li>
+    <li><a href="#c9">Bordado y TPU en producción</a></li>
+    <li><a href="#c10">Corregir el diseño de un pedido en producción</a>
+      <ul><li><a href="#c10-cuando">Cuándo se usa</a></li><li><a href="#c10-pasos">Paso a paso</a></li><li><a href="#c10-plan">Qué le pasa a cada orden</a></li><li><a href="#c10-historial">Historial de correcciones</a></li></ul></li>
+    <li><a href="#c11">Hechos: lo que ya se diseñó</a></li>
+    <li><a href="#c12">Preguntas frecuentes</a></li>
+  </ol>
+</section>
+
+<!-- ───────────── 1 ───────────── -->
+<section class="cap" id="c1">
+  <h2><span class="num">1</span>Cómo llega el trabajo a Diseño</h2>
+  <h3 id="c1-flujo">El camino completo</h3>
+  <div class="flujo">
+    <div class="e"><b>1 · Vendedor</b>Carga la solicitud: arte, lista de jugadores, telas, precio.</div><div class="f">›</div>
+    <div class="e"><b>2 · Vendedor</b>"Enviar a Diseño": cae en la bandeja.</div><div class="f">›</div>
+    <div class="e yo"><b>3 · Diseñador</b>Toma el trabajo o manda la tizada a TIZADA PRO.</div><div class="f">›</div>
+    <div class="e yo"><b>4 · Diseñador</b>Deja los diseños prontos y crea el pedido.</div><div class="f">›</div>
+    <div class="e"><b>5 · Planta</b>Produce. Bordado y TPU esperan su diseño en la orden.</div>
+  </div>
+  <p>Una solicitud tiene uno o más <b>servicios</b>: la <b>producción principal</b> (sublimación, impresión directa, DTF o gran formato, según el producto) y los extras: <b>bordado</b>, <b>DTF</b> y <b>TPU</b>. Cada servicio se envía, se toma y se diseña por separado.</p>
+
+  <h3 id="c1-quien">Quién es diseñador</h3>
+  <p>Ve la Bandeja quien cumple <b>una</b> de estas tres cosas:</p>
+  <ol>
+    <li>Tiene el rol <b>Diseñador</b> en la pantalla de Usuarios (lo normal).</li>
+    <li>Es <b>Admin</b>.</li>
+    <li>Está <b>habilitado como excepción</b>: un Admin toca <span class="btn s">Ver quiénes son diseñadores</span> en la Bandeja y habilita a alguien con otro rol (por ejemplo, un vendedor que también diseña).</li>
+  </ol>
+  <div class="volver"><a href="#indice">↑ Índice</a></div>
+</section>
+
+<!-- ───────────── 2 ───────────── -->
+<section class="cap" id="c2">
+  <h2><span class="num">2</span>La Bandeja de Diseño</h2>
+  <p class="bajada">Ventas › Bandeja de Diseño. Es una bandeja común: el que toma un trabajo se lo queda. Se vuelve a leer sola cada minuto.</p>
+
+  <h3 id="c2-pestanas">Las cuatro pestañas</h3>
+  <table class="t">
+    <tr><th style="width:34mm">Pestaña</th><th>Qué tiene</th></tr>
+    <tr><td><span class="tab">En producción</span></td><td>Órdenes de <b>Bordado</b> y <b>TPU</b> que ya están en la planta y esperan su diseño (matriz, boceto, arte). Agrupadas en <b>Para hacer</b> y <b>Esperando al cliente</b>. <a href="#c9">Capítulo 9</a>.</td></tr>
+    <tr><td><span class="tab">Mis trabajos</span></td><td>
+      <b>En las solicitudes</b>: lo que tomaste (o mandaste a TIZADA PRO) y todavía no es pedido.<br>
+      <b>Ya en producción · esperan tu diseño</b>: los Bordado / TPU que tomaste en una solicitud y ya son pedido. Siguen acá hasta que la orden tiene su diseño.</td></tr>
+    <tr><td><span class="tab">Para tomar</span></td><td>Lo que los vendedores enviaron y nadie tomó todavía. <a href="#c3">Capítulo 3</a>.</td></tr>
+    <tr><td><span class="tab">Hechos</span></td><td>Todo lo ya diseñado, por defecto el de <b>hoy</b>, con su pedido y quién lo hizo. <a href="#c11">Capítulo 11</a>.</td></tr>
+  </table>
+  <p>El número de cada pestaña dice cuántos trabajos hay (con los filtros aplicados).</p>
+
+  <h3 id="c2-filtros">Buscar y filtrar</h3>
+  <ul>
+    <li><span class="campo">Buscar cliente, trabajo, orden, pedido o solicitud</span>: vale para todas las pestañas.</li>
+    <li><b>Servicio</b>: producción principal, bordado, DTF o TPU.</li>
+    <li><b>Estado</b>: los estados de la pestaña abierta.</li>
+    <li><span class="btn s">✕ Limpiar filtros</span> los borra.</li>
+  </ul>
+
+  <h3 id="c2-estados">Qué dice cada etiqueta</h3>
+  <table class="t">
+    <tr><th style="width:52mm">Etiqueta</th><th>Qué significa</th></tr>
+    <tr><td><span class="pill celeste">Enviado a diseño</span></td><td>Está en la bandeja, sin dueño.</td></tr>
+    <tr><td><span class="pill ambar">Diseño iniciado</span></td><td>Alguien lo tomó y lo está trabajando.</td></tr>
+    <tr><td><span class="pill verde">Diseñado</span></td><td>Tiene su diseño pronto (el archivo que va a producción).</td></tr>
+    <tr><td><span class="pill fucsia">Modificada · falta aceptar</span></td><td>El vendedor cambió algo después de enviarlo. <a href="#c7">Capítulo 7</a>.</td></tr>
+    <tr><td><span class="pill celeste">En TIZADA PRO</span></td><td>TIZADA PRO está armando la tizada; vuelve sola.</td></tr>
+    <tr><td><span class="pill ambar">Falta diseño</span> <span class="pill celeste">Esperando aprobación del cliente</span> <span class="pill verde">Aprobado · falta el arte</span> <span class="pill rosa">Rechazado por el cliente</span></td><td>La etapa de una orden de Bordado / TPU en producción.</td></tr>
+  </table>
+  <p>En las solicitudes con TIZADA PRO, la columna de lo que hay que hacer dice cuántas prendas tiene la <b>lista de jugadores</b>; si no coincide con la cantidad del producto, lo marca en ámbar.</p>
+  <div class="volver"><a href="#indice">↑ Índice</a></div>
+</section>
+
+<!-- ───────────── 3 ───────────── -->
+<section class="cap" id="c3">
+  <h2><span class="num">3</span>Tomar un trabajo</h2>
+  <p class="bajada">Pestaña <span class="tab">Para tomar</span>.</p>
+  <ul>
+    <li><span class="btn s">Ver solicitud</span>: abre la <b>ficha de la solicitud en PDF</b> (lo que pidió el cliente y lo de Diseño), para mirarla antes de tomarla.</li>
+    <li><span class="btn p">Tomar este trabajo</span>: queda a tu nombre y deja de estar disponible para los demás. Te lleva a la pantalla de Diseño. Si tenía un cambio del vendedor, al tomarlo lo das por aceptado.</li>
+    <li><b>Producción principal con TIZADA PRO</b>: no se "toma". Tiene <span class="btn p">Enviar a TIZADA PRO</span>: revisa el arte y los datos y lo manda. <b>Quien lo manda se queda con el trabajo</b>: pasa a su <span class="tab">Mis trabajos</span>.</li>
+  </ul>
+  <div class="consejo"><span class="t">Consejo</span>Antes de mandar a TIZADA PRO conviene abrir la pantalla de Diseño y tocar "Revisar en TIZADA": ahí ves el arte, la lista y lo que TIZADA diría. <a href="#c5">Capítulo 5</a>.</div>
+  <div class="volver"><a href="#indice">↑ Índice</a></div>
+</section>
+
+<!-- ───────────── 4 ───────────── -->
+<section class="cap" id="c4">
+  <h2><span class="num">4</span>La pantalla de Diseño de una solicitud</h2>
+  <p class="bajada">Se abre con "Abrir" o al tomar un trabajo. Arriba: <span class="btn s">← Bandeja de Diseño</span>, actualizar, <span class="btn p">Ver la solicitud</span> (la ficha en PDF) y <span class="ayuda-icono">?</span>.</p>
+  <p>Tiene dos pestañas generales: <span class="tab">Lo que llegó de la solicitud</span> (solo lectura: lo que cargó el vendedor) y <span class="tab">Diseño: tizada y archivos</span> (donde se trabaja).</p>
+  <h3>Por cada producto</h3>
+  <p><b>Arriba, una tarjeta gris</b> con el producto, las prendas y, por cada servicio, su estado, el diseñador y sus acciones (<span class="btn p">Tomar este trabajo</span>, <span class="btn p">Acepto el cambio</span>). Debajo, las pestañas del producto:</p>
+  <table class="t">
+    <tr><th style="width:38mm">Pestaña</th><th>Qué tiene</th></tr>
+    <tr><td><span class="tab">TIZADA PRO</span></td><td>El arte, la lista de jugadores y los envíos a TIZADA (solo productos con molde de TIZADA PRO). <a href="#c5">Capítulo 5</a>.</td></tr>
+    <tr><td><span class="tab">Archivos · 3 prontos</span></td><td>Cada servicio con lo que mandó el cliente y el <b>diseño pronto</b> (lo que va a producción). <a href="#c6">Capítulo 6</a>.</td></tr>
+    <tr><td><span class="tab">Piezas y telas</span></td><td>La tela de cada pieza (solo lectura para Diseño).</td></tr>
+    <tr><td><span class="tab">Ficha técnica</span></td><td>Avíos, costuras, material y notas del producto del catálogo.</td></tr>
+    <tr><td><span class="tab">Crear pedido</span> / <span class="tab">Pedido 31883</span></td><td>Crear el pedido de producción, o ver cómo está el que ya se creó. <a href="#c8">Capítulo 8</a>.</td></tr>
+    <tr><td><span class="tab">Correcciones</span></td><td>Solo si ya es pedido: el historial de las correcciones del diseño. <a href="#c10-historial">Capítulo 10</a>.</td></tr>
+  </table>
+  <div class="volver"><a href="#indice">↑ Índice</a></div>
+</section>
+
+<!-- ───────────── 5 ───────────── -->
+<section class="cap" id="c5">
+  <h2><span class="num">5</span>TIZADA PRO: la tizada automática</h2>
+  <p class="bajada">Pestaña <span class="tab">TIZADA PRO</span>. TIZADA PRO arma la tizada con el molde del producto, el arte de cada diseño y la lista de jugadores, y la devuelve sola como diseño pronto.</p>
+
+  <h3 id="c5-revisar">Revisar y guardar</h3>
+  <ul>
+    <li>Revisá cada diseño (arte, piezas) y la <b>lista de talles</b>: una fila por prenda, con su variante (qué diseño lleva).</li>
+    <li>Para cargar filas: <span class="btn s">Buscar archivo Excel</span> o <span class="btn s">+ Agregar fila</span>.</li>
+    <li>Si "Para mandar a TIZADA falta: …" aparece en rojo, completá lo que dice.</li>
+  </ul>
+  <p>Abajo, en la misma fila, están los botones de TIZADA y el aviso de conexión (<span class="pill verde">Conectado · envío con el botón</span>):</p>
+  <table class="t">
+    <tr><th style="width:52mm">Botón</th><th>Qué hace</th></tr>
+    <tr><td><span class="btn s">Guardar diseños y lista</span></td><td>Guarda lo que cambiaste. Hay que guardar antes de mandar.</td></tr>
+    <tr><td><span class="btn s">Revisar en TIZADA</span></td><td>Le pregunta a TIZADA si lo aceptaría, <b>sin generar nada</b>.</td></tr>
+    <tr><td><span class="btn p">Enviar a TIZADA PRO</span></td><td>Lo manda a generar la tizada. Se queda a tu nombre.</td></tr>
+    <tr><td><span class="btn s">Rehacer la tizada en TIZADA PRO</span></td><td>Si ya estaba diseñado: la vuelve a mandar con lo guardado ahora. La nueva reemplaza a la actual (pide confirmación).</td></tr>
+  </table>
+  <p>Si el botón está apagado, al lado dice por qué: "Guardá los cambios antes de mandar", "Completá lo que falta", "Ya hay un pedido en curso"…</p>
+
+  <h3 id="c5-mandar">Mandar y rehacer la tizada</h3>
+  <ol class="pasos">
+    <li>Guardá los diseños y la lista.</li>
+    <li>Tocá <span class="btn s">Revisar en TIZADA</span>: tiene que decir que lo aceptaría.</li>
+    <li>Tocá <span class="btn p">Enviar a TIZADA PRO</span>. En la Bandeja aparece <span class="pill celeste">En TIZADA PRO</span>.</li>
+  </ol>
+  <div class="regla"><span class="t">Regla</span>Desde la solicitud del vendedor <b>no sale nada a TIZADA PRO</b>: la tizada la manda siempre el diseñador. (La Tienda del portal sí la manda sola).</div>
+
+  <h3 id="c5-vuelve">Cuando vuelve la tizada</h3>
+  <ul>
+    <li>En <b>Pedidos a TIZADA PRO</b> se ve cada envío: <span class="pill verde">Tizada cargada</span>, los avisos y los archivos.</li>
+    <li>La tizada queda como <b>diseño pronto</b> de la producción principal (un PDF por mesa/tela) y el servicio pasa a <span class="pill verde">Diseñado</span>.</li>
+    <li><b>DTF</b>: con los objetos del arte que van en DTF se arma solo el <b>pliego</b> (uno por film). Bordado y TPU reciben las referencias.</li>
+  </ul>
+  <div class="volver"><a href="#indice">↑ Índice</a></div>
+</section>
+
+<!-- ───────────── 6 ───────────── -->
+<section class="cap" id="c6">
+  <h2><span class="num">6</span>Archivos: diseño pronto, tela y copias</h2>
+  <p class="bajada">Pestaña <span class="tab">Archivos</span>: a la izquierda lo que mandó el cliente; a la derecha, lo del diseñador.</p>
+  <ul>
+    <li><span class="btn p">Subir diseño pronto</span> (o "Subir la tizada / archivo de impresión" en la principal): el archivo que va a producción. Al subirlo, el servicio queda <span class="pill verde">Diseñado</span>.</li>
+    <li><span class="btn s">Sustituir por el archivo corregido</span>: reemplaza un archivo. El nuevo hereda la tela (o el film) y las copias del que reemplaza.</li>
+    <li><b>Tela y copias</b> (producción principal): debajo de cada archivo. <b>Copias y film</b> (DTF): con objetos en varios films, cada pliego dice el suyo.</li>
+    <li>Un archivo de más se puede quitar; el único no, se sustituye.</li>
+  </ul>
+  <div class="ojo"><span class="t">Formato</span>Producción acepta <b>un PDF de una página por archivo</b>. Un PDF de varias páginas no pasa a producción.</div>
+  <div class="volver"><a href="#indice">↑ Índice</a></div>
+</section>
+
+<!-- ───────────── 7 ───────────── -->
+<section class="cap" id="c7">
+  <h2><span class="num">7</span>Cambios del vendedor</h2>
+  <p>Si el vendedor cambia algo de un servicio que ya está en Diseño (la cantidad, el arte, la lista…), el servicio queda <span class="pill fucsia">Modificada · falta aceptar</span> y en la tarjeta gris dice qué cambió y cuándo.</p>
+  <ul>
+    <li>Quien tiene el trabajo toca <span class="btn p">Acepto el cambio (estoy al tanto)</span>. Si el cambio afecta la tizada, rehacela.</li>
+    <li>Si nadie lo tomó, lo acepta el diseñador que lo tome (al tomarlo).</li>
+    <li>Mientras no se acepte, el producto no se puede convertir en pedido.</li>
+  </ul>
+  <div class="volver"><a href="#indice">↑ Índice</a></div>
+</section>
+
+<!-- ───────────── 8 ───────────── -->
+<section class="cap" id="c8">
+  <h2><span class="num">8</span>Crear el pedido de producción</h2>
+  <p class="bajada">Pestaña <span class="tab">Crear pedido</span>. El pedido lo crea Diseño, con la tizada y los archivos ya cargados.</p>
+  <ol class="pasos">
+    <li>Mirá <b>Estado para producción</b>: tiene que estar todo listo (datos del vendedor, lista, precio y seña, diseño de cada servicio). Lo que falta dice dónde se completa.</li>
+    <li>Si el cliente trae su tela, elegí la <b>bobina</b> del cliente que se usa.</li>
+    <li>Tocá <span class="btn p">Crear el pedido de producción</span> y confirmá.</li>
+    <li>Se crean las órdenes de cada área y los archivos pasan solos a producción. La tarjeta muestra el avance: "Archivos del pedido en producción: 3 de 4".</li>
+    <li>Al terminar: <span class="pill verde">Pedido creado · todos los archivos están en producción</span>.</li>
+  </ol>
+  <div class="ojo"><span class="t">Si un archivo no pasó</span>La tarjeta queda en rojo con el archivo que falló. Las órdenes que lo esperan siguen en "Cargando..." y la planta no las ve.
+    <ul style="margin:1mm 0 0">
+      <li><span class="btn p">Volver a pasar los archivos que faltan</span>, si fue un corte (por ejemplo, se reinició el servidor).</li>
+      <li>Si el archivo estaba mal: <span class="btn s">1. Rehacer la tizada en TIZADA PRO</span> y después <span class="btn p">2. Pasar la tizada nueva al pedido</span>.</li>
+    </ul></div>
+  <div class="volver"><a href="#indice">↑ Índice</a></div>
+</section>
+
+<!-- ───────────── 9 ───────────── -->
+<section class="cap" id="c9">
+  <h2><span class="num">9</span>Bordado y TPU en producción</h2>
+  <p class="bajada">Pestaña <span class="tab">En producción</span> de la Bandeja (y "Ya en producción" en Mis trabajos).</p>
+  <p>Cuando el pedido ya existe, el diseño de Bordado y TPU se sube en la <b>ficha de la orden</b> (la misma del ojito en el área): <span class="btn p">Abrir la ficha de la orden</span>. Cuando la orden tiene lo que necesita, se libera sola.</p>
+  <table class="t">
+    <tr><th style="width:42mm">Etapa</th><th>Qué hay que hacer</th></tr>
+    <tr><td><span class="pill ambar">Falta diseño</span></td><td><b>Bordado</b>: subir la matriz (ponchado .dst / .emb). <b>TPU</b>: subir el boceto de producción y enviarlo a aprobación.</td></tr>
+    <tr><td><span class="pill celeste">Esperando aprobación del cliente</span></td><td><b>Bordado</b>: cuando el cliente aprueba, tildar "Aprobación del Cliente" en los requisitos. <b>TPU</b>: el cliente aprueba o rechaza desde su portal.</td></tr>
+    <tr><td><span class="pill verde">Aprobado · falta el arte</span></td><td>Subir las capas del arte (2 a 5).</td></tr>
+    <tr><td><span class="pill rosa">Rechazado por el cliente</span></td><td>Corregir el boceto y volver a enviarlo a aprobación.</td></tr>
+  </table>
+  <p>Si el pedido lo cargó el personal (<span class="pill celeste">Pedido interno</span>), el boceto de TPU no va al cliente: lo confirma el diseñador desde la ficha ("Confirmar diseño").</p>
+  <div class="volver"><a href="#indice">↑ Índice</a></div>
+</section>
+
+<!-- ───────────── 10 ───────────── -->
+<section class="cap" id="c10">
+  <h2><span class="num">10</span>Corregir el diseño de un pedido en producción</h2>
+  <p class="bajada">El pedido ya se creó y la tizada o el DTF estaban mal: se rediseña y el archivo nuevo va al <b>mismo pedido</b> (mismo número, misma solicitud).</p>
+
+  <h3 id="c10-cuando">Cuándo se usa</h3>
+  <ul>
+    <li>Cuando el archivo que tiene la orden de <b>sublimación</b> (o impresión) o de <b>DTF</b> está mal y hay que cambiarlo.</li>
+    <li>Cambia los archivos de sublimación (o impresión) y DTF; Bordado y TPU se corrigen en la ficha de su orden.</li>
+    <li>Si la orden ya se imprimió, la reimpresión se pide como <b>falla</b> en la planta (la reposición sale de ahí, sin cargo), con el archivo corregido de la solicitud.</li>
+  </ul>
+
+  <h3 id="c10-pasos">Paso a paso</h3>
+  <ol class="pasos">
+    <li>Abrí la solicitud en Diseño (por ejemplo desde <span class="tab">Hechos</span> › <span class="btn s">Abrir</span>). Debajo de la tarjeta gris del producto aparece el aviso "<b>Pedido 31883 ya está en producción…</b>" con <span class="btn p">Corregir el diseño</span>.</li>
+    <li>Tocá <span class="btn p">Corregir el diseño</span>, escribí <b>qué estaba mal</b> (queda en el historial) y tocá <span class="btn p">Abrir la corrección</span>.</li>
+    <li>Se vuelve a habilitar ese producto: arte, lista, telas, tizada y diseños prontos. El pedido <b>no se toca</b> todavía.</li>
+    <li>Rediseñá: <span class="btn s">Rehacer la tizada en TIZADA PRO</span>, o en <span class="tab">Archivos</span> <span class="btn s">Sustituir por el archivo corregido</span>.</li>
+    <li>Mirá el <b>cuadro ámbar</b>: dice qué le va a pasar a cada orden (ver abajo). Se actualiza solo cuando cambia un archivo.</li>
+    <li>Tocá <span class="btn p">Pasar al pedido</span>. La confirmación repite qué va a pasar. Confirmá.</li>
+    <li>Las órdenes cambiadas pasan por "Cargando..." y en unos segundos vuelven a <b>Pendiente</b> con el archivo nuevo. La corrección se cierra sola si no queda nada pendiente.</li>
+  </ol>
+  <p>Si te arrepentís antes de pasarlo: <span class="btn s">Cancelar la corrección</span>. El pedido sigue como estaba (los archivos que cambiaste quedan en la solicitud, sin pasar al pedido).</p>
+
+  <h3 id="c10-plan">Qué le pasa a cada orden</h3>
+  <table class="t">
+    <tr><th style="width:52mm">En el cuadro dice</th><th>Qué significa</th></tr>
+    <tr><td><span class="pill verde">Se cambia el archivo</span></td><td>La orden no empezó (pendiente, sin lote, sin imprimir): se le cambia el archivo en la misma orden. Los archivos que no cambiaron quedan como están; los metros se recalculan.</td></tr>
+    <tr><td><span class="pill ambar">La planta la saca del rollo</span></td><td>Está en un lote sin imprimir. La planta la saca del rollo ("Sacar del Rollo"); cuando vuelve a Pendiente, se pasa. La corrección queda abierta mientras tanto.</td></tr>
+    <tr><td><span class="pill celeste">Ya impresa: va por falla</span></td><td>Ya se imprimió: la corrección no la toca. Si hay que volver a imprimirla, se reporta como falla en la planta.</td></tr>
+    <tr><td><span class="pill rosa">Hablar con la planta</span></td><td>Está en un estado raro, o se quedaría sin ningún archivo (por ejemplo, el corregido se subió con otra tela o film). No deja pasar.</td></tr>
+    <tr><td><span class="pill gris">Sin cambios</span></td><td>No cambió ningún archivo de esa tela: queda como está.</td></tr>
+  </table>
+  <div class="no"><span class="t">No deja pasar si…</span>un archivo nuevo es de una tela o film que el pedido no tiene, o una orden se quedaría sin archivos. El cuadro dice qué revisar.</div>
+  <div class="consejo"><span class="t">La tarjeta del pedido</span>En <span class="tab">Pedido 31883</span>, "Órdenes del pedido" lista <b>todas</b> las órdenes del pedido; lo que tocó la corrección está en "Última corrección del diseño: …".</div>
+
+  <h3 id="c10-historial">Historial de correcciones</h3>
+  <p>La pestaña <span class="tab">Correcciones · 2</span> muestra cada corrección de ese producto, lo más nuevo arriba: <span class="pill ambar">Abierta</span>, <span class="pill verde">Pasada al pedido</span> (con qué órdenes cambió) o <span class="pill gris">Cancelada</span>, con el motivo, la fecha y quién la hizo.</p>
+  <div class="volver"><a href="#indice">↑ Índice</a></div>
+</section>
+
+<!-- ───────────── 11 ───────────── -->
+<section class="cap" id="c11">
+  <h2><span class="num">11</span>Hechos: lo que ya se diseñó</h2>
+  <p class="bajada">Pestaña <span class="tab">Hechos</span> de la Bandeja.</p>
+  <p>Todo servicio ya diseñado, sea o no pedido todavía, lo más nuevo primero. Por fila: el estado del pedido, el cliente y el trabajo, el servicio y <b>quién lo hizo</b>, el producto, el pedido (cuántas órdenes terminó la planta) y la fecha. Botones: <span class="btn s">Ver solicitud</span> (PDF) y <span class="btn s">Abrir</span>.</p>
+  <table class="t">
+    <tr><th style="width:52mm">Filtro</th><th>Opciones</th></tr>
+    <tr><td>Período</td><td><b>Diseñados hoy</b> (por defecto), ayer, en los últimos 7, 30 o 90 días, o entre fechas.</td></tr>
+    <tr><td>Quién lo hizo</td><td>Un diseñador · TIZADA PRO (automático) · El vendedor (arte listo del cliente).</td></tr>
+    <tr><td>Pedido</td><td>Diseñado · todavía sin pedido · Pedido en producción · Pedido terminado.</td></tr>
+    <tr><td>Solo los míos</td><td>Lo que tenías tomado vos.</td></tr>
+  </table>
+  <div class="consejo"><span class="t">Consejo</span>Para encontrar un pedido viejo: período "últimos 30 días" (o más) y escribí el número de pedido en el buscador.</div>
+  <div class="volver"><a href="#indice">↑ Índice</a></div>
+</section>
+
+<!-- ───────────── 12 ───────────── -->
+<section class="cap" id="c12">
+  <h2><span class="num">12</span>Preguntas frecuentes</h2>
+  <h4>Mandé a TIZADA PRO y no lo veo en "Para tomar".</h4>
+  <p>Al mandarlo pasa a tu <span class="tab">Mis trabajos</span> con <span class="pill celeste">En TIZADA PRO</span>.</p>
+  <h4>"Enviar a TIZADA PRO" está apagado.</h4>
+  <p>Al lado dice por qué: hay cambios sin guardar, falta algo en la lista o ya hay un envío en curso.</p>
+  <h4>Tomé un bordado y ya es pedido: ¿dónde lo veo?</h4>
+  <p>En <span class="tab">Mis trabajos</span>, en "Ya en producción · esperan tu diseño", hasta que la orden tenga su matriz.</p>
+  <h4>El vendedor cambió algo y no puedo crear el pedido.</h4>
+  <p>El servicio está "Modificada · falta aceptar": tocá "Acepto el cambio" en la tarjeta gris.</p>
+  <h4>La tarjeta del pedido dice que el pase de archivos se cortó.</h4>
+  <p>Tocá "Volver a pasar los archivos que faltan". Si el archivo estaba mal, rehacé la tizada y pasala al pedido.</p>
+  <h4>La orden ya se imprimió con el diseño equivocado.</h4>
+  <p>Corregí el diseño en la solicitud y pedí la reimpresión como falla en la planta, con el archivo corregido.</p>
+  <h4>¿Por qué un vendedor no ve la Bandeja?</h4>
+  <p>Porque no es diseñador: un Admin lo puede habilitar desde "Ver quiénes son diseñadores".</p>
+  <div class="volver"><a href="#indice">↑ Índice</a></div>
+</section>
+
+</body>
+</html>

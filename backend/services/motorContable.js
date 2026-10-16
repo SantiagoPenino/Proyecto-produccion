@@ -84,86 +84,9 @@ async function generaDeuda(codigo) {
     return evt ? !!evt.EvtGeneraDeuda : false;
 }
 
-// SIN USO (13/10): aplicaRecurso, efectoSaldo, listarEventos y resolverLineasAsiento: están en module.exports pero nadie los llama. Ver docs/auditoria-limpieza-2026-10-09.md.
-/**
- * Verifica si un tipo de movimiento aplica a recursos (metros/kg).
- * @param {string} codigo
- * @returns {boolean}
- */
-async function aplicaRecurso(codigo) {
-    const evt = await getEvento(codigo);
-    return evt ? !!evt.EvtAplicaRecurso : false;
-}
-
-/**
- * Devuelve el efecto en saldo (+1, -1, 0) de un tipo de movimiento.
- * @param {string} codigo
- * @returns {number}
- */
-async function efectoSaldo(codigo) {
-    const evt = await getEvento(codigo);
-    return evt ? (evt.EvtAfectaSaldo || 0) : 0;
-}
-
-/**
- * Lista todos los eventos activos (para selectores en UI)
- * @returns {Array}
- */
-async function listarEventos() {
-    await _cargarCache();
-    return Object.values(_cache).sort((a, b) => a.EvtOrden - b.EvtOrden);
-}
-
-/**
- * Resuelve las cuentas contables a partir de las reglas de asiento.
- * Reemplaza los metavalores:
- *   META_CLIENTE -> CueIdCuenta del cliente (submayor)
- *   META_CAJA    -> ID de la cuenta de caja correspondiente
- *
- * @param {string} evtCodigo
- * @param {object} contexto - { importeTotal, importeNeto, importeIva, importeDescuento, cuentaCliente, cuentaCaja }
- * @returns {Array<{CueCodigo, Naturaleza, Importe}>}
- */
-async function resolverLineasAsiento(evtCodigo, contexto = {}) {
-    const reglas = await getReglasAsiento(evtCodigo);
-    if (!reglas.length) return [];
-
-    const {
-        importeTotal = 0,
-        importeNeto = 0,
-        importeIva = 0,
-        importeDescuento = 0,
-        cuentaCliente = null,
-        cuentaCaja = null,
-    } = contexto;
-
-    const formulaMap = {
-        TOTAL: Math.abs(importeTotal),
-        NETO: Math.abs(importeNeto),
-        IVA: Math.abs(importeIva),
-        DESCUENTO: Math.abs(importeDescuento),
-    };
-
-    return reglas.map(r => {
-        let cuenta = r.CueCodigo;
-        if (cuenta === 'META_CLIENTE') cuenta = cuentaCliente;
-        if (cuenta === 'META_CAJA') cuenta = cuentaCaja;
-
-        return {
-            CueCodigo: cuenta,
-            Naturaleza: r.RasNaturaleza,
-            Importe: formulaMap[r.RasFormula] ?? formulaMap.TOTAL,
-        };
-    }).filter(l => l.CueCodigo !== null);
-}
-
 module.exports = {
     getEvento,
     getReglasAsiento,
     generaDeuda,
-    aplicaRecurso,
-    efectoSaldo,
-    listarEventos,
-    resolverLineasAsiento,
     invalidarCache,
 };

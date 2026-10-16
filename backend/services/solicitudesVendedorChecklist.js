@@ -12,6 +12,11 @@
 // formulario). Si se cambia una, se cambia la otra.
 // =====================================================================
 const t = (v) => !!String(v == null ? '' : v).trim();
+// 15/10: primera etapa → la propuesta del taller se da por aprobada (no frena). true = se vuelve a pedir la tilde.
+const PIDE_APROBACION_ESCRITA = false;
+// 15/10: primera etapa → la muestra se da por aprobada (no frena, aunque el producto diga "Requiere confección de muestra").
+// true = se vuelve a pedir "Muestra aprobada por el cliente". Va igual en src/components/pages/ventas/checklistSolicitud.js.
+const PIDE_MUESTRA_APROBADA = false;
 
 /**
  * @param sol      cabecera con sol.Ficha (objeto) y sol.FechaEntrega
@@ -60,14 +65,16 @@ function evaluarProducto(sol, p, archivos, extra = []) {
   const dis = d.diseno || {};
   // El archivo que Diseño subió como diseño pronto ES la verificación: no hace falta la tilde a mano.
   if (dis.origen === 'CLIENTE') c(!!dis.verificado || arch(['DISENO_PRONTO']), 'Archivo de diseño entregado y verificado');
-  if (dis.origen === 'TALLER') c(!!dis.aprobado, 'Diseño aprobado por escrito por el cliente');
+  // 15/10: en esta primera etapa la propuesta del taller se da por aprobada (no se pide la tilde). Para volver a pedirla:
+  // PIDE_APROBACION_ESCRITA = true acá y en src/components/pages/ventas/checklistSolicitud.js.
+  if (dis.origen === 'TALLER' && PIDE_APROBACION_ESCRITA) c(!!dis.aprobado, 'Diseño aprobado por escrito por el cliente');
 
   // 25-sep: la muestra se marca POR PRODUCTO ("Requiere confección de muestra"; producto nuevo o
   // producción grande la requieren siempre). "Se le ofreció / qué respondió" ya no se pide.
   // Solicitudes viejas: si la cabecera tenía la muestra aprobada (o rechazada), se sigue respetando.
   const mu = f.muestra || {};
   const pideMuestra = !!d.requiereMuestra;   // la marca el vendedor (producto nuevo / producción grande la tildan solos, pero se puede destildar)
-  if (pideMuestra && mu.respuesta !== 'RECHAZO') c(!!d.muestraAprobada || !!mu.aprobada, 'Muestra aprobada por el cliente');
+  if (PIDE_MUESTRA_APROBADA && pideMuestra && mu.respuesta !== 'RECHAZO') c(!!d.muestraAprobada || !!mu.aprobada, 'Muestra aprobada por el cliente');
   c(!!sol.FechaEntrega, 'Fecha concreta en que el cliente necesita el trabajo');
   // 25-sep: "Plazo informado y aceptado" e "Indicaciones del cliente" dejaron de pedirse (las
   // indicaciones van en Observaciones generales, que es libre y no frena el ingreso).
@@ -78,4 +85,4 @@ function evaluarProducto(sol, p, archivos, extra = []) {
   return { listo: faltan.length === 0, faltan, ok, luego };
 }
 
-module.exports = { evaluarProducto };
+module.exports = { evaluarProducto, PIDE_MUESTRA_APROBADA };

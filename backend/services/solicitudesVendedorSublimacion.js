@@ -115,10 +115,12 @@ async function opcionesDelMolde(pool, p, elegido = null) {
 // ---------------------------------------------------------------------
 async function guardarSublimacion(pool, user, base, solicitudId, productoSolId, body) {
   const sol = await base.cabecera(pool, solicitudId);
-  base.exigirAbierta(sol);
-  if (!base.esVendedor(user)) throw fallo(403, 'Las piezas y telas las carga el vendedor.');
+  // [CORREGIR EL DISEÑO 15/10] con una corrección abierta, el diseñador corrige la tela de las piezas de un producto ya convertido
+  const corrigiendo = !!base.enCorreccion && await base.enCorreccion(pool, productoSolId) && await base.esDisenador(pool, user);
+  if (!corrigiendo || sol.Estado === 'CANCELADA') base.exigirAbierta(sol);
+  if (!corrigiendo && !base.esVendedor(user)) throw fallo(403, 'Las piezas y telas las carga el vendedor.');
   const p = await productoSol(pool, solicitudId, productoSolId);
-  if (p.PedidoNoDocERP) throw fallo(409, 'Este producto ya se convirtió en pedido.');
+  if (p.PedidoNoDocERP && !corrigiendo) throw fallo(409, 'Este producto ya se convirtió en pedido.');
   const info = await moldeDelProducto(pool, user, base, solicitudId, productoSolId);
   if (!info.aplica) throw fallo(400, info.motivo);
   const modelo = info.modelos.find(m => m.clave === String(body?.modeloClave || ''));

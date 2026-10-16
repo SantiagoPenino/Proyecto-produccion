@@ -9,15 +9,6 @@ router.get('/:clienteId/saldo',         verifyToken, ctrl.getSaldo);
 // Estado de cuenta completo (extracto)
 router.get('/:clienteId/estado-cuenta', verifyToken, ctrl.getEstadoCuenta);
 
-// Bultos físicos activos
-router.get('/:clienteId/bultos',         verifyToken, ctrl.getBultos);
-
-// Reservar metros para una orden (consumo por adelantado)
-router.post('/:clienteId/reservar',      verifyToken, ctrl.reservarMetros);
-
-// Liberar reserva si se cancela la orden
-router.post('/:clienteId/liberar',       verifyToken, ctrl.liberarReserva);
-
 // Devolución física de excedente — solicitar (bobina interna) + bandeja de aprobación
 router.post('/:clienteId/bobinas/:bobinaId/solicitar', verifyToken, ctrl.solicitarDevolucion);
 router.get('/bandeja',                                  verifyToken, ctrl.getBandeja);

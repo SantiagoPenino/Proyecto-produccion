@@ -12,9 +12,6 @@ logger.info("   PORT:", process.env.PORT);
 logger.info("   GEMINI_KEY:", process.env.GEMINI_API_KEY ? "Cargada ✅ (" + process.env.GEMINI_API_KEY.substring(0, 5) + "...)" : "❌ NO DETECTADA");
 logger.info("---------------------------------------------------------");
 
-// --- IMPORTACIÓN DEL SCHEDULER ---
-const { startAutoSync } = require('./scheduler'); // Asegúrate de crear este archivo
-
 const app = express();
 app.set('trust proxy', 1); // Necesario para funcionar detrás de Nginx (proxy reverso)
 
@@ -97,7 +94,6 @@ app.use('/stock-compras', express.static(process.env.STOCK_COMPRAS_PATH || path.
 // --- REGISTRO DE RUTAS ---
 app.use('/api/areas', require('./routes/areasRoutes'));
 app.use('/api/orders', require('./routes/ordersRoutes'));
-app.use('/api/stock', require('./routes/stockRoutes'));
 app.use('/api/failures', require('./routes/failuresRoutes'));
 app.use('/api/clients', require('./routes/clientsRoutes'));
 app.use('/api/presupuestos', require('./routes/presupuestosRoutes'));
@@ -120,7 +116,6 @@ app.use('/api/auth', require('./routes/authRoutes'));
 app.use('/api/dashboard', require('./routes/dashboardRoutes'));
 app.use('/api/reportes',              require('./routes/reportesRoutes'));
 app.use('/api/google', require('./routes/googleAuthRoutes'));
-
 
 const webAuthRoutes = require('./routes/webAuthRoutes');
 const webOrdersRoutes = require('./routes/webOrdersRoutes'); // Nueva ruta Pedidos Web
@@ -157,7 +152,6 @@ app.use('/api/insumos', require('./routes/insumosRoutes'));
 app.use('/api/reception', require('./routes/receptionRoutes'));
 app.use('/api/tela-cliente', require('./routes/telaClienteRoutes')); // Módulo Tela de Cliente
 app.use('/api/inventory', require('./routes/inventoryRoutes'));
-app.use('/api/configuraciones', require('./routes/configuracionesRoutes'));
 app.use('/api/empresas', require('./routes/empresasRoutes'));         // MÓDULO MULTIEMPRESA (emisor de factura)
 app.use('/api/sincro', require('./routes/sincroRoutes'));
 app.use('/api/stockart', require('./routes/stockArtRoutes'));         // EDITOR StockArt (SysAdmin)
@@ -344,22 +338,6 @@ app.get('/api/precios-publicos', async (req, res) => {
     }
 });
 
-// --- API: Stats públicas para landing page ---
-app.get('/api/stats/public', async (req, res) => {
-    try {
-        const { getPool } = require('./config/db');
-        const pool = await getPool();
-        const result = await pool.request().query(`
-            SELECT
-                (SELECT COUNT(*) FROM OrdenesDeposito WITH(NOLOCK)) AS totalOrdenes,
-                (SELECT COUNT(*) FROM Clientes WITH(NOLOCK)) AS totalClientes
-        `);
-        res.json(result.recordset[0]);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
 // --- API: Sync manual de precios (admin) ---
 // Hasta el 28/09/2026 no pedía login. La llama la consola de SysAdmin (SysAdminPage.jsx).
 const { verifyToken, soloAdmin } = require('./middleware/authMiddleware');
@@ -539,7 +517,6 @@ process.on('uncaughtException', (err) => {
     server.close(() => process.exit(1));
 });
 
-
 // --- INICIO DEL SERVIDOR Y SCHEDULER ---
 if (process.env.NODE_ENV !== 'test') {
     server.listen(PORT, async () => {
@@ -547,13 +524,6 @@ if (process.env.NODE_ENV !== 'test') {
 
         try {
             logger.info(`ℹ️ [Sync] Sincronización con ERP desactivada (Pedidos vía WEB activos).`);
-
-            try {
-                require('./cron/planillaSync');
-                logger.info("⏱️ [CRON] Sincronización de Planillas ACTIVADA");
-            } catch (e) {
-                logger.error("❌ [CRON] Error cargando PlanillaSync:", e.message);
-            }
 
             try {
                 const { startWspJob } = require('./jobs/wspAvisos.job');
@@ -570,20 +540,12 @@ if (process.env.NODE_ENV !== 'test') {
                 logger.error("❌ [CRON] Error cargando ZombieCleanup:", e.message);
             }
 
-            // ACTIVAR CRON ESTADOS DE CUENTA (Módulo Contabilidad)
+            // ACTIVAR CRON DEUDAS VENCIDAS (jueves: vence deudas y abre ciclos a semanales sin ciclo)
             try {
-                const { startEstadosCuentaJob } = require('./jobs/estadosCuenta.job');
-                startEstadosCuentaJob();
+                const { startDeudasVencidasJob } = require('./jobs/deudasVencidas.job');
+                startDeudasVencidasJob();
             } catch (e) {
-                logger.error('❌ [CRON] Error cargando EstadosCuenta:', e.message);
-            }
-
-            // ACTIVAR CRON CICLOS DE CRÉDITO (Cierre automático de ciclos semanales)
-            try {
-                const { iniciarCronCiclos } = require('./jobs/ciclosCredito.job');
-                iniciarCronCiclos();
-            } catch (e) {
-                logger.error('❌ [CRON] Error cargando CiclosCredito:', e.message);
+                logger.error('❌ [CRON] Error cargando DeudasVencidas:', e.message);
             }
 
             // ACTIVAR CRON COTIZACIÓN BCU
@@ -595,8 +557,8 @@ if (process.env.NODE_ENV !== 'test') {
             }
 
             // CUADRE NOCTURNO DE SALDOS (Contabilidad) — 06:30 hs. Arranca acá como los demás
-            // jobs porque scheduler.startAutoSync está desactivado (apaga el sync ERP) y todo
-            // lo agendado ahí nunca corre (05-09-2026).
+            // jobs: cada job vivo se arranca desde server.js (el viejo scheduler.js, que nunca
+            // corría porque el sync ERP está apagado, se borró el 15/10).
             try {
                 const { startCuadreSaldosJob } = require('./jobs/cuadreSaldos.job');
                 startCuadreSaldosJob();

@@ -73,10 +73,10 @@ function datosProducto(p) {
     ${F('Familia / tipo de trabajo', d.tipoTrabajo)}
     ${F('Cantidad', `${p.Cantidad} unidades`)}
     ${F('Se produce a partir de', d.muestraFisica ? 'Muestra física' : 'Boceto digital')}
-    ${F('Quién aporta el diseño', dis.origen === 'CLIENTE' ? `Lo entrega el cliente · archivo ${dis.verificado ? 'verificado' : 'SIN verificar'}` : dis.origen === 'TALLER' ? `Lo hace el taller · propuesta ${dis.aprobado ? 'aprobada por escrito' : 'SIN aprobar'}` : '')}
+    ${F('Quién aporta el diseño', dis.origen === 'CLIENTE' ? `Lo entrega el cliente · archivo ${dis.verificado ? 'verificado' : 'SIN verificar'}` : dis.origen === 'TALLER' ? 'Lo hace el taller' : '')}
     ${F('Producto nuevo', d.productoNuevo ? 'Sí' : '')}
     ${F('Producción grande', d.produccionGrande ? 'Sí' : '')}
-    ${F('Muestra', d.requiereMuestra ? `Requiere confección · ${d.muestraAprobada ? 'aprobada por el cliente' : 'SIN aprobar'}` : '')}
+    ${F('Muestra', d.requiereMuestra ? (d.muestraAprobada ? 'Requiere confección · aprobada por el cliente' : require('./solicitudesVendedorChecklist').PIDE_MUESTRA_APROBADA ? 'Requiere confección · SIN aprobar' : 'Requiere confección') : '')}
     ${p.Config?.AMedida
       // [A MEDIDA] no hay talles: va la medida de cada diseño (la que se mandó a TIZADA PRO)
       ? F('Cómo se define', 'A medida (TIZADA PRO)') + F('Medida de cada diseño', medidasAMedida(d))
@@ -152,6 +152,28 @@ function aviosPorTalle(avios) {
   </tbody></table>`;
 }
 
+// [MEDIDAS] la hoja de medidas: arriba las principales grandes por talle, el dibujo con letras a la izquierda,
+// la tabla REF · MEDIDA · talles a la derecha y "Cómo medir" en dos columnas (en cm).
+function hojaMedidas(f, dataUri) {
+  const lista = f.medidas || [];
+  if (!lista.length) return '';
+  const talles = [];
+  lista.forEach(m => m.talles.forEach(x => { if (!talles.includes(x.talle)) talles.push(x.talle); }));
+  const v = (m, tl) => { const x = m.talles.find(y => y.talle === tl); return x ? String(x.valor).replace('.', ',') : ''; };
+  const princ = lista.filter(m => m.principal);
+  const img = dataUri(f.medidasImagenUrl);
+  const como = lista.filter(m => m.comoMedir);
+  return `<div style="font-weight:700;margin:8px 0 3px">Medidas de la prenda <small style="font-weight:400">(cm)</small></div>
+    ${princ.length && talles.length ? `<table><tbody>${princ.map(m => `<tr><td style="white-space:nowrap"><b style="font-size:15px">${esc(m.letra)}</b> ${esc(m.nombre)}</td>${talles.map(tl => `<td style="text-align:center"><small>${esc(tl)}</small><br><b style="font-size:14px">${esc(v(m, tl)) || '—'}</b></td>`).join('')}</tr>`).join('')}</tbody></table>` : ''}
+    <div style="display:flex;gap:10px;align-items:flex-start">
+      ${img ? `<div style="flex:0 0 34%"><img src="${img}" alt="" style="max-width:100%;max-height:240px"></div>` : ''}
+      <div style="flex:1;min-width:0"><table><thead><tr><th>Ref.</th><th>Medida</th>${talles.map(tl => `<th style="text-align:center">${esc(tl)}</th>`).join('')}</tr></thead><tbody>
+        ${lista.map(m => `<tr><td><b>${esc(m.letra)}</b></td><td>${esc(m.nombre)}</td>${talles.map(tl => `<td style="text-align:center">${esc(v(m, tl))}</td>`).join('')}</tr>`).join('')}
+      </tbody></table></div>
+    </div>
+    ${como.length ? `<div style="margin-top:3px"><b>Cómo medir</b><div style="columns:2;column-gap:14px">${como.map(m => `<div><b>${esc(m.letra)}</b> — ${esc(m.comoMedir)}</div>`).join('')}</div></div>` : ''}`;
+}
+
 // [A MEDIDA] "DISEÑO 1 × 12: Rectángulo · 1,5 × 0,96 m · Dobladillo · sin tiras · DISEÑO 2 × 3: …"
 function medidasAMedida(d) {
   const { resumen } = require('./tizadaProAMedida');
@@ -169,6 +191,7 @@ function fichaTecnica(p) {
       ${F('Referencia', f.ref)}${F('Marca', f.marca)}${F('Material', f.material)}${p.Config?.AMedida ? '' : F('Tallas', f.tallas)}${F('Marcación', f.marcacion)}
     </div>
     ${dib ? `<figure style="margin:6px 0"><div class="img" style="max-width:260px"><img src="${dib}" alt="" style="max-width:100%;max-height:220px"></div><figcaption>Dibujo de la ficha</figcaption></figure>` : ''}
+    ${hojaMedidas(f, dibujoDataUri)}
     ${f.avios.length ? `<table><thead><tr><th>Avío</th><th>Por prenda</th><th>Medida</th><th>Nota</th></tr></thead><tbody>${f.avios.map(a => `<tr><td><b>${esc(a.nombre)}</b></td><td>${(a.porTalle || []).length && ['u', 'par'].includes(a.unidad) ? 'según talle' : `${esc(a.cantidad ?? '')} ${esc(a.unidad)}`}</td><td>${esc(a.medida || '')}</td><td>${esc(a.nota || '')}</td></tr>`).join('')}</tbody></table>${aviosPorTalle(f.avios)}` : '<p class="nota">Sin avíos cargados en el configurador.</p>'}
     ${f.costuras.length ? pasosCostura(f.costuras, dibujoDataUri) : '<p class="nota">Sin costuras cargadas en el configurador.</p>'}
     ${f.notas.length ? `<ul class="lista">${f.notas.map(n => `<li>${n.etiqueta ? '<b>' + esc(n.etiqueta) + ':</b> ' : ''}${esc(n.valor)}</li>`).join('')}</ul>` : ''}`;

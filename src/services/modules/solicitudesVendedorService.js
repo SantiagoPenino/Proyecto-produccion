@@ -15,6 +15,7 @@ export const solicitudesVendedorService = {
     obtener: (id) => dato(api.get(`${BASE}/${id}`)),
     crear: (payload) => dato(api.post(BASE, payload)),
     actualizar: (id, payload) => dato(api.put(`${BASE}/${id}`, payload)),
+    guardarDatos: (id, datos) => dato(api.put(`${BASE}/${id}/datos`, datos)),   // [GUARDADO AUTOMÁTICO 15/10] un dato a la vez
     guardarPrecio: (id, payload) => dato(api.put(`${BASE}/${id}/precio`, payload)),
     confirmarSena: (id, payload) => dato(api.post(`${BASE}/${id}/sena/confirmar`, payload)),
     agregarInteraccion: (id, Texto) => dato(api.post(`${BASE}/${id}/interacciones`, { Texto })),
@@ -39,6 +40,15 @@ export const solicitudesVendedorService = {
 
     /** Molde del producto del catálogo (modelos ofrecidos con piezas y telas fijas, telas ofrecidas) + lo ya elegido. */
     moldeDelProducto: (id, productoSolId) => dato(api.get(`${BASE}/${id}/productos/${productoSolId}/molde`)),
+    // [TIPO DEL EXTRA 14/10] { formas: cómo se puede hacer cada bordado / DTF / TPU, extras: los que admite el producto }
+    formasDeExtras: (id, productoSolId) => dato(api.get(`${BASE}/${id}/productos/${productoSolId}/extras-formas`)),
+    // [FASE 1 15/10] agregar (activo true → { ParteID }) o quitar (false → { quitado, motivo }) un extra desde la tabla del arte
+    cambiarExtra: (id, productoSolId, tipo, activo) => dato(api.put(`${BASE}/${id}/productos/${productoSolId}/extras/${tipo}`, { activo })),
+    // [15/10] corregir el diseño de un pedido ya en producción
+    correccionAbrir: (id, productoSolId, motivo) => dato(api.post(`${BASE}/${id}/productos/${productoSolId}/correccion`, { motivo })),
+    correccionCancelar: (id, productoSolId) => dato(api.post(`${BASE}/${id}/productos/${productoSolId}/correccion/cancelar`)),
+    correccionPlan: (id, productoSolId) => dato(api.get(`${BASE}/${id}/productos/${productoSolId}/correccion/plan`)),
+    correccionAplicar: (id, productoSolId) => dato(api.post(`${BASE}/${id}/productos/${productoSolId}/correccion/aplicar`)),
     /** payload: { modeloClave, piezas: [{ pieza, telaProIdProducto, archivoId, nota }], parcial? } */
     guardarSublimacion: (id, productoSolId, payload) => dato(api.put(`${BASE}/${id}/productos/${productoSolId}/sublimacion`, payload)),
     /** payload: { comoSeDefine, notaTalles, medidas, terminacion, medidasPrenda, tablaEstandar, personalizacion, listaCerrada } */
@@ -53,6 +63,7 @@ export const solicitudesVendedorService = {
     /** Arma el .zip y lo manda a TIZADA PRO. soloRevisar = solo POST /pedidos/validar (no genera nada). */
     // [A MEDIDA] cuentas de TIZADA para la medida de un diseño (no guarda) y plantilla con la medida para el diseñador
     tizadaProCalcular: (id, productoSolId, medida, tela) => dato(api.post(`${BASE}/${id}/productos/${productoSolId}/tizadapro/calcular`, { medida, tela })),
+    tizadaProArteVista: (id, productoSolId, archivoId) => dato(api.get(`${BASE}/${id}/productos/${productoSolId}/tizadapro/arte/${archivoId}`)),
     tizadaProPlantillaPedir: (id, productoSolId) => dato(api.post(`${BASE}/${id}/productos/${productoSolId}/tizadapro/plantilla`)),
     tizadaProPlantillaEstado: (id, productoSolId) => dato(api.get(`${BASE}/${id}/productos/${productoSolId}/tizadapro/plantilla`)),
     // Plantilla del PRODUCTO (molde + modelo, la misma que baja la Tienda): 1) que esté lista y cómo se llama 2) el archivo
@@ -81,6 +92,7 @@ export const solicitudesVendedorService = {
     /** Calendario: entregas comprometidas + trabajo planificado de los pedidos ya convertidos. */
     calendario: (desde, hasta) => dato(api.get(`${BASE}/calendario`, { params: { desde, hasta } })),
     bandeja: () => dato(api.get(`${BASE}/bandeja-diseno`)),
+    disenosHechos: (desde, hasta) => dato(api.get(`${BASE}/bandeja-diseno/hechos`, { params: { desde, hasta } })),   // [15/10] pestaña "Hechos"
     /** Órdenes de Bordado y TPU que ya están en producción y todavía esperan su diseño (solo lectura). */
     disenosEnProduccion: () => dato(api.get(`${BASE}/disenos-en-produccion`)),
     // Tizada: true = la principal sale ya a TIZADA PRO (arma el PDF); false = no; sin dato = como diga el .env

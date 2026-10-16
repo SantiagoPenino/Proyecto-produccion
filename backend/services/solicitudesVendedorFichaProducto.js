@@ -3,7 +3,7 @@
 // Ficha técnica del producto del catálogo, para la solicitud (solo lectura)
 // =====================================================================
 // Lo que se cargó en Configurar productos → Ficha de diseño: avíos, costuras (ISO 4915),
-// material/tallas/marcación, notas sueltas y el dibujo. Viaja con cada producto de la
+// material/tallas/marcación, medidas de la prenda, notas sueltas y el dibujo. Viaja con cada producto de la
 // solicitud (obtener → p.FichaProducto) para que el diseñador lo tenga a la vista y salga
 // en la ficha PDF del pedido. Nunca tumba el detalle: si falta una tabla, devuelve null.
 // =====================================================================
@@ -34,14 +34,17 @@ async function fichaProducto(pool, proIdProducto) {
                                                  OBJECT_ID('dbo.ProductoFichaDisenoExtra','U') AS e, OBJECT_ID('dbo.ProductoFichaDisenoAnotaciones','U') AS n, OBJECT_ID('dbo.CosturasISO','U') AS iso,
                                                  COL_LENGTH('dbo.ProductoFichaDisenoCosturas','MaquinaCosturaID') AS paso,
                                                  COL_LENGTH('dbo.ProductoAvios','VariaPorTalle') AS vt, OBJECT_ID('dbo.ProductoAviosTalle','U') AS at,
-                                                 COL_LENGTH('dbo.ProductoFichaDisenoCosturas','AvioID') AS ca, OBJECT_ID('dbo.CatalogoAvios','U') AS cat`)).recordset[0];
+                                                 COL_LENGTH('dbo.ProductoFichaDisenoCosturas','AvioID') AS ca, OBJECT_ID('dbo.CatalogoAvios','U') AS cat,
+                                                 OBJECT_ID('dbo.ProductoMedidasTalle','U') AS med, COL_LENGTH('dbo.ProductoFichaDiseno','MedidasImagenUrl') AS mn`)).recordset[0];
   // [PASO A PASO] etapa, máquina, piezas, tiempo, observaciones e imagen (configurador_costuras_paso_a_paso.sql)
   const paso = ex.c && ex.iso && ex.paso != null;
   // [AVÍOS POR TALLE] valor de cada talle y avío de cada paso (configurador_ficha_avios_talle.sql)
   const talle = ex.a && ex.vt != null && ex.at && ex.ca != null && ex.cat;
+  // [MEDIDAS] medidas de la prenda por talle (configurador_medidas_prenda.sql)
+  const med = ex.f && ex.med && ex.mn != null;
   const rq = () => pool.request().input('PID', sql.Int, pid);
-  const [f, a, c, e, n, at] = await Promise.all([
-    ex.f ? rq().query('SELECT Ref, Marca, Material, Tallas, Marcacion, DibujoUrl FROM dbo.ProductoFichaDiseno WHERE ProIdProducto = @PID') : { recordset: [] },
+  const [f, a, c, e, n, at, md, mt] = await Promise.all([
+    ex.f ? rq().query(`SELECT Ref, Marca, Material, Tallas, Marcacion, DibujoUrl${med ? ', MedidasImagenUrl' : ''} FROM dbo.ProductoFichaDiseno WHERE ProIdProducto = @PID`) : { recordset: [] },
     ex.a ? rq().query(`SELECT Nombre, Cantidad, Unidad, Medida, Nota, Orden${talle ? ', VariaPorTalle' : ''} FROM dbo.ProductoAvios WHERE ProIdProducto = @PID ORDER BY ISNULL(Orden, 999), ID`) : { recordset: [] },
     ex.c ? rq().query(`SELECT c.UnionNombre, c.CodigoISO${ex.iso ? ', i.Nombre AS CosturaNombre' : ', NULL AS CosturaNombre'}
                        ${paso ? `, c.Etapa, c.Descripcion, c.TiempoMin, c.Observaciones, COALESCE(c.ImagenUrl, i.ImagenUrl) AS ImagenUrl,
@@ -56,6 +59,10 @@ async function fichaProducto(pool, proIdProducto) {
     talle ? rq().query(`SELECT x.AvioOrden, x.Talle, x.Valor, ca.Nombre AS Articulo FROM dbo.ProductoAviosTalle x
                         LEFT JOIN dbo.CatalogoAvios ca ON ca.AvioID = x.AvioID
                         WHERE x.ProIdProducto = @PID ORDER BY x.AvioOrden, ISNULL(x.Orden, 999), x.ID`) : { recordset: [] },
+    med ? rq().query(`SELECT pm.Orden, pm.Letra, pm.Nombre, pm.Principal, COALESCE(pm.ComoMedir, c.ComoMedir) AS ComoMedir
+                      FROM dbo.ProductoMedidas pm LEFT JOIN dbo.CatalogoMedidas c ON c.MedidaID = pm.MedidaID
+                      WHERE pm.ProIdProducto = @PID ORDER BY pm.Orden`) : { recordset: [] },
+    med ? rq().query('SELECT MedidaOrden, Talle, Valor FROM dbo.ProductoMedidasTalle WHERE ProIdProducto = @PID ORDER BY MedidaOrden, ISNULL(Orden, 999), ID') : { recordset: [] },
   ]);
   const fd = f.recordset[0] || {};
   const out = {
@@ -79,9 +86,15 @@ async function fichaProducto(pool, proIdProducto) {
       tiempoMin: x.TiempoMin != null ? Number(x.TiempoMin) : null, observaciones: t(x.Observaciones) || null, imagenUrl: t(x.ImagenUrl) || null,
       avio: t(x.AvioNombre) || null,
     })),
+    // [MEDIDAS] en cm; el "cómo medir" ya resuelto (el del producto o el del nomenclador)
+    medidas: md.recordset.map(x => ({
+      letra: t(x.Letra), nombre: t(x.Nombre), principal: !!x.Principal, comoMedir: t(x.ComoMedir) || null,
+      talles: mt.recordset.filter(r => r.MedidaOrden === x.Orden && r.Valor != null).map(r => ({ talle: t(r.Talle), valor: Number(r.Valor) })),
+    })),
+    medidasImagenUrl: t(fd.MedidasImagenUrl) || null,
     notas: [...e.recordset.map(x => ({ etiqueta: t(x.Etiqueta), valor: t(x.Valor) })), ...n.recordset.map(x => ({ etiqueta: null, valor: t(x.Texto) }))].filter(x => x.valor),
   };
-  const vacia = !out.material && !out.tallas && !out.marcacion && !out.dibujoUrl && !out.avios.length && !out.costuras.length && !out.notas.length;
+  const vacia = !out.material && !out.tallas && !out.marcacion && !out.dibujoUrl && !out.avios.length && !out.costuras.length && !out.notas.length && !out.medidas.length;
   return vacia ? null : out;
 }
 

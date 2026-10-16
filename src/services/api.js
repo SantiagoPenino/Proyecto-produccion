@@ -7,7 +7,6 @@ export default api;
 // Export Individual Services
 export { areasService } from './modules/areasService';
 export { ordersService } from './modules/ordersService';
-export { stockService } from './modules/stockService';
 export { clientsService, workflowsService, externalService } from './modules/commonService';
 export { rollsService } from './modules/rollsService';
 export { logisticsService } from './modules/logisticsService';

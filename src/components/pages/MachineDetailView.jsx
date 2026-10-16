@@ -2,7 +2,6 @@ import React, { useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { productionService, machineControlService } from '../../services/api';
-import RollSplitModal from '../modals/RollSplitModal';
 import SlotActionModal from '../modals/SlotActionModal';
 import { toast } from 'sonner';
 import { ArrowLeft, Printer, RefreshCw, Maximize, Power, Pause, CheckCircle2, Play, Loader2, ServerOff, PlusCircle, Droplets, Package } from 'lucide-react';
@@ -12,7 +11,6 @@ const MachineDetailView = () => {
     const navigate = useNavigate();
     const targetId = machineId;
 
-    const [splitModalRoll, setSplitModalRoll] = useState(null);
     const [selectedSlot, setSelectedSlot] = useState(null);
 
     // --- PRODUCTION BOARD DATA ---
@@ -306,16 +304,6 @@ const MachineDetailView = () => {
                     toast.success("Operación Exitosa");
                 }}
             />
-            {
-                splitModalRoll && (
-                    <RollSplitModal
-                        isOpen={!!splitModalRoll}
-                        onClose={() => setSplitModalRoll(null)}
-                        roll={splitModalRoll}
-                        areaId={area}
-                    />
-                )
-            }
         </div>
     );
 };

@@ -27,7 +27,6 @@ router.delete('/estantes/desasignar', verifyToken, webRetirosController.desasign
 router.post('/estantes/mover', verifyToken, webRetirosController.moverRetiroEntreEstantes);
 router.delete('/estantes/liberar/:ubicacionId', verifyToken, webRetirosController.marcarRetiroEntregado);
 router.post('/estantes/liberar-multiple', verifyToken, webRetirosController.marcarRetiroEntregadoMultiple);
-router.post('/estantes/config/seed', verifyToken, webRetirosController.seedConfigEstantes);
 
 router.post('/excepcional', verifyToken, webRetirosController.marcarExcepcional);
 router.get('/excepciones', verifyToken, webRetirosController.getExcepciones);
@@ -35,6 +34,5 @@ router.put('/excepciones/:id/gestionar', verifyToken, webRetirosController.gesti
 
 router.get('/:oreId/bultos', verifyToken, webRetirosController.getBultosRetiro);
 router.post('/anular/:id', verifyToken, webRetirosController.anularRetiro);
-router.post('/autorizar', verifyToken, webRetirosController.autorizarRetiro);
 
 module.exports = router;

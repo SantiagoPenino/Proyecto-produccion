@@ -56,7 +56,14 @@ async function guardar(pool, id, campos) {
 
 async function filaDe(pool, origen, idExterno) {
   const r = await pool.request().input('O', sql.VarChar(50), origen).input('E', sql.VarChar(100), idExterno)
-    .query('SELECT *, DATEDIFF(MINUTE, FechaRecibido, GETDATE()) AS MinutosDesdeRecibido, DATEDIFF(SECOND, FechaRecibido, ISNULL(FechaFin, GETDATE())) AS SegundosDesdeRecibido FROM dbo.IntegracionPedidos WHERE Origen = @O AND IdExterno = @E');
+    // [15/10] El pase en curso se mide desde que ARRANCÓ: en el primero FechaFin es NULL (desde que se recibió); al volver a
+    // pasar archivos (recuperación, corrección del diseño) reintentarArchivos pone FechaFin = arranque. Antes se medía desde
+    // que se recibió el pedido: un re-pase días después salía "cortado a mitad de camino" apenas empezaba (y la pantalla
+    // dejaba de refrescarse sola). "Tardó" solo cuando el pedido terminó en la misma hora en que llegó (un re-pase no lo muestra).
+    .query(`SELECT *, DATEDIFF(MINUTE, ISNULL(FechaFin, FechaRecibido), GETDATE()) AS MinutosDelPase,
+                   CASE WHEN Estado IN ('PROCESANDO', 'PASANDO_ARCHIVOS') THEN DATEDIFF(SECOND, ISNULL(FechaFin, FechaRecibido), GETDATE())
+                        WHEN DATEDIFF(SECOND, FechaRecibido, FechaFin) <= 3600 THEN DATEDIFF(SECOND, FechaRecibido, FechaFin) END AS SegundosDesdeRecibido
+            FROM dbo.IntegracionPedidos WHERE Origen = @O AND IdExterno = @E`);
   return r.recordset[0] || null;
 }
 
@@ -66,8 +73,8 @@ const respuesta = (f) => ({
   noDocERP: f.NoDocERP,
   codigosOrden: f.CodigosOrden ? f.CodigosOrden.split(', ') : [],
   errores: leer(f.ErroresJson, []),
-  // PASANDO_ARCHIVOS hace más de 15 minutos = se cortó a mitad de camino: se puede reintentar
-  archivosColgados: f.Estado === 'PASANDO_ARCHIVOS' && f.MinutosDesdeRecibido > 15,
+  // PASANDO_ARCHIVOS hace más de 15 minutos (desde que arrancó este pase) = se cortó a mitad de camino: se puede reintentar
+  archivosColgados: f.Estado === 'PASANDO_ARCHIVOS' && f.MinutosDelPase > 15,
   archivos: leer(f.ArchivosJson, []).map(a => ({ nombre: a.originalName, destino: a.finalName, subido: !!a.subido, error: a.error || null, paso: a.paso || null })),
   segundos: f.SegundosDesdeRecibido != null ? f.SegundosDesdeRecibido : null,   // cuánto lleva (o cuánto tardó, si terminó)
 });
@@ -242,7 +249,7 @@ async function ponerCantidades(pool, noDoc, pedido, usuarioInterno, cliente) {
     setImmediate(async () => {
       try {
         const ERPSyncService = require('../erpSyncService');
-        await ERPSyncService.syncFinalOrderIntegration(String(noDoc), usuarioInterno?.id || 1, usuarioInterno?.name || cliente?.Nombre, null, { skipDeposito: true });
+        await ERPSyncService.syncFinalOrderIntegration(String(noDoc), usuarioInterno?.id || 1, usuarioInterno?.name || cliente?.Nombre);
       } catch (e) { logger.warn(`[PEDIDOS-SISTEMA] pedido ${noDoc}: no se pudo recotizar con la cantidad de prendas: ${e.message}`); }
     });
   } catch (e) {
@@ -404,9 +411,10 @@ async function reintentarArchivos(pool, { origen, idExterno, usuarioInterno, app
   const f = await filaDe(pool, origen, idExterno);
   if (!f) { const e = new Error('Ese pedido no existe.'); e.status = 404; throw e; }
   // PASANDO_ARCHIVOS de hace más de 15 minutos = el servidor se reinició a mitad de camino.
-  const colgado = f.Estado === 'PASANDO_ARCHIVOS' && f.MinutosDesdeRecibido > 15;
+  const colgado = f.Estado === 'PASANDO_ARCHIVOS' && f.MinutosDelPase > 15;
   if (f.Estado !== 'ERROR_ARCHIVOS' && !colgado) { const e = new Error('Este pedido no tiene archivos pendientes de pasar a producción.'); e.status = 409; throw e; }
-  await guardar(pool, f.IntegracionID, { Estado: 'PASANDO_ARCHIVOS' });
+  // FechaFin = arranque de este pase (lo vuelve a poner pasarArchivos al terminar): ver filaDe
+  await guardar(pool, f.IntegracionID, { Estado: 'PASANDO_ARCHIVOS', FechaFin: new Date() });
   setImmediate(() => pasarArchivos(pool, f.IntegracionID, usuarioInterno, app)
     .catch(e => logger.error(`[PEDIDOS-SISTEMA] pasarArchivos ${f.IntegracionID}: ${e.message}`)));
   return respuesta(await filaDe(pool, origen, idExterno));

@@ -1,8 +1,10 @@
 # ======================================================================
-# Se ignora por RUTA. No volver a poner *.md / *.sql / *.json / *.bat / docs
+# Se ignora por RUTA. No volver a poner *.md / *.json / *.bat / docs
 # globales: escondían archivos que el código necesita (public/manifest.json,
 # texturas.json, reglas_user.json) y la documentación (CHANGELOG, specs, docs).
 # Auditoría de limpieza 09/10/2026: docs/auditoria-limpieza-2026-10-09.md §14.
+# *.sql SÍ va global desde el 16/10/2026 (pedido de Santiago), con excepción
+# explícita para cada .sql que el código lee (ver la sección SQL).
 # ======================================================================
 
 # --- Dependencias y builds ---
@@ -52,6 +54,9 @@ backend/stock/compras/
 # Salidas de scripts: reimprimir_etiqueta.js escribe al lado; wmsBajarSnapshot.js baja a wms-snap/
 backend/scripts/etiqueta_*.html
 wms-snap/
+# exportar_productos_publicados.js: el .sql + fotos para pasar productos a otra base
+scripts/pasar_publicados/
+scripts/pasar_publicados.zip
 
 # --- Generados, bytecode y backups (esto sí por extensión: nunca son fuente) ---
 nul
@@ -62,6 +67,52 @@ __pycache__/
 *.backup.*
 *.orig
 *.tmp
+
+# --- SQL: fuera del repo (16/10/2026). Scripts y migraciones viven en cada máquina ---
+*.sql
+# poslinkService.asegurarEsquema lo lee al arrancar para crear sus tablas: sin él, POSLink falla
+!backend/scripts/sql/poslink_2026-10-12.sql
+
+# --- Respaldos, backups y comprimidos (16/10/2026) ---
+backend/respaldos/
+backend/backup_*.json
+*.rar
+*.zip
+# Rutas de un scratchpad pegadas como nombre de archivo (git add de un temporal)
+*scratchpad*
+
+# --- Pruebas sueltas y salidas de análisis, varias con DATOS DE CLIENTES (16/10/2026) ---
+scratch*.json
+backend/test_*.json
+backend/*_854.bat
+backend/scripts/analisis_*.json
+backend/scripts/resultados_*.json
+scripts/lista_*.md
+# estados de cuenta reales (nombre, RUT y saldo del cliente)
+backend/docs/estado *.pdf
+
+# --- Documentos de Yoania que no van en el repo (16/10/2026): los tiene en su disco ---
+backend/docs/API_EXTERNAL_PEDIDOS_PRENDA.md
+backend/docs/sisnet/
+docs/Auditoria deposito/
+docs/COMPARACION_ERP_que_falta_por_modulo.md
+docs/Configurador/
+docs/Fallas y parciales/
+docs/api-externa-pedidos-prenda-plan.md
+docs/beneficios-billetera-plan.md
+docs/motor-precios-transparencia-plan.md
+docs/parches/
+docs/solicitudes-vendedor-plan.md
+prototipos/
+scripts/DEPLOY_BENEFICIOS.md
+scripts/DEPLOY_SOLICITUDES_Y_CONVERSION.md
+scripts/DEPLOY_TIZADAPRO.md
+scripts/DEPLOY_TIZADAPRO_API.md
+scripts/GUIA_PRUEBAS_BENEFICIOS.md
+specs/39-fallas-faltantes-y-parciales.md
+specs/40-beneficios-pactados.md
+specs/41-captacion-de-solicitudes-vendedores.md
+src/assets/animations/loadings.json
 
 # --- Datos de clientes y archivos pesados que no van en git ---
 # (con / adelante: solo la carpeta de la raíz; sin la barra también taparía backend/scripts/sql/)

@@ -248,19 +248,9 @@ function ClientModal({ client, catalogs, onClose, onSaved, onDeleted }) {
         }
     }, [form.DepartamentoID, form.FormaEnvioID, catalogs.departamentos, catalogs.formasEnvio, isNew]);
 
-    // Auto-asignar vendedor por zona del departamento (solo al editar, si no tiene uno)
-    useEffect(() => {
-        if (isNew || !form.DepartamentoID || form.VendedorID) return;
-        api.get(`/nomenclators/vendedores-by-department/${form.DepartamentoID}`)
-            .then(r => {
-                const vendedores = r.data?.data || [];
-                if (vendedores.length > 0) {
-                    const random = vendedores[Math.floor(Math.random() * vendedores.length)];
-                    setForm(p => p.VendedorID ? p : { ...p, VendedorID: random.Cedula });
-                }
-            })
-            .catch(() => { });
-    }, [form.DepartamentoID, form.VendedorID, isNew]);
+    // El vendedor NO se asigna solo (15/10): antes, si el cliente no tenía, se elegía uno AL
+    // AZAR entre los de la zona del departamento, al editar y al dar de alta. Queda el que
+    // elija quien carga el cliente, o vacío.
 
     // Trim helper: limpia espacios de todos los campos string del form
     const trimForm = (f) => {
@@ -295,15 +285,7 @@ function ClientModal({ client, catalogs, onClose, onSaved, onDeleted }) {
                 : formas.find(f => f.Nombre?.toUpperCase().includes('ENCOMIENDA'));
             if (target) cleanForm.FormaEnvioID = target.ID;
         }
-        if (!cleanForm.VendedorID && cleanForm.DepartamentoID) {
-            try {
-                const r = await api.get(`/nomenclators/vendedores-by-department/${cleanForm.DepartamentoID}`);
-                const vendedores = r.data?.data || [];
-                if (vendedores.length > 0) {
-                    cleanForm.VendedorID = vendedores[Math.floor(Math.random() * vendedores.length)].Cedula;
-                }
-            } catch { }
-        }
+        // Sin vendedor por defecto: ya no se elige uno al azar de la zona (ver arriba).
         return cleanForm;
     };
 

@@ -1,7 +1,7 @@
 // apiordenesRetiro.js
 const express = require('express');
 const router = express.Router();
-const { createOrdenRetiro, getOrdenesRetiroPorEstados, actualizarOrdenRetiroEstado, marcarOrdenRetiroPronto, ordenesRetiroCaja, marcarOrdenRetiroEntregado, getOrdenesRetiroPasarPorCaja, ordenesRetiroMarcarPasarPorCaja, getOrdenesRetiroPorFecha, getOrdenesRetiroPorLugar, marcarDespachoEntregadoAutorizado, buscarParaMostrador, getClienteEnvioDatos, getTodasSinRetiro, backfillLugarRetiro, getOrdenesRetiroPorRemito, editarCostoOrden, desvincularOrdenRetiro, cancelarOrdenCaja, exonerarOrdenCaja, revertirExoneracionOrden, cambiarEstadoOrden, getEstadoOrden } = require('../controllers/ordenesRetiroController');
+const { createOrdenRetiro, getOrdenesRetiroPorEstados, actualizarOrdenRetiroEstado, marcarOrdenRetiroPronto, ordenesRetiroCaja, marcarOrdenRetiroEntregado, getOrdenesRetiroPasarPorCaja, getOrdenesRetiroPorFecha, getOrdenesRetiroPorLugar, marcarDespachoEntregadoAutorizado, buscarParaMostrador, getClienteEnvioDatos, getTodasSinRetiro, backfillLugarRetiro, getOrdenesRetiroPorRemito, editarCostoOrden, desvincularOrdenRetiro, cancelarOrdenCaja, exonerarOrdenCaja, revertirExoneracionOrden, cambiarEstadoOrden, getEstadoOrden } = require('../controllers/ordenesRetiroController');
 const { verifyToken } = require('../middleware/authMiddleware');
 
 // Ruta para crear una Orden de Retiro
@@ -35,9 +35,6 @@ router.get('/caja', ordenesRetiroCaja);
 
 // Ruta para traer las ordenes de retiro que deben pasar por caja
 router.get('/pasarporcaja', getOrdenesRetiroPasarPorCaja);
-
-// Ruta para traer las ordenes de retiro que deben pasar por caja
-router.post('/marcarpasarporcaja/:pasar', verifyToken, ordenesRetiroMarcarPasarPorCaja);
 
 router.get('/filterByDate', getOrdenesRetiroPorFecha);
 

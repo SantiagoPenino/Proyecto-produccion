@@ -673,23 +673,4 @@ const generarComprobanteRecepcion = async ({ codigo, clienteId, tipo, telaClient
 
     return `/recepciones/${fileName}`; // ruta relativa para servir desde el backend
 };
-
-// ==========================================
-// 7. GUARDAR COMPROBANTE (base64 → disco)
-//    Mismo mecanismo que /contabilidad/caja/guardar-comprobante
-// ==========================================
-// SIN USO (13/10): guardarComprobante: receptionService.guardarComprobante existe pero nadie lo llama. Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
-exports.guardarComprobante = async (req, res) => {
-    const { nombreDocumento, pdfBase64 } = req.body;
-    if (!nombreDocumento || !pdfBase64) {
-        return res.status(400).json({ error: 'Faltan parámetros nombreDocumento o pdfBase64' });
-    }
-    try {
-        const filePath = pdfService.guardarDesdeBase64(nombreDocumento, pdfBase64, 'recepciones');
-        logger.info('[RECEPCION-COMPROBANTE] Guardado: ' + filePath);
-        return res.json({ success: true, path: filePath });
-    } catch (err) {
-        logger.error('[RECEPCION-COMPROBANTE] Error al guardar: ' + err.message);
-        return res.status(500).json({ error: err.message });
-    }
-};
+
