@@ -670,6 +670,68 @@ exports.getBultoByLabel = async (req, res) => {
 
 // --- REMITOS (DISPATCH) ---
 
+// ── RECEPCIÓN AUTOMÁTICA DE REMITOS (16/10/2026) ──
+// El material impreso que ECOUV manda a Terminaciones no pasa por cadete ni por el Check-in: el
+// remito se crea y se recibe en el mismo momento, así la orden de terminaciones (XEUV) queda en
+// 'Material Recibido' y aparece directo en la bandeja. Antes quedaba esperando a que alguien
+// hiciera el Check-in a mano en TERMINAC. El resto de los destinos sigue igual.
+const RECEPCION_AUTOMATICA = [{ origen: 'ECOUV', destino: 'TERMINAC' }];
+const normArea = (a) => String(a || '').trim().toUpperCase();
+const esRecepcionAutomatica = (origen, destino) =>
+    RECEPCION_AUTOMATICA.some(r => r.origen === normArea(origen) && r.destino === normArea(destino));
+
+/**
+ * Recibe un remito recién creado con TODOS sus bultos, por el mismo camino que el Check-in manual
+ * ("recibir todo" en ReceptionView → receiveDispatch): mismos estados, historial, requisitos y avisos.
+ *
+ * Corre DESPUÉS del commit del remito y no lo deshace si falla: el remito queda pendiente y se
+ * recibe a mano como siempre. Por eso devuelve el resultado en vez de tirar: el remito ya existe.
+ * @returns {Promise<{ ok: boolean, status?: string, error?: string }>}
+ */
+async function recibirRemitoAutomatico(req, { envioId, codigoRemito, areaDestino, usuarioId, bultosIds }) {
+    let statusCode = 200;
+    let respuesta = null;
+    const resInterno = {
+        status(code) { statusCode = code; return this; },
+        json(data) { respuesta = data; return this; },
+    };
+    try {
+        await exports.receiveDispatch({
+            user: req.user,
+            app: req.app,
+            headers: req.headers,
+            body: {
+                envioId,
+                areaReceptora: normArea(areaDestino),
+                usuarioId,
+                usuario: req.body?.usuario,
+                itemsRecibidos: bultosIds.map(bultoId => ({ bultoId: Number(bultoId), estado: 'ESCANEADO' })),
+            },
+        }, resInterno);
+    } catch (e) {
+        statusCode = 500;
+        respuesta = { error: e.message };
+    }
+
+    if (statusCode >= 400 || !respuesta?.success) {
+        const error = respuesta?.error || 'error desconocido';
+        logger.warn(`[createRemito] No se pudo recibir automáticamente ${codigoRemito} en ${normArea(areaDestino)}: ${error}. Queda para el Check-in manual.`);
+        return { ok: false, error };
+    }
+
+    // Marca en el remito para que en el historial se vea que no hubo Check-in de una persona.
+    try {
+        const pool = await getPool();
+        await pool.request()
+            .input('EID', sql.Int, envioId)
+            .query(`UPDATE Logistica_Envios SET Observaciones = CONCAT(ISNULL(Observaciones, ''), ' [Recepción automática]') WHERE EnvioID = @EID`);
+    } catch (e) {
+        logger.warn(`[createRemito] No se pudo anotar la recepción automática en ${codigoRemito}: ${e.message}`);
+    }
+    logger.info(`[createRemito] ${codigoRemito} recibido automáticamente en ${normArea(areaDestino)} (${respuesta.status}).`);
+    return { ok: true, status: respuesta.status };
+}
+
 exports.createRemito = async (req, res) => {
     // lineasOrden (Spec 39, opcional): [{ ordenId, completaOrden, cantidad, motivoPendiente }] — una por orden madre.
     const { areaOrigen, areaDestino, usuarioId, bultosIds = [], newBultos = [], observations, lineasOrden = [] } = req.body;
@@ -1047,7 +1109,13 @@ exports.createRemito = async (req, res) => {
             }
 
             await transaction.commit();
-            res.json({ success: true, dispatchCode: codigoRemito, envioId, createdCount: newBultos.length });
+
+            // Remito que se recibe solo (ECOUV → TERMINAC): ver recibirRemitoAutomatico.
+            const recepcionAutomatica = esRecepcionAutomatica(areaOrigen, areaDestino)
+                ? await recibirRemitoAutomatico(req, { envioId, codigoRemito, areaDestino, usuarioId, bultosIds: finalBultosIds })
+                : null;
+
+            res.json({ success: true, dispatchCode: codigoRemito, envioId, createdCount: newBultos.length, recepcionAutomatica });
 
         } catch (inner) {
             await transaction.rollback();

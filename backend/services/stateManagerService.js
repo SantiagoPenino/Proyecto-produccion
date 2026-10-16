@@ -301,10 +301,28 @@ const GUARD_ORDENES_RESUELTAS =
     "ISNULL(EstadoenArea,'') NOT IN ('Pronto','En transito','En Transito','En Tránsito','Recibido en Destino','Ingresado','Pronto para entregar','Con Falla','Retenido','Finalizado','Entregado','Avisado','Para Avisar','Cancelado') " +
     "AND Estado NOT IN ('Finalizado','Cancelado','Entregado')";
 
+/**
+ * Lista SQL de EstadoenArea con los que una orden ya NO tiene nada pendiente en su LOTE: se
+ * controló ('Pronto') o siguió por logística ('En transito', 'Recibido en Destino', …).
+ *
+ * Es la ÚNICA definición de "orden terminada para el lote": la usan el cierre automático del
+ * lote (loteCleanupService) y la lista de lotes de Control (rollsController.getRollosActivos).
+ * Antes cada uno tenía su lista y solo el cierre ignoraba lo despachado: en ECOUV, donde se
+ * despacha a medida que se controla, una sola orden 'En transito' dejaba el lote abierto para
+ * siempre (reporte 16/10/2026, lote #4417).
+ *
+ * A diferencia de GUARD_ORDENES_RESUELTAS, 'Retenido' y 'Con Falla' NO están: una orden con
+ * falla pendiente mantiene su lote abierto, porque después de la reposición vuelve a ese lote
+ * para finalizarse (completarOrden: Retenido → Pendiente).
+ */
+const ESTADOS_AREA_FUERA_DE_LOTE =
+    "('Pronto','En transito','En Transito','En Tránsito','Recibido en Destino','Ingresado','Pronto para entregar','En Terminaciones','Finalizado','Entregado','Avisado','Para Avisar','Cancelado')";
+
 module.exports = {
     changeOrderState,
     extractUser,
     fetchNombreRollo,
     fetchNombreMaquina,
     GUARD_ORDENES_RESUELTAS,
+    ESTADOS_AREA_FUERA_DE_LOTE,
 };

@@ -9,6 +9,8 @@ import {
 } from '../../utils/terminacionesGeo';
 import PlanoPieza, { COLOR_CAPA } from '../shared/PlanoPieza';
 import OrdenProntaModal from '../production/components/OrdenProntaModal';
+import { socket } from '../../services/socketService';
+import useRecargaConFreno from '../../hooks/useRecargaConFreno';
 // pdf.js LEGACY, la misma ruta que src/client-portal/api/fileService.js (ver la nota ahí).
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
 import pdfjsWorker from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url';
@@ -60,6 +62,14 @@ const EcoUvFinishing = ({ fase = 'trabajo' }) => {
         const interval = setInterval(fetchDocuments, 30000);
         return () => clearInterval(interval);
     }, [fetchDocuments]);
+
+    // El remito ECOUV → TERMINAC se recibe solo al crearse: con el aviso del server la orden aparece
+    // en la bandeja enseguida, sin esperar la próxima vuelta del polling.
+    const avisarCambio = useRecargaConFreno(fetchDocuments);
+    useEffect(() => {
+        socket.on('server:ordersUpdated', avisarCambio);
+        return () => socket.off('server:ordersUpdated', avisarCambio);
+    }, [avisarCambio]);
 
     // Cargar detalles cuando cambia el ID seleccionado
     useEffect(() => {
