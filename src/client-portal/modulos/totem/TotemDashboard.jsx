@@ -74,6 +74,13 @@ const printTotemTicket = ({ ordenRetiro, client, orders, title = 'COMPROBANTE DE
 };
 
 // Cobro con tarjeta (POSLink): estados en los que se cobró, en los que no, y en los que no se sabe.
+// Botón «Tarjeta» (POS de Resonet) APAGADO hasta tener las credenciales de producción (16/10/2026): el
+// código del cobro con tarjeta se deploya igual. Para prenderlo, poner true y hacer el build.
+const TARJETA_EN_TOTEM = false;
+// Botón «Mercado Pago» (QR) APAGADO hasta probarlo de punta a punta con un pago real (16/10/2026). Para
+// prenderlo, poner true y hacer el build.
+const MP_EN_TOTEM = false;
+
 const POS_SIN_COBRO = ['RECHAZADA', 'CANCELADA', 'ERROR_VALIDACION', 'REVERSADA'];
 // REVERSA_PENDIENTE: el POS tomó la tarjeta y no respondió; la reversa puede tardar hasta 24 h y mientras
 // tanto el retiro sigue bloqueado para otro cobro. Para el cliente es "no vuelvas a pagar, andá a la caja".
@@ -126,6 +133,7 @@ export const TotemDashboard = ({ onLogout, onOcupado }) => {
     const ordenesCobroRef = useRef([]);                // órdenes del retiro, para el ticket
 
     useEffect(() => {
+        if (!TARJETA_EN_TOTEM) return;
         fetch(`${API_BASE}/totem-pos/estado`, { headers: totemPosHeaders() })
             .then(r => r.json())
             .then(d => setPosInfo(d?.pos ? { terminal: d.terminal } : null))
@@ -136,6 +144,7 @@ export const TotemDashboard = ({ onLogout, onOcupado }) => {
     const [mpDisponible, setMpDisponible] = useState(false);
     const [pagoMp, setPagoMp] = useState(null);   // { url, transactionId, retiro, moneda, monto, expiraEnMinutos, estado, desde, aprobadoDesde }
     useEffect(() => {
+        if (!MP_EN_TOTEM) return;
         fetch(`${API_BASE}/totem-mp/estado`, { headers: totemHeaders() })
             .then(r => r.json())
             .then(d => setMpDisponible(!!d?.mp))
@@ -758,8 +767,8 @@ export const TotemDashboard = ({ onLogout, onOcupado }) => {
         const aPagar = orders.filter(o => selectedOrders.includes(o.id) && !o.isPaid && Number(o.amount) > 0);
         const monedasAPagar = [...new Set(aPagar.map(o => monedaDe(o.currency)))];
         const totalAPagar = aPagar.reduce((s, o) => s + Number(o.amount), 0);
-        const puedePagarConTarjeta = !!posInfo && aPagar.length > 0 && monedasAPagar.length === 1;
-        const puedePagarConMp = mpDisponible && aPagar.length > 0 && monedasAPagar.length === 1;
+        const puedePagarConTarjeta = TARJETA_EN_TOTEM && !!posInfo && aPagar.length > 0 && monedasAPagar.length === 1;
+        const puedePagarConMp = MP_EN_TOTEM && mpDisponible && aPagar.length > 0 && monedasAPagar.length === 1;
         const hayPagoEnTotem = puedePagarConTarjeta || puedePagarConMp;
 
         return (
@@ -914,7 +923,7 @@ export const TotemDashboard = ({ onLogout, onOcupado }) => {
                                     }
                                 </button>
                             </div>
-                            {(posInfo || mpDisponible) && aPagar.length > 0 && monedasAPagar.length > 1 && (
+                            {((TARJETA_EN_TOTEM && posInfo) || (MP_EN_TOTEM && mpDisponible)) && aPagar.length > 0 && monedasAPagar.length > 1 && (
                                 <p className="mt-3 text-center text-sm text-white/40">Hay órdenes en pesos y en dólares: para pagar acá, elegí las de una sola moneda.</p>
                             )}
                         </div>

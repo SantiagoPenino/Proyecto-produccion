@@ -356,9 +356,15 @@ async function procesarOrden({ ordenId, codCliente, matriz, cantidad, io }) {
         await guardarTexturasOrden(pool, ordenId, elecciones, 'CLIENTE');
 
         // 4. El cliente aprobó su propio diseño al enviarlo → la orden queda lista para fabricar.
+        //    Si el arte vino en RGB con negro, el aviso al operario va como línea propia de la nota.
+        const notaColor = textoColorArte(res.color_arte);
         await pool.request()
             .input('OID', sql.Int, ordenId)
-            .query(`UPDATE Ordenes SET FechaAprobacionCliente = GETDATE(), TexturasElige = 'CLIENTE' WHERE OrdenID = @OID`);
+            .input('NotaAdd', sql.NVarChar(sql.MAX), notaColor ? ` || ${notaColor}` : '')
+            .query(`UPDATE Ordenes SET FechaAprobacionCliente = GETDATE(), TexturasElige = 'CLIENTE',
+                           Nota = CASE WHEN @NotaAdd = '' THEN Nota ELSE ISNULL(Nota, '') + @NotaAdd END
+                    WHERE OrdenID = @OID`);
+        if (notaColor) logger.info(`[TPU-Matriz] ${cod}: ${notaColor}`);
 
         const { changeOrderState } = require('./stateManagerService');
         const tx = new sql.Transaction(pool);
@@ -368,7 +374,7 @@ async function procesarOrden({ ordenId, codCliente, matriz, cantidad, io }) {
                 target: { type: 'ORDER', id: ordenId },
                 estado: 'Diseñado',
                 userObj: 'Sistema',
-                detalle: `Matriz propia del cliente: arte generado — ${textoPlancha}`,
+                detalle: `Matriz propia del cliente: arte generado — ${textoPlancha}` + (notaColor ? `. ${notaColor}` : ''),
                 io,
             });
             await tx.commit();
@@ -383,6 +389,36 @@ async function procesarOrden({ ordenId, codCliente, matriz, cantidad, io }) {
     } finally {
         try { fs.rmSync(salidaDir, { recursive: true, force: true }); } catch (_) { }
     }
+}
+
+/**
+ * Aviso al operario sobre el color del arte (16/10, pedido de Santiago). El generador pasa los negros
+ * RGB o gris a negro K 100 (NEGRO_* en tpu_matriz.py) y devuelve `color_arte`: { rgb, gris,
+ * negros_k: [[r,g,b]], cerca_limite: [{ rgb, a_k }] }, con valores de 0 a 255. Si el arte
+ * trae negro RGB, o un negro RGB cerca del límite (NEGRO_AVISO_*), devuelve la línea para la nota;
+ * si no, ''. Ej.: "[MATRIZ PROPIA] El archivo del cliente está en RGB y tiene negro: se pasó a negro
+ * K 100 (RGB 3,3,3)."
+ */
+function textoColorArte(c) {
+    if (!c) return '';
+    const negros = Array.isArray(c.negros_k) ? c.negros_k : [];
+    const cerca = Array.isArray(c.cerca_limite) ? c.cerca_limite : [];
+    if (!negros.length && !cerca.length) return '';
+    const lista = (items, fmt) => {
+        const MAX = 6;
+        const txt = items.slice(0, MAX).map(fmt).join(' / ');   // los colores ya llevan comas
+        return items.length > MAX ? `${txt} y ${items.length - MAX} más` : txt;
+    };
+    const rgb = (v) => (Array.isArray(v) ? v.join(',') : String(v));
+    const espacio = c.rgb ? 'RGB' : 'escala de grises';
+    let t = `[MATRIZ PROPIA] El archivo del cliente está en ${espacio}`;
+    t += negros.length
+        ? ` y tiene negro: se pasó a negro K 100 (RGB ${lista(negros, rgb)}).`
+        : '.';
+    if (cerca.length) {
+        t += ` Verificar: hay negros RGB cerca del límite: ${lista(cerca, x => `${rgb(x.rgb)} (${x.a_k ? 'pasado a K 100' : 'quedó en RGB'})`)}.`;
+    }
+    return t;
 }
 
 /** Deja constancia para el operario: Nota + HistorialOrdenes. Devuelve el Error para relanzar. */
@@ -482,4 +518,5 @@ module.exports = {
     encolarGeneracion,
     MAX_PDF_BYTES,
     _pendientes: () => pendientes,
+    _textoColorArte: textoColorArte,
 };

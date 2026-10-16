@@ -64,7 +64,7 @@ Reglas (docs/tpu-cliente-sube-vectorizado-plan.md §1 y §0.6, decisiones del 04
   - Corte = silueta exterior del arte (una por isla, sin huecos), SIN agrandar.
   - CMYK = el arte del cliente INTACTO (se incrusta la pagina como Form XObject: conserva sus
     espacios de color) + un anillo de sangrado de 1 mm hacia afuera relleno con el color de
-    la forma mas externa de cada isla.
+    la forma mas externa de cada isla. Unica excepcion: los negros RGB o gris pasan a K 100 (NEGRO_*).
   - Spot 1 = toda zona: lisa (su geometria rellena) o con textura (tiles del SVG del catalogo
     recortados a la geometria de la zona). Spot 2 = copia exacta de las zonas "doble".
     Spot 3 = las zonas con barniz, lisas. Todo vectorial, tinta al 100 %.
@@ -148,6 +148,23 @@ PIEZA_UNICA = False
 RECUADRO_MARGEN_MIN_MM = 1.5
 RECUADRO_SEP_MM = 9.0
 RECUADRO_PASO_LINEA_MM = 0.05   # paso con que se busca la altura de la linea
+# NEGRO RGB -> NEGRO CMYK (16/10, orden 34844 "CASIANO NEGRO", pedido de Santiago): el circulo de fondo
+# venia en RGB 3,3,3 (sRGB, exportado de CorelDRAW) y PhotoPrint lo convirtio a CMYK con su propia
+# conversion: salio gris violaceo en vez de negro. Se cambian SOLO los negros: un relleno o trazo RGB o
+# gris que es neutro y muy oscuro pasa a NEGRO_CMYK. El resto de los colores RGB NO se toca y PhotoPrint
+# los sigue convirtiendo como siempre ("no quiero que los colores cambien, solo el negro que salga como
+# tiene que salir"). Neutro = canales a menos de NEGRO_TOL_NEUTRO entre si; muy oscuro = ninguno pasa
+# de NEGRO_MAX (el K 100 de Illustrator pasado a RGB es 35,31,32: por eso el margen). Los degradados y
+# lo que ya viene en CMYK o tinta plana no se tocan. Imagenes no hay: leer_vector rechaza el PDF que las trae.
+NEGRO_CMYK = (0.0, 0.0, 0.0, 1.0)
+NEGRO_MAX = 40 / 255
+NEGRO_TOL_NEUTRO = 8 / 255
+# Aviso al operario (16/10, pedido de Santiago): negros RGB CERCA del limite, para que los verifique.
+# Pasados a K: alguno de sus canales a NEGRO_AVISO_MARGEN o menos de NEGRO_MAX (31 a 40 de 255). No
+# pasados: casi negros que quedaron en RGB, a NEGRO_AVISO_MARGEN o menos por encima (hasta 50) o que
+# apenas tiran a un color (diferencia entre canales de hasta NEGRO_AVISO_TOL).
+NEGRO_AVISO_MARGEN = 10 / 255
+NEGRO_AVISO_TOL = 16 / 255
 CIERRE_MAX_MM = 25.0
 PASO_CURVA_MM = 0.15
 
@@ -692,6 +709,185 @@ def _forzar_sobreimpresion(xobj, vistos=None):
             if str(hijo.get(Name.Subtype)) == "/Form":
                 n += _forzar_sobreimpresion(hijo, vistos)
     return n
+
+
+def _a_255(v):
+    """Componente de 0 a 1 -> entero de 0 a 255. Se compara asi, y no en 0-1, porque el PDF trae pocos
+    decimales: el 40 de 255 llega como 0.157 (40,03) y quedaba afuera del limite de 40."""
+    return int(round(float(v) * 255))
+
+
+def _es_negro(comps):
+    """1 valor (gris) o 3 (RGB), de 0 a 1: ¿es negro? (ver NEGRO_*)."""
+    v = [_a_255(c) for c in comps]
+    if not v or max(v) > _a_255(NEGRO_MAX):
+        return False
+    return len(v) == 1 or max(v) - min(v) <= _a_255(NEGRO_TOL_NEUTRO)
+
+
+def _negro_cerca_del_limite(comps, a_k):
+    """¿Negro RGB/gris cerca del limite (ver NEGRO_AVISO_*)? `a_k`: si se paso a K 100 o no."""
+    v = [_a_255(c) for c in comps]
+    alto, dif = max(v), max(v) - min(v)
+    if a_k:
+        return alto >= _a_255(NEGRO_MAX - NEGRO_AVISO_MARGEN)
+    return alto <= _a_255(NEGRO_MAX + NEGRO_AVISO_MARGEN) and dif <= _a_255(NEGRO_AVISO_TOL)
+
+
+def _tipo_espacio(cs, res):
+    """'rgb', 'gris', 'cmyk' u 'otro' para el operando de `cs`/`CS` (nombre de dispositivo o de recurso)."""
+    from pikepdf import Array
+    if not isinstance(cs, Array):
+        nombre = str(cs)
+        directo = {"/DeviceRGB": "rgb", "/RGB": "rgb", "/DeviceGray": "gris", "/G": "gris",
+                   "/DeviceCMYK": "cmyk", "/CMYK": "cmyk"}.get(nombre)
+        if directo:
+            return directo
+        dic = res.get("/ColorSpace") if res is not None else None
+        if dic is None or nombre not in dic:
+            return "otro"
+        cs = dic[nombre]
+        if not isinstance(cs, Array):
+            return _tipo_espacio(cs, None)
+    if len(cs) == 0:
+        return "otro"
+    familia = str(cs[0])
+    if familia == "/ICCBased":
+        return {1: "gris", 3: "rgb", 4: "cmyk"}.get(int(cs[1].get("/N", 0)), "otro")
+    return {"/CalRGB": "rgb", "/CalGray": "gris"}.get(familia, "otro")
+
+
+def info_color_nueva():
+    """Lo que junta _negro_rgb_a_cmyk para el aviso al operario."""
+    return {"rgb": 0, "gris": 0, "negros_k": set(), "cerca": set()}
+
+
+def _negro_rgb_a_cmyk(xobj, recursos_padre=None, vistos=None, info=None):
+    """Reescribe el content stream del arte (y de sus Form XObjects) cambiando cada negro RGB o gris
+    por NEGRO_CMYK (ver NEGRO_*). Devuelve cuantos colores cambio.
+
+    `sc`/`scn` sin `cs` delante usan el espacio vigente: al poner un `k` en lugar de un negro, el espacio
+    pasa a CMYK, asi que antes del siguiente color que NO se cambia se repone su `cs`. q/Q guardan y
+    reponen el estado, como en el PDF.
+
+    Con `info` (info_color_nueva()) junta para el aviso al operario: cuantos colores RGB y grises trae el
+    arte, los negros pasados a K y los que quedaron cerca del limite (ver NEGRO_AVISO_*), en valores de
+    0 a 255."""
+    import pikepdf
+    from pikepdf import ContentStreamInstruction, Name, Operator
+    if vistos is None:
+        vistos = set()
+    oid = getattr(xobj, "objgen", (0, 0))
+    if oid != (0, 0):
+        if oid in vistos:
+            return 0
+        vistos.add(oid)
+    res = xobj.get(Name.Resources)
+    if res is None:
+        res = recursos_padre
+    n = 0
+    hijos = res.get(Name.XObject) if res is not None else None
+    if hijos is not None:
+        for _, hijo in hijos.items():
+            if str(hijo.get(Name.Subtype)) == "/Form":
+                n += _negro_rgb_a_cmyk(hijo, res, vistos, info)
+
+    def registrar(tipo, vals, a_k):
+        if info is None:
+            return
+        info[tipo] += 1
+        if a_k or _negro_cerca_del_limite(vals, a_k):
+            rgb = tuple(_a_255(v) for v in (list(vals) * 3 if len(vals) == 1 else vals))
+            if a_k:
+                info["negros_k"].add(rgb)
+            if _negro_cerca_del_limite(vals, a_k):
+                info["cerca"].add((rgb, a_k))
+    try:
+        instrucciones = pikepdf.parse_content_stream(xobj)
+    except Exception:
+        return n
+
+    DEV = {"g": ("gris", Name.DeviceGray), "rg": ("rgb", Name.DeviceRGB), "k": ("cmyk", Name.DeviceCMYK)}
+    # por canal (f = relleno, s = trazo): (tipo, operando del cs, ¿quedo en CMYK por un cambio nuestro?)
+    est = {"f": ("gris", Name.DeviceGray, False), "s": ("gris", Name.DeviceGray, False)}
+    pila, nuevo, cambios = [], [], 0
+    cmyk_propio = _recursos_usan_devicecmyk(res)    # ¿el arte pinta algo en DeviceCMYK por su cuenta?
+    for ins in instrucciones:
+        if isinstance(ins, pikepdf.ContentStreamInlineImage):
+            cmyk_propio = True                          # imagen inline: por las dudas, se asume CMYK
+            nuevo.append(ins)
+            continue
+        op = str(ins.operator)
+        if op in ("k", "K") or (op in ("cs", "CS") and str(ins.operands[0]) in ("/DeviceCMYK", "/CMYK")):
+            cmyk_propio = True
+        if op == "q":
+            pila.append(dict(est))
+        elif op == "Q" and pila:
+            est = pila.pop()
+        canal = "f" if op in ("cs", "sc", "scn", "g", "rg", "k") else "s" if op in ("CS", "SC", "SCN", "G", "RG", "K") else None
+        if canal:
+            negro = ContentStreamInstruction(list(NEGRO_CMYK), Operator("k" if canal == "f" else "K"))
+            if op in ("cs", "CS"):
+                est[canal] = (_tipo_espacio(ins.operands[0], res), ins.operands[0], False)
+            elif op.lower() in DEV:
+                tipo, dev = DEV[op.lower()]
+                if tipo != "cmyk":
+                    es_negro = _es_negro(ins.operands)
+                    registrar(tipo, list(ins.operands), es_negro)
+                    if es_negro:
+                        nuevo.append(negro)
+                        est[canal] = (tipo, dev, True)
+                        cambios += 1
+                        continue
+                est[canal] = (tipo, dev, False)
+            else:                                           # sc / scn / SC / SCN
+                tipo, nombre, cambiado = est[canal]
+                try:
+                    vals = [float(v) for v in ins.operands]
+                except (TypeError, ValueError):             # patron: lleva un nombre
+                    vals = None
+                if vals is not None and len(vals) == {"gris": 1, "rgb": 3}.get(tipo):
+                    es_negro = _es_negro(vals)
+                    registrar(tipo, vals, es_negro)
+                    if es_negro:
+                        nuevo.append(negro)
+                        est[canal] = (tipo, nombre, True)
+                        cambios += 1
+                        continue
+                if cambiado:                                # reponer el espacio que el k piso
+                    nuevo.append(ContentStreamInstruction([nombre], Operator("cs" if canal == "f" else "CS")))
+                    est[canal] = (tipo, nombre, False)
+        nuevo.append(ins)
+    if cambios:
+        xobj.write(pikepdf.unparse_content_stream(nuevo))
+        # /DefaultCMYK (CorelDRAW lo pone con su perfil, U.S. Web Coated SWOP en la 34844) le asigna un
+        # perfil a todo DeviceCMYK, incluido el negro nuevo: Ghostscript lo convertia a K75 + CMY 65-68.
+        # Si el arte no pinta nada propio en DeviceCMYK, sacarlo no cambia ninguno de sus colores y el
+        # negro queda K puro. Si pinta, se deja: el negro nuevo se trata igual que el CMYK del cliente.
+        # Se copia el diccionario para no tocar recursos compartidos con otro contenido.
+        cs_dic = res.get(Name.ColorSpace) if res is not None else None
+        if not cmyk_propio and cs_dic is not None and Name.DefaultCMYK in cs_dic:
+            nuevos_res = pikepdf.Dictionary({k: v for k, v in res.items()})
+            nuevos_res[Name.ColorSpace] = pikepdf.Dictionary({k: v for k, v in cs_dic.items() if k != "/DefaultCMYK"})
+            xobj[Name.Resources] = nuevos_res
+    return n + cambios
+
+
+def _recursos_usan_devicecmyk(res):
+    """¿Hay imagenes o degradados en DeviceCMYK entre los recursos? (los afecta /DefaultCMYK)."""
+    from pikepdf import Name
+    if res is None:
+        return False
+    for clave in (Name.XObject, Name.Shading):
+        dic = res.get(clave)
+        if dic is None:
+            continue
+        for _, obj in dic.items():
+            if str(obj.get(Name.Subtype, "")) == "/Form":
+                continue
+            if str(obj.get(Name.ColorSpace, "")) in ("/DeviceCMYK", "/CMYK"):
+                return True
+    return False
 
 
 # Umbral de "tinta mayoritaria" para invertir la textura, como el visor (cargarTile: si lo que
@@ -1435,6 +1631,22 @@ def generar(job, preview=None):
     if not n_gs:
         avisos.append("El PDF del cliente no declara ningun estado grafico propio: no se pudo forzar "
                       "la sobreimpresion del arte. Si el relieve sale solo como contorno, es por esto.")
+    # Negros RGB del arte -> negro CMYK (ver NEGRO_*); los demas colores quedan como vinieron. `color_arte`
+    # va en el resultado para el aviso al operario (tpuMatrizService lo agrega a la nota de la orden).
+    info_color = info_color_nueva()
+    n_negros = _negro_rgb_a_cmyk(arte_xo, info=info_color)
+    color_arte = {
+        "rgb": bool(info_color["rgb"]),
+        "gris": bool(info_color["gris"]),
+        "negros_k": [list(v) for v in sorted(info_color["negros_k"])],
+        "cerca_limite": [{"rgb": list(v), "a_k": a_k} for v, a_k in sorted(info_color["cerca"])],
+    }
+    if n_negros:
+        avisos.append(f"El arte trae {n_negros} negro(s) en RGB o gris: se pasaron a negro CMYK (K 100) para que no "
+                      f"salgan grises. El resto de los colores no se toco.")
+    if color_arte["cerca_limite"]:
+        avisos.append("Negros RGB cerca del limite, verificar: " + ", ".join(
+            f"{','.join(map(str, c['rgb']))} ({'pasado a K 100' if c['a_k'] else 'quedo en RGB'})" for c in color_arte["cerca_limite"]) + ".")
 
     # matriz para colocar el arte original dentro del parche: pdf(user) -> parche
     M = ~page.transformation_matrix           # fitz -> pdf del cliente
@@ -1457,7 +1669,9 @@ def generar(job, preview=None):
     ops = []
     for isla in lista_islas:
         col = isla["color"] or (0.0, 0.0, 0.0)
-        if usa_cmyk:
+        if _es_negro(col[:3]):          # borde negro: el mismo negro CMYK que el arte (ver NEGRO_*)
+            ops.append(" ".join(_f(v) for v in NEGRO_CMYK) + " k")
+        elif usa_cmyk:
             c, m, y, k = _rgb_a_cmyk(col)
             ops.append(f"{_f(c)} {_f(m)} {_f(y)} {_f(k)} k")
         else:
@@ -1903,6 +2117,7 @@ def generar(job, preview=None):
         "canaleta_zonas": {"pt": sep_zonas_pt, "zonas_que_ceden": len(canaleta), "contornos": canaleta_n,
                            "area_mm2": canaleta_mm2},
         "arte_cmyk": usa_cmyk,
+        "color_arte": color_arte,
         "avisos": list(dict.fromkeys(avisos)),   # sin repetidos (una textura usada en Spot 1 y Spot 2 avisaba dos veces)
     }
 
