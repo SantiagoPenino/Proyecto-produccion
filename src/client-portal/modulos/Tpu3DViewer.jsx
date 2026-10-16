@@ -645,8 +645,10 @@ const PadMover = ({ dx, dy, onChange, onReset, clase }) => {
 };
 
 // `modo`:
-//  · 'cliente' (default) — portal: endpoints /web-orders scopeados al dueño. Si el pedido tiene
-//    TexturasElige='DISENADOR', la UI de elección se oculta y el cliente solo mira y aprueba.
+//  · 'cliente' (default) — portal: endpoints /web-orders scopeados al dueño. Solo para mirar el
+//    parche: desde el 15/10/2026 el cliente no elige texturas al aprobar un boceto (las define el
+//    diseñador; quien quiere elegirlas arma su propia matriz con «Hago mi matriz»). Aprueba con el
+//    ✓ de la tarjeta, no desde acá.
 //  · 'interno' — detalle de la orden: endpoints /orders sin scope; el diseñador elige las texturas
 //    (se guardan con PUT, que marca ElegidaPor=OPERARIO y deja historial).
 // `onAprobado` (solo modo cliente): callback tras aprobar desde el visor, para refrescar la lista.
@@ -962,13 +964,14 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose, onAprobado, modo = 'clie
     //  · Interno — solo si las texturas las define el diseñador ('DISENADOR'). En los otros dos
     //    casos (el cliente las eligió, o todavía no aprobó) el visor abre como "ver": se puede
     //    editar igual, pero levantando el candado, y eso queda en el historial de la orden.
-    //  · Cliente — solo mientras el pedido espera su aprobación Y le toca elegir a él. Aprobado,
-    //    el visor sigue abriéndose para ver lo que quedó, sin poder cambiarlo.
+    //  · Cliente — nunca (15/10/2026): mira el parche con lo que haya (lo del diseñador, o lo que
+    //    eligió antes del cambio). Hasta esa fecha elegía mientras el pedido esperaba su aprobación,
+    //    y guardar desde acá aprobaba: esa parte de `guardar` quedó sin uso.
     const puedeElegir = esMatriz
         ? true   // matriz propia: el cliente siempre edita, no hay orden ni aprobación
         : esInterno
             ? (desbloqueado || estadoTpu?.texturasElige === 'DISENADOR')
-            : !!estadoTpu && !estadoTpu.aprobado && estadoTpu.eligeCliente !== false;
+            : false;
     const conCandado = esInterno && !desbloqueado && estadoTpu?.texturasElige !== 'DISENADOR';
 
     // Elección ya guardada (reabrir el visor tiene que mostrar lo que había elegido)

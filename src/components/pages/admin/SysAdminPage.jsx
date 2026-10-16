@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import api from '../../../services/api';
 import Swal from 'sweetalert2';
+import { toast } from 'sonner';
 import {
     Server, Cpu, HardDrive, Database, Wifi, Clock, RefreshCw,
     FileText, Search, Filter, ChevronDown, Package,
@@ -183,8 +184,22 @@ const SysAdminPage = () => {
         if (!result.isConfirmed) return;
         setBackupRunning(true);
         try {
-            const { data } = await api.post('/sysadmin/backup');
-            Swal.fire('Backup completado', data.output || 'Respaldo generado correctamente', 'success');
+            // Corre en segundo plano en el servidor (el envío a la oficina puede tardar varios minutos):
+            // se lanza y se consulta el estado hasta que termina.
+            const { data: inicio } = await api.post('/sysadmin/backup');
+            toast.info('Backup en curso: el backup y el envío a la oficina tardan unos minutos.');
+            const desde = new Date(inicio.inicio).getTime();
+            for (;;) {
+                await new Promise(ok => setTimeout(ok, 5000));
+                const { data: est } = await api.get('/sysadmin/backup/estado');
+                const u = est.ultimo;
+                if (!est.enCurso && u && new Date(u.inicio).getTime() >= desde - 1000) {
+                    const tiempo = u.segundos >= 60 ? `${Math.floor(u.segundos / 60)} min ${u.segundos % 60} s` : `${u.segundos} s`;
+                    if (u.ok) Swal.fire('Backup completado', `Terminó en ${tiempo}.`, 'success');
+                    else Swal.fire({ icon: 'error', title: 'El backup falló', html: `<p>Después de ${tiempo}. Lo último que dijo el script:</p><pre style="text-align:left;white-space:pre-wrap;font-size:12px;max-height:240px;overflow:auto">${(u.detalle || 'sin detalle').replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]))}</pre>` });
+                    break;
+                }
+            }
         } catch (e) {
             Swal.fire('Error', e.response?.data?.error || e.message, 'error');
         } finally { setBackupRunning(false); }

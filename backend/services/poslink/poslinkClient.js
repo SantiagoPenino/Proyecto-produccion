@@ -148,8 +148,9 @@ function conTransactionId(body, transactionId) {
 }
 
 /**
- * processFinancialPurchase [SPEC p.23-25]. Venta simple: NeedToReadCard false, Quotas 1
- * (con 0 el POS pregunta cuotas), Plan 0, sin propina.
+ * processFinancialPurchase [SPEC p.23-25]. Venta simple: NeedToReadCard false, Quotas 0
+ * (con tarjeta de crédito el POS le pide las cuotas al cliente en su pantalla; la guía lo marca
+ * "NO RECOMENDADO" sin decir por qué; pedido por Santiago el 14/10), Plan 0, sin propina.
  * @param {object} factura  null → TaxRefund 0, sin InvoiceNumber (verificado: PLS lo acepta).
  *                          { numero, montoCentesimos, gravadoCentesimos, taxRefund } → devolución.
  */
@@ -157,7 +158,7 @@ async function venta({ terminal, fecha, montoCentesimos, monedaISO, factura }) {
     const body = {
         ...base(terminal, fecha),
         Amount: montoPls(montoCentesimos),
-        Quotas: 1,
+        Quotas: 0,
         Plan: 0,
         Currency: String(monedaISO),
         TaxRefund: factura ? Number(factura.taxRefund) : 0,

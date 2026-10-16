@@ -30,4 +30,5 @@ export { wmsService } from './modules/wmsService';
 export { tareasService } from './modules/tareasService';
 export { consultasService } from './modules/consultasService';
 export { servicioTecnicoService } from './modules/servicioTecnicoService';
+export { desarrollosService } from './modules/desarrollosService';
 export { notificacionesService } from './modules/notificacionesService';

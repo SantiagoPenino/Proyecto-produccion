@@ -42,6 +42,7 @@ backend/scratch/
 backend/tickets/
 backend/consultas/
 backend/servicio-tecnico/
+backend/desarrollos-adjuntos/
 backend/fallas/
 backend/ComprobantesPagos/
 backend/comprobantesPagos/

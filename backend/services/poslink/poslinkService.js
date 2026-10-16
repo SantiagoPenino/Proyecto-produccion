@@ -1098,7 +1098,8 @@ async function iniciarReversion({ uuidVenta, montoCentesimos, usuarioId, motivo 
     if (!v || v.PtxTipo !== 'VENTA') throw new CobroPosError('INEXISTENTE', 'Venta con tarjeta inexistente.');
     // Una venta cobrada que el sistema NO registró (APROBADA_SIN_REGISTRAR) también se deshace desde acá: el
     // POS integrado no tiene menú de anulación (visto el 13/10). Es solo del lado del POS: en caja no hay nada
-    // que revertir. Por el total, y sin rebaja de IVA (esa la resuelve una persona con Resonet).
+    // que revertir. Anulación por el total; devolución total o parcial. Sin rebaja de IVA (esa la resuelve
+    // una persona con Resonet).
     const soloPos = v.PtxEstado === E.APROBADA_SIN_REGISTRAR;
     if (v.PtxEstado !== E.REGISTRADA && !soloPos) throw new CobroPosError('ESTADO', `La venta está en ${v.PtxEstado}: solo se anula una venta registrada o cobrada sin registrar.`);
     if (soloPos && Number(v.PtxTaxAmountCentesimos || 0) > 0) throw new CobroPosError('ESTADO', 'Esa venta tuvo rebaja de IVA y no se registró: la devolución hay que coordinarla con Resonet.');
@@ -1113,7 +1114,6 @@ async function iniciarReversion({ uuidVenta, montoCentesimos, usuarioId, motivo 
     const devuelto = prev.filter(x => ['REGISTRADA', 'APROBADA_SIN_REGISTRAR'].includes(x.PtxEstado)).reduce((s, x) => s + Number(x.PtxMontoCentesimos), 0);
     const disponible = total - devuelto;
     if (disponible <= 0) throw new CobroPosError('ESTADO', 'Esa venta ya está devuelta entera.');
-    if (soloPos && devuelto > 0) throw new CobroPosError('ESTADO', 'Esa venta ya tuvo una devolución: lo que falta hay que verlo a mano.');
 
     const doc = soloPos ? null : (await pool.request().input('T', sql.Int, v.PtxTcaIdTransaccion || 0).query(`
         SELECT TOP 1 DocIdDocumento, DocEstado, CfeEstado, DocTotal, MonIdMoneda, CliIdCliente, CueIdCuenta
@@ -1132,7 +1132,7 @@ async function iniciarReversion({ uuidVenta, montoCentesimos, usuarioId, motivo 
         throw new CobroPosError('LOTE', `No se pudo consultar el lote del POS para saber si corresponde anular o devolver: ${e.message}`);
     }
     const tipo = enLote ? 'ANULACION' : 'DEVOLUCION';
-    let monto = tipo === 'ANULACION' || soloPos ? disponible : (Number(montoCentesimos) || disponible);
+    let monto = tipo === 'ANULACION' ? disponible : (Number(montoCentesimos) || disponible);
     if (tipo === 'ANULACION' && devuelto > 0) throw new CobroPosError('ESTADO', 'La venta ya tuvo una devolución parcial: no se puede anular entera.');
     if (!Number.isSafeInteger(monto) || monto <= 0 || monto > disponible) throw new CobroPosError('MONTO_INVALIDO', `Se puede devolver hasta ${(disponible / 100).toFixed(2)}.`);
     if (!soloPos && tipo === 'DEVOLUCION' && monto < total && !aceptada) {
@@ -1257,13 +1257,26 @@ async function registrarReversion(pool, fila) {
     const autorizado = fila.PtxMontoAutorizadoCentesimos == null ? null : Number(fila.PtxMontoAutorizadoCentesimos);
     if (autorizado !== pedido) return sinRegistrar(`El POS ${nombre === 'anulación' ? 'anuló' : 'devolvió'} ${autorizado == null ? '?' : (autorizado / 100).toFixed(2)} y se pidió ${(pedido / 100).toFixed(2)}.`);
     if (int.accion === 'SOLO_POS') {
-        // La venta nunca se registró en caja: no hay documento ni pago que revertir. Queda como no cobrada
-        // (CANCELADA libera sus órdenes y anula el número de factura que tuviera reservado).
+        // La venta nunca se registró en caja: no hay documento ni pago que revertir. Devuelta entera (esta más
+        // las devoluciones anteriores) → queda como no cobrada (CANCELADA libera sus órdenes y anula el número
+        // de factura que tuviera reservado). Parcial → sigue cobrada sin registrar por lo que falta.
         await cambiarEstado(pool, ptxId, [E.APROBADA], E.REGISTRADA, { nota: 'Solo en el POS: la venta nunca se registró en caja.' });
-        const ok = await cambiarEstado(pool, v.PtxId, [E.APROBADA_SIN_REGISTRAR], E.CANCELADA, {
-            PtxRequiereRevision: 0, nota: `${nombre === 'anulación' ? 'Anulada' : 'Devuelta'} en el POS por el cobro #${ptxId}: no quedó cobrada.`,
-        });
-        if (!ok) logger.warn(`${LOG} ${nombre} #${ptxId}: la venta #${v.PtxId} ya no estaba en APROBADA_SIN_REGISTRAR; se dejó como estaba.`);
+        const antes = Number((await pool.request().input('V', sql.BigInt, v.PtxId).input('Id', sql.BigInt, ptxId)
+            .query(`SELECT ISNULL(SUM(PtxMontoCentesimos), 0) AS M FROM dbo.PosTransacciones
+                    WHERE PtxVentaOrigenId = @V AND PtxId <> @Id AND PtxEstado = 'REGISTRADA'`)).recordset[0].M);
+        const totalVenta = Number(v.PtxMontoAutorizadoCentesimos ?? v.PtxMontoCentesimos);
+        if (antes + pedido >= totalVenta) {
+            const ok = await cambiarEstado(pool, v.PtxId, [E.APROBADA_SIN_REGISTRAR], E.CANCELADA, {
+                PtxRequiereRevision: 0, nota: `${nombre === 'anulación' ? 'Anulada' : 'Devuelta'} en el POS por el cobro #${ptxId}: no quedó cobrada.`,
+            });
+            if (!ok) logger.warn(`${LOG} ${nombre} #${ptxId}: la venta #${v.PtxId} ya no estaba en APROBADA_SIN_REGISTRAR; se dejó como estaba.`);
+        } else {
+            await pool.request().input('Id', sql.BigInt, v.PtxId)
+                .input('Nota', sql.NVarChar(1000), `Devolución parcial de ${(pedido / 100).toFixed(2)} por el cobro #${ptxId}; quedan ${((totalVenta - antes - pedido) / 100).toFixed(2)} cobrados sin registrar.`)
+                .query(`UPDATE dbo.PosTransacciones SET PtxUpdatedAt = GETDATE(),
+                            PtxObservaciones = LEFT(CONCAT(PtxObservaciones, CASE WHEN PtxObservaciones IS NULL THEN '' ELSE ' | ' END, CONVERT(VARCHAR(16), GETDATE(), 120), ' ', @Nota), 1000)
+                        WHERE PtxId = @Id`);
+        }
         logger.info(`${LOG} ${nombre} #${ptxId} registrada (SOLO_POS).`);
         return true;
     }

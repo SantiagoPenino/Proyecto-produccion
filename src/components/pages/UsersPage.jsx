@@ -84,7 +84,7 @@ const UsersPage = () => {
             setNuevoUsuario(null);
             cargarDatos();
         } catch (error) {
-            alert("Error al guardar: " + (error.message || 'Error desconocido'));
+            alert("Error al guardar: " + (error.response?.data?.error || error.message || 'Error desconocido'));
         }
     };
 
@@ -94,7 +94,7 @@ const UsersPage = () => {
                 await usersService.delete(id);
                 cargarDatos();
             } catch (error) {
-                alert("Error al eliminar: " + (error.message || 'Error desconocido'));
+                alert("Error al eliminar: " + (error.response?.data?.error || error.message || 'Error desconocido'));
             }
         }
     };

@@ -9,27 +9,27 @@ export const ConfirmationModal = ({ isOpen, onClose, onConfirm, title, message, 
     const styles = {
         danger: {
             icon: <AlertTriangle size={32} className="text-rose-500" />,
-            bgIcon: 'bg-rose-50',
-            btnConfirm: 'bg-rose-600 hover:bg-rose-700 text-white shadow-rose-200',
-            border: 'border-rose-100'
+            bgIcon: 'bg-rose-500/15',
+            btnConfirm: 'bg-rose-600 hover:bg-rose-700 text-white shadow-rose-900/40',
+            border: 'border-rose-500/30'
         },
         warning: {
-            icon: <AlertTriangle size={32} className="text-amber-500" />,
-            bgIcon: 'bg-amber-50',
-            btnConfirm: 'bg-amber-500 hover:bg-amber-600 text-white shadow-amber-200',
-            border: 'border-amber-100'
+            icon: <AlertTriangle size={32} className="text-brand-magenta" />,
+            bgIcon: 'bg-brand-magenta/15',
+            btnConfirm: 'bg-brand-magenta hover:bg-brand-magenta/90 text-white shadow-brand-magenta/20',
+            border: 'border-brand-magenta/30'
         },
         info: {
             icon: <Info size={32} className="text-blue-500" />,
-            bgIcon: 'bg-blue-50',
-            btnConfirm: 'bg-blue-600 hover:bg-blue-700 text-white shadow-blue-200',
-            border: 'border-blue-100'
+            bgIcon: 'bg-blue-500/15',
+            btnConfirm: 'bg-blue-600 hover:bg-blue-700 text-white shadow-blue-900/40',
+            border: 'border-blue-500/30'
         },
         success: {
             icon: <Check size={32} className="text-emerald-500" />,
-            bgIcon: 'bg-emerald-50',
-            btnConfirm: 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-emerald-200',
-            border: 'border-emerald-100'
+            bgIcon: 'bg-emerald-500/15',
+            btnConfirm: 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-emerald-900/40',
+            border: 'border-emerald-500/30'
         }
     };
 
@@ -40,17 +40,17 @@ export const ConfirmationModal = ({ isOpen, onClose, onConfirm, title, message, 
 
             {/* Overlay Oscuro con Blur */}
             <div
-                className="absolute inset-0 bg-zinc-900/60 transition-opacity"
+                className="absolute inset-0 bg-black/70 transition-opacity"
                 onClick={onClose}
             ></div>
 
             {/* Modal Card */}
-            <div className={`relative bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden transform transition-all scale-100 border ${currentStyle.border}`}>
+            <div className={`relative bg-zinc-900 rounded-2xl shadow-2xl w-full max-w-md overflow-hidden transform transition-all scale-100 border ${currentStyle.border}`}>
 
                 {/* Botón cerrar esquina */}
                 <button
                     onClick={onClose}
-                    className="absolute top-4 right-4 text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 p-1 rounded-full transition-colors"
+                    className="absolute top-4 right-4 text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 p-1 rounded-full transition-colors"
                 >
                     <X size={20} />
                 </button>
@@ -63,11 +63,11 @@ export const ConfirmationModal = ({ isOpen, onClose, onConfirm, title, message, 
                     </div>
 
                     {/* Título y Mensaje */}
-                    <h3 className="text-xl font-black text-zinc-800 tracking-tight mb-3">
+                    <h3 className="text-xl font-black text-white tracking-tight mb-3">
                         {title}
                     </h3>
 
-                    <p className="text-sm font-medium text-zinc-500 leading-relaxed mb-8 whitespace-pre-line">
+                    <p className="text-sm font-medium text-zinc-400 leading-relaxed mb-8 whitespace-pre-line">
                         {message}
                     </p>
 
@@ -75,7 +75,7 @@ export const ConfirmationModal = ({ isOpen, onClose, onConfirm, title, message, 
                     <div className="flex gap-3 w-full">
                         <button
                             onClick={onClose}
-                            className="flex-1 py-2.5 px-4 bg-white border border-zinc-200 text-zinc-600 text-sm font-bold rounded-xl hover:bg-zinc-50 hover:border-zinc-300 transition-all focus:ring-2 focus:ring-zinc-200 focus:outline-none"
+                            className="flex-1 py-2.5 px-4 bg-zinc-900 border border-zinc-700 text-zinc-300 text-sm font-bold rounded-xl hover:bg-zinc-800 hover:border-zinc-600 transition-all focus:ring-2 focus:ring-zinc-700 focus:outline-none"
                         >
                             {cancelText}
                         </button>
@@ -85,7 +85,7 @@ export const ConfirmationModal = ({ isOpen, onClose, onConfirm, title, message, 
                                 onConfirm();
                                 onClose();
                             }}
-                            className={`flex-1 py-2.5 px-4 text-sm font-bold rounded-xl shadow-lg hover:shadow-xl transition-all transform hover:-translate-y-0.5 focus:ring-2 focus:ring-offset-2 focus:outline-none ${currentStyle.btnConfirm}`}
+                            className={`flex-1 py-2.5 px-4 text-sm font-bold rounded-xl shadow-lg hover:shadow-xl transition-all transform hover:-translate-y-0.5 focus:ring-2 focus:ring-offset-2 focus:ring-offset-zinc-900 focus:outline-none ${currentStyle.btnConfirm}`}
                         >
                             {confirmText}
                         </button>

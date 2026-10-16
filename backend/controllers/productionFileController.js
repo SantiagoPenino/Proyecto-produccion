@@ -696,7 +696,13 @@ const postControlArchivo = async (req, res) => {
             const notaOriginal  = (row?.NotaOriginal || '').trim();
             const nombreMaquina = row?.NombreMaquina || '';
             const nombreLote    = row?.NombreLote    || '';
-            const tipoFallaDesc = fallaIDClean;  // se muestra el ID; podría JOIN TiposFalla si existe
+            // Nombre del tipo de falla elegido (obligatorio en el control). Va en la nota de la -F: antes
+            // la línea llevaba solo lo escrito en "Observaciones" y, si el operario no escribía nada,
+            // decía "Motivo: (sin especificar)" aunque el tipo estuviera elegido (SUB-34096-F57092, 15/10).
+            const rTipoFalla = await new sql.Request(transaction)
+                .input('TF', sql.Int, fallaIDClean)
+                .query('SELECT Titulo FROM TiposFallas WITH (NOLOCK) WHERE FallaID = @TF');
+            const tituloFalla = String(rTipoFalla.recordset[0]?.Titulo || '').trim();
             const safeMotivo    = (motivo || '').toString().trim();
 
             // Archivo al que corresponde ESTA falla. Una orden -F acumula una línea por cada falla
@@ -709,9 +715,11 @@ const postControlArchivo = async (req, res) => {
 
             // Partes de la nota
             const partesFalla = [];
-            // Motivo SIEMPRE presente: si el operario no escribe nada, la línea quedaba muda
-            // ("Máquina: X | Lote: Y") sin decir por qué falló.
-            partesFalla.push(`Motivo: ${safeMotivo || '(sin especificar)'}`);
+            // Motivo SIEMPRE presente: el tipo de falla y, si escribió algo, el texto del operario
+            // ("Motivo: Tela mal cortada — la tela vino corrida"). Sin ninguno de los dos, la línea
+            // quedaba muda ("Máquina: X | Lote: Y") sin decir por qué falló.
+            const motivoNota = [tituloFalla, safeMotivo].filter(Boolean).join(' — ');
+            partesFalla.push(`Motivo: ${motivoNota || '(sin especificar)'}`);
             if (archivoEtiqueta) partesFalla.push(`Archivo: ${archivoEtiqueta}`);
             if (metrosReponer)  partesFalla.push(`Reponer: ${metrosReponer}m`);
             if (nombreMaquina)  partesFalla.push(`Máquina: ${nombreMaquina}`);
@@ -1594,6 +1602,54 @@ const getFallasImagenes = async (req, res) => {
         res.json({ success: true, data: result.recordset });
     } catch (err) {
         logger.error("Error getFallasImagenes:", err);
+        res.status(500).json({ error: err.message });
+    }
+};
+
+// GET /orden/:ordenId/fallas — las fallas registradas para las líneas "FALLA:" de la nota de esta
+// orden, con el NOMBRE del tipo. El detalle las usa para completar el motivo de las notas viejas, que
+// solo llevaban el texto del operario ("Motivo: (sin especificar)" aunque hubiera tipo elegido).
+// Cada falla agrega una línea a la nota de la -F y un registro en FallasProduccion contra la orden que
+// falló (la madre o la -F anterior del linaje). Una -F que nace de otra HEREDA su nota (las líneas
+// anteriores del linaje + la suya), y una orden deja de recibir líneas cuando se crea la -F siguiente
+// del linaje. Se devuelven los registros del linaje hasta ese momento, con el lote de la orden que
+// falló (la línea dice "Lote: …"), y el front los empareja de la línea más nueva a la más vieja.
+const getFallasOrden = async (req, res) => {
+    try {
+        const ordenId = parseInt(req.params.ordenId, 10);
+        if (!(ordenId > 0)) return res.status(400).json({ error: 'ordenId requerido' });
+        const pool = await getPool();
+        const result = await pool.request()
+            .input('OID', sql.Int, ordenId)
+            .query(`
+                DECLARE @Codigo NVARCHAR(100), @Ingreso DATETIME;
+                SELECT @Codigo = CodigoOrden, @Ingreso = FechaIngreso FROM Ordenes WITH(NOLOCK) WHERE OrdenID = @OID;
+                -- raíz del linaje: SUB-34096-F57092-2 → SUB-34096
+                DECLARE @Raiz NVARCHAR(100) = CASE
+                    WHEN @Codigo LIKE '%-F[0-9]%' THEN LEFT(@Codigo, CHARINDEX('-F', @Codigo) - 1)
+                    ELSE @Codigo END;
+
+                -- hasta que se creó la -F siguiente del linaje (desde ahí las fallas nuevas van a esa). El registro
+                -- de una falla se graba milisegundos DESPUÉS de crear su -F: el corte es estricto en esa creación.
+                DECLARE @Hasta DATETIME = (
+                    SELECT MIN(FechaIngreso) FROM Ordenes WITH(NOLOCK)
+                    WHERE CodigoOrden LIKE @Raiz + '-F%' AND CodigoOrden <> @Codigo AND FechaIngreso > @Ingreso);
+
+                SELECT fp.FallaID, fp.ArchivoID, fp.FechaFalla, fp.Observaciones,
+                       tf.Titulo AS TipoFalla, ao.NombreArchivo, r.Nombre AS Lote
+                FROM FallasProduccion fp WITH(NOLOCK)
+                JOIN Ordenes o WITH(NOLOCK) ON o.OrdenID = fp.OrdenID
+                LEFT JOIN Rollos r WITH(NOLOCK) ON r.RolloID = o.RolloID
+                LEFT JOIN TiposFallas tf WITH(NOLOCK) ON tf.FallaID = TRY_CAST(fp.TipoFalla AS INT)
+                LEFT JOIN ArchivosOrden ao WITH(NOLOCK) ON ao.ArchivoID = fp.ArchivoID
+                WHERE @Codigo IS NOT NULL
+                  AND (o.CodigoOrden = @Raiz OR o.CodigoOrden LIKE @Raiz + '-F%')
+                  AND (@Hasta IS NULL OR fp.FechaFalla < @Hasta)
+                ORDER BY fp.FechaFalla, fp.FallaID
+            `);
+        res.json({ success: true, data: result.recordset });
+    } catch (err) {
+        logger.error('Error getFallasOrden:', err);
         res.status(500).json({ error: err.message });
     }
 };
@@ -2871,6 +2927,7 @@ module.exports = {
     getTiposFalla,
     getFallasImagenes,
     getFallasImagenesLote,
+    getFallasOrden,
     regenerateEtiquetas,
     updateFileCopyCount,
     getCompletedOrdersForReplacement,

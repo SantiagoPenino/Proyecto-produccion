@@ -36,6 +36,9 @@ router.get('/categorias', ticketsController.getCategorias);
 // creación). Antes de /:id, o la captura el matcher.
 router.get('/ordenes-recientes', ticketsController.getOrdenesRecientes);
 
+// "Pasar en limpio" con IA el borrador de una respuesta (solo personal interno, ver el controller)
+router.post('/ia/pasar-en-limpio', ticketsController.pasarEnLimpio);
+
 // Obtener detalles de un ticket específico
 router.get('/:id', ticketsController.getTicketDetails);
 

@@ -45,6 +45,8 @@ router.get('/orden/:ordenId/tpu-matriz/fuente', verifyToken, impersonarCliente, 
 router.get('/texturas-tpu', verifyToken, webOrdersController.getTexturasTpu);
 
 // TPU: elección de textura por zona. El POST solo entra mientras el pedido espera aprobación.
+// SIN USO el POST (15/10): el portal ya no deja elegir texturas al aprobar un boceto (las define el
+// diseñador; el visor del cliente es solo para mirar). Se dejó por si se vuelve atrás. El GET sí se usa.
 router.get('/orden/:ordenId/texturas', verifyToken, impersonarCliente, webOrdersController.getTexturasOrden);
 router.post('/orden/:ordenId/texturas', verifyToken, impersonarCliente, webOrdersController.setTexturasOrden);
 

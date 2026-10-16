@@ -118,6 +118,9 @@ async function procesar({ archivoId, copia, nombreArchivo, codigoOrden }) {
         });
     });
     logger.info(`[DTF-Blanco] ${cod}: plancha generada en ${((Date.now() - t0) / 1000).toFixed(1)}s (${resultado.px[0]}x${resultado.px[1]}px, scipy=${resultado.scipy})`);
+    if (resultado.sinTransparencia) {
+        logger.warn(`[DTF-Blanco] ${cod}: ${nombreArchivo || `archivo ${archivoId}`} no tiene transparencia: el fondo es parte del arte y se imprime el rectángulo entero.`);
+    }
 
     try {
         // 3. Subir a Drive y registrar como REFERENCIA de la orden

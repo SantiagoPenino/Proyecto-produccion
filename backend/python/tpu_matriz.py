@@ -14,7 +14,8 @@ Illustrator. Reproduce su contrato de salida (verificado 04/09/2026 sobre
                           ENCIMA con sobreimpresion (receta de dtf_blanco); si el arte va encima,
                           su knockout anula el relieve (ver generar()). PhotoPrint separa por
                           TINTA, no por capa, y el orden de deposicion lo fija la maquina.
-  <base>-corte.pdf        misma geometria de plancha, capa OCG "Corte", tinta "CutContour".
+  <base>-corte.plt        misma geometria de plancha en HPGL para la cortadora (marcas pluma 1, cortes pluma 7).
+                          Arte de varias piezas: cada copia suma un rectangulo y la linea entre piezas (RECUADRO_*).
   <base>-boceto.pdf       (opcional) el parche unitario a tamanio real con cotas, para el
                           cliente / "Mis matrices". No va al RIP.
   <base>-capas.pdf        (control, job.capas) una pagina por capa del parche unitario + "todo
@@ -47,14 +48,16 @@ Formato de job.json:
        "doble": false,                              # true = tambien en Spot 2 (doble altura)
        "barniz": true}                              # true = zona entera en Spot 3
     ],
-    "imposicion": {"cantidad": 40, "plancha_mm": 275, "sep_mm": 5, "sep_filas_mm": 5,   # entre CORTES
+    "imposicion": {"cantidad": 40, "plancha_mm": 270, "sep_mm": 5, "sep_filas_mm": 5,   # entre CORTES
                    "max_alto_mm": 500, "completar_filas": true},
     "aplanar": true,                                # spots inline en la pagina (default; ver APLANAR_*)
     "spots_raster": false,                          # true = capas de relieve como IMAGEN con su tinta
     "spots_trazado": false,                         # true = capas de relieve como TRAZADOS ya recortados
     "boceto": true,
     "relieve_doble_siempre": false,                 # true = Spot 2 con TODAS las zonas (un solo cabezal blanco)
-    "pieza_unica": true                             # el corte envuelve TODO el arte (default)
+    "pieza_unica": false,                           # true = une las piezas sueltas en un solo corte (default: no)
+    "recuadro": true,                               # varias piezas: rectangulo + linea en el .plt (RECUADRO_*)
+    "recuadro_margen_mm": 1.5, "recuadro_sep_mm": 9 # opcionales: minimo pieza-rectangulo y libre entre rectangulos
   }
 
 Reglas (docs/tpu-cliente-sube-vectorizado-plan.md §1 y §0.6, decisiones del 04/09):
@@ -67,11 +70,13 @@ Reglas (docs/tpu-cliente-sube-vectorizado-plan.md §1 y §0.6, decisiones del 04
     Spot 3 = las zonas con barniz, lisas. Todo vectorial, tinta al 100 %.
   - Escala de textura WYSIWYG con el visor 3D: ancho del tile = ancho del parche /
     repeticiones * escala; dx/dy = corrimiento en fracciones de tile.
-  - Imposicion = la del script: copias por fila = 1 + floor((plancha - parche + 0.5pt) /
-    (parche + sep)), grupo centrado, registros de 5 mm a 5 mm del borde en cada limite de
-    fila (solo CMYK y Corte), mesa = contenido + 5 mm. UNA sola plancha de alto maximo
+  - Imposicion: registros de 5 mm a 5 mm del borde en cada limite de fila (solo CMYK y
+    Corte), mesa = contenido + 5 mm. Desde el 14/10 las copias van ADENTRO de los registros
+    (entran las que dejan al menos sep_mm en cada hueco) y el ancho que sobra se reparte en
+    partes iguales: punto-copia = copia-copia = copia-punto, entre cortes. Antes el grupo iba
+    a sep_mm fijo y centrado en la plancha. UNA sola plancha de alto maximo
     max_alto_mm (decision 04/09: 50 cm), siempre con filas completas (sobran hasta
-    columnas-1 parches). Si la plancha no alcanza la cantidad pedida, los archivos de
+    columnas-1 parches). Arte de varias piezas: copias a 12 mm entre cortes (RECUADRO_*). Si la plancha no alcanza la cantidad pedida, los archivos de
     impresion y corte llevan el sufijo "-<N>copias", con N = VECES que hay que imprimir la
     plancha (copias de plancha) para cubrir el pedido.
 """
@@ -99,11 +104,11 @@ OFFSET_REGISTRO_MM = 5.0        # del borde de la plancha al borde de la marca
 MARGEN_EXTRA_MM = 5.0           # mesa = contenido + este margen
 # Separacion entre parches vecinos, medida entre LINEAS DE CORTE (decision del usuario 08/09:
 # "5 mm entre escudo y escudo, 2,5 mm de cada uno, solo si hay un escudo de ese lado"). Como cada
-# parche ya lleva su sangrado, la separacion entre las cajas del parche es SEP - 2 x sangrado; y
-# contra el borde de la plancha no se agrega nada, porque ahi no hay vecino.
+# parche ya lleva su sangrado, la separacion entre las cajas del parche es SEP - 2 x sangrado.
+# En el ancho, SEP es el MINIMO: desde el 14/10 lo que sobra se reparte entre los huecos (Imposicion).
 SEP_CORTES_DEFAULT_MM = 5.0
 SEP_FILAS_DEFAULT_MM = 5.0
-PLANCHA_DEFAULT_MM = 275.0     # ancho de la plancha: 275 mm desde el 13/10/2026 (antes 300)
+PLANCHA_DEFAULT_MM = 270.0     # ancho de la plancha: 270 mm desde el 14/10/2026 (275 desde el 13/10, antes 300)
 MAX_ALTO_DEFAULT_MM = 500.0     # alto maximo de la plancha (decision del usuario 04/09)
 REPETICIONES_DEFAULT = 2        # espeja REPETICIONES_DEFAULT de webOrdersController.getTexturasTpu
 CAPAS_BANDA_MM = 12.0           # banda superior con el rotulo en el PDF de control de capas
@@ -124,11 +129,25 @@ MAX_PIXELES_RASTER = 24_000_000
 TOL_SIMPLIFICACION_MM = 0.05    # Douglas-Peucker sobre los contornos
 CIERRE_MM = 0.3                 # une piezas separadas por menos de 2x esto
 ISLA_MINIMA_MM2 = 1.0
-# PIEZA UNICA (decision del usuario 08/09): todo lo que trae el archivo del cliente es UN parche.
-# Las piezas sueltas (las 4 estrellas del escudo de la AUF) se unen con TPU al cuerpo principal en
-# vez de salir como recortes separados. Se cierra la silueta con un radio creciente hasta que quede
-# un solo componente; si ni con el tope se unen, se usa la envolvente convexa.
-PIEZA_UNICA = True
+# PIEZA UNICA: APAGADO (14/10, Santiago: "que el archivo de corte corte lo que tiene que cortar").
+# Encendido unia las piezas sueltas (las 4 estrellas del escudo de la AUF) al cuerpo principal
+# cerrando la silueta con un disco creciente, y el corte salia con puentes de TPU y semicirculos
+# entre las estrellas (orden 34674). Apagado, cada pieza dibujada lleva su propio corte por su
+# contorno exterior. Solo se unen piezas a menos de 2 x CIERRE_MM (0,6 mm), que no se pueden
+# cortar por separado. Un job puede pedir la union con "pieza_unica": true.
+PIEZA_UNICA = False
+# RECUADRO DE CORTE (15/10, pedido de Santiago, calcado del "TP-184 AUF URUGUAY" que armaron a mano):
+# cuando el arte tiene MAS DE UNA pieza, cada copia lleva en el .plt un rectangulo alrededor y, si las
+# piezas chicas forman una fila arriba o abajo de la principal (las 4 estrellas del escudo), una linea
+# horizontal que las une de borde a borde del rectangulo por su parte mas ancha (las puntas de los
+# brazos). El rectangulo no tiene medida fija: crece hasta donde lo deja la copia vecina, con al menos
+# RECUADRO_MARGEN_MIN_MM entre las piezas y el y RECUADRO_SEP_MM libres entre rectangulos vecinos (no se
+# tocan). Para que entre, las copias van a 2 x margen + sep entre cortes (12 mm) en vez de
+# SEP_CORTES_DEFAULT_MM. Si las piezas chicas no forman una fila clara va solo el rectangulo, con aviso.
+# Arte de una sola pieza: sin rectangulo y a 5 mm, como antes. Un job puede apagarlo con "recuadro": false.
+RECUADRO_MARGEN_MIN_MM = 1.5
+RECUADRO_SEP_MM = 9.0
+RECUADRO_PASO_LINEA_MM = 0.05   # paso con que se busca la altura de la linea
 CIERRE_MAX_MM = 25.0
 PASO_CURVA_MM = 0.15
 
@@ -635,9 +654,15 @@ def _forzar_sobreimpresion(xobj, vistos=None):
     que le pongamos al hacer el `Do`: el arte termina borrando las tintas planas que tiene debajo y
     del relieve solo queda el contorno (diagnostico del 08/09, pruebas 3 a 13).
 
-    Con /op true y /OPM 1 (modo no-cero) un componente en 0 ya no borra lo que hay debajo: el arte
-    sigue imprimiendo igual en CMYK pero deja intactos Spot 1/2/3. Si el arte no declara ningun
-    ExtGState, se agrega uno y NO se puede aplicar sin tocar su content stream — ese caso se avisa.
+    Con /op true un objeto CMYK pinta sus cuatro canales de proceso y deja intactas las tintas que
+    no nombra: Spot 1/2/3 sobreviven debajo del arte. Si el arte no declara ningun ExtGState, se
+    agrega uno y NO se puede aplicar sin tocar su content stream — ese caso se avisa.
+
+    /OPM 0, NO 1 (14/10, orden 34617, escudo de la AUF): con /OPM 1 (modo no-cero) un componente en
+    0 tampoco borra el CMYK de abajo, asi que un relleno BLANCO (0 0 0 0) encima de un color no
+    pintaba nada y PhotoPrint imprimia el escudo amarillo macizo (los visores no simulan la
+    sobreimpresion y lo mostraban bien). Con /OPM 0 el blanco tapa el CMYK y el relieve queda
+    igual: verificado con Ghostscript (placas Spot identicas) y en maquina el 14/10.
     """
     from pikepdf import Dictionary, Name
     if vistos is None:
@@ -659,7 +684,7 @@ def _forzar_sobreimpresion(xobj, vistos=None):
         for _, gs in gss.items():
             gs[Name.OP] = True
             gs[Name("/op")] = True
-            gs[Name.OPM] = 1
+            gs[Name.OPM] = 0      # 1 hacia desaparecer el blanco del arte (ver docstring)
             n += 1
     hijos = res.get(Name.XObject)
     if hijos is not None:
@@ -1085,18 +1110,31 @@ class Imposicion:
         sangrado = float(cfg.get("sangrado_mm") or 0.0)
         sep_cortes = float(cfg.get("sep_mm") if cfg.get("sep_mm") is not None else SEP_CORTES_DEFAULT_MM)
         sepf_cortes = float(cfg.get("sep_filas_mm") if cfg.get("sep_filas_mm") is not None else SEP_FILAS_DEFAULT_MM)
-        self.sep = max(0.0, sep_cortes - 2 * sangrado) * PT_POR_MM
+        self.sangrado_mm = sangrado
         self.sepF = max(0.0, sepf_cortes - 2 * sangrado) * PT_POR_MM
         self.sep_cortes_mm = sep_cortes
         self.sepf_cortes_mm = sepf_cortes
         self.max_alto = float(cfg.get("max_alto_mm") or MAX_ALTO_DEFAULT_MM) * PT_POR_MM
         self.completar = bool(cfg.get("completar_filas", True))
         max_filas_cfg = int(cfg.get("max_filas") or 0)          # tope opcional extra (0 = sin tope)
-        if Wp > self.W + 0.01:
-            raise ValueError(f"El parche ({Wp / PT_POR_MM:.1f} mm) es mas ancho que la plancha ({self.W / PT_POR_MM:.0f} mm).")
-        paso = Wp + self.sep
-        self.columnas = max(1, 1 + int(math.floor((self.W - Wp + 0.5) / paso))) if paso > 0 else 1
-        self.pasoX = paso
+        # ANCHO (14/10, pedido de Santiago): las copias van ADENTRO de los puntos de registro y lo que
+        # sobra se reparte en partes iguales entre TODOS los huecos de la fila — punto-copia, copia-copia
+        # y copia-punto —, medidos entre lineas de corte. Entran las columnas que dejan al menos
+        # sep_cortes en cada hueco. Antes: grupo a sep fijo centrado en la plancha, y el sobrante quedaba
+        # todo a los costados (TPU-34028: 5 mm entre escudos y ~17 mm hasta cada punto).
+        sangrado_pt = sangrado * PT_POR_MM
+        borde_reg = (OFFSET_REGISTRO_MM + DIAMETRO_REGISTRO_MM) * PT_POR_MM   # borde interno del punto
+        util = self.W - 2 * borde_reg                       # entre los bordes internos de los puntos
+        corte_w = Wp - 2 * sangrado_pt                      # ancho del parche entre cortes
+        sep_min = sep_cortes * PT_POR_MM
+        if corte_w > util + 0.5:
+            raise ValueError(f"El parche ({corte_w / PT_POR_MM:.1f} mm) es mas ancho que el espacio entre los registros "
+                             f"({util / PT_POR_MM:.0f} mm en la plancha de {self.W / PT_POR_MM:.0f} mm).")
+        self.columnas = max(1, int(math.floor((util - sep_min + 0.5) / (corte_w + sep_min))))
+        hueco = max(0.0, (util - self.columnas * corte_w) / (self.columnas + 1))   # entre cortes
+        self.hueco_mm = hueco / PT_POR_MM
+        self.pasoX = corte_w + hueco
+        self.x0 = borde_reg + hueco - sangrado_pt           # origen de la CAJA (con sangrado) de la 1a columna
         self.pasoY = Hp + self.sepF
         self.radio = DIAMETRO_REGISTRO_MM * PT_POR_MM / 2
         self.margen = MARGEN_EXTRA_MM * PT_POR_MM
@@ -1114,8 +1152,6 @@ class Imposicion:
         self.impresiones = int(math.ceil(self.cantidad / self.copias_total))
         self.sufijo = "" if self.suficiente else f"-{self.impresiones}copias"
         self.paginas = 1
-        ocupado = Wp + self.pasoX * (self.columnas - 1)
-        self.x0 = (self.W - ocupado) / 2
         self.H = fijo + self.filas * self.pasoY
 
     def pagina(self, i=0):
@@ -1146,11 +1182,147 @@ class Imposicion:
             "suficiente": self.suficiente,
             "impresiones_necesarias": self.impresiones,
             "sufijo": self.sufijo,
-            "sep_entre_cortes_mm": self.sep_cortes_mm,
+            "sep_entre_cortes_mm": round(self.hueco_mm, 1),      # el hueco real del ancho (repartido)
+            "sep_min_entre_cortes_mm": self.sep_cortes_mm,
             "sep_filas_entre_cortes_mm": self.sepf_cortes_mm,
-            "sep_cajas_mm": round(self.sep / PT_POR_MM, 1),
+            "sep_cajas_mm": round(self.hueco_mm - 2 * self.sangrado_mm, 1),
             "sep_filas_cajas_mm": round(self.sepF / PT_POR_MM, 1),
         }
+
+
+# ── .plt (HPGL) para la cortadora ───────────────────────────────────────────────────────────────
+# Dialecto CALCADO de una muestra que la cortadora acepto (Desktop/tpu/TPU UV 10 cms/leones.plt, la
+# misma que uso backend/services/tpuPltService.js): cabecera IN / VS32 / WU0 / PW0.350 por pluma,
+# 40 unidades por mm, origen en el CENTRO de la plancha con Y hacia arriba, marcas de registro con
+# pluma 1 (circulos de 16 lados, empezando por la izquierda) y contornos de corte con pluma 7,
+# cerrados (el ultimo punto repite el primero), lineas CRLF y SP0 al final.
+PLT_UNIDADES_POR_MM = 40
+PLT_PLUMA_REGISTRO = 1
+PLT_PLUMA_CORTE = 7
+PLT_LADOS_MARCA = 16
+
+
+def _corte_pt(isla, H_px, ppmm):
+    """Contorno de corte de una isla en pt de parche (origen abajo-izquierda de la caja, y hacia arriba)."""
+    return [((c / ppmm) * PT_POR_MM, ((H_px - r) / ppmm) * PT_POR_MM) for r, c in isla["corte"]]
+
+
+def _cruces_horizontal(pts, y):
+    """x (ordenadas) donde la horizontal `y` corta el contorno cerrado `pts`."""
+    xs = []
+    n = len(pts)
+    for k in range(n):
+        (xa, ya), (xb, yb) = pts[k], pts[(k + 1) % n]
+        if (ya <= y < yb) or (yb <= y < ya):
+            xs.append(xa + (y - ya) * (xb - xa) / (yb - ya))
+    return sorted(xs)
+
+
+def recuadro_de_corte(lista_islas, H_px, ppmm, pasoX, pasoY, margen_min_pt, sep_pt):
+    """Cortes extra de UNA copia (ver RECUADRO_*), en pt de parche, para un arte de varias piezas.
+
+    - rect: (x0, y0, x1, y1). Crece hasta dejar `sep_pt` con el rectangulo de la copia vecina (el paso
+      de la imposicion menos la caja de las piezas), nunca a menos de `margen_min_pt` de las piezas.
+    - lineas: segmentos horizontales [(xa, y), (xb, y)] de izquierda a derecha. Por cada grupo de piezas
+      chicas que queda ENTERO arriba (o abajo) de la principal —la de mas area—, una linea de borde a
+      borde del rectangulo que las cruza a todas sin tocar otra pieza, a la altura donde la fila es mas
+      ancha (en las estrellas, las puntas de los brazos). Los tramos van entre pieza y pieza: el
+      contorno de cada pieza completa el corte.
+    - sueltas: piezas chicas que no quedaron en ninguna linea (al costado de la principal, en dos
+      filas, encajadas en otra...): el corte lleva solo el rectangulo y hay que revisarlo."""
+    contornos = [_corte_pt(i, H_px, ppmm) for i in lista_islas]
+    cajas = [(min(x for x, _ in p), min(y for _, y in p), max(x for x, _ in p), max(y for _, y in p))
+             for p in contornos]
+    bx0, by0 = min(c[0] for c in cajas), min(c[1] for c in cajas)
+    bx1, by1 = max(c[2] for c in cajas), max(c[3] for c in cajas)
+    mx = max(margen_min_pt, (pasoX - (bx1 - bx0) - sep_pt) / 2)
+    my = max(margen_min_pt, (pasoY - (by1 - by0) - sep_pt) / 2)
+    rect = (bx0 - mx, by0 - my, bx1 + mx, by1 + my)
+
+    principal = max(range(len(lista_islas)), key=lambda k: lista_islas[k]["area_mm2"])
+    py0, py1 = cajas[principal][1], cajas[principal][3]
+    otras = [k for k in range(len(cajas)) if k != principal]
+    grupos = ([k for k in otras if cajas[k][1] > py1],      # arriba de la principal
+              [k for k in otras if cajas[k][3] < py0])      # abajo
+    paso = RECUADRO_PASO_LINEA_MM * PT_POR_MM
+    lineas, con_linea = [], set()
+    for grupo in grupos:
+        if not grupo:
+            continue
+        lo = max(cajas[k][1] for k in grupo)                 # alturas que cruzan a TODAS las del grupo
+        hi = min(cajas[k][3] for k in grupo)
+        ajenas = [cajas[k] for k in range(len(cajas)) if k not in grupo]
+        mejor = None
+        y = lo + paso / 2
+        while y < hi:
+            if not any(c[1] <= y <= c[3] for c in ajenas):
+                tramos = []
+                for k in grupo:
+                    xs = _cruces_horizontal(contornos[k], y)
+                    if len(xs) < 2:
+                        tramos = None
+                        break
+                    tramos.append((xs[0], xs[-1]))
+                if tramos:
+                    tramos.sort()
+                    if all(a[1] < b[0] for a, b in zip(tramos, tramos[1:])):     # una al lado de la otra
+                        # la fila mas ancha (al 0,01 mm); si empatan, la altura mas centrada
+                        clave = (round(sum(b - a for a, b in tramos) / PT_POR_MM, 2), -abs(y - (lo + hi) / 2))
+                        if mejor is None or clave > mejor[0]:
+                            mejor = (clave, y, tramos)
+            y += paso
+        if mejor is None:
+            continue
+        _, y, tramos = mejor
+        bordes = [rect[0]] + [v for t in tramos for v in t] + [rect[2]]
+        for xa, xb in zip(bordes[0::2], bordes[1::2]):
+            if xb - xa > 1e-6:
+                lineas.append([(xa, y), (xb, y)])
+        con_linea.update(grupo)
+    return {"rect": rect, "lineas": lineas, "sueltas": len(otras) - len(con_linea),
+            "margen_x_mm": round(mx / PT_POR_MM, 1), "margen_y_mm": round(my / PT_POR_MM, 1)}
+
+
+def _escribir_plt(ruta, W, H, copias, registros, lista_islas, H_px, ppmm, imp, recuadro=None):
+    """Plancha de corte en HPGL: marcas (pluma 1) y el contorno de cada pieza de cada copia (pluma 7).
+    Con `recuadro` (ver recuadro_de_corte) cada copia suma su linea entre piezas y su rectangulo."""
+    cx, cy = W / 2.0, H / 2.0
+    u = lambda v_pt: int(round(v_pt / PT_POR_MM * PLT_UNIDADES_POR_MM))
+    lineas = ["IN;"] + [f"VS32,{p};" for p in range(1, 9)] + ["WU0;"] + [f"PW0.350,{p};" for p in range(1, 9)]
+
+    def trazo(pluma, pts, cerrar=True):
+        if len(pts) < 2:
+            return
+        if cerrar and pts[0] != pts[-1]:
+            pts = pts + [pts[0]]
+        lineas.append(f"SP{pluma};")
+        lineas.append(f"PU{u(pts[0][0] - cx)} {u(pts[0][1] - cy)};")
+        for x, y in pts[1:]:
+            lineas.append(f"PD{u(x - cx)} {u(y - cy)};")
+
+    # marcas: de abajo hacia arriba, derecha e izquierda (el orden de la muestra)
+    xi = OFFSET_REGISTRO_MM * PT_POR_MM + imp.radio
+    xd = W - OFFSET_REGISTRO_MM * PT_POR_MM - imp.radio
+    r = imp.radio
+    for y in sorted(registros):
+        for x in (xd, xi):
+            pts = [(x + r * math.cos(math.pi - k * 2 * math.pi / PLT_LADOS_MARCA),
+                    y + r * math.sin(math.pi - k * 2 * math.pi / PLT_LADOS_MARCA)) for k in range(PLT_LADOS_MARCA + 1)]
+            trazo(PLT_PLUMA_REGISTRO, pts)
+    # piezas: el contorno de corte de cada isla, en cada copia (mismas coordenadas que el PDF de antes).
+    # Con recuadro, de adentro hacia afuera como el TP-184: piezas, linea y el rectangulo al final.
+    contornos = [_corte_pt(isla, H_px, ppmm) for isla in lista_islas]
+    for (ox, oy) in copias:
+        for pts in contornos:
+            trazo(PLT_PLUMA_CORTE, [(ox + x, oy + y) for x, y in pts])
+        if recuadro:
+            for seg in recuadro["lineas"]:
+                trazo(PLT_PLUMA_CORTE, [(ox + x, oy + y) for x, y in seg], cerrar=False)
+            x0, y0, x1, y1 = recuadro["rect"]
+            trazo(PLT_PLUMA_CORTE, [(ox + x0, oy + y0), (ox + x1, oy + y0), (ox + x1, oy + y1), (ox + x0, oy + y1)])
+    lineas.append("SP0;")
+    with open(ruta, "w", encoding="ascii", newline="") as fh:
+        fh.write("\r\n".join(lineas))
 
 
 def generar(job, preview=None):
@@ -1213,11 +1385,24 @@ def generar(job, preview=None):
         raise ValueError("No se encontro ninguna isla de corte en el arte.")
     if descartadas:
         avisos.append(f"Se ignoraron {descartadas} pieza(s) menores a {ISLA_MINIMA_MM2:g} mm2 (basura del vector).")
-    if len(lista_islas) > 1:
-        avisos.append(f"El arte tiene {len(lista_islas)} piezas separadas y muy lejos entre si: cada una lleva su propio corte.")
+    # Recuadro de corte (ver RECUADRO_*): solo con mas de una pieza. Para que el rectangulo de cada copia
+    # entre sin tocar al vecino, las copias se separan 2 x margen + sep entre cortes (filas y columnas).
+    con_recuadro = len(lista_islas) > 1 and bool(job.get("recuadro", True))
+    margen_rec_mm = float(job["recuadro_margen_mm"] if job.get("recuadro_margen_mm") is not None else RECUADRO_MARGEN_MIN_MM)
+    sep_rec_mm = float(job["recuadro_sep_mm"] if job.get("recuadro_sep_mm") is not None else RECUADRO_SEP_MM)
+    cfg_imp = dict(job.get("imposicion") or {}, sangrado_mm=sangrado_mm)
+    if con_recuadro:
+        sep_min_rec = 2 * margen_rec_mm + sep_rec_mm
+        for k, defecto in (("sep_mm", SEP_CORTES_DEFAULT_MM), ("sep_filas_mm", SEP_FILAS_DEFAULT_MM)):
+            v = cfg_imp.get(k)
+            cfg_imp[k] = max(float(v if v is not None else defecto), sep_min_rec)
+        avisos.append(f"El arte tiene {len(lista_islas)} piezas separadas: cada una lleva su propio corte y cada copia "
+                      f"un rectangulo de corte alrededor; las copias van a {sep_min_rec:g} mm entre cortes.")
+    elif len(lista_islas) > 1:
+        avisos.append(f"El arte tiene {len(lista_islas)} piezas separadas: cada una lleva su propio corte.")
     # La imposicion se resuelve ANTES de armar los PDFs: los nombres de salida dependen de si la
     # plancha alcanza la cantidad pedida (sufijo -Ncopias).
-    imp = Imposicion(Wp, Hp, dict(job.get("imposicion") or {}, sangrado_mm=sangrado_mm))
+    imp = Imposicion(Wp, Hp, cfg_imp)
     if not imp.suficiente:
         avisos.append(f"La plancha de {imp.W / PT_POR_MM:.0f} x {imp.H / PT_POR_MM:.0f} mm trae {imp.copias_total} parches y el pedido es de "
                       f"{imp.cantidad}: hay que imprimirla {imp.impresiones} veces ({imp.copias_total * imp.impresiones} parches, "
@@ -1653,40 +1838,23 @@ def generar(job, preview=None):
     pdf.save(ruta_imp, object_stream_mode=pikepdf.ObjectStreamMode.disable, min_version="1.6")
     pdf.close()
 
-    # ── PDF de corte (misma plancha)
-    pdf_c = pikepdf.new()
-    sep_cut = _separation(pdf_c, CAPA_CORTE[1])
-    ocg_c = _ocg(pdf_c, CAPA_CORTE[0])
-    x_corte_c = pdf_c.copy_foreign(x_corte)
-    # el XObject copiado trae su propia Separation; unificar al objeto de este PDF
-    x_corte_c.Resources.ColorSpace[Name("/CScut")] = sep_cut
+    # ── Archivo de corte: .plt (HPGL) para la cortadora (15/10, pedido de Santiago; antes PDF con
+    # CutContour). Se escribe con los datos del propio generador —contornos de cada pieza y centros
+    # de las marcas—, asi no hay que adivinar por tamano que es marca y que es pieza.
+    recuadro = None
+    if con_recuadro:
+        recuadro = recuadro_de_corte(lista_islas, H_px, ppmm, imp.pasoX, imp.pasoY,
+                                     margen_rec_mm * PT_POR_MM, sep_rec_mm * PT_POR_MM)
+        if recuadro["sueltas"]:
+            avisos.append(f"{recuadro['sueltas']} pieza(s) chica(s) no forman una fila arriba o abajo de la pieza principal: "
+                          f"el corte lleva el rectangulo pero no la linea que las separa. Revisar el corte.")
+    ruta_corte = None
     for i in range(imp.paginas):
         filas, H, copias, registros = imp.pagina(i)
-        pg = pdf_c.add_blank_page(page_size=(imp.W, H))
-        cont = ["/OC /MC0 BDC"]
-        for (cx, cy) in copias:
-            cuerpo = plano_corte if aplanar else "/XCorte Do"
-            cont.append(f"q 1 0 0 1 {_f(cx)} {_f(cy)} cm {cuerpo} Q")
-        cont.append("q " + _marcas(registros, imp.W, "/CScut cs 1 scn") + " Q")
-        cont.append("EMC")
-        res = Dictionary()
-        if not aplanar:
-            res[Name.XObject] = Dictionary({"/XCorte": x_corte_c})
-        res[Name.ColorSpace] = Dictionary({"/CScut": sep_cut})
-        res[Name.Properties] = Dictionary({"/MC0": ocg_c})
-        pg.Resources = res
-        pg.Contents = pdf_c.make_stream("\n".join(cont).encode("latin-1"))
-    ocp = Dictionary()
-    ocp[Name.OCGs] = Array([ocg_c])
-    d = Dictionary()
-    d[Name.Order] = Array([ocg_c])
-    d[Name.ON] = Array([ocg_c])
-    d[Name("/RBGroups")] = Array([])
-    ocp[Name.D] = d
-    pdf_c.Root[Name.OCProperties] = ocp
-    ruta_corte = os.path.join(salida_dir, f"{base}-corte{imp.sufijo}.pdf")
-    pdf_c.save(ruta_corte, object_stream_mode=pikepdf.ObjectStreamMode.disable, min_version="1.6")
-    pdf_c.close()
+        sufijo_pag = "" if i == 0 else f"-p{i + 1}"
+        ruta = os.path.join(salida_dir, f"{base}-corte{imp.sufijo}{sufijo_pag}.plt")
+        _escribir_plt(ruta, imp.W, H, copias, registros, lista_islas, H_px, ppmm, imp, recuadro)
+        ruta_corte = ruta_corte or ruta
 
     # ── vista PNG (para el operario): arte + zonas tintadas + corte. El PDF del RIP pinta las
     # tintas planas opacas encima del arte (igual que el de Illustrator), asi que en Drive/Acrobat
@@ -1727,6 +1895,9 @@ def generar(job, preview=None):
                       "sangrado": sangrado_mm, "escala": round(escala, 4)},
         "plancha": imp.resumen(),
         "islas": len(lista_islas),
+        "recuadro": None if not recuadro else {
+            "margen_x_mm": recuadro["margen_x_mm"], "margen_y_mm": recuadro["margen_y_mm"],
+            "sep_mm": sep_rec_mm, "lineas": len(recuadro["lineas"]), "sueltas": recuadro["sueltas"]},
         "zonas": len(zonas),
         "tiles_textura": tiles1,
         "canaleta_zonas": {"pt": sep_zonas_pt, "zonas_que_ceden": len(canaleta), "contornos": canaleta_n,

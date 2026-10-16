@@ -4680,7 +4680,7 @@ function GestionArticulos({ depositos = [] }) {
                 </div>
             ) : (
                 <div className="rounded-2xl border border-slate-200 bg-white overflow-hidden">
-                    <div className="grid grid-cols-[1fr_80px_100px_160px_200px_90px] gap-3 px-4 py-2 bg-slate-50 text-[10px] font-black uppercase tracking-wider text-slate-400">
+                    <div className="grid grid-cols-[1fr_80px_100px_160px_200px_116px] gap-3 px-4 py-2 bg-slate-50 text-[10px] font-black uppercase tracking-wider text-slate-400">
                         <span>Artículo</span>
                         <span className="text-right">Stock</span>
                         <span className="text-right">Sin valorizar</span>
@@ -4693,7 +4693,7 @@ function GestionArticulos({ depositos = [] }) {
                             const editando = edit === f.VarId;
                             const sinC = !Number(f.Costo);
                             return (
-                                <div key={f.VarId} className="grid grid-cols-[1fr_80px_100px_160px_200px_90px] gap-3 px-4 py-2.5 items-center">
+                                <div key={f.VarId} className="grid grid-cols-[1fr_80px_100px_160px_200px_116px] gap-3 px-4 py-2.5 items-center">
                                     <div className="min-w-0">
                                         <p className="text-sm font-bold text-slate-700 break-words">{f.Producto}</p>
                                         <p className="text-[11px] text-slate-400 font-semibold break-words">
@@ -4739,11 +4739,9 @@ function GestionArticulos({ depositos = [] }) {
                                                     onChange={e => setVals(x => ({ ...x, costo: e.target.value }))}
                                                     onKeyDown={e => { if (e.key === 'Enter') guardar(f); if (e.key === 'Escape') setEdit(null); }}
                                                     className="w-20 px-2 py-1.5 rounded-lg border border-sky-300 text-sm text-right tabular-nums font-gsanscode [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-200" />
-                                                <select value={vals.moneda} onChange={e => setVals(x => ({ ...x, moneda: e.target.value }))}
-                                                    className="px-1.5 py-1.5 rounded-lg border border-slate-200 text-xs font-bold outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-200">
-                                                    <option value="USD">USD (US$)</option>
-                                                    <option value="UYU">UYU ($)</option>
-                                                </select>
+                                                <Selector size="sm" ancho="w-[104px] shrink-0" value={vals.moneda}
+                                                    onChange={v => setVals(x => ({ ...x, moneda: v }))}
+                                                    opciones={[{ value: 'USD', label: 'USD (US$)' }, { value: 'UYU', label: 'UYU ($)' }]} />
                                             </div>
                                         ) : sinC ? (
                                             <span className="text-[10px] font-black rounded-full px-2.5 py-1 bg-amber-50 text-amber-700">SIN COSTO</span>

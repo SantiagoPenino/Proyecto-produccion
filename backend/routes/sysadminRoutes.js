@@ -33,6 +33,7 @@ router.post('/maintenance', ctrl.broadcastMaintenance);
 // Phase 3
 router.get('/services', ctrl.testServices);
 router.post('/backup', ctrl.backupDatabase);
+router.get('/backup/estado', ctrl.estadoBackup);
 router.get('/client-errors', ctrl.getClientErrors);
 router.get('/tables', ctrl.getTableInfo);
 router.get('/tables/:tableName', ctrl.getTableColumns);

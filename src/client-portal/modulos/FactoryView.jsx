@@ -258,25 +258,22 @@ export const FactoryView = () => {
         }
     };
 
-    // TPU sin texturas elegidas: el ✓ no aprueba directo — abre un modal con los dos caminos
-    // ("que las elija el diseñador" aprueba ya; "elegir mis texturas" abre el visor 3D, donde
-    // confirmar la elección también aprueba).
-    const [aprobarTpuModal, setAprobarTpuModal] = useState({ isOpen: false, project: null });
-
+    // TPU: el cliente ya no elige texturas al aprobar un boceto (15/10/2026). Desde que existe
+    // «Hago mi matriz» (el cliente arma su propia matriz al hacer el pedido), elegirlas sobre un
+    // boceto de la fábrica no tenía sentido: las define nuestro diseñador. El ✓ aprueba como
+    // cualquier pedido y el visor 3D del cliente es solo para mirar.
     const handleAprobarPedido = (project, e) => {
         e?.stopPropagation();
+        // Los que ya tenían texturas elegidas por el cliente (de antes del cambio) no llevan el aviso
         const esTpuSinTexturas = (project.subOrders || []).some(so => /^TPU-/i.test(so.CodigoOrden || ''))
             && !(project.subOrders || []).some(so => Number(so.TieneTexturas) === 1);
-        if (esTpuSinTexturas) {
-            setAprobarTpuModal({ isOpen: true, project });
-            return;
-        }
+        const texturas = esTpuSinTexturas ? ' Las texturas del parche las define nuestro diseñador.' : '';
         setModal({
             isOpen: true,
             title: 'Aprobar Pedido',
             message: project.disenadorNombre
-                ? `Este pedido lo creó tu diseñador ${project.disenadorNombre}. Al aprobarlo entra a producción.`
-                : 'Revisá el arte del pedido. Al aprobarlo, entra a producción.',
+                ? `Este pedido lo creó tu diseñador ${project.disenadorNombre}.${texturas} Al aprobarlo entra a producción.`
+                : `Revisá el arte del pedido.${texturas} Al aprobarlo, entra a producción.`,
             type: 'warning',
             confirmText: 'Aprobar',
             onConfirm: () => ejecutarAprobacion(project)
@@ -1211,62 +1208,11 @@ export const FactoryView = () => {
                 </div>
             )}
 
-            {/* Aprobación TPU sin texturas: los dos caminos del cliente.
-                Por PORTAL a body: un fixed adentro de un ancestro con transform (animaciones de
-                framer) se posiciona contra ese ancestro — el overlay oscurecía solo la columna de
-                contenido y el panel quedaba centrado fuera de la pantalla. */}
-            {aprobarTpuModal.isOpen && createPortal((() => {
-                const proj = aprobarTpuModal.project;
-                const soTpu = (proj?.subOrders || []).find(so => /^TPU-/i.test(so.CodigoOrden || '') && Number(so.TieneArte3D) === 1);
-                return (
-                    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70">
-                        <div className="bg-zinc-900 border border-zinc-700 rounded-2xl p-6 w-full max-w-md shadow-2xl">
-                            <div className="flex items-start gap-3 mb-4">
-                                <div className="w-10 h-10 rounded-full bg-cyan-500/15 flex items-center justify-center flex-shrink-0">
-                                    <Palette className="w-5 h-5 text-cyan-400" />
-                                </div>
-                                <div>
-                                    <h3 className="text-white font-semibold text-base">¿Y las texturas del parche?</h3>
-                                    <p className="text-zinc-400 text-sm mt-1">
-                                        Todavía no elegiste texturas. Podés elegirlas vos en el visor 3D, o aprobar el boceto y que las defina nuestro diseñador.
-                                    </p>
-                                </div>
-                            </div>
-
-                            <div className="flex flex-col gap-2.5">
-                                <button
-                                    onClick={async () => {
-                                        setAprobarTpuModal({ isOpen: false, project: null });
-                                        await ejecutarAprobacion(proj);
-                                    }}
-                                    className="w-full px-4 py-2.5 rounded-lg bg-emerald-600 text-white text-sm font-semibold hover:bg-emerald-500 transition-colors"
-                                >
-                                    Aprobar (el diseñador elige las texturas)
-                                </button>
-                                <button
-                                    disabled={!soTpu?.OrdenID}
-                                    onClick={() => {
-                                        setAprobarTpuModal({ isOpen: false, project: null });
-                                        setTpu3D({ ordenId: soTpu.OrdenID, codigo: soTpu.CodigoOrden });
-                                    }}
-                                    className="w-full px-4 py-2.5 rounded-lg border border-cyan-500/40 text-cyan-300 text-sm font-semibold hover:bg-cyan-500/10 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                                >
-                                    Elegir mis texturas (ver 3D)
-                                </button>
-                                <button
-                                    onClick={() => setAprobarTpuModal({ isOpen: false, project: null })}
-                                    className="w-full px-4 py-2 rounded-lg text-zinc-400 text-sm font-medium hover:bg-zinc-800 transition-colors"
-                                >
-                                    Volver
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                );
-            })(), document.body)}
-
             {/* Modal de Rechazo de boceto (TPU) — motivo OBLIGATORIO: es lo que le dice al
-                diseñador qué corregir. Mismo patrón que el de cancelación (portal a body, ídem). */}
+                diseñador qué corregir. Mismo diseño que el de cancelación, pero por PORTAL a body:
+                un fixed adentro de un ancestro con transform (animaciones de framer) se posiciona
+                contra ese ancestro — el overlay oscurecía solo la columna de contenido y el panel
+                quedaba centrado fuera de la pantalla. */}
             {rechazoModal.isOpen && createPortal(
                 <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70">
                     <div className="bg-zinc-900 border border-zinc-700 rounded-2xl p-6 w-full max-w-md shadow-2xl">

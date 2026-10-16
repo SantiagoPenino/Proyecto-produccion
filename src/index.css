@@ -1,5 +1,6 @@
-/* Google Sans Code (números) y DM Sans (texto) — los usa la sección /stock */
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,700;9..40,900&family=Google+Sans+Code:wght@400;500;600;700&display=swap');
+/* Google Sans Code (números) y DM Sans (texto) — los usa la sección /stock.
+   Roboto Mono — la «tipografía de precisión» de la marca, en el compositor de piezas de Marketing. */
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,700;9..40,900&family=Google+Sans+Code:wght@400;500;600;700&family=Roboto+Mono:wght@400;500&display=swap');
 
 @tailwind base;
 @tailwind components;

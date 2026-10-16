@@ -428,28 +428,74 @@ exports.testServices = async (req, res) => {
 };
 
 // ─── POST /api/sysadmin/backup ────────────────────────────
-// #13 — Manual DB backup
+// #13 — Backup manual de la base. El script (backup.sh, en el servidor) hace el BACKUP DATABASE y lo
+// manda por scp a la PC de la oficina: de noche tarda ~1 min 20 s, pero de día el envío de ~1 GB puede
+// tardar más. Antes se esperaba con exec y un tope de 2 min: el 15/10 lo cortó a los 2:01 con el .bak
+// ya hecho y el envío a medias, y la pantalla solo decía "Command failed". Ahora corre en segundo
+// plano: el POST responde al instante, la pantalla consulta GET /backup/estado y el resultado (con las
+// últimas líneas del script) queda en el log. Uno solo a la vez.
+let backupActual = null;   // { inicio, usuario } mientras corre
+let backupUltimo = null;   // { ok, inicio, fin, segundos, codigo, senal, detalle, usuario }
+const BACKUP_TOPE_MS = 20 * 60 * 1000;   // tope de seguridad: un envío colgado no queda corriendo para siempre
+
 exports.backupDatabase = async (req, res) => {
     try {
-        const { exec } = require('child_process');
+        const { spawn } = require('child_process');
         const { audit } = require('../utils/auditLogger');
         const scriptPath = process.env.BACKUP_SCRIPT_PATH || '/var/www/scripts/backup.sh';
+
+        if (backupActual) {
+            const hora = backupActual.inicio.toLocaleTimeString('es-UY', { hour: '2-digit', minute: '2-digit' });
+            return res.status(409).json({ error: `Ya hay un backup en curso (lo inició ${backupActual.usuario || 'otro usuario'} a las ${hora}). Esperá a que termine.` });
+        }
 
         audit('DB_BACKUP', { user: req.user?.username, userId: req.user?.id, script: scriptPath });
         logger.info(`[SysAdmin] Ejecutando backup script: ${scriptPath}`);
 
-        exec(`bash ${scriptPath}`, { timeout: 120000 }, (error, stdout, stderr) => {
-            if (error) {
-                logger.error('[SysAdmin] Backup script error:', error.message);
-                return res.status(500).json({ error: error.message, stderr });
-            }
-            logger.info('[SysAdmin] Backup completado:', stdout);
-            res.json({ success: true, output: stdout, timestamp: new Date().toISOString() });
-        });
+        const inicio = new Date();
+        const usuario = req.user?.username || null;
+        let salida = '';
+        let terminado = false;
+        const juntar = (b) => { salida = (salida + b.toString()).slice(-4000); };
+        const terminar = (codigo, senal, errorSpawn) => {
+            if (terminado) return;
+            terminado = true;
+            clearTimeout(tope);
+            const segundos = Math.round((Date.now() - inicio.getTime()) / 1000);
+            const detalle = (errorSpawn ? errorSpawn.message + '\n' : '') + salida.trim().split('\n').slice(-12).join('\n');
+            const ok = codigo === 0 && !errorSpawn;
+            backupUltimo = { ok, inicio, fin: new Date(), segundos, codigo, senal: senal || null, detalle, usuario };
+            backupActual = null;
+            if (ok) logger.info(`[SysAdmin] Backup completado en ${segundos} s: ${detalle}`);
+            else logger.error(`[SysAdmin] Backup FALLÓ (código ${codigo}${senal ? `, señal ${senal}` : ''}, ${segundos} s): ${detalle}`);
+        };
+
+        const hijo = spawn('bash', [scriptPath], { stdio: ['ignore', 'pipe', 'pipe'] });
+        backupActual = { inicio, usuario };
+        const tope = setTimeout(() => {
+            salida += `\n(cortado: pasó ${BACKUP_TOPE_MS / 60000} minutos sin terminar)`;
+            hijo.kill('SIGTERM');
+        }, BACKUP_TOPE_MS);
+        hijo.stdout.on('data', juntar);
+        hijo.stderr.on('data', juntar);
+        hijo.on('error', (e) => terminar(null, null, e));
+        hijo.on('close', (codigo, senal) => terminar(codigo, senal));
+
+        res.status(202).json({ success: true, iniciado: true, inicio: inicio.toISOString() });
     } catch (err) {
+        backupActual = null;
         logger.error('[SysAdmin] Backup error:', err);
         res.status(500).json({ error: err.message });
     }
+};
+
+// GET /api/sysadmin/backup/estado — si hay uno corriendo y cómo terminó el último lanzado desde acá
+exports.estadoBackup = (req, res) => {
+    res.json({
+        enCurso: !!backupActual,
+        inicio: backupActual?.inicio || null,
+        ultimo: backupUltimo,
+    });
 };
 
 // Errores del navegador que no son de la app (06/10/2026, visto en el log de producción):

@@ -107,21 +107,35 @@ def rasterizar_pdf(ruta, dpi):
 
 
 def cargar_png(ruta, dpi_defecto):
-    """PNG del cliente → (rgba, dpi, pdf_base_bytes). El PDF base se arma con la imagen
-    al tamanio fisico que declara su DPI (o el default), para poder incrustar el spot."""
+    """PNG del cliente → (rgba, dpi, pdf_base_bytes, perfil_rgb). El PDF base se arma con la
+    imagen al tamanio fisico que declara su DPI (o el default), para poder incrustar el spot.
+    perfil_rgb = el perfil ICC propio del PNG si es de color (None si no trae, o si es de grises)."""
     import fitz
-    im = Image.open(ruta).convert("RGBA")
-    dpi = float((im.info.get("dpi") or (dpi_defecto, dpi_defecto))[0]) or dpi_defecto
+    original = Image.open(ruta)
+    dpi = float((original.info.get("dpi") or (dpi_defecto, dpi_defecto))[0]) or dpi_defecto
+    gris = original.mode in ("1", "L", "LA", "La", "I", "I;16", "F")
+    perfil = None if gris else original.info.get("icc_profile")
+    tiene_alfa = original.mode in ("RGBA", "RGBa", "LA", "La", "PA") or "transparency" in original.info
+    im = original.convert("RGBA")
     rgba = np.asarray(im, dtype=np.uint8)
     h, w = rgba.shape[:2]
     w_pt = w / dpi * 72.0
     h_pt = h / dpi * 72.0
     doc = fitz.open()
     page = doc.new_page(width=w_pt, height=h_pt)
-    page.insert_image(fitz.Rect(0, 0, w_pt, h_pt), filename=ruta, keep_proportion=False)
+    if tiene_alfa:
+        page.insert_image(fitz.Rect(0, 0, w_pt, h_pt), filename=ruta, keep_proportion=False)
+    else:
+        # PNG SIN canal de transparencia (RGB, paleta sin tRNS, grises): fitz lo incrusta sin SMask
+        # y los pasos de color no encontraban el arte ("no encontre la imagen del arte", DTF-34969,
+        # 15/10). Se incrusta la version RGBA, opaca en todo: el blanco cubre el rectangulo entero,
+        # igual que la accion de Photoshop con una imagen sin transparencia. Mismo perfil de color.
+        buf = io.BytesIO()
+        im.save(buf, "PNG", **({"icc_profile": perfil} if perfil else {}))
+        page.insert_image(fitz.Rect(0, 0, w_pt, h_pt), stream=buf.getvalue(), keep_proportion=False)
     pdf_bytes = doc.tobytes()
     doc.close()
-    return rgba, dpi, pdf_bytes
+    return rgba, dpi, pdf_bytes, perfil
 
 
 # ── Plancha de blanco (fiel a suite_user, defaults pisados) ──────────────────
@@ -531,10 +545,9 @@ def main():
     try:
         icc_usado = None
         if args.entrada.lower().endswith(".png"):
-            rgba, dpi, pdf_base = cargar_png(args.entrada, args.dpi)
+            rgba, dpi, pdf_base, perfil_propio = cargar_png(args.entrada, args.dpi)
             # Regla 31/08: el USWC es SOLO para artes que vienen sin perfil. Si el PNG
             # trae el suyo (iCCP), se respeta y se embebe ese, sin conversion.
-            perfil_propio = Image.open(args.entrada).info.get("icc_profile")
             if perfil_propio:
                 pdf_base = incrustar_icc_rgb(pdf_base, perfil_propio)
                 icc_usado = "propio del archivo"
@@ -570,8 +583,11 @@ def main():
 
         cubiertos = int((np.asarray(plancha) < 255).sum())
         cortados = int((~conservar & (rgba[..., 3] > 0)).sum()) if conservar is not None else 0
+        # Ni un pixel transparente: el fondo es parte del arte y en DTF sale el rectangulo entero
+        sin_transparencia = bool((rgba[..., 3] == 255).all())
         print(json.dumps({
             "ok": True, "px": list(plancha.size), "dpi": round(dpi, 2),
+            "sinTransparencia": sin_transparencia,
             "pixelesConTinta": cubiertos, "pixelesCortados": cortados,
             "tailCut": args.tail_cut, "icc": icc_usado, "scipy": _HAY_SCIPY, "bytes": len(resultado),
         }))

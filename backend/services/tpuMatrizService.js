@@ -14,10 +14,12 @@
  *
  * Decisiones del usuario (04/09/2026, docs/tpu-cliente-sube-vectorizado-plan.md §0.6):
  *  - PDF vectorial como entrada; sin revisión ni aprobación; entra a producción como llega.
- *  - Nombres: tpu<NoDocERP>-cmyk-spots.pdf / -corte.pdf / -boceto.pdf (los filtros %cmyk% /
+ *  - Nombres: tpu<NoDocERP>-cmyk-spots.pdf / -corte.plt (HPGL, desde el 15/10; antes PDF) / -boceto.pdf (los filtros %cmyk% /
  *    %corte% / %boceto% del resto del sistema los reconocen).
- *  - Imposición (decidida 04/09; ancho 27,5 cm desde el 13/10, antes 30): UNA plancha de 27,5 cm de ancho y hasta 50 cm de alto, 0 mm
- *    entre copias, 5 mm entre filas, SIEMPRE filas completas (sobran hasta columnas−1 parches).
+ *  - Imposición (decidida 04/09; ancho 27 cm desde el 14/10, 27,5 desde el 13/10, antes 30): UNA plancha de 27 cm de ancho
+ *    y hasta 50 cm de alto, 5 mm entre filas, SIEMPRE filas completas (sobran hasta columnas−1 parches). En el ancho
+ *    las copias van adentro de los puntos de registro y el sobrante se reparte en partes iguales entre los huecos
+ *    (mínimo 5 mm entre cortes; desde el 14/10).
  *    Si ni la plancha más alta alcanza la cantidad pedida, los archivos de impresión y corte
  *    llevan el sufijo "-<N>copias" (N = VECES que hay que imprimir la plancha para cubrir el pedido).
  *
@@ -41,8 +43,11 @@ const MAX_PDF_BYTES = 50 * 1024 * 1024;
 // sep_mm / sep_filas_mm se miden entre LÍNEAS DE CORTE (08/09): 5 mm entre parches vecinos, o sea
 // 2,5 mm que aporta cada uno; contra el borde de la plancha no se agrega margen. El generador les
 // descuenta el sangrado de los dos parches.
-// Ancho de la plancha: 275 mm desde el 13/10/2026 (pedido de Santiago; antes 300).
-const IMPOSICION = { plancha_mm: 275, sep_mm: 5, sep_filas_mm: 5, max_alto_mm: 500, completar_filas: true };
+// Ancho de la plancha: 270 mm desde el 14/10/2026 (pedido de Santiago; 275 desde el 13/10, antes 300).
+// En el ancho sep_mm es el MÍNIMO: el generador reparte lo que sobra entre los huecos de la fila.
+// Arte de VARIAS piezas (15/10): el generador sube los dos a 12 mm para el rectángulo de corte de cada
+// copia en el .plt (RECUADRO_* en tpu_matriz.py).
+const IMPOSICION = { plancha_mm: 270, sep_mm: 5, sep_filas_mm: 5, max_alto_mm: 500, completar_filas: true };
 const SANGRADO_MM = 1.0;
 // PDF de control de capas (una página por capa del parche): temporal, para verificar el generador.
 const CAPAS_CONTROL = true;
@@ -303,7 +308,7 @@ async function procesarOrden({ ordenId, codCliente, matriz, cantidad, io }) {
 
         // 1. Arte de producción: impresión + corte (+ boceto para el cliente / "Mis matrices").
         //    Los nombres los pone el generador: `tpu<NoDocERP>-cmyk-spots[-Ncopias].pdf` y
-        //    `-corte[-Ncopias].pdf` (el sufijo, solo cuando la plancha no alcanza la cantidad, es
+        //    `-corte[-Ncopias].plt` (el sufijo, solo cuando la plancha no alcanza la cantidad, es
         //    la cantidad de veces que hay que imprimirla).
         const arte = [
             { ruta: res.archivos.impresion, nombre: path.basename(res.archivos.impresion) },

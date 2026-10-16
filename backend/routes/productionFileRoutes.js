@@ -28,7 +28,8 @@ router.get('/equipos', equiposController.getEquipos);
 router.get('/ordenes', productionFileController.getOrdenes);
 router.get('/orden/:ordenId/archivos', productionFileController.getArchivosPorOrden);
 router.get('/orden/:ordenId/fallas-imagenes', productionFileController.getFallasImagenes);
-router.get('/lote/:rolloId/fallas-imagenes', verifyToken, productionFileController.getFallasImagenesLote);   // zona marcada de cada -F del lote
+router.get('/lote/:rolloId/fallas-imagenes', verifyToken, productionFileController.getFallasImagenesLote);
+router.get('/orden/:ordenId/fallas', verifyToken, productionFileController.getFallasOrden);   // tipo de cada falla de la nota (detalle)   // zona marcada de cada -F del lote
 router.get('/view-drive-file', productionFileController.viewDriveFile);
 router.get('/tipos-falla', productionFileController.getTiposFalla);
 router.get('/motivos-cancelacion', productionFileController.getMotivosCancelacion);

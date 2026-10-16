@@ -541,3 +541,17 @@ exports.deleteMessage = async (req, res) => {
         res.status(500).json({ error: 'Fallo al eliminar el mensaje' });
     }
 };
+
+// POST /tickets/ia/pasar-en-limpio { texto, esNotaInterna } — la IA corrige la redacción del borrador
+// (ortografía, puntuación, frases claras) sin agregar ni sacar información. El operador lo revisa
+// antes de enviar: acá no se guarda ni se manda nada. Solo personal interno, no clientes del portal.
+exports.pasarEnLimpio = async (req, res) => {
+    if (!req.user || req.user.role === 'WEB_CLIENT') return res.status(403).json({ success: false, error: 'No autorizado.' });
+    const { pasarEnLimpio } = require('../services/iaRedaccionService');
+    try {
+        const r = await pasarEnLimpio(req.body?.texto, { esNotaInterna: !!req.body?.esNotaInterna });
+        res.json({ success: true, texto: r.texto });
+    } catch (e) {
+        res.status(e.status || 500).json({ success: false, error: e.message });
+    }
+};

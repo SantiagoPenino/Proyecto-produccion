@@ -1,8 +1,9 @@
 import { useState, useEffect, useMemo, useRef, useCallback, Suspense, lazy } from 'react';
-import { LayoutDashboard, Warehouse, Printer, ClipboardList, Terminal, CircleUserRound, Tags, Headset, Calculator, Landmark, Shirt, Sun, Sparkles, Flame, Scissors, Pen, Shapes, PenLine, QrCode, ShieldBan, PrinterCheck, History, LayoutGrid, PackagePlus, PackageCheck, Truck, FileSearch, Boxes, Waypoints, Send, Package, Bus, ClipboardCheck, Menu, Users, Shield, Eye, Settings, Database, UserX, RefreshCw, BadgeDollarSign, Layers, BookOpen, Banknote, CreditCard, ShieldCheck, Calendar, CalendarCheck, MapPin, BadgePercent, Contact, Store, LifeBuoy, Ticket, ScanLine, FileText, Cpu, FileDown, Inbox, Receipt, ShoppingCart, Palette, Megaphone, ScanEye, FileSignature, TrendingUp, Wrench, Gift, Handshake, ClipboardPen, PenTool, ChartGantt, UserPen, ListChecks, Target, Zap, ReceiptText, CalendarDays, Repeat, FolderKanban, ListOrdered } from 'lucide-react';
+import { LayoutDashboard, Warehouse, Printer, ClipboardList, Terminal, CircleUserRound, Tags, Headset, Calculator, Landmark, Shirt, Sun, Sparkles, Flame, Scissors, Pen, Shapes, PenLine, QrCode, ShieldBan, PrinterCheck, History, LayoutGrid, PackagePlus, PackageCheck, Truck, FileSearch, Boxes, Waypoints, Send, Package, Bus, ClipboardCheck, Menu, Users, Shield, Eye, Settings, Database, UserX, RefreshCw, BadgeDollarSign, Layers, BookOpen, Banknote, CreditCard, ShieldCheck, Calendar, CalendarCheck, MapPin, BadgePercent, Contact, Store, LifeBuoy, Ticket, ScanLine, FileText, Cpu, FileDown, Inbox, Receipt, ShoppingCart, Palette, Megaphone, ScanEye, FileSignature, TrendingUp, Wrench, Gift, Handshake, ClipboardPen, PenTool, ChartGantt, UserPen, ListChecks, Target, Zap, ReceiptText, CalendarDays, Repeat, FolderKanban, ListOrdered, FlaskConical, House, Library, Archive, LayoutTemplate, NotebookPen } from 'lucide-react';
 import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
 import { SECCIONES_STOCK } from '../pages/stockSecciones';
 import { SECCIONES_ST, destinoServicioTecnico } from '../pages/servicioTecnicoSecciones';
+import { SECCIONES_DES, destinoDesarrollos } from '../pages/desarrollosSecciones';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Toaster, toast } from 'sonner';
 import { ToastContainer, Slide } from 'react-toastify';
@@ -58,6 +59,7 @@ import ChatWidget from '../common/ChatWidget';
 const ProductsIntegration = lazyWithRetry(() => import('../pages/ProductsIntegration'));
 const MarketingProductosPage = lazyWithRetry(() => import('../pages/MarketingProductosPage'));
 const MarketingPreciosPage = lazyWithRetry(() => import('../pages/MarketingPreciosPage'));
+const MarketingPiezasPage = lazyWithRetry(() => import('../pages/MarketingPiezasPage'));
 const StockGestionPage = lazyWithRetry(() => import('../pages/StockGestionPage'));
 const SpecialPrices = lazyWithRetry(() => import('../pages/SpecialPrices'));
 const BasePrices = lazyWithRetry(() => import('../pages/BasePrices'));
@@ -124,6 +126,7 @@ const ReportesPage                 = lazyWithRetry(() => import('../pages/Report
 const ContabilidadReportesPage     = lazyWithRetry(() => import('../pages/ContabilidadReportesPage'));
 const TareasPage                   = lazyWithRetry(() => import('../pages/TareasPage'));
 const ServicioTecnicoPage          = lazyWithRetry(() => import('../pages/ServicioTecnicoPage'));
+const DesarrollosPage              = lazyWithRetry(() => import('../pages/DesarrollosPage'));
 const DescuentoTrabajadoresPage    = lazyWithRetry(() => import('../pages/rrhh/DescuentoTrabajadoresPage')); // RRHH: perfil de precios de trabajadores
 
 // ============================================
@@ -322,10 +325,24 @@ const lucideIconMapRaw = {
     'maquinas': Printer,
     'planes y procedimientos': Repeat,
     'proyectos': FolderKanban,
+    // Desarrollos (docs/desarrollos/plan-integracion.md) y sus secciones. "Proyectos", "Planificación",
+    // "Tareas" y "Reportes" ya tenían ícono por título.
+    'desarrollos': FlaskConical,
+    'inicio': House,
+    'bandeja': Inbox,
+    'muestras': Shirt,
+    'pedidos': NotebookPen,
+    'catálogo técnico': Library,
+    'catalogo tecnico': Library,
+    'archivo': Archive,
+    'plantillas': LayoutTemplate,
+    'equipo de desarrollo': Users,
     // Marketing
     'marketing': Megaphone,
     'precios': BadgeDollarSign,
     'productos': Store,
+    'piezas': Palette,
+    'piezas para redes': Palette,
     // Ítems que quedaban sin ícono / con círculo (íconos Lucide agregados)
     'contabilidad': Landmark,
     'documentos': FileText,
@@ -784,6 +801,7 @@ const MainAppContent = ({ menuItems = [] }) => {
                     una respeta el menú del rol. Con esta ruta fija, cualquiera logueado abría
                     /stock escribiendo la dirección, aunque no lo tuviera en el menú. */}
                 <Route path="/marketing/productos" element={<MarketingProductosPage />} />
+                <Route path="/marketing/piezas" element={<MarketingPiezasPage />} />
                 <Route path="/admin/price-profiles" element={<PriceProfiles />} />
                 <Route path="/admin/price-catalog" element={<CustomerPriceCatalogPage />} />
                 <Route path="/admin/nomencladores" element={<NomenclatorsABM />} />
@@ -1069,6 +1087,11 @@ const DynamicRouter = ({ menuItems }) => {
             const destino = destinoServicioTecnico(location.search, menuItems.map(m => m.Ruta));
             if (destino) return <Navigate to={destino} replace />;
         }
+        // Desarrollos es un grupo sin ruta: /desarrollos lleva a la primera sección que ve el rol.
+        if (normalizedPath === '/desarrollos') {
+            const destino = destinoDesarrollos(location.search, menuItems.map(m => m.Ruta));
+            if (destino) return <Navigate to={destino} replace />;
+        }
 
         // En lugar del fantasma, rebotamos al usuario silenciosamente de vuelta a su dashboard
         return <Navigate to="/" replace />;
@@ -1101,7 +1124,11 @@ const DynamicRouter = ({ menuItems }) => {
     const seccionST = SECCIONES_ST.find(s => s.ruta === menuItem.Ruta);
     if (seccionST) return <ServicioTecnicoPage key={seccionST.id} seccion={seccionST.id} rutasPermitidas={menuItems.map(m => m.Ruta)} />;
     if (menuItem.Ruta === '/servicio-tecnico') return <ServicioTecnicoPage />;
+    // Desarrollos: cada sección es su propia entrada del menú (docs/desarrollos/menu-desarrollos.sql).
+    const seccionDes = SECCIONES_DES.find(s => s.ruta === menuItem.Ruta);
+    if (seccionDes) return <DesarrollosPage key={seccionDes.id} seccion={seccionDes.id} />;
     if (menuItem.Ruta === '/marketing/productos') return <MarketingProductosPage />;
+    if (menuItem.Ruta === '/marketing/piezas') return <MarketingPiezasPage />;
     if (menuItem.Ruta === '/admin/price-catalog') return <CustomerPriceCatalogPage />;
     // Terminaciones (pedido 29/07): la entrada del menú abre el ÁREA TERMINAC en su
     // planilla; la bandeja (checklist) es la pestaña Control del área.

@@ -10,6 +10,89 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
 ## [Sin deployar] — cambios desde el 08/10
 
 ### Agregado
+- **Marketing › Piezas: compositor de posteos e historias con la identidad de user (15/10).** Pantalla nueva `/marketing/piezas`, basada en el compositor que armó Marketing (`Desktop/user-marca/user-marca/compositor/compositor-user.html`), sin el chat con IA (decisión de Santiago: por ahora no va). Plan: `docs/marketing-compositor-piezas-plan.md`.
+  - **La pieza es un fondo y capas libres.** Fondo oscuro con halos o de tinta (cian, magenta o amarillo), grano y recuadro, como el HTML. Capas: título (Inter Bold Italic en mayúsculas), texto (Light, Regular o Bold), dato técnico (Roboto Mono, con o sin `< >`), precio (moneda en Regular y monto en Bold), etiqueta (la pill), imagen, logo (isotipo o logotipo), barra de proceso y asterisco.
+  - **Se arrastran, se estiran y se giran, y no salen del recuadro.** Las manijas de los costados cambian el ancho de los textos (se rearman en líneas, no se deforman) y las esquinas, el tamaño de la letra. El giro se pega a 0°, 45° y 90°; con Shift, de a 15°. Si una capa al estirarse o girar tocaría el recuadro, se frena ahí; con el recuadro apagado, el límite es el borde de la pieza.
+  - **Guías magnéticas:** al arrastrar, la capa se pega al centro de la pieza, a los márgenes y a los bordes y centros de las otras capas. Con Alt no se pega.
+  - **Escribir sobre la pieza** con doble clic en un texto. También desde el panel, que tiene las propiedades de cada capa (tamaño, color de la paleta de la marca, alineación, giro exacto). Los colores «Automático» y «Suave» siguen al fondo: blanco o gris sobre el negro, negro sobre la tinta.
+  - **Lista de capas** para ordenarlas arrastrando, ocultarlas o bloquearlas. Duplicar, borrar, deshacer y rehacer (50 pasos), también con el teclado.
+  - **«Elegir producto»** busca en la lista de precios (la de `/marketing/precios`) y llena el título, el precio en US$ o $, el dato técnico (la descripción para la lista) y la etiqueta (la familia). Si el producto está en la vitrina, ofrece su foto principal y las de cada color. El precio sale de la base, no se tipea.
+  - **Fotos:** se suben desde la PC (no se guardan en el servidor), se arrastran sobre la pieza o se eligen de la vitrina. Forma de la marca (dos esquinas grandes), redondeada, círculo o recta; zoom y encuadre.
+  - **Historias (1080 × 1920):** el editor marca la franja de arriba y de abajo que puede tapar Instagram. Es una guía y no sale en el PNG.
+  - **Plantillas:** «Precio con foto» (el diseño del HTML pasado a capas), «Precio sin foto» y «En blanco». Con textos de muestra, sin precios.
+  - **Descargar PNG** a 1080 × 1350 (feed) o 1080 × 1920 (historia), en RGB, sin la selección ni las guías. Pesa unos 3 MB por el grano del fondo.
+  - **Borrador:** lo que se está armando queda en el navegador, por usuario, como el de Reposiciones. Las fotos de la PC no entran en el borrador: al volver, su capa pide subirla de nuevo.
+- **Desarrollos, fase 0 (la base del módulo).** Se pasa al sistema la herramienta «Desarrollos» de Felipe Lalinde. Plan: `docs/desarrollos/plan-integracion.md`; especificaciones del prototipo al lado.
+  - **Menú:** grupo «Desarrollos» con una entrada por pantalla, como Servicio Técnico. Admin ve todas y VENTAS solo «Pedidos».
+  - **Equipo de desarrollo:** pantalla para sumar gente como Editor (todo) o Colaborador (pedidos, muestras y comentarios), con sus líneas. Los Admin son editores sin cargarlos.
+  - **El resto de las pantallas** muestran qué van a hacer y en qué fase llegan (1: Pedidos y Bandeja; 2: Proyectos, Tareas, Archivo y Plantillas; 3: Planificación e Inicio; 4: Muestras y Catálogo; 5: Reportes).
+  - **Tablas `Des*`:** 36 tablas, que se crean solas la primera vez. Traen de fábrica las 9 plantillas del prototipo, los 6 tipos de desarrollo y los estados y tildes de muestras.
+  - **API común** (`/api/desarrollos`): sesión y nivel, equipo, catálogos (familias de `StockArt` y etiquetas de `ProductoEtiqueta`, como Configurar Productos), comentarios, historial de cambios y adjuntos en disco (`DES_ADJUNTOS_PATH`). Los permisos se validan en el servidor: quien pidió algo ve y comenta su pedido, y el historial es solo del equipo.
+  - **Importador del prototipo:** `backend/scripts/desarrollos/importar.js`. Sin `--confirmar` es una prueba. Corre en una transacción y al final imprime un reporte de lo que no pudo enlazar.
+- **Desarrollos, fase 1: Pedidos y Bandeja.** Con los textos y las reglas del prototipo de Felipe.
+  - **Pedidos (lo que ve un vendedor):** formulario corto (qué piden, detalle, cliente, para cuándo, fotos o PDF) y «Mis pedidos», con el estado en palabras simples (Recibido, Aprobado · en desarrollo (etapa), Listo, Pospuesto, No se hace), el motivo y los comentarios.
+    - **Cliente:** se busca en `Clientes` y al vendedor le salen primero los suyos (por `Usuarios.Cedula = Clientes.VendedorID`). Para un prospecto que todavía no es cliente se escribe el nombre a mano.
+  - **Bandeja (el equipo):** todo lo que entra, con búsqueda, filtros por tipo y por desarrollo, y los mismos órdenes que el prototipo («Recomendado para atender», puntaje y fechas).
+    - Cada pedido se edita (puntaje con el resultado en vivo y nota interna) y se decide: aprobar y crear el proyecto con su plantilla (solo el editor), posponer o descartar con un motivo que ve quien lo pidió, o reabrir.
+    - El equipo también puede cargar un pedido a nombre de otra persona.
+  - **Avisos** (campanita y celular; el prototipo no avisaba):
+    - Al vendedor, cuando su pedido se aprueba, se pospone, se descarta o vuelve a la Bandeja.
+    - A los editores, cuando entra un pedido.
+    - En los comentarios de un pedido, si comenta el equipo le llega a quien lo pidió, y si comenta quien lo pidió les llega a los editores.
+  - **Arreglos respecto del prototipo** (plan §7):
+    - El vendedor nunca ve la nota interna del equipo.
+    - Una «orden» no se puede descartar.
+    - El tipo «proceso» propone la plantilla de procedimiento.
+    - El código PD- o CO- lo decide la plantilla.
+    - Una variante aprobada se sigue por su propio estado.
+    - Aprobar dos veces, incluso al mismo tiempo, no crea dos proyectos.
+    - Los pedidos son DES-NN.
+- **Desarrollos, fase 2: Proyectos, Tareas, Archivo y Plantillas.** Con las reglas del prototipo de Felipe.
+  - **Proyectos:** la lista de los que están en curso (filtros, chips por etapa y los mismos órdenes que el prototipo) y la ficha de cada uno.
+    - La ficha tiene datos, notas, archivos (también los del pedido), las etapas, la tarea que sigue, las tareas por etapa, enlaces, comentarios e historial.
+    - Desde la ficha se guarda el proyecto como plantilla y se cancela, reactiva o borra. «+ Nuevo proyecto» crea uno desde una plantilla.
+    - Al aprobar en la Bandeja se abre la ficha del proyecto nuevo.
+  - **Tareas:** el trabajo del día, en lista agrupada o tablero por estado. Por defecto muestra lo planificado en tandas; las tandas llegan en la fase 3, así que mientras tanto se usa «Todas».
+    - Cada tarea tiene estado, responsable (solo gente del equipo), fecha, dependencias sin ciclos, fechas sugeridas en días hábiles (se confirman de a una o todas juntas), y se mueve o se quita.
+    - Al completar una tarea, la siguiente pasa a «En curso».
+    - El historial de etapas y la fecha de terminado se guardan solos.
+  - **«Alta en el ERP»:** la tarea pide **elegir el artículo** del maestro en vez de tipear el REF. La familia sale de `StockArt` y la etiqueta de `ProductoVentaConfig`, del artículo.
+  - **Archivo:** terminados y cancelados, con lo que llevó cada uno. Las fechas de terminado y cancelado quedan guardadas.
+  - **Plantillas:** editor de etapas (color, orden) y tareas, y lista de tipos de desarrollo. Un tipo que use un pedido, un proyecto o una plantilla no se puede quitar. Las plantillas fijas no se borran.
+  - **Avisos:** al responsable cuando le asignan una tarea, y a quien pidió el desarrollo cuando el proyecto termina o se cancela.
+- **Desarrollos, fase 3: Planificación e Inicio.** Con las reglas del prototipo de Felipe.
+  - **Tandas:** períodos de 1 a 4 semanas. Cada una tiene:
+    - nombre, fechas, objetivo, avance y la carga pendiente de cada persona;
+    - los proyectos vinculados, que entran con las tareas pendientes de su etapa actual, y «Elegir tareas» por etapa;
+    - grupos de proyectos y un link a Google Calendar.
+  - **Reglas de las tandas:**
+    - **Una tarea está en una sola tanda abierta:** al sumarla a otra, sale de la anterior. La base lo garantiza con un índice único.
+    - **La tanda nueva** arranca el lunes después de la última. No se puede crear más allá del horizonte de planificación (2 semanas a 3 meses, o sin límite).
+    - **Al cerrar una tanda**, lo pendiente pasa a la próxima, junto con sus grupos (si no hay próxima, se crea), o queda sin planificar.
+  - **Lista de desarrollo:** todos los proyectos en curso, en orden manual (se arrastra o con ↑ ↓ ⤒) o en cualquier otro orden, con el puntaje editable y «+ tanda». Los proyectos se pueden arrastrar de la lista a la tanda o a un grupo.
+  - **Tareas:** ahora muestra por defecto lo planificado, y cada tarea dormida tiene «+ tanda» para sumarla a la tanda actual.
+  - **Inicio:** la pantalla de entrada de cada persona del equipo. Muestra:
+    - sus tareas planificadas o con fecha, con las atrasadas primero, que se marcan hechas ahí;
+    - sus proyectos;
+    - la tanda en curso;
+    - lo que espera en la Bandeja y las muestras por estado.
+- **Desarrollos, fase 4: Muestras y Catálogo técnico.** Con las reglas del prototipo de Felipe. El enlace con TIZADA PRO queda para cuando se cierre con Yoania.
+  - **Muestras:** cada muestra física, con:
+    - sus órdenes, enlazadas a las órdenes reales del sistema cuando el número existe. La tarjeta muestra el área y el estado en vivo de cada orden, y tocándola se abre su ficha (la misma de la consulta de órdenes, en solo lectura). Al cargar el número se busca la orden y, si no tiene nombre, se completa con su descripción;
+    - los proyectos a los que pertenece, estado del recorrido (se cambia desde la tarjeta), tildes, ronda, fecha de envío, comentario y fotos;
+    - buscador, orden (nuevas, viejas, por estado, por proyecto) y filtros por estado, tilde y proyecto;
+    - «Pegar desde planilla»: carga varias de una vez y no repite las órdenes que ya están (SUB-31584 = sub 31584);
+    - «Estados y tildes» (editor): agregar, renombrar, colorear y ordenar el recorrido. No deja quitar uno que usan muestras.
+    - Las cargan y cambian el editor y los colaboradores, como en el prototipo.
+  - **Catálogo técnico** (lo cambia el editor):
+    - **Capacidades:** «Qué destraba más» (ranking, «De a dos» y el aviso de desarrollos terminados que las resuelven), «Todas las capacidades» (crear, editar, marcar resuelta, borrar las que nadie usa) y, desde la ficha, tildar qué necesita un producto o qué resuelve un desarrollo.
+    - **Variantes:** cada modelo de un producto con su estado, moldes, TizadaPro y ERP, los avisos de lo que falta y su lista de tareas. Al hacer una tarea sigue la próxima, y con todas hechas la variante queda «Lista». Nueva variante eligiendo las opciones de cada parte del molde.
+    - **Opciones de slot:** lo que ofrece cada molde. Se cambia estado, habilitada y nota.
+  - **Arreglos sobre el prototipo** (técnicos, sin cambiar reglas):
+    - crear una capacidad con un nombre que ya existe ya no pisa la otra (avisa);
+    - borrar capacidades y variantes las deja marcadas (no se pierden);
+    - en «Por proyecto», las muestras sin proyecto van al final (quedaban primeras).
+- **Desarrollos: pantallas a todo el ancho y paneles animados (15/10).** Las pantallas ya no tienen ancho máximo (en un monitor ancho quedaba media pantalla vacía). Inicio queda en dos zonas: a la izquierda lo de cada uno (Lo mío, Mis proyectos) y a la derecha lo del equipo (Tanda, Bandeja, Muestras), cada caja con su alto. Los 27 paneles que se abren dentro de la página (formularios en línea, «más», detalles, historial) se despliegan al abrir y se pliegan al cerrar, sin fundido (componente `Desplegable` en `desarrollos/comun.jsx`, con `framer-motion`, que ya estaba en el proyecto).
 - **TPU «Hago mi matriz»: canaleta de 1 pt entre texturas.** Entre dos zonas de relieve que se tocan queda 1 pt (0,35 mm) sin relieve ni barniz, donde solo cae el color del arte. Así no queda blanco y el borde entre texturas se hunde, lo que ayuda al relieve.
   - **Quién la cede:** la zona más grande, la que más superficie se ve en el parche. Retrocede el punto entero y la más chica queda entera. Casi siempre la más grande es el fondo, así que las letras, las estrellas y el dibujo quedan enteros.
     - Primero se probó "cede la de abajo", por orden de dibujo. En el escudo REF-13558 los agujeros de la O y la A son parches del fondo dibujados encima de la letra, y la letra cedía por dentro. Con "la más grande" no importa cómo dibujó el diseñador los agujeros.
@@ -196,7 +279,7 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
       - **«Se cobró» desde un caso en duda vale por el importe completo:** el sistema lo registra en caja como un cobro normal. Si se cobró otro importe, se registra a mano y se usa «Ya lo registré a mano».
       - **El botón «Cobros con tarjeta» muestra en rojo cuántos casos hay** y, si hay alguno, abre directo en esa solapa. También aparece cuando no hay terminal de caja, si hay casos de un tótem.
       - Rutas nuevas: `GET /api/contabilidad/caja/pos/revisar` y `POST /api/contabilidad/caja/pos/cobros/:uuid/resolver` (`{ estadoFinal, nota }`).
-      - **Un cobro aprobado que el sistema no registró se puede devolver a la tarjeta desde acá («Devolverlo a la tarjeta»).** El POS integrado no tiene menú de anulación, así que antes no había forma de hacerlo. Va al POS por el total, como cualquier anulación o devolución. En caja no hay nada que revertir, así que la venta queda «no cobrada» y libera su orden. No aplica si la venta tuvo rebaja de IVA.
+      - **Un cobro aprobado que el sistema no registró se puede devolver a la tarjeta desde acá («Devolverlo a la tarjeta»).** El POS integrado no tiene menú de anulación, así que antes no había forma de hacerlo. Va al POS como cualquier anulación (por el total) o devolución (total o parcial; la parcial, por ahora, desde la consola con `anular <uuid> <monto>`). En caja no hay nada que revertir: cuando lo devuelto llega al total, la venta queda «no cobrada» y libera su orden; si es parcial, sigue «cobrada sin registrar» por lo que falta. No aplica si la venta tuvo rebaja de IVA.
         - Probado con el POS de homologación el 13/10: el $ 1 de prueba (#38, ticket 13) se anuló con el ticket 16 (#40) y quedó «no cobrado».
       - Probado en la base local con un caso armado a mano: lista sus opciones; «se cobró» completa el importe y manda a registrar; una reversa pendiente rechaza «se cobró».
     - Consola: `node scripts/poslinkProbar.js ventas` y `anular <uuid> [monto] ["motivo"]`. Cada anulación o devolución queda en `PosTransacciones` (`PtxTipo` ANULACION/DEVOLUCION) apuntando a su venta (`PtxVentaOrigenId`, columna nueva del script SQL).
@@ -216,8 +299,17 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
 - **Stock › Compras: anular una compra cargada por error (13/10).** En el detalle de la compra, «Anular compra» pide el motivo (obligatorio) y la pasa a la pestaña nueva **Anuladas**: sale de Activas, no se puede recibir ni modificar (pagos, costos, progreso, autorización, edición) y queda a la vista quién la anuló, cuándo y por qué. No se borra, así no se pierden los pagos ni los adjuntos que tuviera.
   - Solo se puede anular si no entró mercadería: lo recibido ya es stock en el inventario (en las compras migradas del sistema anterior cuentan también sus etiquetas vivas).
   - Si estaba dentro de una importación, sale de ella y deja de sumar en su total. Su número de referencia queda libre para volver a cargarla bien.
+- **Helpdesk: «pasar en limpio» con IA la respuesta de un ticket (14/10).** Al lado de la caja de respuesta hay un botón ✨: la IA (Gemini 3.1 Flash-Lite, ~US$ 0,0003 por mensaje) pone comas, mayúsculas y tildes, corrige la ortografía y las abreviaturas («q» → «que») y le da un tono amigable y prolijo. Respeta el saludo («Buenos días» queda) y usa un solo trato: si el operador le habla de usted en alguna parte, todo el mensaje va de usted. No agrega ni saca información, respeta quién dijo qué («me comenta que…») y deja números de pedido, montos y fechas tal cual. No envía nada: el texto corregido queda en la caja para revisarlo, y «Deshacer» vuelve al original. Sirve también para las notas internas. Solo para el personal, no para los clientes del portal.
+  - **Clave de Gemini nueva:** la anterior estaba bloqueada por Google («reported as leaked»). Ya hay una nueva en el `.env` local; falta cargarla en producción.
 
 ### Cambiado
+- **TPU, portal: el cliente ya no elige texturas al aprobar un boceto (15/10).** Desde que existe «Hago mi matriz», elegirlas sobre un boceto que armó la fábrica no tenía sentido: las define nuestro diseñador, y quien quiere elegirlas arma su propia matriz al hacer el pedido.
+  - El ✓ de un TPU ya no abre el cartel «¿Y las texturas del parche?» («Aprobar (el diseñador elige las texturas)» / «Elegir mis texturas (ver 3D)»). Abre la confirmación de «Aprobar pedido», que agrega «Las texturas del parche las define nuestro diseñador.» (`FactoryView.jsx`).
+  - Esa confirmación del portal (`pautas/ConfirmationModal.jsx`) pasa a oscura, como el resto del portal: era blanca. Lo que era naranja (ícono, botón y borde) pasa a brand magenta. Mismo contenido y botones; vale para todas las confirmaciones de «Mi Fábrica».
+  - «Ver 3D» queda solo para mirar el parche: sin panel de texturas y sin aprobar desde el visor (`Tpu3DViewer.jsx`). El diseñador sigue eligiéndolas desde el detalle de la orden, como hasta ahora.
+  - Los pedidos que ya tenían texturas elegidas por el cliente las conservan y se ven en el 3D.
+  - Probado en local con TPU-35001: «Ver 3D» abre solo para mirar.
+- **Cobro con tarjeta (POSLink): las ventas van con `Quotas: 0`.** Con tarjeta de crédito, el POS le pregunta las cuotas al cliente en su pantalla; antes iban siempre en 1 cuota. Las devoluciones siguen con 1. La guía de Resonet marca el 0 como «NO RECOMENDADO», sin decir por qué. Probado en homologación el 14/10: venta de $ 1.000 con Visa Crédito, el POS pidió las cuotas, se eligieron 5 y se aprobó (ticket 19; el voucher dice «CUOTAS: 5»). Para la contabilidad no cambia: se registra Crédito por el total (`services/poslink/poslinkClient.js`).
 - **Caja: el medio de pago usa el selector propio** en lugar de la lista nativa del navegador, en las dos versiones del panel de pago (`CajaPanelPago.jsx`). Muestra todas las opciones sin barra de scroll y, con más de 8, trae buscador. «Tarjeta (POS)» lleva debajo en gris en qué terminal se cobra.
 - **Tienda del portal: vuelven a verse las solapas Todo / Terminados / Personalizados / Confeccionados.** Estaban ocultas desde el 21/08 (`TiendaView.jsx`).
 - **Los archivos del arte de TPU llevan el número de orden en el nombre.** Al subirlos desde el detalle de la orden, lo que va antes del primer « - » se reemplaza por el código: «TPU UV - CMYK.pdf» queda «TPU-31947 - CMYK.pdf», y lo mismo Corte y Spot 1, 2 y 3. Si el nombre no tiene « - », el código se agrega adelante. El boceto, la matriz y el archivo «… - Impresion.pdf» (que ya se renombra a `tpu<pedido>-cmyk-spots.pdf`) no cambian. Las palabras que el sistema busca en el nombre (cmyk, corte, spot, boceto) se mantienen. Vale para lo que se suba desde el deploy: los archivos ya cargados conservan su nombre.
@@ -250,7 +342,10 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
   - **Lotes:** si una operación cambia varias órdenes en la misma transacción, sale un aviso por orden con su último estado y un solo «ordersUpdated». Antes salía uno por cada paso.
 - **Caja, Carga de pagos y Retiros web usan la conexión de socket de la app (13/10)** en lugar de abrir una propia mientras están abiertas.
 - **El botón «Producción» de la landing va directo al inicio** (`/`). Antes iba a `/retiros`, una ruta que nunca existió, y rebotaba al mismo inicio.
-- **TPU: la plancha que arma el generador de matrices («Hago mi matriz») pasa a 27,5 cm de ancho (13/10)**; antes era de 30 cm. El alto máximo sigue en 50 cm y la impresión y el corte salen del mismo armado. Entran menos parches por fila cuando el parche es ancho: uno de 30 mm (32 con el sangrado) pasa de 8 a 7 por fila, porque 8 necesitan 277 mm; por ejemplo, 16 parches pasan de 2 filas (300 × 144,6 mm) a 3 (21 parches, 275 × 209,5 mm). Las matrices ya generadas no cambian.
+- **TPU: la plancha que arma el generador de matrices («Hago mi matriz») pasa a 27 cm de ancho y las copias se reparten parejas entre los puntos de registro (14/10)**; antes era de 30 cm (el 13/10 se había bajado a 27,5, sin deployar). El alto máximo sigue en 50 cm y la impresión y el corte salen del mismo armado.
+  - **Reparto:** antes las copias iban pegadas a 5 mm entre cortes y centradas en la plancha, y todo el sobrante quedaba a los costados (TPU-34028: unos 5 mm entre escudos y unos 17 mm hasta cada punto). Ahora van adentro de los puntos y el sobrante se reparte en partes iguales entre punto y copia, entre copias y entre copia y punto. Probado con el escudo REF-13558 a 70,5 mm: tres por fila con 9,7 mm en los cuatro huecos.
+  - **Cuántas entran:** las que dejan al menos 5 mm en cada hueco, contando los 250 mm entre los puntos. Con parches anchos puede entrar uno menos por fila: uno de 30 mm pasa de 8 a 7. Un parche de más de 250 mm de ancho ya no entra y la orden queda con el aviso de error, como antes con uno más ancho que la plancha.
+  - Las matrices ya generadas no cambian.
 - **Tres rechazos esperados dejan de figurar como error 500 en el log (13/10).** Ahora contestan con su código y se registran como aviso:
   - **Editar el precio de una orden entregada, cobrada o facturada** (caja, «TPU-31877 ya fue entregada…»): 409; orden inexistente, 404 (`ordenesRetiroController.editarCostoOrden`).
   - **Cobro de caja sin cliente, sin tipo de documento o sin órdenes**: 400 (`cajaService.procesarTransaccion`; el controlador ya trataba así los rechazos con `statusCode`).
@@ -263,8 +358,17 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
   - **`/assets/images/logo.png`** (nuevo): lo pedían la página de pago de Handy y el login del portal, y no existía.
   - **PDFs sin logo de empresa** (front y servidor): salen con el logo nuevo en vez del texto «user» con cuadraditos; el texto queda solo si la imagen no carga.
   - Los 9 SVG originales de la marca quedan en `public/assets/images/logo/user-*.svg`. El catálogo de FNC ya tenía el logo nuevo.
+- **TPU «Hago mi matriz»: el archivo de corte sale en `.plt` (HPGL) para la cortadora (15/10).** Antes era un PDF con la tinta CutContour. El formato está calcado de una muestra que la cortadora aceptó (`leones.plt`): misma cabecera, 40 unidades por mm, origen en el centro de la plancha, marcas de registro con la pluma 1 y cortes con la pluma 7. Se escribe con los datos del generador (contorno de cada pieza y centro de cada marca), sin adivinar por tamaño qué es marca y qué es pieza. Las matrices ya generadas conservan su PDF.
+- **TPU «Hago mi matriz»: con más de una pieza, el `.plt` lleva un rectángulo por copia y la línea que separa las piezas chicas (15/10).** Calcado del `.plt` que armaron a mano para el «TP-184 AUF URUGUAY» (escudo con 4 estrellas).
+  - **Rectángulo:** rodea cada copia. No tiene medida fija: crece hasta dejar 9 mm libres con el rectángulo de la copia vecina, y nunca queda a menos de 1,5 mm de las piezas.
+  - **Línea:** si las piezas chicas forman una fila arriba o abajo de la principal, como las estrellas sobre el escudo, una línea horizontal las une de borde a borde del rectángulo. Pasa por la parte más ancha de la fila: en las estrellas, por las puntas de los brazos.
+  - **Casos sin fila clara** (piezas al costado de la principal, en dos filas o encajadas): va solo el rectángulo, y la matriz sale con el aviso «Revisar el corte».
+  - **Separación:** para que entren los rectángulos, las copias de un arte con varias piezas van a 12 mm entre cortes en vez de 5, así que entran menos por plancha. El arte de una sola pieza no cambia.
+  - **Orden de corte:** de adentro hacia afuera, como en el TP-184: las piezas, la línea y por último el rectángulo.
 
 ### Arreglado
+- **Landing, «¿Qué es USER?»: el panel del paso se cierra con animación (15/10).** Al tocar de nuevo el paso abierto, el texto se borraba en el mismo clic y el panel se cerraba vacío, de golpe. Ahora el contenido queda mientras el panel se achica (`LandingPage.jsx`, `ProcessFlow`; va en el build).
+- **Usuarios: crear o editar uno con un nombre de usuario que ya existe ahora lo dice.** Antes el backend devolvía 500 con el texto de SQL y la pantalla mostraba «Request failed with status code 500». Pasó en producción el 14/10 al dar de alta «tincho», que ya existe (en la copia local es Martín Moreira, activo, creado el 24/06). Ahora devuelve 409 con «Ya existe un usuario "tincho" (puede estar inactivo). Elegí otro nombre de usuario o editá el existente.», y Usuarios muestra el mensaje del servidor al guardar o eliminar (`controllers/usersController.js`, `pages/UsersPage.jsx`).
 - **Freno para no emitir CFEs reales desde una copia local.** La base local es copia de producción, y la empresa 1 trae la conexión al SISNET de producción (caja `LALINDE/PROD`). `emitirCFE` la prefiere a la del `.env`, así que «Enviar» en la Bandeja CFE de una PC de desarrollo mandaba un comprobante real a la DGI. Con `SISNET_SOLO_ENV=true` en el `.env` se ignora la conexión de la empresa y se usa la del `.env` (`sisnetService.js`). Ya está puesto en el `.env` local. **No va en el `.env` de producción.**
 - **Los cobros de MercadoPago y Handy ya no se suman al turno de la cajera.** Entraban como caja administrativa, pero pegados al turno abierto en ese momento. El arqueo de la cajera no los contaba, pero el resumen de su sesión y el PDF de cierre sí. `procesarTransaccion` miraba `admin` y los webhooks mandan `esAdministrativa` (`cajaService.js`). Ahora van sin turno, como los que se pasan a mano de Central a Administrativa. Los cobros anteriores conservan su turno.
 - **La bitácora de producción se cierra cuando un lote en marcha deja la máquina.** Antes, al arrastrar un lote que estaba corriendo a otra máquina o a la mesa, al dividirlo o al desarmarlo, su registro quedaba abierto: la máquina seguía sumando horas hasta que el lote se pausara o finalizara en otro lado, o para siempre. En producción había tres abiertos desde hace 49 a 92 días (lotes 455, 1141 y 1621). Ahora se cierra en ese momento, como al pausar. Es la decisión 1 de `docs/servicio-tecnico/horas-uso-y-rendimiento.md`, base para contar las horas de uso de las máquinas. Los registros viejos que quedaron abiertos no se tocan.
@@ -300,6 +404,11 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
   - **De paso:** los cheques ahora registran el usuario que los cargó. Antes quedaba siempre el usuario 1.
   - **`GET /api/debug/reprocess/:id`:** era un GET sin login que borra las medidas de los archivos de una orden. Nadie lo llama; quedó solo para Admin y marcado SIN USO.
 - **TPU «Hago mi matriz»: un PDF con clave ya no da error de servidor (14/10).** El 13/10 a las 19:23 un cliente subió un PDF que pide clave para abrirse, y el análisis respondía error 500 con el mensaje técnico en inglés («invalid password»). Ahora se rechaza como cualquier PDF que no sirve como matriz, con el motivo: «El PDF esta protegido con clave y no se puede abrir. Exportalo de nuevo sin clave para abrir el documento.» Un PDF protegido solo contra edición o copia se sigue aceptando: ese sí se puede abrir.
+- **TPU «Hago mi matriz»: el blanco del arte ya no desaparece al imprimir (14/10).** En la orden 34617 (escudo de la AUF) PhotoPrint imprimía el escudo amarillo macizo: el interior blanco, las letras y las espigas no salían, aunque el archivo se veía bien en Drive y en el sistema. Para que el arte del cliente no borre el relieve y el barniz que van debajo, el generador le prende la sobreimpresión con «modo no-cero» (`/OPM 1`), y en ese modo un relleno blanco encima de un color no pinta nada. Ahora va con `/OPM 0`: el blanco tapa el color y el relieve sigue intacto. Verificado separando las tintas con Ghostscript (placas de relieve y barniz idénticas) y en máquina el 14/10 con el archivo corregido de la 34617: color y relieve completos. Las matrices ya generadas no cambian: las que tengan blanco sobre color y no se hayan impreso hay que corregirlas antes de imprimir.
+- **TPU «Hago mi matriz»: el corte sigue el contorno de cada pieza (14/10).** Cuando el arte tenía piezas sueltas (las 4 estrellas del escudo de la AUF, orden 34674), el generador las unía al escudo con puentes de TPU y el corte salía con semicírculos entre las estrellas. Ahora cada pieza dibujada lleva su propio corte por su contorno exterior: el escudo el suyo y cada estrella el suyo. Solo se unen piezas a menos de 0,6 mm entre sí, que no se pueden cortar por separado. Las matrices ya generadas conservan el corte viejo.
+- **DTF: la capa de tinta blanca automática ya no falla con un PNG sin transparencia (15/10).** El 15/10 la DTF-34969 subió 7 PNG y 5 dieron «no encontre la imagen del arte»: no salió su PDF de tinta blanca y el operario tenía que hacer la acción de Photoshop a mano. Pasaba con todo PNG sin canal de transparencia (color, paleta o grises; probado en local), porque el paso de color buscaba la imagen con transparencia. En esa orden fallaron justo los 5 en Display P3 y anduvieron los 2 sin perfil. Ahora esos PNG se procesan y el blanco cubre el rectángulo entero, igual que con la acción de Photoshop; si el PNG trae su perfil de color, se conserva. Cuando el arte no tiene ningún píxel transparente, el log deja un **aviso**: «no tiene transparencia: el fondo es parte del arte y se imprime el rectángulo entero». Los PNG con transparencia salen igual que antes.
+- **Sysadmin: el botón de backup ya no se corta a los 2 minutos (15/10).** Hoy a las 10:58 dio «Command failed: bash /var/www/scripts/backup.sh»: el sistema esperaba el script con un tope de 2 minutos y lo cortó a los 2:01, con el backup ya hecho (está el `.bak` de las 10:58) y el envío a la PC de la oficina a medias. De noche el script tarda ~1 min 20 s, pero de día el envío de ~1 GB tarda más. Ahora el script corre en segundo plano: el botón responde al instante, la pantalla muestra «Backup en curso» y avisa al terminar si salió bien o mal, cuánto tardó y lo último que dijo el script (también queda en el log). Uno solo a la vez, con un tope de seguridad de 20 minutos.
+- **Fallas: el detalle muestra el tipo de falla en vez de «Motivo: (sin especificar)» (15/10).** El cuadro de fallas armaba el motivo solo con lo escrito en «Observaciones», que no es obligatorio, y dejaba afuera el tipo de falla elegido, que sí lo es. Por eso SUB-34096-F57092 decía «(sin especificar)» aunque el operario había elegido «Tela mal cortada» y marcado la zona. Ahora la nota de cada falla nueva lleva el tipo y, si lo hay, el texto del operario («Motivo: Tela mal cortada — …»). Además el detalle completa las notas ya existentes con el tipo guardado en `FallasProduccion`: empareja cada línea con su registro por archivo y lote, también en las cadenas de reposiciones que heredan la nota anterior.
 
 ### Datos corregidos (ya aplicados en producción)
 - **12/10, RW-32253 (pago de MercadoPago sin registrar, ticket #487):** se reprocesó el aviso a mano (marca de procesado liberada + `POST /api/web-orders/mp-webhook?topic=payment&id=183755638754`). Quedó registrado como pago 72918 (MercadoPago, $7.110,89, con su comprobante), uno solo.
@@ -307,6 +416,24 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
 - **08/10, cuenta con id 0 (Mariana Cabrera, cliente 2340):** su cuenta en dólares tenía `CueIdCuenta = 0`, que el sistema toma como «sin cuenta». Desde el deploy del 07/10 la caja no le podía cobrar en dólares («Faltan parámetros obligatorios: cueIdCuenta»). Pasó a ser la cuenta 7835, con el mismo saldo (US$ −339,67), y se movieron a ella 32 movimientos, 16 deudas, 7 imputaciones y 12 filas de la cola de estados de cuenta. Script: `docs/fix-cuenta-cero-cliente-2340.sql`. Después se agregó `CK_CuentasCliente_IdPositivo` (`CueIdCuenta > 0`) para que no pueda volver a existir una cuenta 0.
 
 ### Notas de deploy
+- **Marketing › Piezas (compositor):** solo front, y trae **dos paquetes nuevos**: `konva` 10.7.0 y `react-konva` 18.2.16 (la línea 18, porque el sistema usa React 18). Antes del build hay que correr `npm install` para que entren. Se cargan solo en esta pantalla: el pedazo del build pesa unos 350 KB.
+  - Archivos: `pages/MarketingPiezasPage.jsx` y la carpeta nueva `marketing/piezas/` (12 archivos), más una línea de ruta y una de ícono en `layout/MainAppContent.jsx`, Inter 300 y 800 itálica en `main.jsx` y Roboto Mono en el `@import` de `index.css`.
+  - **Menú:** `docs/marketing-piezas-menu.sql` agrega «Piezas» dentro de Marketing, para los mismos roles que ven Precios. Se puede correr antes o después del build y frena si ya se corrió. En la base local ya está corrido (15/10).
+  - **Probado en el navegador con una página de prueba sin login** (ya borrada): selección, arrastre contra el recuadro, giro y vuelta a 0°, escribir sobre la pieza, estirar un texto, agregar capas, teclado (flechas, duplicar, borrar, deshacer), foto soltada sobre la capa, historia y fondo de tinta, celular, y el PNG exportado (1080 × 1350, sin manijas ni ayudas). «Elegir producto» se probó con la función que llena la pieza; **la ventana con la lista real de precios y la vitrina no se probó logueado**. El build de producción compila.
+- **Tipo de falla en el detalle:** backend `controllers/productionFileController.js` (nota con el tipo y nuevo `getFallasOrden`) y `routes/productionFileRoutes.js` (`GET /production-file-control/orden/:id/fallas`, con login), necesita reiniciar; front `production/components/OrderDetailModal.jsx` (va en el build). Sin SQL. Probado en la base local con 6 órdenes -F reales, incluida una cadena de 4 reposiciones (SUB-33217): cada línea queda con su tipo, contrastado contra los registros.
+- **TPU, el cliente ya no elige texturas al aprobar:** front `client-portal/modulos/FactoryView.jsx`, `client-portal/modulos/Tpu3DViewer.jsx` y `client-portal/pautas/ConfirmationModal.jsx` (van en el build). En el backend solo cambió un comentario (`routes/webOrdersRoutes.js`: la ruta con la que el cliente guardaba texturas queda marcada «SIN USO»), no hace falta subirlo. Sin SQL.
+- **Backup del Sysadmin en segundo plano:** backend `controllers/sysadminController.js` (`backupDatabase` y el nuevo `estadoBackup`) y `routes/sysadminRoutes.js` (`GET /sysadmin/backup/estado`), necesita reiniciar; front `pages/admin/SysAdminPage.jsx` (va en el build). Sin SQL. Probado en local con scripts de prueba (uno que termina bien, uno que falla y un segundo pedido mientras corre); no se corrió el `backup.sh` real.
+- **Tinta blanca DTF con PNG sin transparencia:** backend `python/dtf_blanco.py` (no hace falta reiniciar: el script corre en cada subida) y `services/dtfBlancoService.js` (el aviso en el log; ese sí necesita reiniciar). Sin SQL ni build.
+- **Corte en `.plt`:** backend `python/tpu_matriz.py` (no hace falta reiniciar) y comentarios en `services/tpuMatrizService.js`. Sin SQL ni build. Probado regenerando la 34617: cabecera idéntica a la muestra, 10 marcas de 5 mm y 60 cortes (12 copias × 5 piezas), y los 2.784 puntos del corte en PDF están exactos en el `.plt`. No se probó en la cortadora.
+- **Rectángulo y línea en el `.plt` de varias piezas:** backend `python/tpu_matriz.py` (no hace falta reiniciar) y un comentario en `services/tpuMatrizService.js`. Sin SQL ni build. Probado con el generador real:
+  - **34617, 12 copias:** quedan 3 × 4 en 270 × 463 mm, con 9 mm libres entre rectángulos y la línea en las puntas de las estrellas.
+  - **Arte de una pieza:** sin rectángulo y a 5 mm, igual que antes.
+  - **Piezas chicas abajo de la principal:** rectángulo y línea.
+  - **Pieza al costado:** solo el rectángulo, con el aviso.
+  - No se probó en la cortadora.
+- **IA en el Helpdesk:** backend nuevo `services/iaRedaccionService.js`, y `controllers/ticketsController.js` y `routes/ticketsRoutes.js` (necesita reiniciar); front `pages/customer-service/HelpDeskAdminView.jsx` (va en el build). Sin SQL. **Requiere una `GEMINI_API_KEY` nueva** en el `.env` de producción (la actual está bloqueada por filtrada); opcional `GEMINI_MODEL` (default `gemini-3.1-flash-lite`, comparado con el 3.5 Flash-Lite y el 3.5 Flash; el 2.5 ya no se habilita a claves nuevas). Si Google está saturado reintenta una vez y pasa al modelo de respaldo. Probado en local con la clave nueva y mensajes reales de tickets (#507, #435), y permisos (cliente → 403) y texto vacío (400).
+- **Corte por pieza en «Hago mi matriz»:** backend `python/tpu_matriz.py` (`PIEZA_UNICA = False`). No hace falta reiniciar. Sin SQL ni build. Probado con el generador real con un escudo y 4 estrellas sueltas: antes 1 corte con puentes, ahora 5 cortes, uno por pieza.
+- **Blanco del arte en «Hago mi matriz»:** backend `python/tpu_matriz.py` (`_forzar_sobreimpresion`, una línea). No hace falta reiniciar. Sin SQL ni build. Probado con el generador real (arte de prueba con blanco sobre amarillo: antes el blanco desaparecía, ahora tapa el amarillo y el relieve sigue debajo) y en máquina con la 34617.
 - **Logos de la marca 2026:** front (va en el build): `components/Logo.jsx`, `utils/pdfGenerator.js`, `index.html`, `public/manifest.json`, `public/sw.js` (versión de caché v8: borra las imágenes viejas guardadas en los navegadores) y las imágenes de `public/` y `src/assets/images/logo/`. Backend: `services/pdfService.js` (necesita reiniciar). Sin SQL. Los PDFs de cada empresa usan el logo de `Empresas.EmpLogoUrl` si tiene uno cargado: revisar en producción que no apunte a un archivo viejo. Probado en local en la landing (navbar, pie y el componente sobre claro y oscuro).
 - **PDF con clave en «Hago mi matriz»:** backend `python/tpu_matriz.py` (función `analizar`). No hace falta reiniciar: el script corre en cada análisis. Sin SQL ni build. Probado en local con un PDF con clave de apertura (lo rechaza con el motivo y responde 200) y uno protegido solo contra edición (se analiza normal).
 - **Anular compras y «Editar compra» (Stock › Compras):** backend `services/wmsInternoService.js`, `controllers/wmsInternoController.js` y `routes/wmsInternoRoutes.js` (necesita reiniciar) y front `pages/StockGestionPage.jsx` (va en el build). Sin SQL: las tres columnas nuevas de `Wms_Compras` (`MotivoAnulacion`, `AnuladaPor`, `FechaAnulacion`) se crean solas la primera vez que se abre Compras. Probado en la base local con el controller real (24 pruebas: anular, bloqueos, filtros, referencia libre, una compra recibida que no se anula); no se probó en el navegador.
@@ -323,7 +450,7 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
 - **Dibujos de prendas:** `public/prendas/` (22 archivos, van en el build) y `scripts/prendas/` (solo para generarlos). Sin backend ni SQL.
 - **Tienda, confeccionados con TIZADA PRO (fase 1, sin pantalla):** backend nuevo `services/tiendaConfeccionService.js` y `controllers/tiendaConfeccionController.js`, 6 rutas en `routes/webOrdersRoutes.js`, y los cambios chicos en `services/solicitudesVendedorSublimacion.js` y `services/solicitudesVendedorTizadaPro.js`; necesita reiniciar. La tabla `TiendaConfecciones` se crea sola en el primer uso. Se puede deployar sin riesgo (nada del portal llama todavía a estas rutas) o esperar al asistente. Para que la revisión incluya a TIZADA, la integración tiene que estar prendida en el servidor (en el deploy del 07/10 quedó `TIZADAPRO_API_ACTIVA=0`).
 - **Zona de la falla (detalle del lote y obligatoria en Sublimación):** backend `controllers/productionFileController.js` (`getFallasImagenesLote`) y `routes/productionFileRoutes.js`, necesita reiniciar; front `modals/RollDetailsModal.jsx`, `pages/FilePrintControl.jsx` y `production/components/FallaAnnotator.jsx` (van en el build). Sin SQL. No se probó en el navegador.
-- **Plancha TPU de 27,5 cm:** backend `services/tpuMatrizService.js` y `python/tpu_matriz.py`, necesita reiniciar. Sin SQL ni build.
+- **Plancha TPU de 27 cm con reparto entre registros:** backend `services/tpuMatrizService.js` y `python/tpu_matriz.py`, necesita reiniciar. Sin SQL ni build.
 - **Aviso de MercadoPago (reintento ante deadlock y marca de procesado, retiros y recargas de billetera):** backend `controllers/webOrdersController.js` (`mpWebhook` y `_acreditarRecargaBilletera`, que ahora avisa si la factura ya se emitió), necesita reiniciar. Sin SQL ni build. No se pudo probar de punta a punta en local (el aviso consulta la API real de MP); el reintento es la misma lógica que el de Handy.
 - **Planilla con un ítem del menú sin pantalla:** backend `controllers/ordersController.js` (`getOrdersByArea`, necesita reiniciar). Sin SQL ni build. Probado en la base local con el handler real: `DESCUENTO-TRABAJADORES` devuelve 200 y la lista vacía (el aviso sale solo la primera vez), y `DF` sigue trayendo sus 201 órdenes.
 - **Planeación (lote en máquina primero, «falta finalizar», cola de la calandra):** backend `controllers/productionKanbanController.js` (`getBoard`) y `controllers/productionController.js` (pase a calandra en `toggleRollStatus`), necesita reiniciar; front `pages/PlaneacionTrabajo.jsx`, `production/components/MachineControl.jsx` y `production/components/RollCard.jsx` (van en el build). Sin SQL. El backend puede ir antes: el orden nuevo sale del backend, y el front viejo ignora las marcas. Probado `getBoard` de SB contra la base local: en la FEDAR 2 el lote en máquina (Secuencia 1) queda arriba del que tiene Secuencia 2, y la Calandra 1 trae las marcas de sus 3 pausados (uno, el 4340, con todo calandrado); los 2 lotes de la mesa traen las suyas (1 y 19 órdenes sin imprimir). El pase a calandra, con el UPDATE real en una transacción revertida: dos lotes seguidos entran al final de la Calandra 1 (Secuencia 0 y −1) en el orden en que llegaron, aunque el segundo tenga número de lote menor. No se probó en el navegador.
@@ -362,6 +489,91 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
 - **Auditoría 13/10, login en los routers abiertos:** backend `routes/clientsRoutes.js`, `empresasRoutes.js`, `tesoreriaRoutes.js`, `pricesRoutes.js`, `specialPricesRoutes.js`, `logisticsRoutes.js`, `rollsRoutes.js` y `server.js` (necesita reiniciar). Sin front ni SQL.
   - **Probado:** con los routers reales y controllers simulados, 80 casos: sin token 403, con token de cliente 403, con token interno pasa, y `external-create` pasa sin token. No se probó contra la base.
   - **Si alguien ve «Esta acción es exclusiva del sistema interno»** en una de esas pantallas: es un usuario interno con un token sin `userType`, de antes de febrero. Se arregla cerrando sesión y volviendo a entrar.
+- **Desarrollos, fase 0:** se puede deployar sin riesgo (nadie lo usa hasta que se corra el SQL del menú).
+  - **Backend** (necesita reiniciar): nuevos `services/desarrollos/` (`fabrica.js`, `esquema.js`, `comun.js`), `controllers/desarrollosController.js`, `routes/desarrollosRoutes.js`, `middleware/multerDesarrollos.js` y `scripts/desarrollos/importar.js`; modificado `server.js` (una línea).
+  - **Front** (va en el build): nuevos `pages/DesarrollosPage.jsx`, `pages/desarrollosSecciones.js`, `desarrollos/comun.jsx`, `desarrollos/EquipoVista.jsx` y `services/modules/desarrollosService.js`; modificados `layout/MainAppContent.jsx` (íconos, página y rutas) y `services/api.js`.
+  - **SQL:** `docs/desarrollos/menu-desarrollos.sql`, solo el menú (las tablas se crean solas). Conviene `DES_ADJUNTOS_PATH` en el `.env` apuntando fuera de la carpeta del sistema, como las otras carpetas de adjuntos.
+  - **Datos:** el importador **no** se corre ahora en producción. Se corre el día del pase, con el JSON final de Felipe (plan §5).
+  - **Probado en la base local:**
+    - Importación del JSON del 12/10: todos los conteos coinciden (65 proyectos, 759 tareas, 35 pedidos, 13 muestras, 53 capacidades, 102 opciones, 15 variantes). Los 30 pedidos aprobados quedan enlazados a su proyecto y las tareas en el orden de su plantilla. Una segunda corrida sin `--vaciar` frena.
+    - API: 27 pruebas con las rutas reales (sin login, Admin, vendedor dueño de un pedido y otro vendedor). Las filas que creó la prueba se borraron.
+    - En el navegador: menú y pantallas como Admin y como vendedor, y Equipo (buscar, sumar, líneas, quitar) también en celular.
+- **Desarrollos, fase 1 (Pedidos y Bandeja):** va junto con la fase 0. Sin SQL nuevo.
+  - **Backend** (necesita reiniciar): nuevos `services/desarrollos/altas.js` y `controllers/desarrollosPedidosController.js`; modificados `routes/desarrollosRoutes.js` y `controllers/desarrollosController.js` (avisos por comentarios).
+  - **Front** (va en el build): nuevos `desarrollos/PedidosVista.jsx`, `desarrollos/BandejaVista.jsx`, `desarrollos/ClienteBuscador.jsx` y `desarrollos/reglas.js`; modificados `pages/DesarrollosPage.jsx` (socket y links de los avisos), `desarrollos/comun.jsx` y `services/modules/desarrollosService.js`.
+  - **Probado en la base local:**
+    - API, 49 pruebas con las rutas reales: vendedor, colaborador, editor y un usuario sin acceso; nota interna oculta al vendedor; posponer, descartar (una orden no), reabrir y borrar; avisos guardados en `NotificacionesUsuario`.
+    - Aprobaciones con prenda, sistemas, proceso, corrección (CO-01) y variante. Dos aprobaciones simultáneas del mismo pedido: una sola pasa.
+    - Puntaje calculado igual que el prototipo en los 35 pedidos importados.
+    - En el navegador: el vendedor carga un pedido con cliente y comenta, y el Admin lo edita, lo aprueba (PD-53), carga una idea y la pospone. Pedidos y Bandeja también en celular.
+    - Todo lo que crearon las pruebas se borró.
+- **Desarrollos, fase 2 (Proyectos, Tareas, Archivo y Plantillas):** va junto con las fases 0 y 1. Sin SQL nuevo.
+  - **Backend** (necesita reiniciar): nuevos `services/desarrollos/proyectos.js`, `controllers/desarrollosProyectosController.js` y `controllers/desarrollosPlantillasController.js`; modificado `routes/desarrollosRoutes.js`.
+  - **Front** (va en el build): nuevos `desarrollos/ProyectosVista.jsx`, `desarrollos/ProyectoFicha.jsx`, `desarrollos/TareasVista.jsx`, `desarrollos/ArchivoVista.jsx`, `desarrollos/PlantillasVista.jsx` y `desarrollos/tareas.jsx`; modificados `pages/DesarrollosPage.jsx`, `desarrollos/BandejaVista.jsx` (abre la ficha al aprobar), `desarrollos/reglas.js` y `services/modules/desarrollosService.js`.
+  - **Probado en la base local:**
+    - API, 58 pruebas con las rutas reales sobre proyectos creados para la prueba:
+      - permisos y validaciones;
+      - código repetido;
+      - alta en el ERP con artículo;
+      - auto-avance;
+      - historial de etapas;
+      - dependencias y ciclos;
+      - mover, agregar y quitar tareas;
+      - confirmar fechas;
+      - terminado, cancelado y reactivado con el aviso al vendedor;
+      - guardar como plantilla;
+      - editor de plantillas y tipos.
+    - Siguen pasando las 27 de la fase 0 y las 49 de la fase 1.
+    - En el navegador: crear un proyecto, la ficha (alta en el ERP eligiendo PR-052, cambiar el responsable, completar tareas y avanzar de etapa), Tareas (lista, tablero, «Todas» con las 674 sin terminar), Archivo y el editor de plantillas, también la ficha en celular.
+    - Todo lo que crearon las pruebas se borró.
+- **Desarrollos, fase 3 (Planificación e Inicio):** va junto con las fases anteriores. Sin SQL nuevo.
+  - **Backend** (necesita reiniciar): nuevo `controllers/desarrollosPlanificacionController.js`; modificado `routes/desarrollosRoutes.js`.
+  - **Front** (va en el build): nuevos `desarrollos/PlanificacionVista.jsx` y `desarrollos/InicioVista.jsx`; modificados `pages/DesarrollosPage.jsx`, `desarrollos/TareasVista.jsx` y `desarrollos/tareas.jsx` («+ tanda»), `desarrollos/reglas.js` y `services/modules/desarrollosService.js`.
+  - **Probado en la base local:**
+    - API, 30 pruebas con las rutas reales:
+      - permisos;
+      - la tanda nueva el próximo lunes y el horizonte;
+      - vincular con las tareas de la etapa actual;
+      - que una tarea pase de una tanda a otra;
+      - que la base rechace la misma tarea en dos tandas abiertas;
+      - grupos;
+      - cerrar pasando lo pendiente (crea la tanda siguiente con la copia del grupo) y sin pasarlo;
+      - «+ tanda»;
+      - desvincular, orden manual y borrar;
+      - el resumen de muestras.
+    - Siguen pasando las 27, 49 y 58 de las fases anteriores.
+    - En el navegador, como Felipe:
+      - crear una tanda y vincular desde la lista;
+      - sumar una etapa entera;
+      - grupos;
+      - arrastrar un proyecto a la tanda;
+      - reordenar la lista arrastrando;
+      - cerrar pasando lo pendiente;
+      - Tareas con lo planificado;
+      - Inicio con todas sus cajas;
+      - Planificación en celular, sin desborde.
+    - El arrastre se probó despachando los eventos, porque el navegador de pruebas no los dispara solo.
+    - Todo se borró y se restauró el orden manual de Felipe.
+- **Desarrollos, fase 4 (Muestras y Catálogo técnico):** va junto con las fases anteriores. Sin SQL a mano: la tabla de capacidades suma la columna `Borrado` sola al arrancar.
+  - **Backend** (necesita reiniciar): nuevos `controllers/desarrollosMuestrasController.js` y `controllers/desarrollosCatalogoController.js`; modificados `routes/desarrollosRoutes.js`, `services/desarrollos/esquema.js` (columna `Borrado` en `DesCapacidades`) y `services/desarrollos/proyectos.js` (los contadores no cuentan capacidades borradas).
+  - **Front** (va en el build): nuevos `desarrollos/MuestrasVista.jsx`, `desarrollos/CatalogoVista.jsx` y `desarrollos/catalogoVariantes.jsx`; modificados `pages/DesarrollosPage.jsx`, `desarrollos/comun.jsx` (galería de fotos reutilizable) y `services/modules/desarrollosService.js`.
+  - **Probado en la base local:**
+    - API, 67 pruebas con las rutas reales:
+      - permisos de vendedor, colaborador y editor;
+      - órdenes enlazadas y sin enlazar;
+      - alta, edición con historial, estado, tildes y borrar;
+      - pegar desde planilla con repetidas;
+      - listas de estados y tildes;
+      - capacidades: crear, nombre repetido, resuelta, borrar en uso y sin uso, volver a crear, lo que necesita un proyecto;
+      - variantes: crear con las 6 tareas, cambios con historial, tareas que avanzan y el pase a «Lista», borrar;
+      - opciones de slot.
+    - Siguen pasando las 27, 49, 58 y 30 de las fases anteriores, y el puntaje da igual en los 35 pedidos.
+    - En el navegador:
+      - cargar una muestra con una orden real (la encuentra y completa el nombre), vincular proyecto, tildar, cambiar el estado desde la tarjeta, abrir la ficha de la orden y borrarla;
+      - estados y tildes, pegar;
+      - Catálogo: ranking, variante nueva con opciones del molde, marcar una tarea, borrarla, opciones de slot y la vista de un producto;
+      - Muestras y Catálogo en celular, sin desborde.
+    - Todo lo que crearon las pruebas se borró.
 
 ## [2026-10-07] — segundo deploy del día (tarde)
 

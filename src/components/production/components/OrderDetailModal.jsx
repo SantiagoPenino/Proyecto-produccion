@@ -39,6 +39,7 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
     // Estado Pestañas
     const [activeTab, setActiveTab] = useState('files');
     const [fallaImages, setFallaImages] = useState([]); // imágenes de fallas anotadas (solo SB)
+    const [fallasRegistro, setFallasRegistro] = useState([]); // FallasProduccion de las líneas "FALLA:" de la nota (con el tipo)
     const { user } = useAuth();
 
     // ¿Este usuario puede MODIFICAR el estado de la orden? Solo internos con rol habilitado.
@@ -1379,6 +1380,19 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
         }
     }, [order]);
 
+    // Fallas registradas de esta orden, con el nombre del tipo: completan el motivo de las notas viejas, que
+    // solo traían el texto del operario ("Motivo: (sin especificar)" aunque hubiera tipo elegido).
+    useEffect(() => {
+        const id = currentOrder?.id;
+        if (id && /FALLA:/i.test(currentOrder?.note || '')) {
+            api.get(`/production-file-control/orden/${id}/fallas`)
+                .then(res => setFallasRegistro(res.data?.data || []))
+                .catch(() => setFallasRegistro([]));
+        } else {
+            setFallasRegistro([]);
+        }
+    }, [currentOrder?.id, currentOrder?.note]);
+
     // Imágenes de fallas marcadas (recuadro) — solo SB, para la tab Referencias.
     useEffect(() => {
         if (order?.id && isSB) {
@@ -2006,7 +2020,41 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
 
                     {currentOrder.note && (() => {
                         const parts = currentOrder.note.split('||').map(n => n.trim()).filter(Boolean);
-                        const fallas = parts.filter(n => /^FALLA:/i.test(n)).map(n => n.replace(/^FALLA:\s*/i, '').trim()).filter(Boolean);
+                        const fallasNota = parts.filter(n => /^FALLA:/i.test(n)).map(n => n.replace(/^FALLA:\s*/i, '').trim()).filter(Boolean);
+                        // Cada línea "… | Archivo: X | … | Lote: L" se empareja con su registro en FallasProduccion
+                        // (mismo archivo y mismo lote). Una -F que nace de otra hereda las líneas anteriores, así que se
+                        // recorre de la línea más nueva a la más vieja tomando el registro más reciente que coincida.
+                        // Si el motivo no trae el tipo (notas anteriores al 15/10) se le antepone; las nuevas quedan igual.
+                        const etiquetaArchivo = (nombre) => {
+                            const n = String(nombre || '').trim();
+                            return (n.match(/Archivo\s+\d+\s+de\s+\d+/i) || [])[0] || n.replace(/\.[^.]+$/, '');
+                        };
+                        const campo = (linea, nombre) => (linea.match(new RegExp(`\\|\\s*${nombre}:\\s*([^|]+)`)) || [])[1]?.trim();
+                        const usados = new Set();
+                        const tipos = fallasNota.map(() => '');
+                        for (let i = fallasNota.length - 1; i >= 0; i--) {
+                            const arch = campo(fallasNota[i], 'Archivo');
+                            const lote = campo(fallasNota[i], 'Lote');
+                            if (!arch) continue;
+                            for (let j = fallasRegistro.length - 1; j >= 0; j--) {
+                                const r = fallasRegistro[j];
+                                if (usados.has(j) || etiquetaArchivo(r.NombreArchivo) !== arch) continue;
+                                if (lote && r.Lote && String(r.Lote).trim() !== lote) continue;
+                                usados.add(j);
+                                tipos[i] = String(r.TipoFalla || '').trim();
+                                break;
+                            }
+                        }
+                        const fallas = fallasNota.map((linea, i) => {
+                            const tipo = tipos[i];
+                            if (!tipo) return linea;
+                            return linea.replace(/^Motivo:\s*([^|]*?)\s*(?=\||$)/, (todo, texto) => {
+                                const t = texto.trim();
+                                if (!t || t === '(sin especificar)') return `Motivo: ${tipo} `;
+                                if (t.toLowerCase().startsWith(tipo.toLowerCase())) return todo;
+                                return `Motivo: ${tipo} — ${t} `;
+                            });
+                        });
                         // Quitar el marcador viejo [CONTIENE ARCHIVOS CON ESCALA/RAPORT] de las notas del cliente
                         // (ahora se muestra en su propia card arriba).
                         const prod = parts.filter(n => !/^FALLA:/i.test(n)).map(n => n.replace(/\[CONTIENE ARCHIVOS CON ESCALA\/RAPORT\]\s*/i, '').trim()).filter(Boolean);

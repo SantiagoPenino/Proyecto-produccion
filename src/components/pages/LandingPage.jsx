@@ -755,6 +755,11 @@ function InfiniteMarquee({ isMobile }) {
 function ProcessFlow({ isMobile, isTablet }) {
   const [activeStep, setActiveStep] = useState(null);
   const [hoveredStep, setHoveredStep] = useState(null);
+  // El panel de escritorio se cierra achicándose: el último paso abierto sigue dibujado durante el
+  // cierre. Si el contenido desaparecía junto con el clic, el panel se cerraba vacío y sin animación.
+  const ultimoPaso = useRef(null);
+  if (activeStep !== null) ultimoPaso.current = activeStep;
+  const pasoPanel = activeStep ?? ultimoPaso.current;
 
   const handleStepClick = (idx) => {
     setHoveredStep(null); // siempre limpiar hover al hacer click
@@ -932,13 +937,13 @@ function ProcessFlow({ isMobile, isTablet }) {
             maxWidth: 820,
             margin: '0 auto',
           }}>
-            {activeStep !== null && (
+            {pasoPanel !== null && (
               <div style={{
                 marginTop: 24,
                 padding: '24px 32px',
-                background: `${steps[activeStep].colorMain}1E`,
+                background: `${steps[pasoPanel].colorMain}1E`,
                 borderRadius: 12,
-                border: `1px solid ${steps[activeStep].colorCustom}40`,
+                border: `1px solid ${steps[pasoPanel].colorCustom}40`,
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'flex-start',
@@ -947,7 +952,7 @@ function ProcessFlow({ isMobile, isTablet }) {
                 boxSizing: 'border-box',
               }}>
                 <div style={{ flexShrink: 0, opacity: 0.5, width: 72, display: 'flex', justifyContent: 'center' }}>
-                  {cloneElement(steps[activeStep].icon, { isActive: true })}
+                  {cloneElement(steps[pasoPanel].icon, { isActive: true })}
                 </div>
                 <div style={{ flex: 1 }}>
                   <h3 style={{
@@ -955,13 +960,13 @@ function ProcessFlow({ isMobile, isTablet }) {
                     margin: '0 0 8px', letterSpacing: '-0.3px',
                     textTransform: 'uppercase'
                   }}>
-                    {steps[activeStep].title}
+                    {steps[pasoPanel].title}
                   </h3>
                   <p style={{
                     color: 'rgba(255,255,255,0.55)', fontSize: 14,
                     lineHeight: 1.7, margin: 0, maxWidth: 700
                   }}>
-                    {steps[activeStep].description}
+                    {steps[pasoPanel].description}
                   </p>
                 </div>
               </div>

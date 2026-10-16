@@ -2,6 +2,12 @@ const { getPool, sql } = require('../config/db');
 const logger = require('../utils/logger');
 const { hashear } = require('../utils/password');
 
+// Usuarios.Usuario tiene índice único: 2627/2601 = ese nombre de usuario ya existe (puede estar inactivo).
+// Antes salía 500 con el texto de SQL y la pantalla mostraba "Request failed with status code 500"
+// (prod 14/10: alta de "tincho").
+const esUsuarioRepetido = (err) => err?.number === 2627 || err?.number === 2601;
+const msgUsuarioRepetido = (usuario) => `Ya existe un usuario "${usuario}" (puede estar inactivo). Elegí otro nombre de usuario o editá el existente.`;
+
 exports.getAll = async (req, res) => {
     try {
         const pool = await getPool();
@@ -38,6 +44,10 @@ exports.create = async (req, res) => {
 
         res.json({ success: true, message: 'Usuario creado', IdUsuario: result.recordset[0].IdUsuario });
     } catch (err) {
+        if (esUsuarioRepetido(err)) {
+            logger.warn(`Alta de usuario rechazada: "${Usuario}" ya existe.`);
+            return res.status(409).json({ error: msgUsuarioRepetido(Usuario) });
+        }
         logger.error('Error creating user:', err);
         res.status(500).json({ error: err.message });
     }
@@ -74,6 +84,10 @@ exports.update = async (req, res) => {
         await request.query(query);
         res.json({ success: true, message: 'Usuario actualizado' });
     } catch (err) {
+        if (esUsuarioRepetido(err)) {
+            logger.warn(`Edición de usuario #${id} rechazada: "${Usuario}" ya existe.`);
+            return res.status(409).json({ error: msgUsuarioRepetido(Usuario) });
+        }
         logger.error('Error updating user:', err);
         res.status(500).json({ error: err.message });
     }

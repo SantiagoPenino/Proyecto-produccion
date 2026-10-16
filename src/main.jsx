@@ -18,11 +18,14 @@ import '@fontsource/dm-sans/800.css';
 import '@fontsource/dm-sans/900.css';
 // Inter (02/10): es la fuente de `font-sans` (tailwind.config) y la usa todo el layout, pero no se cargaba.
 // Sin esto se veía Segoe UI, salvo después de pasar por Clientes o Presupuestos, que la bajan de Google Fonts.
+// 300 y 800 itálica (15/10): las usa el compositor de piezas de Marketing (Light y el título Bold Italic de la marca).
+import '@fontsource/inter/300.css';
 import '@fontsource/inter/400.css';
 import '@fontsource/inter/500.css';
 import '@fontsource/inter/600.css';
 import '@fontsource/inter/700.css';
 import '@fontsource/inter/800.css';
+import '@fontsource/inter/800-italic.css';
 import '@fontsource/inter/900.css';
 import './index.css';
 import './styles/design-system.css'; // <-- IMPORTAR AQUÍ

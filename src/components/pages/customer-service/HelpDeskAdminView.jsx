@@ -4,7 +4,7 @@ import { apiClient, API_BASE_URL } from '../../../client-portal/api/apiClient';
 import { socket } from '../../../services/socketService';
 import { GlassCard } from '../../../client-portal/pautas/GlassCard';
 import { CustomButton } from '../../../client-portal/pautas/CustomButton';
-import { Search, Filter, MessageSquare, Clock, AlertCircle, FileText, Send, Lock, RotateCcw, CheckCircle, Package, ChevronDown, Check, X, Download, Trash2, Paperclip } from 'lucide-react';
+import { Search, Filter, MessageSquare, Clock, AlertCircle, FileText, Send, Lock, RotateCcw, CheckCircle, Package, ChevronDown, Check, X, Download, Trash2, Paperclip, Sparkles, Loader2, Undo2 } from 'lucide-react';
 import { useAuth } from '../../../context/AuthContext';
 import { toast } from 'sonner';
 import { Listbox, Transition } from '@headlessui/react';
@@ -346,6 +346,9 @@ const TicketAdminInterface = ({ ticketId, onUpdate, departamentos }) => {
     const [texto, setTexto] = useState('');
     const [archivos, setArchivos] = useState([]);
     const [sending, setSending] = useState(false);
+    // "Pasar en limpio" con IA: el borrador corregido reemplaza al texto; el original queda para deshacer
+    const [puliendo, setPuliendo] = useState(false);
+    const [textoOriginal, setTextoOriginal] = useState(null);
     const fileInputRef = useRef(null);
     const [modalImage, setModalImage] = useState(null);
     const [modalClosing, setModalClosing] = useState(false);
@@ -473,6 +476,26 @@ const TicketAdminInterface = ({ ticketId, onUpdate, departamentos }) => {
         if (fileInputRef.current) fileInputRef.current.value = ''; // permite volver a elegir el mismo archivo
     };
 
+    // La IA corrige ortografía, puntuación y redacción sin agregar ni sacar información. No envía nada:
+    // el texto corregido queda en la caja para que el operador lo revise (y lo pueda deshacer).
+    const pasarEnLimpio = async () => {
+        if (!texto.trim() || puliendo || sending) return;
+        setPuliendo(true);
+        try {
+            const res = await apiClient.post('/tickets/ia/pasar-en-limpio', { texto, esNotaInterna });
+            if (res.success && res.texto) {
+                setTextoOriginal(texto);
+                setTexto(res.texto);
+            } else {
+                toast.error(res.error || 'No se pudo pasar en limpio.');
+            }
+        } catch (e) {
+            toast.error(e?.message || 'No se pudo pasar en limpio.');
+        } finally {
+            setPuliendo(false);
+        }
+    };
+
     const handleSend = async () => {
         if (!texto.trim() && archivos.length === 0) return;
         setSending(true);
@@ -487,6 +510,7 @@ const TicketAdminInterface = ({ ticketId, onUpdate, departamentos }) => {
             if (res.success) {
                 toast.success(esNotaInterna ? "Nota Interna Guardada" : "Respuesta al cliente enviada.");
                 setTexto('');
+                setTextoOriginal(null);
                 setArchivos([]);
                 fetchThread();
                 onUpdate();
@@ -746,6 +770,18 @@ const TicketAdminInterface = ({ ticketId, onUpdate, departamentos }) => {
                             </div>
                         )}
 
+                        {/* Después de pasar en limpio: volver al texto como estaba */}
+                        {textoOriginal !== null && (
+                            <div className="flex items-center gap-2 text-xs text-zinc-500">
+                                <Sparkles size={13} className="text-brand-cyan shrink-0" />
+                                <span>Texto pasado en limpio con IA. Revisalo antes de enviar.</span>
+                                <button type="button" onClick={() => { setTexto(textoOriginal); setTextoOriginal(null); }}
+                                    className="inline-flex items-center gap-1 font-bold text-zinc-600 hover:text-zinc-900">
+                                    <Undo2 size={13} /> Deshacer
+                                </button>
+                            </div>
+                        )}
+
                         <div className="flex items-end gap-2">
                             <input ref={fileInputRef} type="file" multiple accept="image/*,.pdf" className="hidden" onChange={handleFileChange} />
                             <button
@@ -762,7 +798,17 @@ const TicketAdminInterface = ({ ticketId, onUpdate, departamentos }) => {
                                 placeholder={esNotaInterna ? "Esta nota solo la verá el equipo interno..." : "Escribe una respuesta para el cliente..."}
                                 value={texto}
                                 onChange={(e) => setTexto(e.target.value)}
+                                disabled={puliendo}
                             />
+                            <button
+                                type="button"
+                                onClick={pasarEnLimpio}
+                                disabled={puliendo || sending || !texto.trim()}
+                                title="Pasar en limpio con IA: corrige ortografía y redacción (lo revisás antes de enviar)"
+                                className="p-4 rounded-xl font-bold transition-all disabled:opacity-50 bg-zinc-100 hover:bg-zinc-200 border border-zinc-200"
+                            >
+                                {puliendo ? <Loader2 size={20} className="text-brand-cyan animate-spin" /> : <Sparkles size={20} className="text-brand-cyan" />}
+                            </button>
                             <button
                                 onClick={handleSend}
                                 disabled={sending || (!texto.trim() && archivos.length === 0)}

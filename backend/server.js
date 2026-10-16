@@ -142,6 +142,7 @@ app.use('/api/consultas', require('./routes/consultasClienteRoutes')); // CONSUL
 app.use('/api/tareas', require('./routes/tareasRoutes'));          // TO-DO COMPARTIDO (interno)
 app.use('/api/push', require('./routes/pushRoutes'));              // PUSH NOTIFICATIONS
 app.use('/api/servicio-tecnico', require('./routes/servicioTecnicoRoutes')); // SERVICIO TÉCNICO (docs/servicio-tecnico-plan.md)
+app.use('/api/desarrollos', require('./routes/desarrollosRoutes'));          // DESARROLLOS (docs/desarrollos/plan-integracion.md)
 app.use('/api/notificaciones', require('./routes/notificacionesRoutes'));    // CAMPANITA: avisos por usuario interno
 app.use('/api/nomenclators', nomenclatorsRoutes);
 app.use('/api/routes-config', require('./routes/routesConfigRoutes'));

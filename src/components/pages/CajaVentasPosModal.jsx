@@ -90,12 +90,14 @@ export default function CajaVentasPosModal({ abierto, onCerrar, onIniciado, pest
 
     const resolver = async () => {
         if (!resolviendo) return;
-        if (nota.trim().length < 5) { toast.error('Escribí qué verificaste (POS, banco, voucher...).'); return; }
+        // La nota es obligatoria al cerrar un caso a mano (queda como constancia de qué se verificó). Para
+        // devolverlo a la tarjeta es solo el motivo, opcional como en la solapa Ventas.
+        if (resolviendo.destino !== 'ANULAR_POS' && nota.trim().length < 5) { toast.error('Escribí qué verificaste (POS, banco, voucher...).'); return; }
         setEnviando(true);
         try {
             if (resolviendo.destino === 'ANULAR_POS') {
                 // Va al POS como cualquier anulación: el seguimiento lo muestra CajaCobroPosModal.
-                const r = await api.post('/contabilidad/caja/pos/reversiones', { uuidVenta: resolviendo.uuid, motivo: nota.trim() });
+                const r = await api.post('/contabilidad/caja/pos/reversiones', { uuidVenta: resolviendo.uuid, motivo: nota.trim() || null });
                 setResolviendo(null);
                 setNota('');
                 onIniciado?.(r.data?.data || null);

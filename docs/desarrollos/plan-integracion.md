@@ -1,6 +1,6 @@
 # Desarrollos dentro del sistema: plan de integración
 
-14/10/2026 · borrador para revisar antes de escribir código.
+14/10/2026 · aprobado el 14/10. **Fases 0 a 4 hechas** (ver CHANGELOG «Sin deployar»). Sigue el pase a prod.
 
 Fuentes: el paquete de Felipe (*Guía para Sistemas*, *Plan funcional*, código y `copia-de-datos.json` del 12/10) y tres especificaciones que armé leyendo el código del prototipo de punta a punta. Las especificaciones están al lado de este archivo:
 
@@ -25,11 +25,11 @@ Marcas: **[verificado: dónde]** · **[inferido de X]** · **[no lo sé]**. Lo v
 
 | Pregunta | Respuesta |
 |---|---|
-| 1. ¿El sistema ya tiene gestión de proyectos, tareas o pedidos internos? | **No para esto.** Servicio Técnico tiene proyectos de mantenimiento (`ST_Proyectos`). `Tareas` es una lista de pendientes simple. Solicitudes de vendedores es el circuito de diseño de pedidos, no de desarrollo. `ProyectosTecnicos` y `UpdatesProyecto` existen pero no las usa ningún código **[verificado: 0 filas en la copia local y sin referencias en el código]**. Desarrollos es un módulo nuevo. |
+| 1. ¿El sistema ya tiene gestión de proyectos, tareas o pedidos internos? | **No para esto.** Servicio Técnico tiene sus proyectos (`ST_Proyectos`), pero son algo propio de esa área y aparte de Desarrollos. `Tareas` es una lista de pendientes simple. Solicitudes de vendedores es el circuito de diseño de pedidos, no de desarrollo. `ProyectosTecnicos` y `UpdatesProyecto` existen pero no las usa ningún código **[verificado: 0 filas en la copia local y sin referencias en el código]**. Desarrollos es un módulo nuevo. |
 | 2. ¿Se puede consultar el maestro de productos? | **Sí, es `Articulos`.** Los REF del prototipo (`PR-001`…`PR-057`) son exactamente los 57 `Articulos.CodArticulo` que empiezan con `PR-` **[verificado: copia local]**. La familia sale de `Articulos.CodStock`, igual que en Configurar Productos **[verificado: ConfigurarProductosPage.jsx:1380]**. La etiqueta (Fútbol / Básquet / Vóley) sale de `ProductoVentaConfig.EtiquetaID` → `ProductoEtiqueta` **[verificado: copia local]**. |
 | 3. ¿Las órdenes de USER se encuentran por número y tienen estado? | **Sí, por `Ordenes.CodigoOrden`.** `SUB-31561`, `SUB-31584` y `DIR-31586`, de las muestras, existen con su área y su estado **[verificado: copia local]**. |
 | 4. ¿Usuarios y permisos? | **Sí.** `Usuarios` + `Roles`, y el menú por rol con `Modulos` + `PermisosRoles`. Felipe (78), German (65), Sergio (64) y Agustín (53) ya son usuarios **[verificado: copia local]**. |
-| 5. ¿Adjuntos? | **En Google Drive** (`driveService.uploadToDrive`), como el resto del sistema **[verificado: código]**. El límite lo pone cada ruta de subida; propongo 50 MB por archivo **[decisión mía, se puede cambiar]**. |
+| 5. ¿Adjuntos? | **En disco, como Servicio Técnico** (carpeta `DES_ADJUNTOS_PATH`, fotos pasadas a WebP), con hasta 25 MB por archivo. *Cambio de la fase 0: el borrador decía Google Drive; Servicio Técnico, el módulo interno más parecido, guarda en disco, y las subidas a Drive fallan a veces (se vio en los logs).* |
 | 6. ¿El sistema maneja variantes? | **En parte, y se pisa con lo de Yoania.** Configurar Productos tiene modelos por producto (`ProductoModelos`) y telas (`ProductoTelas`), y TIZADA PRO tiene los moldes con sus opciones. Las "variantes" y "opciones de slot" del prototipo se superponen con eso **[inferido de las tablas y del código de solicitudes]**. Se define con Yoania antes de la fase 4 (§9). |
 | 7. ¿Qué camino? | **Integrarlo entero** (entre el B y el C de la guía): se rehace adentro por fases y se pasa de una vez. El camino A (dejarlo afuera y enlazar) no sirve: el prototipo no tiene API ni servidor, así que el sistema no tiene cómo leerle ni escribirle **[verificado: Guía §9 y código]**. |
 
@@ -89,13 +89,13 @@ Las tres recomendaciones de la guía (tareas en tabla propia, tandas con tabla d
 | `DesSolicitudes` | pedidos | `PedidoPorUsuarioID` + `CliIdCliente` (con texto libre para prospectos) |
 | `DesProyectos` | proyectos | `ProIdProducto` (artículo del maestro) en vez de `ref_erp` tipeado; `AreaID` como línea; fechas de terminado y cancelado guardadas |
 | `DesProyectoEtapas` | etapas copiadas de la plantilla, **siempre** | Un solo orden de tareas; el prototipo tiene dos que pueden no coincidir |
-| `DesTareas` · `DesTareaDependencias` | tareas de proyectos y de variantes | Tabla propia |
+| `DesTareas` · `DesTareaDependencias` · `DesVarianteTareas` | tareas de proyectos; las de variantes, aparte | Tabla propia (las de variantes son una lista simple que no entra en Tareas ni en Planificación) |
 | `DesTandas` · `DesTandaGrupos` · `DesTandaProyectos` · `DesTandaTareas` | planificación | "Una tarea, una tanda abierta" con índice único filtrado y transacción |
 | `DesOrdenLista` | orden manual de la lista de desarrollo | — |
 | `DesMuestras` · `DesMuestraOrdenes` · `DesMuestraProyectos` · `DesMuestraEstados` · `DesMuestraTildes` | muestras | Cada orden enlazada a `Ordenes.OrdenID` cuando existe |
 | `DesCapacidades` · `DesCapacidadUso` | capacidades y qué proyecto o pedido las requiere o resuelve | — |
 | `DesVariantes` · `DesOpcionesSlot` | catálogo técnico | Forma final a definir con Yoania (§9) |
-| `DesComentarios` · `DesBitacora` · `DesAdjuntos` | comunes a todo | La bitácora no se corta en 200; los adjuntos van a Drive |
+| `DesComentarios` · `DesBitacora` · `DesAdjuntos` | comunes a todo | La bitácora no se corta en 200; los adjuntos van a disco |
 | `DesConfig` | horizonte y largo de tanda, fuentes de moldes | — |
 
 Las tablas se crean solas la primera vez, desde un archivo JS versionado en git, como `TiendaConfecciones`. Así existen en cualquier base sin depender de que alguien corra un script. Las altas de menú y permisos te las paso como SQL para correr a mano.
@@ -113,7 +113,7 @@ Los **códigos se generan en el servidor**, dentro de la transacción. En el pro
 | **Líneas** | sublimación → `SB`, directa → `DIRECTA`, ecouv → `ECOUV` (`Areas`) **[verificado: copia local]**. |
 | **Avisos** | Con `notificacionesService.notificar` (campanita + push). Es nuevo: el prototipo no avisa nada. Al vendedor, cuando su pedido se aprueba, pospone, descarta, termina o se cancela. Al responsable, cuando le asignan una tarea. A los editores, cuando entra un pedido. |
 | **TIZADA PRO / Configurar Productos** | Variantes y opciones de slot, y las tareas "Molde y modelos en TizadaPro" / "Cargar el modelo en TizadaPro". Se define con Yoania (§9). |
-| **Servicio Técnico** | Un desarrollo de tipo "máquina" puede terminar en un equipo nuevo. Por ahora no se enlazan; queda anotado. |
+| **Servicio Técnico** | **Son dos cosas distintas.** Los proyectos de Servicio Técnico son propios de esa área y no se mezclan con Desarrollos. A futuro, un desarrollo aprobado que lo amerite podría darse de alta en Servicio Técnico; **queda fuera de este plan**. |
 
 ### 4.5 Lo que no se pasa (y por qué)
 
@@ -135,7 +135,7 @@ Un script de importación (`backend/scripts/desarrollos/importar.js`) lee el JSO
 - **Repetible**: corre sobre tablas vacías, adentro de una transacción. Se puede correr cuantas veces haga falta en la copia local.
 - **Guarda el id original** de cada documento (`IdOrigen`) para poder rastrear.
 - **Personas**: nombre → usuario. "Felipe" y "Felipe Lalinde" → 78, "German" → 65, "Sergio" → 64. Lo que no es una persona ("Lista de WhatsApp (06/10)", "Sugerencia de Claude", "Claude") queda como texto, sin usuario.
-- **REF → artículo** por `CodArticulo`. Casos que necesitan decisión: `PR-034 PR-030` (dos códigos en un campo), `574`, que en el maestro es "Camiseta localhost", un artículo de prueba, y `PRP-001`, que no está en el maestro **[verificado: copia local]**.
+- **REF → artículo** por `CodArticulo`. Caso que necesita decisión: `PR-034 PR-030` (dos códigos en un campo). `574` es «Bandera 3x1 impresion directa», que coincide con PD-27, y `PRP-001` existe **[verificado: copia de producción del 15/10]**. Con la copia local vieja, `574` daba «Camiseta localhost» y `PRP-001` no estaba.
 - **Variantes**: los ids `v1`…`v5` se repiten entre productos **[verificado: spec A]**. Al importar reciben un id nuevo.
 - **Etapas**: los 65 proyectos usan las 5 etapas de siempre **[verificado: JSON]**. Se copian a `DesProyectoEtapas` con id propio.
 - **Muestras**: cada número de orden se busca en `Ordenes` y se enlaza si existe.
@@ -155,7 +155,7 @@ Cada fase se prueba en la copia local con los datos reales importados, Felipe la
 
 ### Fase 0: base
 - Tablas, equipo y permisos, grupo de menú y secciones, esqueleto de la API.
-- Piezas comunes: bitácora, comentarios, adjuntos en Drive, eventos por socket.
+- Piezas comunes: bitácora, comentarios, adjuntos en disco, eventos por socket.
 - Script de importación v1 y su reporte.
 - **Se prueba**: el importador da los conteos del JSON; cada rol ve el menú que corresponde; un vendedor no puede llamar a un endpoint de editor.
 
@@ -176,10 +176,11 @@ Cada fase se prueba en la copia local con los datos reales importados, Felipe la
 - Inicio.
 - **Se prueba**: "una tarea, una tanda abierta" con dos personas tocando a la vez; cerrar una tanda y que lo pendiente llegue a la próxima con sus grupos.
 
-### Fase 4: Muestras y Catálogo técnico (después de hablar con Yoania)
+### Fase 4: Muestras y Catálogo técnico
 - Muestras con órdenes enlazadas y el pegado desde planilla.
-- Capacidades con "Qué destraba más", variantes y opciones de slot, según lo que se acuerde.
+- Capacidades con "Qué destraba más", variantes y opciones de slot.
 - **Se prueba**: el ranking de capacidades da lo mismo que el prototipo; pegar filas no duplica órdenes ya cargadas.
+- **Cómo quedó (14/10):** el catálogo funciona como en el prototipo, con sus propias tablas (`DesVariantes`, `DesOpcionesSlot`, `DesCapacidades`). El enlace con TIZADA PRO / Configurar Productos (§9) se suma después de hablar con Yoania, sin rehacer lo hecho: se cambia de dónde salen las opciones y qué marca sola las tareas de TizadaPro y ERP.
 
 ### Pase a prod
 
@@ -205,7 +206,7 @@ Arreglos técnicos:
 8. **Al borrar un pedido**, sus adjuntos siguen visibles desde el proyecto (B-11).
 9. **"Guardar como plantilla" conserva el tipo de desarrollo** (B-18).
 10. **"Pide REF" solo aplica en desarrollos de producto** (B-20).
-11. **Crear una capacidad con un nombre que ya existe** avisa en vez de pisar la existente (spec C).
+11. **Crear una capacidad con un nombre que ya existe** avisa en vez de pisar la existente (spec C). Borrar capacidades y variantes las marca como borradas (como el punto 6); crear de nuevo una capacidad borrada la recupera.
 12. **Tandas con transacción** y la regla "una tarea, una tanda" garantizada por la base (spec C).
 
 Ajustes de comportamiento que me parecen errores, pero son de producto (se los confirmo a Felipe; por defecto los arreglo así):
@@ -225,13 +226,17 @@ Ajustes de comportamiento que me parecen errores, pero son de producto (se los c
 - **La urgencia cuenta dos veces** en "Recomendado para atender" (en el puntaje y en el extra). ¿Es a propósito?
 - **Pospuestos con la fecha de revisión cumplida**: hoy quedan escondidos en el chip "Pospuestas". ¿Deberían volver a "Por resolver"?
 - **Cómo sacó el JSON y cómo va a sacar el final** el día del pase (§5).
-- Los casos de datos: `PR-034 PR-030`, `574`, `PRP-001` y las personas que no son personas.
+- Los casos de datos: `PR-034 PR-030` y las personas que no son personas («Claude», «Lista de WhatsApp (06/10)», «Sugerencia de Claude»).
 - **Los datos de acceso que están en las fuentes de moldes.**
 - **Si hay fotos o archivos** en el almacén del artifact que no vienen en el JSON.
 - **Quiénes son los vendedores** y quiénes del equipo son editores o colaboradores.
+- **¿Un colaborador puede marcar hechas sus propias tareas?** En el prototipo solo el editor cambia tareas, y así quedó.
+- **¿Los días hábiles de las fechas sugeridas tienen que saltear feriados?** El prototipo solo saltea sábados y domingos; el sistema ya tiene la tabla de feriados.
+- **Muestras, pegar desde planilla:** la 3.ª columna elige entre dos estados y de la 4.ª en adelante va al comentario. El ejemplo de la pantalla pone «avisado» en el comentario, no en el tilde «Avisado». ¿Es así o la casilla debería tildar «Avisado»? Quedó como en el prototipo (spec C §7.25).
+- **Un colaborador puede editar y borrar cualquier muestra**, también las de otros (como en el prototipo, spec C §7.29). ¿Está bien?
 - **La Bandeja ya no muestra los "pasos previos"** (registro, aclaración, viabilidad…) pero todavía existen en los datos. ¿Se descartan?
 
-## 9. Qué hablar con Yoania (antes de la fase 4)
+## 9. Qué hablar con Yoania (para el enlace del catálogo con TIZADA)
 
 - **Variantes del prototipo contra `ProductoModelos` y TIZADA PRO.** ¿Una variante "lista" debería existir como modelo en Configurar Productos? ¿Quién es el dueño de ese dato?
 - **Opciones de slot** (los 6 moldes y sus partes: cuello, costadillo, manga…). ¿Salen de TIZADA PRO? Si TIZADA ya las expone, el catálogo las lee de ahí y no se duplican **[no lo sé si las expone así; lo revisamos juntos]**.
