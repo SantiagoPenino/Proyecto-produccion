@@ -30,7 +30,7 @@ export const MONEDA = { 1: '$', 2: 'US$' };
 export const errorDe = (e) => e?.response?.data?.error || e?.message || 'Error inesperado';
 
 // [AYUDA 15/10] Botón "?" que abre la guía en PDF en otra pestaña. Los PDF están en public/guias/ y los arma
-// backend/scripts/generar_guias_solicitudes.js desde backend/docs/guias/*.html (para cambiar el texto, editar y volver a correr).
+// backend/scripts/generar_guias_solicitudes.js desde public/guias/*.html (para cambiar el texto, editar y volver a correr).
 const GUIAS_AYUDA = {
     vendedores: { url: '/guias/guia-solicitudes-vendedores.pdf', titulo: 'Ayuda: guía para vendedores (PDF)' },
     disenadores: { url: '/guias/guia-solicitudes-disenadores.pdf', titulo: 'Ayuda: guía para diseñadores (PDF)' },

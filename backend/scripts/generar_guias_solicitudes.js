@@ -1,7 +1,7 @@
-// Arma en PDF las guías de ayuda de Solicitudes (las abre el botón "?" de las pantallas) desde backend/docs/guias/*.html,
+// Arma en PDF las guías de ayuda de Solicitudes (las abre el botón "?" de las pantallas) desde public/guias/*.html,
 // con Chrome (puppeteer): índice clickeable, marcadores (panel del visor) y número de página. Los deja en public/guias/.
 // Uso (desde la raíz del proyecto):  node backend/scripts/generar_guias_solicitudes.js
-// Para cambiar el texto: editar el .html de backend/docs/guias/ y volver a correr esto.
+// Para cambiar el texto: editar el .html de public/guias/ y volver a correr esto.
 const path = require('path');
 const puppeteer = require('puppeteer');
 
@@ -17,7 +17,7 @@ const GUIAS = [
   try {
     for (const g of GUIAS) {
       const page = await browser.newPage();
-      await page.goto(`file:///${path.join(RAIZ, 'backend', 'docs', 'guias', g.html).replace(/\\/g, '/')}`, { waitUntil: 'networkidle0' });
+      await page.goto(`file:///${path.join(RAIZ, 'public', 'guias', g.html).replace(/\\/g, '/')}`, { waitUntil: 'networkidle0' });
       await page.pdf({
         path: path.join(RAIZ, 'public', 'guias', g.pdf),
         format: 'A4', printBackground: true,
