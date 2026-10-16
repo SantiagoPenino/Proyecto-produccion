@@ -226,8 +226,10 @@ const dibujarBloqueFiscalDgi = async (pdf, qrY, doc) => {
 };
 
 export const generarPdfFacturaDGI = async (doc, detalles, opciones = {}) => {
-    // Parse SISNET DGI fields from our DB fields if they exist
-    Object.assign(doc, parsearDatosCfe(doc));
+    // Parse SISNET DGI fields from our DB fields if they exist.
+    // Sobre una COPIA: los datos de DGI (serie/número oficiales del QR, CAE…) son para el papel.
+    // Antes se escribían encima del doc recibido y, si era el de pantalla, FA-1906 pasaba a A-29102.
+    doc = { ...doc, ...parsearDatosCfe(doc) };
     const pdf = new jsPDF({ format: 'a4' });
     const esUYU = doc.MonIdMoneda === 1;
     const monedaStr = esUYU ? 'Peso Uruguayo' : 'Dólar estadounidense';

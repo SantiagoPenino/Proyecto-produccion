@@ -1,0 +1,1262 @@
+[
+  {
+    "DcdIdDetalle": 15197,
+    "DocIdDocumento": 4256,
+    "DocTipo": "E-Ticket Contado",
+    "DocFechaEmision": "2026-07-16T12:36:13.430Z",
+    "DcdNomItem": "Cuellos Polares Adulto",
+    "DcdDscItem": null,
+    "DcdSubtotal": 553.28
+  },
+  {
+    "DcdIdDetalle": 15523,
+    "DocIdDocumento": 4391,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-07-16T17:15:01.517Z",
+    "DcdNomItem": "Papel de Sublimación 1,60",
+    "DcdDscItem": null,
+    "DcdSubtotal": 1229.51
+  },
+  {
+    "DcdIdDetalle": 3304,
+    "DocIdDocumento": 1418,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-22T19:21:15.650Z",
+    "DcdNomItem": "Dry Microporoso 1.83 (lado  liso)",
+    "DcdDscItem": null,
+    "DcdSubtotal": 170.74
+  },
+  {
+    "DcdIdDetalle": 3325,
+    "DocIdDocumento": 1432,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-22T19:52:52.840Z",
+    "DcdNomItem": "Dry Microporoso 1.83 (lado  liso)",
+    "DcdDscItem": null,
+    "DcdSubtotal": 147957.84
+  },
+  {
+    "DcdIdDetalle": 3344,
+    "DocIdDocumento": 1441,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-23T12:23:28.470Z",
+    "DcdNomItem": "Hexagonal (1,83)",
+    "DcdDscItem": null,
+    "DcdSubtotal": 3560.75
+  },
+  {
+    "DcdIdDetalle": 3346,
+    "DocIdDocumento": 1443,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-23T12:30:38.463Z",
+    "DcdNomItem": "Delta (1,72 m)",
+    "DcdDscItem": null,
+    "DcdSubtotal": 835.87
+  },
+  {
+    "DcdIdDetalle": 3354,
+    "DocIdDocumento": 1448,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-23T12:54:23.147Z",
+    "DcdNomItem": "Hexagonal (1,83)",
+    "DcdDscItem": null,
+    "DcdSubtotal": 4508.2
+  },
+  {
+    "DcdIdDetalle": 3362,
+    "DocIdDocumento": 1456,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-23T13:20:29.890Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": null,
+    "DcdSubtotal": 111.01
+  },
+  {
+    "DcdIdDetalle": 3478,
+    "DocIdDocumento": 1517,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-23T17:06:13.947Z",
+    "DcdNomItem": "Dry Microporoso 1.83 (lado  poroso)",
+    "DcdDscItem": null,
+    "DcdSubtotal": 614.75
+  },
+  {
+    "DcdIdDetalle": 3479,
+    "DocIdDocumento": 1518,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-23T17:07:22.043Z",
+    "DcdNomItem": "NeoStretch (1,83)",
+    "DcdDscItem": null,
+    "DcdSubtotal": 3196.72
+  },
+  {
+    "DcdIdDetalle": 14045,
+    "DocIdDocumento": 4000,
+    "DocTipo": "E-Ticket Credito",
+    "DocFechaEmision": "2026-07-14T16:14:54.000Z",
+    "DcdNomItem": "Cuellos Polares Adulto",
+    "DcdDscItem": "",
+    "DcdSubtotal": 61.48
+  },
+  {
+    "DcdIdDetalle": 14282,
+    "DocIdDocumento": 4059,
+    "DocTipo": "E-Ticket Contado",
+    "DocFechaEmision": "2026-07-14T18:54:36.000Z",
+    "DcdNomItem": "Cuadro canvas 70 x 50",
+    "DcdDscItem": "Orden: 5 (guerrera)\r\nIngreso Depósito",
+    "DcdSubtotal": 361.48
+  },
+  {
+    "DcdIdDetalle": 12421,
+    "DocIdDocumento": 3643,
+    "DocTipo": "E-Ticket Contado",
+    "DocFechaEmision": "2026-07-10T15:51:17.827Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": "",
+    "DcdSubtotal": 663.93
+  },
+  {
+    "DcdIdDetalle": 12436,
+    "DocIdDocumento": 3689,
+    "DocTipo": "E-Factura Contado",
+    "DocFechaEmision": "2026-07-10T17:37:33.123Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": "",
+    "DcdSubtotal": 1065.57
+  },
+  {
+    "DcdIdDetalle": 12568,
+    "DocIdDocumento": 3742,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-07-10T19:11:52.717Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": "",
+    "DcdSubtotal": 441.55
+  },
+  {
+    "DcdIdDetalle": 12596,
+    "DocIdDocumento": 3749,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-07-10T19:26:13.203Z",
+    "DcdNomItem": "Tela Cliente (Minimo 5mts)",
+    "DcdDscItem": null,
+    "DcdSubtotal": 133.51
+  },
+  {
+    "DcdIdDetalle": 12768,
+    "DocIdDocumento": 3762,
+    "DocTipo": "E-Ticket Contado",
+    "DocFechaEmision": "2026-07-12T16:51:49.640Z",
+    "DcdNomItem": "Articulos User",
+    "DcdDscItem": "",
+    "DcdSubtotal": 649.18
+  },
+  {
+    "DcdIdDetalle": 435,
+    "DocIdDocumento": 283,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-12T15:17:31.710Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": null,
+    "DcdSubtotal": 2346.79
+  },
+  {
+    "DcdIdDetalle": 1660,
+    "DocIdDocumento": 844,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-17T17:53:30.233Z",
+    "DcdNomItem": "UV (PARA RIGIDOS 0,27)",
+    "DcdDscItem": null,
+    "DcdSubtotal": 81.15
+  },
+  {
+    "DcdIdDetalle": 2072,
+    "DocIdDocumento": 1049,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-18T17:56:34.660Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": null,
+    "DcdSubtotal": 732.25
+  },
+  {
+    "DcdIdDetalle": 2082,
+    "DocIdDocumento": 1053,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-18T18:02:04.783Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": null,
+    "DcdSubtotal": 669.77
+  },
+  {
+    "DcdIdDetalle": 2118,
+    "DocIdDocumento": 1077,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-18T18:41:34.250Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": null,
+    "DcdSubtotal": 2416.39
+  },
+  {
+    "DcdIdDetalle": 2182,
+    "DocIdDocumento": 1124,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-18T19:52:59.143Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": null,
+    "DcdSubtotal": 19921.36
+  },
+  {
+    "DcdIdDetalle": 2281,
+    "DocIdDocumento": 1197,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-19T15:55:14.097Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": null,
+    "DcdSubtotal": 162.3
+  },
+  {
+    "DcdIdDetalle": 2333,
+    "DocIdDocumento": 1232,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-19T17:55:45.870Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": null,
+    "DcdSubtotal": 688.67
+  },
+  {
+    "DcdIdDetalle": 2340,
+    "DocIdDocumento": 1239,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-19T18:18:40.107Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": null,
+    "DcdSubtotal": 114509.64
+  },
+  {
+    "DcdIdDetalle": 2341,
+    "DocIdDocumento": 1240,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-19T18:20:35.520Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": null,
+    "DcdSubtotal": 56.48
+  },
+  {
+    "DcdIdDetalle": 2355,
+    "DocIdDocumento": 1251,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-19T18:55:26.943Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": null,
+    "DcdSubtotal": 237.31
+  },
+  {
+    "DcdIdDetalle": 2433,
+    "DocIdDocumento": 1300,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-22T12:19:32.737Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": null,
+    "DcdSubtotal": 957.72
+  },
+  {
+    "DcdIdDetalle": 2440,
+    "DocIdDocumento": 1305,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-22T12:42:54.430Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": null,
+    "DcdSubtotal": 736.1
+  },
+  {
+    "DcdIdDetalle": 2451,
+    "DocIdDocumento": 1314,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-22T13:07:11.150Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": null,
+    "DcdSubtotal": 1063.39
+  },
+  {
+    "DcdIdDetalle": 2457,
+    "DocIdDocumento": 1318,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-22T13:21:56.683Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": null,
+    "DcdSubtotal": 686.51
+  },
+  {
+    "DcdIdDetalle": 1848,
+    "DocIdDocumento": 918,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-18T13:01:49.247Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": null,
+    "DcdSubtotal": 45.11
+  },
+  {
+    "DcdIdDetalle": 1849,
+    "DocIdDocumento": 919,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-18T13:02:41.140Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": null,
+    "DcdSubtotal": 71.41
+  },
+  {
+    "DcdIdDetalle": 1850,
+    "DocIdDocumento": 920,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-18T13:03:30.107Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": null,
+    "DcdSubtotal": 106.47
+  },
+  {
+    "DcdIdDetalle": 1856,
+    "DocIdDocumento": 924,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-18T13:06:02.403Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": null,
+    "DcdSubtotal": 76.11
+  },
+  {
+    "DcdIdDetalle": 1857,
+    "DocIdDocumento": 925,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-18T13:07:33.020Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": null,
+    "DcdSubtotal": 128.21
+  },
+  {
+    "DcdIdDetalle": 1858,
+    "DocIdDocumento": 926,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-18T13:08:26.013Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": null,
+    "DcdSubtotal": 46.42
+  },
+  {
+    "DcdIdDetalle": 1970,
+    "DocIdDocumento": 985,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-18T15:21:35.410Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": null,
+    "DcdSubtotal": 65.4
+  },
+  {
+    "DcdIdDetalle": 1972,
+    "DocIdDocumento": 987,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-18T15:22:39.157Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": null,
+    "DcdSubtotal": 232.95
+  },
+  {
+    "DcdIdDetalle": 1974,
+    "DocIdDocumento": 989,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-18T15:23:15.913Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": null,
+    "DcdSubtotal": 64.92
+  },
+  {
+    "DcdIdDetalle": 1975,
+    "DocIdDocumento": 990,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-18T15:24:07.913Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": null,
+    "DcdSubtotal": 391.1
+  },
+  {
+    "DcdIdDetalle": 1999,
+    "DocIdDocumento": 1004,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-18T16:13:25.267Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": null,
+    "DcdSubtotal": 70.93
+  },
+  {
+    "DcdIdDetalle": 2000,
+    "DocIdDocumento": 1005,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-18T16:16:13.643Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": null,
+    "DcdSubtotal": 200.76
+  },
+  {
+    "DcdIdDetalle": 2001,
+    "DocIdDocumento": 1006,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-18T16:16:45.153Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": null,
+    "DcdSubtotal": 162.3
+  },
+  {
+    "DcdIdDetalle": 2463,
+    "DocIdDocumento": 1323,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-22T13:52:32.220Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": null,
+    "DcdSubtotal": 857.1
+  },
+  {
+    "DcdIdDetalle": 2464,
+    "DocIdDocumento": 1324,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-22T14:02:08.197Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": null,
+    "DcdSubtotal": 1780.02
+  },
+  {
+    "DcdIdDetalle": 2465,
+    "DocIdDocumento": 1325,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-22T14:08:29.010Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": null,
+    "DcdSubtotal": 3853.79
+  },
+  {
+    "DcdIdDetalle": 2471,
+    "DocIdDocumento": 1330,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-22T14:34:20.967Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": null,
+    "DcdSubtotal": 3910.41
+  },
+  {
+    "DcdIdDetalle": 2473,
+    "DocIdDocumento": 1332,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-22T14:44:47.023Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": null,
+    "DcdSubtotal": 301.15
+  },
+  {
+    "DcdIdDetalle": 2474,
+    "DocIdDocumento": 1333,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-22T14:49:40.360Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": null,
+    "DcdSubtotal": 1115.33
+  },
+  {
+    "DcdIdDetalle": 2498,
+    "DocIdDocumento": 1345,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-22T15:31:14.233Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": null,
+    "DcdSubtotal": 621.59
+  },
+  {
+    "DcdIdDetalle": 2505,
+    "DocIdDocumento": 1350,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-22T15:40:37.923Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": null,
+    "DcdSubtotal": 1464.98
+  },
+  {
+    "DcdIdDetalle": 2514,
+    "DocIdDocumento": 1356,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-22T15:55:25.723Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": null,
+    "DcdSubtotal": 1414.67
+  },
+  {
+    "DcdIdDetalle": 2516,
+    "DocIdDocumento": 1358,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-22T16:01:59.430Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": null,
+    "DcdSubtotal": 1607.44
+  },
+  {
+    "DcdIdDetalle": 2553,
+    "DocIdDocumento": 1382,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-22T17:27:22.347Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": null,
+    "DcdSubtotal": 1258.51
+  },
+  {
+    "DcdIdDetalle": 2554,
+    "DocIdDocumento": 1383,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-22T17:28:22.660Z",
+    "DcdNomItem": "UV (PARA RIGIDOS 0,27)",
+    "DcdDscItem": null,
+    "DcdSubtotal": 691.92
+  },
+  {
+    "DcdIdDetalle": 2557,
+    "DocIdDocumento": 1386,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-22T17:42:12.723Z",
+    "DcdNomItem": "Panama (1,60)",
+    "DcdDscItem": null,
+    "DcdSubtotal": 149.02
+  },
+  {
+    "DcdIdDetalle": 6323,
+    "DocIdDocumento": 2202,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-29T16:10:10.933Z",
+    "DcdNomItem": "Dry Microporoso 1.83 (lado  poroso)",
+    "DcdDscItem": null,
+    "DcdSubtotal": 737.7
+  },
+  {
+    "DcdIdDetalle": 6340,
+    "DocIdDocumento": 2216,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-29T17:07:16.103Z",
+    "DcdNomItem": "Dry Microporoso 1.83 (lado  poroso)",
+    "DcdDscItem": null,
+    "DcdSubtotal": 655.74
+  },
+  {
+    "DcdIdDetalle": 6341,
+    "DocIdDocumento": 2217,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-29T17:08:17.087Z",
+    "DcdNomItem": "NeoStretch (1,83)",
+    "DcdDscItem": null,
+    "DcdSubtotal": 614.75
+  },
+  {
+    "DcdIdDetalle": 9215,
+    "DocIdDocumento": 2920,
+    "DocTipo": "E-Factura Credito",
+    "DocFechaEmision": "2026-07-06T14:52:14.627Z",
+    "DcdNomItem": "Pet Film 0,6 X100 m",
+    "DcdDscItem": "",
+    "DcdSubtotal": 65.57
+  },
+  {
+    "DcdIdDetalle": 9216,
+    "DocIdDocumento": 2920,
+    "DocTipo": "E-Factura Credito",
+    "DocFechaEmision": "2026-07-06T14:52:14.627Z",
+    "DcdNomItem": "Tinta Blanca 1L",
+    "DcdDscItem": "",
+    "DcdSubtotal": 98.36
+  },
+  {
+    "DcdIdDetalle": 15582,
+    "DocIdDocumento": 4410,
+    "DocTipo": "E-Ticket Contado",
+    "DocFechaEmision": "2026-07-09T18:02:20.000Z",
+    "DcdNomItem": "Cuellos Polares Adulto",
+    "DcdDscItem": "",
+    "DcdSubtotal": 184.43
+  },
+  {
+    "DcdIdDetalle": 15583,
+    "DocIdDocumento": 3999,
+    "DocTipo": "E-Ticket Contado",
+    "DocFechaEmision": "2026-07-14T18:02:49.000Z",
+    "DcdNomItem": "Cuellos Polares Adulto",
+    "DcdDscItem": "",
+    "DcdSubtotal": 61.48
+  },
+  {
+    "DcdIdDetalle": 15609,
+    "DocIdDocumento": 1548,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-23T18:18:46.000Z",
+    "DcdNomItem": "Costura",
+    "DcdDscItem": "",
+    "DcdSubtotal": 9.02
+  },
+  {
+    "DcdIdDetalle": 5543,
+    "DocIdDocumento": 1997,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-26T15:05:21.917Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": null,
+    "DcdSubtotal": 100.62
+  },
+  {
+    "DcdIdDetalle": 5545,
+    "DocIdDocumento": 1999,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-26T15:09:01.030Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": null,
+    "DcdSubtotal": 53.56
+  },
+  {
+    "DcdIdDetalle": 5547,
+    "DocIdDocumento": 2001,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-26T15:11:31.777Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": null,
+    "DcdSubtotal": 324.59
+  },
+  {
+    "DcdIdDetalle": 5611,
+    "DocIdDocumento": 2026,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-26T16:24:06.113Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": null,
+    "DcdSubtotal": 162.3
+  },
+  {
+    "DcdIdDetalle": 4153,
+    "DocIdDocumento": 1688,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-24T16:57:05.810Z",
+    "DcdNomItem": "Bandera (1,60)",
+    "DcdDscItem": null,
+    "DcdSubtotal": 737.7
+  },
+  {
+    "DcdIdDetalle": 12819,
+    "DocIdDocumento": 3765,
+    "DocTipo": "E-Factura Contado",
+    "DocFechaEmision": "2026-07-13T12:13:00.760Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": "",
+    "DcdSubtotal": 1262.3
+  },
+  {
+    "DcdIdDetalle": 6873,
+    "DocIdDocumento": 2298,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-30T13:31:59.850Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": null,
+    "DcdSubtotal": 26.23
+  },
+  {
+    "DcdIdDetalle": 6879,
+    "DocIdDocumento": 2304,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-30T14:00:43.250Z",
+    "DcdNomItem": "Dry Microporoso 1.83 (lado  liso)",
+    "DcdDscItem": null,
+    "DcdSubtotal": 1256.13
+  },
+  {
+    "DcdIdDetalle": 6881,
+    "DocIdDocumento": 2306,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-30T14:04:52.590Z",
+    "DcdNomItem": "Dry Microporoso 1.83 (lado  liso)",
+    "DcdDscItem": null,
+    "DcdSubtotal": 3006.62
+  },
+  {
+    "DcdIdDetalle": 9909,
+    "DocIdDocumento": 3116,
+    "DocTipo": "E-Factura Contado",
+    "DocFechaEmision": "2026-07-07T16:21:24.073Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": "",
+    "DcdSubtotal": 909.84
+  },
+  {
+    "DcdIdDetalle": 10617,
+    "DocIdDocumento": 3271,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-07-08T14:52:56.057Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": "",
+    "DcdSubtotal": 3278.69
+  },
+  {
+    "DcdIdDetalle": 10620,
+    "DocIdDocumento": 2749,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-07-03T14:01:54.167Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": "",
+    "DcdSubtotal": 41.57
+  },
+  {
+    "DcdIdDetalle": 4728,
+    "DocIdDocumento": 1827,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-25T14:20:42.823Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": null,
+    "DcdSubtotal": 127.73
+  },
+  {
+    "DcdIdDetalle": 4745,
+    "DocIdDocumento": 1836,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-25T14:47:43.420Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": null,
+    "DcdSubtotal": 8.3
+  },
+  {
+    "DcdIdDetalle": 4761,
+    "DocIdDocumento": 1842,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-25T15:01:41.667Z",
+    "DcdNomItem": "Panama (1,60)",
+    "DcdDscItem": null,
+    "DcdSubtotal": 293.9
+  },
+  {
+    "DcdIdDetalle": 4765,
+    "DocIdDocumento": 1846,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-25T15:09:01.400Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": null,
+    "DcdSubtotal": 346.23
+  },
+  {
+    "DcdIdDetalle": 11329,
+    "DocIdDocumento": 2885,
+    "DocTipo": "E-Ticket Contado",
+    "DocFechaEmision": "2026-07-06T12:51:08.413Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": "Compra de 10 metros de DTF",
+    "DcdSubtotal": 162.3
+  },
+  {
+    "DcdIdDetalle": 6247,
+    "DocIdDocumento": 2159,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-29T13:47:52.517Z",
+    "DcdNomItem": "Tela Cliente (Minimo 5mts)",
+    "DcdDscItem": null,
+    "DcdSubtotal": 38.77
+  },
+  {
+    "DcdIdDetalle": 7175,
+    "DocIdDocumento": 2411,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-30T19:58:47.153Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": null,
+    "DcdSubtotal": 721.31
+  },
+  {
+    "DcdIdDetalle": 7629,
+    "DocIdDocumento": 2492,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-07-01T15:44:44.513Z",
+    "DcdNomItem": "Rollo x adelantado Dry Microporoso",
+    "DcdDscItem": "",
+    "DcdSubtotal": 614.75
+  },
+  {
+    "DcdIdDetalle": 7630,
+    "DocIdDocumento": 2492,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-07-01T15:44:44.513Z",
+    "DcdNomItem": "Rollo x adelantado Neostrech",
+    "DcdDscItem": "",
+    "DcdSubtotal": 655.74
+  },
+  {
+    "DcdIdDetalle": 7631,
+    "DocIdDocumento": 2493,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-07-01T15:49:20.317Z",
+    "DcdNomItem": "Dry Microporoso 1.83 (lado  poroso)",
+    "DcdDscItem": null,
+    "DcdSubtotal": 70.33
+  },
+  {
+    "DcdIdDetalle": 7643,
+    "DocIdDocumento": 2499,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-07-01T16:21:36.910Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": null,
+    "DcdSubtotal": 2155.75
+  },
+  {
+    "DcdIdDetalle": 7876,
+    "DocIdDocumento": 2633,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-07-02T15:02:49.920Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": null,
+    "DcdSubtotal": 106.38
+  },
+  {
+    "DcdIdDetalle": 8361,
+    "DocIdDocumento": 2834,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-07-03T18:38:30.310Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": null,
+    "DcdSubtotal": 22.64
+  },
+  {
+    "DcdIdDetalle": 8795,
+    "DocIdDocumento": 2967,
+    "DocTipo": "E-Factura Contado",
+    "DocFechaEmision": "2026-07-06T17:39:21.127Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": "",
+    "DcdSubtotal": 1262.3
+  },
+  {
+    "DcdIdDetalle": 8812,
+    "DocIdDocumento": 2977,
+    "DocTipo": "E-Factura Contado",
+    "DocFechaEmision": "2026-07-06T18:05:15.137Z",
+    "DcdNomItem": "COMPRA 100 METROS TELA CLIENTE",
+    "DcdDscItem": null,
+    "DcdSubtotal": 590.16
+  },
+  {
+    "DcdIdDetalle": 11108,
+    "DocIdDocumento": 3136,
+    "DocTipo": "E-Ticket Contado",
+    "DocFechaEmision": "2026-07-07T17:07:54.520Z",
+    "DcdNomItem": "gorro",
+    "DcdDscItem": "",
+    "DcdSubtotal": 77.87
+  },
+  {
+    "DcdIdDetalle": 11109,
+    "DocIdDocumento": 3136,
+    "DocTipo": "E-Ticket Contado",
+    "DocFechaEmision": "2026-07-07T17:07:54.520Z",
+    "DcdNomItem": "Cuellos Polares Adulto",
+    "DcdDscItem": "",
+    "DcdSubtotal": 61.48
+  },
+  {
+    "DcdIdDetalle": 11220,
+    "DocIdDocumento": 3397,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-07-09T00:28:52.740Z",
+    "DcdNomItem": "envio",
+    "DcdDscItem": "",
+    "DcdSubtotal": 204.92
+  },
+  {
+    "DcdIdDetalle": 9741,
+    "DocIdDocumento": 2472,
+    "DocTipo": "E-Ticket Contado",
+    "DocFechaEmision": "2026-07-01T14:43:59.550Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": "Compra Promo de 10 metros de DTF",
+    "DcdSubtotal": 162.3
+  },
+  {
+    "DcdIdDetalle": 9795,
+    "DocIdDocumento": 3099,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-07-07T15:30:06.757Z",
+    "DcdNomItem": "Adis brillo Rajman (1,58)",
+    "DcdDscItem": null,
+    "DcdSubtotal": 690.42
+  },
+  {
+    "DcdIdDetalle": 10324,
+    "DocIdDocumento": 3193,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-07-07T19:09:48.700Z",
+    "DcdNomItem": "Delta (1,72 m)",
+    "DcdDscItem": null,
+    "DcdSubtotal": 1327.87
+  },
+  {
+    "DcdIdDetalle": 10356,
+    "DocIdDocumento": 3204,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-07-07T19:37:26.750Z",
+    "DcdNomItem": "Papel de Sublimación 1,60",
+    "DcdDscItem": "",
+    "DcdSubtotal": 1229.51
+  },
+  {
+    "DcdIdDetalle": 10365,
+    "DocIdDocumento": 3085,
+    "DocTipo": "E-Factura Contado",
+    "DocFechaEmision": "2026-07-07T15:01:32.663Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": "",
+    "DcdSubtotal": 1278.69
+  },
+  {
+    "DcdIdDetalle": 10494,
+    "DocIdDocumento": 3246,
+    "DocTipo": "E-Ticket Contado",
+    "DocFechaEmision": "2026-07-08T13:23:56.960Z",
+    "DcdNomItem": "DTF para rígidos UV",
+    "DcdDscItem": "Stikers UV",
+    "DcdSubtotal": 168.03
+  },
+  {
+    "DcdIdDetalle": 13371,
+    "DocIdDocumento": 3855,
+    "DocTipo": "E-Ticket Contado",
+    "DocFechaEmision": "2026-07-13T18:01:15.000Z",
+    "DcdNomItem": "Cuellos Polares Adulto",
+    "DcdDscItem": "",
+    "DcdSubtotal": 61.48
+  },
+  {
+    "DcdIdDetalle": 13771,
+    "DocIdDocumento": 3921,
+    "DocTipo": "E-Factura Contado",
+    "DocFechaEmision": "2026-07-14T12:52:53.000Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": "",
+    "DcdSubtotal": 1262.3
+  },
+  {
+    "DcdIdDetalle": 13792,
+    "DocIdDocumento": 3933,
+    "DocTipo": "E-Ticket Contado",
+    "DocFechaEmision": "2026-07-14T13:21:32.000Z",
+    "DcdNomItem": "DTF para rígidos UV (57cm)",
+    "DcdDscItem": "",
+    "DcdSubtotal": 1472.95
+  },
+  {
+    "DcdIdDetalle": 11368,
+    "DocIdDocumento": 3205,
+    "DocTipo": "E-Ticket Contado",
+    "DocFechaEmision": "2026-07-07T19:38:22.183Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": "",
+    "DcdSubtotal": 162.3
+  },
+  {
+    "DcdIdDetalle": 11386,
+    "DocIdDocumento": 3429,
+    "DocTipo": "E-Factura Contado",
+    "DocFechaEmision": "2026-07-09T13:35:11.750Z",
+    "DcdNomItem": "Panama (1,60)",
+    "DcdDscItem": "",
+    "DcdSubtotal": 5819.67
+  },
+  {
+    "DcdIdDetalle": 11546,
+    "DocIdDocumento": 3293,
+    "DocTipo": "E-Ticket Contado",
+    "DocFechaEmision": "2026-07-08T16:13:14.427Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": "",
+    "DcdSubtotal": 1262.3
+  },
+  {
+    "DcdIdDetalle": 11599,
+    "DocIdDocumento": 3503,
+    "DocTipo": "E-Ticket Contado",
+    "DocFechaEmision": "2026-07-09T17:50:55.100Z",
+    "DcdNomItem": "DTF para rígidos UV (57cm)",
+    "DcdDscItem": "Stikers UV",
+    "DcdSubtotal": 163.93
+  },
+  {
+    "DcdIdDetalle": 11789,
+    "DocIdDocumento": 3556,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-07-09T20:07:39.313Z",
+    "DcdNomItem": "DTF para rígidos UV (57cm)",
+    "DcdDscItem": null,
+    "DcdSubtotal": 162.3
+  },
+  {
+    "DcdIdDetalle": 13004,
+    "DocIdDocumento": 3590,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-07-10T13:37:39.033Z",
+    "DcdNomItem": "Deportiva Parisien 1,60",
+    "DcdDscItem": "",
+    "DcdSubtotal": 655.74
+  },
+  {
+    "DcdIdDetalle": 13193,
+    "DocIdDocumento": 3799,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-07-13T14:17:28.177Z",
+    "DcdNomItem": "Toalla (1,83)",
+    "DcdDscItem": null,
+    "DcdSubtotal": 291.8
+  },
+  {
+    "DcdIdDetalle": 11875,
+    "DocIdDocumento": 1390,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-22T17:59:17.333Z",
+    "DcdNomItem": "Delta (1,72 m)",
+    "DcdDscItem": "",
+    "DcdSubtotal": 1299.74
+  },
+  {
+    "DcdIdDetalle": 11876,
+    "DocIdDocumento": 1391,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-22T18:00:18.123Z",
+    "DcdNomItem": "Dry Liso (1,83)",
+    "DcdDscItem": "",
+    "DcdSubtotal": 51.89
+  },
+  {
+    "DcdIdDetalle": 11877,
+    "DocIdDocumento": 1392,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-22T18:01:00.797Z",
+    "DcdNomItem": "NeoStretch (1,83)",
+    "DcdDscItem": "",
+    "DcdSubtotal": 127.02
+  },
+  {
+    "DcdIdDetalle": 11878,
+    "DocIdDocumento": 1395,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-22T18:01:52.653Z",
+    "DcdNomItem": "Dry Pro (1,80)",
+    "DcdDscItem": "",
+    "DcdSubtotal": 1683.27
+  },
+  {
+    "DcdIdDetalle": 12039,
+    "DocIdDocumento": 2262,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-29T19:23:00.377Z",
+    "DcdNomItem": "Delta (1,72 m)",
+    "DcdDscItem": "",
+    "DcdSubtotal": 2786.89
+  },
+  {
+    "DcdIdDetalle": 12040,
+    "DocIdDocumento": 2260,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-29T19:21:01.350Z",
+    "DcdNomItem": "Dry Pro (1,80)",
+    "DcdDscItem": "",
+    "DcdSubtotal": 1311.48
+  },
+  {
+    "DcdIdDetalle": 12196,
+    "DocIdDocumento": 3611,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-07-10T14:42:39.693Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": null,
+    "DcdSubtotal": 162.34
+  },
+  {
+    "DcdIdDetalle": 12277,
+    "DocIdDocumento": 3630,
+    "DocTipo": "E-Factura Contado",
+    "DocFechaEmision": "2026-07-10T15:08:12.117Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": "",
+    "DcdSubtotal": 26000
+  },
+  {
+    "DcdIdDetalle": 12280,
+    "DocIdDocumento": 3634,
+    "DocTipo": "E-Factura Contado",
+    "DocFechaEmision": "2026-07-10T15:13:53.627Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": "",
+    "DcdSubtotal": 26000
+  },
+  {
+    "DcdIdDetalle": 12282,
+    "DocIdDocumento": 3635,
+    "DocTipo": "E-Factura Contado",
+    "DocFechaEmision": "2026-07-10T15:16:28.063Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": "",
+    "DcdSubtotal": 35000
+  },
+  {
+    "DcdIdDetalle": 12285,
+    "DocIdDocumento": 3637,
+    "DocTipo": "E-Ticket Contado",
+    "DocFechaEmision": "2026-07-10T15:19:22.360Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": null,
+    "DcdSubtotal": 162.3
+  },
+  {
+    "DcdIdDetalle": 15686,
+    "DocIdDocumento": 4427,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-07-16T18:46:41.040Z",
+    "DcdNomItem": "Dry Microporoso 1.83 (lado  poroso)",
+    "DcdDscItem": null,
+    "DcdSubtotal": 614.75
+  },
+  {
+    "DcdIdDetalle": 15701,
+    "DocIdDocumento": 4430,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-07-09T18:57:40.000Z",
+    "DcdNomItem": "Deuda de ordenes ya retiradas SUB",
+    "DcdDscItem": "",
+    "DcdSubtotal": 819.67
+  },
+  {
+    "DcdIdDetalle": 15802,
+    "DocIdDocumento": 1957,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-26T19:57:12.000Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": "",
+    "DcdSubtotal": 181.65
+  },
+  {
+    "DcdIdDetalle": 15805,
+    "DocIdDocumento": 4303,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-07-16T19:57:22.000Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": "",
+    "DcdSubtotal": 1262.3
+  },
+  {
+    "DcdIdDetalle": 15811,
+    "DocIdDocumento": 4464,
+    "DocTipo": "E-Ticket Credito",
+    "DocFechaEmision": "2026-07-21T17:35:11.000Z",
+    "DcdNomItem": "ysthghhfgh",
+    "DcdDscItem": null,
+    "DcdSubtotal": 4.1
+  },
+  {
+    "DcdIdDetalle": 14597,
+    "DocIdDocumento": 4094,
+    "DocTipo": "E-Ticket Contado",
+    "DocFechaEmision": "2026-07-15T12:39:00.000Z",
+    "DcdNomItem": "Shorts (Adulto)",
+    "DcdDscItem": "",
+    "DcdSubtotal": 162.3
+  },
+  {
+    "DcdIdDetalle": 14669,
+    "DocIdDocumento": 4110,
+    "DocTipo": "E-Ticket Contado",
+    "DocFechaEmision": "2026-07-15T13:46:31.000Z",
+    "DcdNomItem": "Cuellos Polares Adulto",
+    "DcdDscItem": "",
+    "DcdSubtotal": 184.43
+  },
+  {
+    "DcdIdDetalle": 4911,
+    "DocIdDocumento": 1902,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-25T18:35:33.717Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": null,
+    "DcdSubtotal": 137.79
+  },
+  {
+    "DcdIdDetalle": 14706,
+    "DocIdDocumento": 4121,
+    "DocTipo": "E-Ticket Contado",
+    "DocFechaEmision": "2026-07-15T14:29:27.000Z",
+    "DcdNomItem": "SUBLIMACIÓN",
+    "DcdDscItem": "",
+    "DcdSubtotal": 49180.33
+  },
+  {
+    "DcdIdDetalle": 14880,
+    "DocIdDocumento": 0,
+    "DocTipo": "E-Ticket Contado",
+    "DocFechaEmision": "2026-06-10T22:22:16.113Z",
+    "DcdNomItem": "Servicios de produccion",
+    "DcdDscItem": "Servicios de produccion",
+    "DcdSubtotal": 54.1
+  },
+  {
+    "DcdIdDetalle": 14881,
+    "DocIdDocumento": 1645,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-24T15:18:26.103Z",
+    "DcdNomItem": "Dry Pro (1,80)",
+    "DcdDscItem": "Dry Pro (1,80)",
+    "DcdSubtotal": 308.98
+  },
+  {
+    "DcdIdDetalle": 14882,
+    "DocIdDocumento": 3109,
+    "DocTipo": "E-TICKET CONTADO",
+    "DocFechaEmision": "2026-07-07T16:07:50.367Z",
+    "DcdNomItem": "DTF Textil - DTF textil COMUN",
+    "DcdDscItem": "DTF Textil - DTF textil COMUN",
+    "DcdSubtotal": 714.52
+  },
+  {
+    "DcdIdDetalle": 14883,
+    "DocIdDocumento": 3452,
+    "DocTipo": "E-Ticket Contado",
+    "DocFechaEmision": "2026-07-09T14:44:47.117Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": "DTF textil COMUN",
+    "DcdSubtotal": 64.51
+  },
+  {
+    "DcdIdDetalle": 14884,
+    "DocIdDocumento": 3715,
+    "DocTipo": "E-Ticket Contado",
+    "DocFechaEmision": "2026-07-10T18:25:01.840Z",
+    "DcdNomItem": "Cuadro canvas 70 x 50",
+    "DcdDscItem": "Cuadro canvas 70 x 50",
+    "DcdSubtotal": 451.64
+  },
+  {
+    "DcdIdDetalle": 14945,
+    "DocIdDocumento": 4185,
+    "DocTipo": "E-Factura Contado",
+    "DocFechaEmision": "2026-07-15T17:59:25.000Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": "",
+    "DcdSubtotal": 162.3
+  },
+  {
+    "DcdIdDetalle": 14950,
+    "DocIdDocumento": 4188,
+    "DocTipo": "E-Ticket Contado",
+    "DocFechaEmision": "2026-07-15T18:06:55.000Z",
+    "DcdNomItem": "Shorts (Adulto)",
+    "DcdDscItem": "",
+    "DcdSubtotal": 1622.95
+  },
+  {
+    "DcdIdDetalle": 14960,
+    "DocIdDocumento": 667,
+    "DocTipo": "Pedidos Caja",
+    "DocFechaEmision": "2026-06-16T18:11:30.000Z",
+    "DcdNomItem": "DTF textil COMUN",
+    "DcdDscItem": "",
+    "DcdSubtotal": 298.2
+  }
+]

@@ -204,10 +204,25 @@ async function validar(pool, pedido) {
       if (!(parseInt(est.prendas, 10) > 0)) err('FALTA_CANTIDAD', `${campo}.estampado.prendas`, `${n}: falta la cantidad total de prendas a estampar.`);
       if (!(parseInt(est.estampadosPorPrenda, 10) > 0)) err('FALTA_CANTIDAD', `${campo}.estampado.estampadosPorPrenda`, `${n}: faltan los estampados por prenda.`);
     }
-    // DTF se mide contra su material (el film). Bordado y TPU NO llevan medida: solo se exige el archivo.
+    // [TIPO POR OBJETO 15/10] Un archivo puede traer SU tipo (material y variante: el de su objeto, o el film de su pliego).
+    // Se controla contra el catálogo como el del servicio; sin tipo propio vale el del servicio.
+    const catalogo = new Map([[s.variante, mats]]);   // variante → materiales (una lectura por variante)
+    for (let k = 0; k < archivos.length; k++) {
+      const a = archivos[k];
+      if (!a || typeof a !== 'object') continue;
+      if (!a.material?.nombre && !a.material?.codArticulo) { delete a.material; continue; }
+      const variante = s.tipo === 'DTF' ? VARIANTE_DTF : (String(a.variante || '').trim() || s.variante);
+      if (!catalogo.has(variante)) catalogo.set(variante, await materialesDe(pool, AREA_DE[s.tipo], variante));
+      const m = buscarMaterial(catalogo.get(variante), a.material);
+      if (!m) err('MATERIAL_INVALIDO', `${campo}.archivos[${k}].material`, `${n}: el tipo "${a.material.nombre || a.material.codArticulo}" de "${a.nombre}" no está en el catálogo de "${variante}".`);
+      else { a.material = { nombre: String(m.Material).trim(), codArticulo: String(m.CodArticulo ?? '').trim(), codStock: String(m.CodStock ?? '').trim() }; a.variante = variante; a._mat = m; }
+    }
+    // DTF se mide contra su material (el film: el del archivo o el del servicio). Bordado y TPU NO llevan medida: solo se exige el archivo.
     archivos.forEach((a, k) => {
+      const matArchivo = a?._mat || null;
+      if (a && typeof a === 'object') delete a._mat;
       if (!archivoOk(a, `${campo}.archivos[${k}]`, n) || s.tipo !== 'DTF') return;
-      const e = errorMedidaDtf(a.nombre, num(a.anchoM), num(a.altoM), mat);
+      const e = errorMedidaDtf(a.nombre, num(a.anchoM), num(a.altoM), matArchivo || mat);
       if (e) err(e.codigo, `${campo}.archivos[${k}]`, e.mensaje);
       a.copias = a.copias === undefined || a.copias === null || a.copias === '' ? 1 : parseInt(a.copias, 10);
       if (!(a.copias >= 1)) err('COPIAS_INVALIDAS', `${campo}.archivos[${k}].copias`, `"${a.nombre}": las copias deben ser 1 o más.`);

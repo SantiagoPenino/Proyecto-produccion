@@ -144,22 +144,28 @@ async function armables(pool) {
 
 // Extras del producto (configurador › Técnicas: ProductoTerminadoServicios) con la forma de hacerlos (TecnicaOpciones:
 // el artículo → variante y material de la parte, lo mismo que el vendedor elige a mano en "Servicios y extras").
+// Las formas de hacer bordado / DTF / TPU (TecnicaOpciones activas), con su material y variante, y si el producto la marcó
+async function opcionesTecnicas(pool, proId) {
+  return (await pool.request().input('P', sql.Int, proId).query(`
+    SELECT t.TecnicaOpcionID, LTRIM(RTRIM(t.AreaID)) AS AreaID, LTRIM(RTRIM(t.Nombre)) AS Nombre, m.Material, m.Variante, m.CodArticulo, m.CodStock,
+           CASE WHEN EXISTS (SELECT 1 FROM dbo.ProductoTecnicaOpciones x WHERE x.ProIdProducto = @P AND x.TecnicaOpcionID = t.TecnicaOpcionID) THEN 1 ELSE 0 END AS Marcada
+    FROM dbo.TecnicaOpciones t
+    OUTER APPLY (SELECT TOP 1 LTRIM(RTRIM(a.Descripcion)) AS Material, LTRIM(RTRIM(sa.Articulo)) AS Variante,
+                        LTRIM(RTRIM(a.CodArticulo)) AS CodArticulo, LTRIM(RTRIM(a.CodStock)) AS CodStock
+                 FROM dbo.Articulos a LEFT JOIN dbo.StockArt sa ON LTRIM(RTRIM(sa.CodStock)) = LTRIM(RTRIM(a.CodStock))
+                 WHERE LTRIM(RTRIM(a.CodArticulo)) = LTRIM(RTRIM(t.CodArticulo))) m
+    WHERE t.AreaID IN ('EMB', 'DF', 'TPU') AND ISNULL(t.Activo, 1) = 1
+    ORDER BY t.AreaID, ISNULL(t.Orden, 999), t.TecnicaOpcionID`).catch(() => ({ recordset: [] }))).recordset
+    .filter(o => o.Material && o.Variante && !/recargo/i.test(o.Nombre));   // los recargos (Relieve 3D) no son una forma de hacerlo
+}
+
 async function extrasDelProducto(pool, proId) {
   const serv = (await pool.request().input('P', sql.Int, proId).query(`
     SELECT LTRIM(RTRIM(AreaID)) AS AreaID, Obligatorio, UPPER(ISNULL(Modo, 'LIBRE')) AS Modo, UPPER(ISNULL(Cobro, 'APARTE')) AS Cobro
     FROM dbo.ProductoTerminadoServicios WHERE ProIdProducto = @P`).catch(() => ({ recordset: [] }))).recordset
     .filter(s => EXTRA_DE_AREA[String(s.AreaID).toUpperCase()]);
   if (!serv.length) return [];
-  const opc = (await pool.request().input('P', sql.Int, proId).query(`
-    SELECT t.TecnicaOpcionID, LTRIM(RTRIM(t.AreaID)) AS AreaID, LTRIM(RTRIM(t.Nombre)) AS Nombre, m.Material, m.Variante,
-           CASE WHEN EXISTS (SELECT 1 FROM dbo.ProductoTecnicaOpciones x WHERE x.ProIdProducto = @P AND x.TecnicaOpcionID = t.TecnicaOpcionID) THEN 1 ELSE 0 END AS Marcada
-    FROM dbo.TecnicaOpciones t
-    OUTER APPLY (SELECT TOP 1 LTRIM(RTRIM(a.Descripcion)) AS Material, LTRIM(RTRIM(sa.Articulo)) AS Variante
-                 FROM dbo.Articulos a LEFT JOIN dbo.StockArt sa ON LTRIM(RTRIM(sa.CodStock)) = LTRIM(RTRIM(a.CodStock))
-                 WHERE LTRIM(RTRIM(a.CodArticulo)) = LTRIM(RTRIM(t.CodArticulo))) m
-    WHERE t.AreaID IN ('EMB', 'DF', 'TPU') AND ISNULL(t.Activo, 1) = 1
-    ORDER BY t.AreaID, ISNULL(t.Orden, 999), t.TecnicaOpcionID`).catch(() => ({ recordset: [] }))).recordset
-    .filter(o => o.Material && o.Variante && !/recargo/i.test(o.Nombre));   // los recargos (Relieve 3D) no son una forma de hacerlo
+  const opc = await opcionesTecnicas(pool, proId);
   return serv.map(s => {
     const area = String(s.AreaID).toUpperCase();
     const tipo = EXTRA_DE_AREA[area];
@@ -168,10 +174,22 @@ async function extrasDelProducto(pool, proId) {
     const lista = (s.Modo === 'LIBRE' || !marcadas.length) ? deArea : marcadas;
     return {
       tipo, nombre: NOMBRE_EXTRA[tipo], obligatorio: !!s.Obligatorio, cobro: s.Cobro === 'INCLUIDA' ? 'INCLUIDA' : 'APARTE',
-      opciones: (s.Modo === 'FIJA' ? lista.slice(0, 1) : lista).map(o => ({ id: o.TecnicaOpcionID, nombre: o.Nombre, material: o.Material, variante: o.Variante })),
+      opciones: (s.Modo === 'FIJA' ? lista.slice(0, 1) : lista).map(opcionDe),
     };
   });
 }
+// [TIPO DEL EXTRA 14/10] Para la tabla del arte del VENDEDOR: cómo se puede hacer cada extra, la misma lista que ve el
+// cliente en la Tienda (las que ofrece el producto). Si el producto no tiene ese extra en Técnicas (el vendedor lo agregó
+// igual), todas las activas del área. { BORDADO: [{ id, nombre, material, variante }], DTF: [...], TPU: [...] }
+async function formasDeExtras(pool, proId) {
+  const [conf, opc] = await Promise.all([extrasDelProducto(pool, proId), opcionesTecnicas(pool, proId)]);
+  return Object.fromEntries(Object.entries(EXTRA_DE_AREA).map(([area, tipo]) => {
+    const e = conf.find(x => x.tipo === tipo);
+    return [tipo, e ? e.opciones : opc.filter(o => o.AreaID === area).map(opcionDe)];
+  }));
+}
+const opcionDe = (o) => ({ id: o.TecnicaOpcionID, nombre: o.Nombre, material: o.Material, variante: o.Variante, codArticulo: o.CodArticulo || null, codStock: o.CodStock || null });
+
 function parteExtra(e, opcionId, previa = null, cantidad = 1) {
   const op = e.opciones.find(o => o.id === opcionId) || e.opciones.find(o => o.material === previa?.Datos?.material) || e.opciones[0] || null;
   const datos = { ...(previa?.Datos || {}), opcionId: op?.id || null, variante: op?.variante || (e.tipo === 'DTF' ? 'DTF Textil' : null), material: op?.material || null };
@@ -617,6 +635,7 @@ function iniciarBarrido(getPool) {
 }
 
 module.exports = {
-  esClientePortal, solicitudDelCliente, recordarApp, producto, extrasDelProducto, vendedorDe,
+  esClientePortal, solicitudDelCliente, recordarApp, producto, extrasDelProducto, formasDeExtras, vendedorDe,
   armables, listar, crear, resumen, cambiarExtra, revisarArte, descartar, confirmar, convertirListos, iniciarBarrido,
+  analisisDeArte,   // [A MEDIDA] también la pantalla del vendedor/diseñador (solicitudesVendedorTizadaPro.vistaArte)
 };

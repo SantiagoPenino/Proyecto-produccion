@@ -14,7 +14,6 @@ const { SQL_RECALC_MONTO_TOTAL, sqlMonedaLinea, sqlLineaTocaAlCargo, sqlImporteD
 const { getPool, sql } = require('../config/db');
 const { crearDocumentoContable } = require('../services/contabilidadCore');
 const contabilidadCore = require('../services/contabilidadCore');
-const sobregiro = require('../services/planSobregiroService');
 
 // ── BILLETERA · contra-asiento de la venta de una ORDEN cubierta a mano ─────────
 // Una orden que entró normal ya asentó Deudores/Ventas+IVA (convención del sistema).
@@ -126,7 +125,6 @@ exports.getMonedas = async (req, res) => {
   }
 };
 
-
 /**
  * GET /api/contabilidad/metodos-pago
  */
@@ -148,7 +146,6 @@ exports.getMetodosPago = async (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 };
-
 
 /**
  * GET /api/contabilidad/unidades
@@ -275,7 +272,6 @@ exports.getArticulos = async (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 };
-
 
 /**
  * POST /api/contabilidad/cuentas
@@ -1061,353 +1057,6 @@ exports.getPlanesCliente = async (req, res) => {
 };
 
 /**
- * POST /api/contabilidad/planes
- * Crea un nuevo plan de recursos para una cuenta.
- * Body: { CueIdCuenta, PlaCantidadTotal, PlaDescripcion?, PlaFechaVencimiento?,
- *         PlaImportePagado?, MonedaPagoId?, MetodoPagoId? }
- */
-exports.crearPlan = async (req, res) => {
-  try {
-    const {
-      CueIdCuenta, ProIdProducto,
-      PlaCantidadTotal,
-      PlaDescripcion      = null,
-      PlaFechaVencimiento = null,
-      PlaImportePagado    = null,
-      MonedaPagoId        = null,
-      MetodoPagoId        = null,
-      DocTipo             = 'FACTURA',   // 'FACTURA' | 'RECIBO' | 'TICKET'
-    } = req.body;
-    const UsuarioAlta = req.user?.id ?? 1;
-
-    if (!CueIdCuenta || !PlaCantidadTotal || PlaCantidadTotal <= 0)
-      return res.status(400).json({ success: false, error: 'CueIdCuenta y PlaCantidadTotal son obligatorios.' });
-
-    const pool = await getPool();
-
-    // Obtener datos de la cuenta
-    const cuentaRes = await pool.request()
-      .input('CueIdCuenta', sql.Int, parseInt(CueIdCuenta))
-      .query(`SELECT CueTipo, CliIdCliente, ProIdProducto AS ProIdProductoCuenta FROM dbo.CuentasCliente WHERE CueIdCuenta = @CueIdCuenta`);
-
-    if (!cuentaRes.recordset.length)
-      return res.status(404).json({ success: false, error: 'Cuenta no encontrada.' });
-
-    const { CueTipo, CliIdCliente, ProIdProductoCuenta } = cuentaRes.recordset[0];
-    const ProIdFinal = ProIdProducto || ProIdProductoCuenta;
-
-    // Rechazar cuentas monetarias
-    const TIPOS_MONETARIOS = ['USD','UYU','ARS','EUR','PYG','BRL','CORRIENTE','CREDITO','DEBITO','CAJA','DINERO_USD','DINERO_UYU'];
-    if (TIPOS_MONETARIOS.includes(CueTipo?.toUpperCase()))
-      return res.status(400).json({ success: false, error: `La cuenta "${CueTipo}" no es una cuenta de recursos.` });
-
-    // ── Traspaso de excedente: si un plan anterior de este cliente/producto se agotó
-    // con sobregiro (metros consumidos de más, registrados como negativo en la cuenta
-    // pero nunca reflejados en PlanesMetros porque PlaCantidadUsada no puede superar
-    // PlaCantidadTotal), ese excedente se hereda como "usado inicial" del plan nuevo
-    // para que la tarjeta muestre la capacidad real disponible. No toca CueSaldoActual
-    // (la cuenta corriente de metros ya está correcta).
-    // El criterio de qué es sobregiro y cómo se marca lo absorbido vive en
-    // planSobregiroService, compartido con recargarPlan y con la venta de rollo
-    // desde caja (antes esta herencia existía SOLO acá, y por eso una recarga
-    // dejaba el plan mostrando metros que el cliente ya se había consumido).
-    // OJO: se mide ANTES de insertar el plan y ANTES del movimiento de ENTRADA,
-    // con los dos lados todavía sin tocar. Si se midiera en el medio, la resta
-    // daría cualquier cosa.
-    const { sobregiro: excesoTotal } = await sobregiro.calcularSobregiro(parseInt(CueIdCuenta), () => pool.request());
-
-    const usadaInicial  = Math.min(excesoTotal, parseFloat(PlaCantidadTotal));
-    const sobrante      = Math.round((excesoTotal - usadaInicial) * 10000) / 10000;
-    const activoInicial = usadaInicial >= parseFloat(PlaCantidadTotal) ? 0 : 1;
-
-    if (excesoTotal > 0) {
-      logger.info(`[CONTABILIDAD] Plan nuevo CliId=${CliIdCliente} Prod=${ProIdFinal}: heredando excedente de ${usadaInicial} uds como usado inicial.`);
-      if (sobrante > 0) {
-        logger.warn(`[CONTABILIDAD] Excedente pendiente (${excesoTotal}) supera la capacidad del plan nuevo (${PlaCantidadTotal}) para CliId=${CliIdCliente}. Quedan ${sobrante} uds sin absorber para la próxima carga de metros.`);
-      }
-    }
-
-    // Insertar plan con columnas reales de PlanesMetros
-    const insert = await pool.request()
-      .input('CliIdCliente',        sql.Int,           parseInt(CliIdCliente))
-      .input('CueIdCuenta',         sql.Int,           parseInt(CueIdCuenta))
-      .input('ProIdProducto',       sql.Int,           ProIdFinal ? parseInt(ProIdFinal) : null)
-      .input('PlaCantidadTotal',    sql.Decimal(18,4), parseFloat(PlaCantidadTotal))
-      .input('PlaCantidadUsada',    sql.Decimal(18,4), usadaInicial)
-      .input('PlaPrecioUnitario',   sql.Decimal(18,4), PlaImportePagado ? parseFloat(PlaImportePagado) : null)
-      .input('MonIdMoneda',         sql.Int,           MonedaPagoId  ? parseInt(MonedaPagoId)  : null)
-      .input('PlaFechaVencimiento', sql.Date,          PlaFechaVencimiento || null)
-      .input('PlaDescripcion',      sql.NVarChar(500), PlaDescripcion || null)
-      .input('PlaObservaciones',    sql.NVarChar(500), null)
-      .input('PlaActivo',           sql.Bit,           activoInicial)
-      .input('UsuarioAlta',         sql.Int,           UsuarioAlta)
-      .query(`
-        INSERT INTO dbo.PlanesMetros
-          (CliIdCliente, CueIdCuenta, ProIdProducto,
-           PlaCantidadTotal, PlaCantidadUsada,
-           PlaPrecioUnitario, MonIdMoneda,
-           PlaFechaInicio, PlaFechaVencimiento,
-           PlaDescripcion, PlaObservaciones,
-           PlaActivo, PlaFechaAlta, PlaUsuarioAlta)
-        OUTPUT INSERTED.PlaIdPlan
-        VALUES
-          (@CliIdCliente, @CueIdCuenta, @ProIdProducto,
-           @PlaCantidadTotal, @PlaCantidadUsada,
-           @PlaPrecioUnitario, @MonIdMoneda,
-           CAST(GETDATE() AS DATE), @PlaFechaVencimiento,
-           @PlaDescripcion, @PlaObservaciones,
-           @PlaActivo, GETDATE(), @UsuarioAlta)
-      `);
-
-    const PlaIdPlan = insert.recordset[0].PlaIdPlan;
-
-    // No hace falta marcar nada: el sobregiro se mide como la diferencia entre el
-    // restante de los planes y el saldo de la cuenta, y al nacer este plan con
-    // `usadaInicial` esa diferencia ya quedó saldada. La próxima carga vuelve a
-    // restar y encuentra 0 (o solo el sobrante que no entró acá).
-
-    // Registrar los artículos permitidos en la tabla PlanesMetrosArticulosPermitidos
-    const artsPermitidos = Array.isArray(req.body.articulosPermitidos) && req.body.articulosPermitidos.length > 0 
-        ? req.body.articulosPermitidos 
-        : [ProIdFinal];
-    
-    for (const artPermId of artsPermitidos) {
-        if (artPermId) {
-            await pool.request()
-                .input('PlaId', sql.Int, PlaIdPlan)
-                .input('ProId', sql.Int, artPermId)
-                .query(`
-                    INSERT INTO dbo.PlanesMetrosArticulosPermitidos (PlaIdPlan, ProIdProducto)
-                    VALUES (@PlaId, @ProId)
-                `);
-        }
-    }
-
-    // ── 1. ENTRADA en inventario de recursos (siempre) ─────────────────────
-    await svc.registrarMovimiento({
-      CueIdCuenta:     parseInt(CueIdCuenta),
-      MovTipo:         'ENTRADA',
-      MovConcepto:     `Saldo inicial plan #${PlaIdPlan}${PlaDescripcion ? ' — ' + PlaDescripcion : ''}`,
-      MovImporte:      parseFloat(PlaCantidadTotal),
-      MovUsuarioAlta:  UsuarioAlta,
-    });
-
-    // ── 2. Documento contable según DocTipo ────────────────────────────────
-    let docNumero = null;
-    let DocIdDocumento = null;
-
-    if (DocTipo !== 'TICKET') {
-      // Generar número correlativo con prefijo según tipo
-      const prefijo    = DocTipo === 'RECIBO' ? 'RC' : 'FC';
-      const secTipo    = DocTipo === 'RECIBO' ? 'RECIBO_PLAN' : 'FACTURA_PLAN';
-      const anio       = new Date().getFullYear();
-      const seqRes     = await pool.request()
-        .input('Tipo', sql.VarChar(30), secTipo)
-        .query(`
-          IF NOT EXISTS (SELECT 1 FROM dbo.SecuenciaDocumentos WHERE SecTipoDoc = @Tipo AND SecSerie = 'C')
-            INSERT INTO dbo.SecuenciaDocumentos (SecTipoDoc, SecSerie, SecPrefijo, SecDigitos, SecUltimoNumero, SecActivo) 
-            VALUES (@Tipo, 'C', 'FC-', 5, 0, 1);
-          UPDATE dbo.SecuenciaDocumentos
-          SET SecUltimoNumero = SecUltimoNumero + 1
-          OUTPUT INSERTED.SecUltimoNumero
-          WHERE SecTipoDoc = @Tipo AND SecSerie = 'C';
-        `);
-      const numero  = seqRes.recordset[0].SecUltimoNumero;
-      docNumero = `${prefijo}-${anio}-${String(numero).padStart(5, '0')}`;
-      const importe = PlaImportePagado ? parseFloat(PlaImportePagado) : 0;
-
-      // Insertar DocumentoContable y Detalles
-      const docEstado = (DocTipo === 'FACTURA' && importe <= 0) ? 'EMITIDO' : 'COBRADO';
-      const pUnit = (req.body.PlaPrecioUnitario !== undefined && req.body.PlaPrecioUnitario !== null)
-        ? parseFloat(req.body.PlaPrecioUnitario)
-        : (PlaImportePagado ? parseFloat(PlaImportePagado) / parseFloat(PlaCantidadTotal) : 0.0);
-
-      DocIdDocumento = await crearDocumentoContable({
-        header: {
-          cueIdCuenta: parseInt(CueIdCuenta),
-          clienteId: parseInt(CliIdCliente),
-          monedaId: MonedaPagoId ? parseInt(MonedaPagoId) : 1,
-          tipo: DocTipo,
-          numero: docNumero,
-          serie: 'A',
-          subtotal: importe,
-          impuestos: 0,
-          total: importe,
-          docPagado: docEstado === 'COBRADO',
-          estado: docEstado,
-          cfeEstado: null,
-          usuarioId: UsuarioAlta
-        },
-        lineas: [
-          {
-            nomItem: `Adquisición de Plan de Recursos #${PlaIdPlan}`.substring(0, 200),
-            dscItem: `${PlaDescripcion || ''}`.substring(0, 500),
-            cantidad: parseFloat(PlaCantidadTotal) || 1.0,
-            precioUnitario: pUnit,
-            subtotal: importe,
-            impuestos: 0,
-            total: importe
-          }
-        ]
-      });
-
-
-      if (DocTipo === 'FACTURA') {
-        if (importe > 0) {
-          // Pago al contado con factura: registrar cobro en cuenta monetaria
-          const cueTipoDin = (MonedaPagoId === 2 || MonedaPagoId === '2') ? 'DINERO_USD' : 'DINERO_UYU';
-          const cuentaDinRes = await pool.request()
-            .input('CliIdCliente', sql.Int,      parseInt(CliIdCliente))
-            .input('CueTipo',      sql.VarChar(20), cueTipoDin)
-            .query(`SELECT TOP 1 CueIdCuenta FROM dbo.CuentasCliente WHERE CliIdCliente=@CliIdCliente AND CueTipo=@CueTipo AND CueActiva=1 ORDER BY CueEsPrincipal DESC, CueIdCuenta ASC`);
-          if (cuentaDinRes.recordset.length > 0) {
-            await svc.registrarMovimiento({
-              CueIdCuenta:    cuentaDinRes.recordset[0].CueIdCuenta,
-              MovTipo:        'PAGO',
-              MovConcepto:    `Pago plan #${PlaIdPlan} (${docNumero})`,
-              MovImporte:     importe,
-              MovUsuarioAlta: UsuarioAlta,
-              DocIdDocumento,
-            });
-          }
-        } else {
-          // Factura sin pago inmediato → crear DeudaDocumento
-          // No se crea deuda sin importe — el importe es obligatorio si DocTipo=FACTURA sin pago
-          // (deja pendiente para cuando el cliente pague)
-          logger.info(`[CONTABILIDAD] Plan #${PlaIdPlan}: Factura ${docNumero} emitida sin pago inmediato. Sin DeudaDocumento (se registrará al cobrar).`);
-        }
-      } else if (DocTipo === 'RECIBO' && importe > 0) {
-        // Recibo: solo registrar cobro, sin deuda
-        const cueTipoDin = (MonedaPagoId === 2 || MonedaPagoId === '2') ? 'DINERO_USD' : 'DINERO_UYU';
-        const cuentaDinRes = await pool.request()
-          .input('CliIdCliente', sql.Int,      parseInt(CliIdCliente))
-          .input('CueTipo',      sql.VarChar(20), cueTipoDin)
-          .query(`SELECT TOP 1 CueIdCuenta FROM dbo.CuentasCliente WHERE CliIdCliente=@CliIdCliente AND CueTipo=@CueTipo AND CueActiva=1 ORDER BY CueEsPrincipal DESC, CueIdCuenta ASC`);
-        if (cuentaDinRes.recordset.length > 0) {
-          await svc.registrarMovimiento({
-            CueIdCuenta:    cuentaDinRes.recordset[0].CueIdCuenta,
-            MovTipo:        'PAGO',
-            MovConcepto:    `Cobro plan #${PlaIdPlan} (${docNumero})`,
-            MovImporte:     importe,
-            MovUsuarioAlta: UsuarioAlta,
-            DocIdDocumento,
-          });
-        }
-      }
-    }
-    // TICKET: solo inventario, sin documento contable
-
-    logger.info(`[CONTABILIDAD] Plan #${PlaIdPlan} creado: ${PlaCantidadTotal} uds | DocTipo=${DocTipo}${docNumero ? ' | ' + docNumero : ''}`);
-    res.json({
-      success: true,
-      data: { PlaIdPlan, DocIdDocumento, docNumero, DocTipo },
-      message: `Plan creado: ${PlaCantidadTotal} unidades${docNumero ? ` — ${DocTipo} ${docNumero}` : ''}.`,
-    });
-  } catch (err) {
-    logger.error('[CONTABILIDAD] crearPlan:', err.message);
-    res.status(500).json({ success: false, error: err.message });
-  }
-};
-
-/**
- * POST /api/contabilidad/planes/:PlaIdPlan/recargar
- * Agrega más cantidad a un plan existente (recarga).
- * Body: { CantidadAdicional, ImportePagado? }
- */
-exports.recargarPlan = async (req, res) => {
-  try {
-    const { PlaIdPlan } = req.params;
-    const { CantidadAdicional, ImportePagado = null } = req.body;
-    const UsuarioAlta = req.user?.id ?? 1;
-
-    if (!CantidadAdicional || parseFloat(CantidadAdicional) <= 0)
-      return res.status(400).json({ success: false, error: 'CantidadAdicional debe ser mayor a 0.' });
-
-    const pool = await getPool();
-    const planRes = await pool.request()
-      .input('PlaIdPlan', sql.Int, parseInt(PlaIdPlan))
-      .query(`
-        SELECT pm.*, cc.CliIdCliente, cc.CueTipo
-        FROM dbo.PlanesMetros pm
-        JOIN dbo.CuentasCliente cc ON cc.CueIdCuenta = pm.CueIdCuenta
-        WHERE pm.PlaIdPlan = @PlaIdPlan
-      `);
-
-    if (!planRes.recordset.length)
-      return res.status(404).json({ success: false, error: 'Plan no encontrado.' });
-
-    const plan = planRes.recordset[0];
-
-    await pool.request()
-      .input('PlaIdPlan',         sql.Int,           parseInt(PlaIdPlan))
-      .input('CantidadAdicional', sql.Decimal(18,4), parseFloat(CantidadAdicional))
-      .query(`UPDATE dbo.PlanesMetros SET PlaCantidadTotal = PlaCantidadTotal + @CantidadAdicional, PlaActivo = 1 WHERE PlaIdPlan = @PlaIdPlan`);
-
-    await svc.registrarMovimiento({
-      CueIdCuenta:     plan.CueIdCuenta,
-      MovTipo:         'RECARGA',
-      MovConcepto:     `Recarga plan #${PlaIdPlan} (+${CantidadAdicional} ${plan.PlaUnidad || ''})`,
-      MovImporte:      parseFloat(CantidadAdicional),
-      MovUsuarioAlta:  UsuarioAlta,
-      MovObservaciones: `Plan #${PlaIdPlan}`
-    });
-
-    // Los metros que el cliente ya se consumió de más contra planes anteriores se
-    // descuentan de esta recarga: sin esto la barra del plan muestra la recarga
-    // entera y el motor vuelve a entregar metros ya consumidos.
-    // Va DESPUÉS del movimiento de ENTRADA: el sobregiro se mide restando el saldo
-    // de la cuenta al restante de los planes, y los dos lados tienen que estar ya
-    // actualizados (el plan por el UPDATE de arriba, la cuenta por el movimiento).
-    const absRecarga = await sobregiro.absorberSobregiroEnPlan({
-      PlaIdPlan:   parseInt(PlaIdPlan),
-      CueIdCuenta: plan.CueIdCuenta,
-      Capacidad:   parseFloat(CantidadAdicional),
-    });
-
-    if (ImportePagado && parseFloat(ImportePagado) > 0) {
-      const monRes = await pool.request()
-        .input('CliIdCliente', sql.Int, plan.CliIdCliente)
-        .query(`SELECT TOP 1 CueIdCuenta FROM dbo.CuentasCliente WHERE CliIdCliente = @CliIdCliente AND CueTipo LIKE 'DINERO%' AND CueActiva = 1 ORDER BY CueEsPrincipal DESC, CueIdCuenta`);
-      if (monRes.recordset.length > 0) {
-        const monCta = monRes.recordset[0].CueIdCuenta;
-        
-        // 1. Generar la deuda por la recarga
-        await svc.registrarMovimiento({
-          CueIdCuenta:    monCta,
-          MovTipo:        'ORDEN',
-          MovConcepto:    `Cargo por recarga plan #${PlaIdPlan} (+${CantidadAdicional} ${plan.PlaUnidad || ''})`,
-          MovImporte:     -Math.abs(parseFloat(ImportePagado)),
-          MovUsuarioAlta: UsuarioAlta,
-        });
-
-        // 2. Registrar el pago de esa recarga
-        await svc.registrarMovimiento({
-          CueIdCuenta:    monCta,
-          MovTipo:        'PAGO',
-          MovConcepto:    `Pago recarga plan #${PlaIdPlan}`,
-          MovImporte:     Math.abs(parseFloat(ImportePagado)),
-          MovUsuarioAlta: UsuarioAlta,
-        });
-      }
-    }
-
-    const avisoSobregiro = absRecarga.absorbido > 0
-      ? ` De esos, ${absRecarga.absorbido} se descontaron para cubrir metros que el cliente ya se había consumido de más.`
-      : '';
-
-    res.json({
-      success: true,
-      sobregiroAbsorbido: absRecarga.absorbido,
-      sobregiroPendiente: absRecarga.sobrante,
-      message: `Plan #${PlaIdPlan} recargado con ${CantidadAdicional} ${plan.PlaUnidad}.${avisoSobregiro}`,
-    });
-  } catch (err) {
-    logger.error('[CONTABILIDAD] recargarPlan:', err.message);
-    res.status(500).json({ success: false, error: err.message });
-  }
-};
-
-/**
  * PATCH /api/contabilidad/planes/:PlaIdPlan/desactivar
  * Desactiva un plan (lo cierra).
  */
@@ -1550,7 +1199,6 @@ exports.desactivarPlan = async (req, res) => {
   }
 };
 
-
 /**
  * GET /api/contabilidad/ciclos/:CliIdCliente
  * Devuelve los ciclos de crédito de un cliente.
@@ -1676,7 +1324,9 @@ exports.cerrarCiclo = async (req, res) => {
     });
   } catch (err) {
     logger.error('[CONTABILIDAD] cerrarCiclo:', err);
-    res.status(500).json({ success: false, error: err.message || err.toString() });
+    // Un control que frenó el cierre (ciclo que ya tiene factura, pre-factura desactualizada)
+    // va con su statusCode (409), igual que en emitirFacturaAnticipo.
+    res.status(err.statusCode || 500).json({ success: false, error: err.message || err.toString() });
   }
 };
 
@@ -1712,6 +1362,9 @@ async function ajustarCierrePorDelta(makeReq, DocIdDocumento, CicIdCiclo, delta)
 /**
  * Recomputa el saldo corrido (MovSaldoPosterior) de todos los movimientos de la
  * cuenta y el CueSaldoActual, tras un cambio de importe.
+ * Sin ORDEN/ORDEN_ANTICIPO, igual que SP_RegistrarMovimiento, registrarAjusteManual y el
+ * job de cuadre: la deuda real es el CIERRE_CICLO/VTA_CAJA del documento, y sumar también
+ * las órdenes la contaría dos veces (antes dejaba "debe" a cuentas que estaban en cero).
  */
 async function recomputarSaldoCuenta(makeReq, CueIdCuenta) {
   await makeReq()
@@ -1719,7 +1372,8 @@ async function recomputarSaldoCuenta(makeReq, CueIdCuenta) {
     .query(`
       ;WITH ord AS (
         SELECT MovIdMovimiento,
-               SUM(MovImporte) OVER (ORDER BY MovFecha, MovIdMovimiento ROWS UNBOUNDED PRECEDING) AS run
+               SUM(CASE WHEN MovTipo NOT IN ('ORDEN','ORDEN_ANTICIPO') THEN MovImporte ELSE 0 END)
+                 OVER (ORDER BY MovFecha, MovIdMovimiento ROWS UNBOUNDED PRECEDING) AS run
         FROM dbo.MovimientosCuenta
         WHERE CueIdCuenta = @c AND (MovAnulado IS NULL OR MovAnulado = 0)
       )
@@ -1728,7 +1382,8 @@ async function recomputarSaldoCuenta(makeReq, CueIdCuenta) {
 
       UPDATE dbo.CuentasCliente
       SET CueSaldoActual = ISNULL((SELECT SUM(MovImporte) FROM dbo.MovimientosCuenta
-        WHERE CueIdCuenta = @c AND (MovAnulado IS NULL OR MovAnulado = 0)), 0)
+        WHERE CueIdCuenta = @c AND (MovAnulado IS NULL OR MovAnulado = 0)
+          AND MovTipo NOT IN ('ORDEN','ORDEN_ANTICIPO')), 0)
       WHERE CueIdCuenta = @c;
     `);
 }
@@ -2338,101 +1993,6 @@ exports.cerrarCiclosVencidos = async (req, res) => {
 // SECCIÓN 6: PLANES DE METROS
 // ============================================================
 
-// SIN USO (13/10): getPlanesMetros: sin ruta (la ruta usa getPlanesCliente, que devuelve lo mismo). Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
-/**
- * GET /api/contabilidad/planes/:CliIdCliente
- * Devuelve los planes de metros activos e históricos del cliente.
- */
-exports.getPlanesMetros = async (req, res) => {
-  try {
-    const pool = await getPool();
-    const result = await pool.request()
-      .input('CliIdCliente', sql.Int, parseInt(req.params.CliIdCliente))
-      .query(`
-        SELECT
-          p.PlaIdPlan, p.CueIdCuenta, p.ProIdProducto,
-          art.Descripcion AS NombreArticulo,
-          p.PlaDescripcion,
-          p.PlaCantidadTotal,
-          p.PlaCantidadUsada,
-          p.PlaCantidadTotal - p.PlaCantidadUsada AS PlaCantidadPendiente,
-          -- Saldo real de la cuenta (puede ser negativo para ROLLO/SEMANAL con recursos)
-          ISNULL(cc.CueSaldoActual, p.PlaCantidadTotal - p.PlaCantidadUsada) AS PlaCantidadRestante,
-          CASE WHEN p.PlaCantidadTotal > 0
-               THEN CAST(p.PlaCantidadUsada * 100.0 / p.PlaCantidadTotal AS DECIMAL(5,2))
-               ELSE 0
-          END AS PorcentajeUsado,
-          p.PlaPrecioUnitario, mon.MonSimbolo,
-          p.PlaFechaInicio, p.PlaFechaVencimiento,
-          p.PlaActivo
-        FROM      dbo.PlanesMetros p
-        LEFT JOIN dbo.CuentasCliente cc ON cc.CueIdCuenta = p.CueIdCuenta
-        LEFT JOIN dbo.Articulos a       ON a.ProIdProducto = p.ProIdProducto
-        LEFT JOIN dbo.Monedas   mon     ON mon.MonIdMoneda  = p.MonIdMoneda
-        CROSS APPLY (SELECT LTRIM(RTRIM(a.Descripcion)) AS Descripcion) art
-        WHERE p.CliIdCliente = @CliIdCliente
-        ORDER BY p.PlaActivo DESC, p.PlaFechaInicio DESC
-      `);
-    res.json({ success: true, data: result.recordset });
-  } catch (err) {
-    logger.error('[CONTABILIDAD] getPlanesMetros:', err.message);
-    res.status(500).json({ success: false, error: err.message });
-  }
-};
-
-// SIN USO (13/10): crearPlanMetros: sin ruta. Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
-/**
- * POST /api/contabilidad/planes
- * Crea un nuevo plan de metros/kg prepago.
- * Body: { CliIdCliente, CueIdCuenta, ProIdProducto, PlaCantidadTotal,
- *          PlaPrecioUnitario?, MonIdMoneda?, PlaFechaInicio, PlaFechaVencimiento?, PlaDescripcion? }
- */
-exports.crearPlanMetros = async (req, res) => {
-  try {
-    const {
-      CliIdCliente, CueIdCuenta, ProIdProducto,
-      PlaCantidadTotal, PlaPrecioUnitario = null,
-      MonIdMoneda = null, PlaFechaInicio, PlaFechaVencimiento = null,
-      PlaDescripcion = null,
-    } = req.body;
-
-    const UsuarioAlta = req.user?.id ?? 1;
-
-    if (!CliIdCliente || !CueIdCuenta || !ProIdProducto || !PlaCantidadTotal || !PlaFechaInicio) {
-      return res.status(400).json({ success: false, error: 'Faltan campos obligatorios.' });
-    }
-
-    const pool = await getPool();
-    const result = await pool.request()
-      .input('CliIdCliente',      sql.Int,          CliIdCliente)
-      .input('CueIdCuenta',       sql.Int,          CueIdCuenta)
-      .input('ProIdProducto',     sql.Int,          ProIdProducto)
-      .input('PlaCantidadTotal',  sql.Decimal(18,4), PlaCantidadTotal)
-      .input('PlaPrecioUnitario', sql.Decimal(18,4), PlaPrecioUnitario)
-      .input('MonIdMoneda',       sql.Int,          MonIdMoneda)
-      .input('PlaFechaInicio',    sql.Date,         new Date(PlaFechaInicio))
-      .input('PlaFechaVencimiento', sql.Date,       PlaFechaVencimiento ? new Date(PlaFechaVencimiento) : null)
-      .input('PlaDescripcion',    sql.NVarChar(200), PlaDescripcion)
-      .input('UsuarioAlta',       sql.Int,          UsuarioAlta)
-      .query(`
-        INSERT INTO dbo.PlanesMetros
-          (CliIdCliente, CueIdCuenta, ProIdProducto, PlaCantidadTotal, PlaCantidadUsada,
-           PlaPrecioUnitario, MonIdMoneda, PlaFechaInicio, PlaFechaVencimiento,
-           PlaDescripcion, PlaActivo, PlaFechaAlta, PlaUsuarioAlta)
-        OUTPUT INSERTED.PlaIdPlan
-        VALUES
-          (@CliIdCliente, @CueIdCuenta, @ProIdProducto, @PlaCantidadTotal, 0,
-           @PlaPrecioUnitario, @MonIdMoneda, @PlaFechaInicio, @PlaFechaVencimiento,
-           @PlaDescripcion, 1, GETDATE(), @UsuarioAlta)
-      `);
-
-    res.status(201).json({ success: true, data: { PlaIdPlan: result.recordset[0].PlaIdPlan } });
-  } catch (err) {
-    logger.error('[CONTABILIDAD] crearPlanMetros:', err.message);
-    res.status(500).json({ success: false, error: err.message });
-  }
-};
-
 // ============================================================
 // SECCIÓN 7: REPORTES
 // ============================================================
@@ -2858,145 +2418,8 @@ exports.getReciboMovimiento = async (req, res) => {
 };
 
 // ============================================================
-// SECCIÓN 8: COLA DE ESTADOS DE CUENTA
+// SECCIÓN 8: CLIENTES ACTIVOS
 // ============================================================
-
-const emailSvc = require('../services/contabilidadEmailService');
-let _batchFns = null;
-const getBatch = () => {
-  if (!_batchFns) _batchFns = require('../jobs/estadosCuenta.job');
-  return _batchFns;
-};
-
-/** GET /api/contabilidad/cola/:ColIdCola/preview — devuelve HTML renderizado */
-// SIN USO (13/10): previewEstadoCola: sin ruta (el JSDoc cita GET /cola/:id/preview, que contabilidadRoutes no monta). Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
-exports.previewEstadoCola = async (req, res) => {
-  try {
-    const pool    = await getPool();
-    const itemRes = await pool.request()
-      .input('ColIdCola', sql.Int, parseInt(req.params.ColIdCola))
-      .query(`SELECT ColContenidoJSON, ColAsunto, ColEmailDestino FROM dbo.ColaEstadosCuenta WHERE ColIdCola = @ColIdCola`);
-
-    if (!itemRes.recordset.length)
-      return res.status(404).json({ success: false, error: 'No encontrado.' });
-
-    const item = itemRes.recordset[0];
-    let datos;
-    try { datos = JSON.parse(item.ColContenidoJSON); } catch { datos = {}; }
-
-    const { generarHTMLEstadoCuenta, obtenerDatosEmpresa } = require('../services/contabilidadEmailService');
-    const empresa = await obtenerDatosEmpresa();
-    const html = generarHTMLEstadoCuenta(datos, empresa);
-
-    // Devolver como HTML directamente (para iframe) o como JSON según Accept header
-    if (req.headers.accept?.includes('text/html')) {
-      res.setHeader('Content-Type', 'text/html; charset=utf-8');
-      return res.send(html);
-    }
-    res.json({ success: true, html, asunto: item.ColAsunto, email: item.ColEmailDestino });
-  } catch (err) {
-    logger.error('[CONTABILIDAD] previewEstadoCola:', err.message);
-    res.status(500).json({ success: false, error: err.message });
-  }
-};
-
-/** GET /api/contabilidad/cola  — lista la cola con filtros */
-
-exports.getColaEstados = async (req, res) => {
-  try {
-    const { estado = null, page = 1, limit = 50 } = req.query;
-    const offset = (parseInt(page) - 1) * parseInt(limit);
-    const pool   = await getPool();
-    const req2   = pool.request()
-      .input('Limit',  sql.Int, parseInt(limit))
-      .input('Offset', sql.Int, offset);
-    const where = estado ? `AND ColEstado = @Estado` : '';
-    if (estado) req2.input('Estado', sql.VarChar(20), estado);
-
-    const result = await req2.query(`
-      SELECT c.ColIdCola, c.CliIdCliente, cl.Nombre AS NombreCliente,
-             c.ColAsunto, c.ColEmailDestino, c.ColEstado,
-             c.ColFechaGeneracion, c.ColFechaEnvio, c.ColErrorEnvio,
-             c.ColTipoDisparo, c.ColFechaDesde, c.ColFechaHasta
-      FROM   dbo.ColaEstadosCuenta c WITH (NOLOCK)
-      JOIN   dbo.Clientes cl        WITH (NOLOCK) ON cl.CliIdCliente = c.CliIdCliente
-      WHERE  1=1 ${where}
-      ORDER  BY c.ColFechaGeneracion DESC
-      OFFSET @Offset ROWS FETCH NEXT @Limit ROWS ONLY
-    `);
-    const countRes = await pool.request()
-      .input('EstadoF', sql.VarChar(20), estado || '')
-      .query(`SELECT COUNT(*) AS total FROM dbo.ColaEstadosCuenta ${estado ? `WHERE ColEstado = @EstadoF` : ''}`);
-
-    res.json({ success: true, data: result.recordset, total: countRes.recordset[0].total, page: parseInt(page), limit: parseInt(limit) });
-  } catch (err) {
-    logger.error('[CONTABILIDAD] getColaEstados:', err.message);
-    res.status(500).json({ success: false, error: err.message });
-  }
-};
-
-/** PATCH /api/contabilidad/cola/:ColIdCola/estado — aprobar/rechazar */
-exports.cambiarEstadoCola = async (req, res) => {
-  try {
-    const { ColIdCola } = req.params;
-    const { estado }    = req.body;
-    if (!['PENDIENTE','APROBADO','RECHAZADO'].includes(estado))
-      return res.status(400).json({ success: false, error: 'Estado inválido.' });
-    const pool = await getPool();
-    await pool.request()
-      .input('ColIdCola', sql.Int,        parseInt(ColIdCola))
-      .input('Estado',    sql.VarChar(20), estado)
-      .query(`UPDATE dbo.ColaEstadosCuenta SET ColEstado = @Estado WHERE ColIdCola = @ColIdCola`);
-    res.json({ success: true, message: `Estado actualizado a ${estado}` });
-  } catch (err) {
-    logger.error('[CONTABILIDAD] cambiarEstadoCola:', err.message);
-    res.status(500).json({ success: false, error: err.message });
-  }
-};
-
-/** POST /api/contabilidad/cola/:ColIdCola/enviar — envía un registro */
-exports.enviarEstadoCola = async (req, res) => {
-  try {
-    const pool    = await getPool();
-    const itemRes = await pool.request()
-      .input('ColIdCola', sql.Int, parseInt(req.params.ColIdCola))
-      .query(`SELECT ColIdCola, ColContenidoJSON, ColAsunto, ColEmailDestino FROM dbo.ColaEstadosCuenta WHERE ColIdCola = @ColIdCola`);
-    if (!itemRes.recordset.length) return res.status(404).json({ success: false, error: 'No encontrado.' });
-    const item  = itemRes.recordset[0];
-    let datos;
-    try { datos = JSON.parse(item.ColContenidoJSON); } catch { datos = {}; }
-    const result = await emailSvc.enviarDesdeCola({ ColIdCola: item.ColIdCola, destinatario: item.ColEmailDestino, asunto: item.ColAsunto, datos, pool, sql });
-    res.json({ success: result.ok, data: result });
-  } catch (err) {
-    logger.error('[CONTABILIDAD] enviarEstadoCola:', err.message);
-    res.status(500).json({ success: false, error: err.message });
-  }
-};
-
-/** POST /api/contabilidad/cola/enviar-aprobados — envía todos los APROBADOS (o IDs pasados) */
-exports.enviarAprobados = async (req, res) => {
-  try {
-    const { ids = null } = req.body;
-    const pool   = await getPool();
-    const result = await getBatch().enviarColaAprobados(pool, ids?.length ? ids : null);
-    res.json({ success: true, data: result });
-  } catch (err) {
-    logger.error('[CONTABILIDAD] enviarAprobados:', err.message);
-    res.status(500).json({ success: false, error: err.message });
-  }
-};
-
-/** POST /api/contabilidad/cola/generar — dispara la generación manual */
-exports.generarEstadosManual = async (req, res) => {
-  try {
-    logger.info(`[CONTABILIDAD] Generación manual por usuario ${req.user?.id}`);
-    getBatch().runEstadosCuentaBatch().catch(e => logger.error('[CONTABILIDAD] Error batch manual:', e.message));
-    res.json({ success: true, message: 'Generación iniciada en segundo plano. Revisá la cola en unos segundos.' });
-  } catch (err) {
-    logger.error('[CONTABILIDAD] generarEstadosManual:', err.message);
-    res.status(500).json({ success: false, error: err.message });
-  }
-};
 
 /**
  * GET /api/contabilidad/clientes-activos
@@ -3374,7 +2797,6 @@ exports.getDeudaConsolidada = async (req, res) => {
 
 // (getMonedas ya está definido al inicio del archivo — no duplicar)
 
-
 /**
  * GET /api/contabilidad/cotizacion-hoy
  * Devuelve la cotización vigente del día (USD → UYU).
@@ -3535,134 +2957,6 @@ exports.registrarPagoCruzado = async (req, res) => {
     });
   } catch (err) {
     logger.error('[CONTABILIDAD] registrarPagoCruzado:', err.message);
-    res.status(500).json({ success: false, error: err.message });
-  }
-};
-
-// ============================================================
-// SECCIÓN: CATÁLOGO DE TIPOS DE MOVIMIENTO
-// ============================================================
-
-/**
- * GET /api/contabilidad/tipos-movimiento
- */
-exports.getTiposMovimiento = async (req, res) => {
-  try {
-    const pool = await getPool();
-    const result = await pool.request().query(`
-      SELECT TmoId, TmoNombre, TmoDescripcion,
-             TmoPrefijo, TmoSecuencia,
-             TmoAfectaSaldo, TmoGeneraDeuda,
-             TmoAplicaRecurso, TmoRequiereDoc,
-             TmoActivo, TmoOrden
-      FROM dbo.TiposMovimiento
-      ORDER BY TmoOrden ASC, TmoId ASC
-    `);
-    res.json({ success: true, data: result.recordset });
-  } catch (err) {
-    logger.error('[CONTABILIDAD] getTiposMovimiento:', err.message);
-    res.status(500).json({ success: false, error: err.message });
-  }
-};
-
-/**
- * PATCH /api/contabilidad/tipos-movimiento/:TmoId
- * Body: campos editables (solo los que se envíen se modifican)
- */
-exports.updateTipoMovimiento = async (req, res) => {
-  try {
-    const { TmoId } = req.params;
-    const { TmoNombre, TmoDescripcion, TmoPrefijo,
-            TmoAfectaSaldo, TmoGeneraDeuda,
-            TmoAplicaRecurso, TmoRequiereDoc,
-            TmoActivo, TmoOrden } = req.body;
-
-    const pool = await getPool();
-    const existe = await pool.request()
-      .input('TmoId', sql.VarChar(30), TmoId)
-      .query(`SELECT TmoId FROM dbo.TiposMovimiento WHERE TmoId = @TmoId`);
-    if (!existe.recordset.length)
-      return res.status(404).json({ success: false, error: `Tipo '${TmoId}' no encontrado.` });
-
-    await pool.request()
-      .input('TmoId',            sql.VarChar(30),  TmoId)
-      .input('TmoNombre',        sql.NVarChar(100), TmoNombre        ?? null)
-      .input('TmoDescripcion',   sql.NVarChar(500), TmoDescripcion   ?? null)
-      .input('TmoPrefijo',       sql.VarChar(5),    TmoPrefijo       ?? null)
-      .input('TmoAfectaSaldo',   sql.SmallInt,      TmoAfectaSaldo   != null ? parseInt(TmoAfectaSaldo) : null)
-      .input('TmoGeneraDeuda',   sql.Bit,           TmoGeneraDeuda   ?? null)
-      .input('TmoAplicaRecurso', sql.Bit,           TmoAplicaRecurso ?? null)
-      .input('TmoRequiereDoc',   sql.Bit,           TmoRequiereDoc   ?? null)
-      .input('TmoActivo',        sql.Bit,           TmoActivo        ?? null)
-      .input('TmoOrden',         sql.Int,           TmoOrden         ?? null)
-      .query(`
-        UPDATE dbo.TiposMovimiento SET
-          TmoNombre        = ISNULL(@TmoNombre,        TmoNombre),
-          TmoDescripcion   = ISNULL(@TmoDescripcion,   TmoDescripcion),
-          TmoPrefijo       = ISNULL(@TmoPrefijo,       TmoPrefijo),
-          TmoAfectaSaldo   = ISNULL(@TmoAfectaSaldo,   TmoAfectaSaldo),
-          TmoGeneraDeuda   = ISNULL(@TmoGeneraDeuda,   TmoGeneraDeuda),
-          TmoAplicaRecurso = ISNULL(@TmoAplicaRecurso, TmoAplicaRecurso),
-          TmoRequiereDoc   = ISNULL(@TmoRequiereDoc,   TmoRequiereDoc),
-          TmoActivo        = ISNULL(@TmoActivo,        TmoActivo),
-          TmoOrden         = ISNULL(@TmoOrden,         TmoOrden)
-        WHERE TmoId = @TmoId
-      `);
-
-    logger.info(`[CONTABILIDAD] TipoMovimiento '${TmoId}' actualizado.`);
-    res.json({ success: true, message: `Tipo '${TmoId}' actualizado correctamente.` });
-  } catch (err) {
-    logger.error('[CONTABILIDAD] updateTipoMovimiento:', err.message);
-    res.status(500).json({ success: false, error: err.message });
-  }
-};
-
-/**
- * POST /api/contabilidad/tipos-movimiento
- */
-exports.createTipoMovimiento = async (req, res) => {
-  try {
-    const { TmoId, TmoNombre, TmoDescripcion, TmoPrefijo, TmoAfectaSaldo, TmoGeneraDeuda, TmoAplicaRecurso, TmoRequiereDoc, TmoActivo, TmoOrden } = req.body;
-    if (!TmoId || !TmoNombre) return res.status(400).json({ success: false, error: "TmoId y TmoNombre son obligatorios." });
-    
-    const pool = await getPool();
-    const existe = await pool.request().input('Id', sql.VarChar(30), TmoId).query(`SELECT TmoId FROM dbo.TiposMovimiento WHERE TmoId = @Id`);
-    if (existe.recordset.length > 0) return res.status(400).json({ success: false, error: "El TmoId (ID) ya existe." });
-
-    await pool.request()
-      .input('TmoId',            sql.VarChar(30),  TmoId)
-      .input('TmoNombre',        sql.NVarChar(100), TmoNombre)
-      .input('TmoDescripcion',   sql.NVarChar(500), TmoDescripcion || null)
-      .input('TmoPrefijo',       sql.VarChar(5),    TmoPrefijo     || null)
-      .input('TmoAfectaSaldo',   sql.SmallInt,      TmoAfectaSaldo ?? 0)
-      .input('TmoGeneraDeuda',   sql.Bit,           TmoGeneraDeuda ?? 0)
-      .input('TmoAplicaRecurso', sql.Bit,           TmoAplicaRecurso ?? 0)
-      .input('TmoRequiereDoc',   sql.Bit,           TmoRequiereDoc ?? 0)
-      .input('TmoActivo',        sql.Bit,           TmoActivo ?? 1)
-      .input('TmoOrden',         sql.Int,           TmoOrden ?? 100)
-      .query(`
-        INSERT INTO dbo.TiposMovimiento (TmoId, TmoNombre, TmoDescripcion, TmoPrefijo, TmoAfectaSaldo, TmoGeneraDeuda, TmoAplicaRecurso, TmoRequiereDoc, TmoActivo, TmoOrden)
-        VALUES (@TmoId, @TmoNombre, @TmoDescripcion, @TmoPrefijo, @TmoAfectaSaldo, @TmoGeneraDeuda, @TmoAplicaRecurso, @TmoRequiereDoc, @TmoActivo, @TmoOrden)
-      `);
-    res.json({ success: true, message: "Tipo de movimiento creado." });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-};
-
-/**
- * DELETE /api/contabilidad/tipos-movimiento/:TmoId
- */
-exports.deleteTipoMovimiento = async (req, res) => {
-  try {
-    const { TmoId } = req.params;
-    const pool = await getPool();
-    await pool.request()
-      .input('TmoId', sql.VarChar(30), TmoId)
-      .query(`DELETE FROM dbo.TiposMovimiento WHERE TmoId = @TmoId`);
-    res.json({ success: true, message: "Tipo de movimiento eliminado." });
-  } catch (err) {
-    if (err.number === 547) return res.status(400).json({ success: false, error: "No se puede eliminar porque está en uso (tiene registros asociados)." });
     res.status(500).json({ success: false, error: err.message });
   }
 };
@@ -5815,273 +5109,3 @@ exports.getFacturasParaCargar = async (req, res) => {
   }
 };
 
-// ============================================================================
-// DEVOLVER CONSUMO DE RECURSO — inversa de consumirRecursoAdelantado
-// Devuelve los metros al plan, revierte los movimientos generados y deja la
-// orden de nuevo PENDIENTE DE FACTURAR (le quita la marca CUBIERTO).
-// ============================================================================
-// SIN USO (13/10): devolverConsumoRecurso: sin ruta (el front usa devolver-consumo-saldo, que es otro handler). Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
-exports.devolverConsumoRecurso = async (req, res) => {
-  const pool = await getPool();
-  let transaction = null;
-  try {
-    const movId       = parseInt(req.params.MovIdMovimiento);
-    const UsuarioAlta  = req.user.id;
-    if (!movId) return res.status(400).json({ success: false, error: 'MovIdMovimiento requerido.' });
-
-    // 1. Cargar la ORDEN y validar que tenga un consumo para devolver
-    const movRes = await pool.request().input('MovId', sql.Int, movId).query(`
-      SELECT m.MovIdMovimiento, m.CueIdCuenta, m.MovTipo, m.MovImporte, m.OrdIdOrden,
-             m.DocIdDocumento, m.MovAnulado, m.MovObservaciones, m.CicIdCiclo
-      FROM dbo.MovimientosCuenta m WITH(NOLOCK)
-      WHERE m.MovIdMovimiento = @MovId`);
-    if (!movRes.recordset.length) return res.status(404).json({ success: false, error: 'Movimiento no encontrado.' });
-    const mov = movRes.recordset[0];
-    const obs = mov.MovObservaciones || '';
-
-    if (!['ORDEN', 'ORDEN_ANTICIPO'].includes(mov.MovTipo))
-      return res.status(400).json({ success: false, error: 'Solo aplicable sobre movimientos tipo ORDEN.' });
-    if (mov.MovAnulado)
-      return res.status(400).json({ success: false, error: 'La orden está anulada.' });
-    if (mov.DocIdDocumento)
-      return res.status(400).json({ success: false, error: 'La orden ya fue facturada; no se puede devolver el consumo.' });
-    if (!(/^CUBIERTO/.test(obs) || /^MATERIAL_CUBIERTO/.test(obs)))
-      return res.status(400).json({ success: false, error: 'Esta orden no tiene un consumo de recurso para devolver.' });
-    if (!mov.OrdIdOrden)
-      return res.status(400).json({ success: false, error: 'La orden no tiene OrdIdOrden; devolución no soportada.' });
-
-    // 2. Buscar los movimientos generados por el consumo (ENTREGA de metros + CREDITO_PLAN de servicios)
-    const linkRes = await pool.request()
-      .input('OrdId', sql.Int, mov.OrdIdOrden).input('Ref', sql.VarChar(20), String(movId))
-      .query(`
-        SELECT MovIdMovimiento, CueIdCuenta, MovTipo, MovImporte, MovObservaciones
-        FROM dbo.MovimientosCuenta WITH(NOLOCK)
-        WHERE OrdIdOrden = @OrdId
-          AND MovTipo IN ('ENTREGA','CREDITO_PLAN')
-          AND (MovAnulado IS NULL OR MovAnulado = 0)
-          AND (MovObservaciones LIKE '%Ref#' + @Ref + ' %'
-               OR MovObservaciones LIKE '%Ref#' + @Ref
-               OR MovObservaciones LIKE '%servicios pendientes%')`);
-    const entregas = linkRes.recordset.filter(l => l.MovTipo === 'ENTREGA');
-    const creditos = linkRes.recordset.filter(l => l.MovTipo === 'CREDITO_PLAN');
-    if (!entregas.length && !creditos.length)
-      return res.status(400).json({ success: false, error: 'No se encontraron los movimientos del consumo (Ref#' + movId + ') para revertir.' });
-
-    // 3. Reversa atómica
-    transaction = await pool.transaction();
-    await transaction.begin();
-    try {
-      let metrosDevueltos = 0;
-
-      // 3a. Devolver metros: por cada ENTREGA → plan + cuenta MTS + anular
-      for (const e of entregas) {
-        const metros = Math.abs(Number(e.MovImporte));
-        metrosDevueltos += metros;
-
-        const planRes = await new sql.Request(transaction).input('Cue', sql.Int, e.CueIdCuenta)
-          .query(`SELECT TOP 1 PlaIdPlan, PlaCantidadUsada FROM dbo.PlanesMetros WITH(UPDLOCK,ROWLOCK)
-                  WHERE CueIdCuenta = @Cue ORDER BY PlaActivo DESC, PlaIdPlan DESC`);
-        if (planRes.recordset.length) {
-          const nuevaUsada = Math.max(0, Number(planRes.recordset[0].PlaCantidadUsada) - metros);
-          await new sql.Request(transaction)
-            .input('Pla', sql.Int, planRes.recordset[0].PlaIdPlan).input('Usada', sql.Decimal(18,4), nuevaUsada)
-            .query('UPDATE dbo.PlanesMetros SET PlaCantidadUsada = @Usada, PlaActivo = 1 WHERE PlaIdPlan = @Pla');
-        }
-        const sRes = await new sql.Request(transaction).input('C', sql.Int, e.CueIdCuenta)
-          .query('SELECT CueSaldoActual FROM dbo.CuentasCliente WITH(UPDLOCK) WHERE CueIdCuenta = @C');
-        const nuevoMTS = Math.round((Number(sRes.recordset[0].CueSaldoActual) + metros) * 10000) / 10000;
-        await new sql.Request(transaction).input('C', sql.Int, e.CueIdCuenta).input('S', sql.Decimal(18,4), nuevoMTS)
-          .query('UPDATE dbo.CuentasCliente SET CueSaldoActual = @S WHERE CueIdCuenta = @C');
-        await new sql.Request(transaction).input('M', sql.Int, e.MovIdMovimiento)
-          .query(`UPDATE dbo.MovimientosCuenta SET MovAnulado = 1,
-                    MovObservaciones = CONCAT(ISNULL(MovObservaciones,''), ' [DEVUELTO]') WHERE MovIdMovimiento = @M`);
-      }
-
-      // 3b. Revertir CREDITO_PLAN (servicios): restar del saldo monetario + anular; guardar el importe para restaurar la ORDEN
-      let creditoRestaurar = 0;
-      for (const c of creditos) {
-        const imp = Number(c.MovImporte);
-        creditoRestaurar += imp;
-        const sRes = await new sql.Request(transaction).input('C', sql.Int, c.CueIdCuenta)
-          .query('SELECT CueSaldoActual FROM dbo.CuentasCliente WITH(UPDLOCK) WHERE CueIdCuenta = @C');
-        const nuevoMon = Math.round((Number(sRes.recordset[0].CueSaldoActual) - imp) * 100) / 100;
-        await new sql.Request(transaction).input('C', sql.Int, c.CueIdCuenta).input('S', sql.Decimal(18,4), nuevoMon)
-          .query('UPDATE dbo.CuentasCliente SET CueSaldoActual = @S WHERE CueIdCuenta = @C');
-        await new sql.Request(transaction).input('M', sql.Int, c.MovIdMovimiento)
-          .query(`UPDATE dbo.MovimientosCuenta SET MovAnulado = 1,
-                    MovObservaciones = CONCAT(ISNULL(MovObservaciones,''), ' [DEVUELTO]') WHERE MovIdMovimiento = @M`);
-      }
-
-      // 3c. Restaurar la ORDEN: importe original (si fue reducido por servicios) + limpiar la marca CUBIERTO
-      const importeOriginal = Math.round((Math.abs(Number(mov.MovImporte)) + creditoRestaurar) * 100) / 100;
-      await new sql.Request(transaction)
-        .input('M', sql.Int, movId).input('Imp', sql.Decimal(18,4), -importeOriginal)
-        .query('UPDATE dbo.MovimientosCuenta SET MovImporte = @Imp, MovObservaciones = NULL WHERE MovIdMovimiento = @M');
-
-      // 3d. Restaurar la DeudaDocumento de la orden (si estaba cancelada/parcial) → PENDIENTE
-      await new sql.Request(transaction)
-        .input('OrdId', sql.Int, mov.OrdIdOrden).input('Imp', sql.Decimal(18,4), importeOriginal)
-        .query(`UPDATE dbo.DeudaDocumento SET DDeImportePendiente = @Imp, DDeEstado = 'PENDIENTE'
-                WHERE OrdIdOrden = @OrdId AND DDeEstado IN ('CANCELADO','PARCIAL')`);
-
-      // 3e. Revertir el ciclo (si la orden estaba en un ciclo): volver a sumar a facturar
-      if (mov.CicIdCiclo) {
-        await new sql.Request(transaction)
-          .input('Cic', sql.Int, mov.CicIdCiclo).input('Imp', sql.Decimal(18,4), importeOriginal)
-          .query(`UPDATE dbo.CiclosCredito SET CicTotalPagos = CicTotalPagos - @Imp,
-                    CicSaldoFacturar = CicSaldoFacturar + @Imp WHERE CicIdCiclo = @Cic`);
-      }
-
-      await transaction.commit();
-      logger.info('[DEVOLVER_RECURSO] MovId=' + movId + ' metrosDevueltos=' + metrosDevueltos + ' creditoRestaurado=' + creditoRestaurar);
-      return res.json({
-        success: true,
-        metrosDevueltos,
-        message: 'Consumo devuelto: ' + metrosDevueltos.toFixed(2) + ' mts retornados al plan. La orden vuelve a pendiente de facturar.',
-      });
-    } catch (txErr) {
-      await transaction.rollback().catch(() => {});
-      throw txErr;
-    }
-  } catch (err) {
-    logger.error('[DEVOLVER_RECURSO] Error:', err.message);
-    return res.status(500).json({ success: false, error: err.message });
-  }
-};
-
-// ============================================================================
-// COLA DE ESTADOS DE CUENTA - NUEVOS ENDPOINTS (MANUAL Y PDF)
-// ============================================================================
-
-exports.eliminarItemCola = async (req, res) => {
-  try {
-    const { ColIdCola } = req.params;
-    const pool = await getPool();
-    await pool.request()
-      .input('ColIdCola', sql.Int, ColIdCola)
-      .query(`DELETE FROM dbo.ColaEstadosCuenta WHERE ColIdCola = @ColIdCola`);
-    res.json({ success: true, message: 'Item eliminado correctamente de la cola.' });
-  } catch (err) {
-    logger.error('[CONTABILIDAD] eliminarItemCola:', err.message);
-    res.status(500).json({ error: err.message });
-  }
-};
-
-exports.generarColaManual = async (req, res) => {
-  try {
-    const { clientesIds, fechaDesde, fechaHasta } = req.body;
-    const pool = await getPool();
-    const svc = require('../services/contabilidadService');
-    const emailSvc = require('../services/contabilidadEmailService'); // Solo para requerimientos extra si es necesario
-    
-    let queryClientes = `
-      SELECT DISTINCT c.CliIdCliente, c.Nombre, c.Email
-      FROM dbo.CuentasCliente cc WITH(NOLOCK)
-      JOIN dbo.Clientes c WITH(NOLOCK) ON c.CliIdCliente = cc.CliIdCliente
-      WHERE cc.CueActiva = 1 AND c.Email IS NOT NULL AND LEN(LTRIM(RTRIM(c.Email))) > 5
-    `;
-    
-    if (clientesIds && clientesIds.length > 0) {
-      queryClientes += ` AND c.CliIdCliente IN (${clientesIds.join(',')})`;
-    }
-
-    const result = await pool.request().query(queryClientes);
-    const clientes = result.recordset;
-    
-    let generados = 0;
-    const fDesde = fechaDesde ? new Date(fechaDesde) : new Date(new Date().getFullYear(), new Date().getMonth(), 1);
-    const fHasta = fechaHasta ? new Date(fechaHasta) : new Date();
-
-    for (const cliente of clientes) {
-      const snapshot = await svc.getEstadoCuentaCompleto(
-        cliente.CliIdCliente,
-        fDesde,
-        fHasta,
-        { top: 500, soloActivas: true }
-      );
-
-      if (!snapshot.cuentas.length) continue;
-
-      const fechaStr = fHasta.toLocaleDateString('es-UY', { day: '2-digit', month: '2-digit', year: 'numeric' });
-      const asunto = `Estado de cuenta — ${cliente.Nombre} — ${fechaStr}`;
-
-      const cueReq = await pool.request().input('CliIdCliente', sql.Int, cliente.CliIdCliente).query(`
-        SELECT TOP 1 CueIdCuenta FROM dbo.CuentasCliente WHERE CliIdCliente = @CliIdCliente AND CueActiva = 1 ORDER BY CueIdCuenta
-      `);
-      const cueId = cueReq.recordset[0]?.CueIdCuenta || null;
-
-      await pool.request()
-        .input('CliIdCliente',     sql.Int,              cliente.CliIdCliente)
-        .input('CueIdCuenta',      sql.Int,              cueId)
-        .input('ColContenidoJSON', sql.NVarChar(sql.MAX), JSON.stringify(snapshot))
-        .input('ColAsunto',        sql.NVarChar(300),     asunto)
-        .input('ColEmailDestino',  sql.NVarChar(300),     cliente.Email || '')
-        .input('ColFechaDesde',    sql.Date,              fDesde)
-        .input('ColFechaHasta',    sql.Date,              fHasta)
-        .query(`
-          INSERT INTO dbo.ColaEstadosCuenta
-            (CliIdCliente, CueIdCuenta, ColContenidoJSON, ColAsunto,
-             ColEmailDestino, ColFechaDesde, ColFechaHasta,
-             ColEstado, ColFechaGeneracion, ColTipoDisparo)
-          VALUES
-            (@CliIdCliente, @CueIdCuenta, @ColContenidoJSON, @ColAsunto,
-             @ColEmailDestino, @ColFechaDesde, @ColFechaHasta,
-             'PENDIENTE', GETDATE(), 'MANUAL')
-        `);
-      generados++;
-    }
-
-    res.json({ success: true, generados });
-  } catch (err) {
-    logger.error('[CONTABILIDAD] generarColaManual:', err.message);
-    res.status(500).json({ error: err.message });
-  }
-};
-
-exports.descargarPdfCola = async (req, res) => {
-  try {
-    const { ColIdCola } = req.params;
-    const pool = await getPool();
-    const result = await pool.request()
-      .input('ColIdCola', sql.Int, ColIdCola)
-      .query(`SELECT ColContenidoJSON, ColRutaPDF, CliIdCliente, ColFechaDesde, ColFechaHasta FROM dbo.ColaEstadosCuenta WHERE ColIdCola = @ColIdCola`);
-      
-    if (result.recordset.length === 0) {
-      return res.status(404).json({ error: 'Item no encontrado en la cola.' });
-    }
-    
-    const item = result.recordset[0];
-    const fs = require('fs');
-
-    // 1. Si ya existe la ruta en BD y el archivo físico, servirlo directo
-    if (item.ColRutaPDF && fs.existsSync(item.ColRutaPDF)) {
-      res.setHeader('Content-Type', 'application/pdf');
-      res.setHeader('Content-Disposition', `inline; filename="EstadoCuenta_${item.CliIdCliente}.pdf"`);
-      return res.send(fs.readFileSync(item.ColRutaPDF));
-    }
-
-    // 2. Si no existe físicamente, generarlo on the fly
-    const emailSvc = require('../services/contabilidadEmailService');
-    const { generarPDFDesdeHTML } = require('../utils/pdfPuppeteerGenerator');
-
-    let datos;
-    try { datos = JSON.parse(item.ColContenidoJSON); } catch { datos = {}; }
-
-    const html = emailSvc.generarHTMLEstadoCuenta(datos);
-    const filename = `Estado_de_Cuenta_Manual_${item.CliIdCliente}_${Date.now()}.pdf`;
-    const { pdfBytes, filePath } = await generarPDFDesdeHTML(html, filename);
-
-    // Guardar ruta en la DB para futuras descargas
-    await pool.request()
-      .input('ColIdCola', sql.Int, ColIdCola)
-      .input('ColRutaPDF', sql.NVarChar(500), filePath)
-      .query(`UPDATE dbo.ColaEstadosCuenta SET ColRutaPDF = @ColRutaPDF WHERE ColIdCola = @ColIdCola`);
-
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
-    res.send(pdfBytes);
-  } catch (err) {
-    logger.error('[CONTABILIDAD] descargarPdfCola:', err.message);
-    res.status(500).json({ error: err.message });
-  }
-};

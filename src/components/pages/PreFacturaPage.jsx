@@ -14,7 +14,7 @@ export default function PreFacturaPage() {
 
   useEffect(() => {
     if (!state?.movsOriginales) {
-      navigate('/contabilidad/cuentas', { replace: true });
+      navigate('/contabilidad/cliente-360', { replace: true });
     }
   }, [state, navigate]);
 
@@ -27,7 +27,7 @@ export default function PreFacturaPage() {
   const emitidaRef = React.useRef(false);
 
   const handleClose = () => {
-    navigate(returnTo || '/contabilidad/cuentas', {
+    navigate(returnTo || '/contabilidad/cliente-360', {
       replace: true,
       state: {
         selectedClienteId: cliente?.CliIdCliente,

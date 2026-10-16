@@ -41,9 +41,10 @@ router.get('/audit', ctrl.getAuditTrail);
 // ── CRON JOBS ─────────────────────────────────────────────────────────────────
 const jobRegistry = require('../jobs/jobRegistry');
 
-/** GET /api/sysadmin/cron – lista todos los jobs con su estado */
+/** GET /api/sysadmin/cron – lista los jobs con su estado. Solo los que tienen función
+ *  ejecutable: un registrar() sin setFn no aparece como tarjeta (ver jobRegistry). */
 router.get('/cron', (req, res) => {
-    res.json({ success: true, data: jobRegistry.getAll() });
+    res.json({ success: true, data: jobRegistry.getEjecutables() });
 });
 
 /** GET /api/sysadmin/cron/cuadre-saldos/detalle – última foto del cuadre nocturno de

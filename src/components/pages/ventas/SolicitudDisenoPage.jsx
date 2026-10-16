@@ -1,12 +1,12 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { toast } from 'sonner';
-import { ArrowLeft, ClipboardList, FileText, Loader2, Printer, RefreshCw } from 'lucide-react';
+import { ArrowLeft, ClipboardList, FileText, Loader2, RefreshCw } from 'lucide-react';
 import { useAuth } from '../../../context/AuthContext';
 import { solicitudesVendedorService as svc } from '../../../services/modules/solicitudesVendedorService';
 import { fmtFecha, fmtFechaHora } from '../../../utils/fechas';
 import OrderDetailModal from '../../production/components/OrderDetailModal';
-import { BTN_PRIMARIO, BTN_SECUNDARIO, ESTADO_SOLICITUD, VisorPdf, errorDe } from './solicitudesComunes';
+import { BTN_PRIMARIO, BTN_SECUNDARIO, BotonAyuda, ESTADO_SOLICITUD, VisorPdf, errorDe } from './solicitudesComunes';
 import { DisenoTab, Pastilla, ProductoTab, medirDisenoPronto } from './SolicitudVendedorDetalle';
 
 /**
@@ -99,9 +99,11 @@ export default function SolicitudDisenoPage() {
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                     <button onClick={() => navigate('/ventas/bandeja-diseno')} className={BTN_SECUNDARIO}><ArrowLeft size={14} /> Bandeja de Diseño</button>
-                    <button onClick={() => navigate(`/ventas/solicitudes/${id}`)} className={BTN_SECUNDARIO} title="Lo que el cliente pidió y mandó (solo lectura para Diseño)"><FileText size={14} /> Ver la solicitud</button>
                     <button onClick={cargar} className={BTN_SECUNDARIO} title="Actualizar"><RefreshCw size={14} /></button>
-                    <button onClick={abrirFicha} disabled={generandoFicha} className={BTN_PRIMARIO}>{generandoFicha ? <Loader2 size={14} className="animate-spin" /> : <Printer size={14} />} Ficha del pedido (PDF)</button>
+                    {/* 15/10: "Ver la solicitud" abre la ficha en PDF (antes iba a la pantalla del vendedor) y reemplaza a "Ficha del
+                        pedido (PDF)", que abría lo mismo */}
+                    <button onClick={abrirFicha} disabled={generandoFicha} className={BTN_PRIMARIO} title="La ficha de la solicitud en PDF: lo que pidió el cliente y lo de Diseño, con los archivos en miniatura">{generandoFicha ? <Loader2 size={14} className="animate-spin" /> : <FileText size={14} />} Ver la solicitud</button>
+                    <BotonAyuda guia="disenadores" />
                 </div>
             </div>
 

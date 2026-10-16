@@ -2151,17 +2151,14 @@ exports.createWebOrder = async (req, res) => {
             // --- AUTO-COTIZACIÓN ASÍNCRONA ---
             // Disparar el cálculo de precios en segundo plano para que la orden
             // aparezca cotizada en Caja sin requerir un sync manual del ERP.
-            // skipDeposito=true → NO escribe en OrdenesDeposito, solo calcula y
-            // guarda en PedidosCobranza para que sea visible en el panel de Caja.
+            // Calcula y guarda en PedidosCobranza para que sea visible en el panel de Caja.
             setImmediate(async () => {
                 try {
                     logger.info(`[WebOrder] 🔢 Iniciando auto-cotización para NoDocERP=${erpDocNumber}...`);
                     await ERPSyncService.syncFinalOrderIntegration(
                         erpDocNumber,
                         req.user?.id || 1,
-                        req.user?.name || nombreCliente,
-                        null,
-                        { skipDeposito: true }
+                        req.user?.name || nombreCliente
                     );
                     logger.info(`[WebOrder] ✅ Auto-cotización completada para NoDocERP=${erpDocNumber}.`);
                 } catch (syncErr) {
@@ -3212,7 +3209,7 @@ exports.reuseMatrizTPU = async (req, res) => {
         // 6. Auto-cotización (cobra la producción por el CodArticulo; NO hay línea 156 = matriz gratis)
         setImmediate(async () => {
             try {
-                await ERPSyncService.syncFinalOrderIntegration(erpDocNumber, req.user?.id || 1, req.user?.name || mat.Cliente, null, { skipDeposito: true });
+                await ERPSyncService.syncFinalOrderIntegration(erpDocNumber, req.user?.id || 1, req.user?.name || mat.Cliente);
             } catch (e) { logger.error('[reuseMatriz] cotización: ' + e.message); }
         });
 
@@ -6235,8 +6232,9 @@ const performCheckoutRollback = async (pool, transactionId, ordenRetiroId, gatew
             .input('PagoIdChk', sql.Int, pagoId)
             .query('SELECT MPaIdMetodoPago FROM Pagos WITH(NOLOCK) WHERE PagIdPago = @PagoIdChk');
         const metodoDelPago = pagMetodRes.recordset[0]?.MPaIdMetodoPago;
+        // dbo.MetodosPagos: 9 = Pago en Linea Handy, 10 = Pago en Linea MercadoPago (el 8 es Descuento de sueldo)
         const esHandy = gatewayName === 'Handy' && metodoDelPago === 9;
-        const esMercadoPago = gatewayName === 'MercadoPago' && metodoDelPago === 8;
+        const esMercadoPago = gatewayName === 'MercadoPago' && metodoDelPago === 10;
         if (!esHandy && !esMercadoPago) {
             logger.warn(`[ROLLBACK] El PagIdPago ${pagoId} (método ${metodoDelPago}) no corresponde a ${gatewayName}. Rollback abortado para evitar anular un pago de otro canal.`);
             return;

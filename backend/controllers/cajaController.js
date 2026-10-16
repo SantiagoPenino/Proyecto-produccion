@@ -10,6 +10,7 @@ const { getPool, sql } = require('../config/db');
 const pdfService  = require('../services/pdfService');
 const { estamparAreaLineas } = require('../services/areaLineaService');
 const { resolverCuentaDineroCliente } = require('../services/cuentaDineroCliente');
+const { siguienteNumeroTransaccion } = require('../utils/numeroTransaccionCaja');
 
 // ─────────────────────────────────────────────
 // Null-safe: el aviso en vivo es accesorio; nunca puede tirar una respuesta cuyo cambio
@@ -1361,10 +1362,8 @@ const registrarOperacionManual = async (req, res) => {
     }
 
     // 2. Encabezado de transaccion
-    const nDoc = await new sql.Request(transaction)
-      .input('T', sql.VarChar(20), evento.EvtPrefijo || evtCodigo)
-      .query('SELECT ISNULL(MAX(TcaNumeroDoc),0)+1 AS N FROM dbo.TransaccionesCaja WITH(UPDLOCK) WHERE TcaTipoDocumento=@T');
-    const numDoc = nDoc.recordset[0].N;
+    // Numeración con candado y MAX numérico (TcaNumeroDoc es texto: ver utils/numeroTransaccionCaja).
+    const numDoc = await siguienteNumeroTransaccion(transaction, evento.EvtPrefijo || evtCodigo);
 
     const rTca = await new sql.Request(transaction)
       .input('Ses', sql.Int, sesionId)
@@ -1892,9 +1891,8 @@ const procesarPagoDeudaInterno = async (req, res) => {
       if (!docNumero) {
         generaDocumentoContable = false;
         tipoTransaccion = 'PAGO_DEUDA';
-        const nDocRes = await new sql.Request(transaction)
-          .query(`SELECT ISNULL(MAX(TcaNumeroDoc),0)+1 AS Siguiente FROM dbo.TransaccionesCaja WHERE TcaTipoDocumento='PAGO_DEUDA'`);
-        docNumero = String(nDocRes.recordset[0].Siguiente);
+        // Numeración con candado y MAX numérico (TcaNumeroDoc es texto: ver utils/numeroTransaccionCaja).
+        docNumero = String(await siguienteNumeroTransaccion(transaction, 'PAGO_DEUDA'));
         logger.warn('[PAGO-DEUDA] Sin secuencia fiscal disponible');
       } else {
         generaDocumentoContable = true;
@@ -3814,9 +3812,9 @@ const registrarPagoAnticipo = async (req, res) => {
       }
 
       // ─────────────────────────────────────────────
-      const nDocR = await new sql.Request(transaction)
-        .query(`SELECT ISNULL(MAX(TcaNumeroDoc),0)+1 AS N FROM dbo.TransaccionesCaja WHERE TcaTipoDocumento='ANTICIPO'`);
-      const tcaNum = String(nDocR.recordset[0].N);
+      // Numeración con candado y MAX numérico. Antes el MAX comparaba texto ("9" > "10") y todos
+      // los anticipos desde el 23/06 salieron "A-10" (ver utils/numeroTransaccionCaja).
+      const tcaNum = String(await siguienteNumeroTransaccion(transaction, 'ANTICIPO'));
 
       const tcaR = await new sql.Request(transaction)
         .input('Ses',  sql.Int,           sesionId)

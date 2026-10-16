@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Ban, FileText, Loader2, Search, X } from 'lucide-react';
+import { Ban, FileText, HelpCircle, Loader2, Search, X } from 'lucide-react';
 import api from '../../../services/apiClient';
 import { solicitudesVendedorService } from '../../../services/modules/solicitudesVendedorService';
 import Selector from '../../ui/Selector';
@@ -28,6 +28,26 @@ export const ROL_ARCHIVO = { ARTE_CLIENTE: 'Arte del cliente', REFERENCIA: 'Refe
 export const MONEDA = { 1: '$', 2: 'US$' };
 
 export const errorDe = (e) => e?.response?.data?.error || e?.message || 'Error inesperado';
+
+// [AYUDA 15/10] Botón "?" que abre la guía en PDF en otra pestaña. Los PDF están en public/guias/ y los arma
+// backend/scripts/generar_guias_solicitudes.js desde backend/docs/guias/*.html (para cambiar el texto, editar y volver a correr).
+const GUIAS_AYUDA = {
+    vendedores: { url: '/guias/guia-solicitudes-vendedores.pdf', titulo: 'Ayuda: guía para vendedores (PDF)' },
+    disenadores: { url: '/guias/guia-solicitudes-disenadores.pdf', titulo: 'Ayuda: guía para diseñadores (PDF)' },
+};
+export function BotonAyuda({ guia }) {
+    const g = GUIAS_AYUDA[guia] || GUIAS_AYUDA.vendedores;
+    return (
+        <a href={g.url} target="_blank" rel="noopener noreferrer" title={g.titulo} aria-label={g.titulo}
+            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-white text-brand-cyan transition-colors hover:bg-cyan-50">
+            <HelpCircle size={18} aria-hidden="true" />
+        </a>
+    );
+}
+// [GUARDADO AUTOMÁTICO 15/10] Lo que se guarda solo en la solicitud (datos, cantidad, precio, arte y lista de TIZADA PRO)
+// lo avisa acá: estado 'guardando' al empezar y 'ok' o 'error' (con el mensaje) al terminar. Lo muestra el indicador
+// "Guardado" del encabezado (SolicitudVendedorDetalle). En el portal nadie lo escucha.
+export const avisarGuardado = (estado, mensaje) => window.dispatchEvent(new CustomEvent('solicitud:guardado', { detail: { estado, mensaje } }));
 export const plata = (monto, mon) => (monto == null ? '—' : `${MONEDA[mon] || ''} ${Number(monto).toLocaleString('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`.trim());
 
 // SIN USO (06/10): ninguna pantalla importa Pill ni PillModificada desde que Solicitudes pasó a claro con pastillas

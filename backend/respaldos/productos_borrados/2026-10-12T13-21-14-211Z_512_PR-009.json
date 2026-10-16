@@ -1,0 +1,101 @@
+{
+  "fecha": "2026-10-12T13:21:14.204Z",
+  "usuario": "Yoania",
+  "producto": {
+    "proId": 512,
+    "codArticulo": "PR-009",
+    "descripcion": "Camiseta basket FP+B",
+    "estado": "BORRADOR",
+    "esCombo": false
+  },
+  "tablas": {
+    "ProductoTerminadoServicios": [
+      {
+        "ID": 25,
+        "ProIdProducto": 512,
+        "AreaID": "SB",
+        "Obligatorio": true,
+        "Modo": "LIBRE",
+        "Cobro": "INCLUIDA"
+      },
+      {
+        "ID": 26,
+        "ProIdProducto": 512,
+        "AreaID": "TWC",
+        "Obligatorio": true,
+        "Modo": "LIBRE",
+        "Cobro": "INCLUIDA"
+      },
+      {
+        "ID": 27,
+        "ProIdProducto": 512,
+        "AreaID": "TWT",
+        "Obligatorio": true,
+        "Modo": "LIBRE",
+        "Cobro": "INCLUIDA"
+      }
+    ],
+    "ArticuloClasificacion": [
+      {
+        "ProIdProducto": 512,
+        "AclArea": "Productos Confeccionados",
+        "AclVariante": null,
+        "AclOrigen": "MANUAL",
+        "AclFecha": "2026-08-21T10:58:19.500Z",
+        "AclUsuarioId": 12
+      }
+    ],
+    "ProductoVentaConfig": [
+      {
+        "ProIdProducto": 512,
+        "OrigenTipo": "CONFECCIONADO",
+        "OrigenProIdProducto": null,
+        "CantidadMinima": null,
+        "CantidadFija": null,
+        "ValidarStock": true,
+        "Estado": "BORRADOR",
+        "FechaRegistro": "2026-09-01T14:19:00.340Z",
+        "FechaModif": "2026-09-29T13:38:55.217Z",
+        "EsCombo": false,
+        "Familia": "Camisetas",
+        "EtiquetaID": 2,
+        "TizadaProMoldeRef": null,
+        "CodigoCorto": null,
+        "TecnicaPrincipal": "SB",
+        "AnchoM": null,
+        "AltoM": null,
+        "BordeCm": null,
+        "UM": "u",
+        "Molde": "OBLIGATORIO",
+        "VisiblePortal": false,
+        "VisibleTienda": false,
+        "VisibleInterno": true,
+        "PadreProIdProducto": null,
+        "ModeloClave": null,
+        "TecnicasPropias": false
+      }
+    ],
+    "Articulos": [
+      {
+        "ProIdProducto": 512,
+        "CodArticulo": "PR-009              ",
+        "IDProdReact": null,
+        "SupFlia": "2       ",
+        "Grupo": "2.1                 ",
+        "CodStock": "2.2.1.12            ",
+        "Descripcion": "Camiseta basket FP+B                                                                                ",
+        "Mostrar": true,
+        "anchoimprimible": null,
+        "LLEVAPAPEL": null,
+        "MonIdMoneda": 1,
+        "ProCodigoOdooProducto": null,
+        "UniIdUnidad": null,
+        "borrar": 0,
+        "largoimprimible": null,
+        "EnListaPrecios": false,
+        "EnListaPublica": false,
+        "DescripcionLista": null
+      }
+    ]
+  }
+}

@@ -12,28 +12,21 @@ import { toast } from 'react-toastify';
 import ProductionTable from "../../production/components/ProductionTable"; // Restored
 // import OrderCard from "../../production/components/OrderCard"; // Grid components commented out
 import OrderDetailModal from "../../production/components/OrderDetailModal";
-import RollsKanban from "../../pages/RollsKanban";
-import ProductionKanban from "../../pages/ProductionKanban";
 import FilePrintControl from "../../pages/FilePrintControl";
 import EcoUvFinishing from "../../pages/EcoUvFinishing";
 import LogisticsDashboard from "../../logistics/LogisticsDashboard";
 import PlaneacionTrabajo from "../../pages/PlaneacionTrabajo";
 import PlanificacionPage from "../../pages/PlanificacionPage";
-import ImportadorManualView from "../ImportadorManualView";
 import EmbBandeja from "../EmbBandeja";
 
 // Modales y Sidebars
-import NewOrderModal from "../../modals/NewOrderModal";
 import NuevaSolicitudModal from "../../servicio-tecnico/NuevaSolicitudModal";
 import StockRequestModal from "../../modals/StockRequestModal";
-import LogisticsCartModal from "../../modals/LogisticsCartModal";
 import RollAssignmentModal from "../../modals/RollAssignmentModal";
 // [PRO] Herramientas propias del área Producción (prendas): rutas de producción,
 // cotizaciones del área y ficha de productos terminados.
 import ProBandeja from "../ProBandeja";
 import QuotationView from "../../logistics/QuotationView";
-import RollSidebar from "../../layout/RollSidebar";
-import MatrixSidebar from "../../layout/MatrixSidebar";
 
 import { ordersService, rollsService, areasService } from '../../../services/api';
 import { socket } from '../../../services/socketService';
@@ -87,8 +80,8 @@ const MagicButton = ({ areaKey, onSuccess }) => {
 
 export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab }) {
     // Normalizar a MAYÚSCULA: si la URL viene '/area/df', areaKey llegaba en minúscula
-    // y disparaba queries duplicadas (df + DF) en el board (RollsKanban/ProductionKanban,
-    // que reciben areaCode={areaKey}) + un retry inútil en la lista. Con una sola
+    // y disparaba queries duplicadas (df + DF) en los tableros que reciben areaCode={areaKey}
+    // + un retry inútil en la lista. Con una sola
     // capitalización, todo el árbol pide 'DF' una vez.
     const areaKey = (rawAreaKey || '').toUpperCase();
     const navigate = useNavigate();
@@ -185,12 +178,9 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
 
     const activeFilterCount = (activeFilters.priorities?.length || 0) + (activeFilters.statuses?.length || 0) + (activeFilters.areaStatuses?.length || 0) + (activeFilters.variants?.length || 0) + (activeFilters.inks?.length || 0);
 
-    const [isNewOrderOpen, setIsNewOrderOpen] = useState(false);
     const [isStockOpen, setIsStockOpen] = useState(false);
     const [isFailureOpen, setIsFailureOpen] = useState(false);
-    const [isCartOpen, setIsCartOpen] = useState(false);
     const [isRollModalOpen, setIsRollModalOpen] = useState(false);
-    const [isImportModalOpen, setIsImportModalOpen] = useState(false);
     const [flashingRows, setFlashingRows] = useState([]);
     const [showCancelled, setShowCancelled] = useState(false);
     const [cancelledOrders, setCancelledOrders] = useState([]);
@@ -273,8 +263,7 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
         }
     };
 
-    const hideImportar = ['corte', 'costura', 'bordado', 'estampado', 'twc', 'twt', 'emb', 'terminac'].includes((areaKey || '').toLowerCase());
-    // [PRO] Producción (prendas): sin Importar/Asignar a Lote/Historial ni tabs de
+    // [PRO] Producción (prendas): sin Asignar a Lote/Historial ni tabs de
     // Planeación/Control/Logística. En su lugar: Ingresar Orden (form interno de prendas),
     // Modificar Flujo (rutas), Editar Cotización y Configurar Productos (producto terminado).
     const isPro = (areaKey || '').toUpperCase() === 'PRO';
@@ -1058,10 +1047,8 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
     return (
         <div className={`absolute inset-0 flex flex-col bg-zinc-50 overflow-hidden font-sans text-zinc-800 z-10${isPro ? ' area-pro-oscura' : ''}`}>
             <StockRequestModal isOpen={isStockOpen} onClose={() => setIsStockOpen(false)} areaName={areaConfig.name} areaCode={areaKey} />
-            <NewOrderModal isOpen={isNewOrderOpen} onClose={() => { setIsNewOrderOpen(false); refetch(); }} areaName={areaConfig.name} areaCode={areaKey} />
             {/* "Reportar falla" → solicitud a Servicio Técnico (máquina del área ya elegible + historial del área) */}
             <NuevaSolicitudModal abierta={isFailureOpen} onCerrar={() => setIsFailureOpen(false)} areaInicial={areaKey} categoriaInicial="MAQUINA" conHistorialArea />
-            <LogisticsCartModal isOpen={isCartOpen} onClose={() => setIsCartOpen(false)} areaName={areaConfig.name} areaCode={areaKey} onSuccess={() => refetch()} />
             <RollAssignmentModal isOpen={isRollModalOpen} onClose={() => setIsRollModalOpen(false)} selectedIds={selectedIds} areaCode={areaKey} onSuccess={() => { setSelectedIds([]); refetch(); }} />
 
             {/* [PRO] "Confirmación de Cotización" dejó de ser modal: ahora es la pestaña/ruta
@@ -1069,39 +1056,11 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
                 vistas del área. El buscador de "cualquier área" vive DENTRO de esa página
                 (QuotationView), no acá como modal aparte. */}
 
-            {isImportModalOpen && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 animate-fade-in">
-                    <div className="bg-white w-full max-w-7xl max-h-[95vh] rounded-xl overflow-hidden shadow-2xl flex flex-col relative">
-                        <button
-                            className="absolute top-4 right-6 text-slate-500 hover:text-slate-800 z-10 bg-white hover:bg-slate-200 p-2 rounded-full transition"
-                            onClick={() => setIsImportModalOpen(false)}
-                        >
-                            <i className="fa-solid fa-xmark text-xl"></i>
-                        </button>
-                        <div className="overflow-y-auto flex-1 p-0">
-                            <ImportadorManualView
-                                isModal={true}
-                                onClose={() => setIsImportModalOpen(false)}
-                                onImportSuccess={() => refetch()}
-                            />
-                        </div>
-                    </div>
-                </div>
-            )}
-
             <header className="bg-white flex flex-col shrink-0 z-20 w-full relative">
                 <div className="px-4 py-2 tablet:px-2 tablet:py-1 flex items-center justify-between bg-white min-h-[56px] tablet:min-h-[44px] relative w-full overflow-hidden">
 
                     {/* CENTRO ABSOLUTO: Tabs de Navegación (Siempre en el centro exacto de la pantalla) */}
                     <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex items-center gap-1 tablet:gap-0.5 z-30 pointer-events-auto">
-                        {!hideImportar && !isPro && (
-                            <button
-                                className={`${btnBaseClass} px-3 h-8 text-xs tablet:px-2 tablet:h-7 tablet:text-[11px] ${btnSecondaryClass}`}
-                                onClick={() => setIsImportModalOpen(true)}
-                            >
-                                <i className="fa-solid fa-file-import"></i> <span className="tablet:hidden">Importar Orden</span><span className="hidden tablet:inline">Importar</span>
-                            </button>
-                        )}
                         {isPro && (
                             <button
                                 className={`${btnBaseClass} px-3 h-8 text-xs tablet:px-2 tablet:h-7 tablet:text-[11px] ${btnSecondaryClass}`}
@@ -1219,9 +1178,6 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
                         <Route index element={<ProductionTable rowData={filteredOrders} onRowSelected={setSelectedIds} selectedRowIds={selectedIds} onRowClick={setSelectedOrder} columnDefs={areaConfig.defaultColDefs} toolbarContent={tableToolbar} flashingRowIds={flashingRows} />} />
                         <Route path="tabla" element={<ProductionTable rowData={filteredOrders} onRowSelected={setSelectedIds} selectedRowIds={selectedIds} onRowClick={setSelectedOrder} columnDefs={areaConfig.defaultColDefs} toolbarContent={tableToolbar} flashingRowIds={flashingRows} />} />
 
-                        <Route path="lotes" element={<RollsKanban areaCode={areaKey} />} />
-
-                        <Route path="produccion" element={<ProductionKanban areaCode={areaKey} />} />
                         {/* TERMINAC (29/07): Bandeja = trabajos con material recibido (checklist);
                             Control = órdenes terminadas esperando aprobación. EMB/EST/TWC/TWT
                             comparten la misma Bandeja/Control genérica (sin lotes). El resto de

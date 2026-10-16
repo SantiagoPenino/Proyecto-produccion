@@ -228,69 +228,6 @@ const generarPdfEgreso = async (voucher) => {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// INGRESO GENÉRICO
-// ═══════════════════════════════════════════════════════════════════════════════
-// SIN USO (13/10): generarPdfIngreso: está en module.exports pero nadie lo llama. Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
-/**
- * Genera y guarda el PDF de un ingreso genérico.
- * @param {Object} datos - { tcaId, concepto, monto, moneda, metodoPago, fecha, serieDoc, numeroDoc,
- *   empresaFantasia, empresaRazon, empresaDir, empresaCiudad, empresaRuc, empresaLogo }
- *   (empresaNombre sigue aceptándose como alias de empresaFantasia por compatibilidad)
- */
-const generarPdfIngreso = async (datos) => {
-  const doc      = await PDFDocument.create();
-  const page     = doc.addPage([595.28, 420.94]);
-  const { width, height } = page.getSize();
-  const font     = await doc.embedFont(StandardFonts.Helvetica);
-  const fontBold = await doc.embedFont(StandardFonts.HelveticaBold);
-
-  const numero = `${datos.serieDoc || 'A'}-${String(datos.numeroDoc || datos.tcaId || '000').padStart(6, '0')}`;
-
-  await dibujarCabecera(page, {
-    doc,
-    fantasia: datos.empresaFantasia || datos.EmpresaFantasia || datos.empresaNombre,
-    razon:    datos.empresaRazon    || datos.EmpresaRazon,
-    dir:      datos.empresaDir      || datos.EmpresaDir,
-    ciudad:   datos.empresaCiudad   || datos.EmpresaCiudad,
-    ruc:      datos.empresaRuc      || datos.EmpresaRuc,
-    logoUrl:  datos.empresaLogo     || datos.EmpresaLogo,
-    titulo:   'INGRESO DE CAJA',
-    numero,
-    fontBold, font, width, height,
-  });
-
-  page.drawRectangle({ x: 20, y: 20, width: width - 40, height: height - 110, borderColor: rgb(0.8, 0.8, 0.8), borderWidth: 0.5 });
-
-  const filas = [
-    ['Fecha',         fmtDate(datos.fecha || new Date())],
-    ['Concepto',      datos.concepto    || ''],
-    ['Método de Pago',datos.metodoPago  || ''],
-    ['Moneda',        datos.moneda      || 'UYU'],
-  ];
-
-  let y = height - 110;
-  filas.forEach(([label, value], i) => {
-    y -= 22;
-    dibujarFila(page, { y, label, value, font, fontBold, width, highlight: i % 2 === 0 });
-  });
-
-  // Monto
-  const montoY = 80;
-  page.drawRectangle({ x: width / 2 - 10, y: montoY - 10, width: width / 2 - 30, height: 55,
-    color: rgb(0.95, 0.99, 0.96), borderColor: rgb(0.1, 0.55, 0.2), borderWidth: 1.5 });
-  page.drawText('TOTAL INGRESO', { x: width / 2, y: montoY + 30, size: 8, font, color: rgb(0.1, 0.4, 0.1) });
-  const montoStr = `${datos.moneda === 'USD' ? 'US$ ' : '$ '}${fmtNum(datos.monto)}`;
-  page.drawText(montoStr, { x: width / 2 + 2, y: montoY + 10, size: 16, font: fontBold, color: rgb(0.1, 0.5, 0.2) });
-
-  page.drawText(`Documento interno · ${new Date().toLocaleString('es-UY')}`, {
-    x: 30, y: 25, size: 7, font, color: rgb(0.6, 0.6, 0.6),
-  });
-
-  const pdfBytes = await doc.save();
-  return guardarPDF(pdfBytes, `IG-${String(datos.tcaId || Date.now()).padStart(6, '0')}`, 'ingresos');
-};
-
-// ═══════════════════════════════════════════════════════════════════════════════
 // TICKET DE VENTA / COBRO (para cuando viene como base64 desde el frontend)
 // ═══════════════════════════════════════════════════════════════════════════════
 /**
@@ -473,7 +410,6 @@ const generarPdfCierre = async ({ sesion, movimientos = [], empresa = {} }) => {
 
 module.exports = {
   generarPdfEgreso,
-  generarPdfIngreso,
   generarPdfCierre,
   guardarDesdeBase64,
   guardarPDF,

@@ -264,6 +264,19 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
   - **PDFs sin logo de empresa** (front y servidor): salen con el logo nuevo en vez del texto «user» con cuadraditos; el texto queda solo si la imagen no carga.
   - Los 9 SVG originales de la marca quedan en `public/assets/images/logo/user-*.svg`. El catálogo de FNC ya tenía el logo nuevo.
 
+### Quitado
+- **«Procesos Automáticos» de Configuración, con sus 4 procesos.** Estaban todos apagados. No cambia nada de lo que hace hoy el sistema.
+  - **Pedidos desde Google Sheets (DTF y Sublimación):** el cron que cada 5 minutos leía la planilla y creaba los pedidos, y el control para mover la fila de la planilla (`UltimafilaDF` / `UltimafilaSB`). La importación a pedido de órdenes externas sigue igual: usa su propia URL (`ORDENES_EXTERNAS_SCRIPT_URL`, y si falta, `PLANILLA_SCRIPT_URL`).
+  - **Envío a React** (escribir el pedido en `OrdenesDeposito` al cotizar) y **envío al ERP Macrosoft** (`POST /pedidos`). La cotización se sigue guardando igual en `Ordenes`, `PedidosCobranza` y `PedidosCobranzaDetalle`.
+  - **Stock del Depósito** (menú «Enviar a React», `/logistica/stock-deposito`): la página de cálculo, envío a React y liberación, y sus endpoints `/logistics/deposit-*`. La pestaña Stock de Logística muestra siempre la vista de stock común.
+- **Caja vieja (`/caja/pagos`, menú «Caja ACTUAL»).** Ya no se usaba: los retiros se cobran desde la Caja (`CajaTransaccionView`). Se borró `pages/CargaPagosView.jsx` y sus dos rutas en `MainAppContent.jsx`. Si el menú de la base todavía tiene `/caja/pagos`, al entrar vuelve al inicio.
+  - **Queda igual** todo lo que usa también la Caja nueva u otras pantallas: los endpoints `/apiordenesRetiro/caja`, `/apiordenesRetiro/mostrador/buscar`, `/apipagos/*` y `/apicotizaciones/hoy` y `/bcu`, `useRecargaConFreno` y `CustomSelect`.
+  - **Se quitaron también los 3 endpoints que solo usaba esa pantalla**, con su función en el controller:
+    - `POST /apicotizaciones/insertar` (`insertCotizacion`): cargaba la cotización a mano y no pedía login. La cotización del día sigue saliendo del BCU (`/apicotizaciones/bcu` y el job).
+    - `POST /apiordenesRetiro/marcarpasarporcaja/:pasar` (`ordenesRetiroMarcarPasarPorCaja`). La columna `ORePasarPorCaja` sigue igual: la leen y la escriben la Caja, los pagos, CFE, WMS y la auditoría de depósito.
+    - `POST /web-retiros/autorizar` (`autorizarRetiro`). La Caja autoriza sin pago con `POST /contabilidad/caja/autorizar`, que no cambia.
+  - Antes de quitarlos se buscaron en el front, el backend, los scripts y los otros proyectos de `User-Macrosoft`, también con la URL armada en tiempo de ejecución. Solo aparecían en la caja vieja y en copias del repo.
+
 ### Arreglado
 - **Freno para no emitir CFEs reales desde una copia local.** La base local es copia de producción, y la empresa 1 trae la conexión al SISNET de producción (caja `LALINDE/PROD`). `emitirCFE` la prefiere a la del `.env`, así que «Enviar» en la Bandeja CFE de una PC de desarrollo mandaba un comprobante real a la DGI. Con `SISNET_SOLO_ENV=true` en el `.env` se ignora la conexión de la empresa y se usa la del `.env` (`sisnetService.js`). Ya está puesto en el `.env` local. **No va en el `.env` de producción.**
 - **Los cobros de MercadoPago y Handy ya no se suman al turno de la cajera.** Entraban como caja administrativa, pero pegados al turno abierto en ese momento. El arqueo de la cajera no los contaba, pero el resumen de su sesión y el PDF de cierre sí. `procesarTransaccion` miraba `admin` y los webhooks mandan `esAdministrativa` (`cajaService.js`). Ahora van sin turno, como los que se pasan a mano de Central a Administrativa. Los cobros anteriores conservan su turno.
@@ -307,6 +320,7 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
 - **08/10, cuenta con id 0 (Mariana Cabrera, cliente 2340):** su cuenta en dólares tenía `CueIdCuenta = 0`, que el sistema toma como «sin cuenta». Desde el deploy del 07/10 la caja no le podía cobrar en dólares («Faltan parámetros obligatorios: cueIdCuenta»). Pasó a ser la cuenta 7835, con el mismo saldo (US$ −339,67), y se movieron a ella 32 movimientos, 16 deudas, 7 imputaciones y 12 filas de la cola de estados de cuenta. Script: `docs/fix-cuenta-cero-cliente-2340.sql`. Después se agregó `CK_CuentasCliente_IdPositivo` (`CueIdCuenta > 0`) para que no pueda volver a existir una cuenta 0.
 
 ### Notas de deploy
+- **Caja vieja quitada:** front `layout/MainAppContent.jsx` y el borrado de `pages/CargaPagosView.jsx` (va en el build). Backend `controllers/cotizacionesController.js`, `controllers/ordenesRetiroController.js`, `controllers/webRetirosController.js`, `routes/getwayCotizaciones.js`, `routes/getwayOrdenesRetiro.js` y `routes/webRetirosRoutes.js` (necesita reiniciar). Sin SQL. Probado: el build compila y las tres rutas cargan sin los endpoints quitados; no se probó en el navegador. Después del deploy, sacar «Caja ACTUAL» (`/caja/pagos`) en Admin › Menú para que no aparezca en el menú lateral.
 - **Logos de la marca 2026:** front (va en el build): `components/Logo.jsx`, `utils/pdfGenerator.js`, `index.html`, `public/manifest.json`, `public/sw.js` (versión de caché v8: borra las imágenes viejas guardadas en los navegadores) y las imágenes de `public/` y `src/assets/images/logo/`. Backend: `services/pdfService.js` (necesita reiniciar). Sin SQL. Los PDFs de cada empresa usan el logo de `Empresas.EmpLogoUrl` si tiene uno cargado: revisar en producción que no apunte a un archivo viejo. Probado en local en la landing (navbar, pie y el componente sobre claro y oscuro).
 - **PDF con clave en «Hago mi matriz»:** backend `python/tpu_matriz.py` (función `analizar`). No hace falta reiniciar: el script corre en cada análisis. Sin SQL ni build. Probado en local con un PDF con clave de apertura (lo rechaza con el motivo y responde 200) y uno protegido solo contra edición (se analiza normal).
 - **Anular compras y «Editar compra» (Stock › Compras):** backend `services/wmsInternoService.js`, `controllers/wmsInternoController.js` y `routes/wmsInternoRoutes.js` (necesita reiniciar) y front `pages/StockGestionPage.jsx` (va en el build). Sin SQL: las tres columnas nuevas de `Wms_Compras` (`MotivoAnulacion`, `AnuladaPor`, `FechaAnulacion`) se crean solas la primera vez que se abre Compras. Probado en la base local con el controller real (24 pruebas: anular, bloqueos, filtros, referencia libre, una compra recibida que no se anula); no se probó en el navegador.
@@ -362,6 +376,20 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
 - **Auditoría 13/10, login en los routers abiertos:** backend `routes/clientsRoutes.js`, `empresasRoutes.js`, `tesoreriaRoutes.js`, `pricesRoutes.js`, `specialPricesRoutes.js`, `logisticsRoutes.js`, `rollsRoutes.js` y `server.js` (necesita reiniciar). Sin front ni SQL.
   - **Probado:** con los routers reales y controllers simulados, 80 casos: sin token 403, con token de cliente 403, con token interno pasa, y `external-create` pasa sin token. No se probó contra la base.
   - **Si alguien ve «Esta acción es exclusiva del sistema interno»** en una de esas pantallas: es un usuario interno con un token sin `userType`, de antes de febrero. Se arregla cerrando sesión y volviendo a entrar.
+- **Baja de Procesos Automáticos y del envío a React/Macrosoft:**
+  - **Backend (necesita reiniciar):**
+    - Borrados: `cron/planillaSync.js`, `controllers/configuracionesController.js` y `routes/configuracionesRoutes.js`.
+    - Modificados: `server.js` (ya no carga el cron ni `/api/configuraciones`) y `services/erpSyncService.js` (sin interruptor, sin envío a React/ERP, sin `getMacrosoftToken` ni `syncOrderToERP`).
+    - Sin la opción `skipDeposito`: `controllers/ordersController.js`, `prendasOrdersController.js`, `webOrdersController.js`, `quotationController.js`, `integrationOrdersController.js` y `services/pedidosExternos/procesador.js`.
+    - Stock del Depósito: `controllers/logisticsController.js` y `routes/logisticsRoutes.js`.
+  - **Front (va en el build):**
+    - Borrados: `modals/config/ConfigSyncModal.jsx` y `logistics/DepositStockPage.jsx`.
+    - Modificados: `pages/ConfigPage.jsx`, `layout/MainAppContent.jsx`, `logistics/LogisticsDashboard.jsx`, `logistics/ReceptionView.jsx` y `services/modules/logisticsService.js`.
+  - **SQL, después del backend y el build:**
+    - `scripts/menu_quitar_enviar_a_react.sql`: saca el menú. Después cada usuario tiene que recargar la página.
+    - `scripts/sql/quitar_sync_planillas_react_erp_2026-10-15.sql`: borra la tabla `ConfiguracionesSync` y, de `PedidosCobranza`, las columnas `EstadoSyncReact`, `EstadoSyncERP`, `ObsReact` y `ObsERP`, que nadie escribía. Es opcional: sin él el sistema anda igual.
+  - **`.env`:** `PLANILLA_SCRIPT_URL` se deja: la importación a pedido la usa si falta `ORDENES_EXTERNAS_SCRIPT_URL`. `ERP_API_URL` también queda, porque la usa Clientes.
+  - **Probado:** la sintaxis de los archivos tocados y que no quede ninguna referencia en el código. El script de columnas se corrió en la base local dentro de una transacción deshecha: borra la tabla y las 4 columnas. No se probó en el navegador.
 
 ## [2026-10-07] — segundo deploy del día (tarde)
 

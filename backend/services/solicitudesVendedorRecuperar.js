@@ -171,4 +171,4 @@ async function recuperar(pool, user, base, solicitudId, productoSolId, app) {
   return { ok: true, pedido: fila.NoDocERP, ordenes: resumen, estado };
 }
 
-module.exports = { puedeRecuperar, recuperar, CANCELADA_POR_LIMPIEZA };
+module.exports = { puedeRecuperar, recuperar, CANCELADA_POR_LIMPIEZA, paginasDe };   // paginasDe: también la usa la corrección del diseño

@@ -34,9 +34,9 @@
  * movimientos que lo respalden, secuela del tacho sobre la ENTRADA— y se
  * repara caso por caso, nunca inflando el plan.
  *
- * Lo usan las TRES puertas por las que se cargan metros: crearPlan y
- * recargarPlan (contabilidadController) y la venta de rollo desde caja
- * (cajaService). Antes solo crearPlan heredaba el sobregiro.
+ * Lo usa la venta de rollo desde caja (cajaService). Hasta el 16/10/2026 también
+ * crearPlan y recargarPlan (contabilidadController), que eran de la pantalla
+ * RecursosView (alta/recarga de plan a mano): se borraron porque no se usaban.
  *
  * IMPORTANTE para quien lo llame: la resta solo da bien cuando el plan y la
  * cuenta están los dos actualizados. Llamar DESPUÉS de haber sumado los metros

@@ -1,0 +1,100 @@
+USE [SecureAppDB2205];
+GO
+
+-- ============================================================================
+
+-- 2. ALTERACIÓN DE COLUMNAS (TABLAS EXISTENTES)
+-- ============================================================================
+
+
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='Ordenes' AND COLUMN_NAME='CliIdCliente') ALTER TABLE dbo.[Ordenes] ADD [CliIdCliente] int NULL;
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='Ordenes' AND COLUMN_NAME='ProdIdProducto') ALTER TABLE dbo.[Ordenes] ADD [ProdIdProducto] int NULL;
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='Ordenes' AND COLUMN_NAME='ProIdProducto') ALTER TABLE dbo.[Ordenes] ADD [ProIdProducto] int NULL;
+
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='PedidosCobranzaDetalle' AND COLUMN_NAME='Moneda') ALTER TABLE dbo.[PedidosCobranzaDetalle] ADD [Moneda] varchar(10) NULL;
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='PedidosCobranzaDetalle' AND COLUMN_NAME='PerfilAplicado') ALTER TABLE dbo.[PedidosCobranzaDetalle] ADD [PerfilAplicado] nvarchar(MAX) NULL;
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='PedidosCobranzaDetalle' AND COLUMN_NAME='PricingTrace') ALTER TABLE dbo.[PedidosCobranzaDetalle] ADD [PricingTrace] nvarchar(MAX) NULL;
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='PedidosCobranzaDetalle' AND COLUMN_NAME='DatoTecnico') ALTER TABLE dbo.[PedidosCobranzaDetalle] ADD [DatoTecnico] decimal(18,2) NULL;
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='PedidosCobranzaDetalle' AND COLUMN_NAME='MonedaOriginal') ALTER TABLE dbo.[PedidosCobranzaDetalle] ADD [MonedaOriginal] varchar(10) NULL;
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='PedidosCobranzaDetalle' AND COLUMN_NAME='PrecioUnitarioOriginal') ALTER TABLE dbo.[PedidosCobranzaDetalle] ADD [PrecioUnitarioOriginal] decimal(18,2) NULL;
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='PedidosCobranzaDetalle' AND COLUMN_NAME='SubtotalOriginal') ALTER TABLE dbo.[PedidosCobranzaDetalle] ADD [SubtotalOriginal] decimal(18,2) NULL;
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='PedidosCobranzaDetalle' AND COLUMN_NAME='ProIdProducto') ALTER TABLE dbo.[PedidosCobranzaDetalle] ADD [ProIdProducto] int NULL;
+
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='PreciosEspeciales' AND COLUMN_NAME='CliIdCliente') ALTER TABLE dbo.[PreciosEspeciales] ADD [CliIdCliente] int NULL;
+
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='PedidosCobranza' AND COLUMN_NAME='QR_Pedido') ALTER TABLE dbo.[PedidosCobranza] ADD [QR_Pedido] nvarchar(50) NULL;
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='PedidosCobranza' AND COLUMN_NAME='QR_Cliente') ALTER TABLE dbo.[PedidosCobranza] ADD [QR_Cliente] nvarchar(50) NULL;
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='PedidosCobranza' AND COLUMN_NAME='QR_Trabajo') ALTER TABLE dbo.[PedidosCobranza] ADD [QR_Trabajo] nvarchar(255) NULL;
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='PedidosCobranza' AND COLUMN_NAME='QR_Urgencia') ALTER TABLE dbo.[PedidosCobranza] ADD [QR_Urgencia] nvarchar(10) NULL;
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='PedidosCobranza' AND COLUMN_NAME='QR_Producto') ALTER TABLE dbo.[PedidosCobranza] ADD [QR_Producto] nvarchar(50) NULL;
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='PedidosCobranza' AND COLUMN_NAME='QR_Cantidad') ALTER TABLE dbo.[PedidosCobranza] ADD [QR_Cantidad] nvarchar(50) NULL;
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='PedidosCobranza' AND COLUMN_NAME='QR_Importe') ALTER TABLE dbo.[PedidosCobranza] ADD [QR_Importe] nvarchar(50) NULL;
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='PedidosCobranza' AND COLUMN_NAME='QR_String') ALTER TABLE dbo.[PedidosCobranza] ADD [QR_String] nvarchar(MAX) NULL;
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='PedidosCobranza' AND COLUMN_NAME='DetalleCostos') ALTER TABLE dbo.[PedidosCobranza] ADD [DetalleCostos] nvarchar(MAX) NULL;
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='PedidosCobranza' AND COLUMN_NAME='PerfilesPrecio') ALTER TABLE dbo.[PedidosCobranza] ADD [PerfilesPrecio] nvarchar(MAX) NULL;
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='PedidosCobranza' AND COLUMN_NAME='MontoContabilizado') ALTER TABLE dbo.[PedidosCobranza] ADD [MontoContabilizado] decimal(18,2) NULL DEFAULT (0);
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='PedidosCobranza' AND COLUMN_NAME='MetrosContabilizados') ALTER TABLE dbo.[PedidosCobranza] ADD [MetrosContabilizados] decimal(18,2) NULL DEFAULT (0);
+
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='PreciosEspecialesItems' AND COLUMN_NAME='MonIdMoneda') ALTER TABLE dbo.[PreciosEspecialesItems] ADD [MonIdMoneda] int NULL;
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='PreciosEspecialesItems' AND COLUMN_NAME='ProIdProducto') ALTER TABLE dbo.[PreciosEspecialesItems] ADD [ProIdProducto] int NULL;
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='PreciosEspecialesItems' AND COLUMN_NAME='CliIdCliente') ALTER TABLE dbo.[PreciosEspecialesItems] ADD [CliIdCliente] int NULL;
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='PreciosEspecialesItems' AND COLUMN_NAME='CodGrupo') ALTER TABLE dbo.[PreciosEspecialesItems] ADD [CodGrupo] varchar(100) NULL;
+
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='PreciosBase' AND COLUMN_NAME='MonIdMoneda') ALTER TABLE dbo.[PreciosBase] ADD [MonIdMoneda] int NULL;
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='PreciosBase' AND COLUMN_NAME='ProIdProducto') ALTER TABLE dbo.[PreciosBase] ADD [ProIdProducto] int NULL;
+
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='PreciosListaPublica' AND COLUMN_NAME='FiltroLanding') ALTER TABLE dbo.[PreciosListaPublica] ADD [FiltroLanding] nvarchar(500) NULL;
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='PerfilesPrecios' AND COLUMN_NAME='Categoria') ALTER TABLE dbo.[PerfilesPrecios] ADD [Categoria] varchar(255) NULL;
+
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='PerfilesItems' AND COLUMN_NAME='MonIdMoneda') ALTER TABLE dbo.[PerfilesItems] ADD [MonIdMoneda] int NULL;
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='PerfilesItems' AND COLUMN_NAME='ProIdProducto') ALTER TABLE dbo.[PerfilesItems] ADD [ProIdProducto] int NULL;
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='PerfilesItems' AND COLUMN_NAME='CodGrupo') ALTER TABLE dbo.[PerfilesItems] ADD [CodGrupo] varchar(100) NULL;
+
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='MetodosPagos' AND COLUMN_NAME='MPaAfectaCaja') ALTER TABLE dbo.[MetodosPagos] ADD [MPaAfectaCaja] bit NOT NULL DEFAULT (1);
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='MetodosPagos' AND COLUMN_NAME='MPaTipo') ALTER TABLE dbo.[MetodosPagos] ADD [MPaTipo] varchar(20) NOT NULL DEFAULT ('ENTRADA');
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='MetodosPagos' AND COLUMN_NAME='MPaActivo') ALTER TABLE dbo.[MetodosPagos] ADD [MPaActivo] bit NOT NULL DEFAULT (1);
+
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='ConfigMapeoERP' AND COLUMN_NAME='Tipo') ALTER TABLE dbo.[ConfigMapeoERP] ADD [Tipo] varchar(20) NULL DEFAULT ('GRUPO');
+
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='Articulos' AND COLUMN_NAME='UniIdUnidad') ALTER TABLE dbo.[Articulos] ADD [UniIdUnidad] int NULL;
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='Articulos' AND COLUMN_NAME='borrar') ALTER TABLE dbo.[Articulos] ADD [borrar] int NULL;
+
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='Pagos' AND COLUMN_NAME='PagTcaIdTransaccion') ALTER TABLE dbo.[Pagos] ADD [PagTcaIdTransaccion] int NULL;
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='Pagos' AND COLUMN_NAME='PagCotizacion') ALTER TABLE dbo.[Pagos] ADD [PagCotizacion] decimal(18,4) NULL;
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='Pagos' AND COLUMN_NAME='PagMontoConvertido') ALTER TABLE dbo.[Pagos] ADD [PagMontoConvertido] decimal(18,2) NULL;
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='Pagos' AND COLUMN_NAME='PagTipoMovimiento') ALTER TABLE dbo.[Pagos] ADD [PagTipoMovimiento] varchar(20) NULL;
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='Pagos' AND COLUMN_NAME='PagSaldoConsumidoId') ALTER TABLE dbo.[Pagos] ADD [PagSaldoConsumidoId] int NULL;
+
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='OrdenesDeposito' AND COLUMN_NAME='OrdMaterialPlanilla') ALTER TABLE dbo.[OrdenesDeposito] ADD [OrdMaterialPlanilla] nvarchar(255) NULL;
+GO
+
+-- ============================================================================
+
+-- 3. PARCHES DE ESTRUCTURA Y MODIFICACIONES ADICIONALES
+-- ============================================================================
+
+
+-- Tabla ConfigEstados
+IF EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='ConfigEstados' AND COLUMN_NAME='TipoEstado')
+    ALTER TABLE dbo.ConfigEstados ALTER COLUMN TipoEstado NVARCHAR(50);
+IF EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='ConfigEstados' AND COLUMN_NAME='AreaID')
+    ALTER TABLE dbo.ConfigEstados ALTER COLUMN AreaID NVARCHAR(255);
+GO
+
+
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='Rollos' AND COLUMN_NAME='UsuarioID') 
+    ALTER TABLE dbo.[Rollos] ADD [UsuarioID] int NULL;
+GO
+
+
+-- ----------------------------------------------------------------------------
+-- PARCHE: Columnas de CFE para SecuenciaDocumentos
+-- ----------------------------------------------------------------------------
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='SecuenciaDocumentos' AND COLUMN_NAME='SecNroResolucion') 
+BEGIN
+    ALTER TABLE dbo.[SecuenciaDocumentos] ADD [SecNroResolucion] varchar(20) NULL;
+    ALTER TABLE dbo.[SecuenciaDocumentos] ADD [SecRangoDesde] int NULL;
+    ALTER TABLE dbo.[SecuenciaDocumentos] ADD [SecRangoHasta] int NULL;
+    ALTER TABLE dbo.[SecuenciaDocumentos] ADD [SecFechaVencimientoCAE] date NULL;
+END
+GO

@@ -9,14 +9,12 @@ import PedidoModal from '../modals/PedidoModal';
 
 import ConfigPrintersModal from '../modals/config/ConfigPrintersModal';
 import ConfigInsumosModal from '../modals/config/ConfigInsumosModal';
-import ConfigFlowsModal from '../modals/config/ConfigFlowsModal';
 import ConfigStatusesModal from '../modals/config/ConfigStatusesModal';
 import ConfigRouteRulesModal from '../modals/config/ConfigRouteRulesModal';
 import ConfigDeliveryTimesModal from '../modals/config/ConfigDeliveryTimesModal';
 import ConfigHorarioLaboralModal from '../modals/config/ConfigHorarioLaboralModal';
 import ConfigFeriadosModal from '../modals/config/ConfigFeriadosModal';
 import ConfigWebServicesModal from '../modals/config/ConfigWebServicesModal';
-import ConfigSyncModal from '../modals/config/ConfigSyncModal';
 import ConfigSincroArticulosModal from '../modals/config/ConfigSincroArticulosModal';
 import StockArtEditModal from '../modals/config/StockArtEditModal';
 import ConfigUrgenciaDescuentoRolloModal from '../modals/config/ConfigUrgenciaDescuentoRolloModal';
@@ -303,13 +301,6 @@ export default function ConfigPage({ onBack }) {
                             onClick={() => setActiveModal('webservices')}
                         />
                         <ConfigCard
-                            title="Procesos Automáticos"
-                            subtitle="Cronjobs y Planillas"
-                            icon="fa-power-off"
-                            colorClass="from-rose-500 to-red-600"
-                            onClick={() => setActiveModal('syncs')}
-                        />
-                        <ConfigCard
                             title="SINCRO Artículos"
                             subtitle="Mapeo ERP → Sistema"
                             icon="fa-database"
@@ -389,14 +380,12 @@ export default function ConfigPage({ onBack }) {
             {/* MODALES DE CONFIGURACIÓN EXISTENTES */}
             {activeModal === 'printers' && <ConfigPrintersModal isOpen={true} onClose={() => { setActiveModal(null); loadAreaDetails(selectedAreaId); }} areaCode={selectedAreaId} equipos={details.equipos} />}
             {activeModal === 'insumos' && <ConfigInsumosModal isOpen={true} onClose={() => { setActiveModal(null); loadAreaDetails(selectedAreaId); }} areaCode={selectedAreaId} insumos={details.insumos} />}
-            {activeModal === 'flows' && <ConfigFlowsModal isOpen={true} onClose={() => setActiveModal(null)} />}
             {activeModal === 'rules' && <ConfigRouteRulesModal isOpen={true} onClose={() => setActiveModal(null)} />}
             {activeModal === 'times' && <ConfigDeliveryTimesModal isOpen={true} onClose={() => setActiveModal(null)} />}
             {activeModal === 'horario' && <ConfigHorarioLaboralModal isOpen={true} onClose={() => setActiveModal(null)} />}
             {activeModal === 'feriados' && <ConfigFeriadosModal isOpen={true} onClose={() => setActiveModal(null)} />}
             {activeModal === 'statuses' && <ConfigStatusesModal isOpen={true} onClose={() => { setActiveModal(null); loadAreaDetails(selectedAreaId); }} areaCode={selectedAreaId} initialStatuses={details.estados} areas={areas} />}
             {activeModal === 'webservices' && <ConfigWebServicesModal isOpen={true} onClose={() => setActiveModal(null)} />}
-            {activeModal === 'syncs' && <ConfigSyncModal isOpen={true} onClose={() => setActiveModal(null)} />}
             {activeModal === 'sincro-articulos' && <ConfigSincroArticulosModal isOpen={true} onClose={() => setActiveModal(null)} />}
             {activeModal === 'stockart' && <StockArtEditModal isOpen={true} onClose={() => setActiveModal(null)} />}
             {activeModal === 'urgencia-descuento-rollo' && <ConfigUrgenciaDescuentoRolloModal isOpen={true} onClose={() => setActiveModal(null)} />}

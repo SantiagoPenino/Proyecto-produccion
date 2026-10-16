@@ -489,31 +489,6 @@ const getOrdenesRetiroPasarPorCaja = async (req, res) => {
   }
 };
 
-const ordenesRetiroMarcarPasarPorCaja = async (req, res) => {
-  const { ordenDeRetiro } = req.body;
-  const pasarPorCaja = req.params.pasar === '1';
-  let transaction;
-  try {
-    const OReIdOrdenRetiro = parseInt(ordenDeRetiro.replace('R-', ''), 10);
-    const pool = await getPool();
-
-    transaction = await pool.transaction();
-    await transaction.begin();
-
-    await transaction.request()
-      .input('ID', sql.Int, OReIdOrdenRetiro).input('Pasar', sql.Bit, pasarPorCaja)
-      .query('UPDATE OrdenesRetiro SET ORePasarPorCaja = @Pasar WHERE OReIdOrdenRetiro = @ID');
-
-    await transaction.commit();
-    res.status(200).json({ message: 'Exito' });
-    req.app.get('socketio')?.emit('actualizado', { type: 'actualizacion' });
-    req.app.get('socketio')?.emit('retiros:update', { type: 'estado' });
-  } catch (err) {
-    if (transaction) try { await transaction.rollback(); } catch (e) { }
-    res.status(500).json({ error: err.message });
-  }
-};
-
 const getOrdenesRetiroPorFecha = async (req, res) => {
   try {
     const pool = await getPool();
@@ -1949,7 +1924,7 @@ const revertirExoneracionOrden = async (req, res) => {
 
 module.exports = {
   createOrdenRetiro, getOrdenesRetiroPorEstados, actualizarOrdenRetiroEstado, marcarOrdenRetiroPronto,
-  marcarOrdenRetiroEntregado, ordenesRetiroCaja, getOrdenesRetiroPasarPorCaja, ordenesRetiroMarcarPasarPorCaja, getOrdenesRetiroPorFecha,
+  marcarOrdenRetiroEntregado, ordenesRetiroCaja, getOrdenesRetiroPasarPorCaja, getOrdenesRetiroPorFecha,
   getOrdenesRetiroPorLugar, marcarDespachoEntregadoAutorizado, buscarParaMostrador, getClienteEnvioDatos, getTodasSinRetiro, backfillLugarRetiro, getOrdenesRetiroPorRemito,
   editarCostoOrden, desvincularOrdenRetiro, cancelarOrdenCaja, exonerarOrdenCaja, revertirExoneracionOrden, getDesgloseOrdenesCaja,
   cambiarEstadoOrden, getEstadoOrden

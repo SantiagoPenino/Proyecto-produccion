@@ -762,51 +762,6 @@ async function hookOrdenCreada(params, transaction = null) {
   }
 }
 
-// SIN USO (13/10): hookReposicion: está en module.exports pero nadie lo llama. Ver docs/auditoria-limpieza-2026-10-09.md.
-/**
- * hookReposicion
- * Llamar cuando la orden es una REPOSICIÓN (CodigoOrden empieza con 'R').
- * NO afecta el saldo ni descuenta recursos.
- * Solo deja trazabilidad en MovimientosCuenta con importe = 0
- * para que quede en el historial del cliente.
- *
- * @param {object} params
- *   @param {number} OrdIdOrden
- *   @param {number} CliIdCliente
- *   @param {number} MonIdMoneda   1=UYU, 2=USD
- *   @param {string} CodigoOrden
- *   @param {number} UsuarioAlta
- */
-async function hookReposicion(params) {
-  const { OrdIdOrden, CliIdCliente, MonIdMoneda, CodigoOrden, NombreTrabajo, UsuarioAlta } = params;
-
-  try {
-    const CueTipo = MonIdMoneda === 2 ? 'DINERO_USD' : 'DINERO_UYU';
-
-    // Obtener o crear la cuenta del cliente (sin modificar saldo)
-    const CueIdCuenta = await obtenerOCrearCuenta(CliIdCliente, CueTipo, {
-      MonIdMoneda,
-      UsuarioAlta,
-    });
-
-    // Registrar movimiento con importe 0 — solo para el historial
-    await registrarMovimiento({
-      CueIdCuenta,
-      MovTipo:        'REPOSICION',
-      MovConcepto:    `Reposición ${CodigoOrden}${NombreTrabajo ? ' — ' + NombreTrabajo : ''}`,
-      MovObservaciones: NombreTrabajo ? `Reposición sin cargo — ${NombreTrabajo}` : 'Orden de reposición',
-      MovImporte:     0,
-      MovUsuarioAlta: UsuarioAlta,
-      OrdIdOrden,
-
-    });
-
-    logger.info(`[CONTABILIDAD] Reposición registrada en historial: ${CodigoOrden} (CliId=${CliIdCliente}, importe=$0)`);
-  } catch (err) {
-    logger.warn(`[CONTABILIDAD] hookReposicion falló (no afecta la orden): ${err.message}`);
-  }
-}
-
 /**
  * hookPagoRegistrado
  * Llamar DESPUÉS del commit de registrarPago().
@@ -3271,6 +3226,30 @@ async function cerrarCicloCompleto({
   const pool = await getPool();
   const contabilidadCore = require('./contabilidadCore');
 
+  // FRENO CONTRA EL REINTENTO. El cierre no corre en una transacción: si falla después de
+  // crear la factura (paso 3) y antes de cerrar el ciclo (paso 6), la factura queda hecha y
+  // el ciclo sigue ABIERTO, y volver a cerrar crearía OTRA factura por las mismas órdenes.
+  // Solo el cierre guarda CicIdCiclo en el documento. Los ANULADOS no cuentan: si alguien
+  // anuló la factura de un cierre a medias, se puede volver a cerrar. Va antes de todo,
+  // incluido el paso 0, para no tocar nada.
+  const docPrevio = await pool.request()
+    .input('CicIdCiclo', sql.Int, CicIdCiclo)
+    .query(`
+      SELECT TOP 1 DocIdDocumento, DocTipo, DocSerie, DocNumero,
+             CONVERT(varchar(10), DocFechaEmision, 103) AS Fecha
+      FROM dbo.DocumentosContables
+      WHERE CicIdCiclo = @CicIdCiclo AND ISNULL(DocEstado, '') <> 'ANULADO'
+      ORDER BY DocIdDocumento DESC
+    `);
+  if (docPrevio.recordset.length) {
+    const d = docPrevio.recordset[0];
+    throw Object.assign(new Error(
+      `Este ciclo ya tiene una factura: ${String(d.DocTipo || '').trim()} ${String(d.DocSerie || '').trim()}-${d.DocNumero}`
+      + `${d.Fecha ? ' del ' + d.Fecha : ''}. Un cierre anterior pudo quedar a medias. No se generó otra factura: `
+      + 'revisá esa antes de volver a cerrar (si está mal, anulala en la Bandeja CFE y después cerrá de nuevo).'
+    ), { statusCode: 409, detalleCiclo: { CicIdCiclo, DocIdDocumento: d.DocIdDocumento } });
+  }
+
   // 0. Procesar ediciones manuales de detalles
   if (detallesEditados && detallesEditados.length > 0) {
     for (const d of detallesEditados) {
@@ -4127,89 +4106,10 @@ async function cerrarCiclosVencidos() {
   return { procesados, errores };
 }
 
-// SIN USO (13/10): forzarCierreTodosCiclosAbiertos: su única llamada está comentada en jobs/estadosCuenta.job.js. Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
-/**
- * forzarCierreTodosCiclosAbiertos
- * Busca TODOS los ciclos ABIERTOS (sin importar si vencieron) y los cierra.
- * Utilizado por el CRON de estados de cuenta.
- */
-async function forzarCierreTodosCiclosAbiertos() {
-  const pool = await getPool();
-  let procesados = 0, errores = 0;
-
-  // Seleccionar todos los ABIERTOS
-  const abiertos = await pool.request().query(`
-    SELECT CicIdCiclo FROM dbo.CiclosCredito WHERE CicEstado = 'ABIERTO'
-  `);
-
-  for (const c of abiertos.recordset) {
-    try {
-      await cerrarCicloCompleto({ CicIdCiclo: c.CicIdCiclo, UsuarioAlta: 1 });
-      procesados++;
-    } catch (e) {
-      logger.error(`[CICLO] Error forzando cierre CicIdCiclo=${c.CicIdCiclo}: ${e.message}`);
-      errores++;
-    }
-  }
-
-  logger.info(`[CICLO] forzarCierreTodosCiclosAbiertos → procesados: ${procesados}, errores: ${errores}`);
-  return { procesados, errores };
-}
-
 
 // ============================================================
 // SECCIÓN X: HOOK — RETIRO AUTORIZADO SIN PAGO (FIADO)
 // ============================================================
-
-// SIN USO (13/10): hookRetiroSinPago: está en module.exports pero nadie lo llama. Ver docs/auditoria-limpieza-2026-10-09.md.
-async function hookRetiroSinPago({ OReIdOrdenRetiro, CliIdCliente, OrdIds = [], Monto = 0, UsuarioAlta = 1, Observacion = '' }) {
-  try {
-    const pool = await getPool();
-
-    const cueRes = await pool.request()
-      .input('CliIdCliente', sql.Int, CliIdCliente)
-      .query(`
-        SELECT TOP 1 CueIdCuenta
-        FROM   dbo.CuentasCliente
-        WHERE  CliIdCliente = @CliIdCliente
-          AND  CueTipo IN ('DINERO_UYU', 'DINERO_USD')
-          AND  CueActiva = 1
-        ORDER BY CueEsPrincipal DESC, CASE CueTipo WHEN 'DINERO_UYU' THEN 1 ELSE 2 END
-      `);
-
-    if (cueRes.recordset.length > 0) {
-      const { CueIdCuenta } = cueRes.recordset[0];
-      await registrarMovimiento({
-        CueIdCuenta,
-        MovTipo:          'FIADO',
-        MovConcepto:      `Retiro R-${OReIdOrdenRetiro} entregado sin cobro`,
-        MovImporte:       0,
-        MovUsuarioAlta:   UsuarioAlta,
-        OReIdOrdenRetiro: OReIdOrdenRetiro,
-        MovObservaciones: `Monto: ${Number(Monto).toFixed(2)}${Observacion ? ' | ' + Observacion : ''}`,
-      });
-    } else {
-      logger.warn(`[FIADO] Sin cuenta DINERO para CliId=${CliIdCliente}`);
-    }
-
-    if (OrdIds.length > 0) {
-      const placeholders = OrdIds.map((_, i) => `@ord${i}`).join(',');
-      const req2 = pool.request();
-      OrdIds.forEach((id, i) => req2.input(`ord${i}`, sql.Int, id));
-      const updated = await req2.query(`
-        UPDATE dbo.DeudaDocumento
-        SET    DDeEstado = 'EN_GESTION'
-        WHERE  OrdIdOrden IN (${placeholders})
-          AND  DDeEstado = 'PENDIENTE'
-      `);
-      logger.info(`[FIADO] R-${OReIdOrdenRetiro}: ${updated.rowsAffected[0]} deuda(s) -> EN_GESTION`);
-    }
-
-    logger.info(`[FIADO] OK: R-${OReIdOrdenRetiro}, Cli=${CliIdCliente}, Monto=${Monto}`);
-  } catch (err) {
-    logger.warn('[FIADO] hookRetiroSinPago fallo (no afecta la entrega):', err.message);
-  }
-}
 
 // ============================================================
 // SECCIÓN CENTRALIZACIÓN: OPERACIONES SOBRE MOVIMIENTOSCUENTA
@@ -4603,46 +4503,6 @@ async function revertirRecursosPorTransaccion(tcaId, usuarioId, transaction) {
   return { revertidos, pendientes };
 }
 
-// SIN USO (13/10): transformarMovimiento: solo lo llama services/pagoService.js, que está @deprecated. Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
-/**
- * transformarMovimiento
- * Cambia el tipo de movimientos existentes (ej. ORDEN -> VTA_CAJA) y les asigna
- * un documento de respaldo. Usado por pagoService al emitir una factura web.
- *
- * @param {object} params
- *   @param {number[]} params.ordIds     IDs de OrdenDeposito cuyos movimientos se transforman
- *   @param {string}   params.tipoOrigen Tipo actual a buscar (ej. 'ORDEN')
- *   @param {string}   params.tipoDestino Nuevo tipo (ej. 'VTA_CAJA')
- *   @param {number}   params.docId      DocIdDocumento a asignar
- *   @param {string}   params.concepto   Nuevo concepto del movimiento
- * @param {object} transaction  Transacción mssql activa (opcional)
- */
-async function transformarMovimiento(params, transaction = null) {
-  const pool = await getPool();
-  const { ordIds = [], tipoOrigen, tipoDestino, docId, concepto } = params;
-
-  if (!ordIds.length) return;
-
-  const mkReq = () => transaction ? new sql.Request(transaction) : pool.request();
-
-  await mkReq()
-    .input('docId',    sql.Int,          docId)
-    .input('concepto', sql.NVarChar(500), concepto)
-    .input('tipo',     sql.VarChar(30),  tipoDestino)
-    .query(`
-      UPDATE dbo.MovimientosCuenta
-      SET MovTipo        = @tipo,
-          DocIdDocumento = @docId,
-          MovConcepto    = @concepto,
-          MovFecha       = GETDATE()
-      WHERE OrdIdOrden IN (${ordIds.join(',')})
-        AND MovTipo = '${tipoOrigen}'
-        AND (MovAnulado IS NULL OR MovAnulado = 0)
-    `);
-
-  logger.info(`[CONTAB] transformarMovimiento: ordIds=[${ordIds}] ${tipoOrigen}->${tipoDestino} docId=${docId}`);
-}
-
 // ============================================================
 // EXPORTS
 // ============================================================
@@ -4810,7 +4670,6 @@ async function buscarDeudaVivaDeDocumento(DocIdDocumento, transaction = null) {
  * Fuente única de verdad para armar el estado de cuenta de un cliente.
  * Usada por:
  *   - contabilidadController.getEstadoCuentaCliente (reporte web/PDF)
- *   - estadosCuenta.job (snapshot para email)
  *   - cualquier consumer futuro
  *
  * @param {number}  clienteId
@@ -5974,15 +5833,12 @@ module.exports = {
   acumularEnCiclo,
   cerrarCicloCompleto,
   cerrarCiclosVencidos,
-  forzarCierreTodosCiclosAbiertos,
   getCicloMovimientos,
 
   // Hooks — llamar post-commit desde otros controladores
   hookOrdenCreada,
-  hookReposicion,
   hookPagoRegistrado,
   hookEntregaMetros,
-  hookRetiroSinPago,
 
   // Consultas
   getSaldoCliente,
@@ -6002,7 +5858,6 @@ module.exports = {
   anularMovimientosPorFiltro,
   revertirRecursosPorTransaccion,
   recursosBloqueanReversion,
-  transformarMovimiento,
 };
 
 /**
@@ -6044,6 +5899,11 @@ async function procesarEventoContable(evtCodigo, data) {
   try {
     let resSubmayor = null;
     const pool = await getPool();
+
+    // Fuera del if del paso 1: la usa la imputación del pago (paso 4). Declarada adentro, el
+    // paso 4 tiraba "cueId is not defined" con todo pago (realizarPago, desde el 21/05) y
+    // tampoco llegaba el asiento del paso 5.
+    let cueId = null;
 
     // 1. LÓGICA DE SUBMAYOR (CUENTAS CORRIENTES / SALDO CLIENTE)
     if (evt.EvtAfectaSaldo !== 0 && CliIdCliente) {
@@ -6252,7 +6112,6 @@ async function procesarEventoContable(evtCodigo, data) {
         }
       }
 
-      let cueId = null; // declarado aquí para ser visible en la imputación de pago (paso 4)
       if (!saltarDinero) {
         const cueTipo = MonIdMoneda === 2 ? 'DINERO_USD' : 'DINERO_UYU';
         cueId = await obtenerOCrearCuenta(CliIdCliente, cueTipo, { MonIdMoneda, UsuarioAlta });

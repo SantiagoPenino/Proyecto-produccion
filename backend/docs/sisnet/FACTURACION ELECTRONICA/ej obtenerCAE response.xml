@@ -1,0 +1,15 @@
+
+<S:Envelope xmlns:S="http://schemas.xmlsoap.org/soap/envelope/">
+    <S:Body>
+        <ns2:obtenerCAEResponse xmlns:ns2="http://webServices.sitioWeb.crp.com/">
+            <return>
+                <errorDes/>
+                <hayError>false</hayError>
+                <idInterno>52560</idInterno>
+                <numero>18302</numero>
+                <numeroAutorizacion>90150012568</numeroAutorizacion>
+                <serie>A</serie>
+            </return>
+        </ns2:obtenerCAEResponse>
+    </S:Body>
+</S:Envelope>

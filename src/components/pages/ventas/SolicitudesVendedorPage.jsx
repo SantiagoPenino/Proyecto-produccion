@@ -7,7 +7,7 @@ import Selector from '../../ui/Selector';
 import SelectorFecha from '../../ui/SelectorFecha';
 import { solicitudesVendedorService as svc } from '../../../services/modules/solicitudesVendedorService';
 import { fmtFecha, fmtFechaHora } from '../../../utils/fechas';
-import { ESTADO_SOLICITUD, errorDe, plata } from './solicitudesComunes';
+import { BotonAyuda, ESTADO_SOLICITUD, errorDe, plata } from './solicitudesComunes';
 import { cargarPerfil, precargarSolicitud } from './solicitudPrecarga';
 
 // Botón principal y buscador de esta pantalla (06/10): brand-cyan, como el resto del sistema. BTN_PRIMARIO e INPUT de
@@ -116,7 +116,10 @@ export default function SolicitudesVendedorPage() {
                         <p className="text-sm text-slate-400">Lo que pide el cliente antes de ser pedido: se capta, se diseña por partes y se pacta precio y seña. Acá no se crea ninguna orden de producción.</p>
                     </div>
                 </div>
-                <button onClick={() => navigate('/ventas/solicitudes/nueva')} className={BTN_PRINCIPAL}><Plus size={14} /> Nueva solicitud</button>
+                <div className="flex items-center gap-2">
+                    <button onClick={() => navigate('/ventas/solicitudes/nueva')} className={BTN_PRINCIPAL}><Plus size={14} /> Nueva solicitud</button>
+                    <BotonAyuda guia="vendedores" />
+                </div>
             </div>
 
             {/* Filtros en una sola zona (06/10). Antes: 4 tarjetas grandes con los números (dos filtraban y no se notaba),

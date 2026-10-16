@@ -53,16 +53,6 @@ async function proximoId(transaction, nombre) {
     return r.recordset[0].Id;
 }
 
-// SIN USO (13/10): resolverEstadoPorTipoCliente: no se exporta ni se llama. Ver docs/auditoria-limpieza-2026-10-09.md.
-/**
- * resolverEstadoPorTipoCliente
- * SOLO como fallback cuando no hay datos de contabilidad disponibles.
- * La lógica real usa verificarRecursoCliente() para cada retiro.
- */
-function resolverEstadoPorTipoCliente(tipoCliente) {
-    return (tipoCliente === 2 || tipoCliente === 3) ? 4 : 1;
-}
-
 /**
  * verificarRecursoCliente
  * Chequea si el cliente tiene un plan de recursos activo para el producto dado.
@@ -279,27 +269,6 @@ async function ordenCubiertaPorLibro(transaction, OrdIdOrdenDeposito) {
         logger.warn(`[RETIRO] Error verificando libro de recursos OrdDep=${OrdIdOrdenDeposito}: ${err.message}.`);
         return false;
     }
-}
-
-// SIN USO (13/10): tienePlanHistorico: no se exporta ni se llama (lo reemplazó el criterio por costo, ver más abajo). Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
-async function tienePlanHistorico(transaction, CliIdCliente, ProIdProducto) {
-    if (!CliIdCliente || !ProIdProducto) return false;
-    const r = await transaction.request()
-        .input('Cli', sql.Int, CliIdCliente)
-        .input('Pro', sql.Int, ProIdProducto)
-        .query(`
-            SELECT TOP 1 pm.PlaIdPlan
-            FROM   dbo.PlanesMetros pm WITH(NOLOCK)
-            WHERE  pm.CliIdCliente = @Cli
-              AND  (
-                pm.ProIdProducto = @Pro
-                OR EXISTS (
-                  SELECT 1 FROM dbo.PlanesMetrosArticulosPermitidos pap WITH(NOLOCK)
-                  WHERE pap.PlaIdPlan = pm.PlaIdPlan AND pap.ProIdProducto = @Pro
-                )
-              )
-        `);
-    return r.recordset.length > 0;
 }
 
 /**

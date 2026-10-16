@@ -17,7 +17,6 @@ import {
   Landmark, Package
 } from 'lucide-react';
 import CajaVentaDirectaTab from './CajaVentaDirectaTab';
-import CajaCobroLibreTab from './CajaCobroLibreTab';
 import CajaSaldoAnticipoTab from './CajaSaldoAnticipoTab';
 
 import CajaPagoDeudaTab from './CajaPagoDeudaTab';

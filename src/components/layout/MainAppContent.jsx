@@ -66,12 +66,10 @@ const PriceProfiles = lazyWithRetry(() => import('../pages/PriceProfiles'));
 const BeneficiosPredefinidos = lazyWithRetry(() => import('../pages/BeneficiosPredefinidos'));
 const BeneficiosPactados = lazyWithRetry(() => import('../pages/BeneficiosPactados'));
 const LabelGenerationPage = lazyWithRetry(() => import('../pages/LabelGenerationPage'));
-const DepositStockPage = lazyWithRetry(() => import('../logistics/DepositStockPage'));
 const CustomerReplacementPage = lazyWithRetry(() => import('../pages/customer-service/CustomerReplacementPage'));
 const SolicitudesInsumoPage = lazyWithRetry(() => import('../pages/customer-service/SolicitudesInsumoPage')); // Spec 39
 const CustomerPriceCatalogPage = lazyWithRetry(() => import('../pages/CustomerPriceCatalogPage'));
 const IntegralOrderView = lazyWithRetry(() => import('../pages/IntegralOrderView'));
-const CargaPagosView = lazyWithRetry(() => import('../pages/CargaPagosView'));
 const VerificarPagosOnlineView = lazyWithRetry(() => import('../pages/VerificarPagosOnlineView'));
 const ExcepcionesDeudaView = lazyWithRetry(() => import('../pages/ExcepcionesDeudaView'));
 const CargaDepositoPage = lazyWithRetry(() => import('../logistics/CargaDepositoPage'));
@@ -101,14 +99,11 @@ const BandejaDisenoPage = lazyWithRetry(() => import('../pages/ventas/BandejaDis
 const SolicitudDisenoPage = lazyWithRetry(() => import('../pages/ventas/SolicitudDisenoPage'));
 const AuditDepositoView = lazyWithRetry(() => import('../pages/AuditDepositoView'));
 const AdminEditarOrdenView = lazyWithRetry(() => import('../pages/AdminEditarOrdenView'));
-const ContabilidadCuentasView    = lazyWithRetry(() => import('../pages/ContabilidadCuentasView'));
 const ClienteVista360            = lazyWithRetry(() => import('../pages/ClienteVista360'));
 const VendedorCliente360         = lazyWithRetry(() => import('../pages/VendedorCliente360'));
 const VendedorVentasMensuales    = lazyWithRetry(() => import('../pages/VendedorVentasMensuales'));
 const PreFacturaPage             = lazyWithRetry(() => import('../pages/PreFacturaPage'));
 const ContabilidadAntiguedadView  = lazyWithRetry(() => import('../pages/ContabilidadAntiguedadView'));
-const ContabilidadColaEstadosView = lazyWithRetry(() => import('../pages/ContabilidadColaEstadosView'));
-const ImportadorManualView         = lazyWithRetry(() => import('../production/ImportadorManualView'));
 const CajaTransaccionView          = lazyWithRetry(() => import('../pages/CajaTransaccionView'));
 const LibroMayorView               = lazyWithRetry(() => import('../pages/LibroMayorView'));
 const PlanCuentasView              = lazyWithRetry(() => import('../pages/PlanCuentasView'));
@@ -749,7 +744,6 @@ const MainAppContent = ({ menuItems = [] }) => {
                 <Route path="/atencion-cliente/reposiciones" element={<CustomerReplacementPage />} />
                 <Route path="/atencion-cliente/solicitudes-insumo" element={<SolicitudesInsumoPage />} />
                 <Route path="/logistica/transporte" element={<TransportControlPage />} />
-                <Route path="/logistica/stock-deposito" element={<DepositStockPage />} />
                 <Route path="/logistica/retiros-web" element={<WebRetirosPage />} />
                 <Route path="/logistica/excepciones" element={<ExcepcionesDeudaView />} />
                 <Route path="/logistica/carga-deposito" element={<CargaDepositoPage />} />
@@ -764,7 +758,8 @@ const MainAppContent = ({ menuItems = [] }) => {
                 <Route path="/admin/clientes-integration" element={<ClientsIntegration />} />
                 <Route path="/ventas/presupuestos" element={<PresupuestosPage />} />
                 <Route path="/ventas/solicitudes" element={<SolicitudesVendedorPage />} />
-                <Route path="/ventas/solicitudes/nueva" element={<SolicitudVendedorForm />} />
+                {/* 15/10: la nueva solicitud se carga en la MISMA pantalla de la solicitud (key propia: al crearla se vuelve a montar) */}
+                <Route path="/ventas/solicitudes/nueva" element={<SolicitudVendedorDetalle key="nueva" />} />
                 <Route path="/ventas/solicitudes/:id/editar" element={<SolicitudVendedorForm />} />
                 <Route path="/ventas/solicitudes/:id/imprimir" element={<SolicitudImprimible />} />
                 <Route path="/ventas/solicitudes/:id/diseno" element={<SolicitudDisenoPage />} />
@@ -791,12 +786,12 @@ const MainAppContent = ({ menuItems = [] }) => {
                 <Route path="/admin/leads" element={<LeadsCRMView />} />
                 <Route path="/leads" element={<LeadsCRMView />} />
                 <Route path="/produccion/etiquetas" element={<LabelGenerationPage />} />
-                <Route path="/caja/pagos" element={<CargaPagosView />} />
                 <Route path="/caja/pagos-online" element={<VerificarPagosOnlineView />} />
                 <Route path="/caja/cuadre" element={<CuadreDiarioView />} />
                 <Route path="/caja/central-admin" element={<ReporteCajaCentralAdminView />} />
                 <Route path="/admin/consola" element={<SysAdminPage />} />
-                <Route path="/contabilidad/cuentas"          element={<ContabilidadCuentasView />} />
+                {/* La ventana Cuentas se sacó el 16/10/2026: la reemplazó el Panel 360 */}
+                <Route path="/contabilidad/cuentas"          element={<Navigate to="/contabilidad/cliente-360" replace />} />
                 <Route path="/contabilidad/cliente-360"      element={<ClienteVista360 />} />
                 <Route path="/vendedores/cliente-360"        element={<VendedorCliente360 />} />
                 <Route path="/beneficios/predefinidos"       element={<BeneficiosPredefinidos />} />
@@ -804,8 +799,7 @@ const MainAppContent = ({ menuItems = [] }) => {
                 <Route path="/vendedores/ventas"             element={<VendedorVentasMensuales />} />
                 <Route path="/contabilidad/prefactura"        element={<PreFacturaPage />} />
                 <Route path="/contabilidad/antiguedad"        element={<ContabilidadAntiguedadView />} />
-                <Route path="/contabilidad/cola-estados"      element={<ContabilidadColaEstadosView />} />
-                <Route path="/contabilidad/recursos"          element={<Navigate to="/contabilidad/cuentas" replace />} />
+                <Route path="/contabilidad/recursos"          element={<Navigate to="/contabilidad/cliente-360" replace />} />
                 <Route path="/contabilidad/tipos-movimiento"  element={<Navigate to="/contabilidad/motor" replace />} />
                 <Route path="/caja/transaccion"               element={<CajaTransaccionView />} />
                 <Route path="/contabilidad/libro-mayor"       element={<LibroMayorView />} />
@@ -1125,7 +1119,9 @@ const DynamicRouter = ({ menuItems }) => {
     if (menuItem.Ruta === '/atencion-cliente/entrega-pedidos') return <EntregaPedidosView />;
     if (menuItem.Ruta === '/logistica/retiros-web') return <WebRetirosPage />;
     if (menuItem.Ruta === '/logistica/dashboard-deposito') return <DepositoDashboard />;
-    if (menuItem.Ruta === '/caja/pagos' || menuItem.Ruta.toLowerCase() === '/caja/pagos/') return <CargaPagosView />;
+    // La caja vieja (CargaPagosView) se eliminó el 15/10: se cobra desde CajaTransaccionView.
+    // Mientras el menú de la base tenga /caja/pagos, vuelve al inicio en vez de caer en AreaView.
+    if (menuItem.Ruta.toLowerCase().replace(/\/$/, '') === '/caja/pagos') return <Navigate to="/" replace />;
     if (menuItem.Ruta === '/caja/cuadre') return <CuadreDiarioView />;
     if (menuItem.Ruta === '/caja/central-admin') return <ReporteCajaCentralAdminView />;
     if (menuItem.Ruta === '/logistica/verificar-codigo') return <VerificarCodigoPage />;
@@ -1143,15 +1139,14 @@ const DynamicRouter = ({ menuItems }) => {
     if (menuItem.Ruta === '/caja/verificar-pagos') return <VerificarPagosOnlineView />;
     if (menuItem.Ruta === '/admin/excepciones-deuda') return <ExcepcionesDeudaView />;
     if (menuItem.Ruta === '/admin/consola') return <SysAdminPage />;
-    if (menuItem.Ruta === '/contabilidad/cuentas')              return <ContabilidadCuentasView />;
+    if (menuItem.Ruta === '/contabilidad/cuentas')              return <ClienteVista360 />; // ventana vieja → 360
     if (menuItem.Ruta === '/contabilidad/cliente-360')          return <ClienteVista360 />;
     if (menuItem.Ruta === '/vendedores/cliente-360')            return <VendedorCliente360 />;
     if (menuItem.Ruta === '/beneficios/predefinidos')           return <BeneficiosPredefinidos />;
     if (menuItem.Ruta === '/beneficios/pactos')                 return <BeneficiosPactados />;
     if (menuItem.Ruta === '/vendedores/ventas')                 return <VendedorVentasMensuales />;
     if (menuItem.Ruta === '/contabilidad/antiguedad')            return <ContabilidadAntiguedadView />;
-    if (menuItem.Ruta === '/contabilidad/cola-estados')          return <ContabilidadColaEstadosView />;
-    if (menuItem.Ruta === '/contabilidad/recursos')              return <ContabilidadCuentasView />;
+    if (menuItem.Ruta === '/contabilidad/recursos')              return <ClienteVista360 />; // ventana vieja → 360
     if (menuItem.Ruta === '/caja/transaccion')                   return <CajaTransaccionView />;
     if (menuItem.Ruta === '/contabilidad/libro-mayor')           return <LibroMayorView />;
     if (menuItem.Ruta === '/contabilidad/plan-cuentas')          return <PlanCuentasView />;

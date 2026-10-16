@@ -36,7 +36,6 @@ router.post('/assign-roll', verifyToken, ordersController.assignRoll);
 router.post('/unassign-roll', verifyToken, ordersController.unassignOrder);
 router.post('/cancel', verifyToken, ordersController.cancelOrder);
 router.post('/cancel-request', verifyToken, ordersController.cancelRequest);
-router.post('/cancel-roll', verifyToken, ordersController.cancelRoll);
 
 // Rutas con :id (DEBEN IR AL FINAL de los GET/PUT/DELETE específicos)
 router.delete('/:id', verifyToken, ordersController.deleteOrder);
@@ -52,7 +51,6 @@ router.delete('/:id', verifyToken, ordersController.deleteOrder);
 //                   Limitado a los roles habilitados (ver ROLES_EDITAN_ESTADO).
 router.put('/:id/status', verifyToken, soloInternoConRol(), ordersController.updateStatus);
 router.put('/:id/area-status', verifyToken, soloInternoConRol(ROLES_EDITAN_ESTADO), ordersController.updateAreaStatus);
-router.get('/history/:id', verifyToken, ordersController.getOrderHistory);
 
 // 2. GESTIÓN DE ARCHIVOS
 router.put('/file/update', verifyToken, ordersController.updateFile);
@@ -114,7 +112,6 @@ router.get('/:ordenId/tpu-matriz/fuente', verifyToken, ordersController.getTpuMa
 router.post('/file/cancel', verifyToken, ordersController.cancelFile);
 router.post('/reactivate', verifyToken, ordersController.reactivateOrder);
 router.post('/reactivate-request', verifyToken, ordersController.reactivateRequest);
-router.post('/file/reactivate', verifyToken, ordersController.reactivateFile);
 router.put('/service/update', verifyToken, ordersController.updateService);
 router.delete('/file/:id', verifyToken, ordersController.deleteFile);
 
@@ -122,5 +119,4 @@ router.delete('/file/:id', verifyToken, ordersController.deleteFile);
 router.get('/:id/references', ordersController.getOrderReferences);
 router.get('/:id/services', ordersController.getOrderServices);
 
-router.post('/assign-fabric-bobbin', verifyToken, ordersController.assignFabricBobbin);
 module.exports = router;

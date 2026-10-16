@@ -14,7 +14,9 @@ import Selector from '../../ui/Selector';
  * (solicitudesVendedorTizadaPro: filasExtra / dondeVa).
  *
  * servicios: [{ tipo: 'BORDADO'|'DTF'|'TPU', nombre, cobro: 'INCLUIDA'|'APARTE'|null, obligatorio, opciones: [{id, nombre}], opcionId }]
- * filasArchivo: [{ archivo: { ArchivoID, NombreOriginal, UrlDrive }, tipo, pieza, detalle }]
+ *   (opcionId = el tipo del servicio, el de por defecto de las filas sin tipo propio)
+ * filasArchivo: [{ archivo: { ArchivoID, NombreOriginal, UrlDrive }, tipo, pieza, detalle, opcionId }]
+ * onForma(claveObjeto, opcionId): el tipo de UN objeto del arte (15/10). Sin onForma, el tipo se muestra y no se cambia.
  */
 const PROCESOS = [['sublimado', 'Sublimado'], ['dtf', 'DTF'], ['tpu', 'TPU'], ['bordado', 'Bordado']];
 const TIPO_DE = { dtf: 'DTF', tpu: 'TPU', bordado: 'BORDADO' };
@@ -22,13 +24,16 @@ const PROC_DE = { DTF: 'dtf', TPU: 'tpu', BORDADO: 'bordado' };
 const ACEPTA = { DTF: '.png', TPU: '.png,.jpg,.jpeg,.pdf,.ai,.svg', BORDADO: '.png,.jpg,.jpeg,.pdf,.ai,.svg,.dst,.emb' };
 const NOMBRE_TIPO = { BORDADO: 'Bordado', DTF: 'DTF', TPU: 'TPU' };
 
+// La clave del tipo de un objeto en d.formas: "<objeto>|<pieza>" (la misma que el servidor, solicitudesVendedorTizadaPro)
+export const claveObjeto = (o) => `${o.objeto}|${o.pieza || ''}`;
+
 const Cobro = ({ s }) => (!s?.cobro ? null : s.cobro === 'INCLUIDA'
     ? <span className="inline-block rounded-full bg-emerald-50 border border-emerald-200 px-2 py-0.5 text-[10px] font-bold text-emerald-700 whitespace-nowrap">incluido</span>
     : <span className="inline-block rounded-full bg-amber-50 border border-amber-200 px-2 py-0.5 text-[10px] font-bold text-amber-700 whitespace-nowrap">se cobra aparte</span>);
 
 export default function ArteExtrasTabla({
     d, objetos = [], servicios = [], filasArchivo = [], piezas = [], puede = false, ocupado = false, todosLosProcesos = false,
-    onProceso, onAgregar, onCambiarFila, onQuitarFila, onOpcion = null,
+    onProceso, onAgregar, onCambiarFila, onQuitarFila, onForma = null,
 }) {
     const inputs = useRef({});
     const servicio = (T) => servicios.find(s => s.tipo === T) || null;
@@ -36,11 +41,25 @@ export default function ArteExtrasTabla({
     const usados = new Set([...objetos.map(procesoDe).filter(p => p !== 'sublimado').map(p => TIPO_DE[p]), ...filasArchivo.map(f => f.tipo)]);
     // Extras obligatorios del producto que este diseño todavía no tiene en ninguna fila
     const faltan = servicios.filter(s => s.obligatorio && !usados.has(s.tipo));
-    const opcionesDe = (s) => (onOpcion && s?.opciones?.length > 1 ? (
-        <Selector value={s.opcionId ? String(s.opcionId) : ''} disabled={!puede || ocupado} onChange={e => onOpcion(s.tipo, e.target.value)} claseBoton={claseSel(SEL_CAMPO)} anchoLista={220} title={`Cómo se hace el ${s.nombre}`}>
-            {!s.opcionId && <option value="">— elegí —</option>}
-            {s.opciones.map(o => <option key={o.id} value={String(o.id)}>{o.nombre}</option>)}
-        </Selector>) : null);
+    // [TIPO POR OBJETO 15/10] El tipo de CADA fila (DTF textil común, bordado 100% hilo…): el de esa fila (formaFila: el del
+    // objeto en d.formas o el de la fila subida aparte) o, sin tipo propio, el del servicio. Cambiarlo cambia solo esa fila.
+    // Se elige si hay más de uno o si todavía no tiene; si no, se dice cuál es. s.actual: lo cargado que no está en la lista.
+    const opcionesDe = (s, formaFila, onCambiar) => {
+        if (!s) return null;
+        const id = formaFila || s.opcionId;
+        const elegida = (s.opciones || []).find(o => String(o.id) === String(id)) || null;
+        if (onCambiar && puede && (s.opciones?.length > 1 || (s.opciones?.length === 1 && !elegida))) return (
+            <Selector value={elegida ? String(elegida.id) : ''} disabled={ocupado} onChange={e => { if (e.target.value) onCambiar(Number(e.target.value)); }}
+                claseBoton={claseSel(`${SEL_CAMPO} ${elegida ? '' : '!border-amber-400'}`)} anchoLista={240} title={`Tipo de ${s.nombre.toLowerCase()} de esta fila`}>
+                {!elegida && <option value="">{s.actual ? `${s.actual} (elegí de la lista)` : `— tipo de ${s.nombre.toLowerCase()} —`}</option>}
+                {s.opciones.map(o => <option key={o.id} value={String(o.id)}>{o.nombre}</option>)}
+            </Selector>
+        );
+        const txt = elegida?.nombre || (s.opciones?.length === 1 && !onCambiar ? s.opciones[0].nombre : null) || s.actual;
+        if (txt) return <div className="text-xs font-semibold text-slate-700" title={`Tipo de ${s.nombre.toLowerCase()}`}>{txt}</div>;
+        // Vendedor (todosLosProcesos): se avisa que falta; al cliente del portal no (no tiene de dónde elegirlo)
+        return todosLosProcesos ? <div className="text-[11px] font-bold text-amber-700">Falta el tipo de {s.nombre.toLowerCase()}</div> : null;
+    };
     const elegirArchivo = (T) => inputs.current[T]?.click();
     const celdaImagen = 'px-2 py-2 w-[84px] text-center align-middle';
 
@@ -69,7 +88,7 @@ export default function ArteExtrasTabla({
                                     {T && !s && <div className="mt-1 text-[10px] text-amber-700 font-bold">La solicitud no tiene {NOMBRE_TIPO[T]}</div>}
                                     {s?.cobro && <div className="mt-1"><Cobro s={s} /></div>}
                                 </td>
-                                <td className="py-2 pr-3 align-middle">{s ? opcionesDe(s) : null}</td>
+                                <td className="py-2 pr-3 align-middle">{s ? opcionesDe(s, (d.formas || {})[claveObjeto(o)], onForma ? (id) => onForma(claveObjeto(o), id) : null) : null}</td>
                             </tr>
                         );
                     })}
@@ -100,7 +119,7 @@ export default function ArteExtrasTabla({
                                 </td>
                                 <td className="py-2 pr-3 align-middle">
                                     <div className="flex items-center gap-2">
-                                        <div className="flex-1 min-w-0">{opcionesDe(s)}</div>
+                                        <div className="flex-1 min-w-0">{opcionesDe(s, f.opcionId, onForma ? (id) => onCambiarFila(f.archivo.ArchivoID, { opcionId: id }) : null)}</div>
                                         {puede && <button type="button" disabled={ocupado} onClick={() => onQuitarFila(f.archivo.ArchivoID)} title="Quitar este extra (y su archivo)" className="shrink-0 text-slate-400 hover:text-rose-600"><Trash2 size={14} /></button>}
                                     </div>
                                 </td>

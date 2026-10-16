@@ -13,10 +13,7 @@ router.get('/details', productionController.getOrderDetails);
 router.get('/ready-for-control', productionController.getRollAndFiles);
 router.post('/register-action', verifyToken, productionController.registerFileAction);
 
-// Compatibilidad con Tabla
-router.get('/board-data', productionController.getBoardData);
-router.post('/move-order', verifyToken, productionController.moveOrder);
-router.post('/create-roll', verifyToken, productionController.createRoll);
+// Armado automático de lotes (Planeación)
 router.post('/magic-sort', verifyToken, productionController.magicSort);
 
 // Etiqueta térmica del lote finalizado (se carga en un iframe oculto → sin verifyToken, igual que las etiquetas de orden)

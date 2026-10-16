@@ -849,10 +849,9 @@ exports.createPlanillaOrder = async (req, res) => {
                 logger.error("⚠️ [IntegrationOrder] Error launching file processing:", errProc.message);
             }
 
-            // 🎯 EARLY PRICING & SYNC: Disparar SOLO cotización y PedidosCobranza, NO OrdenesDeposito.
-            // OrdenesDeposito se escribe únicamente durante el Check-In del WMS (depósito).
+            // 🎯 EARLY PRICING: cotizar y guardar PedidosCobranza apenas se crea el pedido.
             try {
-                await ERPSyncService.syncFinalOrderIntegration(erpDocNumber, 1, 'Auto-Ingreso', null, { skipDeposito: true });
+                await ERPSyncService.syncFinalOrderIntegration(erpDocNumber, 1, 'Auto-Ingreso');
                 logger.info(`✅ [IntegrationOrder] Early-Pricing & Sync exitoso para: ${erpDocNumber}`);
             } catch (errSync) {
                 logger.error(`⚠️ [IntegrationOrder] Early-Pricing & Sync falló para ${erpDocNumber}. Error: ${errSync.message}`);

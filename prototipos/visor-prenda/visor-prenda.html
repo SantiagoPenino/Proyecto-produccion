@@ -1,0 +1,934 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Visor de prenda</title>
+<!--
+  VISOR DE PRENDA SUBLIMADA (prototipo suelto, fuera del sistema)
+  ────────────────────────────────────────────────────────────────
+  Se suelta un .ai o un .pdf armado sobre la plantilla (una mesa de trabajo por pieza:
+  Frente, Espalda, Costadillo derecho/izquierdo, Sisa derecha/izquierda, Cuello) y arma:
+   - el boceto plano de frente y espalda (PNG descargable)
+   - la prenda en 3D (GLB descargable)
+
+  Moldes: salen de la capa «guias» del .ai. Un PDF común no los trae (las guías de
+  Illustrator no se exportan), así que se usa la última plantilla leída de un .ai, o la
+  plantilla base que viene incluida acá (musculosa de "Camiseta Goes 2026 PRUEBA 2").
+  Las páginas del PDF se emparejan con las mesas de trabajo por orden y tamaño.
+
+  ?archivo=<url> carga un archivo al abrir (útil para enlazarlo desde el sistema).
+  La forma 3D es un torso genérico; las piezas y el diseño son los del archivo.
+-->
+<style>
+  :root { --bg: #f3f2ef; --card: #fff; --ink: #1d1d1f; --muted: #6b6b70; --line: #e3e1dc; --accent: #0e7490; --error: #b42318; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 "Segoe UI", system-ui, sans-serif; }
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 12px 16px; background: var(--card); border-bottom: 1px solid var(--line); }
+  h1 { font-size: 16px; margin: 0 auto 0 0; }
+  button, .boton { font: inherit; font-weight: 600; font-size: 13px; border: 1px solid var(--line); background: #fff; color: var(--ink); border-radius: 9px; padding: 6px 12px; cursor: pointer; }
+  button:hover:not(:disabled), .boton:hover { background: #f7f7f5; }
+  .primario { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .primario:hover { background: #0b6178 !important; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  #estado { padding: 8px 16px; font-size: 13px; color: var(--muted); min-height: 36px; }
+  #estado.error { color: var(--error); }
+  #estado b { color: var(--ink); }
+  main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; padding: 0 16px 20px; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  .panel { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 12px; display: flex; flex-direction: column; min-height: 540px; min-width: 0; }
+  .panel h2 { font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin: 0 0 10px; font-weight: 600; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .panel h2 .acciones { margin-left: auto; display: flex; gap: 6px; flex-wrap: wrap; text-transform: none; letter-spacing: 0; }
+  #boceto { flex: 1; display: flex; align-items: center; justify-content: center; min-height: 0; }
+  #boceto canvas { max-width: 100%; max-height: 72vh; height: auto; }
+  #vista3d { flex: 1; position: relative; min-height: 480px; border-radius: 10px; overflow: hidden; background: radial-gradient(ellipse at 50% 40%, #ffffff 0%, #ecebe7 75%); }
+  #vista3d canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .vacio { margin: auto; color: var(--muted); text-align: center; padding: 32px 16px; max-width: 360px; }
+  #vista3d .vacio { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
+  #soltar { position: fixed; inset: 0; background: rgba(14, 116, 144, .12); border: 3px dashed var(--accent); display: none; align-items: center; justify-content: center; font-size: 20px; font-weight: 700; color: var(--accent); z-index: 10; pointer-events: none; }
+  body.arrastrando #soltar { display: flex; }
+  footer { padding: 0 16px 20px; color: var(--muted); font-size: 12px; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<header>
+  <h1>Visor de prenda</h1>
+  <label class="boton primario" for="archivo">Abrir .ai o .pdf</label>
+  <input id="archivo" type="file" accept=".ai,.pdf,application/pdf,application/illustrator" hidden>
+</header>
+<div id="estado">Arrastrá acá un .ai o un .pdf armado sobre la plantilla (una mesa de trabajo por pieza), o tocá <b>Abrir .ai o .pdf</b>.</div>
+<main>
+  <section class="panel">
+    <h2>Boceto <span class="acciones"><button id="bajarPng" disabled>Descargar PNG</button></span></h2>
+    <div id="boceto"><p class="vacio">El frente y la espalda armados aparecen acá.</p></div>
+  </section>
+  <section class="panel">
+    <h2>3D
+      <span class="acciones">
+        <button data-vista="frente" disabled>Frente</button>
+        <button data-vista="espalda" disabled>Espalda</button>
+        <button data-vista="costado" disabled>Costado</button>
+        <button id="girar" disabled>Pausar giro</button>
+        <button id="bajarGlb" disabled>Descargar .glb</button>
+      </span>
+    </h2>
+    <div id="vista3d"><p class="vacio">La prenda en 3D aparece acá. Se gira arrastrando y se acerca con la rueda.</p></div>
+  </section>
+</main>
+<footer id="pie">La forma 3D es un torso genérico: las piezas, los moldes y el diseño son los del archivo. Necesita internet la primera vez (carga pdf.js y three.js).</footer>
+<div id="soltar">Soltá el archivo para verlo</div>
+
+<script type="application/json" id="plantilla-base">{"nombre":"Musculosa (Camiseta Goes 2026 PRUEBA 2)","artboards":[{"name":"Sisa derecha","box":{"x":-168.18,"y":1819.92,"w":2590.87,"h":170.08}},{"name":"Tapacostura","box":{"x":-1673.95,"y":1720.71,"w":830.55,"h":99.21}},{"name":"Sisa izquierda","box":{"x":-168.18,"y":1550.63,"w":2590.87,"h":170.08}},{"name":"Cuello","box":{"x":-2307.5,"y":1466.83,"w":2097.64,"h":155.91}},{"name":"Frente","box":{"x":-2211.12,"y":-989.66,"w":2001.26,"h":2239.37}},{"name":"Espalda","box":{"x":-83.51,"y":-989.66,"w":2004.1,"h":2296.07}},{"name":"Costadillo derecho","box":{"x":2072.32,"y":-989.67,"w":521.58,"h":1584.57}},{"name":"Costadillo izquierdo","box":{"x":2785.01,"y":-989.67,"w":521.58,"h":1584.57}}],"piezas":{"Sisa derecha":{"pts":[[1127.25,1990],[1996.47,1990],[1996.47,1819.92],[258.04,1819.92],[258.04,1990]],"notches":[]},"Tapacostura":{"pts":[[-1258.67,1819.92],[-945.5,1819.92],[-945.5,1720.71],[-1571.85,1720.71],[-1571.85,1819.92]],"notches":[]},"Sisa izquierda":{"pts":[[1127.26,1720.71],[1996.47,1720.71],[1996.47,1550.63],[258.04,1550.63],[258.04,1720.71]],"notches":[]},"Cuello":{"pts":[[-1247.2,1466.83],[-1255.14,1466.83],[-1262.22,1466.83],[-2077.21,1466.83],[-2077.21,1622.74],[-1262.22,1622.74],[-1255.14,1622.74],[-440.15,1622.74],[-440.15,1466.83]],"notches":[[-1258.68,1473.92],[-1258.68,1615.65]]},"Frente":{"pts":[[-1827.11,-989.18],[-1827.11,-684.68],[-1827.11,-677.59],[-1827.11,526.51],[-1744.39,549.89],[-1722.28,557.29],[-1702.13,565.77],[-1693.14,570.5],[-1685.04,575.52],[-1677.92,580.82],[-1671.74,586.54],[-1666.07,593.18],[-1660.57,600.97],[-1655.3,609.56],[-1650.57,618.43],[-1642.72,636.63],[-1636.82,655.54],[-1632.57,675.13],[-1629.7,695.51],[-1627.41,727.4],[-1626.45,783.72],[-1627.24,829.78],[-1629.99,875.37],[-1635.49,931.95],[-1650,1045.28],[-1659.72,1126.18],[-1664.03,1174.59],[-1666.58,1215.61],[-1508.16,1249.23],[-1487.43,1162.49],[-1472.64,1107.44],[-1456.05,1053.07],[-1441.2,1010.35],[-1428.9,978.89],[-1414.78,947.45],[-1398.91,916.5],[-1388.14,898.04],[-1382.52,889.85],[-1376.4,882],[-1362.68,867.17],[-1347.18,853.71],[-1330.25,841.8],[-1312.17,831.74],[-1293.26,823.66],[-1273.9,817.77],[-1264.09,815.7],[-1243.46,813.03],[-1214.03,811.5],[-1206.94,811.5],[-1177.52,813.03],[-1156.89,815.7],[-1147.08,817.77],[-1127.72,823.66],[-1108.81,831.74],[-1090.73,841.8],[-1073.8,853.71],[-1058.3,867.17],[-1044.58,882],[-1038.45,889.85],[-1027.46,906.89],[-1011.33,937.02],[-996.53,968.4],[-983.75,999.84],[-968.5,1042.3],[-951.49,1096.5],[-936.38,1151.43],[-918.35,1225.39],[-912.82,1249.23],[-754.39,1215.61],[-757.94,1161.55],[-763.81,1102.85],[-785.49,931.95],[-790.99,875.37],[-793.74,829.78],[-794.53,783.72],[-793.57,727.4],[-791.27,695.51],[-788.41,675.13],[-784.16,655.54],[-778.26,636.63],[-770.41,618.43],[-765.68,609.56],[-760.4,600.97],[-754.9,593.18],[-749.24,586.54],[-743.06,580.82],[-735.94,575.52],[-727.83,570.5],[-718.85,565.77],[-698.69,557.29],[-676.58,549.89],[-593.87,526.51],[-593.87,-677.59],[-593.87,-684.68],[-593.87,-989.18]],"notches":[[-1820.02,-681.14],[-1210.49,804.42],[-600.95,-681.14]]},"Espalda":{"pts":[[1535.16,-989.25],[1535.16,583.13],[1452.45,606.51],[1430.34,613.91],[1410.18,622.41],[1401.2,627.12],[1393.09,632.14],[1385.97,637.44],[1379.8,643.19],[1374.13,649.8],[1368.63,657.59],[1363.35,666.18],[1358.62,675.05],[1350.77,693.28],[1344.84,712.16],[1340.62,731.77],[1337.76,752.13],[1335.46,784.02],[1334.5,840.34],[1335.29,886.41],[1338.04,931.99],[1343.54,988.57],[1358.05,1101.89],[1367.78,1182.8],[1372.08,1231.21],[1374.64,1272.23],[1215.47,1305.99],[1209.63,1278.92],[1206.63,1272.71],[1201.58,1266.22],[1195.6,1259.64],[1188.26,1253.04],[1179.47,1246.46],[1169.58,1240.11],[1161.33,1235.52],[1155.04,1232.26],[1140.35,1225.51],[1119.43,1217.69],[1093.33,1209.81],[1067.45,1203.52],[1030.94,1196.94],[992.41,1192.32],[955.96,1189.8],[922.08,1189],[915,1189],[881.12,1189.8],[844.67,1192.32],[806.18,1196.94],[769.67,1203.52],[743.76,1209.81],[717.65,1217.69],[696.73,1225.51],[682.05,1232.26],[675.75,1235.52],[667.51,1240.11],[657.61,1246.46],[648.82,1253.04],[641.48,1259.64],[635.5,1266.22],[630.46,1272.71],[627.45,1278.92],[621.61,1305.99],[462.45,1272.23],[465.99,1218.17],[471.86,1159.47],[493.57,988.57],[499.04,931.99],[501.79,886.41],[502.59,840.34],[501.62,784.02],[499.33,752.13],[496.46,731.77],[492.24,712.16],[486.31,693.28],[478.46,675.05],[473.73,666.18],[468.46,657.59],[462.96,649.8],[457.32,643.19],[451.11,637.44],[443.99,632.14],[435.89,627.12],[426.9,622.41],[406.75,613.91],[384.64,606.51],[301.92,583.13],[301.92,-989.25]],"notches":[[1161.41,1227.58],[918.54,1181.92],[675.67,1227.58]]},"Costadillo derecho":{"pts":[[2141.77,595.26],[2182.28,583.18],[2213.8,575.44],[2246.42,569.21],[2329.68,556.51],[2336.71,556.53],[2419.79,569.21],[2452.42,575.44],[2483.94,583.18],[2524.45,595.26],[2524.45,-621.77],[2524.45,-628.86],[2524.45,-990.02],[2141.77,-990.02]],"notches":[[2333.22,549.45],[2517.36,-625.31]]},"Costadillo izquierdo":{"pts":[[2854.45,595.25],[2894.96,583.18],[2926.48,575.44],[2959.11,569.2],[3042.36,556.5],[3049.39,556.53],[3132.48,569.2],[3165.1,575.44],[3196.63,583.18],[3237.13,595.25],[3237.13,-990.02],[2854.45,-990.02],[2854.45,-628.86],[2854.45,-621.77]],"notches":[[3045.91,549.45],[2861.54,-625.32]]}}}</script>
+<script>
+  // Si los módulos no cargan (sin internet, CDN caído), que no quede colgado en silencio.
+  setTimeout(() => {
+    if (window.__visorListo) return;
+    const e = document.getElementById('estado');
+    e.className = 'error';
+    e.textContent = 'No se pudieron cargar pdf.js / three.js. Revisá la conexión a internet y recargá la página.';
+  }, 20000);
+</script>
+<script type="module">
+import * as pdfjsLib from 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.4.168/build/pdf.min.mjs';
+import { decompress as zstdDecompress } from 'https://cdn.jsdelivr.net/npm/fzstd@0.1.1/+esm';
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.4.168/build/pdf.worker.min.mjs';
+window.__visorListo = true;
+
+// Nombres de las mesas de trabajo de la plantilla y capas que no se dibujan.
+const CFG = {
+  front: 'Frente',
+  back: 'Espalda',
+  sideR: 'Costadillo derecho',
+  sideL: 'Costadillo izquierdo',
+  armR: 'Sisa derecha',
+  armL: 'Sisa izquierda',
+  neck: 'Cuello',
+  capaGuias: 'guias',
+  capasOcultas: /^(guias|extras?)$/i,   // rótulos de las mesas de trabajo y anotaciones del diseñador
+  dpi: 90,                              // resolución con que se leen las mesas de trabajo
+  hemStitch: 56.7,                      // pespunte del ruedo: 2 cm sobre el borde (pt)
+};
+const CLAVE_PLANTILLA = 'visorPrenda.plantilla';
+
+// ═══════════════════════════════════════════════════════════════ lectura del .ai
+
+const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+const svgPt = p => [p[0], -p[1]];
+const aiPt = p => [p[0], -p[1]];
+
+function concatenar(partes) {
+  const out = new Uint8Array(partes.reduce((s, p) => s + p.length, 0));
+  let k = 0;
+  for (const p of partes) { out.set(p, k); k += p.length; }
+  return out;
+}
+
+function buscarBytes(bytes, texto) {
+  const n = new TextEncoder().encode(texto);
+  fuera: for (let i = 0; i <= bytes.length - n.length; i++) {
+    for (let j = 0; j < n.length; j++) if (bytes[i + j] !== n[j]) continue fuera;
+    return i;
+  }
+  return -1;
+}
+
+async function inflar(bytes) {
+  const flujo = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate'));
+  return new Uint8Array(await new Response(flujo).arrayBuffer());
+}
+
+// Illustrator guarda su documento nativo comprimido dentro del PDF (AIPrivateData1..N).
+// Un PDF común no lo tiene: devuelve null.
+async function datosPrivados(bytes) {
+  const s = new TextDecoder('latin1').decode(bytes);   // un carácter por byte: los índices coinciden
+  const refs = [...s.matchAll(/\/AIPrivateData(\d+) (\d+) 0 R/g)].map(m => [+m[1], +m[2]]).sort((a, b) => a[0] - b[0]);
+  if (!refs.length) return null;
+  const partes = [];
+  for (const [, obj] of refs) {
+    const m = new RegExp(`(?:^|[\\r\\n])${obj} 0 obj`).exec(s);
+    if (!m) return null;
+    const k = s.indexOf('stream', m.index);
+    const dict = s.slice(m.index, k);
+    let ini = k + 6;
+    if (s[ini] === '\r') ini++;
+    if (s[ini] === '\n') ini++;
+    const largo = +(/\/Length (\d+)(?! \d+ R)/.exec(dict) || [])[1];
+    if (!largo) return null;
+    const data = bytes.subarray(ini, ini + largo);
+    partes.push(/FlateDecode/.test(dict) ? await inflar(data) : data);
+  }
+  const todo = concatenar(partes);
+  const utf8 = new TextDecoder();
+  for (const [marca, decodificar] of [['%AI24_ZStandard_Data', b => zstdDecompress(b)], ['%AI12_CompressedData', inflar]]) {
+    const i = buscarBytes(todo, marca);
+    if (i >= 0) return utf8.decode(todo.subarray(0, i)) + utf8.decode(await decodificar(todo.subarray(i + marca.length)));
+  }
+  return utf8.decode(todo);
+}
+
+function leerMesasDeTrabajo(texto) {
+  const lineas = texto.split(/\r?\n/);
+  const fin = lineas.findIndex(l => l.includes('(ArtboardArray)'));
+  const mesas = [];
+  let cur = null;
+  for (let i = 0; i < fin; i++) {
+    let m;
+    if ((m = /^%_\((.*)\) \/UnicodeString \(Name\) ,$/.exec(lineas[i]))) mesas.push(cur = { name: m[1], pts: [] });
+    else if (cur && cur.pts.length < 2 && (m = /^%_(-?[\d.]+) (-?[\d.]+) \/RealPointRelToROrigin/.exec(lineas[i]))) cur.pts.push([+m[1], +m[2]]);
+  }
+  return mesas.filter(b => b.pts.length === 2).map(({ name, pts: [[x1, y1], [x2, y2]] }) => ({
+    name, box: { x: Math.min(x1, x2), y: Math.min(y1, y2), w: Math.abs(x2 - x1), h: Math.abs(y2 - y1) },
+  }));
+}
+
+// Trazados de una capa, en coordenadas de Illustrator (y hacia arriba). Las curvas se aplanan.
+function leerTrazados(texto, capa) {
+  const lineas = texto.split(/\r?\n/);
+  const ini = lineas.indexOf(`(${capa}) Ln`);
+  if (ini < 0) return [];
+  const trazados = [];
+  let cur = null, ult = null, nivel = 0;
+  const bez = (p0, p1, p2, p3) => {
+    for (let k = 1; k <= 8; k++) {
+      const t = k / 8, u = 1 - t;
+      cur.push([0, 1].map(j => u * u * u * p0[j] + 3 * u * u * t * p1[j] + 3 * u * t * t * p2[j] + t * t * t * p3[j]));
+    }
+  };
+  for (let i = ini + 1; i < lineas.length; i++) {
+    const l = lineas[i];
+    if (l.startsWith('%AI5_BeginLayer')) nivel++;
+    else if (l.startsWith('%AI5_EndLayer') && nivel-- === 0) break;
+    const t = l.trim().split(/\s+/);
+    const op = t.pop();
+    const n = t.map(Number);
+    if (!n.length || n.some(Number.isNaN)) continue;
+    if (op === 'm' && n.length === 2) trazados.push(cur = [n]);
+    else if (!cur) continue;
+    else if (/^[Ll]$/.test(op) && n.length === 2) cur.push(n);
+    else if (/^[Cc]$/.test(op) && n.length === 6) bez(ult, n.slice(0, 2), n.slice(2, 4), n.slice(4));
+    else if (/^[Vv]$/.test(op) && n.length === 4) bez(ult, ult, n.slice(0, 2), n.slice(2));
+    else if (/^[Yy]$/.test(op) && n.length === 4) bez(ult, n.slice(0, 2), n.slice(2), n.slice(2));
+    else continue;
+    ult = cur[cur.length - 1];
+  }
+  return trazados.map(limpiarMolde);
+}
+
+// Quita duplicados y los piquetes (muescas en V), guardándolos aparte: indican cómo se cosen las piezas.
+function limpiarMolde(crudo) {
+  const pts = crudo.filter((p, i) => i === 0 || dist(p, crudo[i - 1]) > 0.5);
+  if (pts.length > 2 && dist(pts[0], pts[pts.length - 1]) < 1) pts.pop();
+  const notches = [];
+  for (let cambio = true; cambio;) {
+    cambio = false;
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[(i - 1 + pts.length) % pts.length], b = pts[i], c = pts[(i + 1) % pts.length];
+      const la = dist(a, b), lc = dist(b, c);
+      if (la < 16 && lc < 16 && dist(a, c) / (la + lc) < 0.6) {
+        notches.push(b);
+        pts.splice(i, 1);
+        cambio = true;
+        break;
+      }
+    }
+  }
+  return { pts, notches };
+}
+
+// Plantilla = mesas de trabajo + molde de cada una (el trazado de «guias» que cae dentro, el más grande).
+function plantillaDesdeTexto(texto, nombre) {
+  const artboards = leerMesasDeTrabajo(texto);
+  const piezas = {};
+  const areas = {};
+  for (const g of leerTrazados(texto, CFG.capaGuias)) {
+    if (g.pts.length < 3) continue;
+    const bb = bbox(g.pts), c = [(bb.x0 + bb.x1) / 2, (bb.y0 + bb.y1) / 2];
+    const ab = artboards.find(a => c[0] >= a.box.x && c[0] <= a.box.x + a.box.w && c[1] >= a.box.y && c[1] <= a.box.y + a.box.h);
+    const area = (bb.x1 - bb.x0) * (bb.y1 - bb.y0);
+    if (ab && (!piezas[ab.name] || area > areas[ab.name])) { piezas[ab.name] = g; areas[ab.name] = area; }
+  }
+  return artboards.length && Object.keys(piezas).length ? { nombre, artboards, piezas } : null;
+}
+
+function plantillaGuardada() {
+  try {
+    const p = JSON.parse(localStorage.getItem(CLAVE_PLANTILLA) || 'null');
+    if (p && p.artboards && p.piezas) return p;
+  } catch { /* sin almacenamiento: queda la base */ }
+  return JSON.parse(document.getElementById('plantilla-base').textContent);
+}
+
+function guardarPlantilla(p) {
+  try { localStorage.setItem(CLAVE_PLANTILLA, JSON.stringify(p)); } catch { /* sin almacenamiento: no se recuerda */ }
+}
+
+// Cada mesa de trabajo es una página del PDF: se rasteriza con pdf.js, sin las capas ocultas.
+// Con intent 'print' porque el modo pantalla espera requestAnimationFrame, que no corre si la
+// pestaña no se está mostrando (y además respeta las capas marcadas como no imprimibles).
+async function rasterizarPaginas(bytes) {
+  const pdf = await pdfjsLib.getDocument({ data: bytes.slice() }).promise;
+  const occ = await pdf.getOptionalContentConfig({ intent: 'print' });
+  const grupos = occ && typeof occ[Symbol.iterator] === 'function' ? [...occ] : Object.entries(occ?.getGroups?.() || {});
+  for (const [id, g] of grupos) if (CFG.capasOcultas.test(String(g?.name || '').trim())) occ.setVisibility(id, false);
+  const paginas = [];
+  for (let n = 1; n <= pdf.numPages; n++) {
+    const page = await pdf.getPage(n);
+    const v1 = page.getViewport({ scale: 1 });
+    const vp = page.getViewport({ scale: CFG.dpi / 72 });
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(vp.width);
+    canvas.height = Math.round(vp.height);
+    await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp, intent: 'print', optionalContentConfigPromise: Promise.resolve(occ) }).promise;
+    paginas.push({ w: v1.width, h: v1.height, canvas });
+  }
+  await pdf.destroy();
+  return paginas;
+}
+
+// Página ↔ mesa de trabajo: primero por orden, después por tamaño (las dos sisas miden igual).
+function emparejar(plantilla, paginas) {
+  const usadas = new Set(), P = {}, faltan = [];
+  plantilla.artboards.forEach((b, i) => {
+    const encaja = pg => Math.abs(pg.w - b.box.w) < 3 && Math.abs(pg.h - b.box.h) < 3;
+    const k = paginas[i] && !usadas.has(i) && encaja(paginas[i]) ? i : paginas.findIndex((pg, j) => !usadas.has(j) && encaja(pg));
+    if (k < 0) { faltan.push(b.name); return; }
+    usadas.add(k);
+    const molde = plantilla.piezas[b.name] || null;
+    P[b.name] = { name: b.name, id: b.name, ab: b.box, canvas: paginas[k].canvas, poly: molde, bb: molde ? bbox(molde.pts) : null };
+  });
+  return { P, faltan, sobran: paginas.length - usadas.size };
+}
+
+// ═══════════════════════════════════════════════════════════════ geometría
+
+function bbox(pts) {
+  const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
+  return { x0: Math.min(...xs), y0: Math.min(...ys), x1: Math.max(...xs), y1: Math.max(...ys) };
+}
+
+function argmax(pts, score) {
+  let best = -1, bestScore = -Infinity;
+  pts.forEach((p, i) => { const s = score(p); if (s > bestScore) { best = i; bestScore = s; } });
+  return best;
+}
+
+function pointInPoly([x, y], pts) {
+  let dentro = false;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const [xi, yi] = pts[i], [xj, yj] = pts[j];
+    if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) dentro = !dentro;
+  }
+  return dentro;
+}
+
+// Tramo del contorno entre los vértices i y j que no pasa por el ruedo (el más alto de los dos sentidos).
+function subpath(pts, i, j) {
+  const n = pts.length, fwd = [], bwd = [];
+  for (let k = i; ; k = (k + 1) % n) { fwd.push(pts[k]); if (k === j) break; }
+  for (let k = i; ; k = (k - 1 + n) % n) { bwd.push(pts[k]); if (k === j) break; }
+  const minY = a => Math.min(...a.map(p => p[1]));
+  return minY(fwd) >= minY(bwd) ? fwd : bwd;
+}
+
+function cutAtX(pts, x0) {
+  for (let i = 0; i < pts.length - 1; i++) {
+    const a = pts[i], b = pts[i + 1];
+    if ((a[0] - x0) * (b[0] - x0) <= 0 && a[0] !== b[0]) {
+      const t = (x0 - a[0]) / (b[0] - a[0]);
+      return [[x0, a[1] + t * (b[1] - a[1])], ...pts.slice(i + 1)];
+    }
+  }
+  return pts;
+}
+
+// Frente / espalda: costados, hombros, sisas y escote a partir del contorno del molde.
+function analyzeBody(poly) {
+  const pts = poly.pts, bb = bbox(pts), cx = (bb.x0 + bb.x1) / 2, h = bb.y1 - bb.y0;
+  const sideTop = x => argmax(pts, p => (Math.abs(p[0] - x) < 1 ? p[1] : -Infinity));
+  // Hombro: a cada lado del centro, el tramo más alto que no sea un detalle chico de la curva.
+  const shoulder = left => {
+    let best = null;
+    pts.forEach((a, i) => {
+      const j = (i + 1) % pts.length, b = pts[j], low = Math.min(a[1], b[1]);
+      if (low < bb.y1 - 0.2 * h || dist(a, b) < 0.05 * (bb.x1 - bb.x0) || ((a[0] + b[0]) / 2 < cx) !== left) return;
+      if (!best || low > best.low) best = { low, i, j };
+    });
+    const iOuter = Math.abs(pts[best.i][0] - cx) > Math.abs(pts[best.j][0] - cx);
+    return { outer: iOuter ? best.i : best.j, inner: iOuter ? best.j : best.i };
+  };
+  const sL = sideTop(bb.x0), sR = sideTop(bb.x1), shL = shoulder(true), shR = shoulder(false);
+  return {
+    pts, bb,
+    side: { left: pts[sL], right: pts[sR] },
+    armhole: { left: subpath(pts, sL, shL.outer), right: subpath(pts, sR, shR.outer) },
+    neck: subpath(pts, shL.inner, shR.inner),
+  };
+}
+
+function analyzeSide(poly) {
+  const pts = poly.pts, bb = bbox(pts);
+  const tl = argmax(pts, p => (Math.abs(p[0] - bb.x0) < 1 ? p[1] : -Infinity));
+  const tr = argmax(pts, p => (Math.abs(p[0] - bb.x1) < 1 ? p[1] : -Infinity));
+  const notch = poly.notches.find(p => Math.abs(p[0] - bb.x0) < 12 || Math.abs(p[0] - bb.x1) < 12);
+  return {
+    bb, cx: (bb.x0 + bb.x1) / 2,
+    top: subpath(pts, tl, tr),
+    topY: { left: pts[tl][1], right: pts[tr][1] },
+    // El piquete lateral marca el borde que se cose al frente.
+    frontEdge: notch ? (Math.abs(notch[0] - bb.x0) < 12 ? 'left' : 'right') : null,
+  };
+}
+
+// Ubica la mitad visible de un costadillo al costado del cuerpo (at = lado del que mira).
+function placeSide(S, B, view, at) {
+  const need = at === 'left' ? 'right' : 'left';
+  const frontEdge = S.frontEdge || need;
+  const attach = view === 'front' ? frontEdge : (frontEdge === 'left' ? 'right' : 'left');
+  const mirror = attach !== need;
+  const attachX = need === 'right' ? S.bb.x1 : S.bb.x0;
+  const dx = (at === 'left' ? B.bb.x0 : B.bb.x1) - attachX;
+  // Alineamos el comienzo de la sisa (no el piquete) para que la tira quede continua.
+  const dy = B.side[at][1] - S.topY[attach];
+  const T = p => [(mirror ? 2 * S.cx - p[0] : p[0]) + dx, p[1] + dy];
+  const cxV = S.cx + dx, edgeX = attachX + dx;
+  const top = S.top.map(T);
+  if ((top[top.length - 1][0] - top[0][0]) * (edgeX - cxV) < 0) top.reverse();
+  const topHalf = cutAtX(top, cxV);
+  const bottom = Math.max(S.bb.y0 + dy, B.bb.y0);
+  return {
+    topHalf, edgeX,
+    poly: [...topHalf, [edgeX, bottom], [cxV, bottom]],
+    matrix: [mirror ? -1 : 1, 0, 0, 1, (mirror ? 2 * S.cx : 0) + dx, -dy],
+  };
+}
+
+// Tira (sisa / cuello) doblada al medio a lo largo de una costura: cada tramo recibe una porción
+// rotada de la tira. 'front' muestra una mitad de la tira y 'back' la otra, como queda cosida.
+function band(pathAI, strip, type, inside) {
+  let P = pathAI.filter((p, i) => i === 0 || dist(p, pathAI[i - 1]) > 0.5).map(svgPt);
+  const H2 = (strip.bb.y1 - strip.bb.y0) / 2;
+  const segNormal = (pts, i, s) => {
+    const a = pts[i], b = pts[i + 1], L = dist(a, b);
+    return [(-(b[1] - a[1]) / L) * s, ((b[0] - a[0]) / L) * s];
+  };
+  const outwardSign = pts => {
+    let vote = 0;
+    for (let i = 0; i < pts.length - 1; i++) {
+      const n = segNormal(pts, i, 1);
+      const m = [(pts[i][0] + pts[i + 1][0]) / 2 + n[0] * 4, (pts[i][1] + pts[i + 1][1]) / 2 + n[1] * 4];
+      vote += inside(aiPt(m)) ? -1 : 1;
+    }
+    return vote >= 0 ? 1 : -1;
+  };
+  let s = outwardSign(P);
+  // Recorremos en el sentido que no espeja la imagen de la tira.
+  if (s * (type === 'front' ? 1 : -1) < 0) { P = P.reverse(); s = -s; }
+
+  const { x0, x1, y0, y1 } = strip.bb, W = x1 - x0;
+  const total = P.slice(1).reduce((acc, p, i) => acc + dist(P[i], p), 0);
+  const v0 = type === 'front' ? -y1 : -(y0 + y1) / 2;
+  let u = (x0 + x1) / 2 - total / 2;
+  const slices = [], segN = [];
+  for (let i = 0; i < P.length - 1; i++) {
+    const a = P[i], L = dist(a, P[i + 1]);
+    const d = [(P[i + 1][0] - a[0]) / L, (P[i + 1][1] - a[1]) / L];
+    const n = segNormal(P, i, s);
+    segN.push(n);
+    const f = type === 'front' ? n : [-n[0], -n[1]];
+    const o = type === 'front' ? a : [a[0] + n[0] * H2, a[1] + n[1] * H2];
+    const uu = x0 + ((((u - x0) % W) + W) % W);
+    slices.push({ img: strip.id, m: [d[0], d[1], f[0], f[1], o[0], o[1]], src: [uu, v0, L + 1.5, H2] });
+    u += L;
+  }
+  const vn = P.map((_, i) => {
+    const a = segN[i - 1] || segN[i], b = segN[i] || segN[i - 1];
+    const v = [a[0] + b[0], a[1] + b[1]], l = Math.hypot(...v) || 1;
+    return [v[0] / l, v[1] / l];
+  });
+  const offset = k => P.map((p, i) => [p[0] + vn[i][0] * k, p[1] + vn[i][1] * k]);
+  return { slices, seam: P, outer: offset(H2), stitch: offset(Math.min(6, H2 / 4)) };
+}
+
+// Vista armada (frente o espalda) como lista de operaciones de dibujo en coordenadas SVG (y hacia abajo).
+function armarVista(view, P) {
+  const body = P[view === 'front' ? CFG.front : CFG.back];
+  if (!body?.poly) return null;
+  const B = analyzeBody(body.poly);
+  // De frente, a la izquierda del que mira está el lado derecho de quien la viste.
+  const wearer = at => ((view === 'front') === (at === 'left') ? 'R' : 'L');
+  const sides = {};
+  for (const at of ['left', 'right']) {
+    const piece = P[wearer(at) === 'R' ? CFG.sideR : CFG.sideL];
+    if (piece?.poly) sides[at] = { piece, place: placeSide(analyzeSide(piece.poly), B, view, at) };
+  }
+  const inBody = p => pointInPoly(p, B.pts);
+  const inGarment = p => inBody(p) || Object.values(sides).some(s => pointInPoly(p, s.place.poly));
+  const bands = [];
+  for (const at of ['left', 'right']) {
+    const strip = P[wearer(at) === 'R' ? CFG.armR : CFG.armL];
+    if (strip?.poly) bands.push(band([...(sides[at] ? sides[at].place.topHalf : []), ...B.armhole[at]], strip, view, inGarment));
+  }
+  if (P[CFG.neck]?.poly) bands.push(band(B.neck, P[CFG.neck], view, inBody));
+
+  const sp = pts => pts.map(svgPt);
+  // Las tiras no pueden pasar la línea de contorno que forma el centro de cada costadillo.
+  const xs = Object.values(sides).flatMap(s => s.place.poly.map(p => p[0]));
+  const xL = sides.left ? Math.min(...xs) : B.bb.x0, xR = sides.right ? Math.max(...xs) : B.bb.x1;
+  const garment = [sp(B.pts), ...Object.values(sides).map(s => sp(s.place.poly))];
+  const art = [
+    { clip: [[[xL, -1e5], [xR, -1e5], [xR, 1e5], [xL, 1e5]]], items: bands.flatMap(b => b.slices) },
+    ...Object.values(sides).map(({ piece, place }) => ({ clip: [sp(place.poly)], img: piece.id, m: place.matrix })),
+    { clip: [sp(B.pts)], img: body.id },
+  ];
+  const INK = { width: 4, alpha: 0.6 }, STITCH = { width: 3, alpha: 0.45, dash: [12, 9] };
+  const lines = [{ line: sp(B.pts), close: true, ...INK }];
+  for (const [at, { place }] of Object.entries(sides)) {
+    lines.push({ line: sp(place.poly), close: true, ...INK });
+    const x = place.edgeX + (at === 'left' ? -9 : 9), yTop = place.topHalf[place.topHalf.length - 1][1];
+    lines.push({ line: [[x, -B.bb.y0], [x, -yTop + 12]], ...STITCH });
+  }
+  for (const b of bands) {
+    lines.push({ line: [b.seam[0], ...b.outer, b.seam.at(-1)], ...INK });
+    lines.push({ line: b.stitch, ...STITCH });
+  }
+  const vb = bbox([...garment.flat(), ...bands.flatMap(b => b.outer)]);
+  const hemY = -(B.bb.y0 + CFG.hemStitch);
+  lines.push({ clip: garment, items: [{ line: [[vb.x0, hemY], [vb.x1, hemY]], ...STITCH }] });
+  return {
+    vb, art, lines,
+    // Para la textura 3D: sin los contornos negros (el borde ya lo da la forma), con los pespuntes.
+    xL, xR, hem: -B.bb.y0, top: -B.bb.y1, arm: -(B.side.left[1] + B.side.right[1]) / 2, yMin: vb.y0,
+    ops3d: [...art, ...lines.filter(l => l.dash || l.items)],
+  };
+}
+
+function drawOps(ctx, ops, imgs) {
+  for (const op of ops) {
+    ctx.save();
+    if (op.clip) {
+      ctx.beginPath();
+      for (const poly of op.clip) { poly.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y))); ctx.closePath(); }
+      ctx.clip();
+    }
+    if (op.items) drawOps(ctx, op.items, imgs);
+    else if (op.line) {
+      ctx.beginPath();
+      op.line.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+      if (op.close) ctx.closePath();
+      ctx.lineWidth = op.width;
+      ctx.lineJoin = 'round';
+      ctx.setLineDash(op.dash || []);
+      ctx.strokeStyle = `rgba(29, 29, 31, ${op.alpha})`;
+      ctx.stroke();
+    } else {
+      const im = imgs[op.img];
+      if (im) {
+        if (op.m) ctx.transform(...op.m);
+        if (op.src) {
+          const [x, y, w, h] = op.src, k = im.canvas.width / im.w;
+          ctx.drawImage(im.canvas, (x - im.x) * k, (y - im.y) * k, w * k, h * k, 0, 0, w, h);
+        } else ctx.drawImage(im.canvas, im.x, im.y, im.w, im.h);
+      }
+    }
+    ctx.restore();
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════ boceto 2D
+
+function dibujarBoceto(vistas, imgs) {
+  const K = 0.5, pad = 70, gap = 90, rotulo = 150;   // K = px por punto
+  const tam = vistas.map(v => ({ w: v.vb.x1 - v.vb.x0 + 2 * pad, h: v.vb.y1 - v.vb.y0 + 2 * pad }));
+  const c = document.createElement('canvas');
+  c.width = Math.ceil((tam.reduce((s, t) => s + t.w, 0) + gap) * K);
+  c.height = Math.ceil((Math.max(...tam.map(t => t.h)) + rotulo) * K);
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, c.width, c.height);
+  let ox = 0;
+  vistas.forEach((v, i) => {
+    const t = tam[i], oy = rotulo * K;
+    ctx.fillStyle = '#6b6b70';
+    ctx.font = `600 ${Math.round(72 * K)}px "Segoe UI", system-ui, sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.fillText(i === 0 ? 'FRENTE' : 'ESPALDA', ox + (t.w * K) / 2, 110 * K);
+    // El arte va en una capa aparte para darle sombra sin sombrear las costuras.
+    const capa = document.createElement('canvas');
+    capa.width = Math.ceil(t.w * K);
+    capa.height = Math.ceil(t.h * K);
+    const cctx = capa.getContext('2d');
+    cctx.setTransform(K, 0, 0, K, -(v.vb.x0 - pad) * K, -(v.vb.y0 - pad) * K);
+    drawOps(cctx, v.art, imgs);
+    ctx.save();
+    ctx.shadowColor = 'rgba(0, 0, 0, .18)';
+    ctx.shadowBlur = 40 * K;
+    ctx.shadowOffsetY = 14 * K;
+    ctx.drawImage(capa, ox, oy);
+    ctx.restore();
+    ctx.save();
+    ctx.setTransform(K, 0, 0, K, ox - (v.vb.x0 - pad) * K, oy - (v.vb.y0 - pad) * K);
+    drawOps(ctx, v.lines, imgs);
+    ctx.restore();
+    ox += (t.w + gap) * K;
+  });
+  return c;
+}
+
+// ═══════════════════════════════════════════════════════════════ 3D
+
+// Textura: frente a la izquierda y espalda a la derecha; abajo el ruedo, h = 1 a la altura del hombro.
+function armarAtlas(vistas, imgs, limite = 4096) {
+  const filaPt = Math.max(...vistas.map(v => v.hem - v.top)), mitadPt = Math.max(...vistas.map(v => v.xR - v.xL));
+  const hMax = Math.max(...vistas.map(v => (v.hem - v.yMin) / (v.hem - v.top)));
+  // 1 px por punto, salvo que la placa de video no acepte una textura tan grande.
+  const PX = Math.min(1, limite / (2 * mitadPt), limite / (hMax * filaPt));
+  const filaPx = filaPt * PX;
+  const mitadPx = Math.round(mitadPt * PX);
+  const canvas = document.createElement('canvas');
+  canvas.width = 2 * mitadPx;
+  canvas.height = Math.ceil(hMax * filaPx);
+  const ctx = canvas.getContext('2d');
+  vistas.forEach((v, k) => {
+    const sx = mitadPx / (v.xR - v.xL), sy = filaPx / (v.hem - v.top);
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(k * mitadPx, 0, mitadPx, canvas.height);
+    ctx.clip();
+    ctx.setTransform(sx, 0, 0, sy, k * mitadPx - v.xL * sx, canvas.height - v.hem * sy);
+    drawOps(ctx, v.ops3d, imgs);
+    ctx.restore();
+  });
+  return { canvas, hTop: canvas.height / filaPx };
+}
+
+// Torso: el contorno de la prenda (frente + espalda, medidos en el molde) envuelve una sección
+// superelíptica que se afina sobre los hombros hasta que las tiras de adelante y atrás se juntan.
+function armarMalla(vistas, atlas) {
+  const PT_M = 0.0254 / 72, NS = 128, NH = 180, FORMA = 2.2, PROFUNDIDAD = 0.6, HOMBRO = 2.5, M = 720;
+  const prom = a => a.reduce((s, x) => s + x, 0) / a.length;
+  const medioContorno = prom(vistas.map(v => v.xR - v.xL)) * PT_M;
+  const alto = prom(vistas.map(v => v.hem - v.top)) * PT_M;
+  const hSisa = Math.min(0.9, prom(vistas.map(v => (v.hem - v.arm) / (v.hem - v.top))));
+  // Arriba de la sisa el torso se cierra con un perfil redondeado (potencia HOMBRO): los breteles suben y
+  // pasan por arriba del hombro. 2 = punta de botella, 3 = caja; 2,5 queda como un hombro.
+  const relacion = h => (h >= 1 ? 0 : h <= hSisa
+    ? PROFUNDIDAD * (0.94 + 0.06 * h / hSisa)
+    : PROFUNDIDAD * (1 - ((h - hSisa) / (1 - hSisa)) ** HOMBRO) ** (1 / HOMBRO));
+  const se = c => Math.sign(c) * Math.abs(c) ** (2 / FORMA);
+  const anillo = r => {
+    const xs = new Float64Array(M + 1), zs = new Float64Array(M + 1), largo = new Float64Array(M + 1);
+    for (let k = 0; k <= M; k++) {
+      const t = (2 * Math.PI * k) / M;
+      xs[k] = se(Math.cos(t));
+      zs[k] = r * se(Math.sin(t));
+      if (k) largo[k] = largo[k - 1] + Math.hypot(xs[k] - xs[k - 1], zs[k] - zs[k - 1]);
+    }
+    return { xs, zs, largo, P: largo[M] };
+  };
+  // Punto del anillo a una fracción del perímetro: la tela no se estira, se reparte por largo de arco.
+  const enAnillo = (R, frac) => {
+    const meta = frac * R.P;
+    let lo = 0, hi = M;
+    while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (R.largo[mid] <= meta) lo = mid; else hi = mid; }
+    const t = (meta - R.largo[lo]) / ((R.largo[hi] - R.largo[lo]) || 1);
+    return [R.xs[lo] + t * (R.xs[hi] - R.xs[lo]), R.zs[lo] + t * (R.zs[hi] - R.zs[lo])];
+  };
+  const filas = Array.from({ length: NH + 1 }, (_, i) => {
+    const h = (atlas.hTop * i) / NH, R = anillo(relacion(h));
+    return { y: h * alto, R, a: (2 * medioContorno) / R.P };
+  });
+
+  // Dos mallas de (NH+1)×(NS+1): frente (s 0..1, z > 0) y espalda (s 1..2, z < 0).
+  const vid = (mitad, i, j) => mitad * (NH + 1) * (NS + 1) + i * (NS + 1) + j;
+  const nV = 2 * (NH + 1) * (NS + 1);
+  const pos = new Float32Array(nV * 3), uv = new Float32Array(nV * 2);
+  for (let mitad = 0; mitad < 2; mitad++) for (let i = 0; i <= NH; i++) for (let j = 0; j <= NS; j++) {
+    const s = mitad + j / NS, { y, R, a } = filas[i], [x, z] = enAnillo(R, s / 2), k = vid(mitad, i, j);
+    pos.set([a * x, y, a * z], k * 3);
+    uv.set([mitad ? 1.5 - 0.5 * s : 0.5 - 0.5 * s, i / NH], k * 2);
+  }
+
+  // Solo se arman las celdas donde hay prenda (más un margen de una celda para no comer bordes).
+  const S = 3, mascara = document.createElement('canvas');
+  mascara.width = 2 * NS * S;
+  mascara.height = NH * S;
+  const mctx = mascara.getContext('2d', { willReadFrequently: true });
+  mctx.imageSmoothingQuality = 'high';
+  mctx.drawImage(atlas.canvas, 0, 0, mascara.width, mascara.height);
+  const alfa = mctx.getImageData(0, 0, mascara.width, mascara.height).data;
+  const llena = new Uint8Array(2 * NH * NS);
+  for (let mitad = 0; mitad < 2; mitad++) for (let i = 0; i < NH; i++) for (let j = 0; j < NS; j++) {
+    const px = (mitad ? mascara.width : mascara.width / 2) - S * (j + 1), py = mascara.height - S * (i + 1);
+    let hay = 0;
+    for (let dy = 0; dy < S && !hay; dy++) for (let dx = 0; dx < S && !hay; dx++) hay = alfa[((py + dy) * mascara.width + px + dx) * 4 + 3] > 8 ? 1 : 0;
+    llena[(mitad * NH + i) * NS + j] = hay;
+  }
+  const usar = (mitad, i, j) => {
+    for (let di = -1; di <= 1; di++) for (let dj = -1; dj <= 1; dj++) {
+      const ii = i + di, jj = j + dj;
+      if (ii >= 0 && ii < NH && jj >= 0 && jj < NS && llena[(mitad * NH + ii) * NS + jj]) return true;
+    }
+    return false;
+  };
+  const indices = [];
+  for (let mitad = 0; mitad < 2; mitad++) for (let i = 0; i < NH; i++) for (let j = 0; j < NS; j++) {
+    if (!usar(mitad, i, j)) continue;
+    const a = vid(mitad, i, j), b = vid(mitad, i + 1, j), c = vid(mitad, i, j + 1), d = vid(mitad, i + 1, j + 1);
+    indices.push(a, b, c, c, b, d);
+  }
+  // Se compactan los vértices usados.
+  const nuevo = new Int32Array(nV).fill(-1), P2 = [], U2 = [], I2 = [];
+  for (const k of indices) {
+    if (nuevo[k] < 0) { nuevo[k] = P2.length / 3; P2.push(pos[k * 3], pos[k * 3 + 1], pos[k * 3 + 2]); U2.push(uv[k * 2], uv[k * 2 + 1]); }
+    I2.push(nuevo[k]);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(P2, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(U2, 2));
+  geo.setIndex(I2);
+  geo.computeVertexNormals();
+  // En las costuras laterales frente y espalda comparten posición: se promedian las normales para que no se vea el corte.
+  const nrm = geo.attributes.normal;
+  const unir = (p, q) => {
+    if (p < 0 || q < 0) return;
+    const v = new THREE.Vector3().fromBufferAttribute(nrm, p).add(new THREE.Vector3().fromBufferAttribute(nrm, q)).normalize();
+    nrm.setXYZ(p, v.x, v.y, v.z);
+    nrm.setXYZ(q, v.x, v.y, v.z);
+  };
+  for (let i = 0; i <= NH; i++) {
+    unir(nuevo[vid(0, i, NS)], nuevo[vid(1, i, 0)]);
+    unir(nuevo[vid(0, i, 0)], nuevo[vid(1, i, NS)]);
+  }
+  return { geo, alto, ancho: medioContorno };
+}
+
+const host = document.getElementById('vista3d');
+const escena = new THREE.Scene();
+// Luces simples, sin mapa de entorno: menos trabajo para la placa de video.
+escena.add(new THREE.HemisphereLight(0xffffff, 0xd6d2ca, 2.2));
+const luz = new THREE.DirectionalLight(0xffffff, 1.6);
+luz.position.set(1.2, 2.4, 2.6);
+const contraluz = new THREE.DirectionalLight(0xffffff, 0.7);
+contraluz.position.set(-1.6, 1.4, -2.2);
+escena.add(luz, contraluz);
+const camara = new THREE.PerspectiveCamera(30, 1, 0.05, 50);
+let renderer = null, controles = null, fallo3D = null;
+let prenda = null, sombra = null, altoPrenda = 0.8;
+
+// Si el navegador no da WebGL (o lo corta), el boceto y "Descargar .glb" siguen andando: solo falta la vista.
+function aviso3D(texto) {
+  fallo3D = texto;
+  const p = document.createElement('p');
+  p.className = 'vacio';
+  p.textContent = texto;
+  host.replaceChildren(p);
+}
+const CONSEJO = 'El boceto y "Descargar .glb" siguen funcionando. Probá recargar la página, abrirla en Edge, o en Chrome: Configuración → Sistema → activar "Usar aceleración de hardware cuando esté disponible".';
+try {
+  renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  const gl = renderer.getContext(), ext = gl.getExtension('WEBGL_debug_renderer_info');
+  const placa = ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+  renderer.domElement.addEventListener('webglcontextlost', e => {
+    e.preventDefault();
+    aviso3D(`El navegador cortó el 3D: se perdió el contexto WebGL (placa: ${placa}). ${CONSEJO}`);
+  });
+  renderer.domElement.addEventListener('webglcontextrestored', () => {
+    fallo3D = null;
+    if (prenda) { host.replaceChildren(renderer.domElement); ajustar(); }
+  });
+  controles = new OrbitControls(camara, renderer.domElement);
+  controles.enableDamping = true;
+  controles.autoRotate = true;
+  controles.autoRotateSpeed = 1.2;
+  new ResizeObserver(() => ajustar()).observe(host);
+  renderer.setAnimationLoop(() => {
+    if (!prenda || fallo3D) return;
+    controles.update();
+    renderer.render(escena, camara);
+  });
+} catch (e) {
+  console.error(e);
+  renderer = null;
+  aviso3D(`Este navegador no puede mostrar 3D (WebGL): ${e.message}. ${CONSEJO}`);
+}
+
+function ajustar() {
+  const w = host.clientWidth, h = host.clientHeight;
+  if (!renderer || !w || !h) return;
+  renderer.setSize(w, h, false);
+  camara.aspect = w / h;
+  camara.updateProjectionMatrix();
+}
+
+function encuadrar([x, z] = [0, 1]) {
+  const objetivo = new THREE.Vector3(0, altoPrenda * 0.5, 0), d = altoPrenda * 2.7;
+  camara.position.set(x * d, objetivo.y + altoPrenda * 0.08, z * d);
+  camara.lookAt(objetivo);
+  if (controles) { controles.target.copy(objetivo); controles.update(); }
+}
+
+function mostrar3D(vistas, imgs) {
+  const atlas = armarAtlas(vistas, imgs, Math.min(4096, renderer?.capabilities.maxTextureSize || 4096));
+  const { geo, alto, ancho } = armarMalla(vistas, atlas);
+  if (prenda) {
+    prenda.traverse(o => { if (o.isMesh) { o.material.map.dispose(); o.material.dispose(); o.geometry.dispose(); } });
+    escena.remove(prenda);
+  }
+  const textura = new THREE.CanvasTexture(atlas.canvas);
+  textura.colorSpace = THREE.SRGBColorSpace;
+  textura.anisotropy = renderer ? Math.min(8, renderer.capabilities.getMaxAnisotropy()) : 1;
+  // Exterior con el estampado; interior (lo que se ve por la sisa y el escote) más oscuro, como el revés
+  // de la tela. El interior es la misma malla dada vuelta (glTF no tiene materiales de cara trasera).
+  const material = color => new THREE.MeshStandardMaterial({ map: textura, color, alphaTest: 0.5, roughness: 0.85, metalness: 0 });
+  const geoInterior = geo.clone();
+  const idx = geoInterior.index.array;
+  for (let i = 0; i < idx.length; i += 3) [idx[i + 1], idx[i + 2]] = [idx[i + 2], idx[i + 1]];
+  const nrm = geoInterior.attributes.normal.array;
+  for (let i = 0; i < nrm.length; i++) nrm[i] = -nrm[i];
+  const exterior = new THREE.Mesh(geo, material(0xffffff));
+  const interior = new THREE.Mesh(geoInterior, material(0x8a8a8a));
+  exterior.name = 'Exterior';
+  interior.name = 'Interior';
+  prenda = new THREE.Group();
+  prenda.name = 'Prenda';
+  prenda.add(exterior, interior);
+  escena.add(prenda);
+  if (!sombra) {
+    const c = document.createElement('canvas');
+    c.width = c.height = 128;
+    const g = c.getContext('2d'), grad = g.createRadialGradient(64, 64, 0, 64, 64, 64);
+    grad.addColorStop(0, 'rgba(0, 0, 0, .28)');
+    grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    g.fillStyle = grad;
+    g.fillRect(0, 0, 128, 128);
+    sombra = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(c), transparent: true, depthWrite: false }));
+    sombra.rotation.x = -Math.PI / 2;
+    escena.add(sombra);
+  }
+  sombra.scale.set(ancho * 1.25, ancho * 0.8, 1);
+  sombra.position.y = -alto * 0.06;
+  altoPrenda = alto;
+  encuadrar();
+  if (!renderer || fallo3D) return;
+  if (!renderer.domElement.isConnected) host.replaceChildren(renderer.domElement);
+  ajustar();
+}
+
+// ═══════════════════════════════════════════════════════════════ pantalla
+
+const $ = id => document.getElementById(id);
+let bocetoActual = null, nombreBase = 'prenda';
+
+function estado(html, error = false) {
+  $('estado').innerHTML = html;
+  $('estado').className = error ? 'error' : '';
+}
+
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+async function cargarArchivo(nombre, bytes) {
+  nombreBase = nombre.replace(/\.(ai|pdf)$/i, '');
+  estado(`Leyendo <b>${esc(nombre)}</b>…`);
+  const cabecera = new TextDecoder('latin1').decode(bytes.subarray(0, 5));
+  if (cabecera !== '%PDF-') throw new Error('El archivo no es un PDF ni un .ai compatible con PDF. En Illustrator: Guardar como → .ai con "Crear archivo compatible con PDF" tildado, o Guardar como → PDF.');
+
+  // Moldes: del archivo si trae la capa «guias»; si no, la última plantilla leída (o la base).
+  let plantilla = null, deArchivo = false;
+  try {
+    const texto = await datosPrivados(bytes);
+    if (texto) plantilla = plantillaDesdeTexto(texto, nombre);
+  } catch (e) { console.warn('No se pudieron leer los datos de Illustrator:', e); }
+  if (plantilla) { deArchivo = true; guardarPlantilla(plantilla); } else plantilla = plantillaGuardada();
+
+  estado(`Leyendo las mesas de trabajo de <b>${esc(nombre)}</b>…`);
+  const paginas = await rasterizarPaginas(bytes);
+  const { P, faltan, sobran } = emparejar(plantilla, paginas);
+  const vistas = ['front', 'back'].map(v => armarVista(v, P));
+  if (!vistas[0] || !vistas[1]) {
+    throw new Error(`No encontré el ${!vistas[0] ? 'Frente' : 'Espalda'} con su molde. ` +
+      (deArchivo ? 'Revisá que la mesa de trabajo se llame así y que su molde esté en la capa «guias».'
+        : `Las páginas no coinciden con la plantilla «${esc(plantilla.nombre)}» (${plantilla.artboards.length} mesas de trabajo; el archivo tiene ${paginas.length} páginas).`));
+  }
+  const imgs = Object.fromEntries(Object.values(P).map(p => [p.id, { canvas: p.canvas, x: p.ab.x, y: -(p.ab.y + p.ab.h), w: p.ab.w, h: p.ab.h }]));
+
+  estado(`Armando el boceto y el 3D de <b>${esc(nombre)}</b>…`);
+  await new Promise(r => setTimeout(r, 30));   // que se pinte el mensaje antes del trabajo pesado
+  bocetoActual = dibujarBoceto(vistas, imgs);
+  $('boceto').replaceChildren(bocetoActual);
+  try { mostrar3D(vistas, imgs); }
+  catch (e) { console.error(e); aviso3D(`No se pudo armar el 3D: ${e.message}`); }
+  for (const b of document.querySelectorAll('.panel button')) b.disabled = false;
+
+  const avisos = [];
+  if (faltan.length) avisos.push(`sin página para: ${faltan.map(esc).join(', ')}`);
+  if (sobran > 0) avisos.push(`${sobran} página(s) que no son de la plantilla`);
+  estado(`<b>${esc(nombre)}</b> · ${paginas.length} mesas de trabajo · moldes ${deArchivo
+    ? 'del archivo (capa «guias»)'
+    : `de la plantilla «${esc(plantilla.nombre)}» (el archivo no trae la capa «guias»)`}` +
+    (avisos.length ? ` · <span style="color:var(--error)">Atención: ${avisos.join('; ')}</span>` : ''));
+}
+
+async function abrir(nombre, cargar) {
+  try { await cargarArchivo(nombre, new Uint8Array(await cargar())); }
+  catch (e) { console.error(e); estado(esc(e.message || String(e)), true); }
+}
+
+$('archivo').addEventListener('change', e => {
+  const f = e.target.files?.[0];
+  e.target.value = '';
+  if (f) abrir(f.name, () => f.arrayBuffer());
+});
+let arrastres = 0;
+window.addEventListener('dragenter', e => { e.preventDefault(); arrastres++; document.body.classList.add('arrastrando'); });
+window.addEventListener('dragleave', () => { if (--arrastres <= 0) { arrastres = 0; document.body.classList.remove('arrastrando'); } });
+window.addEventListener('dragover', e => e.preventDefault());
+window.addEventListener('drop', e => {
+  e.preventDefault();
+  arrastres = 0;
+  document.body.classList.remove('arrastrando');
+  const f = e.dataTransfer?.files?.[0];
+  if (f) abrir(f.name, () => f.arrayBuffer());
+});
+
+const VISTAS = { frente: [0, 1], espalda: [0, -1], costado: [1, 0] };
+for (const b of document.querySelectorAll('[data-vista]')) b.addEventListener('click', () => encuadrar(VISTAS[b.dataset.vista]));
+$('girar').addEventListener('click', () => {
+  controles.autoRotate = !controles.autoRotate;
+  $('girar').textContent = controles.autoRotate ? 'Pausar giro' : 'Girar';
+});
+
+function descargar(blob, nombre) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = nombre;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+$('bajarPng').addEventListener('click', () => bocetoActual?.toBlob(b => descargar(b, `${nombreBase} - boceto.png`), 'image/png'));
+async function exportarGlb() {
+  if (!prenda) throw new Error('el 3D no se llegó a armar');
+  return new GLTFExporter().parseAsync(prenda, { binary: true });
+}
+window.exportarGlb = exportarGlb;   // para generar el .glb sin el botón (pruebas, integración)
+$('bajarGlb').addEventListener('click', async () => {
+  try { descargar(new Blob([await exportarGlb()], { type: 'model/gltf-binary' }), `${nombreBase} - 3D.glb`); }
+  catch (e) { estado('No se pudo exportar el .glb: ' + esc(e.message), true); }
+});
+
+const desdeUrl = new URLSearchParams(location.search).get('archivo');
+if (desdeUrl) abrir(decodeURIComponent(desdeUrl.split('/').pop()), () => fetch(desdeUrl).then(r => { if (!r.ok) throw new Error(`No se pudo bajar ${desdeUrl} (${r.status})`); return r.arrayBuffer(); }));
+</script>
+</body>
+</html>

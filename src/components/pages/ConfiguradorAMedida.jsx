@@ -127,12 +127,27 @@ export default function ConfiguradorAMedida({ valor, onChange, deshabilitado = f
                         <div className="mt-3">
                             <p className="text-xs font-bold text-slate-600 mb-1.5">Triángulo: hacia dónde va la punta por defecto <span className="font-normal text-slate-400">(abajo = banderín)</span></p>
                             <div className="flex flex-wrap gap-2">
+                                {/* 16/10: cambiar la punta por defecto también cambia las medidas fijas que tenían la anterior
+                                    (antes quedaban con la vieja y la tienda seguía dibujando esa) */}
                                 {(p?.puntas || ['abajo', 'arriba', 'izq', 'der']).map(o => (
-                                    <button key={o} type="button" aria-pressed={valor.orientacion === o} disabled={deshabilitado} onClick={() => set({ orientacion: o })} className={chip(valor.orientacion === o)}>
+                                    <button key={o} type="button" aria-pressed={valor.orientacion === o} disabled={deshabilitado}
+                                        onClick={() => set({
+                                            orientacion: o,
+                                            medidas: { ...valor.medidas, fijas: valor.medidas.fijas.map(fx => ((valor.formas.includes(fx.forma) ? fx.forma : valor.forma) === 'triangulo' && (fx.orientacion || valor.orientacion) === valor.orientacion ? { ...fx, orientacion: o } : fx)) },
+                                        })} className={chip(valor.orientacion === o)}>
                                         <IconoForma forma="triangulo" punta={o} className={valor.orientacion === o ? 'text-emerald-600' : 'text-slate-400'} />{NOMBRE[o]}
                                     </button>
                                 ))}
                             </div>
+                            {/* las medidas fijas con otra punta (cada una tiene la suya: es la que se dibuja y se pide) */}
+                            {valor.medidas.modo === 'FIJAS' && (() => {
+                                const otras = valor.medidas.fijas.filter(fx => (valor.formas.includes(fx.forma) ? fx.forma : valor.forma) === 'triangulo' && fx.orientacion && fx.orientacion !== valor.orientacion);
+                                return otras.length > 0 && (
+                                    <p className="mt-1.5 text-[11px] font-bold text-amber-600">
+                                        Ojo: {otras.map(fx => `${fx.nombre || 'una medida'} (${String(NOMBRE[fx.orientacion] || fx.orientacion).toLowerCase()})`).join(', ')} tiene{otras.length === 1 ? '' : 'n'} su propia punta: es la que se usa. Se cambia abajo, en Medidas.
+                                    </p>
+                                );
+                            })()}
                         </div>
                     )}
                 </div>

@@ -320,25 +320,6 @@ exports.getColumnsDictionary = async (req, res) => {
     }
 };
 
-// =====================================================================
-// 8. LEGACY (Por si acaso quedó algo viejo llamando a JSON)
-// =====================================================================
-// SIN USO (13/10): updateAreaConfig: marcado LEGACY y sin ruta en areasRoutes. Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
-exports.updateAreaConfig = async (req, res) => {
-    const { code } = req.params;
-    const { ui_config } = req.body;
-    try {
-        const pool = await getPool();
-        await pool.request()
-            .input('config', sql.NVarChar(sql.MAX), JSON.stringify(ui_config))
-            .input('code', sql.VarChar(20), code)
-            .query('UPDATE dbo.Areas SET ui_config = @config WHERE AreaID = @code');
-        res.json({ message: 'Configuración JSON actualizada' });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-};
-
 // ELIMINAR EQUIPO
 exports.deletePrinter = async (req, res) => {
     const { id } = req.params;

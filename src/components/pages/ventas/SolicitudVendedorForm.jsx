@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import { ArrowLeft, ArrowLeftRight, ArrowRight, Check, Circle, ClipboardPen, ClipboardPlus, Loader2, Lock, Plus, Save, Shirt, Trash2, Upload, X } from 'lucide-react';
-import { BLOQUE_DEL_REQUISITO, RESPUESTA_MUESTRA, datosProductoVacios, evaluarProducto, fichaVacia } from './checklistSolicitud';
+import { BLOQUE_DEL_REQUISITO, PIDE_APROBACION_ESCRITA, PIDE_MUESTRA_APROBADA, RESPUESTA_MUESTRA, datosProductoVacios, evaluarProducto, fichaVacia } from './checklistSolicitud';
 import api from '../../../services/apiClient';
 import { useAuth } from '../../../context/AuthContext';
 import { solicitudesVendedorService as svc } from '../../../services/modules/solicitudesVendedorService';
@@ -52,11 +52,16 @@ const nombreProd = (x, i) => (x?.TipoFabricacion === 'PRODUCTO_TERMINADO'
 // Requisitos que se completan al editar la solicitud (no en el alta)
 const REQ_AL_EDITAR = ['Boceto, ficha técnica o muestra de referencia', 'Muestra aprobada por el cliente', 'Archivo de diseño entregado y verificado', 'Diseño aprobado por escrito por el cliente', 'Tipos de costura por parte de la prenda', 'Terminaciones definidas', 'Avíos y accesorios definidos', 'Tela e insumos definidos, y quién los provee'];
 const MODALIDAD = { PRODUCTO_TERMINADO: 'Producto del catálogo', PERSONALIZADO: 'Producto del cliente' };
+// 15/10: por ahora solo se toman pedidos de productos del catálogo. "Producto del cliente" no se ofrece: no tiene dónde
+// cargar las telas ni si lleva corte y costura. Las solicitudes nuevas arrancan como del catálogo, sin elegir modalidad;
+// las viejas de producto del cliente se siguen viendo y editando. true = vuelve la elección de modalidad.
+const ACEPTA_PRODUCTO_DEL_CLIENTE = false;
 const modalidadDe = (ps) => {
     const t = [...new Set(ps.map(x => x.TipoFabricacion).filter(Boolean))];
     return { modalidad: t.length === 1 ? t[0] : '', mezclada: t.length > 1 };
 };
-const parteVacia = (incluido = false) => ({ IncluidoEnProducto: incluido, CantidadTotal: '', PorPrenda: '', Ubicacion: '', ArteOrigen: 'EMPRESA', Observaciones: '', Datos: {}, Estado: 'INGRESADO' });
+// PorPrenda arranca en 1 (15/10): la cantidad y la ubicación salen después de la lista de jugadores y de la tabla del arte
+const parteVacia = (incluido = false) => ({ IncluidoEnProducto: incluido, CantidadTotal: '', PorPrenda: 1, Ubicacion: '', ArteOrigen: 'EMPRESA', Observaciones: '', Datos: {}, Estado: 'INGRESADO' });
 const opciones = (lista, campo) => [...new Set((lista || []).map(x => String(x[campo] || '').trim()).filter(Boolean))];
 
 // Pago y seña: mismos campos que la pestaña "Precio" de la solicitud (guardarPrecio / confirmarSena).
@@ -118,7 +123,7 @@ const capitalizar = (v) => String(v || '').trim().toLowerCase().replace(/\S+/g, 
 // El número grande de cada bloque se sacó: repetía el del paso.
 const Bloque = ({ id, titulo, sub, why, activo, children }) => (
     <section id={id} hidden={!activo} className={BLOQUE}>
-        <h2 className={`${TIT_BLOQUE} ${why ? 'mb-1' : 'mb-4'}`}>{titulo}{sub ? <small>{sub}</small> : null}</h2>
+        {titulo && <h2 className={`${TIT_BLOQUE} ${why ? 'mb-1' : 'mb-4'}`}>{titulo}{sub ? <small>{sub}</small> : null}</h2>}
         {why && <p className="mb-4 max-w-[62ch] text-sm text-slate-500">{why}</p>}
         {children}
     </section>
@@ -146,14 +151,24 @@ const ListaArchivos = ({ archivos, vacio }) => (
 );
 
 
-export default function SolicitudVendedorForm() {
-    const { id } = useParams();
+// [FASE 2 · 15/10] embebido: el formulario DENTRO de la solicitud, para editar en el lugar (ya no hay "Editar solicitud"):
+//   { id, bloques: [1] (Identificación) | [3] o [3, 7] (el producto y, sin TIZADA PRO, sus extras), productoSolId (el
+//     producto que se edita), nuevoProducto (se agrega uno), onListo() (guardó), onCancelar() }
+// Sin encabezado, pasos ni panel: el bloque y "Cancelar" / "Guardar". Guarda la solicitud entera, con las mismas reglas.
+export default function SolicitudVendedorForm({ embebido = null }) {
+    const { id: idRuta } = useParams();
+    // embebido sin id = alta dentro de la pantalla de la solicitud (Nueva solicitud, 15/10)
+    const id = embebido ? (embebido.id ? String(embebido.id) : undefined) : idRuta;
     const navigate = useNavigate();
     const { user } = useAuth() || {};
     const esEdicion = !!id;
+    // La página /ventas/solicitudes/:id/editar ya no se usa: se edita en la solicitud
+    const redirigir = !!idRuta && !embebido;
+    useEffect(() => { if (redirigir) navigate(`/ventas/solicitudes/${idRuta}`, { replace: true }); }, [redirigir, idRuta, navigate]);
 
     const [cargando, setCargando] = useState(esEdicion);
     const [guardando, setGuardando] = useState(false);
+    const [originales, setOriginales] = useState({});   // [15/10] producto de cada ProductoSolID al abrir (para avisar si se cambia)
     const [cliente, setCliente] = useState(null);
     const [presupuesto, setPresupuesto] = useState(null);
     const [cab, setCab] = useState({ NombreTrabajo: '', VendedorID: user?.id || '', Detalle: '', Observaciones: '', FechaEntrega: '', FechaEntregaHasta: '', Ficha: fichaVacia() });
@@ -163,10 +178,10 @@ export default function SolicitudVendedorForm() {
     const [archivosGuardados, setArchivosGuardados] = useState([]);   // en edición: para que el checklist vea los adjuntos
     const [comprobantes, setComprobantes] = useState([]);             // comprobantes elegidos, se suben al guardar
     const [arrastrando, setArrastrando] = useState(false);
-    const [productos, setProductos] = useState([productoVacio('')]);
+    const [productos, setProductos] = useState([productoVacio(ACEPTA_PRODUCTO_DEL_CLIENTE ? '' : 'PRODUCTO_TERMINADO')]);
     const [sel, setSel] = useState(0);
     const [extraSel, setExtraSel] = useState('');                     // pestaña de extra que se ve (BORDADO | DTF | TPU)
-    const [paso, setPaso] = useState(1);                              // pestaña (bloque) que se ve                                // producto que se ve en los bloques 3 a 7
+    const [paso, setPaso] = useState(embebido?.bloques?.[0] || 1);    // pestaña (bloque) que se ve                                // producto que se ve en los bloques 3 a 7
     const [vendedores, setVendedores] = useState([]);
     const [dialogo, preguntar] = useConfirmar();   // confirmaciones con el estilo del sistema (06/10; antes window.confirm)
     const [catalogo, setCatalogo] = useState([]);
@@ -230,7 +245,7 @@ export default function SolicitudVendedorForm() {
 
     // Edición: traer la solicitud
     useEffect(() => {
-        if (!esEdicion) return;
+        if (!esEdicion || redirigir) return;
         (async () => {
             try {
                 const s = await svc.obtener(id);
@@ -246,6 +261,7 @@ export default function SolicitudVendedorForm() {
                 setPago(pg);
                 setPagoInicial(pg);
                 setArchivosGuardados(s.Archivos || []);
+                setOriginales(Object.fromEntries(s.Productos.map(p => [p.ProductoSolID, { id: p.ProIdProducto, nombre: p.ProductoNombre }])));
                 const ps = s.Productos.map(p => {
                     const base = productoVacio();
                     const principal = p.Partes.find(x => x.Tipo === 'PRINCIPAL');
@@ -261,16 +277,22 @@ export default function SolicitudVendedorForm() {
                         Partes: partes, convertido: !!p.PedidoNoDocERP,
                     };
                 });
-                setProductos(ps);
+                // Embebido: el producto que se edita, o uno nuevo al final (mismo tipo que los demás)
+                if (embebido?.nuevoProducto) { setProductos([...ps, productoVacio(modalidadDe(ps).modalidad)]); setSel(ps.length); }
+                else {
+                    setProductos(ps);
+                    const i = embebido?.productoSolId ? ps.findIndex(x => x.ProductoSolID === embebido.productoSolId) : -1;
+                    if (i >= 0) setSel(i);
+                }
                 ps.forEach(p => {
                     if (p.ProIdProducto) cargarServiciosProducto(p._k, p.ProIdProducto, false);
                     if (p.Partes.BORDADO?.Datos?.variante) cargarMateriales('EMB', p.Partes.BORDADO.Datos.variante);
                     if (p.Partes.TPU?.Datos?.variante) cargarMateriales('TPU', p.Partes.TPU.Datos.variante);
                 });
-            } catch (e) { toast.error(errorDe(e)); navigate('/ventas/solicitudes'); }
+            } catch (e) { toast.error(errorDe(e)); if (embebido) embebido.onCancelar?.(); else navigate('/ventas/solicitudes'); }
             finally { setCargando(false); }
         })();
-    }, [id, esEdicion, navigate, cargarServiciosProducto, cargarMateriales]);
+    }, [id, esEdicion, navigate, cargarServiciosProducto, cargarMateriales]);   // eslint-disable-line react-hooks/exhaustive-deps
 
     const cambiarProducto = (k, cambios) => setProductos(ps => ps.map(p => p._k === k ? { ...p, ...cambios } : p));
     const cambiarDatos = (k, grupo, cambios) => setProductos(ps => ps.map(p => p._k === k ? { ...p, Datos: { ...p.Datos, [grupo]: { ...p.Datos[grupo], ...cambios } } } : p));
@@ -320,7 +342,7 @@ export default function SolicitudVendedorForm() {
         const fija = Number(art?.CantidadFija) || 0, min = Number(art?.CantidadMinima) || 0;
         const cant = Number(p.Cantidad) || 0;
         const cantidad = fija ? (cant && cant % fija === 0 ? cant : fija) : (min && cant < min ? min : (cant || ''));
-        cambiarProducto(p._k, { ProIdProducto: proId, ProductoNombre: art?.Descripcion || '', Cantidad: cantidad, _min: min, _fija: fija, _precio: art?.Precio ?? null, _moneda: art?.Moneda || '', _molde: art?.Molde || null });
+        cambiarProducto(p._k, { ProIdProducto: proId, ProductoNombre: art?.Descripcion || '', Cantidad: cantidad, _min: min, _fija: fija, _precio: art?.Precio ?? null, _moneda: art?.Moneda || '', _molde: art?.Molde || null, _tizada: !!art?.TizadaProMoldeRef });
         cargarServiciosProducto(p._k, proId, true);
     };
     const agregarProducto = () => { setProductos(ps => [...ps, productoVacio(modalidadDe(ps).modalidad)]); setSel(productos.length); };
@@ -331,6 +353,16 @@ export default function SolicitudVendedorForm() {
         }))) return;
         setProductos(ps => ps.filter(x => x._k !== p._k));
         setSel(s => (i < s ? s - 1 : i === s ? 0 : s));
+    };
+    // Embebido (fase 2): quitar el producto que se está editando y guardar la solicitud sin él
+    const quitarEsteProducto = async () => {
+        const i = Math.min(sel, productos.length - 1);
+        const x = productos[i];
+        if (!(await preguntar({
+            Icono: Trash2, titulo: 'Quitar el producto', peligro: true, boton: 'Quitar',
+            texto: `"${nombreProd(x, i)}" sale de la solicitud. Sus servicios salen de Diseño.`,
+        }))) return;
+        await guardar(productos.filter((_, k) => k !== i));
     };
     // Ir a un paso: abre su pestaña y sube hasta la fila de pasos. Si no es un paso (ej. el panel), solo baja hasta ahí.
     const irA = (bid) => {
@@ -361,12 +393,13 @@ export default function SolicitudVendedorForm() {
         return avisos;
     };
 
-    const guardar = async () => {
+    // lista: los productos a guardar (embebido, "Quitar este producto" guarda sin él); por defecto, los de la pantalla
+    const guardar = async (lista = productos) => {
         if (!cliente) return toast.warning('Elegí el cliente de la solicitud.');
         if (!cab.NombreTrabajo.trim()) return toast.warning('Ingresá el nombre del trabajo.');
         if (!cab.Detalle.trim()) return toast.warning('Escribí el detalle de la solicitud (qué pide el cliente).');
-        for (let i = 0; i < productos.length; i++) {
-            const p = productos[i];
+        for (let i = 0; i < lista.length; i++) {
+            const p = lista[i];
             if (!p.TipoFabricacion) return toast.warning('Elegí la modalidad de la solicitud: producto del catálogo o producto del cliente.');
             if (p.TipoFabricacion === 'PRODUCTO_TERMINADO' && !p.ProIdProducto) return toast.warning(`${nombreProd(p, i)}: elegí el producto del catálogo.`);
             if (!(Number(p.Cantidad) > 0)) return toast.warning(`${nombreProd(p, i)}: ingresá la cantidad de prendas.`);
@@ -380,16 +413,25 @@ export default function SolicitudVendedorForm() {
         if (pago.ModoCobro === 'PRECIO_ESTABLECIDO' && !(num(pago.PrecioPactado) > 0)) return toast.warning('Pago y seña: ingresá el total pactado, o elegí "Facturar por cada área".');
         if (pago.RequiereSena && !(num(pago.SenaMontoRequerido) > 0)) return toast.warning('Pago y seña: indicá de cuánto es la seña que se pide.');
         if (pago.RequiereSena && pago.pagoSena && (!senaDe(pago).SenaVia || !(num(pago.SenaMonto) > 0) || !senaDe(pago).SenaReferencia)) return toast.warning('Pago y seña: si pagó la seña, completá monto, vía de entrada y referencia del pago.');
+        // [GUARDADO AUTOMÁTICO 15/10] "Cambiar producto" en la solicitud: si se eligió otro producto, se dice qué pasa antes de guardar
+        const cambiados = embebido && esEdicion ? lista.filter(p => originales[p.ProductoSolID] && String(originales[p.ProductoSolID].id || '') !== String(p.ProIdProducto || '')) : [];
+        if (cambiados.length && !(await preguntar({
+            Icono: ArrowLeftRight, titulo: 'Cambiar el producto', peligro: true, boton: 'Cambiar el producto',
+            texto: `${cambiados.map(p => `«${originales[p.ProductoSolID].nombre || 'El producto anterior'}» pasa a ser «${p.ProductoNombre || 'el producto elegido'}».`).join(' ')} Los extras que el producto nuevo no admite (y no están en Diseño) salen de la solicitud. Las piezas y telas, el arte y la lista de jugadores quedan como están: revisalos en la pestaña del producto.`,
+        }))) return;
 
         const payload = {
             CodCliente: cliente.CodCliente, PreId: presupuesto?.PreId || null, ...cab, FechaEntrega: cab.FechaEntrega || null, FechaEntregaHasta: cab.FechaEntregaHasta || null,
             Ficha: { ...cab.Ficha, senaFecha: pago.RequiereSena && pago.pagoSena ? pago.SenaFecha : '' },
-            Productos: productos.map(p => ({
+            Productos: lista.map(p => ({
                 ProductoSolID: p.ProductoSolID, TipoFabricacion: p.TipoFabricacion, ProIdProducto: p.ProIdProducto || null, ProductoNombre: p.ProductoNombre || null,
                 Cantidad: p.Cantidad, Observaciones: p.Observaciones, Datos: p.Datos,
                 Partes: [
                     { Tipo: 'PRINCIPAL', Observaciones: p.Principal.Observaciones },
-                    ...ADICIONALES.filter(t => p.Partes[t]).map(t => ({ Tipo: t, ...p.Partes[t] })),
+                    // Sin cargar (15/10): la cantidad del producto y 1 por prenda. Con lista de jugadores, al convertir manda la lista.
+                    ...ADICIONALES.filter(t => p.Partes[t]).map(t => ({ Tipo: t, ...p.Partes[t],
+                        CantidadTotal: num(p.Partes[t].CantidadTotal) > 0 ? p.Partes[t].CantidadTotal : (p.Cantidad || ''),
+                        PorPrenda: num(p.Partes[t].PorPrenda) > 0 ? p.Partes[t].PorPrenda : 1 })),
                 ],
             })),
         };
@@ -400,12 +442,14 @@ export default function SolicitudVendedorForm() {
                 const avisos = [...await guardarPago(id), ...await subirComprobantes(id)];
                 if (avisos.length) toast.warning(`La solicitud se guardó, pero ${avisos.join(' · ')}`);
                 else toast.success(r.cambios ? 'Cambios guardados. Lo que ya estaba en Diseño quedó señalado como "Modificada".' : 'Guardado.');
-                navigate(`/ventas/solicitudes/${id}`);
+                if (embebido) embebido.onListo?.(); else navigate(`/ventas/solicitudes/${id}`);
             } else {
                 const r = await svc.crear(payload);
                 const avisos = [...await guardarPago(r.SolicitudID), ...await subirComprobantes(r.SolicitudID)];
                 if (avisos.length) toast.warning(`Solicitud #${r.SolicitudID} ingresada, pero ${avisos.join(' · ')}. Cargalo en la pestaña Precio.`);
-                else toast.success(`Solicitud #${r.SolicitudID} ingresada. Ahora podés adjuntar archivos y enviar a Diseño.`);
+                else toast.success(todosConTizada
+                    ? `Solicitud #${r.SolicitudID} ingresada. Ahora cargá el arte, la lista de jugadores y el precio, y enviala a Diseño.`
+                    : `Solicitud #${r.SolicitudID} ingresada. Ahora cargá los extras ("Editar producto"), los archivos y el precio, y enviala a Diseño.`);
                 navigate(`/ventas/solicitudes/${r.SolicitudID}`);
             }
         } catch (e) { toast.error(errorDe(e)); }
@@ -416,7 +460,22 @@ export default function SolicitudVendedorForm() {
     // Al CREAR (solicitud inicial) solo va lo que se sabe al ingresar. Talles, archivos para diseñar,
     // especificaciones técnicas y la aprobación de la muestra se completan al EDITAR la solicitud.
     const SOLO_AL_EDITAR = [6];
-    const bloquesVis = esEdicion ? BLOQUES : BLOQUES.filter(b => !SOLO_AL_EDITAR.includes(b.n));
+    // [FASE 1 · 15/10] Productos con molde de TIZADA PRO: como la Tienda, los extras (bordado, DTF, TPU), su tipo y sus
+    // cantidades se cargan en la solicitud (tabla del arte), y el precio y la seña en su pestaña "Precio y seña". Acá no van
+    // "Servicios y extras" ni "Pago y seña" (si TODOS los productos son así; con uno sin TIZADA, quedan como siempre).
+    const todosConTizada = productos.length > 0 && productos.every(x => x.TipoFabricacion === 'PRODUCTO_TERMINADO' && x._tizada);
+    const SIN_TIZADA_NO = todosConTizada ? [7, 2] : [];
+    const bloquesVis = (esEdicion ? BLOQUES : BLOQUES.filter(b => !SOLO_AL_EDITAR.includes(b.n))).filter(b => !SIN_TIZADA_NO.includes(b.n));
+    // Qué bloque se ve: el paso abierto; embebido (fase 2), los que pide la solicitud, todos juntos
+    // (los extras, solo si el producto que se edita no tiene TIZADA PRO: con TIZADA van en la tabla del arte)
+    // alta (15/10, "una sola pantalla"): Identificación y Producto juntos; los extras, el precio y la seña se cargan en la solicitud
+    const bloquesVer = embebido ? (embebido.bloques || []) : (!esEdicion ? [1, 3] : null);
+    const corto = !!bloquesVer;   // sin pasos ni panel: el alta y el formulario embebido
+    const verBloque = (n) => (bloquesVer ? bloquesVer.includes(n) && !(n === 7 && p?._tizada) : paso === n);
+    // si el paso abierto dejó de verse (se eligió un producto con TIZADA PRO estando en Extras o Pago), se abre el último que se ve
+    useEffect(() => {
+        if (!bloquesVis.some(b => b.n === paso)) setPaso(bloquesVis[bloquesVis.length - 1]?.n || 1);
+    }, [todosConTizada, paso]);   // eslint-disable-line react-hooks/exhaustive-deps
 
     // ── Estado del pedido, en vivo (mismas reglas que el sello guardado) ──
     const cabChk = { NombreTrabajo: cab.NombreTrabajo, VendedorID: cab.VendedorID, FechaEntrega: cab.FechaEntrega, Ficha: cab.Ficha };
@@ -453,8 +512,7 @@ export default function SolicitudVendedorForm() {
     productos.forEach((p, i) => !p.convertido && ADICIONALES.filter(t => p.Partes[t]).forEach(t => {
         const pa = p.Partes[t]; const dd = pa.Datos || {};
         const f = [];
-        if (!(num(pa.CantidadTotal) > 0)) f.push('cantidad');
-        if (!String(pa.Ubicacion || '').trim()) f.push('ubicación');
+        // la cantidad (vacía = la del producto) y la ubicación ya no faltan: salen de la lista de jugadores y de la tabla del arte (15/10)
         if (t !== 'DTF' && !dd.variante) f.push(t === 'BORDADO' ? 'dónde se borda' : 'tipo');
         if (!dd.material) f.push(t === 'BORDADO' ? 'hilo o tafeta' : t === 'DTF' ? 'film' : 'artículo');
         if (f.length) sumar(7, `${pref(i)}${NOMBRE_PARTE[t]}: falta ${f.join(', ')}`);
@@ -491,11 +549,13 @@ export default function SolicitudVendedorForm() {
                 const art = catalogo.find(a => String(a.ProIdProducto) === String(x.ProIdProducto));
                 if (!art) return x;
                 cambio = true;
-                return { ...x, _precio: art.Precio ?? null, _moneda: art.Moneda || '', _molde: art.Molde || null, _min: x._min ?? (art.CantidadMinima || null), _fija: x._fija ?? (art.CantidadFija || null) };
+                return { ...x, _precio: art.Precio ?? null, _moneda: art.Moneda || '', _molde: art.Molde || null, _tizada: !!art.TizadaProMoldeRef, _min: x._min ?? (art.CantidadMinima || null), _fija: x._fija ?? (art.CantidadFija || null) };
             });
             return cambio ? next : ps;
         });
-    }, [catalogo]);   // eslint-disable-line react-hooks/exhaustive-deps
+        // 15/10: también cuando llegan los productos de la solicitud (al editar, el catálogo suele llegar antes y quedaban
+        // sin precio de referencia ni la marca de TIZADA PRO)
+    }, [catalogo, productos.map(x => x.ProIdProducto).join(',')]);   // eslint-disable-line react-hooks/exhaustive-deps
     // Precio por defecto: con productos del catálogo, "Precio establecido" arranca con unidades × precio
     // de catálogo (y su moneda). Se vuelve a calcular mientras el total no se haya tocado a mano.
     useEffect(() => {
@@ -528,33 +588,33 @@ export default function SolicitudVendedorForm() {
     const extraVis = p.Partes[extraSel] ? extraSel : (ADICIONALES.find(t => p.Partes[t]) || '');
     const restante = pago.ModoCobro === 'PRECIO_ESTABLECIDO' ? num(pago.PrecioPactado) - (pago.pagoSena ? num(pago.SenaMonto) : 0) : null;
     const iPaso = Math.max(0, bloquesVis.findIndex(b => b.n === paso));   // posición del paso abierto (el 4 ya no existe)
-    const textoGuardar = esEdicion ? 'Guardar cambios' : 'Ingresar solicitud';
+    const textoGuardar = esEdicion ? 'Guardar cambios' : 'Crear solicitud';
 
     // Cargando (solo al editar): este return va DESPUÉS de todos los hooks. Si va antes, al terminar de cargar
     // React encuentra más hooks que en el primer dibujo y la pantalla se cae ("No se pudo cargar la aplicación").
     if (cargando) return <div className="flex justify-center p-3 pt-16 md:p-6 md:pt-16"><Loader2 className="animate-spin text-brand-cyan" /></div>;
 
     return (
-        <div className="p-3 md:p-6">
+        <div className={embebido ? "" : "p-3 md:p-6"}>
             <div className="space-y-4">
                 {/* Encabezado como el de las otras pantallas: ícono de Lucide en brand-cyan y sin fondo, título grande */}
-                <header className="flex flex-wrap items-start justify-between gap-3">
+                {!embebido && <header className="flex flex-wrap items-start justify-between gap-3">
                     <div className="flex min-w-0 items-start gap-3">
                         {esEdicion
                             ? <ClipboardPen size={30} className="mt-1 shrink-0 text-brand-cyan" aria-hidden="true" />
                             : <ClipboardPlus size={30} className="mt-1 shrink-0 text-brand-cyan" aria-hidden="true" />}
                         <div className="min-w-0">
                             <h1 className="text-2xl font-black uppercase tracking-tight text-slate-800">{esEdicion ? `Editar solicitud #${id}` : 'Nueva solicitud'}</h1>
-                            <p className="max-w-[60ch] text-sm text-slate-500">Completá con el cliente cada bloque. Se puede guardar incompleto: lo que falte queda marcado en el panel y se completa después.</p>
+                            <p className="max-w-[60ch] text-sm text-slate-500">{esEdicion ? 'Completá con el cliente cada bloque. Se puede guardar incompleto: lo que falte queda marcado en el panel y se completa después.' : 'El cliente y el producto. Al crearla se abre la solicitud: ahí se cargan el arte, la lista de jugadores, los extras y el precio.'}</p>
                         </div>
                     </div>
                     <button type="button" onClick={() => navigate(esEdicion ? `/ventas/solicitudes/${id}` : '/ventas/solicitudes')} className={BTN_SECUNDARIO}><ArrowLeft size={14} /> Volver sin guardar</button>
-                </header>
+                </header>}
 
-                <div className="grid grid-cols-1 items-start gap-6 min-[901px]:grid-cols-[minmax(0,1fr)_340px]">
+                <div className={corto ? "space-y-4" : "grid grid-cols-1 items-start gap-6 min-[901px]:grid-cols-[minmax(0,1fr)_340px]"}>
                     <main className="min-w-0 space-y-4">
                         {/* Pasos: el número (o un tilde si está completo), el nombre y cuánto falta; el abierto, en brand-cyan */}
-                        <nav id="fp-pasos" className="grid scroll-mt-4 grid-cols-2 gap-2 sm:grid-cols-4" aria-label="Pasos de la solicitud">
+                        {!corto && <nav id="fp-pasos" className="grid scroll-mt-4 grid-cols-2 gap-2 sm:grid-cols-4" aria-label="Pasos de la solicitud">
                             {bloquesVis.map((b, bi) => {
                                 const n = faltan[b.n].length;
                                 const abierto = paso === b.n;
@@ -572,10 +632,10 @@ export default function SolicitudVendedorForm() {
                                     </button>
                                 );
                             })}
-                        </nav>
+                        </nav>}
 
                         {/* 1 · IDENTIFICACIÓN */}
-                        <Bloque activo={paso === 1} id="b-ident" titulo="Identificación">
+                        <Bloque activo={verBloque(1)} id="b-ident" titulo={embebido && esEdicion ? null : "Identificación"}>
                             <div className="grid gap-3.5">
                                 {/* El buscador es compartido (solicitudesComunes) y más bajo: acá toma la altura de los otros campos */}
                                 <Campo div label="Cliente *">
@@ -602,12 +662,12 @@ export default function SolicitudVendedorForm() {
                                             : <p className={AYUDA}>{dias === 0 ? 'La entrega es hoy.' : `Faltan ${dias} día${dias === 1 ? '' : 's'} para la entrega.`} Si la fecha se puede cumplir con la carga de cada sector se ve en la solicitud, después de guardar.</p>)}
                                     </div>
                                 </div>
-                                <Campo label="Observaciones generales"><textarea className={TEXTO_CORTO} value={cab.Observaciones} onChange={e => setCab(c => ({ ...c, Observaciones: e.target.value }))} /></Campo>
+                                {/* 15/10: sin "Observaciones generales" (lo que pide el cliente va en el Detalle). Lo ya escrito se conserva. */}
                             </div>
                         </Bloque>
 
                         {/* 2 · PAGO Y SEÑA (informativo) */}
-                        <Bloque activo={paso === 2} id="b-pago" titulo="Pago y seña">
+                        <Bloque activo={verBloque(2)} id="b-pago" titulo="Pago y seña">
                             <div className="grid gap-3.5">
                                 <Campo div label="Cómo se cobra">
                                     <Seg valor={pago.ModoCobro} onChange={v => setP({ ModoCobro: v })} opciones={[['PRECIO_ESTABLECIDO', 'Precio establecido (un total, todo incluido)'], ['POR_AREA', 'Facturar por cada área']]} />
@@ -683,17 +743,20 @@ export default function SolicitudVendedorForm() {
                         </Bloque>
 
                         {/* 3 · PRODUCTO */}
-                        <Bloque activo={paso === 3} id="b-producto" titulo="Producto" sub={subProd} why="Qué se fabrica y cuántas unidades. Cada producto termina en su propio pedido de producción.">
-                            <div className={`${SEG} mb-3.5`} role="group" aria-label="Modalidad de la solicitud">
-                                {Object.entries(MODALIDAD).map(([v, t]) => <button type="button" key={v} className={segBtn(modalidad === v)} aria-pressed={modalidad === v} onClick={() => cambiarModalidad(v)}>{t}</button>)}
-                            </div>
+                        <Bloque activo={verBloque(3)} id="b-producto" titulo={embebido && esEdicion ? null : "Producto"} sub={subProd} why={corto ? null : "Qué se fabrica y cuántas unidades. Cada producto termina en su propio pedido de producción."}>
+                            {ACEPTA_PRODUCTO_DEL_CLIENTE && (
+                                <div className={`${SEG} mb-3.5`} role="group" aria-label="Modalidad de la solicitud">
+                                    {Object.entries(MODALIDAD).map(([v, t]) => <button type="button" key={v} className={segBtn(modalidad === v)} aria-pressed={modalidad === v} onClick={() => cambiarModalidad(v)}>{t}</button>)}
+                                </div>
+                            )}
                             {!modalidad && (
                                 <p className={`${NOTA_AVISO} mb-3.5`}>{mezclada
                                     ? 'Esta solicitud se cargó antes de esta regla y tiene productos de las dos modalidades. Se puede guardar así. Si elegís una modalidad arriba, pasa a todos los productos.'
                                     : 'Elegí primero la modalidad. Todos los productos de la solicitud van a ser de la misma: no se mezclan productos del catálogo con productos del cliente.'}</p>
                             )}
-                            {modalidad && <p className={`${AYUDA} mb-3.5`}>{modalidad === 'PRODUCTO_TERMINADO' ? 'Del catálogo: cada producto trae sus servicios incluidos.' : 'Del cliente: una prenda que no está en el catálogo. La sublimación y todos los servicios se eligen a mano.'} Todos los productos de la solicitud son de esta modalidad.</p>}
-                            {(modalidad || mezclada) && (
+                            {/* 15/10: sin la explicación de la modalidad (ocupa lugar; el botón elegido ya lo dice) */}
+                            {/* Embebido: cada producto se edita en su pestaña de la solicitud (sin las pestañas de acá) */}
+                            {(modalidad || mezclada) && !embebido && (
                                 <div className={`${PESTANAS} mb-4`} role="group" aria-label="Productos de la solicitud">
                                     {productos.map((x, i) => (
                                         <span key={x._k} className="inline-flex items-center">
@@ -716,7 +779,7 @@ export default function SolicitudVendedorForm() {
                                             </Campo>
                                             {!catalogo.length && <p className={LINEA_AVISO}>No se pudo leer el catálogo de productos.</p>}
                                             {famDe(p) && etiquetasDe(famDe(p)).hay && (
-                                                <Campo div label="Para qué es">
+                                                <Campo div label={null}>
                                                     <div className={SEG} role="group">
                                                         <button type="button" className={segBtn(!etqDe(p))} aria-pressed={!etqDe(p)} onClick={() => cambiarProducto(p._k, { _etiqueta: '' })}>Todas</button>
                                                         {etiquetasDe(famDe(p)).lista.map(et => <button type="button" key={et} className={segBtn(etqDe(p) === et)} aria-pressed={etqDe(p) === et} onClick={() => cambiarProducto(p._k, { _etiqueta: et })}>{et}</button>)}
@@ -725,7 +788,7 @@ export default function SolicitudVendedorForm() {
                                                 </Campo>
                                             )}
                                             {famDe(p) && (
-                                                <Campo div label="Producto a fabricar *">
+                                                <Campo div label={null}>
                                                     {/* Tarjetas del catálogo: blancas, y la elegida con borde y aro en brand-cyan */}
                                                     <div className="grid grid-cols-[repeat(auto-fill,minmax(13rem,1fr))] gap-2.5">
                                                         {productosDe(famDe(p), etqDe(p)).map(x => {
@@ -746,7 +809,7 @@ export default function SolicitudVendedorForm() {
                                                     </div>
                                                 </Campo>
                                             )}
-                                            {p.ProIdProducto ? <p className={LINEA_OK}>Elegido: {p.ProductoNombre}{famDe(p) ? ` (${famDe(p)}${etqDe(p) && etqDe(p) !== SIN_ETQ ? ' › ' + etqDe(p) : ''})` : ''}{p._precio != null ? ` · precio de catálogo ${fmtMoneda(p._precio, p._moneda)} por unidad` : ' · sin precio de catálogo'}</p> : famDe(p) && <p className={AYUDA}>Tocá una tarjeta para elegir el producto.</p>}
+                                            {!p.ProIdProducto && famDe(p) && <p className={AYUDA}>Tocá una tarjeta para elegir el producto.</p>}
                                         </>
                                     )}
                                     {p.TipoFabricacion === 'PERSONALIZADO' && (
@@ -801,7 +864,8 @@ export default function SolicitudVendedorForm() {
                                         {p.TipoFabricacion !== 'PRODUCTO_TERMINADO' && <Tilde checked={d.productoNuevo} onChange={v => cambiarDato(p._k, { productoNuevo: v, ...(v ? { requiereMuestra: true } : {}) })}>Producto nuevo</Tilde>}
                                         <Tilde checked={d.produccionGrande} onChange={v => cambiarDato(p._k, { produccionGrande: v, ...(v ? { requiereMuestra: true } : {}) })}>Producción grande</Tilde>
                                         <Tilde checked={d.requiereMuestra} onChange={v => cambiarDato(p._k, { requiereMuestra: v, muestraAprobada: v ? d.muestraAprobada : false })}>Requiere confección de muestra</Tilde>
-                                        {esEdicion && d.requiereMuestra && <Tilde checked={d.muestraAprobada} onChange={v => cambiarDato(p._k, { muestraAprobada: v })}>Muestra aprobada por el cliente</Tilde>}
+                                        {/* 15/10: primera etapa, la muestra se da por aprobada: la tilde no se muestra (checklistSolicitud.PIDE_MUESTRA_APROBADA) */}
+                                        {PIDE_MUESTRA_APROBADA && esEdicion && d.requiereMuestra && <Tilde checked={d.muestraAprobada} onChange={v => cambiarDato(p._k, { muestraAprobada: v })}>Muestra aprobada por el cliente</Tilde>}
                                     </div>
                                 {esEdicion && d.productoNuevo && (
                                     <>
@@ -825,15 +889,16 @@ export default function SolicitudVendedorForm() {
                                         <Seg valor={d.diseno.origen} onChange={v => cambiarDatos(p._k, 'diseno', { origen: v })} opciones={[['CLIENTE', 'Lo entrega el cliente'], ['TALLER', 'Lo hace el taller']]} />
                                     </Campo>
                                     {esEdicion && d.diseno.origen === 'CLIENTE' && <Tilde checked={d.diseno.verificado} onChange={v => cambiarDatos(p._k, 'diseno', { verificado: v })}>Archivo de diseño recibido y verificado</Tilde>}
-                                    {esEdicion && d.diseno.origen === 'TALLER' && <Tilde checked={d.diseno.aprobado} onChange={v => cambiarDatos(p._k, 'diseno', { aprobado: v })}>Propuesta aprobada por escrito por el cliente</Tilde>}
-                                    <Campo label="Indicaciones para Diseño"><textarea className={TEXTO_CORTO} value={p.Principal.Observaciones} onChange={e => cambiarProducto(p._k, { Principal: { ...p.Principal, Observaciones: e.target.value } })} /></Campo>
-                                    <Campo label="Observaciones del producto"><textarea className={TEXTO_CORTO} value={p.Observaciones} onChange={e => cambiarProducto(p._k, { Observaciones: e.target.value })} /></Campo>
+                                    {/* 15/10: primera etapa, la propuesta se da por aprobada: la tilde no se muestra (checklistSolicitud.PIDE_APROBACION_ESCRITA) */}
+                                    {PIDE_APROBACION_ESCRITA && esEdicion && d.diseno.origen === 'TALLER' && <Tilde checked={d.diseno.aprobado} onChange={v => cambiarDatos(p._k, 'diseno', { aprobado: v })}>Propuesta aprobada por escrito por el cliente</Tilde>}
+                                    {/* 15/10: sin "Indicaciones para Diseño" ni "Observaciones del producto": lo del arte va en la tabla del arte
+                                        y lo que pide el cliente en el Detalle. Lo ya escrito se conserva. */}
                                 </div>
                             </fieldset>
                         </Bloque>
 
                         {/* 7 · EXTRAS */}
-                        <Bloque activo={paso === 7} id="b-extras" titulo="Servicios y extras" sub={subProd}>
+                        <Bloque activo={verBloque(7)} id="b-extras" titulo="Servicios y extras" sub={subProd}>
                             <fieldset className="m-0 min-w-0 border-0 p-0 disabled:opacity-60" disabled={p.convertido}>
                                 <div className="grid gap-3.5">
                                     {/* Extras en pestañas subrayadas: los agregados (tilde verde, o candado si vienen con el producto; con ✕ para quitar)
@@ -868,9 +933,11 @@ export default function SolicitudVendedorForm() {
                                                 <div className="grid gap-3.5">
                                                     {pa.Estado !== 'INGRESADO' && <p className={LINEA_AVISO}>Ya está en Diseño: si cambiás algo, queda señalado como "Modificada" y el diseñador tiene que aceptar el cambio.</p>}
                                                     <div className={TRES}>
-                                                        <Campo label="Cantidad total"><input type="number" className={NUMERO} min="1" value={pa.CantidadTotal} onChange={e => cambiarParte(p._k, t, { CantidadTotal: e.target.value })} /></Campo>
-                                                        <Campo label={t === 'BORDADO' ? 'Bordados por prenda' : 'Estampados por prenda'}><input type="number" className={NUMERO} min="1" value={pa.PorPrenda} onChange={e => cambiarParte(p._k, t, { PorPrenda: e.target.value })} /></Campo>
-                                                        <Campo label="Dónde va (ubicación en la prenda)"><input type="text" className={CAMPO} value={pa.Ubicacion} onChange={e => cambiarParte(p._k, t, { Ubicacion: e.target.value })} placeholder="Ej: pecho izquierdo 8 cm" /></Campo>
+                                                        {/* 15/10: opcionales. Vacía = la cantidad del producto; con lista de jugadores, al convertir manda la lista
+                                                            (cada objeto × las prendas de su diseño). La ubicación se arma con la tabla del arte. */}
+                                                        <Campo label="Cantidad total" ayuda="Opcional: si queda vacía, la del producto; con lista de jugadores, sale de la lista"><input type="number" className={NUMERO} min="1" value={pa.CantidadTotal} placeholder={p.Cantidad ? String(p.Cantidad) : ''} onChange={e => cambiarParte(p._k, t, { CantidadTotal: e.target.value })} /></Campo>
+                                                        <Campo label={t === 'BORDADO' ? 'Bordados por prenda' : 'Estampados por prenda'} ayuda="Opcional: 1 si queda vacío"><input type="number" className={NUMERO} min="1" value={pa.PorPrenda} placeholder="1" onChange={e => cambiarParte(p._k, t, { PorPrenda: e.target.value })} /></Campo>
+                                                        <Campo label="Dónde va (ubicación en la prenda)" ayuda="Opcional: se completa con la tabla del arte"><input type="text" className={CAMPO} value={pa.Ubicacion} onChange={e => cambiarParte(p._k, t, { Ubicacion: e.target.value })} placeholder="Ej: pecho izquierdo 8 cm" /></Campo>
                                                     </div>
                                                     {t === 'DTF' && (<Campo div label="El arte">
                                                         <Seg valor={pa.ArteOrigen} onChange={v => cambiarParte(p._k, t, { ArteOrigen: v })} opciones={[['EMPRESA', 'Se diseña en la empresa (pasa por Diseño)'], ['CLIENTE', 'Viene listo del cliente']]} />
@@ -892,7 +959,7 @@ export default function SolicitudVendedorForm() {
                                                             </Selector>
                                                         </Campo>
                                                     </div>
-                                                    <Campo label="Indicaciones para Diseño"><textarea className={TEXTO_CORTO} value={pa.Observaciones} onChange={e => cambiarParte(p._k, t, { Observaciones: e.target.value })} /></Campo>
+                                                    {/* 15/10: sin "Indicaciones para Diseño" del extra (dónde va y qué lleva salen de la tabla del arte) */}
                                                 </div>
                                             </div>
                                         );
@@ -901,19 +968,40 @@ export default function SolicitudVendedorForm() {
                             </fieldset>
                         </Bloque>
 
+                        {embebido ? (
+                            // Embebido: guardar / cancelar acá mismo; en el producto, también quitarlo (si hay más de uno)
+                            <div className="flex flex-wrap items-center justify-between gap-3">
+                                <span>
+                                    {(embebido.bloques || []).includes(3) && !embebido.nuevoProducto && productos.length > 1 && !p.convertido && p.ProductoSolID && (
+                                        <button type="button" disabled={guardando} onClick={quitarEsteProducto} className="inline-flex items-center gap-1 text-sm font-bold text-rose-600 hover:underline disabled:opacity-50"><Trash2 size={14} /> Quitar este producto de la solicitud</button>
+                                    )}
+                                </span>
+                                <span className="flex flex-wrap gap-2">
+                                    <button type="button" disabled={guardando} onClick={() => embebido.onCancelar?.()} className={BTN_ANTERIOR}>Cancelar</button>
+                                    <button type="button" onClick={() => guardar()} disabled={guardando} className={BTN_INGRESAR}>{guardando ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />} {!esEdicion ? 'Crear solicitud' : embebido.nuevoProducto ? 'Agregar el producto' : 'Guardar'}</button>
+                                </span>
+                            </div>
+                        ) : corto ? (
+                            // Alta (15/10): crear y seguir en la solicitud (ahí se carga todo lo demás)
+                            <div className="flex flex-wrap items-center justify-end gap-2">
+                                <button type="button" disabled={guardando} onClick={() => navigate('/ventas/solicitudes')} className={BTN_ANTERIOR}>Cancelar</button>
+                                <button type="button" onClick={() => guardar()} disabled={guardando} className={BTN_INGRESAR}>{guardando ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />} {textoGuardar}</button>
+                            </div>
+                        ) : (
                         <div className="flex flex-wrap items-center justify-between gap-3">
                             <span className="flex flex-wrap gap-2">
                                 <button type="button" className={BTN_ANTERIOR} disabled={iPaso === 0} onClick={() => irA(bloquesVis[iPaso - 1]?.id)}><ArrowLeft size={16} /> Anterior</button>
                                 <button type="button" className={BTN_SIGUIENTE} disabled={iPaso === bloquesVis.length - 1} onClick={() => irA(bloquesVis[iPaso + 1]?.id)}>{iPaso < bloquesVis.length - 1 ? `Siguiente: ${bloquesVis[iPaso + 1].corto}` : 'Siguiente'} <ArrowRight size={16} /></button>
                             </span>
-                            <button type="button" onClick={guardar} disabled={guardando} className={BTN_INGRESAR}>{guardando ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />} {textoGuardar}</button>
+                            <button type="button" onClick={() => guardar()} disabled={guardando} className={BTN_INGRESAR}>{guardando ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />} {textoGuardar}</button>
                         </div>
+                        )}
                     </main>
 
                     {/* PANEL: Estado del pedido, igual al "Estado para producción" del detalle (EstadoProduccionPanel): tarjeta blanca,
                         pastilla en vez del sello torcido, barra en brand-cyan (antes amarilla), cada paso con un tilde verde o su
                         número y lo que falta en rojo. Tocar un paso abre su bloque. */}
-                    <aside id="fp-estado" className="scroll-mt-4 min-[901px]:sticky min-[901px]:top-4 min-[901px]:max-h-[calc(100vh-2rem)] min-[901px]:overflow-y-auto">
+                    {!corto && <aside id="fp-estado" className="scroll-mt-4 min-[901px]:sticky min-[901px]:top-4 min-[901px]:max-h-[calc(100vh-2rem)] min-[901px]:overflow-y-auto">
                         <div className="rounded-2xl border border-slate-200 bg-white p-4">
                             <div className="flex items-start justify-between gap-3">
                                 <div>
@@ -955,18 +1043,18 @@ export default function SolicitudVendedorForm() {
                                 </div>
                             )}
                             {luego.length > 0 && <div className="mt-3 border-t border-dashed border-slate-200 pt-3 text-xs text-amber-700">Se puede completar después, no frena: {luego.join(' · ')}</div>}
-                            <button type="button" onClick={guardar} disabled={guardando} className={`${BTN_INGRESAR} mt-4 w-full`}>{guardando ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />} {textoGuardar}</button>
+                            <button type="button" onClick={() => guardar()} disabled={guardando} className={`${BTN_INGRESAR} mt-4 w-full`}>{guardando ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />} {textoGuardar}</button>
                         </div>
                         <p className="mt-2 text-xs text-slate-500">Se puede guardar incompleto. La solicitud queda marcada con "Falta info" hasta que tenga todo lo necesario para producción; el pago y los extras se exigen recién al convertir a pedido.</p>
-                    </aside>
+                    </aside>}
                 </div>
             </div>
             {/* Barra del celular (hasta 900 px, cuando el panel queda abajo): cuántos pasos están listos y un atajo al panel.
                 Pegada abajo y de borde a borde: los márgenes negativos son el padding de la página. */}
-            <div className="sticky bottom-0 z-[5] -mx-3 -mb-3 mt-4 flex items-center justify-between gap-3 border-t border-slate-200 bg-white px-4 py-2 shadow-[0_-4px_12px_rgba(15,23,42,0.06)] md:-mx-6 md:-mb-6 min-[901px]:hidden">
+            {!corto && <div className="sticky bottom-0 z-[5] -mx-3 -mb-3 mt-4 flex items-center justify-between gap-3 border-t border-slate-200 bg-white px-4 py-2 shadow-[0_-4px_12px_rgba(15,23,42,0.06)] md:-mx-6 md:-mb-6 min-[901px]:hidden">
                 <span className="text-sm font-semibold text-slate-700">{listos === bloquesVis.length ? 'Todo completo' : `${listos} de ${bloquesVis.length} listos`}</span>
                 <a href="#fp-estado" onClick={e => { e.preventDefault(); irA('fp-estado'); }} className="inline-flex min-h-[40px] items-center rounded-lg bg-brand-cyan px-3.5 text-sm font-bold text-white transition-colors hover:bg-brand-cyan/90">Ver qué falta</a>
-            </div>
+            </div>}
             {dialogo}
         </div>
     );

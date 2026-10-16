@@ -71,6 +71,9 @@ router.get('/productos-terminados', verifyToken, async (req, res) => {
         const conEtiqueta = (await pool.request().query(`SELECT COL_LENGTH('dbo.ProductoVentaConfig', 'EtiquetaID') AS c`)).recordset[0].c != null;
         // F1: producción principal, molde y medida fija del producto (docs/migrations/configurador_f1_produccion_principal.sql)
         const conF1 = (await pool.request().query(`SELECT COL_LENGTH('dbo.ProductoVentaConfig', 'TecnicaPrincipal') AS c`)).recordset[0].c != null;
+        // [15/10] Con molde de TIZADA PRO la solicitud se carga como la Tienda (arte, extras y su tipo en la pantalla de la
+        // solicitud): el formulario no muestra "Servicios y extras" ni "Pago y seña" para esos productos.
+        const conTizada = (await pool.request().query(`SELECT COL_LENGTH('dbo.ProductoVentaConfig', 'TizadaProMoldeRef') AS c`)).recordset[0].c != null;
         const area = String(req.query.area || '').trim().toUpperCase();
         if (area) request.input('Area', require('mssql').VarChar, area);
         const r = await request.query(`
@@ -87,7 +90,8 @@ router.get('/productos-terminados', verifyToken, async (req, res) => {
                 ISNULL(img.url_imagen, fd.DibujoUrl) AS Imagen,   -- foto del producto; si no hay, el dibujo de la ficha de diseño
                 vcfg.Estado, vcfg.CantidadMinima, vcfg.CantidadFija, LTRIM(RTRIM(pb.Moneda)) AS Moneda,
                 ${conEtiqueta ? 'vcfg.EtiquetaID, etq.Nombre AS Etiqueta' : 'CAST(NULL AS INT) AS EtiquetaID, CAST(NULL AS NVARCHAR(100)) AS Etiqueta'},
-                ${conF1 ? 'vcfg.TecnicaPrincipal, vcfg.Molde, vcfg.UM, vcfg.AnchoM, vcfg.AltoM, vcfg.BordeCm, vcfg.VisibleInterno, vcfg.VisibleTienda, vcfg.VisiblePortal' : "CAST(NULL AS VARCHAR(10)) AS TecnicaPrincipal, CAST(NULL AS VARCHAR(12)) AS Molde, CAST(NULL AS VARCHAR(3)) AS UM, CAST(NULL AS DECIMAL(10,3)) AS AnchoM, CAST(NULL AS DECIMAL(10,3)) AS AltoM, CAST(NULL AS DECIMAL(6,2)) AS BordeCm, CAST(1 AS BIT) AS VisibleInterno, CAST(NULL AS BIT) AS VisibleTienda, CAST(NULL AS BIT) AS VisiblePortal"}
+                ${conF1 ? 'vcfg.TecnicaPrincipal, vcfg.Molde, vcfg.UM, vcfg.AnchoM, vcfg.AltoM, vcfg.BordeCm, vcfg.VisibleInterno, vcfg.VisibleTienda, vcfg.VisiblePortal' : "CAST(NULL AS VARCHAR(10)) AS TecnicaPrincipal, CAST(NULL AS VARCHAR(12)) AS Molde, CAST(NULL AS VARCHAR(3)) AS UM, CAST(NULL AS DECIMAL(10,3)) AS AnchoM, CAST(NULL AS DECIMAL(10,3)) AS AltoM, CAST(NULL AS DECIMAL(6,2)) AS BordeCm, CAST(1 AS BIT) AS VisibleInterno, CAST(NULL AS BIT) AS VisibleTienda, CAST(NULL AS BIT) AS VisiblePortal"},
+                ${conTizada ? "NULLIF(LTRIM(RTRIM(vcfg.TizadaProMoldeRef)), '') AS TizadaProMoldeRef" : 'CAST(NULL AS VARCHAR(100)) AS TizadaProMoldeRef'}
             FROM dbo.Articulos a
             INNER JOIN dbo.StockArt sa
                 ON LTRIM(RTRIM(sa.CodStock)) = LTRIM(RTRIM(a.CodStock))

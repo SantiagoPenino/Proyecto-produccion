@@ -1,0 +1,114 @@
+[
+  {
+    "id": "01_portada",
+    "tipo": "portada",
+    "titulo": "Auditoría de depósito",
+    "sub": "Tutorial paso a paso",
+    "voz": "Bienvenidos al tutorial de la auditoría de depósito. En este video vamos a ver, paso a paso, cómo abrir una auditoría, escanear las órdenes del estante, cerrar el ciclo, trabajar los casos y leer los reportes."
+  },
+  {
+    "id": "02_que_es",
+    "tipo": "pantalla",
+    "titulo": "Qué es y dónde está",
+    "sub": "Menú Logística › Auditoría de depósito",
+    "voz": "La auditoría de depósito compara lo que el sistema dice que hay en el depósito con lo que realmente está en los estantes. Se entra desde el menú Logística, opción Auditoría de depósito. La pantalla tiene cinco pestañas: Escaneo físico, Situación depósito, Registro de casos, Reportes y Conteo cíclico."
+  },
+  {
+    "id": "03_barra",
+    "tipo": "pantalla",
+    "titulo": "Paso 1 · La barra de la auditoría",
+    "sub": "Sin auditoría abierta no se puede escanear",
+    "voz": "Arriba está la barra de la auditoría. Si no hay ninguna abierta, el escaneo queda bloqueado. Primero hay que abrir una auditoría, que toma una fotografía del depósito en ese momento: la lista de órdenes que deberían estar en los estantes."
+  },
+  {
+    "id": "04_abrir",
+    "tipo": "pantalla",
+    "titulo": "Paso 2 · Abrir la auditoría",
+    "sub": "Alcance: todo el depósito o una sola área",
+    "voz": "Al abrir, elegimos el alcance: el depósito completo, o solo algunas áreas, por ejemplo TP. Con alcance parcial, los casos de las otras áreas no se tocan. Solo puede haber una auditoría abierta a la vez: hasta que no se cierre o se anule, no se puede abrir otra."
+  },
+  {
+    "id": "05_escaneo",
+    "tipo": "pantalla",
+    "titulo": "Paso 3 · Escanear los estantes",
+    "sub": "Cada lectura genera una tarjeta",
+    "voz": "Con la auditoría abierta, vamos al estante y escaneamos cada etiqueta en el campo de escaneo. Cada lectura genera una tarjeta con la orden y su situación. Verde es OK: la orden estaba en la fotografía y está físicamente en el depósito."
+  },
+  {
+    "id": "06_tarjetas",
+    "tipo": "pantalla",
+    "titulo": "Paso 3 · Tarjetas rojas",
+    "sub": "Entregada · No ingresada · Desconocida",
+    "voz": "Las tarjetas rojas son problemas. Entregada: el sistema la da por entregada, pero está en el estante. No ingresada: existe en producción, pero nunca se ingresó al depósito. Desconocida: el código no existe en el sistema. Con el signo de pregunta vemos qué significa cada una; con la llave, las acciones para corregirla; y con la cruz quitamos una lectura equivocada. Si escaneamos dos veces la misma etiqueta, el sistema avisa que ya estaba escaneada y no la cuenta dos veces."
+  },
+  {
+    "id": "07_termometro",
+    "tipo": "pantalla",
+    "titulo": "Paso 3 · Avance del escaneo",
+    "sub": "Termómetro y filtros",
+    "voz": "El termómetro muestra qué porcentaje de la fotografía ya fue verificado. Los filtros permiten ver solo las tarjetas con problemas, o las órdenes que todavía faltan escanear, para no dejar ningún estante sin recorrer."
+  },
+  {
+    "id": "08_situacion",
+    "tipo": "pantalla",
+    "titulo": "Situación depósito",
+    "sub": "Todas las órdenes activas con señalética",
+    "voz": "La pestaña Situación depósito muestra todas las órdenes activas del depósito. Los interruptores filtran por plazo vencido, por escaneada o no, y por aviso enviado. El icono de pago indica si la orden está pagada, sin cobrar, facturada sin cobrar, o sin facturar. Desde acá también se puede avisar por WhatsApp o marcar como entregada."
+  },
+  {
+    "id": "09_cerrar",
+    "tipo": "pantalla",
+    "titulo": "Paso 4 · Cerrar la auditoría",
+    "sub": "Cerrar genera casos · Anular no genera nada",
+    "voz": "Al terminar el recorrido físico, cerramos la auditoría. El sistema compara la fotografía con lo escaneado y genera los casos: faltantes, sobrantes, sin ingreso, sin registro, sin aviso y envejecidas. Anular, en cambio, descarta la sesión sin generar ningún caso."
+  },
+  {
+    "id": "10_resumen",
+    "tipo": "pantalla",
+    "titulo": "Paso 4 · Resumen del cierre",
+    "sub": "Nuevos · Existentes · Reincidentes · Resueltos · Movidas",
+    "voz": "El resumen del cierre indica cuántos casos son nuevos, cuántos ya existían y se volvieron a detectar, cuántos reincidieron después de haberse cerrado, y cuántos se resolvieron solos. Las órdenes que se entregaron o ingresaron durante la auditoría se informan como movidas y no generan caso."
+  },
+  {
+    "id": "11_casos",
+    "tipo": "pantalla",
+    "titulo": "Paso 5 · Registro de casos",
+    "sub": "Una fila por orden, con todos sus problemas",
+    "voz": "El Registro de casos es permanente. Cada orden con problemas aparece una sola vez, con todos sus problemas adentro, y nunca se duplica: si vuelve a detectarse, se suma una detección al mismo caso. Las tarjetas resumen los casos abiertos, los crónicos, los de severidad alta, los reincidentes y los cerrados. Severidad alta significa tres o más detecciones, un faltante de más de cinco mil pesos, o más de noventa días."
+  },
+  {
+    "id": "12_detalle",
+    "tipo": "pantalla",
+    "titulo": "Paso 5 · Trabajar un caso",
+    "sub": "Seguimiento · Acciones sobre depósito · Historia",
+    "voz": "Al abrir una orden vemos sus problemas, la historia completa y el seguimiento. Las acciones de seguimiento son: tomar, registrar avance, esperar, asignar responsable con fecha límite, resolver, o asumir la pérdida. Las acciones sobre depósito ejecutan directo: cancelar la orden, entregar, avisar por WhatsApp, regresar a depósito o ingresar."
+  },
+  {
+    "id": "13_sync",
+    "tipo": "pantalla",
+    "titulo": "Paso 5 · Cierre automático",
+    "sub": "El caso se cierra solo cuando la orden se corrige",
+    "voz": "Cuando la orden se entrega o se corrige desde el depósito, el caso se cierra solo al volver a abrir esta pantalla, y en la historia queda registrado cómo se cerró. Con el filtro de cerrados recientes se puede revisar qué se resolvió en los últimos días."
+  },
+  {
+    "id": "14_reportes",
+    "tipo": "pantalla",
+    "titulo": "Paso 6 · Reportes",
+    "sub": "Ejecutivo con análisis gráfico · Completo · PDF · Excel",
+    "voz": "En Reportes elegimos una auditoría cerrada, o la foto en vivo del depósito. La versión ejecutiva trae el análisis gráfico: antigüedad, casos por tipo y severidad, verificación física, situación de pago y valor por área, además de los hallazgos redactados. Se imprime a PDF o se exporta a Excel con todas las hojas."
+  },
+  {
+    "id": "15_ciclico",
+    "tipo": "pantalla",
+    "titulo": "Paso 7 · Conteo cíclico",
+    "sub": "Qué área auditar y cuándo",
+    "voz": "El Conteo cíclico propone qué área auditar y cuándo, según el valor que tiene en depósito. Las áreas A se auditan cada siete días, las B cada catorce y las C cada treinta. Con el botón Auditar solo esta área se abre una auditoría de esa zona con un clic."
+  },
+  {
+    "id": "16_cierre",
+    "tipo": "cierre",
+    "titulo": "Resumen",
+    "sub": "Abrir · Escanear · Cerrar · Trabajar los casos · Reportar",
+    "voz": "En resumen: abrir la auditoría, escanear los estantes, cerrar para generar los casos, trabajar cada caso hasta resolverlo, y usar los reportes y el conteo cíclico para mantener el depósito bajo control. Gracias por ver este tutorial."
+  }
+]

@@ -94,6 +94,20 @@ async function exigirMedidaDtf(pool, pa, b, nombre) {
   if (e) throw fallo(400, e.mensaje);
 }
 
+// [TIPO POR OBJETO 15/10] Pliego de DTF: las copias y su film (b.Material: '' o null = el del servicio; sin el dato, queda
+// el que tenía). El film se controla contra el catálogo de DTF y el pliego tiene que entrar en su ancho.
+async function produccionDtf(pool, b, a) {
+  const copias = b.Copias === undefined || b.Copias === null || b.Copias === '' ? (a.Copias || 1) : parseInt(b.Copias, 10);
+  if (!(copias >= 1)) throw fallo(400, 'Las copias deben ser 1 o más.');
+  if (b.Material === undefined) return { Material: a.Material || null, CodArticulo: a.CodArticulo || null, CodStock: a.CodStock || null, Copias: copias };
+  if (!String(b.Material || '').trim()) return { Material: null, CodArticulo: null, CodStock: null, Copias: copias };
+  const mat = buscarMaterial(await materialesDe(pool, 'DF', VARIANTE_DTF), { nombre: b.Material });
+  if (!mat) throw fallo(400, `El film "${b.Material}" no está en el catálogo de DTF.`);
+  const e = errorMedidaDtf(a.NombreOriginal, Number(a.AnchoM), Number(a.AltoM), mat);
+  if (e) throw fallo(400, e.mensaje);
+  return { Material: String(mat.Material).trim(), CodArticulo: String(mat.CodArticulo ?? '').trim(), CodStock: String(mat.CodStock ?? '').trim(), Copias: copias };
+}
+
 async function guardarProduccion(cx, archivoId, p) {
   await new sql.Request(cx).input('A', sql.Int, archivoId)
     .input('M', sql.NVarChar(200), p.Material).input('CA', sql.VarChar(50), p.CodArticulo).input('CS', sql.VarChar(50), p.CodStock).input('C', sql.Int, p.Copias)
@@ -103,7 +117,6 @@ async function guardarProduccion(cx, archivoId, p) {
 // Corregir la tela / las copias de un diseño pronto ya subido. Lo hace el diseñador que tiene el trabajo (o un Admin).
 async function definirProduccionArchivo(pool, user, base, solicitudId, archivoId, b) {
   const sol = await base.cabecera(pool, solicitudId);
-  base.exigirAbierta(sol);
   const r = await pool.request().input('A', sql.Int, archivoId).input('Sol', sql.Int, solicitudId).query(`
     SELECT a.*, pa.Tipo, pa.DisenadorID, p.PedidoNoDocERP
     FROM dbo.SolicitudesVendedorArchivos a
@@ -113,13 +126,16 @@ async function definirProduccionArchivo(pool, user, base, solicitudId, archivoId
   const a = r.recordset[0];
   if (!a) throw fallo(404, 'El archivo no existe o ya fue sustituido.');
   if (a.Rol !== 'DISENO_PRONTO' || !['PRINCIPAL', 'DTF'].includes(a.Tipo)) throw fallo(400, 'Las copias se cargan solo en los archivos de diseño pronto de la producción principal y de DTF.');
-  if (a.Tipo === 'DTF') b = { Copias: b.Copias };   // DTF: solo copias (el film es el del servicio)
-  if (a.PedidoNoDocERP) throw fallo(409, 'Este producto ya se convirtió en pedido: el archivo ya no se puede cambiar.');
+  // [CORREGIR EL DISEÑO 15/10] con una corrección abierta, cualquier diseñador corrige la tela y las copias del archivo nuevo
+  const corrigiendo = !!a.PedidoNoDocERP && !!base.enCorreccion && await base.enCorreccion(pool, a.ProductoSolID) && await base.esDisenador(pool, user);
+  if (!corrigiendo || sol.Estado === 'CANCELADA') base.exigirAbierta(sol);
+  if (a.PedidoNoDocERP && !corrigiendo) throw fallo(409, 'Este producto ya se convirtió en pedido: el archivo ya no se puede cambiar.');
   // Las carga el diseñador que tiene el trabajo; en un DTF con arte listo del cliente (sin diseñador), el vendedor.
   const vendedorDirecto = a.Tipo === 'DTF' && !a.DisenadorID && base.esVendedor(user);
-  if (!base.esAdmin(user) && a.DisenadorID !== user.id && !vendedorDirecto) throw fallo(403, 'La tela y las copias las carga el diseñador que tiene el trabajo.');
+  if (!corrigiendo && !base.esAdmin(user) && a.DisenadorID !== user.id && !vendedorDirecto) throw fallo(403, 'La tela y las copias las carga el diseñador que tiene el trabajo.');
 
-  const p = await resolverProduccion(pool, b, a, await areaPrincipalDeProducto(pool, a.ProductoSolID));
+  // DTF: las copias y, con objetos en más de un film (15/10), el film de ESTE pliego ('' = el del servicio)
+  const p = a.Tipo === 'DTF' ? await produccionDtf(pool, b, a) : await resolverProduccion(pool, b, a, await areaPrincipalDeProducto(pool, a.ProductoSolID));
   const transaction = new sql.Transaction(pool);
   await transaction.begin();
   try {
@@ -127,7 +143,7 @@ async function definirProduccionArchivo(pool, user, base, solicitudId, archivoId
     await base.registrarEvento(transaction, user, {
       solicitudId, productoSolId: a.ProductoSolID, parteId: a.ParteID, tipo: 'ARCHIVO',
       texto: a.Tipo === 'DTF'
-        ? `Estampado DTF: "${a.NombreOriginal}" → ${p.Copias} ${p.Copias === 1 ? 'copia' : 'copias'}.`
+        ? `Estampado DTF: "${a.NombreOriginal}" → ${p.Material ? `film ${p.Material}, ` : ''}${p.Copias} ${p.Copias === 1 ? 'copia' : 'copias'}.`
         : `Producción principal: "${a.NombreOriginal}" → tela ${p.Material || '(sin elegir)'}, ${p.Copias} ${p.Copias === 1 ? 'copia' : 'copias'}.`,
     });
     await transaction.commit();
@@ -141,7 +157,9 @@ async function definirProduccionArchivo(pool, user, base, solicitudId, archivoId
 // ---------------------------------------------------------------------
 // Solicitud + producto → pedido en términos de negocio (el contrato del plan §2.3)
 // ---------------------------------------------------------------------
-function armarPedido(sol, p, bobinaId) {
+// formas: cómo se puede hacer cada extra del producto (pedidoPortalService.formasDeExtras), para la variante del tipo de
+// cada archivo y el film de cada objeto de DTF (15/10)
+function armarPedido(sol, p, bobinaId, formas = {}) {
   // F1: producción principal según el producto del catálogo (SB si no dice otra cosa)
   const areaPrincipal = String(p.Config?.TecnicaPrincipal || 'SB').trim().toUpperCase();
   const vigentes = sol.Archivos.filter(a => a.Vigente);
@@ -175,15 +193,67 @@ function armarPedido(sol, p, bobinaId) {
       .map(a => { const n = prendasDelDiseno(a.NombreOriginal); return n ? { ...arch(a), prendas: n } : arch(a); });
   };
 
+  // [TIPO POR OBJETO 15/10] Cada archivo de bordado / DTF / TPU lleva SU tipo (Material del archivo: el del objeto o el
+  // del pliego); sin tipo propio, el del servicio. La variante sale de la forma con ese material.
+  const varianteDe = (tipo, material) => (formas[tipo] || []).find(o => o.material === material)?.variante || null;
+  const conTipo = (archivos, pa) => {
+    const porId = new Map(vigentes.filter(a => a.ParteID === pa.ParteID).map(a => [`SOLARCH-${a.ArchivoID}`, a]));
+    return archivos.map(x => {
+      const a = porId.get(x.id);
+      return a?.Material ? { ...x, material: { nombre: a.Material, codArticulo: a.CodArticulo || undefined, codStock: a.CodStock || undefined }, variante: varianteDe(pa.Tipo, a.Material) || undefined } : x;
+    });
+  };
+  // Las cantidades de bordado y DTF salen de la lista de jugadores: cada objeto × las prendas de SU diseño (15/10)
+  const PROC = { dtf: 'DTF', tpu: 'TPU', bordado: 'BORDADO' };
+  const prendasDe = (d) => (tz?.planilla || []).filter(f => tz.disenos.length === 1 || String(f.diseno || '').toUpperCase() === String(d.nombre || '').toUpperCase())
+    .reduce((t, f) => t + (Number(f.cantidad) > 0 ? Number(f.cantidad) : 1), 0);
+  // DTF por film: { porFilm: { film → { prendas (las que llevan algo en ese film), estampados } }, total: lo mismo de todo el DTF }
+  const dtfPorFilm = (pa) => {
+    const defecto = (pa.Datos || {}).material || '';
+    const filmDe = (id) => (formas.DTF || []).find(o => o.id === Number(id))?.material || defecto;
+    const g = {};
+    const total = { prendas: 0, estampados: 0 };
+    for (const d of tz?.disenos || []) {
+      const n = {};
+      for (const o of (d.arteArchivoId ? d.editablesDetalle || [] : [])) {
+        if (PROC[(d.editables || {})[o.objeto] || o.sugerido] !== 'DTF') continue;
+        const f = filmDe((d.formas || {})[`${o.objeto}|${o.pieza || ''}`]);
+        n[f] = (n[f] || 0) + 1;
+      }
+      for (const x of d.extrasArchivos || []) if (x.tipo === 'DTF') { const f = filmDe(x.opcionId); n[f] = (n[f] || 0) + 1; }
+      const prendas = prendasDe(d);
+      for (const [f, k] of Object.entries(n)) { g[f] = g[f] || { prendas: 0, estampados: 0 }; g[f].prendas += prendas; g[f].estampados += prendas * k; }
+      if (Object.keys(n).length) { total.prendas += prendas; total.estampados += prendas * Object.values(n).reduce((t, k) => t + k, 0); }
+    }
+    return { porFilm: g, total };
+  };
+  // prendas × estampados por prenda; si no da justo (distinta cantidad de objetos por diseño), los estampados × 1
+  const estampadoDe = (x) => (x.prendas > 0 && x.estampados % x.prendas === 0
+    ? { prendas: x.prendas, estampadosPorPrenda: x.estampados / x.prendas } : { prendas: x.estampados, estampadosPorPrenda: 1 });
+
   const servicios = p.Partes.filter(pa => pa.Tipo !== 'PRINCIPAL').map(pa => {
     const d = pa.Datos || {};
     const s = {
       tipo: pa.Tipo, variante: d.variante || null, material: d.material ? { nombre: d.material } : null,
       ubicacion: pa.Ubicacion || '', nota: pa.Observaciones || '',
-      archivos: archivosDelServicio(pa), bocetos: deParte(pa, 'BOCETO'), referencias: deParte(pa, 'REFERENCIA'),
+      archivos: conTipo(archivosDelServicio(pa), pa), bocetos: deParte(pa, 'BOCETO'), referencias: deParte(pa, 'REFERENCIA'),
     };
-    if (pa.Tipo === 'BORDADO') s.prendas = pa.CantidadTotal || p.Cantidad;
-    else s.estampado = { prendas: pa.CantidadTotal, estampadosPorPrenda: pa.PorPrenda, origen: d.origenPrendas || 'Stock User' };
+    if (pa.Tipo === 'BORDADO') {
+      // un solo logo de un diseño: las prendas de ese diseño (con varios, cada orden lleva las de su logo)
+      s.prendas = (s.archivos.length === 1 && s.archivos[0].prendas) || pa.CantidadTotal || p.Cantidad;
+    } else {
+      // sin cargar (15/10: ya no se piden en el formulario): la cantidad del producto y 1 por prenda
+      s.estampado = { prendas: pa.CantidadTotal || p.Cantidad, estampadosPorPrenda: pa.PorPrenda || 1, origen: d.origenPrendas || 'Stock User' };
+      if (pa.Tipo === 'DTF') {
+        const { porFilm: g, total } = dtfPorFilm(pa);
+        const films = Object.keys(g);
+        if (films.length) {
+          s.estampado = { ...s.estampado, ...estampadoDe(total) };
+          // más de un film: el traductor arma un DTF y un Estampado por film, cada uno con lo suyo
+          if (films.length > 1) s.estampado.porMaterial = Object.fromEntries(films.map(f => [f, estampadoDe(g[f])]));
+        }
+      }
+    }
     return s;
   });
 
@@ -298,11 +368,11 @@ async function disenosEnProduccion(pool, user, base) {
     SELECT TOP 300 o.OrdenID, LTRIM(RTRIM(o.CodigoOrden)) AS CodigoOrden, LTRIM(RTRIM(o.AreaID)) AS AreaID, LTRIM(RTRIM(CAST(o.NoDocERP AS varchar(50)))) AS NoDocERP,
            LTRIM(RTRIM(o.Cliente)) AS Cliente, o.DescripcionTrabajo, LTRIM(RTRIM(o.Material)) AS Material, o.Magnitud, o.FechaIngreso, x.Etapa,
            ${tieneIngresoInterno ? 'o.IngresoInternoPor' : 'CAST(NULL AS INT) AS IngresoInternoPor'},
-           sv.SolicitudID, sv.DisenadorSolicitud
+           sv.SolicitudID, sv.DisenadorSolicitud, sv.DisenadorSolicitudID
     FROM dbo.Ordenes o
     -- Si el pedido nació de una Solicitud: cuál, y quién tenía tomado ese servicio ahí (para que el trabajo no se pierda de vista)
     OUTER APPLY (
-      SELECT TOP 1 p.SolicitudID, ud.Nombre AS DisenadorSolicitud
+      SELECT TOP 1 p.SolicitudID, ud.Nombre AS DisenadorSolicitud, pa.DisenadorID AS DisenadorSolicitudID
       FROM dbo.SolicitudesVendedorProductos p
       LEFT JOIN dbo.SolicitudesVendedorPartes pa ON pa.ProductoSolID = p.ProductoSolID AND pa.Activo = 1
                                                AND pa.Tipo = CASE o.AreaID WHEN 'EMB' THEN 'BORDADO' ELSE 'TPU' END
@@ -313,7 +383,9 @@ async function disenosEnProduccion(pool, user, base) {
     WHERE ${SQL_ORDEN_VIVA}
       AND x.Etapa IS NOT NULL
     ORDER BY CASE x.Etapa WHEN 'RECHAZADO' THEN 0 WHEN 'FALTA_DISENO' THEN 1 WHEN 'APROBADO_FALTA_ARTE' THEN 2 ELSE 3 END, o.FechaIngreso`);
-  return r.recordset;
+  // [15/10] EsMia: el servicio lo tenía tomado quien mira en la solicitud. La Bandeja lo sigue mostrando en "Mis trabajos"
+  // hasta que la orden tenga su diseño (antes, al crearse el pedido, salía de "Mis trabajos" y quedaba solo en "En producción").
+  return r.recordset.map(x => ({ ...x, EsMia: !!x.DisenadorSolicitudID && Number(x.DisenadorSolicitudID) === Number(user.id) }));
 }
 
 // Cómo va en PRODUCCIÓN el diseño de Bordado / TPU de un pedido ya convertido (para el detalle de la solicitud).
@@ -341,9 +413,10 @@ async function convertir(pool, user, base, solicitudId, productoSolId, b, app) {
   const faltantes = sol.Conversion.find(c => c.ProductoSolID === productoSolId)?.faltantes || [];
   if (faltantes.length) throw fallo(409, `Todavía no se puede convertir. Falta:\n• ${faltantes.join('\n• ')}`);
 
+  const formas = p.ProIdProducto ? await require('./pedidoPortalService').formasDeExtras(pool, p.ProIdProducto) : {};
   const resultado = await procesador.crearPedido(pool, {
     origen: ORIGEN, idExterno: idExternoDe(solicitudId, productoSolId),
-    pedido: armarPedido(sol, p, parseInt(b?.bobinaId, 10) || null), usuarioInterno: user, app,
+    pedido: armarPedido(sol, p, parseInt(b?.bobinaId, 10) || null, formas), usuarioInterno: user, app,
   });
 
   if (resultado.noDocERP && !p.PedidoNoDocERP) {

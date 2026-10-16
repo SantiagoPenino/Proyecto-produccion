@@ -721,5 +721,3 @@ exports.syncOrders = async (req, res) => {
         res.json(r);
     } catch (e) { res.status(500).json({ error: e.message }); }
 };
-// SIN USO (13/10): testImportJson: sin ruta. Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
-exports.testImportJson = async (req, res) => res.json({ ok: true });

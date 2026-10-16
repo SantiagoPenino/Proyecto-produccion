@@ -1,0 +1,101 @@
+{
+  "fecha": "2026-10-12T13:23:12.678Z",
+  "usuario": "Yoania",
+  "producto": {
+    "proId": 522,
+    "codArticulo": "PR-019",
+    "descripcion": "Camiseta y short basket FP+B+DTF",
+    "estado": "BORRADOR",
+    "esCombo": false
+  },
+  "tablas": {
+    "ProductoTerminadoServicios": [
+      {
+        "ID": 55,
+        "ProIdProducto": 522,
+        "AreaID": "SB",
+        "Obligatorio": true,
+        "Modo": "LIBRE",
+        "Cobro": "INCLUIDA"
+      },
+      {
+        "ID": 56,
+        "ProIdProducto": 522,
+        "AreaID": "TWC",
+        "Obligatorio": true,
+        "Modo": "LIBRE",
+        "Cobro": "INCLUIDA"
+      },
+      {
+        "ID": 57,
+        "ProIdProducto": 522,
+        "AreaID": "TWT",
+        "Obligatorio": true,
+        "Modo": "LIBRE",
+        "Cobro": "INCLUIDA"
+      }
+    ],
+    "ArticuloClasificacion": [
+      {
+        "ProIdProducto": 522,
+        "AclArea": "Productos Confeccionados",
+        "AclVariante": null,
+        "AclOrigen": "MANUAL",
+        "AclFecha": "2026-08-21T10:58:19.683Z",
+        "AclUsuarioId": 12
+      }
+    ],
+    "ProductoVentaConfig": [
+      {
+        "ProIdProducto": 522,
+        "OrigenTipo": "CONFECCIONADO",
+        "OrigenProIdProducto": null,
+        "CantidadMinima": null,
+        "CantidadFija": null,
+        "ValidarStock": true,
+        "Estado": "BORRADOR",
+        "FechaRegistro": "2026-09-01T14:19:00.340Z",
+        "FechaModif": "2026-09-29T13:38:55.217Z",
+        "EsCombo": false,
+        "Familia": "Camisetas",
+        "EtiquetaID": 2,
+        "TizadaProMoldeRef": null,
+        "CodigoCorto": null,
+        "TecnicaPrincipal": "SB",
+        "AnchoM": null,
+        "AltoM": null,
+        "BordeCm": null,
+        "UM": "u",
+        "Molde": "OBLIGATORIO",
+        "VisiblePortal": false,
+        "VisibleTienda": false,
+        "VisibleInterno": true,
+        "PadreProIdProducto": null,
+        "ModeloClave": null,
+        "TecnicasPropias": false
+      }
+    ],
+    "Articulos": [
+      {
+        "ProIdProducto": 522,
+        "CodArticulo": "PR-019              ",
+        "IDProdReact": null,
+        "SupFlia": "2       ",
+        "Grupo": "2.1                 ",
+        "CodStock": "2.2.1.12            ",
+        "Descripcion": "Camiseta y short basket FP+B+DTF                                                                    ",
+        "Mostrar": true,
+        "anchoimprimible": null,
+        "LLEVAPAPEL": null,
+        "MonIdMoneda": 1,
+        "ProCodigoOdooProducto": null,
+        "UniIdUnidad": null,
+        "borrar": 0,
+        "largoimprimible": null,
+        "EnListaPrecios": false,
+        "EnListaPublica": false,
+        "DescripcionLista": null
+      }
+    ]
+  }
+}

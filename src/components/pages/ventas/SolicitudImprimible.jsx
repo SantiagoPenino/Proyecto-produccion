@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
 import { solicitudesVendedorService as svc } from '../../../services/modules/solicitudesVendedorService';
 import { fmtFecha, fmtFechaHora } from '../../../utils/fechas';
-import { RESPUESTA_MUESTRA } from './checklistSolicitud';
+import { PIDE_APROBACION_ESCRITA, PIDE_MUESTRA_APROBADA, RESPUESTA_MUESTRA } from './checklistSolicitud';
 import { NOMBRE_PARTE, ROL_ARCHIVO, plata } from './solicitudesComunes';
 
 /**
@@ -109,7 +109,7 @@ export default function SolicitudImprimible() {
                                 {d.comoSeDefine === 'MEDIDA' ? <><F l="Medidas y cantidad por medida" v={d.medidas} /><F l="Terminación / costura" v={d.terminacion} /></>
                                     : <><F l="Talles" v={d.notaTalles} /><F l="Medidas de la prenda" v={d.medidasPrenda || (d.tablaEstandar ? 'Tabla estándar del taller, confirmada con el cliente' : '')} /></>}
                                 {d.personalizacion && <F l="Nombres y números" v={d.listaCerrada ? 'Lista completa y cerrada' : 'LISTA SIN CERRAR'} />}
-                                {(d.productoNuevo || d.produccionGrande || d.requiereMuestra) && <F l="Marcas" v={[d.productoNuevo && 'Producto nuevo', d.produccionGrande && 'Producción grande', d.requiereMuestra && `Muestra: ${d.muestraAprobada ? 'aprobada' : 'requiere confección, sin aprobar'}`].filter(Boolean).join(' · ')} />}
+                                {(d.productoNuevo || d.produccionGrande || d.requiereMuestra) && <F l="Marcas" v={[d.productoNuevo && 'Producto nuevo', d.produccionGrande && 'Producción grande', d.requiereMuestra && `Muestra: ${d.muestraAprobada ? 'aprobada' : PIDE_MUESTRA_APROBADA ? 'requiere confección, sin aprobar' : 'requiere confección'}`].filter(Boolean).join(' · ')} />}
                                 {d.muestraFisica && <F l="Referencia" v="El cliente entregó muestra física o molde" />}
                                 {d.corte?.activo && <F l="Corte" v={`${d.corte.tipoMolde} · ${d.corte.origenTela}`} />}
                                 {d.costura?.activo && <F l="Costura" v={d.costura.instrucciones || 'Sin instrucciones especiales'} />}
@@ -142,7 +142,7 @@ export default function SolicitudImprimible() {
                                     );
                                 })}
                             </div>
-                            {principal && d.diseno?.origen && <F l="Diseño" v={d.diseno.origen === 'NO' ? 'No lleva' : d.diseno.origen === 'CLIENTE' ? `lo entrega el cliente${d.diseno.verificado ? ' · archivo verificado' : ' · archivo SIN verificar'}` : `lo hace el taller${d.diseno.aprobado ? ' · propuesta aprobada por escrito' : ' · propuesta SIN aprobar'}`} />}
+                            {principal && d.diseno?.origen && <F l="Diseño" v={d.diseno.origen === 'NO' ? 'No lleva' : d.diseno.origen === 'CLIENTE' ? `lo entrega el cliente${d.diseno.verificado ? ' · archivo verificado' : ' · archivo SIN verificar'}` : `lo hace el taller${!PIDE_APROBACION_ESCRITA ? '' : d.diseno.aprobado ? ' · propuesta aprobada por escrito' : ' · propuesta SIN aprobar'}`} />}
 
                             {!esDiseno && conv?.checklist && !conv.checklist.listo && (
                                 <div className="mt-2 border border-rose-400 rounded p-2 text-xs">

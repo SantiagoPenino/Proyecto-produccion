@@ -1,0 +1,390 @@
+{
+  "fecha": "2026-10-12T12:58:23.183Z",
+  "usuario": "Yoania",
+  "producto": {
+    "proId": 505,
+    "codArticulo": "PR-002",
+    "descripcion": "Camiseta basket FP",
+    "estado": "BORRADOR",
+    "esCombo": false
+  },
+  "tablas": {
+    "ProductoTerminadoServicios": [
+      {
+        "ID": 202,
+        "ProIdProducto": 505,
+        "AreaID": "SB",
+        "Obligatorio": true,
+        "Modo": "LIBRE",
+        "Cobro": "INCLUIDA"
+      },
+      {
+        "ID": 203,
+        "ProIdProducto": 505,
+        "AreaID": "TWC",
+        "Obligatorio": true,
+        "Modo": "LIBRE",
+        "Cobro": "INCLUIDA"
+      },
+      {
+        "ID": 204,
+        "ProIdProducto": 505,
+        "AreaID": "TWT",
+        "Obligatorio": true,
+        "Modo": "LIBRE",
+        "Cobro": "INCLUIDA"
+      },
+      {
+        "ID": 205,
+        "ProIdProducto": 505,
+        "AreaID": "EMB",
+        "Obligatorio": false,
+        "Modo": "LIBRE",
+        "Cobro": "INCLUIDA"
+      },
+      {
+        "ID": 206,
+        "ProIdProducto": 505,
+        "AreaID": "TPU",
+        "Obligatorio": false,
+        "Modo": "LIBRE",
+        "Cobro": "INCLUIDA"
+      },
+      {
+        "ID": 207,
+        "ProIdProducto": 505,
+        "AreaID": "DF",
+        "Obligatorio": false,
+        "Modo": "LIBRE",
+        "Cobro": "INCLUIDA"
+      }
+    ],
+    "ProductoTecnicaOpciones": [
+      {
+        "ID": 5,
+        "ProIdProducto": 505,
+        "TecnicaOpcionID": 7
+      }
+    ],
+    "ProductoModelos": [
+      {
+        "ID": 1,
+        "ProIdProducto": 505,
+        "ModeloClave": "v_3tsu7pk",
+        "ModeloNombre": "Camiseta basket Goes 2026",
+        "EsDefault": false,
+        "Orden": 1
+      }
+    ],
+    "ProductoAvios": [
+      {
+        "ID": 36,
+        "ProIdProducto": 505,
+        "Nombre": "Etiqueta de marca",
+        "ArtProIdProducto": null,
+        "Cantidad": 1,
+        "Unidad": "u",
+        "Medida": null,
+        "Nota": "Centro de la espalda, cosida al pegar el cuello",
+        "Orden": 1,
+        "AvioID": 6,
+        "VariaPorTalle": false
+      },
+      {
+        "ID": 37,
+        "ProIdProducto": 505,
+        "Nombre": "Etiqueta de talle",
+        "ArtProIdProducto": null,
+        "Cantidad": 1,
+        "Unidad": "u",
+        "Medida": null,
+        "Nota": "Junto a la etiqueta de marca",
+        "Orden": 2,
+        "AvioID": 7,
+        "VariaPorTalle": false
+      },
+      {
+        "ID": 38,
+        "ProIdProducto": 505,
+        "Nombre": "Etiqueta de composición y lavado",
+        "ArtProIdProducto": null,
+        "Cantidad": 1,
+        "Unidad": "u",
+        "Medida": null,
+        "Nota": "Costado izquierdo, a 10 cm del ruedo",
+        "Orden": 3,
+        "AvioID": 22,
+        "VariaPorTalle": false
+      },
+      {
+        "ID": 39,
+        "ProIdProducto": 505,
+        "Nombre": "Hilo de poliéster (agujas)",
+        "ArtProIdProducto": null,
+        "Cantidad": 35,
+        "Unidad": "m",
+        "Medida": "Talle M ≈ 35 m · más chico o más grande en proporción",
+        "Nota": "Estimado. Color de la tela",
+        "Orden": 4,
+        "AvioID": 24,
+        "VariaPorTalle": false
+      },
+      {
+        "ID": 40,
+        "ProIdProducto": 505,
+        "Nombre": "Hilo texturizado (áncoras)",
+        "ArtProIdProducto": null,
+        "Cantidad": 175,
+        "Unidad": "m",
+        "Medida": "Talle M ≈ 175 m · más chico o más grande en proporción",
+        "Nota": "Estimado. Áncoras de overlock y recubridora; color de la tela",
+        "Orden": 5,
+        "AvioID": 25,
+        "VariaPorTalle": false
+      }
+    ],
+    "ProductoFichaDisenoCosturas": [
+      {
+        "ID": 85,
+        "ProIdProducto": 505,
+        "UnionNombre": "Unir hombros",
+        "CodigoISO": "ISO 514",
+        "Orden": 1,
+        "Etapa": "Armado",
+        "Descripcion": "Frente + espalda, por los hombros",
+        "MaquinaCosturaID": 4,
+        "TiempoMin": 0.3,
+        "Observaciones": null,
+        "ImagenUrl": null,
+        "AvioID": null
+      },
+      {
+        "ID": 86,
+        "ProIdProducto": 505,
+        "UnionNombre": "Pegar costadillos al frente",
+        "CodigoISO": "ISO 514",
+        "Orden": 2,
+        "Etapa": "Armado",
+        "Descripcion": "Costadillo derecho + frente y costadillo izquierdo + frente (2 costuras)",
+        "MaquinaCosturaID": 4,
+        "TiempoMin": 0.6,
+        "Observaciones": "Hacer coincidir los piquetes; el costadillo arranca debajo de la sisa",
+        "ImagenUrl": null,
+        "AvioID": null
+      },
+      {
+        "ID": 87,
+        "ProIdProducto": 505,
+        "UnionNombre": "Cerrar costados con la espalda",
+        "CodigoISO": "ISO 514",
+        "Orden": 3,
+        "Etapa": "Armado",
+        "Descripcion": "Costadillos + espalda, de la sisa al ruedo (2 costuras)",
+        "MaquinaCosturaID": 4,
+        "TiempoMin": 0.6,
+        "Observaciones": "Las dos uniones de la sisa a la misma altura. Meter la etiqueta de composición en el costado izquierdo, a 10 cm del ruedo",
+        "ImagenUrl": null,
+        "AvioID": null
+      },
+      {
+        "ID": 88,
+        "ProIdProducto": 505,
+        "UnionNombre": "Recubrir costuras de costadillos",
+        "CodigoISO": "ISO 602",
+        "Orden": 4,
+        "Etapa": "Armado",
+        "Descripcion": "Las 4 costuras de los costadillos (pespunte visto por el derecho)",
+        "MaquinaCosturaID": 6,
+        "TiempoMin": 0.9,
+        "Observaciones": "Solo si el diseño lleva la costura vista; si no, borrar este paso",
+        "ImagenUrl": null,
+        "AvioID": null
+      },
+      {
+        "ID": 89,
+        "ProIdProducto": 505,
+        "UnionNombre": "Cerrar cuello en aro",
+        "CodigoISO": "ISO 301",
+        "Orden": 5,
+        "Etapa": "Terminación",
+        "Descripcion": "Pieza Cuello (57,8 cm), punta con punta",
+        "MaquinaCosturaID": 1,
+        "TiempoMin": 0.15,
+        "Observaciones": null,
+        "ImagenUrl": null,
+        "AvioID": null
+      },
+      {
+        "ID": 90,
+        "ProIdProducto": 505,
+        "UnionNombre": "Pegar cuello",
+        "CodigoISO": "ISO 514",
+        "Orden": 6,
+        "Etapa": "Terminación",
+        "Descripcion": "Cuello doblado al medio + escote de frente y espalda",
+        "MaquinaCosturaID": 4,
+        "TiempoMin": 0.45,
+        "Observaciones": "Repartir el cuello en 4 cuartos; la unión del aro va al centro de la espalda. Meter las etiquetas de marca y talle en el centro de la espalda",
+        "ImagenUrl": null,
+        "AvioID": null
+      },
+      {
+        "ID": 91,
+        "ProIdProducto": 505,
+        "UnionNombre": "Pegar tapacostura en la espalda",
+        "CodigoISO": "ISO 406",
+        "Orden": 7,
+        "Etapa": "Terminación",
+        "Descripcion": "Tapacostura (22,1 cm) sobre la costura del cuello, de hombro a hombro por la espalda",
+        "MaquinaCosturaID": 6,
+        "TiempoMin": 0.4,
+        "Observaciones": "Tapa el overlock del cuello y fija las etiquetas",
+        "ImagenUrl": null,
+        "AvioID": null
+      },
+      {
+        "ID": 92,
+        "ProIdProducto": 505,
+        "UnionNombre": "Recubrir cuello por el frente",
+        "CodigoISO": "ISO 406",
+        "Orden": 8,
+        "Etapa": "Terminación",
+        "Descripcion": "Costura del cuello, de hombro a hombro por el frente",
+        "MaquinaCosturaID": 6,
+        "TiempoMin": 0.3,
+        "Observaciones": null,
+        "ImagenUrl": null,
+        "AvioID": null
+      },
+      {
+        "ID": 93,
+        "ProIdProducto": 505,
+        "UnionNombre": "Cerrar tiras de sisa en aro",
+        "CodigoISO": "ISO 301",
+        "Orden": 9,
+        "Etapa": "Terminación",
+        "Descripcion": "Sisa derecha y sisa izquierda (61,3 cm), punta con punta",
+        "MaquinaCosturaID": 1,
+        "TiempoMin": 0.2,
+        "Observaciones": null,
+        "ImagenUrl": null,
+        "AvioID": null
+      },
+      {
+        "ID": 94,
+        "ProIdProducto": 505,
+        "UnionNombre": "Pegar ribete de sisas",
+        "CodigoISO": "ISO 514",
+        "Orden": 10,
+        "Etapa": "Terminación",
+        "Descripcion": "Tiras de sisa dobladas al medio + sisas del cuerpo",
+        "MaquinaCosturaID": 4,
+        "TiempoMin": 0.8,
+        "Observaciones": "La unión del aro va en la costura del costado; estirar apenas la tira en la parte de abajo de la sisa para que no quede abierta",
+        "ImagenUrl": null,
+        "AvioID": null
+      },
+      {
+        "ID": 95,
+        "ProIdProducto": 505,
+        "UnionNombre": "Recubrir sisas",
+        "CodigoISO": "ISO 406",
+        "Orden": 11,
+        "Etapa": "Terminación",
+        "Descripcion": "Costura de las dos sisas (pespunte por el cuerpo)",
+        "MaquinaCosturaID": 6,
+        "TiempoMin": 0.6,
+        "Observaciones": null,
+        "ImagenUrl": null,
+        "AvioID": null
+      },
+      {
+        "ID": 96,
+        "ProIdProducto": 505,
+        "UnionNombre": "Ruedo",
+        "CodigoISO": "ISO 406",
+        "Orden": 12,
+        "Etapa": "Terminación",
+        "Descripcion": "Bajo de frente, costadillos y espalda (doblez de 2,5 cm)",
+        "MaquinaCosturaID": 6,
+        "TiempoMin": 0.55,
+        "Observaciones": "Coincidir las costuras de los costados al doblar",
+        "ImagenUrl": null,
+        "AvioID": null
+      }
+    ],
+    "ProductoFichaDiseno": [
+      {
+        "ProIdProducto": 505,
+        "Ref": null,
+        "Marca": "USER",
+        "Material": null,
+        "Tallas": "Niño 0–16 · Adulto XS–6XL · Femenino XS–6XL",
+        "Marcacion": null,
+        "Colores": null,
+        "Proveedor": null,
+        "DibujoUrl": null,
+        "FechaModif": "2026-10-09T15:57:42.200Z"
+      }
+    ],
+    "ArticuloClasificacion": [
+      {
+        "ProIdProducto": 505,
+        "AclArea": "Productos Confeccionados",
+        "AclVariante": null,
+        "AclOrigen": "MANUAL",
+        "AclFecha": "2026-08-21T10:58:19.500Z",
+        "AclUsuarioId": 12
+      }
+    ],
+    "ProductoVentaConfig": [
+      {
+        "ProIdProducto": 505,
+        "OrigenTipo": "CONFECCIONADO",
+        "OrigenProIdProducto": null,
+        "CantidadMinima": null,
+        "CantidadFija": null,
+        "ValidarStock": true,
+        "Estado": "BORRADOR",
+        "FechaRegistro": "2026-09-01T14:19:00.340Z",
+        "FechaModif": "2026-10-09T15:57:42.197Z",
+        "EsCombo": false,
+        "Familia": "Camisetas",
+        "EtiquetaID": 2,
+        "TizadaProMoldeRef": "prod_20260921_152644_a01c",
+        "CodigoCorto": null,
+        "TecnicaPrincipal": "SB",
+        "AnchoM": null,
+        "AltoM": null,
+        "BordeCm": null,
+        "UM": "u",
+        "Molde": "OBLIGATORIO",
+        "VisiblePortal": false,
+        "VisibleTienda": false,
+        "VisibleInterno": true
+      }
+    ],
+    "Articulos": [
+      {
+        "ProIdProducto": 505,
+        "CodArticulo": "PR-002              ",
+        "IDProdReact": null,
+        "SupFlia": "2       ",
+        "Grupo": "2.1                 ",
+        "CodStock": "2.2.1.12            ",
+        "Descripcion": "Camiseta basket FP                                                                                  ",
+        "Mostrar": true,
+        "anchoimprimible": null,
+        "LLEVAPAPEL": null,
+        "MonIdMoneda": 1,
+        "ProCodigoOdooProducto": null,
+        "UniIdUnidad": null,
+        "borrar": 0,
+        "largoimprimible": null,
+        "EnListaPrecios": false,
+        "EnListaPublica": false,
+        "DescripcionLista": null
+      }
+    ]
+  }
+}

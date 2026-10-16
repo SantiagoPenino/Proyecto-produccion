@@ -1,13 +1,8 @@
 const express = require('express');
 const router = express.Router();
-const stockCtrl = require('../controllers/stockController');
 const invCtrl = require('../controllers/inventoryController'); // Importamos el nuevo
 const controller = require('../controllers/areasController');
 const { verifyToken } = require('../middleware/authMiddleware');
-
-// Rutas de Solicitudes
-router.post('/', stockCtrl.createRequest);
-router.get('/history', stockCtrl.getHistory); // ?area=DTF
 
 // Rutas de Insumos (Autocompletado)
 router.get('/items', invCtrl.getInsumos); // ?q=tinta

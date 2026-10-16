@@ -1250,7 +1250,6 @@ exports.getOrdersByArea = async (req, res) => {
         // DEBUG: Force print final area
         // logger.info(`🔎 [getOrdersByArea] Querying DB with AreaID = '${area}'`);
 
-
         const pool = await getPool();
         // Auto-heal de FechaAprobacionCliente/FechaRechazoCliente: el SELECT las lee siempre.
         // La función cachea tras el primer llamado, así que en el camino caliente no cuesta nada.
@@ -1403,7 +1402,6 @@ exports.getOrdersByArea = async (req, res) => {
             END ASC,
             ISNULL(o.Secuencia, 0) DESC,
             o.FechaIngreso ASC`;
-
 
         const result = await request.query(query);
 
@@ -1691,7 +1689,6 @@ exports.createOrder = async (req, res) => {
     }
 };
 
-
 // =====================================================================
 // 3. FUNCIONES ORIGINALES (Restauradas tal cual estaban)
 // =====================================================================
@@ -1926,7 +1923,6 @@ exports.assignRoll = async (req, res) => {
 
             // Unify inputs ya se hizo arriba
 
-
             // 2. VINCULAR ÓRDENES (Primero las asignamos al rollo sin tocar secuencia aun)
             // Esto es necesario para que luego al consultar "todas las ordenes del rollo"
             // incluyan a las nuevas y podamos reordenar el conjunto completo.
@@ -1940,7 +1936,6 @@ exports.assignRoll = async (req, res) => {
                         UPDATE dbo.Ordenes 
                         SET 
                             RolloID = @RID,
-
 
                             -- Importante: Si la orden es 'Reposicion' o tiene 'falla' en true, aseguramos su marca.
                             -- Pero aqui solo actualizamos la vinculacion.
@@ -2928,9 +2923,6 @@ exports.getIntegralPedidoDetailsV2 = async (req, res) => {
             };
         });
 
-
-
-
         // 5. Data Final
         const responseData = {
             header,
@@ -3346,7 +3338,7 @@ exports.cancelOrder = async (req, res) => {
                     let userIdInt = 1;
                     if (typeof usuario === 'object' && usuario.UsuarioID) userIdInt = parseInt(usuario.UsuarioID);
                     else if (typeof usuario === 'number') userIdInt = usuario;
-                    await ERPSyncService.syncFinalOrderIntegration(noDocERP, userIdInt, safeUser, null, { skipDeposito: true });
+                    await ERPSyncService.syncFinalOrderIntegration(noDocERP, userIdInt, safeUser);
                 }
             } catch (errSync) {
                 logger.error("❌ Error recotizando orden tras cancelar:", errSync);
@@ -3739,7 +3731,7 @@ exports.cancelRequest = async (req, res) => {
                     let userIdInt = 1;
                     if (typeof usuario === 'object' && usuario.UsuarioID) userIdInt = parseInt(usuario.UsuarioID);
                     else if (typeof usuario === 'number') userIdInt = usuario;
-                    await ERPSyncService.syncFinalOrderIntegration(noDoc, userIdInt, safeUser, null, { skipDeposito: true });
+                    await ERPSyncService.syncFinalOrderIntegration(noDoc, userIdInt, safeUser);
                 }
             } catch (syncErr) {
                 logger.error("❌ Error recotizando orden tras cancelar Request:", syncErr);
@@ -3756,32 +3748,6 @@ exports.cancelRequest = async (req, res) => {
         }
     } catch (e) {
         logger.error("❌ Error cancelRequest:", e);
-        res.status(500).json({ error: e.message });
-    }
-};
-// SIN USO (13/10): cancelRoll: stub que responde success sin hacer nada; el front no llama a /orders/cancel-roll. Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
-exports.cancelRoll = async (req, res) => { res.json({ success: true }); };
-// SIN USO (13/10): getOrderHistory: devuelve un historial simulado; el front no llama a /orders/history (el historial real viene en /orders/details). Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
-exports.getOrderHistory = async (req, res) => {
-    const { id } = req.params;
-    try {
-        const pool = await getPool();
-        // Intentamos buscar en una tabla de auditoría si existe, o construimos historial básico
-        // Asumiendo que existe una tabla de auditoría o log. Si no, devolvemos info básica de la orden como "Creada".
-        // Por ahora, simularemos historial con la fecha de ingreso y control de archivos.
-
-        const result = await pool.request()
-            .input('ID', sql.Int, id)
-            .query(`
-                SELECT 'Orden Ingresada' as Detalle, FechaIngreso as Fecha, 'Pendiente' as Estado, UsuarioID as Usuario FROM Ordenes WHERE OrdenID = @ID
-                UNION ALL
-                SELECT CONCAT('Archivo Controlado: ', NombreArchivo, ' [', EstadoArchivo, ']'), FechaControl, EstadoArchivo, UsuarioControl FROM ArchivosOrden WHERE OrdenID = @ID AND FechaControl IS NOT NULL
-                ORDER BY Fecha DESC
-            `);
-
-        res.json(result.recordset);
-    } catch (e) {
-        logger.error(e);
         res.status(500).json({ error: e.message });
     }
 };
@@ -3908,7 +3874,7 @@ exports.cancelFile = async (req, res) => {
                     let userIdInt = 1;
                     if (typeof usuario === 'object' && usuario.UsuarioID) userIdInt = parseInt(usuario.UsuarioID);
                     else if (typeof usuario === 'number') userIdInt = usuario;
-                    await ERPSyncService.syncFinalOrderIntegration(noDocERP, userIdInt, userName.substring(0,99), null, { skipDeposito: true });
+                    await ERPSyncService.syncFinalOrderIntegration(noDocERP, userIdInt, userName.substring(0,99));
                 }
             } catch (errSync) {
                 logger.error("❌ Error recotizando orden tras cancelar Archivo:", errSync);
@@ -3959,8 +3925,6 @@ exports.cancelFile = async (req, res) => {
         res.status(500).json({ error: e.message });
     }
 };
-// SIN USO (13/10): assignFabricBobbin: stub que responde success sin hacer nada; ordersService.assignFabricBobbin no tiene callers. Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
-exports.assignFabricBobbin = async (req, res) => { res.json({ success: true }); };
 
 // ============================================================
 // REACTIVACIÓN (reversa de cancelación) — 3 niveles
@@ -3996,148 +3960,6 @@ const getLastFileStatesBeforeCancel = async (transaction, ordenId) => {
             WHERE AO.OrdenID = @OID AND AO.EstadoArchivo = 'CANCELADO'
         `);
     return res.recordset; // [{ ArchivoID, NombreArchivo, EstadoRestaurar }]
-};
-
-// SIN USO (13/10): reactivateFile: ordersService.reactivateFile existe pero nadie lo llama. Puede ser algo pensado para el modal de archivos que nunca se cableó. Ver docs/auditoria-limpieza-2026-10-09.md.
-/**
- * Reactivar UN ARCHIVO individual.
- * - Restaura el EstadoArchivo al estado previo a la cancelación.
- * - Si la orden fue auto-cancelada por ese archivo (todos cancelados), reactiva la orden también.
- * - Nunca toca otras órdenes del pedido.
- */
-exports.reactivateFile = async (req, res) => {
-    const { fileId, usuario } = req.body;
-    if (!fileId) return res.status(400).json({ error: 'fileId requerido' });
-
-    const rawUser = (usuario && typeof usuario === 'object') ? (usuario.UsuarioID || usuario.id || 'Sistema') : usuario;
-    const safeUser = String(rawUser || 'Sistema').substring(0, 99);
-
-    try {
-        const pool = await getPool();
-        const transaction = new sql.Transaction(pool);
-        await transaction.begin();
-
-        try {
-            // 1. Obtener OrdenID + EstadoOrden actual
-            const infoRes = await new sql.Request(transaction)
-                .input('FID', sql.Int, fileId)
-                .query(`
-                    SELECT AO.OrdenID, AO.NombreArchivo, O.Estado as EstadoOrden, O.Nota, O.Observaciones,
-                           O.NoDocERP, O.MotivoCancelacionID, O.DetallesCancelacion
-                    FROM ArchivosOrden AO
-                    INNER JOIN Ordenes O ON AO.OrdenID = O.OrdenID
-                    WHERE AO.ArchivoID = @FID
-                `);
-            if (!infoRes.recordset.length) throw new Error('Archivo no encontrado');
-
-            const { OrdenID, EstadoOrden, Nota, Observaciones, NoDocERP } = infoRes.recordset[0];
-
-            // 2. Reactivar SIEMPRE en Pendiente (misma regla que reactivateOrder):
-            // el último estado del historial podía ser "En Maquina", pero el lote
-            // ya puede no existir — el archivo volvía a un estado de máquina sin
-            // máquina y quedaba en el limbo.
-            const estadoRestaurar = 'Pendiente';
-
-            // 3. Restaurar el archivo
-            await new sql.Request(transaction)
-                .input('FID', sql.Int, fileId)
-                .input('Estado', sql.VarChar(50), estadoRestaurar)
-                .input('User', sql.VarChar(100), safeUser)
-                .query(`
-                    UPDATE ArchivosOrden
-                    SET EstadoArchivo = @Estado,
-                        MotivoCancelacionID = NULL,
-                        DetallesCancelacion = NULL,
-                        Observaciones = TRIM(
-                            REPLACE(REPLACE(REPLACE(
-                                ISNULL(Observaciones,''),
-                                ' [CANCELADO]', ''), ' [ORDEN CANCELADA]', ''), ' [PEDIDO CANCELADO]', '')
-                        ),
-                        UsuarioControl = @User,
-                        FechaControl = GETDATE()
-                    WHERE ArchivoID = @FID
-                `);
-
-            // 4. ¿La orden fue auto-cancelada porque todos los archivos estaban cancelados?
-            let orderReactivated = false;
-            const esOrdenCancelada = (EstadoOrden || '').toUpperCase().includes('CANCELAD');
-            if (esOrdenCancelada) {
-                // Verificar si había otros archivos no cancelados ANTES de este (es decir, si auto-canceló)
-                const otrosRes = await new sql.Request(transaction)
-                    .input('OID', sql.Int, OrdenID)
-                    .input('FID', sql.Int, fileId)
-                    .query(`
-                        SELECT COUNT(*) as Cnt FROM ArchivosOrden
-                        WHERE OrdenID = @OID AND ArchivoID != @FID AND EstadoArchivo != 'CANCELADO'
-                    `);
-                // Si no hay otros activos aún => la orden estaba auto-cancelada, la reactivamos
-                if (otrosRes.recordset[0].Cnt === 0) {
-                    const notaLimpia = (Nota || '')
-                        .replace(/ \[CANCELADO:[^\]]*\]/g, '')
-                        .replace(/ \[AUTO-CANCEL:[^\]]*\]/g, '')
-                        .trim();
-                    const obsLimpia = (Observaciones || '')
-                        .replace(/ \[CANCELADO:[^\]]*\]/g, '')
-                        .replace(/ \[PEDIDO CANCELADO:[^\]]*\]/g, '')
-                        .replace(/ \[AUTO-CANCEL:[^\]]*\]/g, '')
-                        .trim();
-
-                    await new sql.Request(transaction)
-                        .input('OID', sql.Int, OrdenID)
-                        .input('Nota', sql.NVarChar, notaLimpia)
-                        .input('Obs', sql.NVarChar, obsLimpia)
-                        .query(`
-                            UPDATE Ordenes
-                            SET Nota = @Nota,
-                                Observaciones = @Obs,
-                                MotivoCancelacionID = NULL,
-                                DetallesCancelacion = NULL
-                            WHERE OrdenID = @OID
-                        `);
-                    orderReactivated = true;
-                }
-            }
-
-            // 5. Recalcular magnitud
-            await recalculateOrderMagnitude(transaction, OrdenID);
-
-            // 6. Log en historial
-            // Historial via servicio central
-            await changeOrderState(transaction, {
-                target  : { type: 'ORDER', id: OrdenID },
-                estado  : 'Pendiente',
-                userObj : req.user || req.body.usuario,
-                detalle : 'Archivo reactivado manualmente',
-                io       : req.app.get('socketio')
-            });
-
-            await transaction.commit();
-
-            // 7. Socket
-            try {
-                const io = req.app.get('socketio');
-                if (io) io.emit('server:order_updated', { orderId: OrdenID });
-            } catch (_) {}
-
-            // 8. Sync ERP si corresponde
-            if (NoDocERP) {
-                try {
-                    const ERPSyncService = require('../services/erpSyncService');
-                    const userIdInt = typeof usuario === 'object' ? parseInt(usuario.UsuarioID || 1) : (parseInt(usuario) || 1);
-                    await ERPSyncService.syncFinalOrderIntegration(NoDocERP, userIdInt, safeUser, null, { skipDeposito: true });
-                } catch (e) { logger.error('ERP sync error on reactivateFile:', e); }
-            }
-
-            res.json({ success: true, estadoRestaurado: estadoRestaurar, orderReactivated });
-
-        } catch (inner) {
-            await transaction.rollback();
-            throw inner;
-        }
-    } catch (e) {
-        logger.error('❌ Error reactivateFile:', e);
-        res.status(500).json({ error: e.message });
-    }
 };
 
 /**
@@ -4244,7 +4066,7 @@ exports.reactivateOrder = async (req, res) => {
                 try {
                     const ERPSyncService = require('../services/erpSyncService');
                     const userIdInt = typeof usuario === 'object' ? parseInt(usuario.UsuarioID || 1) : (parseInt(usuario) || 1);
-                    await ERPSyncService.syncFinalOrderIntegration(NoDocERP, userIdInt, safeUser, null, { skipDeposito: true });
+                    await ERPSyncService.syncFinalOrderIntegration(NoDocERP, userIdInt, safeUser);
                 } catch (e) { logger.error('ERP sync error on reactivateOrder:', e); }
             }
 
@@ -4382,7 +4204,7 @@ exports.reactivateRequest = async (req, res) => {
             try {
                 const ERPSyncService = require('../services/erpSyncService');
                 const userIdInt = typeof usuario === 'object' ? parseInt(usuario.UsuarioID || 1) : (parseInt(usuario) || 1);
-                await ERPSyncService.syncFinalOrderIntegration(noDoc, userIdInt, safeUser, null, { skipDeposito: true });
+                await ERPSyncService.syncFinalOrderIntegration(noDoc, userIdInt, safeUser);
             } catch (e) { logger.error('ERP sync error on reactivateRequest:', e); }
 
             res.json({ success: true, ordenesReactivadas: ordenes.length });

@@ -26,7 +26,7 @@ import {
 import { toast } from 'sonner';
 
 import api from '../../services/api';
-import { fetchAPI, FilaCliente } from './ContabilidadCuentasView';
+import { fetchAPI, FilaCliente } from './cuentasComunes';
 import { fmtFechaCorta } from '../../utils/fechas';
 import TabBeneficiosCliente from '../beneficios/TabBeneficiosCliente';
 

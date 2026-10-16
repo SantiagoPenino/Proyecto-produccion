@@ -288,6 +288,8 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
     // [PRENDAS] Ref al carrito embebido — el botón único "Confirmar Pedido" lo usa para
     // disparar la compra WMS cuando no se personaliza (ver handleSubmit).
     const wmsRef = useRef(null);
+    // Ver el candado del envío en handleSubmit
+    const enviandoRef = useRef(false);
     const cartTotalQty = cartItems.reduce((acc, it) => acc + (parseInt(it.cantidad, 10) || 0), 0);
     // Allows passing overrides via navigate('/order/...', { state: { config: { allowedOptions: ['...'] } } })
     const overrideConfig = location.state?.config || {};
@@ -1323,8 +1325,28 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
     };
 
     // --- Submit Logic ---
+    // CANDADO CONTRA EL DOBLE ENVÍO (copiado de OrderForm, que lo tiene desde el 14-08;
+    // este fork es del 16-07 y no lo había recibido).
+    // El `loading` del botón no alcanza: es estado de React y tarda un render en
+    // aplicarse, así que dos clicks seguidos entran los dos y crean DOS pedidos
+    // completos (pasó en el portal: BOR-12291 y BOR-12292, con 8 segundos de diferencia).
+    // Un ref se marca en el acto, en el mismo tick.
+    //
+    // Va como envoltorio y no adentro del cuerpo porque el envío tiene decenas de
+    // `return` de validación: soltar el candado en cada uno sería olvidarse de alguno
+    // y dejar el botón muerto para siempre. El `finally` lo suelta pase lo que pase.
     const handleSubmit = async (e) => {
         e.preventDefault();
+        if (enviandoRef.current) return;
+        enviandoRef.current = true;
+        try {
+            await enviarPedido(e);
+        } finally {
+            enviandoRef.current = false;
+        }
+    };
+
+    const enviarPedido = async (e) => {
         setReusoRegen(false); // se activa solo en reuso de matriz con cantidad distinta
         // [PRENDAS] Alta interna: el pedido siempre se carga a nombre de un cliente elegido
         // por el vendedor (nunca del usuario logueado). Sin cliente, no se puede confirmar.

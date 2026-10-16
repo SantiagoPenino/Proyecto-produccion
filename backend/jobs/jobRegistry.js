@@ -70,6 +70,17 @@ function getAll() {
     }));
 }
 
+/**
+ * Igual que getAll pero solo los jobs con función ejecutable (setFn hecho). Es lo que
+ * muestra /admin/cron: un registrar() sin setFn (un job que nunca arrancó) no genera
+ * tarjeta fantasma. getAll queda completo para los chequeos "¿ya está registrado?".
+ */
+function getEjecutables() {
+    return Object.values(registry)
+        .filter(j => typeof j.fn === 'function')
+        .map(j => ({ ...j, fn: undefined }));
+}
+
 /** Ejecuta un job manualmente por su id */
 async function ejecutarManual(id) {
     const job = registry[id];
@@ -89,4 +100,4 @@ async function ejecutarManual(id) {
     }
 }
 
-module.exports = { registrar, setFn, setProximaEjecucion, marcarInicio, marcarOk, marcarError, getAll, ejecutarManual };
+module.exports = { registrar, setFn, setProximaEjecucion, marcarInicio, marcarOk, marcarError, getAll, getEjecutables, ejecutarManual };

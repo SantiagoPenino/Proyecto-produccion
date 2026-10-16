@@ -51,6 +51,9 @@ backend/stock/compras/
 # Salidas de scripts: reimprimir_etiqueta.js escribe al lado; wmsBajarSnapshot.js baja a wms-snap/
 backend/scripts/etiqueta_*.html
 wms-snap/
+# exportar_productos_publicados.js: el .sql + fotos para pasar productos a otra base
+scripts/pasar_publicados/
+scripts/pasar_publicados.zip
 
 # --- Generados, bytecode y backups (esto sí por extensión: nunca son fuente) ---
 nul

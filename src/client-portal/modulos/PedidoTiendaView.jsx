@@ -433,7 +433,8 @@ export const PedidoTiendaView = () => {
                             porArte={esAMedida ? (d, ctx) => (ctx.seccion === 'arte' ? arteAMedida(d, ctx) : null) : null}
                             // [EXTRAS EN LA TABLA 14/10] prendas con talles: los extras se eligen en la tabla del arte de cada diseño
                             // [EXTRAS EN LA TABLA 14/10] los extras se eligen en la tabla de cada diseño (también a medida)
-                            extrasPortal={{ lista: res.extras, activar: activarExtra, opcion: (T, opcionId) => cambiarExtra(T, { opcionId: parseInt(opcionId, 10) }) }} />
+                            // [TIPO POR OBJETO 15/10] el tipo (DTF común / dorado…) se elige por objeto en la tabla y queda en el diseño
+                            extrasPortal={{ lista: res.extras, activar: activarExtra }} />
                     )}
                 </div>
 

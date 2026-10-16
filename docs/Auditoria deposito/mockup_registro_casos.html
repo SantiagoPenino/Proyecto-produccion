@@ -1,0 +1,627 @@
+<!--
+  MOCKUP — Registro de Casos de Auditoría de Depósito
+  El motor de fusión (§5 de la especificación) está implementado de verdad.
+  Datos sintéticos. Botón "Cerrar auditoría" ejecuta la fusión y muestra el resultado.
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+
+<style>
+  :root{
+    --bg:#F4F7FB; --panel:#FFF; --borde:#EAEEF4; --borde2:#E3E8F0;
+    --linea:#F1F4F8; --tenue:#F8FAFC;
+    --titulo:#1E2A44; --texto:#414B5E; --suave:#8C96A8;
+    --indigo:#4F46E5; --indigo-bg:#EEEDFD;
+    --violeta:#7C3AED; --violeta-bg:#F4EDFE;
+    --verde:#17A34A; --verde-bg:#ECFDF3;
+    --rojo:#DC2626; --rojo-bg:#FEF3F2; --rojo-bd:#FBD9D5;
+    --ambar:#D97706; --ambar-bg:#FFFBEB; --ambar-bd:#F7E4BC;
+    --naranja:#EA7C1B; --magenta:#D6336C; --navy:#1E293B; --slate:#64748B;
+    --sans:"Plus Jakarta Sans",system-ui,-apple-system,sans-serif;
+    --mono:"JetBrains Mono",ui-monospace,Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  .pag{background:var(--bg);font-family:var(--sans);color:var(--texto);
+    font-size:14px;line-height:1.5;padding:28px 26px 46px}
+  .pag :focus-visible{outline:2px solid var(--indigo);outline-offset:2px}
+  .cont{max-width:1240px;margin:0 auto}
+  .tit{font-size:21px;font-weight:800;color:var(--titulo);margin:0 0 5px;letter-spacing:-.018em}
+  .sub-pag{margin:0 0 20px;color:var(--suave);font-size:13px}
+
+  .panel{background:var(--panel);border:1px solid var(--borde);border-radius:14px;
+    box-shadow:0 1px 3px rgba(30,42,68,.045);overflow:hidden}
+  .tabbar{display:flex;gap:2px;overflow-x:auto;border-bottom:1px solid var(--borde2);padding:0 6px}
+  .tabbar::-webkit-scrollbar{height:4px}
+  .tabbar::-webkit-scrollbar-thumb{background:var(--borde2);border-radius:3px}
+  .tb{display:flex;align-items:center;gap:8px;background:none;border:none;cursor:pointer;
+    padding:15px 16px;margin-bottom:-1px;border-bottom:2.5px solid transparent;
+    font-family:var(--sans);font-size:13.5px;font-weight:600;color:var(--suave);white-space:nowrap}
+  .tb:hover{color:var(--texto)}
+  .tb svg{width:15px;height:15px;stroke-width:2;flex:none}
+  .tb .bg{font-size:11px;font-weight:700;background:#EFF2F7;color:var(--suave);padding:2px 8px;border-radius:20px}
+  .tb.on{color:var(--indigo);border-bottom-color:var(--indigo)}
+  .tb.on .bg{background:var(--indigo-bg);color:var(--indigo)}
+  .cuerpo{padding:22px}
+
+  .sec-h{display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap;margin-bottom:16px}
+  .sec-h .tx{flex:1;min-width:220px}
+  .sec-h h2{font-size:16px;font-weight:800;color:var(--indigo);margin:0 0 3px;letter-spacing:-.01em}
+  .sec-h p{margin:0;font-size:12px;color:var(--suave)}
+  .sec-h .ac{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+
+  .btn{display:inline-flex;align-items:center;gap:6px;font-family:var(--sans);
+    font-size:12.5px;font-weight:600;padding:8px 14px;border-radius:8px;
+    border:1px solid transparent;cursor:pointer;white-space:nowrap}
+  .btn svg{width:14px;height:14px;stroke-width:2.2}
+  .btn:hover{filter:brightness(1.07)}
+  .btn:disabled{opacity:.42;cursor:not-allowed;filter:none}
+  .btn.verde{background:var(--verde);color:#fff}
+  .btn.indigo{background:var(--indigo);color:#fff}
+  .btn.violeta{background:var(--violeta);color:#fff}
+  .btn.navy{background:var(--navy);color:#fff}
+  .btn.claro{background:#fff;border-color:var(--borde2);color:var(--texto)}
+  .btn.mini{padding:5px 10px;font-size:11.5px;border-radius:6px}
+  select.sel,input.bus{font-family:var(--sans);font-size:12.5px;font-weight:500;
+    padding:8px 12px;border:1px solid var(--borde2);border-radius:8px;background:#fff;color:var(--texto)}
+  select.sel{cursor:pointer}
+  input.bus{min-width:230px;font-weight:400}
+  input.bus::placeholder{color:#AEB6C4}
+
+  /* Resultado de la fusión */
+  .fusion{border:1px solid var(--borde2);border-radius:12px;overflow:hidden;margin-bottom:18px}
+  .fusion-h{background:var(--navy);color:#fff;padding:11px 16px;display:flex;
+    align-items:center;gap:10px;flex-wrap:wrap}
+  .fusion-h b{font-size:13px;font-weight:700}
+  .fusion-h span{font-family:var(--mono);font-size:11.5px;color:#A9B4C4}
+  .fusion-g{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));
+    gap:1px;background:var(--borde2)}
+  .fz{background:#fff;padding:13px 15px}
+  .fz .n{font-family:var(--mono);font-size:22px;font-weight:700;line-height:1;letter-spacing:-.02em}
+  .fz .l{font-size:11.5px;color:var(--suave);margin-top:6px;font-weight:600}
+  .fz.nue .n{color:var(--rojo)} .fz.exi .n{color:var(--slate)}
+  .fz.rei .n{color:var(--ambar)} .fz.res .n{color:var(--verde)}
+  .fz.tot .n{color:var(--indigo)}
+  .fz .h{font-size:11px;color:var(--suave);margin-top:3px;font-style:italic}
+
+  /* KPIs */
+  .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:11px;margin-bottom:18px}
+  .kpi{border:1px solid var(--borde);border-radius:11px;padding:13px 15px;background:#fff}
+  .kpi .l{font-size:11.5px;font-weight:600;color:var(--suave);margin-bottom:7px}
+  .kpi .v{font-size:23px;font-weight:800;color:var(--titulo);letter-spacing:-.03em;line-height:1}
+  .kpi .p{font-size:11.5px;color:var(--suave);margin-top:5px}
+  .kpi.r .v{color:var(--rojo)} .kpi.a .v{color:var(--ambar)}
+  .kpi.g .v{color:var(--verde)} .kpi.v .v{color:var(--violeta)}
+
+  /* Filtros */
+  .filtros{display:flex;gap:7px;margin-bottom:14px;flex-wrap:wrap;align-items:center}
+  .pill{background:#fff;border:1px solid var(--borde2);border-radius:20px;padding:7px 14px;
+    font-family:var(--sans);font-size:12.5px;font-weight:600;color:var(--texto);
+    cursor:pointer;display:flex;align-items:center;gap:7px}
+  .pill:hover{border-color:#CBD4E1}
+  .pill .n{font-family:var(--mono);font-size:11px;color:var(--suave)}
+  .pill.on{background:var(--indigo);border-color:var(--indigo);color:#fff}
+  .pill.on .n{color:#C7C3F7}
+
+  .lote{display:flex;gap:8px;align-items:center;flex-wrap:wrap;background:var(--indigo-bg);
+    border:1px solid #D9D6FB;border-radius:10px;padding:10px 14px;margin-bottom:14px}
+  .lote b{font-size:12.5px;color:var(--indigo);font-weight:700}
+
+  /* Tabla */
+  .marco{border:1px solid var(--borde2);border-radius:11px;overflow:hidden;margin-bottom:18px}
+  .scroll{overflow:auto;max-height:560px}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  thead th{position:sticky;top:0;z-index:2;background:var(--tenue);font-size:12.5px;
+    font-weight:700;color:var(--titulo);text-align:left;padding:12px 14px;white-space:nowrap;
+    border-bottom:1px solid var(--borde2);cursor:pointer;user-select:none}
+  thead th:hover{color:var(--indigo)}
+  thead th.chk,tbody td.chk{width:38px;padding-right:0;cursor:default}
+  thead th.n,tbody td.n{text-align:right}
+  tbody td{padding:11px 14px;border-bottom:1px solid var(--linea);color:var(--texto);vertical-align:top}
+  tbody tr.fila{cursor:pointer}
+  tbody tr.fila:hover{background:#FAFCFE}
+  tbody tr.abierta{background:#F7F9FE}
+  tbody tr.sel{background:#F6F5FE}
+  td.caso{font-family:var(--mono);font-size:12px;font-weight:700;color:var(--slate);white-space:nowrap}
+  td.cod{font-family:var(--mono);font-size:12.5px;font-weight:700;color:var(--indigo);white-space:nowrap}
+  td.cli{color:var(--titulo);font-weight:500}
+  input[type=checkbox]{width:15px;height:15px;accent-color:var(--indigo);cursor:pointer}
+
+  .chip{display:inline-block;font-size:10.5px;font-weight:700;padding:2.5px 8px;
+    border-radius:20px;color:#fff;white-space:nowrap;font-family:var(--mono)}
+  .chip.h{background:#fff;border:1px solid var(--borde2);color:var(--suave);font-weight:500}
+  .est{display:inline-block;font-size:11px;font-weight:700;padding:2.5px 9px;border-radius:20px;white-space:nowrap}
+  .est.ABIERTO{background:var(--rojo-bg);color:var(--rojo);border:1px solid var(--rojo-bd)}
+  .est.EN_CURSO{background:var(--indigo-bg);color:var(--indigo);border:1px solid #D9D6FB}
+  .est.ESPERANDO{background:var(--ambar-bg);color:var(--ambar);border:1px solid var(--ambar-bd)}
+  .est.RESUELTO{background:var(--verde-bg);color:var(--verde);border:1px solid #BBF0CD}
+  .est.ASUMIDO{background:#F1F5F9;color:var(--slate);border:1px solid var(--borde2)}
+  .veces{font-family:var(--mono);font-size:12px;font-weight:700;color:var(--texto)}
+  .veces.cron{color:#fff;background:var(--rojo);padding:2px 8px;border-radius:20px;font-size:10.5px}
+  .rein{font-size:9.5px;font-weight:700;color:var(--ambar);letter-spacing:.04em;display:block;margin-top:3px}
+  .sev{width:7px;height:7px;border-radius:50%;display:inline-block;margin-right:7px;vertical-align:middle}
+  .fecha{font-family:var(--mono);font-size:11.5px;color:var(--suave);white-space:nowrap}
+  .fecha b{color:var(--texto);font-weight:500;display:block}
+
+  /* Detalle */
+  td.det{padding:0;background:#FBFCFE;border-bottom:2px solid var(--borde2)}
+  .det-in{padding:16px 18px 18px 52px}
+  .det-in h4{font-size:12px;font-weight:800;color:var(--titulo);margin:0 0 12px;
+    text-transform:uppercase;letter-spacing:.05em}
+  .tl{border-left:2px solid var(--borde2);padding-left:16px;margin-bottom:16px}
+  .tl-i{position:relative;padding-bottom:13px}
+  .tl-i:last-child{padding-bottom:0}
+  .tl-i::before{content:"";position:absolute;left:-21px;top:4px;width:9px;height:9px;
+    border-radius:50%;background:var(--borde2);border:2px solid #FBFCFE}
+  .tl-i.d::before{background:var(--rojo)}
+  .tl-i.a::before{background:var(--indigo)}
+  .tl-i.c::before{background:var(--verde)}
+  .tl-i .f{font-family:var(--mono);font-size:10.5px;color:var(--suave)}
+  .tl-i .t{font-size:12.5px;color:var(--texto);margin-top:2px}
+  .tl-i .t b{color:var(--titulo);font-weight:600}
+  .tl-i .u{font-size:11px;color:var(--suave);margin-top:1px}
+  .acc-box{display:flex;gap:8px;flex-wrap:wrap;align-items:center;
+    border-top:1px solid var(--borde2);padding-top:14px}
+
+  .hist{display:flex;gap:10px;overflow-x:auto;padding-bottom:6px}
+  .hcard{flex:0 0 auto;border:1px solid var(--borde2);border-radius:10px;padding:12px 14px;
+    background:#fff;min-width:170px}
+  .hcard.act{border-color:var(--indigo);box-shadow:0 0 0 2px var(--indigo-bg)}
+  .hcard .c{font-family:var(--mono);font-size:11.5px;font-weight:700;color:var(--indigo)}
+  .hcard .f{font-size:11px;color:var(--suave);margin-top:3px}
+  .hcard .r{font-family:var(--mono);font-size:11px;color:var(--texto);margin-top:8px;
+    border-top:1px solid var(--linea);padding-top:7px;line-height:1.7}
+  .hcard .r i{font-style:normal;font-weight:700}
+
+  .vacio{padding:48px 20px;text-align:center;color:var(--suave);font-size:13px}
+  .nota{font-size:11.5px;color:var(--suave);border-top:1px solid var(--borde2);
+    padding-top:14px;margin-top:4px}
+  .nota code{font-family:var(--mono);font-size:11px;background:#E8EDF4;padding:2px 6px;border-radius:4px}
+
+  .toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);background:var(--navy);
+    color:#fff;font-size:12.5px;font-weight:600;padding:11px 18px;border-radius:9px;
+    box-shadow:0 6px 22px rgba(30,42,68,.24);opacity:0;pointer-events:none;
+    transition:opacity .22s;z-index:80;font-family:var(--sans);max-width:90vw;text-align:center}
+  .toast.ver{opacity:1}
+
+  @media (max-width:680px){
+    .pag{padding:18px 12px 36px} .cuerpo{padding:16px}
+    tbody td,thead th{padding:10px 11px} .det-in{padding:14px}
+    input.bus{min-width:100%}
+  }
+  @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+
+<div class="pag"><div class="cont">
+  <h1 class="tit">Auditoría de Depósito / Control Físico</h1>
+  <p class="sub-pag">Revisa el estado global del depósito, cruza códigos con escáner, exporta reportes y notifica clientes.</p>
+  <div class="panel">
+    <nav class="tabbar" id="tabbar"></nav>
+    <div class="cuerpo" id="cuerpo"></div>
+  </div>
+</div></div>
+<div class="toast" id="toast"></div>
+
+<script>
+(function(){
+  "use strict";
+
+  var IC={
+    scan:'<path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/>',
+    lupa:'<circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/>',
+    reloj:'<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+    xc:'<circle cx="12" cy="12" r="9"/><path d="m15 9-6 6M9 9l6 6"/>',
+    alerta:'<path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4M12 17h.01"/>',
+    lista:'<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>',
+    baja:'<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5M12 15V3"/>',
+    camara:'<path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3Z"/><circle cx="12" cy="13" r="3.5"/>'
+  };
+  function ic(n){return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">'+IC[n]+'</svg>';}
+
+  function rnd32(a){return function(){a|=0;a=a+0x6D2B79F5|0;var t=Math.imul(a^a>>>15,1|a);
+    t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
+  function esc(s){return String(s).replace(/[&<>"]/g,function(c){
+    return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c];});}
+  var nf=new Intl.NumberFormat("es-UY",{maximumFractionDigits:0});
+  function num(v){return nf.format(v);}
+  function plata(v){return "$ "+nf.format(Math.round(v));}
+  function fmt(d){return ("0"+d.getDate()).slice(-2)+"/"+("0"+(d.getMonth()+1)).slice(-2)+"/"+d.getFullYear();}
+  function fmtH(d){return fmt(d)+" "+("0"+d.getHours()).slice(-2)+":"+("0"+d.getMinutes()).slice(-2);}
+
+  /* ═══════════ CATÁLOGOS ═══════════ */
+  var TIPOS={
+    FALTANTE:     {n:"Faltante físico",   c:"#DC2626", sev:"ALTA"},
+    SOBRANTE:     {n:"Sobrante",          c:"#EA7C1B", sev:"MEDIA"},
+    NO_REGISTRADA:{n:"Sin registro",      c:"#64748B", sev:"MEDIA"},
+    SIN_AVISO:    {n:"Sin aviso",         c:"#7C3AED", sev:"MEDIA"},
+    DUPLICADO:    {n:"Código duplicado",  c:"#D6336C", sev:"MEDIA"},
+    PERMANENCIA:  {n:"Excede plazo",      c:"#D97706", sev:"BAJA"}
+  };
+  var SEV={ALTA:"#DC2626",MEDIA:"#D97706",BAJA:"#94A3B8"};
+  var CLIENTES=["Subliking","imajam uruguay srl","ARYES Gestión y Diseño","Florencia Diaz",
+    "Penna Roberto Abigail Valentina","Felipe Lalinde","JUPIGO SRL","Valeria Pereira",
+    "danielo freitas","Ethel Jauregui","Emilia Perera","IIBCE","Matias Fumont","MalegginaDeco",
+    "Chestampados","Claudia Figueroa","María Quijano","Creativo Cut","Ploteo SRL","Faby Buzo",
+    "osoloco","Fundamento Concept Store","La Cabaña","PAULA SUBLIMACIONES","TVI123",
+    "Gráfica Sur","Lucía Methol","Bazar Punta Carretas","Papelera Cordón","Impresos Colonia"];
+  var OPERADORES=["M. Rodríguez","L. Ferreira","J. Sosa"];
+
+  /* ═══════════ UNIVERSO DE ÓRDENES ═══════════ */
+  var R=rnd32(20260904);
+  var ORDENES=[];
+  (function(){
+    var pref=["EUV","DTF","SB","PRO","RDF","IMD","DF"], serie=15100;
+    for(var i=0;i<520;i++){
+      var p=pref[Math.floor(R()*pref.length)];
+      ORDENES.push({
+        id:i+1,
+        codigo:p==="EUV"?"EUV-"+(serie+=1+Math.floor(R()*3)):p+"-"+(1000+Math.floor(R()*11000)),
+        cliente:CLIENTES[Math.floor(R()*CLIENTES.length)],
+        valor:Math.round((400+R()*34000)/10)*10,
+        zona:R()<.55?"A":"B"
+      });
+    }
+  })();
+
+  /* ═══════════ MOTOR ═══════════ */
+  var CASOS=[], AUDITORIAS=[], seqCaso=0, seqAud=0;
+
+  function buscarCaso(ordenId,tipo){
+    for(var i=0;i<CASOS.length;i++)
+      if(CASOS[i].orden_id===ordenId && CASOS[i].tipo===tipo) return CASOS[i];
+    return null;
+  }
+  function abierto(c){ return c.estado!=="RESUELTO" && c.estado!=="ASUMIDO"; }
+
+  function calcSeveridad(c){
+    var o=ORDENES[c.orden_id-1];
+    if(c.veces_detectado>=3) return "ALTA";
+    if(c.tipo==="FALTANTE" && o && o.valor>22000) return "ALTA";
+    return TIPOS[c.tipo].sev;
+  }
+
+  /* Genera los hallazgos "físicos" de una auditoría (simulados) */
+  function generarHallazgos(nAud,alcance,rnd){
+    var H=[], pool=ORDENES.filter(function(o){ return alcance==="TOTAL"||o.zona===alcance; });
+    // Persistentes: los que arrastran de la corrida anterior
+    CASOS.forEach(function(c){
+      if(!abierto(c)) return;
+      var o=ORDENES[c.orden_id-1];
+      if(alcance!=="TOTAL" && o.zona!==alcance) return;
+      // 68% de los casos abiertos siguen sin resolverse
+      if(rnd()<0.68) H.push({orden_id:c.orden_id,tipo:c.tipo});
+    });
+    // Nuevos
+    var tipos=Object.keys(TIPOS);
+    var cuantos = nAud===1 ? 46 : 9+Math.floor(rnd()*7);
+    for(var i=0;i<cuantos;i++){
+      var o=pool[Math.floor(rnd()*pool.length)];
+      var t=tipos[Math.floor(rnd()*tipos.length)];
+      if(!H.some(function(h){return h.orden_id===o.id&&h.tipo===t;}))
+        H.push({orden_id:o.id,tipo:t});
+    }
+    // Reincidencias: casos ya cerrados que vuelven
+    CASOS.forEach(function(c){
+      if(abierto(c)) return;
+      var o=ORDENES[c.orden_id-1];
+      if(alcance!=="TOTAL" && o.zona!==alcance) return;
+      if(rnd()<0.06 && !H.some(function(h){return h.orden_id===c.orden_id&&h.tipo===c.tipo;}))
+        H.push({orden_id:c.orden_id,tipo:c.tipo});
+    });
+    return H;
+  }
+
+  /* ══ EL MOTOR DE FUSIÓN — §5 de la especificación ══ */
+  function cerrarAuditoria(fecha,operador,alcance,rnd){
+    seqAud++;
+    var aud={ id:seqAud, codigo:"AUD-"+fecha.getFullYear()+"-"+
+        ("0"+(fecha.getMonth()+1)).slice(-2)+("0"+fecha.getDate()).slice(-2)+"-01",
+      fecha:fecha, operador:operador, alcance:alcance,
+      nuevos:0, existentes:0, reincidentes:0, resueltos:0 };
+
+    var H=generarHallazgos(seqAud,alcance,rnd);
+    var vistos={};
+
+    H.forEach(function(h){
+      vistos[h.orden_id+"|"+h.tipo]=true;
+      var o=ORDENES[h.orden_id-1];
+      var c=buscarCaso(h.orden_id,h.tipo);
+
+      if(!c){                                          // ── NUEVO
+        seqCaso++;
+        c={ id:seqCaso, codigo:"CASO-"+("00000"+seqCaso).slice(-5),
+          orden_id:o.id, orden_codigo:o.codigo, cliente:o.cliente, valor:o.valor,
+          tipo:h.tipo, estado:"ABIERTO", reincidente:false,
+          primera_aud:aud.codigo, primera:fecha, ultima_aud:aud.codigo, ultima:fecha,
+          veces_detectado:1, responsable:null, eventos:[] };
+        c.eventos.push({f:fecha,k:"d",t:"Detectado en <b>"+aud.codigo+"</b>",u:operador});
+        c.severidad=calcSeveridad(c);
+        CASOS.push(c); aud.nuevos++;
+
+      } else if(abierto(c)){                           // ── YA EXISTENTE: no se duplica
+        c.veces_detectado++; c.ultima=fecha; c.ultima_aud=aud.codigo;
+        c.severidad=calcSeveridad(c);
+        c.eventos.push({f:fecha,k:"d",
+          t:"Vuelve a detectarse en <b>"+aud.codigo+"</b> ("+c.veces_detectado+"ª vez)",u:operador});
+        aud.existentes++;
+
+      } else {                                         // ── REINCIDENTE: reabre
+        c.estado="ABIERTO"; c.reincidente=true;
+        c.veces_detectado++; c.ultima=fecha; c.ultima_aud=aud.codigo;
+        c.severidad=calcSeveridad(c);
+        c.eventos.push({f:fecha,k:"d",
+          t:"<b>Reabierto</b> — reapareció tras haberse cerrado",u:operador});
+        aud.reincidentes++;
+      }
+    });
+
+    // ── AUTO-CIERRE, solo dentro del alcance (§5.3)
+    CASOS.forEach(function(c){
+      if(!abierto(c)) return;
+      if(vistos[c.orden_id+"|"+c.tipo]) return;
+      var o=ORDENES[c.orden_id-1];
+      if(alcance!=="TOTAL" && o.zona!==alcance) return;   // fuera de alcance: NO tocar
+      c.estado="RESUELTO"; c.motivo="No reapareció en "+aud.codigo;
+      c.eventos.push({f:fecha,k:"c",t:"<b>Resuelto</b> — no reapareció en "+aud.codigo,u:"sistema"});
+      aud.resueltos++;
+    });
+
+    AUDITORIAS.push(aud);
+    return aud;
+  }
+
+  /* ═══════════ HISTORIA PREVIA (2 auditorías ya corridas) ═══════════ */
+  cerrarAuditoria(new Date(2026,5,15,18,30),"M. Rodríguez","TOTAL",rnd32(101));
+  // acciones humanas entre auditorías
+  (function(){
+    var r=rnd32(777);
+    CASOS.forEach(function(c){
+      if(!abierto(c)) return;
+      var u=r();
+      if(u<0.16){ c.estado="RESUELTO"; c.responsable=OPERADORES[Math.floor(r()*3)];
+        c.eventos.push({f:new Date(2026,6,2),k:"a",t:"Acción: <b>Recontado</b> — hallado en estante contiguo",u:c.responsable});
+        c.eventos.push({f:new Date(2026,6,2),k:"c",t:"<b>Resuelto</b> por el responsable",u:c.responsable});
+      } else if(u<0.30){ c.estado="EN_CURSO"; c.responsable=OPERADORES[Math.floor(r()*3)];
+        c.eventos.push({f:new Date(2026,6,4),k:"a",t:"Acción: <b>Aviso enviado</b> al cliente por WhatsApp",u:c.responsable});
+      } else if(u<0.38){ c.estado="ESPERANDO"; c.responsable=OPERADORES[Math.floor(r()*3)];
+        c.eventos.push({f:new Date(2026,6,6),k:"a",t:"Acción: <b>Derivado</b> — espera respuesta del cliente",u:c.responsable});
+      }
+    });
+  })();
+  cerrarAuditoria(new Date(2026,7,17,19,10),"L. Ferreira","TOTAL",rnd32(202));
+
+  /* ═══════════ ESTADO UI ═══════════ */
+  var filtro="ABIERTOS", tipoF="", busca="", abiertaFila=null, marc={}, ultimaFusion=null;
+
+  var FILTROS=[
+    {k:"ABIERTOS", n:"Abiertos",     f:function(c){return abierto(c);}},
+    {k:"CRONICOS", n:"Crónicos",     f:function(c){return abierto(c)&&c.veces_detectado>=3;}},
+    {k:"REIN",     n:"Reincidentes", f:function(c){return c.reincidente;}},
+    {k:"ALTA",     n:"Severidad alta",f:function(c){return abierto(c)&&c.severidad==="ALTA";}},
+    {k:"CERRADOS", n:"Cerrados",     f:function(c){return !abierto(c);}},
+    {k:"TODOS",    n:"Todos",        f:function(){return true;}}
+  ];
+  function lista(){
+    var f=FILTROS.find(function(x){return x.k===filtro;});
+    var l=CASOS.filter(f.f);
+    if(tipoF) l=l.filter(function(c){return c.tipo===tipoF;});
+    if(busca){var q=busca.toLowerCase();
+      l=l.filter(function(c){return (c.codigo+" "+c.orden_codigo+" "+c.cliente).toLowerCase().indexOf(q)>-1;});}
+    var ord={ALTA:0,MEDIA:1,BAJA:2};
+    return l.sort(function(a,b){
+      if(ord[a.severidad]!==ord[b.severidad]) return ord[a.severidad]-ord[b.severidad];
+      return b.veces_detectado-a.veces_detectado;
+    });
+  }
+
+  /* ═══════════ TABS ═══════════ */
+  var TABS=[{i:"scan",n:"Escaneo Físico",c:0},{i:"lupa",n:"Órdenes Activas",c:876},
+    {i:"reloj",n:"Caducadas",c:171},{i:"xc",n:"Extraviadas",c:0},
+    {i:"alerta",n:"Sobrantes",c:0},{i:"alerta",n:"Entregadas Sin Pago",c:10602},
+    {i:"lista",n:"Registro de Casos",c:null,on:true}];
+  document.getElementById("tabbar").innerHTML=TABS.map(function(t){
+    return '<button class="tb'+(t.on?" on":"")+'">'+ic(t.i)+t.n+
+      (t.c!==null?'<span class="bg">'+num(t.c)+'</span>':'')+'</button>';}).join("");
+
+  /* ═══════════ RENDER ═══════════ */
+  function pinta(){
+    var ab=CASOS.filter(abierto);
+    var cron=ab.filter(function(c){return c.veces_detectado>=3;});
+    var alta=ab.filter(function(c){return c.severidad==="ALTA";});
+    var rein=CASOS.filter(function(c){return c.reincidente;});
+    var cerr=CASOS.filter(function(c){return !abierto(c);});
+    var ult=AUDITORIAS[AUDITORIAS.length-1];
+
+    var h=
+      '<div class="sec-h"><div class="tx"><h2>Registro de Casos</h2>'+
+      '<p>Lista única y permanente. Cada auditoría suma los casos nuevos; los que ya están acá no se duplican.</p></div>'+
+      '<div class="ac">'+
+      '<select class="sel" id="alc"><option value="TOTAL">Alcance: depósito completo</option>'+
+      '<option value="A">Alcance: solo zona A</option><option value="B">Alcance: solo zona B</option></select>'+
+      '<button class="btn navy" id="nueva">'+ic("camara")+'Tomar inventario y cerrar</button>'+
+      '<button class="btn verde" id="xls">'+ic("baja")+'Excel</button></div></div>';
+
+    /* Resultado de la última fusión */
+    var f=ultimaFusion||ult;
+    h+='<div class="fusion"><div class="fusion-h"><b>'+esc(f.codigo)+'</b>'+
+      '<span>'+fmtH(f.fecha)+' · '+esc(f.operador)+' · alcance '+
+      (f.alcance==="TOTAL"?"depósito completo":"zona "+f.alcance)+'</span></div>'+
+      '<div class="fusion-g">'+
+      '<div class="fz nue"><div class="n">'+f.nuevos+'</div><div class="l">Casos nuevos</div>'+
+        '<div class="h">se crearon</div></div>'+
+      '<div class="fz exi"><div class="n">'+f.existentes+'</div><div class="l">Ya estaban en la lista</div>'+
+        '<div class="h">NO se duplicaron</div></div>'+
+      '<div class="fz rei"><div class="n">'+f.reincidentes+'</div><div class="l">Reincidentes</div>'+
+        '<div class="h">reabiertos</div></div>'+
+      '<div class="fz res"><div class="n">'+f.resueltos+'</div><div class="l">Resueltos solos</div>'+
+        '<div class="h">no reaparecieron</div></div>'+
+      '<div class="fz tot"><div class="n">'+ab.length+'</div><div class="l">Abiertos en el registro</div>'+
+        '<div class="h">total vigente</div></div>'+
+      '</div></div>';
+
+    /* KPIs */
+    h+='<div class="kpis">'+
+      [{l:"Casos abiertos",v:ab.length,p:"en seguimiento"},
+       {l:"Crónicos",v:cron.length,p:"3+ auditorías seguidas",c:"r"},
+       {l:"Severidad alta",v:alta.length,p:"atacar primero",c:"r"},
+       {l:"Reincidentes",v:rein.length,p:"volvieron tras cerrarse",c:"a"},
+       {l:"Cerrados",v:cerr.length,p:"histórico acumulado",c:"g"},
+       {l:"Auditorías",v:AUDITORIAS.length,p:"corridas hasta hoy",c:"v"}
+      ].map(function(k){return '<div class="kpi '+(k.c||"")+'"><div class="l">'+k.l+
+        '</div><div class="v">'+num(k.v)+'</div><div class="p">'+k.p+'</div></div>';}).join("")+'</div>';
+
+    /* Filtros */
+    h+='<div class="filtros">'+FILTROS.map(function(x){
+      return '<button class="pill'+(x.k===filtro?" on":"")+'" data-f="'+x.k+'">'+x.n+
+        '<span class="n">'+CASOS.filter(x.f).length+'</span></button>';}).join("")+
+      '<select class="sel" id="tipoF"><option value="">Todos los tipos</option>'+
+      Object.keys(TIPOS).map(function(t){
+        return '<option value="'+t+'"'+(tipoF===t?" selected":"")+'>'+TIPOS[t].n+'</option>';}).join("")+
+      '</select><input class="bus" id="bus" type="search" placeholder="Buscar caso, orden o cliente…" value="'+esc(busca)+'"></div>';
+
+    /* Acción en lote */
+    var nm=Object.keys(marc).filter(function(k){return marc[k];}).length;
+    if(nm) h+='<div class="lote"><b>'+nm+' caso'+(nm>1?"s":"")+' seleccionado'+(nm>1?"s":"")+'</b>'+
+      '<select class="sel" id="accLote"><option>Avisar al cliente</option><option>Recontar</option>'+
+      '<option>Revertir a depósito</option><option>Derivar a responsable</option>'+
+      '<option>Marcar como resuelto</option></select>'+
+      '<button class="btn indigo mini" id="ejecLote">Ejecutar en lote</button>'+
+      '<button class="btn claro mini" id="limpiar">Quitar selección</button></div>';
+
+    /* Tabla */
+    var L=lista();
+    h+='<div class="marco">';
+    if(!L.length){ h+='<div class="vacio">No hay casos con este filtro.</div>'; }
+    else{
+      h+='<div class="scroll"><table><thead><tr><th class="chk"></th>'+
+        '<th>Caso</th><th>Orden</th><th>Cliente</th><th>Tipo</th><th>Estado</th>'+
+        '<th class="n">Veces</th><th>Detectado</th><th>Última vez</th><th>Responsable</th>'+
+        '</tr></thead><tbody>';
+      L.forEach(function(c){
+        var esAb=abiertaFila===c.id, mk=marc[c.id];
+        h+='<tr class="fila'+(esAb?" abierta":"")+(mk?" sel":"")+'" data-c="'+c.id+'">'+
+          '<td class="chk"><input type="checkbox" data-mk="'+c.id+'"'+(mk?" checked":"")+'></td>'+
+          '<td class="caso"><span class="sev" style="background:'+SEV[c.severidad]+'"></span>'+c.codigo+'</td>'+
+          '<td class="cod">'+esc(c.orden_codigo)+'</td>'+
+          '<td class="cli">'+esc(c.cliente)+'</td>'+
+          '<td><span class="chip" style="background:'+TIPOS[c.tipo].c+'">'+TIPOS[c.tipo].n+'</span></td>'+
+          '<td><span class="est '+c.estado+'">'+c.estado.replace("_"," ")+'</span>'+
+            (c.reincidente?'<span class="rein">REINCIDENTE</span>':'')+'</td>'+
+          '<td class="n"><span class="veces'+(c.veces_detectado>=3?" cron":"")+'">'+
+            (c.veces_detectado>=3?"×"+c.veces_detectado:c.veces_detectado)+'</span></td>'+
+          '<td class="fecha"><b>'+fmt(c.primera)+'</b>'+c.primera_aud+'</td>'+
+          '<td class="fecha"><b>'+fmt(c.ultima)+'</b>'+c.ultima_aud+'</td>'+
+          '<td>'+(c.responsable?esc(c.responsable):'<span class="chip h">sin asignar</span>')+'</td></tr>';
+        if(esAb){
+          h+='<tr><td class="det" colspan="10"><div class="det-in">'+
+            '<h4>Historia del caso</h4><div class="tl">'+
+            c.eventos.map(function(e){
+              return '<div class="tl-i '+e.k+'"><div class="f">'+fmtH(e.f)+'</div>'+
+                '<div class="t">'+e.t+'</div><div class="u">'+esc(e.u)+'</div></div>';}).join("")+
+            '</div><div class="acc-box">'+
+            '<select class="sel" data-acc="'+c.id+'"><option>Recontar</option>'+
+            '<option>Avisar al cliente</option><option>Revertir a depósito</option>'+
+            '<option>Alta manual en el sistema</option><option>Derivar</option>'+
+            '<option>Comentar</option></select>'+
+            '<button class="btn indigo mini" data-reg="'+c.id+'">Registrar acción</button>'+
+            (abierto(c)?'<button class="btn verde mini" data-res="'+c.id+'">Marcar resuelto</button>'+
+              '<button class="btn claro mini" data-asu="'+c.id+'">Asumir pérdida</button>':'')+
+            '<span style="font-size:11.5px;color:var(--suave);margin-left:auto">'+
+            'Orden '+esc(c.orden_codigo)+' · '+plata(c.valor)+'</span>'+
+            '</div></div></td></tr>';
+        }
+      });
+      h+='</tbody></table></div>';
+    }
+    h+='</div>';
+
+    /* Historial de auditorías */
+    h+='<div class="sec-h" style="margin-bottom:12px"><div class="tx">'+
+      '<h2 style="font-size:14px">Historial de auditorías</h2>'+
+      '<p>Cada corrida guarda su fotografía. El resultado de la fusión queda registrado.</p></div></div>'+
+      '<div class="hist">'+AUDITORIAS.slice().reverse().map(function(a,ix){
+        return '<div class="hcard'+(ix===0?" act":"")+'"><div class="c">'+a.codigo+'</div>'+
+          '<div class="f">'+fmt(a.fecha)+' · '+esc(a.operador)+'</div>'+
+          '<div class="f">alcance: '+(a.alcance==="TOTAL"?"completo":"zona "+a.alcance)+'</div>'+
+          '<div class="r"><i style="color:var(--rojo)">'+a.nuevos+'</i> nuevos · '+
+          '<i style="color:var(--slate)">'+a.existentes+'</i> ya estaban<br>'+
+          '<i style="color:var(--ambar)">'+a.reincidentes+'</i> reincidentes · '+
+          '<i style="color:var(--verde)">'+a.resueltos+'</i> resueltos</div></div>';}).join("")+'</div>';
+
+    h+='<p class="nota">La deduplicación se garantiza en la base con un índice único parcial: '+
+      '<code>UNIQUE (orden_id, tipo) WHERE estado NOT IN (\'RESUELTO\',\'ASUMIDO\')</code>. '+
+      'Si el código de la aplicación falla, la base lo impide igual.</p>';
+
+    document.getElementById("cuerpo").innerHTML=h;
+  }
+
+  /* ═══════════ EVENTOS ═══════════ */
+  var cu=document.getElementById("cuerpo");
+  cu.addEventListener("click",function(e){
+    var t;
+    if((t=e.target.closest("[data-mk]"))){
+      marc[t.dataset.mk]=t.checked; pinta(); return; }
+    if(e.target.closest("#limpiar")){ marc={}; pinta(); return; }
+    if(e.target.closest("#ejecLote")){
+      var acc=document.getElementById("accLote").value;
+      var ids=Object.keys(marc).filter(function(k){return marc[k];});
+      ids.forEach(function(id){
+        var c=CASOS.find(function(x){return x.id==id;});
+        if(!c) return;
+        c.eventos.push({f:new Date(),k:"a",t:"Acción en lote: <b>"+esc(acc)+"</b>",u:"M. Rodríguez"});
+        c.responsable=c.responsable||"M. Rodríguez";
+        if(acc==="Marcar como resuelto"){ c.estado="RESUELTO";
+          c.eventos.push({f:new Date(),k:"c",t:"<b>Resuelto</b> desde acción en lote",u:"M. Rodríguez"}); }
+        else if(abierto(c)) c.estado="EN_CURSO";
+      });
+      marc={}; pinta(); toast(acc+" · aplicado a "+ids.length+" caso"+(ids.length>1?"s":"")); return; }
+    if((t=e.target.closest("[data-reg]"))){
+      var c=CASOS.find(function(x){return x.id==t.dataset.reg;});
+      var sel=cu.querySelector('[data-acc="'+t.dataset.reg+'"]');
+      c.eventos.push({f:new Date(),k:"a",t:"Acción: <b>"+esc(sel.value)+"</b>",u:"M. Rodríguez"});
+      c.responsable=c.responsable||"M. Rodríguez";
+      if(abierto(c)) c.estado="EN_CURSO";
+      pinta(); toast("Acción registrada en "+c.codigo); return; }
+    if((t=e.target.closest("[data-res]"))){
+      var c2=CASOS.find(function(x){return x.id==t.dataset.res;});
+      c2.estado="RESUELTO"; c2.responsable=c2.responsable||"M. Rodríguez";
+      c2.eventos.push({f:new Date(),k:"c",t:"<b>Resuelto</b> por el responsable",u:"M. Rodríguez"});
+      pinta(); toast(c2.codigo+" resuelto"); return; }
+    if((t=e.target.closest("[data-asu]"))){
+      var c3=CASOS.find(function(x){return x.id==t.dataset.asu;});
+      c3.estado="ASUMIDO"; c3.motivo="Pérdida asumida"; c3.responsable=c3.responsable||"M. Rodríguez";
+      c3.eventos.push({f:new Date(),k:"c",t:"<b>Pérdida asumida</b> — requiere ajuste con motivo",u:"M. Rodríguez"});
+      pinta(); toast(c3.codigo+" cerrado como pérdida asumida"); return; }
+    if((t=e.target.closest("[data-f]"))){ filtro=t.dataset.f; abiertaFila=null; pinta(); return; }
+    if(e.target.closest("#nueva")){
+      var alc=document.getElementById("alc").value;
+      var f=new Date();
+      ultimaFusion=cerrarAuditoria(f,"M. Rodríguez",alc,rnd32(Date.now()%99991));
+      abiertaFila=null; marc={}; pinta();
+      toast(ultimaFusion.codigo+": "+ultimaFusion.nuevos+" nuevos · "+
+        ultimaFusion.existentes+" ya estaban · "+ultimaFusion.resueltos+" resueltos");
+      return; }
+    if(e.target.closest("#xls")){ toast("Excel generado · "+lista().length+" casos"); return; }
+    if((t=e.target.closest("tr.fila"))){
+      abiertaFila = abiertaFila==+t.dataset.c ? null : +t.dataset.c;
+      pinta(); return; }
+  });
+  cu.addEventListener("change",function(e){
+    if(e.target.id==="tipoF"){ tipoF=e.target.value; abiertaFila=null; pinta(); }
+  });
+  cu.addEventListener("input",function(e){
+    if(e.target.id!=="bus") return;
+    var v=e.target.value; clearTimeout(window.__d);
+    window.__d=setTimeout(function(){ busca=v; abiertaFila=null; pinta();
+      var b=document.getElementById("bus");
+      if(b){b.focus();b.setSelectionRange(v.length,v.length);}},260);
+  });
+
+  var tt;
+  function toast(m){var el=document.getElementById("toast");
+    el.textContent=m; el.classList.add("ver");
+    clearTimeout(tt); tt=setTimeout(function(){el.classList.remove("ver");},3200);}
+
+  pinta();
+})();
+</script>

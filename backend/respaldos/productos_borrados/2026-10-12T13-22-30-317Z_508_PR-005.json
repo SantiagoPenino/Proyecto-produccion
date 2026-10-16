@@ -1,0 +1,101 @@
+{
+  "fecha": "2026-10-12T13:22:30.314Z",
+  "usuario": "Yoania",
+  "producto": {
+    "proId": 508,
+    "codArticulo": "PR-005",
+    "descripcion": "Camiseta y short basket FP",
+    "estado": "BORRADOR",
+    "esCombo": false
+  },
+  "tablas": {
+    "ProductoTerminadoServicios": [
+      {
+        "ID": 13,
+        "ProIdProducto": 508,
+        "AreaID": "SB",
+        "Obligatorio": true,
+        "Modo": "LIBRE",
+        "Cobro": "INCLUIDA"
+      },
+      {
+        "ID": 14,
+        "ProIdProducto": 508,
+        "AreaID": "TWC",
+        "Obligatorio": true,
+        "Modo": "LIBRE",
+        "Cobro": "INCLUIDA"
+      },
+      {
+        "ID": 15,
+        "ProIdProducto": 508,
+        "AreaID": "TWT",
+        "Obligatorio": true,
+        "Modo": "LIBRE",
+        "Cobro": "INCLUIDA"
+      }
+    ],
+    "ArticuloClasificacion": [
+      {
+        "ProIdProducto": 508,
+        "AclArea": "Productos Confeccionados",
+        "AclVariante": null,
+        "AclOrigen": "MANUAL",
+        "AclFecha": "2026-08-21T10:58:19.677Z",
+        "AclUsuarioId": 12
+      }
+    ],
+    "ProductoVentaConfig": [
+      {
+        "ProIdProducto": 508,
+        "OrigenTipo": "CONFECCIONADO",
+        "OrigenProIdProducto": null,
+        "CantidadMinima": null,
+        "CantidadFija": null,
+        "ValidarStock": true,
+        "Estado": "BORRADOR",
+        "FechaRegistro": "2026-09-01T14:19:00.340Z",
+        "FechaModif": "2026-09-29T13:38:55.217Z",
+        "EsCombo": false,
+        "Familia": "Camisetas",
+        "EtiquetaID": 2,
+        "TizadaProMoldeRef": null,
+        "CodigoCorto": null,
+        "TecnicaPrincipal": "SB",
+        "AnchoM": null,
+        "AltoM": null,
+        "BordeCm": null,
+        "UM": "u",
+        "Molde": "OBLIGATORIO",
+        "VisiblePortal": false,
+        "VisibleTienda": false,
+        "VisibleInterno": true,
+        "PadreProIdProducto": null,
+        "ModeloClave": null,
+        "TecnicasPropias": false
+      }
+    ],
+    "Articulos": [
+      {
+        "ProIdProducto": 508,
+        "CodArticulo": "PR-005              ",
+        "IDProdReact": null,
+        "SupFlia": "2       ",
+        "Grupo": "2.1                 ",
+        "CodStock": "2.2.1.12            ",
+        "Descripcion": "Camiseta y short basket FP                                                                          ",
+        "Mostrar": true,
+        "anchoimprimible": null,
+        "LLEVAPAPEL": null,
+        "MonIdMoneda": 1,
+        "ProCodigoOdooProducto": null,
+        "UniIdUnidad": null,
+        "borrar": 0,
+        "largoimprimible": null,
+        "EnListaPrecios": false,
+        "EnListaPublica": false,
+        "DescripcionLista": null
+      }
+    ]
+  }
+}

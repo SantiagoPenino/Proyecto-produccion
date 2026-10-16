@@ -1,0 +1,11 @@
+-- "Comprar y personalizar": el cliente sigue pagando UN SOLO total (consolidado en la
+-- línea de la orden PRO), pero ahora se conservan las líneas de costo de cada
+-- personalización (EMB/DF/TPU/EST) en PedidosCobranzaDetalle en vez de borrarlas —
+-- para poder ver/facturar el detalle por servicio más adelante.
+--
+-- EsHermanaConsolidada=1 marca esas líneas: su importe YA está sumado dentro de la
+-- línea de PRO, así que todo lo que arme un total a nivel PEDIDO (factura/CFE, caja,
+-- recálculo de MontoTotal) tiene que EXCLUIRLAS explícitamente o el cliente terminaría
+-- pagando el costo de la personalización dos veces. Los queries que ya filtran por
+-- OrdenID puntual no necesitan tocarse.
+ALTER TABLE dbo.PedidosCobranzaDetalle ADD EsHermanaConsolidada BIT NOT NULL DEFAULT 0;

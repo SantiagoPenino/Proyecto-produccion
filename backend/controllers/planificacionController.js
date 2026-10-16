@@ -717,9 +717,8 @@ async function calcularFechaCompromiso(pool, area, nuevasOrdenes, diasColchon = 
 }
 
 // Guarda (o actualiza) la foto del día para un área en HistoricoCapacidadDiaria. Se llama desde
-// el job diario (capacidadDiaria.job.js) y, oportunistamente, desde getCapacidad — así el
-// histórico empieza a llenarse desde ya sin depender de que el server se reinicie para que el
-// cron arranque a correr.
+// getCapacidad cada vez que alguien abre la planificación de un área: así se llena el histórico.
+// (El job diario capacidadDiaria.job.js nunca llegó a agendarse y se borró el 15/10.)
 async function upsertSnapshotDiario(pool, area, fecha, situacion) {
     if (!situacion.tieneCapacidad) return;
     await pool.request()

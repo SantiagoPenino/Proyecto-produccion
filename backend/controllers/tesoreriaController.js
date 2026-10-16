@@ -138,12 +138,17 @@ exports.recibirCheque = async (req, res) => {
       });
 
       if (lineas.length > 0) {
-        await generarAsientoCompleto({
+        const asiId = await generarAsientoCompleto({
           concepto: `Recepción Cheque Tercero #${NumeroCheque}`,
           usuarioId: req.user?.id || 1,
           origen: 'TESORERIA',
           lineas
         }, transaction);
+        // El asiento queda atado al cheque: anularCheque revierte ESTE, no lo busca por número.
+        await transaction.request()
+          .input('IdChq', sql.Int, IdCheque)
+          .input('AsiId', sql.Int, asiId)
+          .query('UPDATE dbo.TesoreriaCheques SET AsiIdAlta = @AsiId WHERE IdCheque = @IdChq');
       }
     } else {
       logger.info(`[TESORERIA] Cheque #${NumeroCheque} dado de alta desde caja — el asiento lo genera el cobro, acá no se duplica.`);
@@ -192,12 +197,17 @@ exports.emitirCheque = async (req, res) => {
     });
     
     if (lineas.length > 0) {
-      await generarAsientoCompleto({
+      const asiId = await generarAsientoCompleto({
         concepto: `Emisión Cheque Propio #${NumeroCheque}`,
         usuarioId: req.user?.id || 1,
         origen: 'TESORERIA',
         lineas
       }, transaction);
+      // El asiento queda atado al cheque: anularCheque revierte ESTE, no lo busca por número.
+      await transaction.request()
+        .input('IdChq', sql.Int, IdCheque)
+        .input('AsiId', sql.Int, asiId)
+        .query('UPDATE dbo.TesoreriaCheques SET AsiIdAlta = @AsiId WHERE IdCheque = @IdChq');
     }
 
     await transaction.commit();
@@ -294,7 +304,8 @@ exports.editarCheque = async (req, res) => {
  * del historial activo, con el motivo escrito.
  *
  * Se bloquea si el cheque está vinculado a un cobro (Pagos.PagIdCheque): ahí hay que
- * revertir el cobro primero, no el cheque.
+ * revertir el cobro primero, no el cheque. Y solo se anula en su estado inicial
+ * (EN_CARTERA / EMITIDO): después de depositado, endosado o cobrado ya existió afuera.
  */
 exports.anularCheque = async (req, res) => {
   const { id } = req.params;
@@ -317,6 +328,26 @@ exports.anularCheque = async (req, res) => {
     if (cheque.Estado === 'ANULADO') {
       await transaction.rollback();
       return res.status(400).json({ success: false, error: 'El cheque ya está anulado.' });
+    }
+
+    // Anular = "se cargó por error, nunca existió": vale solo mientras el cheque no salió de
+    // la oficina. Depositado, endosado, rechazado o cobrado ya existió afuera: revertir solo
+    // el alta dejaría Valores a Depositar en negativo, y revertir todo descuadraría el banco.
+    const ESTADO_INICIAL = { TERCERO: 'EN_CARTERA', PROPIO: 'EMITIDO' };
+    if (cheque.Estado !== ESTADO_INICIAL[cheque.Tipo]) {
+      await transaction.rollback();
+      const QUE_HACER = {
+        DEPOSITADO: 'Ya fue depositado: si el banco lo rebotó, marcalo RECHAZADO.',
+        ENDOSADO:   'Ya fue endosado a un proveedor: si lo rebotaron, marcalo RECHAZADO.',
+        RECHAZADO:  'Ya está rechazado y el rechazo generó su asiento.',
+        COBRADO:    'El banco ya lo debitó.',
+      };
+      return res.status(409).json({
+        success: false,
+        error: 'CHEQUE_NO_ANULABLE',
+        mensaje: `No se puede anular un cheque ${cheque.Estado}. ${QUE_HACER[cheque.Estado] || ''} `
+               + 'Si hay que corregir un dato, pedí un ajuste a contabilidad.'
+      });
     }
 
     // ¿Está vinculado a un cobro? Anularlo dejaría el pago apuntando a un cheque muerto.
@@ -347,21 +378,33 @@ exports.anularCheque = async (req, res) => {
       `);
 
     // ── Reversa del asiento ────────────────────────────────────────────────
-    // Se busca el asiento original del cheque y se genera su contrapartida (mismas
-    // cuentas, debe y haber invertidos). No se borra el original: la contabilidad no
+    // Se revierte el asiento que generó el alta del cheque (AsiIdAlta) con su contrapartida
+    // (mismas cuentas, debe y haber invertidos). No se borra el original: la contabilidad no
     // se corrige borrando, se corrige con un asiento que la neutraliza.
-    const asiRes = await new sql.Request(transaction)
-      .input('Concepto', sql.NVarChar(200), `%#${cheque.NumeroCheque}%`)
-      .query(`
-        SELECT TOP 1 a.AsiId
-        FROM dbo.Cont_AsientosCabecera a
-        WHERE a.SysOrigen = 'TESORERIA' AND a.AsiConcepto LIKE @Concepto
-          AND a.AsiConcepto NOT LIKE '%ANULACI%'
-        ORDER BY a.AsiId DESC
-      `);
+    // Antes se buscaba con LIKE '%#<número>%' y se tomaba el más nuevo: el cheque 12 podía
+    // revertir el del 123, el de otro banco con el mismo número o un "Cambio Estado".
+    // Sin AsiIdAlta (cargado antes de la columna, o entrado por caja): solo el concepto EXACTO
+    // del alta y solo si hay uno libre. Con más de uno no se adivina.
+    let asiId = cheque.AsiIdAlta || null;
+    let sinReversa = null;   // por qué no se revirtió nada, si pasa
+    if (!asiId) {
+      const conceptoAlta = cheque.Tipo === 'PROPIO'
+        ? `Emisión Cheque Propio #${cheque.NumeroCheque}`
+        : `Recepción Cheque Tercero #${cheque.NumeroCheque}`;
+      const asiRes = await new sql.Request(transaction)
+        .input('Concepto', sql.NVarChar(200), conceptoAlta)
+        .query(`
+          SELECT a.AsiId
+          FROM dbo.Cont_AsientosCabecera a
+          WHERE a.SysOrigen = 'TESORERIA' AND a.AsiConcepto = @Concepto
+            AND NOT EXISTS (SELECT 1 FROM dbo.TesoreriaCheques c WHERE c.AsiIdAlta = a.AsiId)
+        `);
+      if (asiRes.recordset.length === 1) asiId = asiRes.recordset[0].AsiId;
+      else if (asiRes.recordset.length > 1) sinReversa = `hay ${asiRes.recordset.length} asientos de alta con el número ${cheque.NumeroCheque} y no se sabe cuál es el suyo: hay que revertirlo a mano`;
+      else sinReversa = 'no tiene asiento de alta propio (si entró por un cobro de caja, el asiento es el del cobro)';
+    }
 
-    if (asiRes.recordset.length) {
-      const asiId = asiRes.recordset[0].AsiId;
+    if (asiId) {
       const detRes = await new sql.Request(transaction)
         .input('AsiId', sql.Int, asiId)
         .query(`
@@ -392,14 +435,20 @@ exports.anularCheque = async (req, res) => {
         }, transaction);
         logger.info(`[TESORERIA] Cheque #${cheque.NumeroCheque} anulado — asiento ${asiId} revertido.`);
       } else {
-        logger.warn(`[TESORERIA] Cheque #${cheque.NumeroCheque}: el asiento ${asiId} no tiene líneas reversibles.`);
+        sinReversa = `el asiento ${asiId} no tiene líneas reversibles`;
       }
-    } else {
-      logger.warn(`[TESORERIA] Cheque #${cheque.NumeroCheque} anulado sin asiento que revertir (no se encontró el original).`);
     }
+    if (sinReversa) logger.warn(`[TESORERIA] Cheque #${cheque.NumeroCheque} anulado SIN revertir asiento: ${sinReversa}.`);
 
     await transaction.commit();
-    res.json({ success: true, message: `Cheque #${cheque.NumeroCheque} anulado y asiento revertido` });
+    // El mensaje dice lo que pasó: antes respondía "asiento revertido" aunque no hubiera revertido nada.
+    res.json({
+      success: true,
+      asientoRevertido: !sinReversa,
+      message: sinReversa
+        ? `Cheque #${cheque.NumeroCheque} anulado, pero NO se revirtió ningún asiento: ${sinReversa}.`
+        : `Cheque #${cheque.NumeroCheque} anulado y asiento ${asiId} revertido.`
+    });
   } catch (err) {
     await transaction.rollback();
     logger.error('Error anularCheque:', err);

@@ -414,67 +414,6 @@ const ReceptionView = ({ onClose, areaContext, areaFilter }) => {
         batchReceiveMutation.mutate(payload);
     };
 
-    const handleSync = async () => {
-        if (!loadedRemito) return;
-        setLoading(true);
-        try {
-            // Filtrar solo items escaneados/recibidos que NO han sido sincronizados aún
-            const scanneableItems = Object.values(itemMap).filter(i => i.scanned && !i.synced);
-
-            if (scanneableItems.length === 0) {
-                toast.info("No hay nuevos items recibidos para sincronizar.");
-                setLoading(false);
-                return;
-            }
-
-            // Lógica de Sincronización
-            const payload = scanneableItems.map(item => ({
-                qr: item.CodigoEtiqueta,
-                count: 1, // Bulto Individual
-                price: parseFloat(item.Precio || 0), // Usar campos del item del remito si están disponibles
-                quantity: parseFloat(item.Cantidad || 0),
-                profile: item.PerfilesPrecio || ''
-            }));
-
-            const res = await logisticsService.syncDepositItems(payload);
-            const successItems = res.results?.filter(r => r.success) || [];
-
-            if (successItems.length > 0) {
-                toast.success(`Sincronizados ${successItems.length} bultos correctamente.`);
-
-                // Actualizar estado local para evitar re-sincronización
-                setItemMap(prev => {
-                    const next = { ...prev };
-                    successItems.forEach(r => {
-                        if (next[r.qr]) {
-                            next[r.qr].synced = true;
-                        }
-                    });
-                    return next;
-                });
-
-                // Verificar si todos los items del remito fueron recibidos y sincronizados
-                const allItemsScanned = Object.values(itemMap).every(i => i.scanned);
-                const allItemsSynced = Object.values(itemMap).every(i => i.synced);
-
-                if (allItemsScanned && allItemsSynced) {
-                    toast.success("Todos los items del remito han sido procesados y sincronizados.");
-                    // Opcional: Cerrar automáticamente o dejar que el usuario 'Confirme' manualmente para cerrar el remito en UI
-                    // setStep(1);
-                    // setRemitoCode('');
-                    // setLoadedRemito(null);
-                }
-            } else {
-                toast.error("Error al sincronizar bultos. Verifique conexión.");
-            }
-        } catch (err) {
-            console.error(err);
-            toast.error("Error de conexión al sincronizar: " + err.message);
-        } finally {
-            setLoading(false);
-        }
-    };
-
     // Metrics
     const totalItems = loadedRemito?.items?.length || 0;
     const scannedCount = Object.values(itemMap).filter(i => i.scanned).length;

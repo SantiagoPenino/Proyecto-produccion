@@ -127,28 +127,4 @@ async function sqlUltimoEnvio(modulo, columnaId, alias = 'env') {
     };
 }
 
-// SIN USO (13/10): historialDe: está en module.exports pero nadie lo llama. Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
-/**
- * Historial de envíos de un registro puntual (para una pantalla de detalle).
- */
-async function historialDe(modulo, refId) {
-    try {
-        const pool = await getPool();
-        if (!await tablaExiste(pool)) return [];
-        const r = await pool.request()
-            .input('modulo', sql.VarChar(30), modulo)
-            .input('refId',  sql.Int,         refId)
-            .query(`
-                SELECT EEmIdEnvio, EEmDestinatario, EEmAsunto, EEmAdjunto, EEmEstado,
-                       EEmProveedor, EEmError, EEmFecha, EEmUsuarioAlta
-                FROM dbo.EnvioEmail WITH(NOLOCK)
-                WHERE EEmModulo = @modulo AND EEmRefId = @refId
-                ORDER BY EEmFecha DESC, EEmIdEnvio DESC`);
-        return r.recordset;
-    } catch (e) {
-        logger.error(`[ENVIO-EMAIL] No se pudo leer el historial (${modulo}/${refId}): ${e.message}`);
-        return [];
-    }
-}
-
-module.exports = { MODULOS, registrarEnvio, sqlUltimoEnvio, historialDe };
+module.exports = { MODULOS, registrarEnvio, sqlUltimoEnvio };

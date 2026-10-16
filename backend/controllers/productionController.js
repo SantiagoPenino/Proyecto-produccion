@@ -534,14 +534,6 @@ exports.getOrderDetails = async (req, res) => {
     }
 };
 
-// Stubs para evitar errores de Undefined en el Router
-// SIN USO (13/10): getBoardData, moveOrder, createRoll, reorderOrders y updateRollName: stubs que responden vacío o success; el front usa /rolls/* y /production-kanban. Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
-exports.getBoardData = async (req, res) => { res.json([]); };
-exports.moveOrder = async (req, res) => { res.json({ success: true }); };
-exports.createRoll = async (req, res) => { res.json({ success: true }); };
-exports.reorderOrders = async (req, res) => { res.json({ success: true }); };
-exports.updateRollName = async (req, res) => { res.json({ success: true }); };
-
 // Etiqueta térmica (10x15) de un LOTE finalizado: nombre, fecha/hora de finalización, metros totales,
 // y cuántas órdenes urgentes / con falla (-F) contiene. Se imprime automáticamente al finalizar el lote
 // desde Planeación. Las órdenes conservan su RolloID al finalizar, así que los datos se calculan acá.
@@ -631,8 +623,6 @@ exports.printEtiquetaLote = async (req, res) => {
         res.status(500).send('<h1>Error generando la etiqueta del lote</h1>');
     }
 };
-// SIN USO (13/10): getMachines: stub sin ruta. Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
-exports.getMachines = async (req, res) => { res.json([]); };
 
 // ==========================================
 // 5. MAGIC SORT (Armado Automático)
@@ -886,15 +876,4 @@ exports.magicSort = async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 };
-// SIN USO (13/10): getGroupedOrderDetails y measureFiles: sin ruta (measurementRoutes usa el measureFiles de measurementController). Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
-exports.getGroupedOrderDetails = async (req, res) => { res.json([]); };
-
-exports.measureFiles = async (req, res) => {
-    const { fileIds } = req.body;
-    try {
-        await fileProcessingService.processFiles(fileIds, req.app.get('io'));
-        res.json({ success: true, message: 'Procesamiento iniciado.' });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-};
+

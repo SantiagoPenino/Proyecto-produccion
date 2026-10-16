@@ -95,8 +95,6 @@ router.get('/clientes/:CliIdCliente/ordenes-sin-factura', ctrl.getOrdenesPendien
 router.get('/ordenes/:OrdIdOrden/detalle', ctrl.getOrdenDetalle);
 router.post('/ordenes/reasignar-cliente', ctrl.reasignarOrdenesCliente);
 router.get('/planes/:CliIdCliente', ctrl.getPlanesCliente);
-router.post('/planes', ctrl.crearPlan);
-router.post('/planes/:PlaIdPlan/recargar', ctrl.recargarPlan);
 router.patch('/planes/:PlaIdPlan/desactivar', ctrl.desactivarPlan);
 router.get('/planes/:PlaIdPlan/materiales', ctrl.getMaterialesPlan);
 router.put('/planes/:PlaIdPlan/materiales', ctrl.setMaterialesPlan);
@@ -143,18 +141,6 @@ router.get('/reportes/catalogo',              reportesVentasCtrl.getCatalogoArbo
 router.put('/reportes/catalogo/articulo',     reportesVentasCtrl.clasificarArticulos);
 
 // ────────────────────────────────────────────────────────────────────────────
-// RUTAS: COLA DE ESTADOS DE CUENTA
-// ────────────────────────────────────────────────────────────────────────────
-router.get('/cola', ctrl.getColaEstados);
-router.post('/cola/:ColIdCola/estado', ctrl.cambiarEstadoCola);
-router.post('/cola/:ColIdCola/enviar', ctrl.enviarEstadoCola);
-router.post('/cola/enviar-aprobados', ctrl.enviarAprobados);
-router.post('/cola/run-batch', ctrl.generarEstadosManual);
-router.delete('/cola/:ColIdCola', ctrl.eliminarItemCola);
-router.post('/cola/manual', ctrl.generarColaManual);
-router.get('/cola/:ColIdCola/pdf', ctrl.descargarPdfCola);
-
-// ────────────────────────────────────────────────────────────────────────────
 // RUTAS: CUENTAS CLIENTE
 // ────────────────────────────────────────────────────────────────────────────
 const motorCtrl = require('../controllers/motorContableController');
@@ -162,11 +148,6 @@ router.get('/motor/transacciones', motorCtrl.getTiposTransaccion);
 router.get('/motor/transacciones/:codigo/reglas', motorCtrl.getReglasPorTransaccion);
 router.post('/motor/transacciones', motorCtrl.saveReglasTransaccion);
 router.delete('/motor/transacciones/:codigo', motorCtrl.deleteTransaccion);
-
-router.get('/tipos-movimiento', ctrl.getTiposMovimiento);
-router.post('/tipos-movimiento', ctrl.createTipoMovimiento);
-router.patch('/tipos-movimiento/:TmoId', ctrl.updateTipoMovimiento);
-router.delete('/tipos-movimiento/:TmoId', ctrl.deleteTipoMovimiento);
 
 // ── Módulo Caja y Pagos ────────────────────────────────────────────────
 const caja = require('../controllers/cajaController');

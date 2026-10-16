@@ -1,34 +1,18 @@
-import React, { useState, useEffect, Suspense } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { areasService } from '../../services/modules/areasService';
 import LogisticsLayout from './LogisticsLayout';
-import PackingView from './PackingView';
 import DispatchView from './DispatchView';
 import TransportView from './TransportView';
 import ReceptionView from './ReceptionView';
 import StockView from './StockView';
 import LostView from './LostView';
 import DepositoDashboard from './DepositoDashboard';
-import ImportadorManualView from '../production/ImportadorManualView';
 import LabelGenerationPage from '../pages/LabelGenerationPage';
 import QuotationView from './QuotationView';
 import CanastosView from './CanastosView';
 import WmsReceiveSalesView from './WmsReceiveSalesView';
 import EsperandoBultosView from './EsperandoBultosView';
-
-// Dynamic Import with auto-reload on stale chunks
-const DepositStockPage = React.lazy(() =>
-    import('./DepositStockPage').catch((err) => {
-        const key = 'chunk_reload_' + window.location.pathname;
-        if (!sessionStorage.getItem(key)) {
-            sessionStorage.setItem(key, '1');
-            window.location.reload();
-            return new Promise(() => {});
-        }
-        sessionStorage.removeItem(key);
-        throw err;
-    })
-);
 
 const LogisticsDashboard = ({ areaCode }) => {
     const { user } = useAuth();
@@ -36,7 +20,7 @@ const LogisticsDashboard = ({ areaCode }) => {
     const isDeposito = user?.areaKey?.trim().toUpperCase() === 'DEPOSITO';
     const hasFullAccess = isAdmin || isDeposito;
     const isAreaContext = !!areaCode;
-    const [activeTab, setActiveTab] = useState(isAreaContext ? 'dispatch' : 'import');
+    const [activeTab, setActiveTab] = useState('dispatch');
 
     // Global Area Filter
     const [globalArea, setGlobalArea] = useState(areaCode || 'TODOS');
@@ -129,8 +113,6 @@ const LogisticsDashboard = ({ areaCode }) => {
         const commonProps = { areaFilter: globalArea };
 
         switch (activeTab) {
-            case 'import':
-                return <div className="absolute inset-0 overflow-y-auto"><ImportadorManualView embedded={true} /></div>;
             case 'quotation':
                 return <div className="absolute inset-0"><QuotationView {...commonProps} /></div>;
             case 'canastos':
@@ -152,24 +134,11 @@ const LogisticsDashboard = ({ areaCode }) => {
             case 'esperando':
                 return <div className="absolute inset-0 overflow-y-auto"><EsperandoBultosView /></div>;
             case 'stock':
-                if (commonProps.areaFilter === 'DEPOSITO') {
-                    // Lazy load with Suspense fallback
-                    return (
-                        <Suspense fallback={
-                            <div className="flex flex-col items-center justify-center h-full p-10 text-gray-400">
-                                <i className="fa-solid fa-circle-notch fa-spin text-3xl mb-4 text-indigo-500"></i>
-                                <span className="text-sm font-bold animate-pulse">Cargando módulo de Depósito...</span>
-                            </div>
-                        }>
-                            <DepositStockPage />
-                        </Suspense>
-                    );
-                }
                 return <StockView {...commonProps} />;
             case 'lost':
                 return <LostView {...commonProps} />;
             default:
-                return <div className="absolute inset-0 overflow-y-auto"><ImportadorManualView embedded={true} /></div>;
+                return <DispatchView {...commonProps} mode="create" selectedStockItems={dispatchSelection} setSelectedStockItems={setDispatchSelection} />;
         }
     };
 

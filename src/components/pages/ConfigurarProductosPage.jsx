@@ -6,7 +6,8 @@ import TerminacionesEcouvModal from '../modals/config/TerminacionesEcouvModal';
 import NuevoProductoTerminadoModal from '../modals/config/NuevoProductoTerminadoModal';
 import Selector from '../ui/Selector';
 import { PasosCosturaEditor, TablaPasosCostura } from './ConfiguradorPasosCostura';   // [PASO A PASO]
-import { GrillaAvioTalles, TablaAviosTalle, resumenPorTalle, esMedida } from './ConfiguradorAviosTalle';   // [AVÍOS POR TALLE]
+import { GrillaAvioTalles, TablaAviosTalle, TablaAviosEditable, resumenPorTalle, esMedida } from './ConfiguradorAviosTalle';   // [AVÍOS POR TALLE]
+import { TablaMedidasEditable, ComoMedirEditable, HojaMedidas } from './ConfiguradorMedidas';   // [MEDIDAS]
 import PasoVariantes from './ConfiguradorVariantes';   // [VARIANTES] producto padre + variantes (12/10)
 import ConfiguradorAMedida, { IconoForma } from './ConfiguradorAMedida';   // [A MEDIDA] pañuelos, toallas, banderas (13/10)
 import { useConfirmar } from './ventas/solicitudesComunes';   // ventana de confirmar (en vez de window.confirm)
@@ -65,7 +66,7 @@ const AREAS_PRINCIPAL = ['SB', 'DIRECTA', 'ECOUV'];
 // Pestañas de la página (02/10): una sola fila. A la izquierda lo que se vende; a la derecha, separados,
 // los catálogos que usan los productos.
 const PESTANAS_PRODUCTOS = [['confeccionados', 'Confeccionados'], ['combos', 'Combos y Promos'], ['ecouv', 'EcoUV']];
-const PESTANAS_CATALOGOS = [['tecnicas', 'Técnicas'], ['avios', 'Avíos'], ['costuras', 'Costuras']];
+const PESTANAS_CATALOGOS = [['tecnicas', 'Técnicas'], ['medidas', 'Medidas'], ['avios', 'Avíos'], ['costuras', 'Costuras']];
 // Filtro de la lista por estado (02/10). Son los contadores de arriba: cada uno con su color apagado,
 // prendido y el de la cuenta.
 const FILTROS_ESTADO = [
@@ -375,6 +376,9 @@ const fichaToForm = (d) => ({
     modoMolde: d.config?.AMedida ? 'A_MEDIDA' : 'TALLES',
     // Cómo arma TIZADA los archivos: '' = automático (lo del .env), 'normal', 'una_por_fila' (un archivo por fila con sus copias)
     tizadaMesasModo: d.config?.TizadaMesasModo || '',
+    // Talles que se venden: grupos del molde (Niño, Adulto, Femenino…); vacío = todos los del molde
+    gruposTalle: String(d.config?.GruposTalle || '').split(',').map(x => x.trim()).filter(Boolean),
+    gruposTalleDisponible: !d.config || d.config.GruposTalle !== undefined,
     mesasModoDisponible: !d.config || d.config.TizadaMesasModo !== undefined,
     // F1: producción principal, molde, medida fija, unidad y canales
     tecnicaPrincipal: d.config?.TecnicaPrincipal || 'SB',
@@ -432,6 +436,7 @@ const fichaToForm = (d) => ({
         colores: d.fichaDiseno?.Colores || '',
         proveedor: d.fichaDiseno?.Proveedor || '',
         dibujoUrl: d.fichaDiseno?.DibujoUrl || null,
+        medidasImagenUrl: d.fichaDiseno?.MedidasImagenUrl || null,   // [MEDIDAS] el dibujo con las letras
     },
     fichaDisenoAnotaciones: (d.fichaDisenoAnotaciones || []).map(a => ({ x: Number(a.PosX), y: Number(a.PosY), texto: a.Texto })),
     fichaDisenoExtra: (d.fichaDisenoExtra || []).map(c => ({ label: c.Etiqueta, valor: c.Valor || '' })),
@@ -452,6 +457,12 @@ const fichaToForm = (d) => ({
         };
     }),
     aviosPorTalleOk: d.aviosPorTalle === true,   // ¿se corrió configurador_ficha_avios_talle.sql?
+    // [MEDIDAS] medidas de la prenda (letra, medida del nomenclador, principal, cm por talle)
+    medidas: (d.medidas || []).map(m => ({
+        medidaId: m.MedidaID || '', nombre: m.Nombre || '', letra: m.Letra || '', principal: !!m.Principal, comoMedir: m.ComoMedir || '',
+        talles: (m.talles || []).map(t => ({ talle: t.talle, valor: t.valor != null ? String(Number(t.valor)) : '' })),
+    })),
+    medidasOk: d.medidasPrenda === true,   // ¿se corrió configurador_medidas_prenda.sql?
     // [VARIANTES] { padre, modeloClave, modeloNombre, permitido: { tecnicas, opciones, telas, accesorios } } si es variante
     variante: d.variante || null,
     cantidadVariantes: d.cantidadVariantes || 0,
@@ -462,6 +473,7 @@ const formToPayload = (f) => ({
     // [A MEDIDA] null = no es a medida (o dejó de serlo)
     ...(f.esCombo || !f.aMedidaDisponible ? {} : { aMedida: f.modoMolde === 'A_MEDIDA' && f.aMedida?.variable ? f.aMedida : null }),
     ...(f.esCombo || !f.mesasModoDisponible ? {} : { tizadaMesasModo: f.tizadaMesasModo || null }),
+    ...(f.esCombo || !f.gruposTalleDisponible ? {} : { gruposTalle: f.gruposTalle || [] }),
     ...(f.esCombo ? {} : { tecnicaPrincipal: f.tecnicaPrincipal || 'SB', molde: f.molde || 'OBLIGATORIO', um: f.um || 'u', anchoM: f.anchoM === '' ? null : Number(f.anchoM), altoM: f.altoM === '' ? null : Number(f.altoM), bordeCm: f.bordeCm === '' ? null : Number(f.bordeCm) }),
     visiblePortal: !!f.visiblePortal, visibleTienda: !!f.visibleTienda, visibleInterno: f.visibleInterno !== false,
     origenTipo: f.origenTipo,
@@ -512,7 +524,15 @@ const formToPayload = (f) => ({
             marcacion: f.fichaDiseno.marcacion?.trim() || null,
             colores: f.fichaDiseno.colores?.trim() || null,
             proveedor: f.fichaDiseno.proveedor?.trim() || null,
+            ...(f.medidasOk ? { medidasImagenUrl: f.fichaDiseno.medidasImagenUrl || null } : {}),
         },
+        ...(f.medidasOk ? {
+            medidas: (f.medidas || []).filter(m => (m.nombre || '').trim()).map(m => ({
+                medidaId: m.medidaId || null, nombre: m.nombre.trim(), letra: (m.letra || '').trim() || null, principal: !!m.principal,
+                comoMedir: (m.comoMedir || '').trim() || null,
+                talles: (m.talles || []).filter(t => t.valor !== '' && t.valor != null).map(t => ({ talle: t.talle, valor: Number(t.valor) })),
+            })),
+        } : {}),
         fichaDisenoAnotaciones: f.fichaDisenoAnotaciones.map(a => ({ x: a.x, y: a.y, texto: a.texto })),
         fichaDisenoExtra: f.fichaDisenoExtra.filter(c => (c.label || '').trim()).map(c => ({ label: c.label.trim(), valor: c.valor || '' })),
         fichaDisenoCosturas: f.fichaDisenoCosturas.filter(c => (c.union || '').trim()).map(c => ({
@@ -754,6 +774,8 @@ export default function ConfigurarProductosPage() {
     const [maquinasCosturaCat, setMaquinasCosturaCat] = useState([]); // [PASO A PASO] MaquinasCostura (incluye inactivas)
     const [costurasPasoAPaso, setCosturasPasoAPaso] = useState(false); // [PASO A PASO] ¿se corrió configurador_costuras_paso_a_paso.sql?
     const [aviosCat, setAviosCat] = useState([]);             // CatalogoAvios (incluye inactivos)
+    const [medidasCat, setMedidasCat] = useState([]);         // [MEDIDAS] CatalogoMedidas, el nomenclador (incluye inactivas)
+    const [medidasFaltaSql, setMedidasFaltaSql] = useState(false);
     const [locales, setLocales] = useState([]);               // productos del local
     const [stockArts, setStockArts] = useState([]);           // [ACCESORIOS] cualquier artículo con variantes WMS (mástil, base…)
     const [depositosWms, setDepositosWms] = useState([]);     // [ACCESORIOS] depósitos del WMS de donde puede salir un accesorio
@@ -809,6 +831,7 @@ export default function ConfigurarProductosPage() {
 
     // Ficha de diseño (paso 6 del confeccionado)
     const [subiendoDibujo, setSubiendoDibujo] = useState(false);
+    const [subiendoMedidasImg, setSubiendoMedidasImg] = useState(false);   // [MEDIDAS]
     const [fichaPreview, setFichaPreview] = useState(false); // modal "Ver ficha técnica"
 
     // EcoUV embebido
@@ -827,13 +850,16 @@ export default function ConfigurarProductosPage() {
 
     const loadCatalogos = useCallback(async () => {
         try {
-            const [t, iso, av, ar, maq] = await Promise.all([
+            const [t, iso, av, ar, maq, med] = await Promise.all([
                 api.get(`${API}/tecnicas?all=1`),
                 api.get(`${API}/costuras-iso?all=1`),
                 api.get(`${API}/avios?all=1`),
                 api.get(`${API}/areas-principales`).catch(() => ({ data: { data: [] } })),
                 api.get(`${API}/maquinas-costura?all=1`).catch(() => ({ data: { data: [] } })),   // [PASO A PASO]
+                api.get(`${API}/medidas?all=1`).catch(() => ({ data: { data: [] } })),            // [MEDIDAS]
             ]);
+            setMedidasCat(med.data?.data || []);
+            setMedidasFaltaSql(!!med.data?.faltaSql);
             setMaquinasCosturaCat(maq.data?.data || []);
             setCosturasPasoAPaso(!!iso.data?.pasoAPaso);
             setAreasPrincipales(ar.data?.data || []);
@@ -1042,6 +1068,24 @@ export default function ConfigurarProductosPage() {
         } finally { setSubiendoDibujo(false); }
     };
 
+    // [MEDIDAS] el dibujo con las letras de la tabla de medidas. Se guarda al subirlo (como el dibujo de la ficha).
+    const subirMedidasImagen = async (file) => {
+        if (!form?.proId || !file) return;
+        setSubiendoMedidasImg(true);
+        try {
+            const fd = new FormData();
+            fd.append('imagen', file);
+            const { data } = await api.post(`${API}/productos/${form.proId}/ficha-diseno/medidas-imagen`, fd, { headers: { 'Content-Type': 'multipart/form-data' } });
+            setForm(prev => ({ ...prev, fichaDiseno: { ...prev.fichaDiseno, medidasImagenUrl: data.url } }));
+            // ya está guardado: también en lo leído, así no aparece como cambio sin guardar
+            const leido = leidoRef.current[form.proId];
+            if (leido) { const lf = { ...leido.form, fichaDiseno: { ...leido.form.fichaDiseno, medidasImagenUrl: data.url } }; leidoRef.current[form.proId] = { form: lf, firma: firmaForm(lf) }; }
+            toast.success('✅ Dibujo de las medidas cargado');
+        } catch (e) {
+            toast.error('Error subiendo el dibujo: ' + (e.response?.data?.error || e.message));
+        } finally { setSubiendoMedidasImg(false); }
+    };
+
     // Arrastrar una anotación sobre el dibujo — mueve el DOM directo durante el
     // drag (sin re-render por cada mousemove) y recién confirma en el estado al soltar.
     // elDot = el punto que se arrastra (evDown.currentTarget); elCanvas = su contenedor.
@@ -1136,18 +1180,6 @@ export default function ConfigurarProductosPage() {
         return true;
     };
 
-    // Contadores del filtro por estado: lo de la pestaña abierta, con la búsqueda y el área ya aplicadas
-    // (cada número es lo que muestra la lista al tocarlo).
-    const conteoEstados = useMemo(() => {
-        const base = productos.filter(p => !p.PadreProIdProducto && (vista === 'combos' ? esCombo(p) : !esCombo(p)) && pasaBusquedaYArea(p));
-        return {
-            '': base.length,
-            PUBLICADO: base.filter(p => p.Estado === 'PUBLICADO').length,
-            BORRADOR: base.filter(p => p.Estado === 'BORRADOR').length,
-            SIN: base.filter(p => !p.Estado).length,
-        };
-    }, [productos, vista, busca, filtroArea]);
-
     // [VARIANTES] variantes por padre: en la lista cuelgan de su padre, no van sueltas
     const variantesPorPadre = useMemo(() => {
         const m = {};
@@ -1155,10 +1187,26 @@ export default function ConfigurarProductosPage() {
         Object.values(m).forEach(l => l.sort((a, b) => String(a.CodArticulo).localeCompare(String(b.CodArticulo))));
         return m;
     }, [productos]);
+    // Estado de un producto en la LISTA (15/10): un padre con alguna variante publicada cuenta como publicado (lo que se
+    // vende es la variante). Lo usan los contadores, el filtro y el "N pub." de familias y etiquetas.
+    const estadoEnLista = (p) => (p.Estado === 'PUBLICADO' || (variantesPorPadre[p.ProIdProducto] || []).some(v => v.Estado === 'PUBLICADO') ? 'PUBLICADO' : p.Estado);
+
+    // Contadores del filtro por estado: lo de la pestaña abierta, con la búsqueda y el área ya aplicadas
+    // (cada número es lo que muestra la lista al tocarlo).
+    const conteoEstados = useMemo(() => {
+        const base = productos.filter(p => !p.PadreProIdProducto && (vista === 'combos' ? esCombo(p) : !esCombo(p)) && pasaBusquedaYArea(p));
+        return {
+            '': base.length,
+            PUBLICADO: base.filter(p => estadoEnLista(p) === 'PUBLICADO').length,
+            BORRADOR: base.filter(p => estadoEnLista(p) === 'BORRADOR').length,
+            SIN: base.filter(p => !p.Estado).length,
+        };
+    }, [productos, vista, busca, filtroArea, variantesPorPadre]);
+
     const productosFiltrados = useMemo(() => productos.filter(p => {
         if (p.PadreProIdProducto) return false;
         if (!pasaBusquedaYArea(p) && !(variantesPorPadre[p.ProIdProducto] || []).some(pasaBusquedaYArea)) return false;
-        if (filtroEstado === 'PUBLICADO' || filtroEstado === 'BORRADOR') return p.Estado === filtroEstado;
+        if (filtroEstado === 'PUBLICADO' || filtroEstado === 'BORRADOR') return estadoEnLista(p) === filtroEstado;
         if (filtroEstado === 'SIN') return !p.Estado;
         return true;
     }), [productos, busca, filtroEstado, filtroArea, variantesPorPadre]);
@@ -1438,23 +1486,30 @@ export default function ConfigurarProductosPage() {
         }
         const primera = telas.find(t => t.esDefault) || telas[0];
         const material = telas.length ? (telas.length === 1 ? primera.material : `${primera.material} (o ${telas.filter(t => t !== primera).map(t => t.material).join(', ')})`) : '';
-        const tallas = agruparTalles(moldeSel.talles).map(([g, l]) => `${g} ${l[0].replace(/fem$/i, '')}–${l[l.length - 1].replace(/fem$/i, '')}`).join(' · ');
+        // Solo los grupos que vende el producto ("Talles que se venden"); sin ninguno marcado, todos los del molde
+        const todos = agruparTalles(moldeSel.talles);
+        const marcados = (form?.gruposTalle || []).filter(g => todos.some(([n]) => n === g));
+        const grupos = marcados.length ? todos.filter(([n]) => marcados.includes(n)) : todos;
+        const tallas = grupos.map(([g, l]) => `${g} ${l[0].replace(/fem$/i, '')}–${l[l.length - 1].replace(/fem$/i, '')}`).join(' · ');
         return { material, tallas };
-    }, [moldeSel, form?.telas]);
+    }, [moldeSel, form?.telas, form?.gruposTalle]);
     useEffect(() => {
         if (!form || form.esCombo) return;
         const patch = {};
-        if (!form.fichaDiseno.material && autoFicha.material) patch.material = autoFicha.material;
-        if (!form.fichaDiseno.tallas && autoFicha.tallas) patch.tallas = autoFicha.tallas;
+        // 15/10: el bloque "Datos de la prenda" ya no está: material y tallas siguen siempre a lo calculado (molde, telas y
+        // talles que se venden). Si cambia algo que el usuario tocó (grupos de talle, telas), queda para guardar con eso.
+        if (autoFicha.material && form.fichaDiseno.material !== autoFicha.material) patch.material = autoFicha.material;
+        if (autoFicha.tallas && form.fichaDiseno.tallas !== autoFicha.tallas) patch.tallas = autoFicha.tallas;
         if (!Object.keys(patch).length) return;
         setForm(prev => ({ ...prev, fichaDiseno: { ...prev.fichaDiseno, ...patch } }));
-        // El relleno automático no es un cambio del usuario: se suma también a lo leído
+        // El relleno automático al ABRIR el producto no es un cambio del usuario: se suma también a lo leído
         const leido = leidoRef.current[form.proId];
-        if (leido) {
+        const firmaSinFicha = (x) => firmaForm({ ...x, fichaDiseno: { ...x.fichaDiseno, material: "", tallas: "" } });
+        if (leido && firmaSinFicha(leido.form) === firmaSinFicha(form)) {
             const f = { ...leido.form, fichaDiseno: { ...leido.form.fichaDiseno, ...patch } };
             leidoRef.current[form.proId] = { form: f, firma: firmaForm(f) };
         }
-    }, [autoFicha, form?.proId]);
+    }, [autoFicha, form?.proId]);   // eslint-disable-line react-hooks/exhaustive-deps
 
     // Cambios sin guardar (02/10): lo que mandaría "Guardar" contra lo último leído. La foto, el nombre y el
     // código, la familia y la etiqueta se guardan al instante y no entran.
@@ -1522,6 +1577,15 @@ export default function ConfigurarProductosPage() {
         const entradas = [...(form?.modelos || new Map()).entries()];
         setModeloVista((entradas.find(([, v]) => v.esDefault) || entradas[0] || [''])[0] || '');
     }, [form?.proId, form?.tizadaProMoldeRef]);
+    // 15/10: el modelo de la ficha impresa ES la variante (no se elige): el de la variante, o el único que vende el
+    // producto. Un producto con varios modelos no nombra ninguno: cada variante lleva el suyo.
+    const modeloFicha = useMemo(() => {
+        if (!form) return null;
+        const nombre = (clave) => (moldeSel?.modelos || []).find(m => m.clave === clave)?.nombre;
+        if (form.variante) return { clave: form.variante.modeloClave, nombre: form.variante.modeloNombre || nombre(form.variante.modeloClave) || form.variante.modeloClave };
+        const vende = [...(form.modelos || new Map()).keys()];
+        return vende.length === 1 ? { clave: vende[0], nombre: nombre(vende[0]) || vende[0] } : null;
+    }, [form, moldeSel]);
     // Piezas donde puede ir un aplique: las de los modelos que se venden (unión), por su nombre
     // genérico (Frente, Cuello…). Si todavía no se marcó ningún modelo, todas las del molde.
     const piezasParaApliques = useMemo(() => {
@@ -1534,6 +1598,11 @@ export default function ConfigurarProductosPage() {
     }, [moldeSel, form?.modelos, form?.modoMolde, form?.aMedida?.pieza]);
     // [AVÍOS POR TALLE] talles del molde por curva y en orden real: las columnas de la grilla de avíos
     const gruposTalles = useMemo(() => agruparTalles(moldeSel?.talles), [moldeSel]);
+    // Los grupos que vende el producto (si marcó alguno); si no, todos los del molde
+    const gruposVenta = useMemo(() => {
+        const marcados = (form?.gruposTalle || []).filter(g => gruposTalles.some(([n]) => n === g));
+        return marcados.length ? gruposTalles.filter(([n]) => marcados.includes(n)) : gruposTalles;
+    }, [gruposTalles, form?.gruposTalle]);
     // Técnicas que admiten aplique: las de decoración activas en el paso Técnicas, más Etiqueta (siempre)
     const tecnicasApliqueActivas = useMemo(() => [...AREAS_DECORACION.filter(x => form?.tecnicas?.[x.id]?.on), AREA_APLIQUE_EXTRA], [form?.tecnicas]);
 
@@ -1891,7 +1960,7 @@ export default function ConfigurarProductosPage() {
                                         )}
                                         {gruposLista.map(g => {
                                             const cerrado = !busca && grupoAbierto !== g.nombre;
-                                            const publicados = g.items.filter(p => p.Estado === 'PUBLICADO').length;
+                                            const publicados = g.items.filter(p => estadoEnLista(p) === 'PUBLICADO').length;
                                             return (
                                                 <div key={g.nombre}>
                                                     <button onClick={() => toggleGrupo(g.nombre)} aria-expanded={!cerrado}
@@ -1912,7 +1981,7 @@ export default function ConfigurarProductosPage() {
                                                                 // Abierto si lo abrió el usuario, si hay búsqueda, o si contiene el producto abierto.
                                                                 const clave = `${g.nombre}|${n.id}`;
                                                                 const abierta = !!busca || etiquetasAbiertas.has(clave) || n.items.some(p => p.ProIdProducto === form?.proId || (variantesPorPadre[p.ProIdProducto] || []).some(v => v.ProIdProducto === form?.proId));
-                                                                const pubEt = n.items.filter(p => p.Estado === 'PUBLICADO').length;
+                                                                const pubEt = n.items.filter(p => estadoEnLista(p) === 'PUBLICADO').length;
                                                                 return (
                                                                     <div key={`etq-${n.id}`}>
                                                                         <button onClick={() => toggleEtiqueta(clave)} aria-expanded={abierta}
@@ -2550,6 +2619,27 @@ export default function ConfigurarProductosPage() {
                                                         </div>
                                                     )}
 
+                                                    {/* Talles que se venden (15/10): solo si el molde junta más de un grupo (ej. Camiseta Basket: niño, adulto y femenino) */}
+                                                    {moldeSel && form.gruposTalleDisponible && gruposTalles.length > 1 && (
+                                                        <div className="border border-slate-200 rounded-xl p-4">
+                                                            {tituloSeccion('Talles que se venden', 'El molde trae varios grupos de talles. Marcá los que vende este producto: avíos por talle y ficha muestran solo esos. Sin ninguno marcado, se usan todos.')}
+                                                            <div className="flex flex-wrap gap-2">
+                                                                {gruposTalles.map(([g, l]) => {
+                                                                    const sel = (form.gruposTalle || []).includes(g);
+                                                                    return (
+                                                                        <button key={g} type="button" aria-pressed={sel}
+                                                                            onClick={() => setF({ gruposTalle: sel ? form.gruposTalle.filter(x => x !== g) : [...(form.gruposTalle || []), g] })}
+                                                                            className={`inline-flex items-center gap-2 rounded-full border-2 px-3.5 py-1.5 text-sm font-bold transition-colors ${sel ? 'border-emerald-500 bg-emerald-50/50 text-slate-800' : 'border-slate-200 text-slate-500 hover:border-slate-300'}`}>
+                                                                            {sel ? <Check size={14} className="text-emerald-600" aria-hidden="true" /> : null}
+                                                                            {g} <span className="font-normal text-slate-400">{String(l[0]).replace(/fem$/i, '')} a {String(l[l.length - 1]).replace(/fem$/i, '')}</span>
+                                                                        </button>
+                                                                    );
+                                                                })}
+                                                            </div>
+                                                            {!(form.gruposTalle || []).length && <p className="mt-2 text-[11px] text-slate-400">Ninguno marcado: se usan los {gruposTalles.reduce((t, [, l]) => t + l.length, 0)} talles del molde.</p>}
+                                                        </div>
+                                                    )}
+
                                                     {moldeSel && (
                                                         <div className="border border-slate-200 rounded-xl p-4">
                                                             {tituloSeccion('Telas que se ofrecen', 'Solo las que el molde admite en TizadaPro. La estrella marca la que se ofrece primero. El precio que se muestra es el de la lista de precios de la tela: acá no se cambia.')}
@@ -2836,16 +2926,13 @@ export default function ConfigurarProductosPage() {
                                                                     onChange={e => setF({ fichaDiseno: { ...form.fichaDiseno, marca: e.target.value } })}
                                                                     className={`block w-full mt-1 ${claseCampo}`} />
                                                             </label>
-                                                            {/* Modelo de la ficha impresa: el mismo que se mira en "Piezas y talles". Por ahora los pasos y
-                                                                avíos son los mismos para todos los modelos; el modelo sale en el encabezado. */}
+                                                            {/* 15/10: el modelo de la ficha impresa ES la variante: no se elige, se muestra */}
                                                             {(moldeSel?.modelos || []).length > 0 && (
                                                                 <div className={`lg:col-span-2 ${claseEtiquetaCampo}`}>
                                                                     Modelo (sale en la ficha impresa)
-                                                                    <Selector value={modeloVista} onChange={e => setModeloVista(e.target.value)} anchoLista={280}
-                                                                        claseBoton={claseSel(`mt-1 w-full ${claseCampo}`)}>
-                                                                        <option value="" descripcion="La ficha no nombra ningún modelo">Sin modelo</option>
-                                                                        {moldeSel.modelos.map(m => <option key={m.clave} value={m.clave} descripcion={form.modelos.has(m.clave) ? 'Se vende' : 'No se vende en este producto'}>{m.nombre}</option>)}
-                                                                    </Selector>
+                                                                    <div className={`mt-1 ${claseCampo} ${modeloFicha ? 'font-bold text-slate-800' : 'text-slate-400'}`}>
+                                                                        {modeloFicha ? modeloFicha.nombre : 'Cada variante lleva su modelo (este producto vende varios)'}
+                                                                    </div>
                                                                 </div>
                                                             )}
                                                         </div>
@@ -2902,38 +2989,88 @@ export default function ConfigurarProductosPage() {
                                                                         className="text-red-400 hover:text-red-600 font-black px-1.5">×</button>
                                                                 </div>
                                                             ))}
-                                                            <button type="button"
-                                                                onClick={() => setF({ fichaDisenoAnotaciones: [...form.fichaDisenoAnotaciones, { x: 50, y: 30, texto: 'Nuevo detalle' }] })}
-                                                                className={claseAgregar}>
-                                                                + Agregar anotación
-                                                            </button>
+                                                            {/* 15/10: sin "+ Agregar anotación": las anotaciones se agregan haciendo clic sobre el dibujo */}
                                                         </div>
                                                     </div>
 
+                                                    {/* 15/10: sin "Datos de la prenda": material y tallas salen solos (molde, telas y talles que se venden) y van a la ficha impresa */}
+                                                    {/* [MEDIDAS] el dibujo con letras, la tabla por talle (cm) y cómo medir */}
                                                     <div className="border border-slate-200 rounded-xl p-4">
-                                                        {tituloSeccion('Datos de la prenda', 'Material y tallas salen del molde de TizadaPro y de los materiales que se ofrecen (sin molde, de los del área). Se pueden pisar; "Automático" vuelve a lo calculado.')}
-                                                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                                                            {[['material', 'Material', autoFicha.material], ['tallas', 'Tallas', autoFicha.tallas], ['marcacion', 'Marcación', null]].map(([k, label, auto]) => (
-                                                                <div key={k}>
-                                                                    <label htmlFor={`ficha-${k}`} className={`flex items-center justify-between ${claseEtiquetaCampo}`}>{label}
-                                                                        {auto != null && form.fichaDiseno[k] !== auto && auto && (
-                                                                            <button type="button" onClick={() => setF({ fichaDiseno: { ...form.fichaDiseno, [k]: auto } })}
-                                                                                className="inline-flex items-center gap-1 text-[10px] font-bold text-brand-cyan hover:underline">
-                                                                                <RotateCcw size={11} aria-hidden="true" />Automático
-                                                                            </button>
+                                                        {tituloSeccion('Medidas de la prenda', 'Subí el dibujo con las letras (A, B, C…) y cargá cada medida en cm por talle. La medida sale del nomenclador (Catálogos › Medidas) con su "cómo medir". Las marcadas como principales salen grandes arriba de la ficha impresa.')}
+                                                        {!form.medidasOk ? (
+                                                            <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-800">
+                                                                <TriangleAlert size={14} className="mt-0.5 shrink-0" aria-hidden="true" />
+                                                                <span>Falta correr <b>docs/migrations/configurador_medidas_prenda.sql</b> en esta base. Hasta entonces no se pueden cargar medidas.</span>
+                                                            </div>
+                                                        ) : (
+                                                            <div className="space-y-4">
+                                                                <div className="flex flex-col gap-4 lg:flex-row">
+                                                                    <div className="lg:w-64 shrink-0">
+                                                                        {form.fichaDiseno.medidasImagenUrl ? (
+                                                                            <img src={form.fichaDiseno.medidasImagenUrl} alt="Dibujo con las medidas" className="mb-2 w-full rounded-lg border border-slate-200 bg-slate-50 object-contain" style={{ maxHeight: 260 }} />
+                                                                        ) : (
+                                                                            <div className="mb-2 rounded-lg border border-dashed border-slate-300 px-3 py-8 text-center text-xs text-slate-400">Sin dibujo de medidas</div>
                                                                         )}
-                                                                    </label>
-                                                                    <input id={`ficha-${k}`} value={form.fichaDiseno[k]} placeholder={auto || (k === 'marcacion' ? 'Cómo se marca el talle (etiqueta, estampa…)' : '')}
-                                                                        onChange={e => setF({ fichaDiseno: { ...form.fichaDiseno, [k]: e.target.value } })}
-                                                                        className={`block w-full mt-1 ${claseCampo} ${auto != null && form.fichaDiseno[k] && form.fichaDiseno[k] === auto ? 'bg-slate-50 text-slate-600' : ''}`} />
-                                                                    {auto != null && !form.fichaDiseno[k] && !auto && <p className="text-[10px] text-amber-600 mt-1">{k === 'material' ? (form.molde === 'OBLIGATORIO' || form.tizadaProMoldeRef ? 'Marcá las telas que se ofrecen en "Molde, telas y apliques".' : 'Marcá los materiales que se ofrecen en "Producción principal".') : (form.molde === 'NO' ? 'Sin molde no hay talles: el producto va por unidad a medida fija.' : 'Vinculá el molde de TizadaPro para tomar los talles.')}</p>}
+                                                                        <div className="flex flex-wrap gap-2">
+                                                                            <label className={`inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-600 hover:bg-slate-50 cursor-pointer ${subiendoMedidasImg ? 'opacity-50 pointer-events-none' : ''}`}>
+                                                                                <Upload size={14} className="text-brand-cyan" aria-hidden="true" />
+                                                                                {subiendoMedidasImg ? 'Subiendo…' : (form.fichaDiseno.medidasImagenUrl ? 'Cambiar dibujo' : 'Subir dibujo')}
+                                                                                <input type="file" accept="image/*" className="hidden" onChange={e => { subirMedidasImagen(e.target.files?.[0]); e.target.value = ''; }} />
+                                                                            </label>
+                                                                            {form.fichaDiseno.medidasImagenUrl && (
+                                                                                <button type="button" onClick={() => setF({ fichaDiseno: { ...form.fichaDiseno, medidasImagenUrl: null } })} className="rounded-lg px-2 py-1.5 text-xs font-bold text-red-500 hover:bg-red-50">Quitar</button>
+                                                                            )}
+                                                                        </div>
+                                                                    </div>
+                                                                    <div className="min-w-0 flex-1">
+                                                                        <TablaMedidasEditable medidas={form.medidas} medidasCat={medidasCat} gruposVisibles={gruposVenta} gruposTodos={gruposTalles}
+                                                                            onChange={medidas => setF({ medidas })} />
+                                                                        {gruposTalles.length === 0 && form.medidas.length > 0 && (
+                                                                            <p className="mt-2 text-[11px] text-slate-400">Para cargar los valores, vinculá el molde en "Molde, telas y apliques": los talles salen de ahí.</p>
+                                                                        )}
+                                                                    </div>
                                                                 </div>
-                                                            ))}
-                                                        </div>
+                                                                {form.medidas.some(m => m.nombre) && (
+                                                                    <div>
+                                                                        {/* 15/10: la leyenda ES el "cómo medir" de cada letra (no hay otro texto libre) */}
+                                                                        <div className="mb-1.5 text-xs font-bold text-slate-600">Leyenda — Cómo medir <span className="font-normal text-slate-400">— sale del nomenclador; escribí encima para cambiarlo solo en este producto</span></div>
+                                                                        <ComoMedirEditable medidas={form.medidas} medidasCat={medidasCat} onChange={medidas => setF({ medidas })} />
+                                                                    </div>
+                                                                )}
+                                                            </div>
+                                                        )}
                                                     </div>
 
                                                     <div className="border border-slate-200 rounded-xl p-4">
-                                                        {tituloSeccion('Notas sueltas', 'Lo que no entra arriba ni en Avíos, como etiqueta y valor. Salen al pie de la ficha impresa.')}
+                                                        {tituloSeccion('Avíos', 'Todo lo que lleva la prenda y no es tela; el tipo sale del "Catálogo de avíos". En Carga: Única (lo mismo en todos los talles), Por talle (la medida o cantidad de cada talle) o Artículo por talle (ej. cierre de 15 cm o de 18 cm).')}
+                                                        {!form.aviosPorTalleOk && (
+                                                            <div className="mb-3 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-800">
+                                                                <TriangleAlert size={14} className="mt-0.5 shrink-0" aria-hidden="true" />
+                                                                <span>Falta correr <b>docs/migrations/configurador_ficha_avios_talle.sql</b> en esta base. Hasta entonces la medida va como texto y los pasos de costura no guardan el avío que usan.</span>
+                                                            </div>
+                                                        )}
+                                                        {/* [AVÍOS EN TABLA 15/10] una fila por avío y una columna por talle (solo los grupos que vende el producto) */}
+                                                        <TablaAviosEditable avios={form.avios} aviosCat={aviosCat} gruposVisibles={gruposVenta} gruposTodos={gruposTalles}
+                                                            puedePorTalle={form.aviosPorTalleOk && gruposTalles.length > 0}
+                                                            onChange={avios => setF({ avios })}
+                                                            onAgregar={() => { const c = aviosCat.find(x => x.Activo); setF({ avios: [...form.avios, { avioId: c ? c.AvioID : '', nombre: c ? c.Nombre : '', cantidad: 1, unidad: c ? (c.Unidad || 'u') : 'u', medida: '', nota: '', porTalle: false, talles: [], articuloPorTalle: false }] }); }} />
+                                                        {form.aviosPorTalleOk && gruposTalles.length === 0 && form.avios.length > 0 && (
+                                                            <p className="mt-2 text-[11px] text-slate-400">Para cargar avíos por talle, vinculá el molde en "Molde, telas y apliques": los talles salen de ahí.</p>
+                                                        )}
+                                                    </div>
+
+                                                    <div className="border border-slate-200 rounded-xl p-4">
+                                                        {/* [PASO A PASO] la secuencia de costura de la prenda, de la preparación al planchado */}
+                                                        {tituloSeccion('Costura paso a paso', 'Cómo se cose la prenda, en orden: en cada paso, qué operación es, qué costura lleva (ISO 4915), en qué máquina, qué piezas une, cuánto tarda y qué cuidar. La imagen sale del catálogo de costuras, o subí una foto del paso.')}
+                                                        <PasosCosturaEditor pasos={form.fichaDisenoCosturas} onChange={pasos => setF({ fichaDisenoCosturas: pasos })}
+                                                            costurasIso={costurasIsoCat} maquinas={maquinasCosturaCat} pasoAPaso={costurasPasoAPaso}
+                                                            piezas={piezasParaApliques} conAvio={form.aviosPorTalleOk && costurasPasoAPaso}
+                                                            avios={[...new Map(form.avios.filter(a => a.avioId).map(a => [String(a.avioId), { avioId: a.avioId, nombre: a.nombre }])).values()]} />
+                                                    </div>
+
+                                                    {/* 15/10: las notas sueltas, al final de la ficha */}
+                                                    <div className="border border-slate-200 rounded-xl p-4">
+                                                        {tituloSeccion('Notas sueltas', 'Lo que no entra en nada de lo de arriba, como etiqueta y valor. Salen al pie de la ficha impresa.')}
                                                         <div className="space-y-2">
                                                             {form.fichaDisenoExtra.map((c, i) => (
                                                                 <div key={i} className="flex items-center gap-2">
@@ -2952,76 +3089,6 @@ export default function ConfigurarProductosPage() {
                                                                 + Agregar campo
                                                             </button>
                                                         </div>
-                                                    </div>
-
-                                                    <div className="border border-slate-200 rounded-xl p-4">
-                                                        {tituloSeccion('Avíos', 'Todo lo que lleva la prenda y no es tela. Se eligen del "Catálogo de avíos". Si la medida o la cantidad cambian según el talle, marcá "Varía por talle" y cargá cada talle del molde.')}
-                                                        {!form.aviosPorTalleOk && (
-                                                            <div className="mb-3 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-800">
-                                                                <TriangleAlert size={14} className="mt-0.5 shrink-0" aria-hidden="true" />
-                                                                <span>Falta correr <b>docs/migrations/configurador_ficha_avios_talle.sql</b> en esta base. Hasta entonces la medida va como texto y los pasos de costura no guardan el avío que usan.</span>
-                                                            </div>
-                                                        )}
-                                                        <div className="space-y-2">
-                                                            {form.avios.map((av, i) => {
-                                                                const set = (patch) => { const next = [...form.avios]; next[i] = { ...av, ...patch }; setF({ avios: next }); };
-                                                                // Por talle: solo con la base al día y si el molde tiene talles (o el avío ya traía valores por talle)
-                                                                const puedePorTalle = form.aviosPorTalleOk && (gruposTalles.length > 0 || av.porTalle);
-                                                                const cantidadPorTalle = av.porTalle && !esMedida(av.unidad);
-                                                                return (
-                                                                    <div key={i} className="border border-slate-200 rounded-xl bg-white px-3 py-2.5 flex flex-wrap items-center gap-x-3 gap-y-2">
-                                                                        <Selector value={av.avioId || ''} title="Avío del catálogo"
-                                                                            onChange={e => { const c = aviosCat.find(x => String(x.AvioID) === e.target.value); set(c ? { avioId: c.AvioID, nombre: c.Nombre, unidad: c.Unidad || 'u' } : { avioId: '' }); }}
-                                                                            claseBoton={claseSel(`min-w-[200px] border rounded-lg px-2.5 py-1.5 text-sm font-bold text-slate-800 ${av.avioId ? 'border-slate-200' : 'border-amber-300'}`)} anchoLista={280}>
-                                                                            <option value="">{aviosCat.filter(x => x.Activo).length ? 'Elegí el avío…' : 'Cargá avíos en "Catálogo de avíos"'}</option>
-                                                                            {aviosCat.filter(x => x.Activo || x.AvioID === av.avioId).map(x => <option key={x.AvioID} value={x.AvioID}>{x.Nombre}{x.Activo ? '' : ' (inactivo)'}</option>)}
-                                                                        </Selector>
-                                                                        {cantidadPorTalle ? (
-                                                                            <span className="text-xs text-slate-500">Cantidad según el talle ({av.unidad || 'u'})</span>
-                                                                        ) : (
-                                                                            <label className="inline-flex items-center gap-1.5 text-xs text-slate-500">
-                                                                                <input type="number" min="0.01" step="0.01" value={av.cantidad} title="Cantidad por prenda" onChange={e => set({ cantidad: e.target.value })}
-                                                                                    className={`w-20 text-center font-bold ${claseCampoFila}`} />
-                                                                                {av.unidad || 'u'} por prenda
-                                                                            </label>
-                                                                        )}
-                                                                        {!av.porTalle && (
-                                                                            <input value={av.medida} placeholder={puedePorTalle ? 'Medida (si es la misma en todos los talles)' : 'Medida por talle (ej. S–M 55 cm · L–XXL 60 cm)'} onChange={e => set({ medida: e.target.value })}
-                                                                                className={`min-w-[220px] flex-1 ${claseCampoFila}`} />
-                                                                        )}
-                                                                        <input value={av.nota} placeholder="Nota" onChange={e => set({ nota: e.target.value })}
-                                                                            className={`min-w-[120px] ${av.porTalle ? 'flex-1' : ''} ${claseCampoFila}`} />
-                                                                        {puedePorTalle && (
-                                                                            <label className="inline-flex cursor-pointer items-center gap-1.5 text-xs font-bold text-slate-600" title="La medida o la cantidad cambian según el talle">
-                                                                                <input type="checkbox" checked={!!av.porTalle} onChange={e => set({ porTalle: e.target.checked })}
-                                                                                    className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-400" />
-                                                                                Varía por talle
-                                                                            </label>
-                                                                        )}
-                                                                        <button type="button" title="Quitar" onClick={() => setF({ avios: form.avios.filter((_, j) => j !== i) })} className="text-red-400 hover:text-red-600 font-black px-1.5">×</button>
-                                                                        {av.porTalle && form.aviosPorTalleOk && (
-                                                                            <GrillaAvioTalles av={av} grupos={gruposTalles} aviosCat={aviosCat} onChange={set} />
-                                                                        )}
-                                                                    </div>
-                                                                );
-                                                            })}
-                                                            {form.aviosPorTalleOk && gruposTalles.length === 0 && form.avios.length > 0 && (
-                                                                <p className="text-[11px] text-slate-400">Para cargar avíos por talle, vinculá el molde en "Molde, telas y apliques": los talles salen de ahí.</p>
-                                                            )}
-                                                            <button type="button" onClick={() => { const c = aviosCat.find(x => x.Activo); setF({ avios: [...form.avios, { avioId: c ? c.AvioID : '', nombre: c ? c.Nombre : '', cantidad: 1, unidad: c ? (c.Unidad || 'u') : 'u', medida: '', nota: '', porTalle: false, talles: [], articuloPorTalle: false }] }); }}
-                                                                className={claseAgregar}>
-                                                                + Agregar avío
-                                                            </button>
-                                                        </div>
-                                                    </div>
-
-                                                    <div className="border border-slate-200 rounded-xl p-4">
-                                                        {/* [PASO A PASO] la secuencia de costura de la prenda, de la preparación al planchado */}
-                                                        {tituloSeccion('Costura paso a paso', 'Cómo se cose la prenda, en orden: en cada paso, qué operación es, qué costura lleva (ISO 4915), en qué máquina, qué piezas une, cuánto tarda y qué cuidar. La imagen sale del catálogo de costuras, o subí una foto del paso.')}
-                                                        <PasosCosturaEditor pasos={form.fichaDisenoCosturas} onChange={pasos => setF({ fichaDisenoCosturas: pasos })}
-                                                            costurasIso={costurasIsoCat} maquinas={maquinasCosturaCat} pasoAPaso={costurasPasoAPaso}
-                                                            piezas={piezasParaApliques} conAvio={form.aviosPorTalleOk && costurasPasoAPaso}
-                                                            avios={[...new Map(form.avios.filter(a => a.avioId).map(a => [String(a.avioId), { avioId: a.avioId, nombre: a.nombre }])).values()]} />
                                                     </div>
 
                                                     <div className="flex items-center gap-3">
@@ -3057,7 +3124,7 @@ export default function ConfigurarProductosPage() {
                                                                     </div>
                                                                     <div className="text-sm font-bold mb-3">
                                                                         REF. {form.fichaDiseno.ref || form.codArticulo} — {form.descripcion}
-                                                                        {(() => { const m = (moldeSel?.modelos || []).find(x => x.clave === modeloVista); return m ? <span className="font-normal"> · Modelo: <b>{m.nombre}</b></span> : null; })()}
+                                                                        {modeloFicha ? <span className="font-normal"> · Modelo: <b>{modeloFicha.nombre}</b></span> : null}
                                                                     </div>
 
                                                                     {form.fichaDiseno.dibujoUrl ? (
@@ -3106,6 +3173,12 @@ export default function ConfigurarProductosPage() {
                                                                             </tr>
                                                                         </tbody>
                                                                     </table>
+                                                                    {form.medidasOk && (
+                                                                        <div className="mt-3">
+                                                                            <HojaMedidas medidas={form.medidas} medidasCat={medidasCat} imagenUrl={form.fichaDiseno.medidasImagenUrl}
+                                                                                ordenTalles={gruposVenta.flatMap(([, l]) => l)} />
+                                                                        </div>
+                                                                    )}
                                                                     {form.avios.filter(a => a.nombre.trim()).length > 0 && (
                                                                         <table className="w-full text-xs mt-3">
                                                                             <thead><tr className="border-b-2 border-slate-800 text-left"><th className="py-1 pr-2">Avío</th><th className="py-1 pr-2">Cant./prenda</th><th className="py-1 pr-2">Medida por talle</th><th className="py-1">Nota</th></tr></thead>
@@ -3271,6 +3344,7 @@ export default function ConfigurarProductosPage() {
                     {vista === 'tecnicas' && (
                         <CatalogoTecnicas tecnicas={tecnicasCat} onReload={loadCatalogos} />
                     )}
+                    {vista === 'medidas' && <CatalogoMedidas medidas={medidasCat} faltaSql={medidasFaltaSql} onReload={loadCatalogos} />}
                     {vista === 'avios' && <CatalogoAvios avios={aviosCat} onReload={loadCatalogos} />}
                     {vista === 'costuras' && <CatalogoCosturas costuras={costurasIsoCat} maquinas={maquinasCosturaCat} pasoAPaso={costurasPasoAPaso} onReload={loadCatalogos} />}
 
@@ -3456,6 +3530,71 @@ function CatalogoAvios({ avios, onReload }) {
                     <input value={nuevo.nombre} onChange={e => setNuevo({ ...nuevo, nombre: e.target.value })} onKeyDown={e => e.key === 'Enter' && crear()} placeholder="Nuevo avío (ej. Cierre frontal nylon)" className="flex-1 min-w-[220px] border border-slate-200 rounded-lg px-3 py-2 text-sm" />
                     <Selector value={nuevo.unidad} onChange={e => setNuevo({ ...nuevo, unidad: e.target.value })} claseBoton={claseSel('border border-slate-200 rounded-lg px-2 py-2 text-xs w-[72px]')} anchoLista={100}>{['u', 'par', 'm', 'cm'].map(u => <option key={u} value={u}>{u}</option>)}</Selector>
                     <button onClick={crear} disabled={creando} className="bg-slate-800 text-white rounded-lg px-4 py-2 text-xs font-bold disabled:opacity-50">{creando ? '…' : '+ Agregar avío'}</button>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+//  [MEDIDAS] Nomenclador de medidas (dbo.CatalogoMedidas): Largo total, Ancho de pecho… con cómo se miden
+// ═════════════════════════════════════════════════════════════════════════
+function CatalogoMedidas({ medidas, faltaSql = false, onReload }) {
+    const [edits, setEdits] = useState({});
+    const [savingId, setSavingId] = useState(null);
+    const [nueva, setNueva] = useState({ nombre: '', referencia: '', comoMedir: '' });
+    const [creando, setCreando] = useState(false);
+    const val = (m, k, orig) => edits[m.MedidaID]?.[k] ?? (orig ?? '');
+    const setVal = (id, k, v) => setEdits(prev => ({ ...prev, [id]: { ...prev[id], [k]: v } }));
+    const guardar = async (m) => {
+        const e = edits[m.MedidaID]; if (!e) return;
+        setSavingId(m.MedidaID);
+        try { await api.put(`${API}/medidas/${m.MedidaID}`, e); toast.success('✅ Medida guardada'); setEdits(prev => { const n = { ...prev }; delete n[m.MedidaID]; return n; }); onReload(); }
+        catch (err) { toast.error('Error: ' + (err.response?.data?.error || err.message)); }
+        finally { setSavingId(null); }
+    };
+    const toggle = async (m) => { try { await api.put(`${API}/medidas/${m.MedidaID}`, { activo: !m.Activo }); onReload(); } catch (err) { toast.error('Error: ' + (err.response?.data?.error || err.message)); } };
+    const crear = async () => {
+        if (!nueva.nombre.trim()) return toast.error('Poné el nombre de la medida.');
+        setCreando(true);
+        try { await api.post(`${API}/medidas`, nueva); toast.success('✅ Medida creada'); setNueva({ nombre: '', referencia: '', comoMedir: '' }); onReload(); }
+        catch (err) { toast.error('Error: ' + (err.response?.data?.error || err.message)); }
+        finally { setCreando(false); }
+    };
+    const campo = 'w-full border border-transparent hover:border-slate-200 focus:border-indigo-300 rounded-lg px-2 py-1 text-sm';
+    if (faltaSql) return (
+        <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 max-w-3xl">
+            <TriangleAlert size={14} className="mt-0.5 shrink-0" aria-hidden="true" />
+            <span>Falta correr <b>docs/migrations/configurador_medidas_prenda.sql</b> en esta base.</span>
+        </div>
+    );
+    return (
+        <div className="space-y-4">
+            <p className="text-xs text-slate-400 max-w-3xl">Las medidas que se toman en las prendas (largo total, ancho de pecho…), con su referencia y cómo se miden. En la ficha de cada producto se elige cuáles lleva y con qué letra del dibujo; el "cómo medir" sale de acá. Una medida inactiva no se ofrece más, pero los productos que ya la tienen la conservan.</p>
+            <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+                <table className="w-full text-sm">
+                    <thead><tr className="text-left text-[10px] font-black uppercase tracking-wider text-slate-400 border-b border-slate-100">
+                        <th className="px-4 py-2 w-64">Medida</th><th className="px-3 py-2 w-48">Referencia</th><th className="px-3 py-2">Cómo medir</th><th className="px-3 py-2 w-24 text-center">En uso</th><th className="px-3 py-2 w-20 text-center">Activa</th><th className="px-3 py-2 w-28"></th>
+                    </tr></thead>
+                    <tbody>
+                        {medidas.map(m => (
+                            <tr key={m.MedidaID} className={`border-b border-slate-50 ${m.Activo ? '' : 'opacity-50'}`}>
+                                <td className="px-4 py-1.5"><input value={val(m, 'nombre', m.Nombre)} onChange={e => setVal(m.MedidaID, 'nombre', e.target.value)} aria-label="Medida" className={`${campo} font-bold`} /></td>
+                                <td className="px-3 py-1.5"><input value={val(m, 'referencia', m.Referencia)} onChange={e => setVal(m.MedidaID, 'referencia', e.target.value)} placeholder="ej. HPS a ruedo" aria-label="Referencia" className={`${campo} text-slate-600`} /></td>
+                                <td className="px-3 py-1.5"><input value={val(m, 'comoMedir', m.ComoMedir)} onChange={e => setVal(m.MedidaID, 'comoMedir', e.target.value)} placeholder="ej. de costado a costado, 1 cm bajo la sisa" aria-label="Cómo medir" className={`${campo} text-slate-600`} /></td>
+                                <td className="px-3 py-1.5 text-center text-xs text-slate-500">{m.Usos ? `${m.Usos} producto${m.Usos === 1 ? '' : 's'}` : '—'}</td>
+                                <td className="px-3 py-1.5 text-center"><Toggle on={!!m.Activo} onChange={() => toggle(m)} /></td>
+                                <td className="px-3 py-1.5 text-right">{edits[m.MedidaID] && <button onClick={() => guardar(m)} disabled={savingId === m.MedidaID} className="bg-indigo-600 text-white rounded-lg px-3 py-1 text-xs font-bold disabled:opacity-50">{savingId === m.MedidaID ? '…' : 'Guardar'}</button>}</td>
+                            </tr>
+                        ))}
+                        {medidas.length === 0 && <tr><td colSpan={6} className="px-4 py-6 text-center text-slate-400 text-sm">Todavía no hay medidas. Cargá la primera abajo.</td></tr>}
+                    </tbody>
+                </table>
+                <div className="flex flex-wrap gap-2 px-4 py-3 border-t border-slate-100 bg-slate-50/60">
+                    <input value={nueva.nombre} onChange={e => setNueva({ ...nueva, nombre: e.target.value })} onKeyDown={e => e.key === 'Enter' && crear()} placeholder="Nueva medida (ej. Largo de manga)" aria-label="Nueva medida" className="w-56 border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+                    <input value={nueva.referencia} onChange={e => setNueva({ ...nueva, referencia: e.target.value })} placeholder="Referencia (opcional)" aria-label="Referencia de la nueva medida" className="w-44 border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+                    <input value={nueva.comoMedir} onChange={e => setNueva({ ...nueva, comoMedir: e.target.value })} onKeyDown={e => e.key === 'Enter' && crear()} placeholder="Cómo medir (ej. del hombro al puño)" aria-label="Cómo medir la nueva medida" className="flex-1 min-w-[220px] border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+                    <button onClick={crear} disabled={creando} className="bg-slate-800 text-white rounded-lg px-4 py-2 text-xs font-bold disabled:opacity-50">{creando ? '…' : '+ Agregar medida'}</button>
                 </div>
             </div>
         </div>

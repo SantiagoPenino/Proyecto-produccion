@@ -64,46 +64,6 @@ async function hermanasSinBultoPropio(db, ordenId, estadosEnArea, estadoPortador
     return r.recordset;
 }
 
-// SIN USO (13/10): isOrdenCompleta y getOrdenesPedido: están en module.exports pero nadie los llama. Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
-/**
- * Todos los archivos y servicios extra (no cancelados) de la orden están en OK/FINALIZADO
- * y ninguno en FALLA. Misma regla que usa completarOrden.
- */
-async function isOrdenCompleta(db, ordenId) {
-    const r = await makeRequest(db)
-        .input('OID', sql.Int, ordenId)
-        .query(`
-            SELECT
-                (SELECT COUNT(*) FROM ArchivosOrden WHERE OrdenID = @OID AND EstadoArchivo != 'CANCELADO') +
-                (SELECT COUNT(*) FROM ServiciosExtraOrden WHERE OrdenID = @OID AND Estado != 'CANCELADO') as Total,
-                (SELECT COUNT(*) FROM ArchivosOrden WHERE OrdenID = @OID AND EstadoArchivo IN ('OK', 'FINALIZADO')) +
-                (SELECT COUNT(*) FROM ServiciosExtraOrden WHERE OrdenID = @OID AND Estado IN ('OK', 'FINALIZADO')) as Completed,
-                (SELECT COUNT(*) FROM ArchivosOrden WHERE OrdenID = @OID AND EstadoArchivo = 'FALLA') as Fallas
-        `);
-    const { Total, Completed, Fallas } = r.recordset[0];
-    return Total > 0 && Total === Completed && Fallas === 0;
-}
-
-/**
- * Órdenes hermanas del pedido (no canceladas), opcionalmente filtradas por área.
- */
-async function getOrdenesPedido(db, noDocERP, { areaId } = {}) {
-    if (!noDocERP) return [];
-    const req = makeRequest(db).input('NoDoc', sql.VarChar, String(noDocERP));
-    let where = `O.NoDocERP = @NoDoc AND ${sqlOrdenNoCancelada('O')}`;
-    if (areaId) {
-        where += ' AND O.AreaID = @Area';
-        req.input('Area', sql.VarChar, areaId);
-    }
-    const r = await req.query(`
-        SELECT O.OrdenID, O.CodigoOrden, O.AreaID, O.Estado, O.EstadoenArea, O.EstadoLogistica
-        FROM Ordenes O
-        WHERE ${where}
-        ORDER BY O.OrdenID
-    `);
-    return r.recordset;
-}
-
 /**
  * Núcleo: devuelve { completo, faltantes } donde faltantes son las hermanas
  * que aún no están prontas. asumirProntaOrdenId permite evaluar "¿quedaría
@@ -255,8 +215,6 @@ function sqlExistsHermanaNoPronta(ordenAlias) {
 }
 
 module.exports = {
-    isOrdenCompleta,
-    getOrdenesPedido,
     isPedidoCompletoEnArea,
     isPedidoCompletoGlobal,
     isPedidoCompletoFisicamenteEnArea,

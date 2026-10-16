@@ -26,6 +26,7 @@ exports.listar            = accion('listar',            (pool, req) => svc.lista
 exports.obtener           = accion('obtener',           (pool, req) => svc.obtener(pool, req.user, id(req.params.id)));
 exports.crear             = accion('crear',             (pool, req) => svc.crear(pool, req.user, req.body || {}));
 exports.actualizar        = accion('actualizar',        (pool, req) => svc.actualizar(pool, req.user, id(req.params.id), req.body || {}));
+exports.guardarDatos      = accion('guardarDatos',      (pool, req) => svc.guardarDatos(pool, req.user, id(req.params.id), req.body || {}));   // [GUARDADO AUTOMÁTICO 15/10] un dato a la vez
 exports.guardarPrecio     = accion('guardarPrecio',     (pool, req) => svc.guardarPrecio(pool, req.user, id(req.params.id), req.body || {}));
 exports.confirmarSena     = accion('confirmarSena',     (pool, req) => svc.confirmarSena(pool, req.user, id(req.params.id), req.body || {}));
 exports.agregarInteraccion = accion('agregarInteraccion', (pool, req) => svc.agregarInteraccion(pool, req.user, id(req.params.id), req.body || {}));
@@ -69,6 +70,7 @@ exports.piezasDelArte = accion('piezasDelArte', (pool, req) => svc.piezasDelArte
 exports.tizadaProGuardar    = accion('tizadaProGuardar',    (pool, req) => svc.tizadaProGuardar(pool, req.user, id(req.params.id), id(req.params.productoSolId), req.body || {}));
 // [A MEDIDA]
 exports.tizadaProCalcular   = accion('tizadaProCalcular',   (pool, req) => svc.tizadaProCalcular(pool, req.user, id(req.params.id), id(req.params.productoSolId), req.body || {}));
+exports.tizadaProArteVista  = accion('tizadaProArteVista',  (pool, req) => svc.tizadaProArteVista(pool, req.user, id(req.params.id), id(req.params.productoSolId), id(req.params.archivoId)));
 exports.tizadaProPlantillaPedir  = accion('tizadaProPlantillaPedir',  (pool, req) => svc.tizadaProPlantillaPedir(pool, req.user, id(req.params.id), id(req.params.productoSolId)));
 exports.tizadaProPlantillaEstado = accion('tizadaProPlantillaEstado', (pool, req) => svc.tizadaProPlantillaEstado(pool, req.user, id(req.params.id), id(req.params.productoSolId)));
 exports.tizadaProPlantillaBajar = async (req, res) => {
@@ -84,9 +86,17 @@ exports.tizadaProActualizar = accion('tizadaProActualizar', (pool, req) => svc.t
 exports.estimarPlazo      = accion('estimarPlazo',      (pool, req) => svc.estimarPlazo(pool, req.user, id(req.params.id)));
 exports.calendario        = accion('calendario',        (pool, req) => svc.calendario(pool, req.user, req.query || {}));
 exports.bandeja           = accion('bandeja',           (pool, req) => svc.bandeja(pool, req.user));
+exports.correccionAbrir   = accion('correccionAbrir',   (pool, req) => svc.correccionAbrir(pool, req.user, id(req.params.id), id(req.params.productoSolId), req.body || {}));   // [15/10] corregir el diseño de un pedido
+exports.correccionCancelar = accion('correccionCancelar', (pool, req) => svc.correccionCancelar(pool, req.user, id(req.params.id), id(req.params.productoSolId)));
+exports.correccionAplicar = accion('correccionAplicar', (pool, req) => svc.correccionAplicar(pool, req.user, id(req.params.id), id(req.params.productoSolId), req.app));   // "Pasar al pedido"
+exports.correccionPlan    = accion('correccionPlan',    (pool, req) => svc.correccionPlan(pool, req.user, id(req.params.id), id(req.params.productoSolId)));
+exports.disenosHechos     = accion('disenosHechos',     (pool, req) => svc.disenosHechos(pool, req.user, req.query || {}));   // [15/10] pestaña "Hechos" (?desde=&hasta=)
 exports.tomarParte        = accion('tomarParte',        (pool, req) => svc.tomarParte(pool, req.user, id(req.params.parteId)));
 exports.aceptarCambio     = accion('aceptarCambio',     (pool, req) => svc.aceptarCambio(pool, req.user, id(req.params.parteId)));
-
+// [TIPO DEL EXTRA 14/10] cómo se hace cada bordado / DTF / TPU, desde la tabla del arte (la misma lista que la Tienda)
+exports.formasDeExtras    = accion('formasDeExtras',    (pool, req) => svc.formasDeExtras(pool, req.user, id(req.params.id), id(req.params.productoSolId)));
+// [FASE 1 15/10] agregar / quitar un bordado, DTF o TPU desde la tabla del arte ({ activo: true | false })
+exports.cambiarExtra      = accion('cambiarExtra',      (pool, req) => svc.cambiarExtra(pool, req.user, id(req.params.id), id(req.params.productoSolId), req.params.tipo, req.body || {}));
 exports.listarVendedores  = accion('listarVendedores',  (pool) => svc.listarVendedores(pool));
 exports.listarDisenadores = accion('listarDisenadores', (pool, req) => svc.listarDisenadores(pool, req.user));
 exports.definirDisenador  = accion('definirDisenador',  (pool, req) => svc.definirDisenador(pool, req.user, id(req.params.idUsuario), !!req.body?.activo));
