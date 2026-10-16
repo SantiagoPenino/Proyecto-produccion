@@ -422,15 +422,24 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
     };
 
     // Guardar metros de UNA orden de falla (persiste en Ordenes.Magnitud).
-    const persistOrderMeters = async (orderId, value) => {
+    // Descarta lo tipeado en la celda: vuelve a mostrarse el valor guardado.
+    const descartarMetersDraft = (orderId) => setMetersDraft(prev => { const n = { ...prev }; delete n[orderId]; return n; });
+    const persistOrderMeters = async (orderId, value, esReposicion = false) => {
         if (readOnly) return;
+        // La reposición nace con metros: se corrigen, pero no se dejan vacíos (el backend también lo rechaza).
+        if (esReposicion && !(parseFloat(value) > 0)) {
+            toast.error('La reposición tiene que tener metros (mayor a 0).');
+            descartarMetersDraft(orderId);
+            return;
+        }
         try {
             await rollsService.setOrderMagnitud(orderId, value === '' ? null : parseFloat(value));
             loadFreshData(true);
             if (onUpdate) onUpdate();
         } catch (e) {
             console.error('Error guardando metros de la orden', e);
-            toast.error('No se pudieron guardar los metros de la orden');
+            toast.error(e?.response?.data?.error || 'No se pudieron guardar los metros de la orden');
+            descartarMetersDraft(orderId);
         }
     };
 
@@ -635,6 +644,37 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
     // junto con las normales (antes iban a un grupo propio con header magenta). El indicador de
     // falla va en la FILA de cada orden (su prioridad), no en el header del grupo.
     const isFalla = (o) => /-F\d+/i.test(o?.code || o?.CodigoOrden || '');
+    // Reposición de cliente (-R): se marca igual que la falla pero en amarillo, y sus metros se
+    // editan igual. Una -F de una -R (…-R1-F123) es falla: por eso se excluye primero.
+    const isReposicion = (o) => !isFalla(o)
+        && (/^reposici[oó]n$/i.test(o?.priority || '') || /-R\d+$/i.test(o?.code || o?.CodigoOrden || ''));
+    // Metros editables de la falla (-F) y de la reposición (-R), en la vista de SB y en la tabla de
+    // DTF / ECOUV / Impresión Directa. Solo con el lote en la impresora: en la calandra (lockReorder)
+    // y en el Historial (readOnly) van como texto fijo. Nunca en TPU ni en órdenes por unidades
+    // (UM='U'): ahí la magnitud no son metros, y el backend la repartiría como metros a los archivos.
+    // La reposición nace con los metros que cargó Atención al Cliente; acá se corrigen.
+    const AREAS_METROS_EDITABLES = ['SB', 'DF', 'DTF', 'ECOUV', 'DIRECTA'];
+    const metrosEditables = (o) => (isFalla(o) || isReposicion(o)) && !lockReorder && !readOnly
+        && AREAS_METROS_EDITABLES.includes((currentAreaCode || '').toUpperCase())
+        && !isLoteTPU && String(o?.um || '').toUpperCase() !== 'U';
+    const celdaMetrosEditable = (o) => (
+        <span className="inline-flex items-center gap-0.5 justify-center" onClick={(e) => e.stopPropagation()}>
+            <input
+                type="number" step="0.1" min="0"
+                value={metersDraft[o.id] !== undefined ? metersDraft[o.id] : (o.magnitude ?? '')}
+                onChange={(e) => setMetersDraft(prev => ({ ...prev, [o.id]: e.target.value }))}
+                onBlur={(e) => persistOrderMeters(o.id, e.target.value, isReposicion(o))}
+                onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+                className={`w-16 text-right font-black text-zinc-800 text-sm bg-white border rounded px-1 py-0.5 focus:outline-none focus:ring-1 ${isReposicion(o) ? 'border-yellow-400 focus:ring-yellow-500' : 'border-brand-magenta/40 focus:ring-brand-magenta'}`}
+                title={isReposicion(o) ? 'Metros de esta reposición' : 'Metros de esta orden de falla'}
+            />
+            <span className="text-[10px] text-zinc-400">m</span>
+        </span>
+    );
+    const pillPrioridad = (o) => o.priority === 'Urgente'
+        ? 'bg-brand-magenta/10 text-brand-magenta border-brand-magenta/20'
+        : isReposicion(o) ? 'bg-yellow-100 text-yellow-700 border-yellow-300'
+        : 'bg-zinc-50 text-zinc-400 border-zinc-200';
 
     // Zona marcada de cada falla (la imagen que se guarda al reportarla en el control de archivos). Antes solo se
     // veía en el detalle de la orden: acá la fila -F no mostraba dónde estaba la falla (13/10/2026).
@@ -1921,7 +1961,7 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
                                                 {unit.orders.map((o, oi) => { return (
                                                   <Draggable key={`o-${o.id}`} draggableId={`o-${o.id}`} index={oi} isDragDisabled={printedOrderIds.includes(o.id) || unit.kind === 'new' || lockReorder || readOnly}>
                                                     {(op, osnap) => (
-                                                  <div ref={op.innerRef} {...op.draggableProps} className={`flex items-center py-2 tablet:py-1 border-t border-zinc-100 first:border-t-0 transition-colors ${osnap.isDragging ? 'bg-white shadow-lg ring-1 ring-brand-cyan/40' : selectedOrderIds.includes(o.id) ? 'bg-brand-cyan/10' : isFalla(o) ? 'bg-brand-magenta/10' : printedOrderIds.includes(o.id) ? 'bg-emerald-50/60' : 'hover:bg-slate-50'}`}>
+                                                  <div ref={op.innerRef} {...op.draggableProps} className={`flex items-center py-2 tablet:py-1 border-t border-zinc-100 first:border-t-0 transition-colors ${osnap.isDragging ? 'bg-white shadow-lg ring-1 ring-brand-cyan/40' : selectedOrderIds.includes(o.id) ? 'bg-brand-cyan/10' : isFalla(o) ? 'bg-brand-magenta/10' : isReposicion(o) ? 'bg-yellow-100' : printedOrderIds.includes(o.id) ? 'bg-emerald-50/60' : 'hover:bg-slate-50'}`}>
                                                     <div className="w-10 flex justify-center">
                                                       {!readOnly && <input type="checkbox" className="w-4 h-4 rounded border-zinc-300 text-brand-cyan focus:ring-brand-cyan cursor-pointer" checked={selectedOrderIds.includes(o.id)} onChange={() => handleToggleOne(o.id)} />}
                                                     </div>
@@ -1949,22 +1989,7 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
                                                       {botonFalla(o)}
                                                     </div>
                                                     <div className="w-24 text-center">
-                                                      {/* Los metros de la falla se editan SOLO en la impresora: en la calandra
-                                                          (lockReorder) y en el Historial (readOnly) van como texto fijo. */}
-                                                      {isFalla(o) && !lockReorder && !readOnly ? (
-                                                        <span className="inline-flex items-center gap-0.5 justify-center" onClick={(e) => e.stopPropagation()}>
-                                                          <input
-                                                            type="number" step="0.1" min="0"
-                                                            value={metersDraft[o.id] !== undefined ? metersDraft[o.id] : (o.magnitude ?? '')}
-                                                            onChange={(e) => setMetersDraft(prev => ({ ...prev, [o.id]: e.target.value }))}
-                                                            onBlur={(e) => persistOrderMeters(o.id, e.target.value)}
-                                                            onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
-                                                            className="w-16 text-right font-black text-zinc-800 text-sm bg-white border border-brand-magenta/40 rounded px-1 py-0.5 focus:outline-none focus:ring-1 focus:ring-brand-magenta"
-                                                            title="Metros de esta orden de falla"
-                                                          />
-                                                          <span className="text-[10px] text-zinc-400">m</span>
-                                                        </span>
-                                                      ) : (
+                                                      {metrosEditables(o) ? celdaMetrosEditable(o) : (
                                                         <>
                                                           <span className="font-black text-zinc-800 text-sm tablet:text-xs">{o.magnitude || 0}</span><span className="text-[10px] text-zinc-400 ml-0.5">m</span>
                                                           {copiasBandera(o) > 0 && (
@@ -1976,7 +2001,7 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
                                                       )}
                                                     </div>
                                                     <div className="w-28 tablet:w-24 flex justify-center">
-                                                      <span className={`px-2.5 py-1 tablet:px-1.5 tablet:py-0.5 rounded-lg text-[10px] tablet:text-[9px] font-black uppercase tracking-wider tablet:tracking-tight border ${o.priority === 'Urgente' ? 'bg-brand-magenta/10 text-brand-magenta border-brand-magenta/20' : 'bg-zinc-50 text-zinc-400 border-zinc-200'}`}>{o.priority || 'Normal'}</span>
+                                                      <span className={`px-2.5 py-1 tablet:px-1.5 tablet:py-0.5 rounded-lg text-[10px] tablet:text-[9px] font-black uppercase tracking-wider tablet:tracking-tight border ${pillPrioridad(o)}`}>{o.priority || 'Normal'}</span>
                                                     </div>
                                                     <div className="w-10 flex justify-center">
                                                       {o.note && o.note.trim() !== '' && (
@@ -2137,7 +2162,7 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
                                                                 ...provided.draggableProps.style,
                                                                 ...(snapshot.isDragging ? { display: 'table', tableLayout: 'fixed' } : {})
                                                             }}
-                                                            className={`transition-colors group ${selectedOrderIds.includes(o.id) ? 'bg-brand-cyan/10' : isFalla(o) ? 'bg-brand-magenta/10' : printedOrderIds.includes(o.id) ? 'bg-emerald-50/60' : 'hover:bg-slate-50'} ${snapshot.isDragging ? 'bg-white shadow-xl ring-1 ring-brand-cyan/50 opacity-90' : ''} ${(!isGroup && isSB && ui !== 0 && oi === 0) ? '[&>td]:border-t-8 [&>td]:border-zinc-200' : ''}`}
+                                                            className={`transition-colors group ${selectedOrderIds.includes(o.id) ? 'bg-brand-cyan/10' : isFalla(o) ? 'bg-brand-magenta/10' : isReposicion(o) ? 'bg-yellow-100' : printedOrderIds.includes(o.id) ? 'bg-emerald-50/60' : 'hover:bg-slate-50'} ${snapshot.isDragging ? 'bg-white shadow-xl ring-1 ring-brand-cyan/50 opacity-90' : ''} ${(!isGroup && isSB && ui !== 0 && oi === 0) ? '[&>td]:border-t-8 [&>td]:border-zinc-200' : ''}`}
                                                         >
                                                             <td className="px-2 py-0 align-middle w-10">
                                                                 <div className="flex items-center justify-center gap-1.5 h-full">
@@ -2186,6 +2211,8 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
                                                 </div>
                                             </td>
                                             <td className="px-4 py-3 text-center w-20">
+                                                {metrosEditables(o) ? celdaMetrosEditable(o) : (
+                                                <>
                                                 <span className="font-black text-zinc-800 text-sm">{isLoteTPU ? Math.round(o.magnitude || 0) : (o.magnitude || 0)}</span>
                                                 <span className="text-[10px] text-zinc-400 ml-0.5">{isLoteTPU ? 'u' : 'm'}</span>
                                                 {copiasBandera(o) > 0 && (
@@ -2193,12 +2220,12 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
                                                         {copiasBandera(o)} {copiasBandera(o) === 1 ? 'bandera' : 'banderas'}
                                                     </div>
                                                 )}
+                                                </>
+                                                )}
                                             </td>
                                             <td className="px-4 py-3 text-center w-28">
                                                 <span className={`px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider border
-                                                    ${o.priority === 'Urgente'
-                                                        ? 'bg-brand-magenta/10 text-brand-magenta border-brand-magenta/20'
-                                                        : 'bg-zinc-50 text-zinc-400 border-zinc-200'}`}>
+                                                    ${pillPrioridad(o)}`}>
                                                     {o.priority || 'Normal'}
                                                 </span>
                                             </td>

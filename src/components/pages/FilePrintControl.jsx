@@ -114,6 +114,8 @@ const FilePrintControl = ({ areaCode }) => {
   const [fallaTypes, setFallaTypes] = useState([]);
   const [finalizandoOrden, setFinalizandoOrden] = useState(false);
   const [pendingSelectCode, setPendingSelectCode] = useState(null);
+  // Falla/reposición que llegó a Control con 0 m: { order, valor, guardando } mientras se le cargan los metros.
+  const [cargarMetros, setCargarMetros] = useState(null);
 
   // Falla Form
   const [failureType, setFailureType] = useState('');
@@ -208,7 +210,7 @@ const FilePrintControl = ({ areaCode }) => {
           nextService: o.ProximoServicio,
           meters: parseFloat(o.Magnitud) || 0,
           priority: o.Prioridad || 'Normal',
-          modoRetiro: o.ModoRetiro || ''
+          modoRetiro: o.ModoRetiro || '', sinImprimir: o.SinImprimir === 1
         }));
         setOrders(normalized);
         // Auto-select pending order after lote switch
@@ -296,7 +298,7 @@ const FilePrintControl = ({ areaCode }) => {
             nextService: o.ProximoServicio,
             meters: parseFloat(o.Magnitud) || 0,
           priority: o.Prioridad || 'Normal',
-          modoRetiro: o.ModoRetiro || ''
+          modoRetiro: o.ModoRetiro || '', sinImprimir: o.SinImprimir === 1
           }));
           setOrders(normalized);
 
@@ -310,7 +312,7 @@ const FilePrintControl = ({ areaCode }) => {
                 if (prev.id !== fresh.id) return prev;
                 // Sin cambios reales → devolver prev (misma referencia). Si no, cada evento creaba
                 // un objeto nuevo y re-disparaba la recarga de archivos ("Cargando archivos" en loop).
-                const campos = ['status', 'statusArea', 'controlled', 'sequence', 'failures', 'hasLabels', 'rolloId', 'nextService', 'meters'];
+                const campos = ['status', 'statusArea', 'controlled', 'sequence', 'failures', 'hasLabels', 'rolloId', 'nextService', 'meters', 'sinImprimir'];
                 if (campos.every(k => prev[k] === fresh[k])) return prev;
                 return { ...prev, ...fresh };
               });
@@ -401,16 +403,22 @@ const FilePrintControl = ({ areaCode }) => {
         let nextOrder = null;
         const startIdx = idx !== -1 ? idx + 1 : 0;
         for (let i = startIdx; i < currentSorted.length; i++) {
-          if ((currentSorted[i].meters || 0) > 0) {
+          // Las que faltan imprimir (ECOUV) no se pueden controlar: se saltean.
+          if ((currentSorted[i].meters || 0) > 0 && !currentSorted[i].sinImprimir) {
             nextOrder = currentSorted[i];
             break;
           }
         }
+        const faltanImprimir = currentSorted.filter(o => o.sinImprimir && o.id !== completedOrderData.ordenId).length;
 
         if (nextOrder) {
           setSelectedOrder(nextOrder);
           setCompletedOrderData(null);
           setToast({ visible: true, message: `Auto-avanzando a orden #${nextOrder.code || nextOrder.id}...`, type: 'info' });
+        } else if (faltanImprimir > 0) {
+          // El lote NO está completo: quedan órdenes que todavía no se imprimieron.
+          setCompletedOrderData(null);
+          setToast({ visible: true, message: `No quedan órdenes impresas para controlar. Faltan ${faltanImprimir} sin imprimir en el lote.`, type: 'info' });
         } else {
           // Sin más órdenes válidas
           setCompletedOrderData(null);
@@ -499,7 +507,7 @@ const FilePrintControl = ({ areaCode }) => {
           nextService: o.ProximoServicio,
           meters: parseFloat(o.Magnitud) || 0,
           priority: o.Prioridad || 'Normal',
-          modoRetiro: o.ModoRetiro || ''
+          modoRetiro: o.ModoRetiro || '', sinImprimir: o.SinImprimir === 1
         }));
         setOrders(normalized);
       }).catch(console.error);
@@ -512,10 +520,45 @@ const FilePrintControl = ({ areaCode }) => {
       return;
     }
     if ((order.meters || 0) <= 0) {
+      // Falla (-F) o reposición (-R) sin metros: sus metros se cargan a mano, así que se piden acá
+      // mismo en vez de dejarla trabada (el lote ya puede estar finalizado y en el Historial).
+      if (/-F\d+(-\d+)?$/i.test(order.code || '') || /-R\d+$/i.test(order.code || '')) {
+        setCargarMetros({ order, valor: '' });
+        return;
+      }
       setToast({ visible: true, message: `La orden ${order.code || order.id} tiene 0 metros. No se puede procesar.`, type: 'error' });
       return;
     }
+    // ECOUV: la orden se ve en el lote pero se controla recién tildada como impresa (el backend
+    // también lo rechaza; ver backend/utils/controlSoloImpresas).
+    if (order.sinImprimir) {
+      setToast({ visible: true, message: `La orden ${order.code || order.id} todavía no está marcada como impresa. Tildala en el detalle del lote para controlarla.`, type: 'warning' });
+      return;
+    }
     setSelectedOrder(order);
+  };
+
+  // Guarda los metros de la falla/reposición que llegó a Control en 0 y la abre para controlar.
+  // Mismo endpoint que la celda de metros del detalle del lote (reparte los metros a los archivos).
+  const handleGuardarMetrosControl = async () => {
+    if (!cargarMetros?.order || cargarMetros.guardando) return;
+    const valor = parseFloat(String(cargarMetros.valor || '').replace(',', '.'));
+    if (!(valor > 0)) {
+      setToast({ visible: true, message: 'Ingresá los metros (mayor a 0).', type: 'error' });
+      return;
+    }
+    const order = cargarMetros.order;
+    setCargarMetros(prev => ({ ...prev, guardando: true }));
+    try {
+      await rollsService.setOrderMagnitud(order.id, valor);
+      setOrders(prev => prev.map(o => o.id === order.id ? { ...o, meters: valor } : o));
+      setCargarMetros(null);
+      setToast({ visible: true, message: `Metros de ${order.code || order.id} guardados: ${valor} m.`, type: 'success' });
+      handleSelectOrder({ ...order, meters: valor });
+    } catch (e) {
+      setToast({ visible: true, message: e?.response?.data?.error || 'No se pudieron guardar los metros', type: 'error' });
+      setCargarMetros(prev => prev && ({ ...prev, guardando: false }));
+    }
   };
 
   // Tarjetas de "órdenes hermanas" (mismo pedido, misma área): 1/2, 2/2, etc.
@@ -593,7 +636,8 @@ const FilePrintControl = ({ areaCode }) => {
         rolloId: found.RolloID || null,
         nextService: found.ProximoServicio,
         meters: parseFloat(found.Magnitud) || 0,
-        priority: found.Prioridad || 'Normal'
+        priority: found.Prioridad || 'Normal',
+        sinImprimir: found.SinImprimir === 1
       });
     } catch (e) {
       console.error(e);
@@ -683,7 +727,7 @@ const FilePrintControl = ({ areaCode }) => {
           rolloId: o.RolloID || null, nextService: o.ProximoServicio,
           meters: parseFloat(o.Magnitud) || 0,
           priority: o.Prioridad || 'Normal',
-          modoRetiro: o.ModoRetiro || ''
+          modoRetiro: o.ModoRetiro || '', sinImprimir: o.SinImprimir === 1
         }));
         setOrders(normalized);
 
@@ -802,7 +846,7 @@ const FilePrintControl = ({ areaCode }) => {
             nextService: o.ProximoServicio,
             meters: parseFloat(o.Magnitud) || 0,
           priority: o.Prioridad || 'Normal',
-          modoRetiro: o.ModoRetiro || ''
+          modoRetiro: o.ModoRetiro || '', sinImprimir: o.SinImprimir === 1
           }));
           setOrders(normalized);
         }).catch(console.error);
@@ -1288,7 +1332,8 @@ const FilePrintControl = ({ areaCode }) => {
             </div>
           ) : (
             sortedOrders.map(o => {
-              const isBlocked = (o.meters || 0) <= 0;
+              const sinMetros = (o.meters || 0) <= 0;
+              const isBlocked = sinMetros || o.sinImprimir;
               return (
                 <div key={o.id} className={`relative transition-opacity ${isBlocked ? 'opacity-60 grayscale' : ''}`}>
                   {activeRoll?.id === 'todo' && o.rolloId && (
@@ -1296,9 +1341,16 @@ const FilePrintControl = ({ areaCode }) => {
                       Lote #{o.rolloId}
                     </div>
                   )}
-                  {isBlocked && (
+                  {sinMetros ? (
                     <div className="absolute top-2 right-2 z-20 text-red-500 bg-white/80 rounded-full px-2 py-0.5 text-[10px] font-bold border border-red-200 shadow-sm flex items-center gap-1">
                       <i className="fa-solid fa-ban"></i> 0m
+                      {/* Falla/reposición: tocándola se cargan los metros (handleSelectOrder) */}
+                      {(/-F\d+(-\d+)?$/i.test(o.code || '') || /-R\d+$/i.test(o.code || '')) && <span>· tocá para cargar</span>}
+                    </div>
+                  ) : o.sinImprimir && (
+                    <div className="absolute top-2 right-2 z-20 text-zinc-600 bg-white/90 rounded-full px-2 py-0.5 text-[10px] font-black uppercase border border-zinc-300 shadow-sm flex items-center gap-1"
+                      title="Se controla cuando se tilde como impresa en el detalle del lote">
+                      <i className="fa-solid fa-print"></i> Sin imprimir
                     </div>
                   )}
                   <OrderCard
@@ -1442,7 +1494,7 @@ const FilePrintControl = ({ areaCode }) => {
                       {filesVista.length} {esControlTPU ? 'LÍNEA A CONTROLAR' : 'ARCHIVOS EN ORDEN'}
                     </div>
                     {selectedOrder?.priority && (
-                      <span className={`px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider border ${['urgente', 'falla', 'reposición', 'reposicion'].includes(String(selectedOrder.priority).toLowerCase()) ? 'bg-brand-magenta/10 text-brand-magenta border-brand-magenta/20' : 'bg-white text-zinc-400 border-zinc-200'}`}>
+                      <span className={`px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider border ${['reposición', 'reposicion'].includes(String(selectedOrder.priority).toLowerCase()) ? 'bg-yellow-100 text-yellow-700 border-yellow-300' : ['urgente', 'falla'].includes(String(selectedOrder.priority).toLowerCase()) ? 'bg-brand-magenta/10 text-brand-magenta border-brand-magenta/20' : 'bg-white text-zinc-400 border-zinc-200'}`}>
                         {selectedOrder.priority}
                       </span>
                     )}
@@ -1572,6 +1624,41 @@ const FilePrintControl = ({ areaCode }) => {
       </main>
 
       {/* --- MODALS --- */}
+
+      {/* 0. Cargar metros de una falla/reposición que llegó a Control en 0 m */}
+      {cargarMetros && (
+        <div className="fixed inset-0 z-[1400] bg-black/40 flex items-center justify-center p-4">
+          <div className="bg-white w-full max-w-sm rounded-2xl shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200">
+            <div className="px-6 py-4 border-b bg-yellow-50 border-yellow-200 flex justify-between items-center">
+              <h3 className="font-black text-lg text-yellow-700">CARGAR METROS</h3>
+              <button onClick={() => setCargarMetros(null)} className="text-slate-400 hover:text-slate-600"><i className="fa-solid fa-xmark text-xl"></i></button>
+            </div>
+            <div className="p-6 space-y-4">
+              <p className="text-sm text-slate-600">
+                La orden <b>{cargarMetros.order.code}</b> no tiene metros cargados. Cargalos para poder controlarla.
+              </p>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number" step="0.01" min="0" autoFocus
+                  value={cargarMetros.valor}
+                  onChange={(e) => setCargarMetros(prev => ({ ...prev, valor: e.target.value }))}
+                  onKeyDown={(e) => { if (e.key === 'Enter') handleGuardarMetrosControl(); }}
+                  className="flex-1 text-right font-black text-lg text-zinc-800 border border-yellow-400 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-yellow-400"
+                  placeholder="0.00"
+                />
+                <span className="font-bold text-slate-400">m</span>
+              </div>
+              <div className="flex gap-2">
+                <button onClick={() => setCargarMetros(null)} className="flex-1 py-2.5 rounded-xl bg-white border-2 border-slate-200 text-slate-500 font-bold text-sm hover:bg-slate-50">Cancelar</button>
+                <button onClick={handleGuardarMetrosControl} disabled={cargarMetros.guardando}
+                  className="flex-1 py-2.5 rounded-xl bg-brand-cyan text-white font-black text-sm hover:bg-cyan-600 disabled:opacity-60">
+                  {cargarMetros.guardando ? 'Guardando...' : 'Guardar'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 1. Action Modal (Falla/Cancel) */}
       {controlAction && (controlAction === 'FALLA' || controlAction === 'CANCELADO') && (

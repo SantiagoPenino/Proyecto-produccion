@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Auditoría de limpieza · 16/10/2026</title>
+<style>
+  @page { size: A4; margin: 16mm 17mm 18mm 17mm; }
+  :root {
+    --tinta: #0f172a; --texto: #334155; --suave: #64748b; --linea: #e2e8f0;
+    --teal: #0e7490; --code-bg: #f1f5f9; --code-tx: #334155;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  body { margin: 0; font-family: "Segoe UI", "Calibri", system-ui, sans-serif; font-size: 10.2pt; line-height: 1.5; color: var(--texto); background: #fff; }
+  h1 { font-size: 23pt; line-height: 1.15; color: var(--tinta); margin: 0 0 3pt; font-weight: 700; letter-spacing: -0.3pt; }
+  .sub { color: var(--suave); font-size: 10pt; margin: 0 0 10pt; }
+  p { margin: 0 0 8pt; }
+  code { font-family: "Cascadia Mono", Consolas, monospace; font-size: 8.4pt; background: var(--code-bg); color: var(--code-tx); padding: 0.5pt 3pt; border-radius: 3pt; white-space: nowrap; }
+  b, strong { color: var(--tinta); font-weight: 600; }
+  .frase { border: 1px solid var(--linea); background: #f8fafc; border-radius: 6pt; padding: 7pt 10pt; margin: 4pt 0 14pt; }
+  .nota { border: 1px solid var(--linea); border-left: 3pt solid var(--teal); background: #f8fafc; border-radius: 6pt; padding: 8pt 11pt; margin: 12pt 0; break-inside: avoid; }
+  .nota.ojo { border-left-color: #b45309; background: #fffbeb; }
+  .nota ol { margin: 4pt 0 0 14pt; padding: 0; }
+  .nota li { margin: 2pt 0; }
+  h2 { font-size: 13pt; color: var(--teal); font-weight: 600; margin: 15pt 0 6pt; padding-bottom: 3pt; border-bottom: 1.4pt solid var(--teal); break-after: avoid; }
+  h2 small { color: var(--suave); font-weight: 400; font-size: 8.6pt; margin-left: 6pt; }
+  h3 { font-size: 15.5pt; color: var(--tinta); margin: 18pt 0 2pt; font-weight: 700; break-after: avoid; }
+  .bajada { font-size: 8.8pt; color: var(--suave); margin: 0 0 6pt; break-after: avoid; }
+  .bajada b { color: var(--tinta); }
+  .item { display: grid; grid-template-columns: 74pt 1fr; gap: 6pt; padding: 5pt 0; border-bottom: 1px solid #f1f5f9; break-inside: avoid; }
+  .item:last-child { border-bottom: 0; }
+  .pill { display: inline-block; font-size: 7.4pt; font-weight: 700; padding: 1pt 6pt; border-radius: 8pt; height: fit-content; margin-top: 2pt; justify-self: start; }
+  .hecho { color: #047857; background: #ecfdf5; }
+  .pendiente { color: #b45309; background: #fffbeb; }
+  .decidir { color: #0369a1; background: #e0f2fe; }
+  .descartado { color: #475569; background: #f1f5f9; }
+  .prod { color: #6d28d9; background: #f5f3ff; }
+  .plan { margin: 0 0 6pt; }
+  .plan .fila { display: grid; grid-template-columns: 16pt 1fr auto; gap: 8pt; align-items: center; padding: 5pt 0; border-bottom: 1px solid #f1f5f9; }
+  .plan .n { color: var(--teal); font-weight: 700; text-align: center; }
+  .contadores { display: flex; gap: 6pt; margin: 2pt 0 4pt; }
+  .quien { display: inline-block; font-size: 8pt; color: var(--suave); border: 1px solid var(--linea); border-radius: 8pt; padding: 0 6pt; margin-left: 4pt; vertical-align: 2pt; }
+  .salto { break-before: page; }
+</style>
+</head>
+<body>
+
+<h1>Auditoría de limpieza del proyecto</h1>
+<div class="sub">Qué se hizo y qué falta · al 16/10/2026</div>
+
+<p>El 09/10 se revisó todo el código para encontrar archivos sin uso, basura, código repetido y lo que conviene refactorizar: 548 archivos del front y 442 del backend, unas 350.000 líneas. El reporte completo, con la evidencia de cada punto, está en <code>docs/auditoria-limpieza-2026-10-09.md</code>. Esta versión actualiza la del 14/10: suma lo que se hizo del 14 al 16/10 (los bugs del reporte y el código SIN USO), que está todo en el commit <code>1f34406</code>.</p>
+
+<div class="frase"><b>En una frase:</b> los 12 bugs del reporte están arreglados y lo SIN USO quedó decidido: se borró lo que no servía (quedan 18 marcas, casi todas de seguridad). Lo que sigue abierto es seguridad, secretos y acordar qué queda en git después del <code>.gitignore</code> nuevo; después, carpetas y refactor.</div>
+
+<h2>El plan</h2>
+<div class="plan">
+  <div class="fila"><span class="n">1</span><span>Secretos: ver si la contraseña de la base que quedó en la historia de git sigue vigente, y sacar las claves del repo</span><span class="pill pendiente">Pendiente</span></div>
+  <div class="fila"><span class="n">2</span><span>Arreglar el <code>.gitignore</code> y sacar la basura evidente <span class="quien">falta acordar qué queda en git (ver «Ojo»)</span></span><span class="pill hecho">Hecho</span></div>
+  <div class="fila"><span class="n">3</span><span>Borrar el código muerto que tiene reemplazo y marcar SIN USO el resto; después decidir cada marca</span><span class="pill hecho">Hecho</span></div>
+  <div class="fila"><span class="n">+</span><span>Bugs del reporte: los 12, más uno que apareció en el camino</span><span class="pill hecho">Hecho</span></div>
+  <div class="fila"><span class="n">+</span><span>Seguridad: rutas sin login, tokens de cliente y token de activación <span class="quien">lo lleva Santiago</span></span><span class="pill pendiente">Pendiente</span></div>
+  <div class="fila"><span class="n">4</span><span>Reordenar carpetas por dominio, un dominio por deploy</span><span class="pill pendiente">Pendiente</span></div>
+  <div class="fila"><span class="n">5</span><span>Unificar las reglas repetidas y partir los archivos grandes</span><span class="pill pendiente">Pendiente</span></div>
+</div>
+
+<h3>Lo que ya se hizo</h3>
+<div class="bajada"><b>13 puntos</b> en tres tandas el 13/10 (Santiago) y <b>los bugs del reporte y lo SIN USO</b> del 14 al 16/10 (Yoania).</div>
+
+<h2>Paso 2 · .gitignore y basura <small>commit 734e3b3 · 13/10</small></h2>
+<div class="item"><span class="pill hecho">Hecho</span><div><b><code>.gitignore</code> reescrito por ruta.</b> Tenía <code>*.md</code>, <code>*.sql</code>, <code>*.json</code> y <code>*.bat</code> globales, y dejaba afuera de git archivos que el sistema necesita: <code>public/manifest.json</code>, <code>reglas_user.json</code> del preflight, los SQL de <code>backend/scripts/sql/</code> y toda la carpeta <code>docs/</code>. Ahora están en el repo.</div></div>
+<div class="item"><span class="pill hecho">Hecho</span><div><b>Salió de git lo que no tenía que estar.</b> <code>.claude/skills</code>, <code>muestras/</code>, <code>sql/</code>, CSV con datos de clientes, <code>.docx</code> y <code>.xlsx</code>. Se sacaron del índice, no del disco.</div></div>
+<div class="item"><span class="pill hecho">Hecho</span><div><b>Basura borrada.</b> <code>temp_layout.jsx</code>, los <code>.bak</code> y <code>.backup</code>, el archivo <code>nul</code>, 4 scripts <code>.cjs</code> de parcheo que estaban en <code>src/</code>, <code>Sidebarborrar.jsx</code> y 3 carpetas <code>__pycache__</code>.</div></div>
+
+<h2>Paso 3 · Código muerto <small>commit 2fd3c5f · 13/10</small></h2>
+<div class="item"><span class="pill hecho">Hecho</span><div><b>52 archivos de código borrados, cada uno con su reemplazo verificado.</b> El formulario viejo del portal (<code>components/orders/</code>), el prototipo de producción de noviembre, baskets, <code>labelsService</code>, <code>ImportLogModal</code> y <code>SettingsModal</code> (rotos), <code>ProductsIntegration_new</code>, <code>Metricas</code>, <code>Planilla</code> y 6 del backend. Y 26 imágenes duplicadas.</div></div>
+<div class="item"><span class="pill hecho">Hecho</span><div><b>98 marcas SIN USO en 82 archivos</b>, cada una con su motivo y «Confirmar con Yoania si se usa o se borra». Ya se decidieron todas menos 18 (ver «Lo que falta»).</div></div>
+
+<h2>Seguridad, bugs y rendimiento <small>commit 48a55b1 · 13/10</small></h2>
+<div class="item"><span class="pill hecho">Hecho</span><div><b>Siete routers del backend piden login del sistema interno:</b> <code>clients</code>, <code>empresas</code>, <code>tesoreria</code>, <code>prices</code>, <code>special-prices</code>, <code>logistics</code> y <code>rolls</code>. Probado con 80 casos. Excepciones: <code>POST /api/clients/external-create</code> (sistema externo con x-api-key) y <code>GET /api/debug/reprocess/:id</code>, que quedó solo para Admin.</div></div>
+<div class="item"><span class="pill hecho">Hecho</span><div><b>Anular una factura con ciclo de crédito</b> ya no falla (<code>@CicAnulado</code> declarado dos veces). <b>Los avisos de socket</b> salen después de guardar. <b>Fuga de conexiones de socket</b> cerrada: todo usa <code>services/socketService</code>. Menores: el botón «Producción» de la landing.</div></div>
+
+<h2>Bugs del reporte · los 12 <small>commit 1f34406 · 14 al 16/10</small></h2>
+<div class="bajada">Cada uno se confirmó primero en el código y en la base (copia de producción del 07/10, solo lectura o con transacción revertida) y recién después se arregló.</div>
+<div class="item"><span class="pill hecho">Hecho</span><div><b>MercadoPago es el método 10.</b> En <code>dbo.MetodosPagos</code>: 9 = Handy, 10 = MercadoPago, 8 = Descuento de sueldo. El rollback del checkout preguntaba por el 8 desde el 10/06, así que nunca deshacía un pago de MP. Consultado en producción: no hubo casos.</div></div>
+<div class="item"><span class="pill hecho">Hecho</span><div><b><code>anularCheque</code> revierte su propio asiento.</b> Columna nueva <code>TesoreriaCheques.AsiIdAlta</code>: el alta guarda el asiento que generó y anular revierte ese, no uno buscado por número. Solo se anula en <code>EN_CARTERA</code> o <code>EMITIDO</code>; si no puede revertir, lo avisa. <b>Ya corrido en producción el 14/10</b> (<code>PROD_verificar_</code> y <code>PROD_migrar_cheques_asiento_alta.sql</code>: 12 cheques).</div></div>
+<div class="item"><span class="pill hecho">Hecho</span><div><b><code>recomputarSaldoCuenta</code></b> usa la fórmula de siempre, sin <code>ORDEN</code> / <code>ORDEN_ANTICIPO</code>.</div></div>
+<div class="item"><span class="pill hecho">Hecho</span><div><b>Numeración de caja.</b> El problema de fondo: <code>TcaNumeroDoc</code> es texto y <code>MAX</code> compara letras («9» &gt; «10»), así que desde el 23/06 todos los anticipos salen <code>A-10</code> (36). Helper nuevo <code>utils/numeroTransaccionCaja.js</code> con lock, igual que <code>codigoVenta.js</code>. Los 36 viejos no se renumeran (decidido). Cotizaciones no se tocaron: no tienen duplicados y el número solo ordena. El job del BCU no se revisó.</div></div>
+<div class="item"><span class="pill hecho">Hecho</span><div><b><code>cerrarCicloCompleto</code>: freno.</b> Si el ciclo ya tiene una factura no anulada, responde 409 y no toca nada. En la copia del 07/10 no había cierres a medias. La transacción completa queda para cuando se parta <code>contabilidadService</code>.</div></div>
+<div class="item"><span class="pill hecho">Hecho</span><div><b><code>PrendaOrderForm</code></b> tiene el mismo candado anti doble envío que <code>OrderForm</code>.</div></div>
+<div class="item"><span class="pill hecho">Hecho</span><div><b><code>importOnDemand</code></b> se arregló, y después el importador manual se borró entero.</div></div>
+<div class="item"><span class="pill hecho">Hecho</span><div><b>Cola de estados de cuenta: se sacó.</b> Nunca se mandó nada: en la copia local había 13.463 envíos PENDIENTE (243 MB), una tanda por jueves desde el 11/06. Se fueron la pantalla, sus 8 rutas y la generación. El job quedó como <code>jobs/deudasVencidas.job.js</code>: sigue venciendo deudas y abriendo ciclos a los semanales, con el mismo horario. Falta vaciar la tabla en producción (script abajo).</div></div>
+<div class="item"><span class="pill hecho">Hecho</span><div><b>Front de contabilidad.</b> <code>generarPdfFacturaDGI</code> trabaja sobre una copia del documento. El «1 undefined =» se arregló (y después esa ventana se sacó).</div></div>
+<div class="item"><span class="pill hecho">Hecho</span><div><b><code>seedConfigEstantes</code></b> se borró con su ruta. Además de fallar, con los valores por defecto habría dejado 160 de los 320 casilleros de retiros.</div></div>
+<div class="item"><span class="pill hecho">Hecho</span><div><b>Otros.</b> Exports duplicados borrados (las versiones vivas no cambiaron: misma huella antes y después). <code>ClientsIntegration</code> ya no asigna vendedor al azar. El monitor de disco usa <code>statfs</code> (el servidor es Linux).</div></div>
+<div class="item"><span class="pill hecho">Hecho</span><div><b>Tablero viejo de lotes</b> borrado: 6 archivos, 5 funciones vacías de <code>productionController</code> y 3 rutas. Planeación conserva lo suyo (<code>toggle-status</code>, <code>magic-sort</code>).</div></div>
+<div class="item"><span class="pill hecho">Hecho</span><div><b>Bug nuevo, apareció en el camino: el pago de Entrega de pedidos no se imputaba.</b> En <code>procesarEventoContable</code>, <code>cueId</code> se declaraba adentro de un <code>if</code> y se usaba afuera: desde el 21/05, cada pago de <code>realizarPago</code> quedaba sin imputar y sin asiento (el error se tragaba). Arreglado. Quedan 2 pagos sueltos de jul/ago (cuentas 1443 y 1782) para el saneamiento.</div></div>
+
+<h2>Código SIN USO · revisado de a uno <small>commit 1f34406 · 15 y 16/10</small></h2>
+<div class="item"><span class="pill hecho">Hecho</span><div><b>Front, «se puede borrar»: 22 archivos, 5.195 líneas.</b> Login viejo del portal, <code>ProcessStepper</code>, 3 sidebars, <code>PackingView</code>, 9 modales, <code>CfePreviewModal</code>, <code>Chat</code>, <code>LogisticsView</code>, <code>MeasurementView</code> y otros.</div></div>
+<div class="item"><span class="pill hecho">Hecho</span><div><b>Backend, «se puede borrar».</b> Unas 45 funciones muertas en 11 controllers y 10 services, con sus rutas. Archivos: <code>utilsController</code>, <code>equiposController</code>, <code>stockController</code> + <code>stockRoutes</code> (<code>/api/stock</code> ya no existe) y <code>pagoService</code> (no era el POS).</div></div>
+<div class="item"><span class="pill hecho">Hecho</span><div><b>Borrado por Yoania:</b> importador manual, configuraciones, <code>DepositStockPage</code>, <code>CargaPagosView</code> (se resuelve «dos cajas»), <code>UnifiedProductionManager</code> y las rutas <code>/cotizaciones/insertar</code>, <code>/marcarpasarporcaja</code> y <code>/web-retiros/autorizar</code>.</div></div>
+<div class="item"><span class="pill hecho">Hecho</span><div><b>Jobs.</b> <code>ciclosCredito.job</code>, <code>capacidadDiaria.job</code> y <code>scheduler.js</code> entero (se van las tarjetas fantasma de <code>/admin/cron</code>).</div></div>
+<div class="item"><span class="pill hecho">Hecho</span><div><b>Estaciones de impresión: queda una.</b> <code>/print-station</code> imprime retiros, encomiendas y el remito A4 de WMS. Se borraron <code>/encomienda-station</code> y <code>/wms-remito-station</code>: todo sale por la misma impresora.</div></div>
+<div class="item"><span class="pill hecho">Hecho</span><div><b>Contabilidad.</b> <code>TiposMovimientoAdmin</code> y sus 4 rutas (la tabla no la lee nadie más). El Panel DB (<code>AdminDashboard</code>, <code>DynamicGrid</code>, <code>adminController</code>). <code>RecursosView</code> con el alta y la recarga de planes a mano (no se usan: los planes nacen en Caja).</div></div>
+<div class="item"><span class="pill hecho">Hecho</span><div><b>Utilidades.</b> <code>ui/Input.jsx</code>; el contador de la landing y <code>GET /api/stats/public</code> (era público); <code>slowQueryDetector</code> y su filtro en SysAdmin; <code>pdfPuppeteerGenerator</code> (solo lo usaba la cola).</div></div>
+<div class="item"><span class="pill hecho">Hecho</span><div><b><code>prendasOrdersController</code>: de 5.805 a 2.540 líneas.</b> Se fueron las 32 funciones copiadas de <code>webOrders</code> que ninguna ruta llamaba (Handy, MercadoPago, tótem, retiros, direcciones). Quedan <code>createWebOrder</code> y las 5 de retiro WMS y personalización. También <code>reactivateFile</code> y <code>devolverConsumoRecurso</code>.</div></div>
+<div class="item"><span class="pill hecho">Hecho</span><div><b>La ventana Cuentas la reemplazó el Panel 360.</b> <code>ContabilidadCuentasView.jsx</code> ahora se llama <code>cuentasComunes.jsx</code> (de 5.873 a 3.992 líneas): no es una pantalla, guarda las 14 piezas que usan el 360, el 360 del vendedor y Beneficios. <code>/contabilidad/cuentas</code> y <code>/contabilidad/recursos</code> llevan al 360. Falta sacar las 2 entradas del menú en producción (script abajo).</div></div>
+<div class="item"><span class="pill hecho">Hecho</span><div><b>Cómo se controló.</b> Cada borrado tuvo un ensayo antes de escribir; en el backend lo muerto se calculó siguiendo las llamadas en el código interpretado, no buscando texto. Después de cada tanda: cargan los 92 archivos de rutas, el front compila desde <code>main.jsx</code> sin imports rotos y el lint no suma errores. Los SQL se probaron en la base local con la transacción revertida.</div></div>
+
+<h3 id="falta-titulo">Lo que falta</h3>
+<div class="contadores" id="contadores"></div>
+
+<div class="nota"><b>Para producción, cuando se deploye <code>1f34406</code>.</b> Cada uno tiene su script de verificación (solo lectura) y uno de aplicación que valida, se autochequea y commitea o revierte solo:
+  <ol>
+    <li><code>PROD_verificar_cola_estados_cuenta.sql</code> y después <code>PROD_quitar_cola_estados_cuenta.sql</code>: vacía la cola (la tabla queda) y saca «Estados de Cuenta» del menú.</li>
+    <li><code>PROD_verificar_menu_cuentas.sql</code> y después <code>PROD_quitar_menu_cuentas.sql</code>: saca «Cuentas» y «Recursos y Planes» del menú. Frena si algún rol se queda sin el Panel 360.</li>
+  </ol>
+  Los de cheques ya se corrieron el 14/10.
+</div>
+
+<div id="falta">
+
+<div class="nota ojo"><b>Ojo con el <code>.gitignore</code> nuevo y el commit <code>1f34406</code>.</b> Al sacar las reglas globales (<code>*.sql</code>, <code>*.md</code>, <code>*.bat</code>, <code>docs</code>, <code>backend/docs</code>), en la máquina de Yoania quedaron a la vista todos los archivos sueltos que nunca habían estado en git, y el commit subió <b>651 archivos nuevos</b>: 558 <code>.sql</code> (231 en <code>backend/scripts</code>, 182 en <code>scripts</code>, 86 en <code>docs/migrations</code>), 30 <code>.md</code>, 3 <code>.bat</code> y 2 PDF. En la otra máquina seguramente esos archivos no existen y por eso no se notó.</div>
+<div class="item"><span class="pill decidir">Decidir</span><div><b>Qué queda en git de esos 651.</b> Las migraciones y los <code>PROD_*</code> sirven en el repo. Los que tienen datos de clientes (<code>sql_scripts_cliente_854/</code>, <code>backend/respaldos/</code>, los <code>.bat</code> de snapshot) conviene sacarlos del índice con reglas por carpeta, iguales en las dos máquinas. Sin reescribir la historia.</div></div>
+<div class="item"><span class="pill pendiente">Pendiente</span><div><b><code>docs/migrations/PROD_tizadapro_usuario_lectura.sql</code></b> tiene escrita la clave del usuario de lectura de TizadaPro. Parece de ejemplo; confirmar que no sea la real.</div></div>
+
+<h2>Paso 1 · Secretos</h2>
+<div class="item"><span class="pill decidir">Decidir</span><div><b>Contraseña de la base en la historia de git.</b> <code>backend/.env</code> estuvo commiteado (0e9d025 y 09453df, nov y dic de 2025) y sigue en la historia de los dos remotos. Falta ver si es la actual; si lo es, rotarla. Reescribir la historia solo si se decide, y coordinado entre los dos.</div></div>
+<div class="item"><span class="pill pendiente">Pendiente</span><div><b>Claves escritas en archivos del repo.</b> <code>backend/scripts/analizar_tizadapro.js:18</code> (clave de <code>sa</code> local), <code>docs/API_Telas_Activas.md</code> (una x-api-key: comparar con <code>EXTERNAL_API_KEY</code>), y <code>user</code> / <code>1234</code> como default en <code>erpSyncService.js</code> y <code>clientsController.js</code>.</div></div>
+
+<h2>Seguridad · lo que sigue abierto <small>lo lleva Santiago</small></h2>
+<div class="item"><span class="pill pendiente">Pendiente</span><div><b>Rutas que todavía no piden login.</b> <code>nomenclators</code> (22), <code>reports</code>, <code>integration-logs</code>, <code>chat</code>, <code>sisnet</code>, <code>drive-reauth</code> / <code>drive-callback</code>, <code>/drive/save-token</code>, <code>reception</code>, los <code>getway*</code> de retiros, <code>measurement</code>, <code>audit</code> y 2 rutas de <code>ordersRoutes</code> con «TODO». <code>stock</code> ya no está: se borró entero.</div></div>
+<div class="item"><span class="pill pendiente">Pendiente</span><div><b><code>wms-interno</code> e <code>inventory</code> aceptan el token de un cliente del portal</b> (68 y 14 rutas; algunas de <code>inventory</code> son del portal). <b>El token de activación también sirve de sesión</b> (<code>emailService.js:40</code>).</div></div>
+<div class="item"><span class="pill decidir">Decidir</span><div><b>11 de las 18 marcas SIN USO que quedan son de este grupo</b> y se pueden borrar o cerrar al revisarlo: el chat con Gemini (con <code>n8nService</code> y <code>localFileService</code>), <code>integration-logs</code>, las rutas de prueba de SISNET, el <code>GET /api/debug/reprocess/:id</code>, <code>deleteOrder</code> y <code>reemplazarDeuda</code>.</div></div>
+
+<h2>SIN USO · las otras 7 marcas</h2>
+<div class="item"><span class="pill decidir">Decidir</span><div><b>TPU: <code>tpuPlanchaService</code> y <code>tpuPltService</code></b> (el único PDF → <code>.plt</code> del repo). No se tocaron: los revisa Santiago.</div></div>
+<div class="item"><span class="pill descartado">Se queda</span><div><b><code>FacturarAnticipoModal</code>.</b> Es del plan «Saldo anticipado facturable». Hoy el anticipo se factura desde Pre-factura (<code>emitir-factura-anticipo</code>), el mismo endpoint que usaría el modal.</div></div>
+<div class="item"><span class="pill descartado">Se queda</span><div><b>4 marcas de Solicitudes</b> (<code>solicitudesComunes.jsx</code>, <code>SolicitudVendedorForm.jsx</code>): trabajo en curso.</div></div>
+
+<h2>Encontrados en el camino</h2>
+<div class="item"><span class="pill pendiente">Pendiente</span><div><b><code>anticipoService.aplicarAnticipoAOrden</code> nunca funcionó.</b> Hace un INSERT en columnas que no existen en <code>TransaccionesCaja</code>; el error se traga y la orden queda para caja.</div></div>
+<div class="item"><span class="pill pendiente">Pendiente</span><div><b>Cheques.</b> El rebote acredita siempre 1.1.5 aunque el cheque esté depositado o endosado. <code>cambiarEstadoCheque</code> no pasa moneda ni cotización al motor (cheques en US$). Y hay 4 pares que pueden ser el mismo cheque con prefijo (033881 / 65033881 y otros 3): revisar con los papeles.</div></div>
+<div class="item"><span class="pill pendiente">Pendiente</span><div><b>Endpoints que solo usaba la ventana Cuentas:</b> ciclos, <code>pago-cruzado</code>, <code>pago-anticipado</code>, <code>cuentas/:id/deudas</code> y <code>caja/anular-factura</code>. Revisar uno por uno antes de borrarlos: alguno puede usarlo Caja.</div></div>
+
+<h2>Saneamiento de datos · al final</h2>
+<div class="item"><span class="pill decidir">Decidir</span><div><b>Unas 2.564 cuentas con <code>CueSaldoActual</code> mal.</b> El SP ya no suma las <code>ORDEN</code>, pero el recálculo masivo de la Fase 0 nunca se corrió.</div></div>
+<div class="item"><span class="pill pendiente">Pendiente</span><div><b>Los 2 pagos sueltos del bug de Entrega de pedidos</b> (cuentas 1443 y 1782).</div></div>
+
+<h2>Orden y limpieza que falta</h2>
+<div class="item"><span class="pill pendiente">Pendiente</span><div><b>Archivar scripts y docs de episodios cerrados</b> en <code>backend/scripts/_historico/&lt;año-mes-episodio&gt;/</code> con un README de 5 líneas. Va junto con decidir qué queda en git de los 651 archivos. Los docs que cita un comentario del código se mueven con el comentario.</div></div>
+<div class="item"><span class="pill pendiente">Pendiente</span><div><b>Dejar el grafo de imports como herramienta</b> en <code>scripts/dev/</code>, con <code>npm run audit:grafo</code>.</div></div>
+<div class="item"><span class="pill decidir">Decidir</span><div><b>Dependencias sin uso</b> (13 declaradas que nadie importa, y algunas del backend instaladas en el front). Va en un deploy aparte. <b>Ramas viejas</b>: <code>integracioncontabilidad</code> y <code>portalcliente</code> ya están mergeadas; <code>tincho</code> y <code>feature/copiacontabilidad</code> no.</div></div>
+
+<h2>Paso 4 · Carpetas por dominio</h2>
+<div class="item"><span class="pill pendiente">Pendiente</span><div><b>Mover archivos a carpetas por tema sin cambiar lo que hacen.</b> Primero un alias <code>@</code> en <code>vite.config.js</code>; después un dominio por vez (servicio técnico y stock como ensayo, después caja, contabilidad, logística, ventas, producción y portal; <code>MainAppContent</code> al final). Mover y refactorizar nunca en el mismo commit.</div></div>
+
+<h2>Paso 5 · Refactor</h2>
+<div class="item"><span class="pill pendiente">Pendiente</span><div><b>Primero unificar lo repetido</b>: estados finales de orden, la regla de las órdenes -F / -R, <code>SELECT TOP 1 CotDolar</code>, el saldo de cuenta, formatos, el cliente HTTP, los avisos y los íconos.</div></div>
+<div class="item"><span class="pill pendiente">Pendiente</span><div><b>Después partir los grandes, uno por deploy.</b> <code>webOrdersController</code> (7.673 líneas), <code>contabilidadService</code> (6.369) y <code>cajaController</code> (4.732). Dos ya bajaron: <code>prendasOrdersController</code> (2.540, ya sin la copia muerta) y <code>cuentasComunes</code> (3.992, ya sin la ventana).</div></div>
+<div class="item"><span class="pill pendiente">Pendiente</span><div><b>Convenciones mínimas</b> en <code>docs/CONVENCIONES.md</code>, aplicadas solo al código que se toca.</div></div>
+
+<h2>Descartado</h2>
+<div class="item"><span class="pill descartado">Descartado</span><div><b>Rescatar los 19 <code>.sql</code> perdidos</b> (ya corrieron en producción), <b>agregar <code>WITH (NOLOCK)</code></b> (la base tiene RCSI), <b>reescribir la historia de git para bajar los 345 MB</b> y <b>los puntos de la otra auditoría que no eran ciertos</b>.</div></div>
+<div class="item"><span class="pill descartado">Descartado</span><div><b>Renumerar los 36 anticipos <code>A-10</code></b> (decidido el 14/10) y <b>arreglar la cola de estados de cuenta para usarla</b> (se sacó: nadie la usaba).</div></div>
+
+</div>
+
+<div class="nota"><b>Para revisar entre los dos:</b> qué queda en git de los 651 archivos del commit <code>1f34406</code> (y dejar el <code>.gitignore</code> igual en las dos máquinas), las 11 marcas SIN USO de seguridad y las 2 de TPU, la contraseña de la base y el saneamiento de datos. El detalle de la auditoría sigue en <code>docs/auditoria-limpieza-2026-10-09.md</code>.</div>
+
+<script>
+  // Contadores de "Lo que falta" a partir de las etiquetas (así no quedan desactualizados).
+  const zona = document.getElementById('falta');
+  const n = (c) => zona.querySelectorAll('.pill.' + c).length;
+  document.getElementById('contadores').innerHTML =
+    `<span class="pill pendiente">Pendiente · ${n('pendiente')}</span><span class="pill decidir">Decidir · ${n('decidir')}</span>`;
+</script>
+</body>
+</html>

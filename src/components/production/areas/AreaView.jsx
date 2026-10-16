@@ -533,8 +533,9 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
         
         // Fallas: por priority='Falla' O por código con -F
         const isFalla = (o) => (o.priority || '').toLowerCase() === 'falla' || (o.code || '').toUpperCase().includes('-F');
-        // Reposiciones: por priority='Reposición' O por código con -R
-        const isReposicion = (o) => (o.priority || '').toLowerCase() === 'reposición' || (o.code || '').toUpperCase().includes('-R');
+        // Reposiciones: por priority='Reposición' O por código terminado en -R<n> (mismo criterio
+        // que el badge amarillo de ProductionTable; includes('-R') también agarraba códigos ajenos)
+        const isReposicion = (o) => /^reposici[oó]n$/i.test(o.priority || '') || /-R\d+$/i.test(o.code || '');
 
         if (sidebarFilter !== 'ALL') {
             let filterField = sidebarMode === 'rolls' ? 'rollId' : 'printer';

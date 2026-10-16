@@ -74,7 +74,30 @@ async function ensureFallaColumn(pool) {
     _fallaColEnsured = true;
 }
 const { isPedidoCompletoEnArea } = require('../services/pedidoCompletoService');
-const { cancelarLoteSiVacio } = require('../services/loteCleanupService');
+const { cerrarLoteSiResuelto } = require('../services/loteCleanupService');
+const { sqlSinImprimir } = require('../utils/controlSoloImpresas');
+
+/**
+ * ECOUV (utils/controlSoloImpresas): una orden que todavía no se tildó como impresa se ve en Control
+ * pero no se controla. Corre ANTES de cada acción de control (archivo, copias, finalizar orden), por
+ * la orden o por el archivo/servicio. Devuelve el motivo del rechazo, o null si se puede controlar.
+ */
+async function rechazoSinImprimir(db, { ordenId = null, archivoId = null, isService = false }) {
+    const ordenDelItem = isService
+        ? '(SELECT OrdenID FROM dbo.ServiciosExtraOrden WITH (NOLOCK) WHERE ServicioID = @AID)'
+        : '(SELECT OrdenID FROM dbo.ArchivosOrden WITH (NOLOCK) WHERE ArchivoID = @AID)';
+    const r = await new sql.Request(db)
+        .input('OID', sql.Int, ordenId ? Number(ordenId) : null)
+        .input('AID', sql.Int, archivoId ? Number(archivoId) : null)
+        .query(`
+            SELECT TOP 1 O.CodigoOrden, ${sqlSinImprimir('O')} AS SinImprimir
+            FROM dbo.Ordenes O WITH (NOLOCK)
+            WHERE O.OrdenID = COALESCE(@OID, ${ordenDelItem})`);
+    const o = r.recordset[0];
+    return o && o.SinImprimir === 1
+        ? `La orden ${o.CodigoOrden} todavía no está marcada como impresa. Tildala como impresa en el detalle del lote para poder controlarla.`
+        : null;
+}
 
 /**
  * CIERRA EL CIRCUITO DE IMPRESIÓN al quedar la orden Pronta.
@@ -291,7 +314,10 @@ const getOrdenes = async (req, res) => {
                                 O.EstadoenArea,
                                 -- Forma de envío elegida en el pedido: el área necesita saber
                                 -- si el trabajo se retira, va por encomienda o a domicilio.
-                                LTRIM(RTRIM(ISNULL(O.ModoRetiro, ''))) AS ModoRetiro
+                                LTRIM(RTRIM(ISNULL(O.ModoRetiro, ''))) AS ModoRetiro,
+                                -- ECOUV: se ve en el lote pero no se controla hasta tildarla como
+                                -- impresa (utils/controlSoloImpresas). En el resto de las áreas, siempre 0.
+                                ${sqlSinImprimir('O')} AS SinImprimir
             FROM Ordenes O WITH(NOLOCK)
             LEFT JOIN dbo.Clientes c WITH(NOLOCK) ON O.CliIdCliente = c.CliIdCliente
         WHERE
@@ -541,6 +567,10 @@ const postControlArchivo = async (req, res) => {
     try {
         const pool = await getPool();
         await ensureFallaColumn(pool);
+        if (archivoId) {
+            const rechazo = await rechazoSinImprimir(pool, { archivoId, isService });
+            if (rechazo) return res.status(400).json({ error: rechazo });
+        }
         transaction = new sql.Transaction(pool);
         await transaction.begin();
 
@@ -1441,10 +1471,10 @@ const postControlArchivo = async (req, res) => {
 
         await transaction.commit(); // COMMIT PRINCIPAL
 
-        // --- AUTO-CLEANUP: Si la orden pertenecía a un lote, verificar si el lote quedó vacío ---
+        // --- AUTO-CLEANUP: Si la orden pertenecía a un lote, cerrarlo si ya no le quedan órdenes activas ---
         // (helper compartido: también corre al cancelar/finalizar órdenes fuera de Control)
         if (rolloId) {
-            await cancelarLoteSiVacio(rolloId, req.app.get('socketio'));
+            await cerrarLoteSiResuelto(rolloId, req.app.get('socketio'));
         }
 
         // --- RE-AVISO WSP: Si una reposición cliente (-R) se completó, resetear aviso de la madre ---
@@ -1870,6 +1900,10 @@ const updateFileCopyCount = async (req, res) => {
     try {
         const pool = await getPool();
         await ensureFallaColumn(pool);
+        if (archivoId) {
+            const rechazo = await rechazoSinImprimir(pool, { archivoId, isService });
+            if (rechazo) return res.status(400).json({ error: rechazo });
+        }
         transaction = new sql.Transaction(pool);
         await transaction.begin();
 
@@ -2498,6 +2532,9 @@ async function completarOrden(req, res) {
             return res.json({ success: true, skipped: true, nuevoEstado: Estado, estadoArea: EstadoenArea });
         }
 
+        const rechazo = await rechazoSinImprimir(pool, { ordenId });
+        if (rechazo) return res.status(400).json({ success: false, error: rechazo });
+
         transaction = new sql.Transaction(pool);
         await transaction.begin();
 
@@ -2813,9 +2850,9 @@ async function completarOrden(req, res) {
         }
 
 
-        // AUTO-CLEANUP: si esta era la última orden activa del lote, cancelarlo y liberar la máquina
+        // AUTO-CLEANUP: si esta era la última orden activa del lote, cerrarlo (ver loteCleanupService)
         if (rolloIdOrden) {
-            await cancelarLoteSiVacio(rolloIdOrden, req.app.get('socketio'));
+            await cerrarLoteSiResuelto(rolloIdOrden, req.app.get('socketio'));
         }
 
         res.json({

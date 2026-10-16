@@ -1,6 +1,8 @@
 const { getPool, sql } = require('../config/db');
 const logger = require('../utils/logger');
 const { limpiarMarcasDeLote, resolverLoteVacio } = require('../utils/salidaDeLote');
+const { ESTADOS_AREA_FUERA_DE_LOTE } = require('../services/stateManagerService');
+const { controlSoloImpresas } = require('../utils/controlSoloImpresas');
 
 // Asegura columnas para impreso (todas las áreas) y agrupado manual (SB) de órdenes en el lote.
 // Se ejecuta una sola vez por proceso (el flag evita el chequeo en cada request).
@@ -1572,6 +1574,23 @@ async function marcarImpresoUna(pool, orderId, printed, fecha = null) {
             `);
 }
 
+// En las áreas de controlSoloImpresas (ECOUV) tildar/destildar Impreso habilita/bloquea la orden en
+// Control: se avisa por socket para que Control la actualice en el momento. Sin el aviso, Control no se
+// enteraba hasta el próximo evento de cualquier otra cosa. Best-effort: el tilde ya quedó guardado.
+async function avisarControlSiImpresas(pool, req, orderIds) {
+    const io = req.app && req.app.get('socketio');
+    const ids = (orderIds || []).map(Number).filter(n => Number.isInteger(n) && n > 0);
+    if (!io || !ids.length) return;
+    try {
+        const r = await pool.request()
+            .query(`SELECT AreaID FROM dbo.Ordenes WITH (NOLOCK) WHERE OrdenID IN (${ids.join(',')})`);
+        const n = r.recordset.filter(o => controlSoloImpresas(o.AreaID)).length;
+        if (n > 0) io.emit('server:ordersUpdated', { count: n });
+    } catch (e) {
+        logger.warn(`[ROLLS] No se pudo avisar a Control el tilde de impresas: ${e.message}`);
+    }
+}
+
 exports.setOrderPrinted = async (req, res) => {
     const { orderId, printed } = req.body;
     if (!orderId) return res.status(400).json({ error: 'orderId requerido' });
@@ -1579,6 +1598,7 @@ exports.setOrderPrinted = async (req, res) => {
         const pool = await getPool();
         await ensureOrderColumns(pool);
         await marcarImpresoUna(pool, orderId, printed);
+        await avisarControlSiImpresas(pool, req, [orderId]);
         res.json({ ok: true });
     } catch (err) {
         logger.error('Error seteando Impreso:', err);
@@ -1618,6 +1638,7 @@ exports.setOrdersPrintedBulk = async (req, res) => {
                 logger.warn(`[ROLLS] No se pudo marcar impresa la orden ${ids[i]}: ${e.message}`);
             }
         }
+        await avisarControlSiImpresas(pool, req, ids.filter(id => !fallidas.includes(id)));
         res.json({ ok: fallidas.length === 0, total: ids.length, fallidas });
     } catch (err) {
         logger.error('Error seteando Impreso (grupo):', err);
@@ -1722,6 +1743,8 @@ exports.setOrderCantidadImpresa = async (req, res) => {
             `);
 
         const row = result.recordset[0] || {};
+        // El contador deriva Impreso (lote en MIMAKI): puede habilitar/bloquear la orden en Control.
+        if (!segundaEstacion) await avisarControlSiImpresas(pool, req, [orderId]);
         res.json({ ok: true, cantidadImpresa: row.CantidadImpresa || 0, total: row.Total || 0, impreso: !!row.Impreso });
     } catch (err) {
         logger.error('Error seteando CantidadImpresa:', err);
@@ -1729,7 +1752,7 @@ exports.setOrderCantidadImpresa = async (req, res) => {
     }
 };
 
-// Setear la Magnitud (metros) de UNA orden — se usa para editar los metros de las órdenes -F.
+// Setear la Magnitud (metros) de UNA orden — se usa para editar los metros de las órdenes -F y -R.
 exports.setOrderMagnitud = async (req, res) => {
     const { orderId, magnitud } = req.body;
     if (!orderId) return res.status(400).json({ error: 'orderId requerido' });
@@ -1737,6 +1760,17 @@ exports.setOrderMagnitud = async (req, res) => {
         const pool = await getPool();
         const val = (magnitud === '' || magnitud === null || magnitud === undefined) ? null : Number(magnitud);
         if (val !== null && Number.isNaN(val)) return res.status(400).json({ error: 'magnitud inválida' });
+
+        // La reposición (-R) nace con metros: se corrigen, pero no se dejan vacíos. Una -R en 0 llegaba
+        // a Control, donde no se puede procesar (la -F sí puede volver a 0: nace así en SB).
+        const codRes = await pool.request()
+            .input('OID', sql.Int, Number(orderId))
+            .query('SELECT CodigoOrden FROM dbo.Ordenes WHERE OrdenID = @OID');
+        const codigoOrden = codRes.recordset[0]?.CodigoOrden || '';
+        if (!/-F\d+(-\d+)?$/i.test(codigoOrden) && /-R\d+$/i.test(codigoOrden) && !(val > 0)) {
+            return res.status(400).json({ error: `La reposición ${codigoOrden} tiene que tener metros (mayor a 0).` });
+        }
+
         await pool.request()
             .input('OID', sql.Int, Number(orderId))
             .input('M', sql.Decimal(10, 2), val)
@@ -1747,24 +1781,36 @@ exports.setOrderMagnitud = async (req, res) => {
         // falla y por eso allá ya se ven). El detalle de la orden muestra el metraje por archivo
         // (TOTAL = ArchivosOrden.Metros × Copias) y sumaba 0.00 aunque la orden tuviera su magnitud.
         // Es SOLO para el metraje estimado: la cotización no lee ArchivosOrden en ningún lado.
-        const ordRes = await pool.request()
-            .input('OID', sql.Int, Number(orderId))
-            .query('SELECT CodigoOrden FROM dbo.Ordenes WHERE OrdenID = @OID');
-        const esFalla = /-F\d+(-\d+)?$/i.test(ordRes.recordset[0]?.CodigoOrden || '');
-        if (esFalla) {
-            // Si la -F tiene varios archivos propios (dos archivos de la misma madre que fallaron y
-            // se juntaron en la misma -F), el total se reparte proporcional a lo que consume cada uno
-            // (alto × copias). Con un solo archivo —el caso normal— le queda el valor exacto.
+        const codigo = codigoOrden;
+        const esFalla = /-F\d+(-\d+)?$/i.test(codigo);
+        // Reposición de cliente (-R): sus metros también se editan en el lote (16/10/2026). Nace con
+        // los metros por archivo que cargó Atención al Cliente, así que se reparte respetando esa
+        // proporción (metros × copias actuales); la -F nace en 0 y se reparte por alto × copias.
+        const esReposicion = !esFalla && /-R\d+$/i.test(codigo);
+        if (esFalla || esReposicion) {
+            // Si la orden tiene varios archivos propios (dos archivos de la misma madre que fallaron y
+            // se juntaron en la misma -F), el total se reparte proporcional a lo que consume cada uno.
+            // Con un solo archivo —el caso normal— le queda el valor exacto.
+            const pesoAlto = 'CAST(ISNULL(NULLIF(Alto, 0), 1) * ISNULL(NULLIF(Copias, 0), 1) AS DECIMAL(18,6))';
+            const pesoMetros = 'CAST(ISNULL(Metros, 0) * ISNULL(NULLIF(Copias, 0), 1) AS DECIMAL(18,6))';
             await pool.request()
                 .input('OID', sql.Int, Number(orderId))
                 .input('M', sql.Decimal(10, 2), val === null ? 0 : val)
+                .input('PorMetros', sql.Bit, esReposicion ? 1 : 0)
                 .query(`
-                    ;WITH A AS (
+                    ;WITH A0 AS (
                         SELECT ArchivoID,
                                ISNULL(NULLIF(Copias, 0), 1) AS Cop,
-                               CAST(ISNULL(NULLIF(Alto, 0), 1) * ISNULL(NULLIF(Copias, 0), 1) AS DECIMAL(18,6)) AS Peso
+                               ${pesoAlto} AS PesoAlto,
+                               ${pesoMetros} AS PesoMetros
                         FROM dbo.ArchivosOrden
                         WHERE OrdenID = @OID AND ISNULL(EstadoArchivo, '') <> 'CANCELADO'
+                    ), A AS (
+                        -- Por metros solo si la reposición ya tiene metros cargados; si no, por alto.
+                        SELECT ArchivoID, Cop,
+                               CASE WHEN @PorMetros = 1 AND (SELECT SUM(PesoMetros) FROM A0) > 0
+                                    THEN PesoMetros ELSE PesoAlto END AS Peso
+                        FROM A0
                     ), T AS (SELECT SUM(Peso) AS TotalPeso FROM A)
                     UPDATE ao
                     SET Metros = CAST((@M * (A.Peso / NULLIF(T.TotalPeso, 0))) / A.Cop AS DECIMAL(10,2))
@@ -1842,6 +1888,7 @@ exports.getRollosActivos = async (req, res) => {
         // apagadas por constantes. Y el filtro de área se agrega solo si viene: el
         // "(@AreaID IS NULL OR r.AreaID = @AreaID)" de antes obligaba a recorrer todos los lotes.
         const filtroArea = areaId ? 'r.AreaID = @AreaID AND ' : '';
+        const soloImpresas = controlSoloImpresas(areaId);
         const columnasLote = `
                 r.RolloID as id,
                 r.Nombre as nombre,
@@ -1864,14 +1911,23 @@ exports.getRollosActivos = async (req, res) => {
                 FROM dbo.Ordenes o WITH (NOLOCK)
                 WHERE o.RolloID IS NOT NULL
                   AND o.Estado NOT IN ('Finalizado', 'CANCELADO', 'Entregado')
-                  AND ISNULL(o.EstadoenArea,'') NOT IN ('Pronto', 'PRONTO', 'En Transito', 'EN TRANSITO', 'En Terminaciones')
+                  -- Mismo criterio que el cierre automático del lote (loteCleanupService). Antes esta
+                  -- lista no tenía 'Recibido en Destino', 'Ingresado', …: un lote Finalizado con una
+                  -- orden ya recibida en destino quedaba colgado en Control para siempre.
+                  AND ISNULL(o.EstadoenArea,'') NOT IN ${ESTADOS_AREA_FUERA_DE_LOTE}
                 GROUP BY o.RolloID
             ) pend ON pend.RolloID = r.RolloID
             WHERE ${filtroArea}r.Estado NOT IN ('Cerrado', 'Cancelado')
-              AND (
+              AND (${soloImpresas ? `
+                  -- ECOUV: el lote entra a Control con la PRIMERA orden tildada como impresa, en el estado
+                  -- que esté (imprimiendo, en pausa o ya finalizado en la máquina), y sigue mientras le
+                  -- quede alguna orden sin resolver: las que faltan imprimir se ven bloqueadas en Control.
+                  pend.RolloID IS NOT NULL
+                  AND EXISTS (SELECT 1 FROM dbo.Ordenes oi WITH (NOLOCK)
+                              WHERE oi.RolloID = r.RolloID AND ISNULL(oi.Impreso, 0) = 1 AND oi.Estado <> 'CANCELADO')` : `
                   r.Estado IN ('En maquina', 'Produccion', 'Imprimiendo')
                   -- Incluir Finalizado solo si aún tiene órdenes no completadas
-                  OR (r.Estado = 'Finalizado' AND pend.RolloID IS NOT NULL)
+                  OR (r.Estado = 'Finalizado' AND pend.RolloID IS NOT NULL)`}
               )
               -- SB Control: ocultar lotes en una IMPRESORA (SeparacionImpresion=1) que tengan órdenes de tela
               -- (Sublimacion Tela / Tela de Cliente). Esas van impresora → calandra → control, así que no deben

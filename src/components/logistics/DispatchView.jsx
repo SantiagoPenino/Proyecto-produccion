@@ -518,7 +518,14 @@ const DispatchView = ({ selectedOrders: initialOrders = [], areaFilter, originAr
                 } else {
                     res = await logisticsService.createDispatch(payload);
                 }
-                
+
+                // ECOUV → TERMINAC: el backend recibe el remito en el momento (sin Check-in).
+                if (res?.recepcionAutomatica?.ok) {
+                    toast.success(`${res.dispatchCode} recibido automáticamente en ${finalDest}: ya está en su bandeja.`);
+                } else if (res?.recepcionAutomatica) {
+                    toast.warning(`${res.dispatchCode} se creó pero no se pudo recibir solo en ${finalDest} (${res.recepcionAutomatica.error}). Hacé el Check-in a mano.`, { duration: 10000 });
+                }
+
                 createdParams.push({ ...res, destArea: finalDest, itemCount: res.createdCount || bultosIds.length + newBultos.length });
             }
 
@@ -1066,6 +1073,9 @@ const DispatchView = ({ selectedOrders: initialOrders = [], areaFilter, originAr
                                     <QRCode value={res.dispatchCode} size={90} />
                                 </div>
                                 <div className="text-center font-mono text-base font-black mb-3 text-slate-900">{res.dispatchCode}</div>
+                                {res.recepcionAutomatica?.ok && (
+                                    <div className="text-center text-[10px] font-black uppercase text-emerald-600 mb-3">Recibido automáticamente en {res.destArea}</div>
+                                )}
 
                                 <div className="text-center text-[9px] text-slate-500 mb-3">Emisión: {new Date().toLocaleString('es-AR')}</div>
 

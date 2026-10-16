@@ -3325,11 +3325,11 @@ exports.cancelOrder = async (req, res) => {
             await transaction.commit();
 
             // AUTO-CLEANUP: si el lote quedó solo con órdenes muertas (Pronto/finalizadas/canceladas
-            // que siguen vinculadas), cancelarlo y liberar la máquina. El DELETE de arriba solo
+            // que siguen vinculadas), cerrarlo (ver loteCleanupService). El DELETE de arriba solo
             // cubre el caso "físicamente vacío".
             if (rollId) {
-                const { cancelarLoteSiVacio } = require('../services/loteCleanupService');
-                await cancelarLoteSiVacio(rollId, req.app.get('socketio'));
+                const { cerrarLoteSiResuelto } = require('../services/loteCleanupService');
+                await cerrarLoteSiResuelto(rollId, req.app.get('socketio'));
             }
 
             try {
@@ -3717,11 +3717,11 @@ exports.cancelRequest = async (req, res) => {
 
             await transaction.commit();
 
-            // AUTO-CLEANUP: cancelar los lotes que quedaron sin órdenes activas y liberar sus máquinas
+            // AUTO-CLEANUP: cerrar los lotes que quedaron sin órdenes activas (ver loteCleanupService)
             if (rolloIdsAfectados.length > 0) {
-                const { cancelarLoteSiVacio } = require('../services/loteCleanupService');
+                const { cerrarLoteSiResuelto } = require('../services/loteCleanupService');
                 for (const rid of rolloIdsAfectados) {
-                    await cancelarLoteSiVacio(rid, req.app.get('socketio'));
+                    await cerrarLoteSiResuelto(rid, req.app.get('socketio'));
                 }
             }
 

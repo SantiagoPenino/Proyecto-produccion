@@ -109,8 +109,9 @@ export default function ProductionTable({ rowData = [], onRowSelected, selectedR
         if (params.value === 'Urgente') {
             return <span className="text-xs tablet:text-[10px] font-bold text-brand-magenta uppercase tracking-wide tablet:tracking-tight">URGENTE</span>;
         }
-        if (params.value === 'Reposición' || params.value === 'Reposicion' || params.value === 'REPOSICIÓN') {
-            return <span className="text-xs tablet:text-[10px] font-bold text-orange-500 uppercase tracking-wide tablet:tracking-tight">REPOSICIÓN</span>;
+        // Reposición de cliente (-R): mismo badge que titila que la falla, pero en amarillo.
+        if (/^reposici[oó]n$/i.test(params.value || '') || /-R\d+$/.test(code)) {
+            return <span className="pulse-repo-badge inline-flex items-center px-3 py-1 tablet:px-1.5 tablet:py-0.5 rounded text-xs tablet:text-[10px] font-bold uppercase tracking-wide tablet:tracking-tight">REPOSICIÓN</span>;
         }
         return <span className="text-xs tablet:text-[11px] text-zinc-500 font-medium">{params.value || 'Normal'}</span>;
     };
@@ -633,11 +634,18 @@ export default function ProductionTable({ rowData = [], onRowSelected, selectedR
                     0%, 100% { background-color: rgb(239 68 68); color: white; opacity: 1; }
                     50%       { background-color: rgb(239 68 68); color: white; opacity: 0.5; }
                 }
-                td:has(.pulse-falla-badge) { /* reset td bg */
+                @keyframes pulseRepoBadge {
+                    0%, 100% { background-color: rgb(250 204 21); color: rgb(24 24 27); opacity: 1; }
+                    50%       { background-color: rgb(250 204 21); color: rgb(24 24 27); opacity: 0.5; }
+                }
+                td:has(.pulse-falla-badge), td:has(.pulse-repo-badge) { /* reset td bg */
                     background-color: transparent !important;
                 }
                 .pulse-falla-badge {
                     animation: pulseFallaBadge 2s ease-in-out infinite;
+                }
+                .pulse-repo-badge {
+                    animation: pulseRepoBadge 2s ease-in-out infinite;
                 }
             `}</style>
         </div>

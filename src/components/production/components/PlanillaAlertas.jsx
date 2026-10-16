@@ -65,7 +65,7 @@ const PriorityBadge = ({ priority, code }) => {
     const isFalla = priority === 'Falla' || (code || '').toUpperCase().includes('-F');
     if (isFalla) return <span className="text-xs font-bold text-red-600 uppercase">FALLA</span>;
     if (priority === 'Urgente') return <span className="text-xs font-bold text-brand-magenta uppercase">URGENTE</span>;
-    if (/reposici/i.test(priority || '')) return <span className="text-xs font-bold text-orange-500 uppercase">REPOSICIÓN</span>;
+    if (/reposici/i.test(priority || '') || /-R\d+$/i.test(code || '')) return <span className="text-xs font-bold text-yellow-600 uppercase">REPOSICIÓN</span>;
     return <span className="text-xs text-zinc-500 font-medium">{priority || 'Normal'}</span>;
 };
 
