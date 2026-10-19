@@ -889,7 +889,9 @@ exports.getEstadoTela = async (req, res) => {
 // GET /inventory/tela-cliente/disponible?clienteId=2930
 // ==========================================
 exports.getBovinasDisponibles = async (req, res) => {
-    let { clienteId } = req.query;
+    // ?clienteId= solo lo puede elegir un usuario interno (19/10). Un cliente o un diseñador sale del
+    // token (codCliente, o el cliente que impersona): antes podía pedir el stock de otro cliente.
+    let clienteId = req.user?.userType === 'INTERNAL' ? req.query.clienteId : undefined;
     try {
         const pool = await getPool();
 
@@ -949,7 +951,9 @@ exports.getBovinasDisponibles = async (req, res) => {
 // El saldo NO está guardado: sale de vw_PrendasClienteDisponibles, que resta
 // lo tomado por las órdenes vivas. Ver docs/migrations/bordado_origen_prendas.sql.
 exports.getPrendasClienteDisponibles = async (req, res) => {
-    let { clienteId } = req.query;
+    // ?clienteId= solo lo puede elegir un usuario interno (19/10). Un cliente o un diseñador sale del
+    // token (codCliente, o el cliente que impersona): antes podía pedir el stock de otro cliente.
+    let clienteId = req.user?.userType === 'INTERNAL' ? req.query.clienteId : undefined;
     try {
         const pool = await getPool();
 

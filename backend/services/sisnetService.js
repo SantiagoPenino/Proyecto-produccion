@@ -457,6 +457,14 @@ exports.prepararCFE = async (doc, lineas, cotDolar = 40.0, empresa = null) => {
         logger.info(`[SISNET-Service] e-Ticket con receptor identificado (${valReceptor.tipo} ${valReceptor.normalizado})`);
     }
 
+    // Venta e-Ticket con RUT: DGI no acepta un RUT como receptor de un e-Ticket ("WsReceptor.
+    // getTipoDocRecep()=> Dato invalido para comprobante (e-Ticket). Enviado (2)", doc 19154, 19/10).
+    // El tipo no se cambia solo (lo elige el operador): se frena acá, ANTES de pedir el número a
+    // SISNET, que con el rechazo quedaba gastado. Las NC/ND de e-Ticket ya sacan el RUT (receptorNotaETicket).
+    if (esETicket && !isDocNC && !isDocND && valReceptor.valido && valReceptor.tipo === 'RUT') {
+        bloqueos.push(`Un e-Ticket no puede llevar RUT: DGI lo rechaza. Si el cliente factura con RUT (${valReceptor.normalizado}), cambiá el documento a e-Factura; si es consumidor final, borrá el RUT de los datos DGI del documento.`);
+    }
+
     // Una NC/ND de e-Factura sin receptor identificado no es emitible
     if ((isDocNC || isDocND) && !esETicket && !valReceptor.valido) {
         bloqueos.push(`Una Nota de Crédito/Débito de e-Factura necesita el RUT válido del cliente. ${valReceptor.motivo || ''}`.trim());
@@ -623,8 +631,9 @@ exports.emitirCFE = async (doc, lineas, cotDolar = 40.0, empresa = null, opcione
     const prep = await exports.prepararCFE(doc, lineas, cotDolar, empresa);
 
     if (prep.bloqueos.length > 0) {
-        logger.error(`[SISNET-Service] Emisión abortada: ${prep.bloqueos.join(' | ')}`);
-        throw new Error(prep.bloqueos.join(' '));
+        // Es una validación del documento (lo corrige el operador), no una falla: 400 y warn.
+        logger.warn(`[SISNET-Service] Emisión abortada: ${prep.bloqueos.join(' | ')}`);
+        throw Object.assign(new Error(prep.bloqueos.join(' ')), { statusCode: 400 });
     }
 
     const { tipoCFE, cfeData } = prep;
@@ -682,13 +691,36 @@ exports.emitirCFE = async (doc, lineas, cotDolar = 40.0, empresa = null, opcione
                 // 6. Enviar a RecepcionCFE
                 client.recepcionCFE(cfeData, (err, result) => {
                     if (err) {
-                        logger.error("[SISNET-Service] Error en recepcionCFE: ", err);
+                        // Falla de red/SOAP: no se sabe si SISNET llegó a firmar el CFE, así que el
+                        // número NO se anula (anular uno usado sería peor). Queda en el log para revisarlo.
+                        logger.error(`[SISNET-Service] Error en recepcionCFE (número ${wsCAE.serie}-${wsCAE.numero}, sin confirmar si SISNET lo firmó): `, err);
                         return reject(new Error('Error enviando CFE: ' + err.message));
                     }
 
                     if (result?.return?.hayError) {
-                        logger.error("[SISNET-Service] Rechazo SISNET: ", result.return.mensaje);
-                        return reject(new Error('SISNET Rechazó el documento: ' + result.return.mensaje));
+                        // SISNET manda el motivo en varias líneas ("---- WsReceptor ----" y abajo el
+                        // error): en el log quedaba a la vista solo el encabezado. Va en una línea, con
+                        // el número que se pidió para este intento.
+                        const motivo = String(result.return.mensaje || '').split(/\r?\n/)
+                            .map(l => l.replace(/-{3,}/g, '').trim()).filter(Boolean).join(' | ') || 'sin detalle';
+                        logger.error(`[SISNET-Service] Rechazo SISNET (número ${wsCAE.serie}-${wsCAE.numero}): ${motivo}`);
+                        const rechazo = new Error('SISNET rechazó el documento: ' + motivo);
+
+                        // El número se pidió para este intento y el CFE no se firmó: se anula, si no
+                        // queda gastado sin usar (19/10: e-Ticket 55574). El reservado por el POS NO: la
+                        // terminal ya se lo informó a la procesadora y el reenvío desde la Bandeja sale
+                        // con ese mismo número. Si la anulación falla, el rechazo sigue igual.
+                        if (reservado) return reject(rechazo);
+                        client.anularNumerador({ wsCAE }, (eAn, rAn) => {
+                            const an = rAn?.return;
+                            if (eAn || !an || an.hayError) {
+                                logger.warn(`[SISNET-Service] No se pudo anular el número ${wsCAE.serie}-${wsCAE.numero} del intento rechazado (queda gastado): ${eAn ? eAn.message : (an?.mensaje || 'sin respuesta')}`);
+                            } else {
+                                logger.info(`[SISNET-Service] Número ${wsCAE.serie}-${wsCAE.numero} del intento rechazado anulado: ${an.mensaje}`);
+                            }
+                            reject(rechazo);
+                        });
+                        return;
                     }
 
                     logger.info(`[SISNET-Service] Factura aceptada exitosamente. Hash: ${result.return.hash}`);

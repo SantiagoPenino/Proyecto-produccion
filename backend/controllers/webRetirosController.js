@@ -1235,10 +1235,24 @@ exports.getHistorialPagos = async (req, res) => {
 /**
  * Pagos Online fallidos / no exitosos (Handy)
  */
+// Fallidos (19/10/2026): ¿la orden del intento terminó pagada por otro lado (otro intento, la otra
+// pasarela, caja)? Casi todos los intentos no pagados son reintentos de clientes que después pagaron,
+// así que la pantalla muestra por defecto solo lo que sigue sin pagar (soloSinResolver=1). Sin orden
+// (tienda, recarga de billetera) no se puede saber: queda NULL y se muestra siempre.
+const sqlOrdenPagadaDespues = (a) => `
+            OUTER APPLY (
+                SELECT TOP 1 CASE WHEN ISNULL(r.PagIdPago, 0) <> 0 OR ISNULL(od.PagIdPago, 0) <> 0 THEN 1 ELSE 0 END AS OrdenPagada
+                FROM OrdenesDeposito od WITH(NOLOCK)
+                LEFT JOIN OrdenesRetiro r WITH(NOLOCK) ON r.OReIdOrdenRetiro = od.OReIdOrdenRetiro
+                WHERE od.OrdIdOrden = TRY_CAST(COALESCE(JSON_VALUE(${a}.OrdersJson, '$.ordIds[0]'),
+                                                        JSON_VALUE(${a}.OrdersJson, '$.orders[0].rawId'),
+                                                        JSON_VALUE(${a}.OrdersJson, '$[0].rawId')) AS INT)
+            ) pag`;
+
 exports.getPagosOnlineFallidos = async (req, res) => {
     try {
         const pool = await getPool();
-        const { startDate, endDate, clientFilter, offset } = req.query;
+        const { startDate, endDate, clientFilter, offset, soloSinResolver } = req.query;
         const offsetVal = parseInt(offset) || 0;
         const request = pool.request();
 
@@ -1250,6 +1264,7 @@ exports.getPagosOnlineFallidos = async (req, res) => {
                 h.Status, h.IssuerName,
                 h.PaidAt, h.WebhookReceivedAt, h.CreatedAt,
                 c.Nombre AS NombreCliente,
+                pag.OrdenPagada,
                 -- Orden de retiro con prefijo real de la BD (no hardcodeado)
                 CASE
                     WHEN orr_h.OReIdOrdenRetiro IS NOT NULL
@@ -1268,8 +1283,10 @@ exports.getPagosOnlineFallidos = async (req, res) => {
                     'RW-',''),'R-',''),'PW-','')
                 AS INT)
             ) orr_h
+            ${sqlOrdenPagadaDespues('h')}
             WHERE LOWER(ISNULL(h.Status, '')) NOT IN ('paid', 'pagado', 'success', 'approved')
         `;
+        if (soloSinResolver === '1') queryStr += ` AND ISNULL(pag.OrdenPagada, 0) = 0`;
 
         if (startDate) {
             queryStr += ` AND CAST(h.CreatedAt AS DATE) >= @StartDate`;
@@ -1462,7 +1479,7 @@ exports.getPagosMp = async (req, res) => {
 exports.getPagosMpFallidos = async (req, res) => {
     try {
         const pool = await getPool();
-        const { startDate, endDate, clientFilter, offset } = req.query;
+        const { startDate, endDate, clientFilter, offset, soloSinResolver } = req.query;
         const offsetVal = parseInt(offset) || 0;
         const request = pool.request();
 
@@ -1482,6 +1499,7 @@ exports.getPagosMpFallidos = async (req, res) => {
                 m.WebhookReceivedAt,
                 m.CreatedAt,
                 c.Nombre AS NombreCliente,
+                pag.OrdenPagada,
                 CASE
                     WHEN orr_m.OReIdOrdenRetiro IS NOT NULL
                     THEN ISNULL(orr_m.FormaRetiro, 'R') + '-' + CAST(orr_m.OReIdOrdenRetiro AS VARCHAR)
@@ -1498,8 +1516,10 @@ exports.getPagosMpFallidos = async (req, res) => {
                     'RW-',''),'R-',''),'PW-','')
                 AS INT)
             ) orr_m
+            ${sqlOrdenPagadaDespues('m')}
             WHERE LOWER(ISNULL(m.Status, '')) NOT IN ('approved')
         `;
+        if (soloSinResolver === '1') queryStr += ` AND ISNULL(pag.OrdenPagada, 0) = 0`;
 
         if (startDate) {
             queryStr += ` AND CAST(m.CreatedAt AS DATE) >= @StartDate`;

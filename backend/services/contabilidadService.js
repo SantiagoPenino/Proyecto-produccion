@@ -4579,58 +4579,6 @@ async function reducirDeuda(params, transaction = null) {
   logger.info(`[CONTAB] reducirDeuda: ${where} monto=${monto}`);
 }
 
-// SIN USO (13/10): reemplazarDeuda: nadie lo llama. OJO: hace DELETE de DeudaDocumento. Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
-/**
- * reemplazarDeuda
- * Elimina las deudas existentes de un documento y crea una nueva.
- * Reemplaza el DELETE+INSERT crudo por una operación atómica rastreable.
- * Ojo: el DELETE solo se permite para documentos en estado PENDIENTE/BORRADOR
- * que aún no pasaron por DGI. Para documentos ACEPTADOS_DGI se debe usar NC.
- *
- * @param {object} params
- *   @param {number} params.docId          DocIdDocumento a reemplazar
- *   @param {number} params.cueIdCuenta    CueIdCuenta de la cuenta corriente del cliente
- *   @param {number} params.importe        Nuevo importe original
- *   @param {number} [params.diasVenc]     Días de vencimiento (default: 7)
- * @param {object} transaction
- * @returns {number} DDeIdDocumento nuevo
- */
-async function reemplazarDeuda(params, transaction = null) {
-  const pool = await getPool();
-  const mkReq = () => transaction ? new sql.Request(transaction) : pool.request();
-  const { docId, cueIdCuenta, importe, diasVenc = 7 } = params;
-
-  // 1. Eliminar deudas anteriores del documento (solo PENDIENTE/PARCIAL)
-  await mkReq()
-    .input('DocId', sql.Int, docId)
-    .query(`DELETE FROM dbo.DeudaDocumento WHERE DocIdDocumento = @DocId`);
-
-  // 2. Crear la nueva deuda (si hay importe)
-  if (importe > 0) {
-    const insertRes = await mkReq()
-      .input('CueId',   sql.Int,           cueIdCuenta)
-      .input('DocId',   sql.Int,           docId)
-      .input('Orig',    sql.Decimal(18,4), importe)
-      .input('Pend',    sql.Decimal(18,4), importe)
-      .input('Dias',    sql.Int,           diasVenc)
-      .query(`
-        INSERT INTO dbo.DeudaDocumento
-          (CueIdCuenta, DocIdDocumento, DDeImporteOriginal, DDeImportePendiente,
-           DDeFechaEmision, DDeFechaVencimiento, DDeEstado)
-        OUTPUT INSERTED.DDeIdDocumento
-        VALUES
-          (@CueId, @DocId, @Orig, @Pend,
-           GETDATE(), DATEADD(DAY, @Dias, GETDATE()), 'PENDIENTE')
-      `);
-    const newId = insertRes.recordset[0].DDeIdDocumento;
-    logger.info(`[CONTAB] reemplazarDeuda: docId=${docId} → DDeId=${newId} importe=${importe}`);
-    return newId;
-  }
-
-  logger.info(`[CONTAB] reemplazarDeuda: docId=${docId} eliminada (importe=0, doc pagado)`);
-  return null;
-}
-
 /**
  * buscarDeudaVivaDeDocumento
  * ¿Este documento ya tiene una deuda viva? Devuelve la fila o null.
@@ -5825,7 +5773,6 @@ module.exports = {
   vincularPagosPorOrdenAlDocumento,
   cancelarDeuda,
   reducirDeuda,
-  reemplazarDeuda,
   getDeudas,
 
   // Ciclos de crédito

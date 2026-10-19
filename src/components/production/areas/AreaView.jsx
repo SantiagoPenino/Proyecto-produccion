@@ -78,6 +78,17 @@ const MagicButton = ({ areaKey, onSuccess }) => {
     );
 };
 
+// [FINALIZADAS PAGINADAS 19/10/2026] Canceladas y prontas se piden por página al servidor: antes
+// venía todo el histórico (DF prontas = 19.000 órdenes, 16 MB). Ventana por fecha de ingreso, 30 días
+// al abrir; con texto en el buscador se busca en todo el histórico (diseño acordado el 31/08).
+const TAM_PAGINA_HIST = 50;
+const RANGOS_HIST = [
+    { dias: 30, label: '30 días' },
+    { dias: 90, label: '3 meses' },
+    { dias: 365, label: '12 meses' },
+    { dias: 0, label: 'Todo' },
+];
+
 export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab }) {
     // Normalizar a MAYÚSCULA: si la URL viene '/area/df', areaKey llegaba en minúscula
     // y disparaba queries duplicadas (df + DF) en los tableros que reciben areaCode={areaKey}
@@ -218,27 +229,43 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
         }
     };
 
+    // Canceladas / prontas: una página del servidor (ver TAM_PAGINA_HIST). [PRO] respeta el selector
+    // "Ver área": se piden las del área que se está viendo.
+    const [pagHist, setPagHist] = useState({ dias: 30, pagina: 0, total: 0, totales: {} });
+    const pedidoHistRef = React.useRef(0);   // descarta respuestas viejas (cambios rápidos de página o búsqueda)
+    const modoHist = showPronto ? 'pronto' : (showCancelled ? 'cancelled' : null);
+
+    const cargarHistorico = async (modo, { dias = pagHist.dias, pagina = 0, q = globalSearch } = {}) => {
+        const setFilas = modo === 'pronto' ? setProntoOrders : setCancelledOrders;
+        const setCargando = modo === 'pronto' ? setLoadingPronto : setLoadingCancelled;
+        const n = ++pedidoHistRef.current;
+        setLoadingPronto(modo === 'pronto');
+        setLoadingCancelled(modo === 'cancelled');
+        try {
+            const r = await ordersService.getFinalizadasPaginado(areaDatos, modo, {
+                dias, q: String(q || '').trim(), offset: pagina * TAM_PAGINA_HIST, limit: TAM_PAGINA_HIST,
+            });
+            if (n !== pedidoHistRef.current) return;
+            setFilas(r.rows || []);
+            setPagHist({ dias, pagina, total: r.total || 0, totales: r.totales || {} });
+        } catch (e) {
+            if (n !== pedidoHistRef.current) return;
+            console.error(`Error cargando ${modo === 'pronto' ? 'prontas' : 'canceladas'}:`, e);
+            setFilas([]);
+            setPagHist(p => ({ ...p, pagina: 0, total: 0, totales: {} }));
+        } finally {
+            if (n === pedidoHistRef.current) setCargando(false);
+        }
+    };
+
     const handleToggleCancelled = async () => {
         const next = !showCancelled;
         setShowCancelled(next);
         if (next) { setShowPronto(false); setShowConsultas(false); setConsultasOrders([]); }
         setIsFilterDropdownOpen(false);
-        if (next && areaKey && areaKey.toLowerCase() !== 'area') {
-            setLoadingCancelled(true);
-            try {
-                // Reutilizamos getByArea (mismo que órdenes activas) con mode='cancelled'
-                // ([PRO] respeta el selector "Ver área": canceladas del área que se está viendo)
-                const data = await ordersService.getByArea(areaDatos, 'cancelled');
-                setCancelledOrders(Array.isArray(data) ? data : []);
-            } catch (e) {
-                console.error('Error cargando canceladas:', e);
-                setCancelledOrders([]);
-            } finally {
-                setLoadingCancelled(false);
-            }
-        } else {
-            setCancelledOrders([]);
-        }
+        setCancelledOrders([]);
+        if (next && areaKey && areaKey.toLowerCase() !== 'area') await cargarHistorico('cancelled', { pagina: 0 });
+        else pedidoHistRef.current++;
     };
 
     const handleTogglePronto = async () => {
@@ -246,22 +273,26 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
         setShowPronto(next);
         if (next) { setShowCancelled(false); setShowConsultas(false); setConsultasOrders([]); }
         setIsFilterDropdownOpen(false);
-        if (next && areaKey && areaKey.toLowerCase() !== 'area') {
-            setLoadingPronto(true);
-            try {
-                // ([PRO] respeta el selector "Ver área", igual que canceladas)
-                const data = await ordersService.getByArea(areaDatos, 'pronto');
-                setProntoOrders(Array.isArray(data) ? data : []);
-            } catch (e) {
-                console.error('Error cargando prontas:', e);
-                setProntoOrders([]);
-            } finally {
-                setLoadingPronto(false);
-            }
-        } else {
-            setProntoOrders([]);
-        }
+        setProntoOrders([]);
+        if (next && areaKey && areaKey.toLowerCase() !== 'area') await cargarHistorico('pronto', { pagina: 0 });
+        else pedidoHistRef.current++;
     };
+
+    // El buscador busca en el servidor mientras se ven canceladas/prontas (en todo el histórico).
+    useEffect(() => {
+        if (!modoHist) return undefined;
+        const t = setTimeout(() => cargarHistorico(modoHist, { pagina: 0, q: globalSearch }), 300);
+        return () => clearTimeout(t);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [globalSearch]);
+
+    const paginacionHist = modoHist ? {
+        pagina: pagHist.pagina,
+        tamPagina: TAM_PAGINA_HIST,
+        total: pagHist.total,
+        totales: pagHist.totales,
+        onPagina: (p) => cargarHistorico(modoHist, { pagina: p }),
+    } : null;
 
     // [PRO] Producción (prendas): sin Asignar a Lote/Historial ni tabs de
     // Planeación/Control/Logística. En su lugar: Ingresar Orden (form interno de prendas),
@@ -507,6 +538,12 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
     const areaConsultable = ['SB', 'SUB', 'DF', 'DTF', 'ECOUV'].includes((areaDatos || '').toUpperCase());
 
     // 5. FILTRADO
+    // La lista que se ve todavía se está pidiendo: la planilla muestra "Cargando órdenes…" en vez de
+    // "No hay órdenes" (React Query solo marca isLoading la primera vez de cada área: un refresco
+    // con datos ya en pantalla no la vacía).
+    const cargandoLista = showCancelled ? loadingCancelled
+        : (showPronto ? loadingPronto
+        : (showConsultas ? loadingConsultas : loadingOrders));
     const displayOrders = showCancelled ? cancelledOrders
         : (showPronto ? prontoOrders
         : (showConsultas ? consultasOrders : dbOrders));
@@ -515,13 +552,16 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
         // de la sesión normal (son bandejas aparte, no vistas del tablero).
         if (showCancelled || showPronto || showConsultas) {
             let result = [...displayOrders];
-            if (globalSearch) {
+            // Canceladas/prontas ya vienen buscadas y paginadas del servidor (con más campos, como el
+            // IDCliente): filtrarlas de nuevo acá podía sacar filas que el servidor sí encontró.
+            if (globalSearch && showConsultas) {
                 const term = globalSearch.toLowerCase().trim();
                 result = result.filter(o => 
                     (o.client && o.client.toLowerCase().includes(term)) || 
                     (o.code && o.code.toLowerCase().includes(term)) ||
                     (o.idClienteReact && o.idClienteReact.toString().includes(term)) ||
-                    (o.codCliente && o.codCliente.toString().toLowerCase().includes(term))
+                    (o.codCliente && o.codCliente.toString().toLowerCase().includes(term)) ||
+                    (o.desc && o.desc.toLowerCase().includes(term))
                 );
             }
             return result.sort((a, b) =>
@@ -551,7 +591,8 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
                 (o.client && o.client.toLowerCase().includes(term)) || 
                 (o.code && o.code.toLowerCase().includes(term)) ||
                 (o.idClienteReact && o.idClienteReact.toString().includes(term)) ||
-                (o.codCliente && o.codCliente.toString().toLowerCase().includes(term))
+                (o.codCliente && o.codCliente.toString().toLowerCase().includes(term)) ||
+                (o.desc && o.desc.toLowerCase().includes(term))
             );
         }
 
@@ -871,13 +912,13 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
                 <i className="fa-solid fa-search absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400 text-xs"></i>
                 <input
                     type="text"
-                    placeholder="Buscar orden, cliente o ID cliente..."
+                    placeholder="Buscar orden, cliente, ID o trabajo..."
                     value={globalSearch}
                     onChange={(e) => { setGlobalSearch(e.target.value); try { sessionStorage.setItem(`areaSearch_${areaKey}`, e.target.value); } catch {} }}
                     className={`pl-8 ${globalSearch ? 'pr-8' : 'pr-3'} py-1.5 h-[30px] w-64 tablet:w-44 tablet:h-[28px] shrink-0 text-xs tablet:text-[11px] font-medium border border-zinc-200 rounded-lg bg-white focus:outline-none focus:border-brand-cyan focus:ring-1 focus:ring-brand-cyan transition-all shadow-sm placeholder:text-zinc-400`}
                 />
                 {globalSearch && (
-                    <button 
+                    <button
                         onClick={() => { setGlobalSearch(""); try { sessionStorage.removeItem(`areaSearch_${areaKey}`); } catch {} }}
                         className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600 p-1"
                         title="Limpiar búsqueda"
@@ -886,6 +927,34 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
                     </button>
                 )}
             </div>
+
+            {/* Canceladas / prontas: período por fecha de ingreso. Con texto en el buscador no aplica:
+                se busca en todo el histórico. */}
+            {modoHist && (
+                <div className="flex items-center gap-1 shrink-0">
+                    {RANGOS_HIST.map(r => {
+                        const buscando = !!globalSearch.trim();
+                        const activo = !buscando && pagHist.dias === r.dias;
+                        return (
+                            <button
+                                key={r.dias}
+                                onClick={() => cargarHistorico(modoHist, { dias: r.dias, pagina: 0 })}
+                                disabled={buscando}
+                                title={buscando ? 'Con texto en el buscador se busca en todo el histórico' : 'Órdenes ingresadas en el período'}
+                                className={`px-2.5 py-1.5 h-[30px] tablet:h-[28px] text-xs tablet:text-[11px] font-bold border rounded-lg transition-colors shadow-sm whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed ${
+                                    activo ? 'bg-brand-cyan text-white border-brand-cyan'
+                                           : 'bg-white text-zinc-600 border-zinc-200 hover:enabled:bg-zinc-50 hover:enabled:text-brand-cyan hover:enabled:border-brand-cyan/30'
+                                }`}
+                            >
+                                {r.label}
+                            </button>
+                        );
+                    })}
+                    {globalSearch.trim() && (
+                        <span className="text-[10px] font-bold text-zinc-400 whitespace-nowrap ml-1">Buscando en todo el histórico</span>
+                    )}
+                </div>
+            )}
 
             {/* [PRO] Producción no arma lotes: sin Asignar a Lote.
                 Tampoco las áreas sin lotes (TERMINAC/EMB/EST/TWC/TWT): sus órdenes se
@@ -1176,8 +1245,8 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
 
                 <main className={`flex-1 bg-zinc-50 overflow-hidden flex flex-col h-full items-stretch ${isActive('') || isActive('tabla') || isActive('planeacion') || isActive('bandeja') || isActive('control') || isActive('logistica') || isActive('agenda') || isActive('cotizacion') ? 'p-0' : 'p-6'}`}>
                     <Routes>
-                        <Route index element={<ProductionTable rowData={filteredOrders} onRowSelected={setSelectedIds} selectedRowIds={selectedIds} onRowClick={setSelectedOrder} columnDefs={areaConfig.defaultColDefs} toolbarContent={tableToolbar} flashingRowIds={flashingRows} />} />
-                        <Route path="tabla" element={<ProductionTable rowData={filteredOrders} onRowSelected={setSelectedIds} selectedRowIds={selectedIds} onRowClick={setSelectedOrder} columnDefs={areaConfig.defaultColDefs} toolbarContent={tableToolbar} flashingRowIds={flashingRows} />} />
+                        <Route index element={<ProductionTable rowData={filteredOrders} onRowSelected={setSelectedIds} selectedRowIds={selectedIds} onRowClick={setSelectedOrder} columnDefs={areaConfig.defaultColDefs} toolbarContent={tableToolbar} flashingRowIds={flashingRows} loading={cargandoLista} paginacionServidor={paginacionHist} />} />
+                        <Route path="tabla" element={<ProductionTable rowData={filteredOrders} onRowSelected={setSelectedIds} selectedRowIds={selectedIds} onRowClick={setSelectedOrder} columnDefs={areaConfig.defaultColDefs} toolbarContent={tableToolbar} flashingRowIds={flashingRows} loading={cargandoLista} paginacionServidor={paginacionHist} />} />
 
                         {/* TERMINAC (29/07): Bandeja = trabajos con material recibido (checklist);
                             Control = órdenes terminadas esperando aprobación. EMB/EST/TWC/TWT

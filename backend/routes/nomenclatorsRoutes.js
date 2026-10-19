@@ -1,6 +1,16 @@
 const express = require('express');
 const router = express.Router();
 const { sql, getPool } = require('../config/db');
+const { verifyToken, soloInternoConRol } = require('../middleware/authMiddleware');
+
+// Login por ruta (19/10), según quién llama a cada una (revisado ruta por ruta):
+//  - Sin login: departments, localities/:id, agencies y vendedores. Las usa la página pública de
+//    registro (/register), que no tiene token.
+//  - conToken (cualquier sesión, también clientes y diseñadores): los catálogos del formulario de
+//    pedido del portal (OrderForm, TiendaView), que también usa el sistema interno.
+//  - interno: el ABM de localidades y agencias y lo que solo usa el sistema interno.
+const conToken = verifyToken;
+const interno = [verifyToken, soloInternoConRol()];
 
 // Get All Departments
 router.get('/departments', async (req, res) => {
@@ -23,7 +33,7 @@ router.get('/localities/:id', async (req, res) => {
 });
 
 // Get Localities (All - para el abm)
-router.get('/localities', async (req, res) => {
+router.get('/localities', interno, async (req, res) => {
     try {
         const pool = await getPool();
         const r = await pool.request().query("SELECT l.ID, l.Nombre, l.DepartamentoID, d.Nombre as DepartamentoNombre FROM Localidades l JOIN Departamentos d ON l.DepartamentoID = d.ID ORDER BY d.Nombre, l.Nombre");
@@ -31,7 +41,7 @@ router.get('/localities', async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.post('/localities', async (req, res) => {
+router.post('/localities', interno, async (req, res) => {
     try {
         const pool = await getPool();
         const r = await pool.request()
@@ -42,7 +52,7 @@ router.post('/localities', async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.put('/localities/:id', async (req, res) => {
+router.put('/localities/:id', interno, async (req, res) => {
     try {
         const pool = await getPool();
         await pool.request()
@@ -54,7 +64,7 @@ router.put('/localities/:id', async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.delete('/localities/:id', async (req, res) => {
+router.delete('/localities/:id', interno, async (req, res) => {
     try {
         const pool = await getPool();
         await pool.request()
@@ -74,7 +84,7 @@ router.get('/agencies', async (req, res) => {
 });
 
 // ABM Agencias
-router.post('/agencies', async (req, res) => {
+router.post('/agencies', interno, async (req, res) => {
     try {
         const pool = await getPool();
         const r = await pool.request()
@@ -84,7 +94,7 @@ router.post('/agencies', async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.put('/agencies/:id', async (req, res) => {
+router.put('/agencies/:id', interno, async (req, res) => {
     try {
         const pool = await getPool();
         await pool.request()
@@ -95,7 +105,7 @@ router.put('/agencies/:id', async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.delete('/agencies/:id', async (req, res) => {
+router.delete('/agencies/:id', interno, async (req, res) => {
     try {
         const pool = await getPool();
         await pool.request()
@@ -106,7 +116,7 @@ router.delete('/agencies/:id', async (req, res) => {
 });
 
 // Get Shipping Methods
-router.get('/shipping-methods', async (req, res) => {
+router.get('/shipping-methods', conToken, async (req, res) => {
     try {
         const pool = await getPool();
         const r = await pool.request().query("SELECT * FROM FormasEnvio ORDER BY Nombre");
@@ -115,7 +125,7 @@ router.get('/shipping-methods', async (req, res) => {
 });
 
 // Get Unidades de Medida (1=Cantidades/piezas, 2=Metros) — para el combo del editor de artículos
-router.get('/unidades', async (req, res) => {
+router.get('/unidades', interno, async (req, res) => {
     try {
         const pool = await getPool();
         const r = await pool.request().query("SELECT UniIdUnidad, LTRIM(RTRIM(UniDescripcionUnidad)) AS Descripcion, LTRIM(RTRIM([UniNotación])) AS Notacion FROM Unidades ORDER BY UniIdUnidad");
@@ -124,7 +134,7 @@ router.get('/unidades', async (req, res) => {
 });
 
 // Get Priorities
-router.get('/priorities', async (req, res) => {
+router.get('/priorities', conToken, async (req, res) => {
     try {
         const pool = await getPool();
         const r = await pool.request().query("SELECT * FROM ConfigPrioridades WHERE Activo = 1 ORDER BY Nivel ASC");
@@ -143,7 +153,7 @@ router.get('/priorities', async (req, res) => {
 });
 
 // Get Variants (Sub-Categoría) by AreaID
-router.get('/variants/:areaId', async (req, res) => {
+router.get('/variants/:areaId', conToken, async (req, res) => {
     try {
         const { areaId } = req.params;
         const pool = await getPool();
@@ -184,7 +194,7 @@ router.get('/variants/:areaId', async (req, res) => {
 // Materiales por TIPO de variante (form ECOUV con variantes virtuales):
 // ?tipo=MATERIAL|PRODUCTO_TERMINADO  ·  ?conTerminaciones=1 → solo materiales
 // con terminaciones asignadas (variante "Productos Personalizados / Armar a Medida")
-router.get('/materiales-por-tipo/:areaId', async (req, res) => {
+router.get('/materiales-por-tipo/:areaId', conToken, async (req, res) => {
     try {
         const { areaId } = req.params;
         const tipo = ['MATERIAL', 'PRODUCTO_TERMINADO', 'TERMINACION'].includes(req.query.tipo) ? req.query.tipo : 'MATERIAL';
@@ -227,7 +237,7 @@ router.get('/materiales-por-tipo/:areaId', async (req, res) => {
 });
 
 // Terminaciones permitidas para un material de impresión (form ECOUV del portal)
-router.get('/terminaciones-material/:codArticulo', async (req, res) => {
+router.get('/terminaciones-material/:codArticulo', conToken, async (req, res) => {
     try {
         const pool = await getPool();
         const r = await pool.request()
@@ -252,7 +262,7 @@ router.get('/terminaciones-material/:codArticulo', async (req, res) => {
 });
 
 // Ficha de producto terminado para el form del portal (dimensiones + material + incluidas)
-router.get('/producto-terminado/:codArticulo', async (req, res) => {
+router.get('/producto-terminado/:codArticulo', conToken, async (req, res) => {
     try {
         const pool = await getPool();
         const prod = await pool.request()
@@ -300,7 +310,7 @@ router.get('/producto-terminado/:codArticulo', async (req, res) => {
 });
 
 // Get Materials (Soporte) dependent on Area and Selected Variant
-router.get('/materials/:areaId/:variante', async (req, res) => {
+router.get('/materials/:areaId/:variante', conToken, async (req, res) => {
     try {
         const { areaId, variante } = req.params;
         const pool = await getPool();
@@ -338,7 +348,7 @@ router.get('/materials/:areaId/:variante', async (req, res) => {
 });
 
 // Get All Articles for Combobox
-router.get('/all-articles', async (req, res) => {
+router.get('/all-articles', interno, async (req, res) => {
     try {
         const pool = await getPool();
         const r = await pool.request().query(`
@@ -354,7 +364,7 @@ router.get('/all-articles', async (req, res) => {
 });
 
 // Get Articles by Area
-router.get('/articles-by-area/:areaId', async (req, res) => {
+router.get('/articles-by-area/:areaId', interno, async (req, res) => {
     try {
         const pool = await getPool();
         const r = await pool.request()
@@ -389,6 +399,6 @@ const getVendedores = async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 };
 router.get('/vendedores', getVendedores);
-router.get('/vendedores-by-department/:departamentoId', getVendedores);
+router.get('/vendedores-by-department/:departamentoId', interno, getVendedores);
 
 module.exports = router;

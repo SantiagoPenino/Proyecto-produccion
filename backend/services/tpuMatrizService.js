@@ -453,6 +453,31 @@ async function descargarDrive(url) {
     return { buffer: Buffer.concat(chunks), mimeType: file.mimeType || 'application/octet-stream' };
 }
 
+// Caché del visor (19/10/2026). Abrir el visor 3D de una orden de matriz bajaba de Drive el JOB y el
+// PDF del cliente, analizaba el PDF con Python y después volvía a bajar el MISMO PDF para mandarlo al
+// navegador: 4-5 s medidos con la pantalla vacía. Se guarda la PROMESA, así el análisis y la fuente
+// (que el visor ahora pide a la vez) comparten una sola descarga, y reabrir el visor no vuelve a
+// Drive. Los archivos de una referencia no cambian: uno nuevo es otra referencia, con otra URL.
+// Acotado por cantidad y por tamaño (el VPS anda justo de memoria): un PDF grande no se guarda.
+const CACHE_VISOR_MS = 10 * 60 * 1000;
+const CACHE_VISOR_MAX = 10;
+const CACHE_VISOR_MAX_BYTES = 8 * 1024 * 1024;
+const cacheVisor = new Map();   // clave → { t, p }
+
+function cacheado(clave, fn, pesa = () => 0) {
+    const hit = cacheVisor.get(clave);
+    if (hit && Date.now() - hit.t < CACHE_VISOR_MS) return hit.p;
+    const p = fn();
+    cacheVisor.set(clave, { t: Date.now(), p });
+    p.then(v => { if (pesa(v) > CACHE_VISOR_MAX_BYTES) cacheVisor.delete(clave); },
+           () => cacheVisor.delete(clave));   // un error no queda guardado
+    while (cacheVisor.size > CACHE_VISOR_MAX) cacheVisor.delete(cacheVisor.keys().next().value);
+    return p;
+}
+
+const descargarDriveCacheado = (url) =>
+    cacheado(`drive:${url}`, () => descargarDrive(url), (v) => v?.buffer?.length || 0);
+
 /** Referencias de matriz propia de la orden (scope opcional por CodCliente). null si no es una. */
 async function referenciasMatriz(pool, ordenId, codCliente = null) {
     const r = await pool.request()
@@ -475,32 +500,35 @@ async function referenciasMatriz(pool, ordenId, codCliente = null) {
 async function leerMatrizDeOrden(pool, ordenId, codCliente = null) {
     const refs = await referenciasMatriz(pool, ordenId, codCliente);
     if (!refs) return null;
-    const [jobBuf, pdfBuf] = await Promise.all([descargarDrive(refs.job.UbicacionStorage), descargarDrive(refs.fuente.UbicacionStorage)]);
+    const urlFuente = refs.fuente.UbicacionStorage;
+    const [jobBuf, analisis] = await Promise.all([
+        descargarDriveCacheado(refs.job.UbicacionStorage),
+        // El análisis depende solo del PDF: se guarda junto con él.
+        cacheado(`analisis:${urlFuente}`, async () => {
+            const pdfBuf = await descargarDriveCacheado(urlFuente);
+            fs.mkdirSync(DIR_SALIDA, { recursive: true });
+            const tmp = path.join(DIR_SALIDA, `fuente-${ordenId}-${Date.now()}.pdf`);
+            fs.writeFileSync(tmp, pdfBuf.buffer);
+            try { return await analizar(tmp); } finally { try { fs.unlinkSync(tmp); } catch (_) { } }
+        }),
+    ]);
     const job = JSON.parse(jobBuf.buffer.toString('utf8'));   // descargarDrive devuelve { buffer, mimeType }
-    fs.mkdirSync(DIR_SALIDA, { recursive: true });
-    const tmp = path.join(DIR_SALIDA, `fuente-${ordenId}-${Date.now()}.pdf`);
-    fs.writeFileSync(tmp, pdfBuf.buffer);
-    try {
-        const analisis = await analizar(tmp);
-        // separacion_zonas_pt: la canaleta con la que se generó ESTA orden. Las generadas antes del
-        // 08/10 no la tienen (0): el visor no les dibuja una canaleta que su archivo no lleva.
-        return {
-            job: {
-                zonas: job.zonas || [], medida_mm: job.medida_mm || null, imposicion: job.imposicion || null,
-                separacion_zonas_pt: Number(job.separacion_zonas_pt) || 0,
-            },
-            analisis,
-        };
-    } finally {
-        try { fs.unlinkSync(tmp); } catch (_) { }
-    }
+    // separacion_zonas_pt: la canaleta con la que se generó ESTA orden. Las generadas antes del
+    // 08/10 no la tienen (0): el visor no les dibuja una canaleta que su archivo no lleva.
+    return {
+        job: {
+            zonas: job.zonas || [], medida_mm: job.medida_mm || null, imposicion: job.imposicion || null,
+            separacion_zonas_pt: Number(job.separacion_zonas_pt) || 0,
+        },
+        analisis,
+    };
 }
 
 /** Manda el PDF fuente de la matriz de la orden al response (para que el visor lo abra con pdf.js). */
 async function responderFuenteMatriz(pool, ordenId, codCliente, res) {
     const refs = await referenciasMatriz(pool, ordenId, codCliente);
     if (!refs) return res.status(404).json({ error: 'La orden no tiene matriz propia.' });
-    const { buffer } = await descargarDrive(refs.fuente.UbicacionStorage);
+    const { buffer } = await descargarDriveCacheado(refs.fuente.UbicacionStorage);
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Cache-Control', 'private, max-age=3600');
     res.end(buffer);

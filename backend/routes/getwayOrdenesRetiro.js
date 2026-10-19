@@ -2,7 +2,12 @@
 const express = require('express');
 const router = express.Router();
 const { createOrdenRetiro, getOrdenesRetiroPorEstados, actualizarOrdenRetiroEstado, marcarOrdenRetiroPronto, ordenesRetiroCaja, marcarOrdenRetiroEntregado, getOrdenesRetiroPasarPorCaja, getOrdenesRetiroPorFecha, getOrdenesRetiroPorLugar, marcarDespachoEntregadoAutorizado, buscarParaMostrador, getClienteEnvioDatos, getTodasSinRetiro, backfillLugarRetiro, getOrdenesRetiroPorRemito, editarCostoOrden, desvincularOrdenRetiro, cancelarOrdenCaja, exonerarOrdenCaja, revertirExoneracionOrden, cambiarEstadoOrden, getEstadoOrden } = require('../controllers/ordenesRetiroController');
-const { verifyToken } = require('../middleware/authMiddleware');
+const { verifyToken, soloInternoConRol } = require('../middleware/authMiddleware');
+
+// Las rutas que no tenían login (estados, caja, pasarporcaja, filterByDate, lugar) quedan solo para
+// usuarios internos (19/10). Las llaman la estación de impresión, Retiros web, Entrega de pedidos y
+// Caja, todas con sesión interna; pasarporcaja y filterByDate las usaba la app React vieja (borrada).
+const interno = [verifyToken, soloInternoConRol()];
 
 // Ruta para crear una Orden de Retiro
 router.post('/crear', verifyToken, createOrdenRetiro);
@@ -19,7 +24,7 @@ router.post('/caja/orden/estado',      verifyToken, cambiarEstadoOrden);
 router.get('/mostrador/estado', verifyToken, getEstadoOrden);
 
 // Ruta para obtener todas las órdenes de retiro en estado "Ingresado"
-router.get('/estados', getOrdenesRetiroPorEstados);
+router.get('/estados', interno, getOrdenesRetiroPorEstados);
 
 // Ruta para actualizar estado orden de retiro
 router.post('/actualizarEstado', verifyToken, actualizarOrdenRetiroEstado)
@@ -31,15 +36,15 @@ router.post('/marcarPronto', verifyToken, marcarOrdenRetiroPronto);
 router.post('/marcarOrdenEntregada', verifyToken, marcarOrdenRetiroEntregado)
 
 // Ruta para traer las ordenes de retiro y ordenes para la caja
-router.get('/caja', ordenesRetiroCaja);
+router.get('/caja', interno, ordenesRetiroCaja);
 
 // Ruta para traer las ordenes de retiro que deben pasar por caja
-router.get('/pasarporcaja', getOrdenesRetiroPasarPorCaja);
+router.get('/pasarporcaja', interno, getOrdenesRetiroPasarPorCaja);
 
-router.get('/filterByDate', getOrdenesRetiroPorFecha);
+router.get('/filterByDate', interno, getOrdenesRetiroPorFecha);
 
 // Rutas para Entregas/Logística
-router.get('/lugar/:lugarId', getOrdenesRetiroPorLugar);
+router.get('/lugar/:lugarId', interno, getOrdenesRetiroPorLugar);
 router.post('/despachos/entregar-autorizado', verifyToken, marcarDespachoEntregadoAutorizado);
 
 // Mostrador & Facturación Remota

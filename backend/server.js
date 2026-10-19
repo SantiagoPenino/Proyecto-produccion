@@ -145,9 +145,6 @@ app.use('/api/delivery-times', require('./routes/deliveryTimesRoutes'));
 app.use('/api/horario-laboral', require('./routes/horarioLaboralRoutes'));
 app.use('/api/planificacion', require('./routes/planificacionRoutes'));
 app.use('/api/feriados', require('./routes/feriadosRoutes'));
-// SIN USO (13/10): nadie lo llama (ni el front ni scripts). Era un GET sin login que borra las medidas
-// de los archivos de una orden y los reprocesa: queda solo para Admin. Confirmar con Yoania si se usa o se borra.
-app.get('/api/debug/reprocess/:id', require('./middleware/authMiddleware').verifyToken, require('./middleware/authMiddleware').soloAdmin, require('./controllers/debugController').reprocessOrder);
 app.use('/api/insumos', require('./routes/insumosRoutes'));
 app.use('/api/reception', require('./routes/receptionRoutes'));
 app.use('/api/tela-cliente', require('./routes/telaClienteRoutes')); // Módulo Tela de Cliente
@@ -157,7 +154,6 @@ app.use('/api/sincro', require('./routes/sincroRoutes'));
 app.use('/api/stockart', require('./routes/stockArtRoutes'));         // EDITOR StockArt (SysAdmin)
 app.use('/api/configurador', require('./routes/configuradorRoutes')); // CONFIGURADOR DE PRODUCTOS (/configurar-productos, aislado)
 app.use('/api/quotation', require('./routes/quotationRoutes'));
-app.use('/api/sisnet', require('./routes/sisnetRoutes'));
 
 try {
     app.use('/api/contabilidad', require('./routes/contabilidadRoutes'));
@@ -231,7 +227,6 @@ try {
 } catch (e) { logger.error('❌ Error loading external pedidos-prenda routes:', e.message); }
 
 try {
-    app.use('/api/integration-logs', require('./routes/integrationLogsRoutes'));
     app.use('/api/external', require('./routes/externalRoutes'));
 } catch (e) { logger.error("❌ Error loading log routes:", e); }
 
@@ -270,7 +265,6 @@ try {
     app.use('/api/clients', require('./routes/clientsRoutes'));
 } catch (e) { logger.error("❌ Error loading clients routes:", e); }
 
-app.use('/api/chat', require('./routes/chatRoutes'));
 // checkout routes deshabilitado por ahora
 
 try {
@@ -416,23 +410,6 @@ io.on('connection', (socket) => {
 const PORT = process.env.PORT || 5000;
 
 // FORCED RESTART TRIGGER: 2026-01-01 22:38
-
-// --- RUTAS TEMPORALES: Re-autorización de Google Drive ---
-// BORRAR DESPUÉS DE USARLAS
-const driveService = require('./services/driveService');
-app.get('/api/drive-reauth', (req, res) => {
-    const url = driveService.getAuthUrl();
-    if (!url) return res.status(500).send('Error generando URL de auth');
-    res.redirect(url);
-});
-app.get('/api/drive-callback', async (req, res) => {
-    const code = req.query.code;
-    if (!code) return res.status(400).send('Falta código');
-    const ok = await driveService.saveToken(code);
-    if (ok) res.send('✅ Token guardado exitosamente. Ya podés subir archivos. Reiniciá PM2: pm2 restart sistema-produccion');
-    else res.status(500).send('❌ Error guardando token');
-});
-// --- FIN RUTAS TEMPORALES ---
 
 // --- CATÁLOGOS NO LISTADOS ---
 // Páginas autocontenidas fuera del SPA (ej. el catálogo FNC): sin links desde el sitio,

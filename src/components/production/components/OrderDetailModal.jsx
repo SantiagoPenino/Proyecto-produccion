@@ -24,6 +24,7 @@ import Swal from 'sweetalert2';
 // Visor 3D del parche TPU (el mismo del portal, en modo interno: el diseñador elige las texturas).
 // Lazy: carga three.js/pdfjs solo si se abre.
 const Tpu3DViewer = React.lazy(() => import('../../../client-portal/modulos/Tpu3DViewer'));
+import Tpu3DCargando from '../../../client-portal/modulos/Tpu3DCargando';
 
 // Capas del arte TPU (04/09/2026): HASTA 5, y con 2 alcanza (formato actual: cmyk-spots + corte;
 // el viejo: 5 archivos). Espeja CAPAS_ARTE_TPU / CAPAS_ARTE_TPU_MIN del backend
@@ -3021,7 +3022,7 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
 
             {/* Visor 3D TPU en modo interno (elige/corrige texturas el diseñador). */}
             {visor3D && (
-                <React.Suspense fallback={null}>
+                <React.Suspense fallback={<Tpu3DCargando onClose={() => setVisor3D(false)} />}>
                     <Tpu3DViewer
                         modo="interno"
                         ordenId={currentOrder.id}

@@ -26,6 +26,14 @@ exports.verifyToken = (req, res, next) => {
                 return res.status(401).json({ message: 'Token inválido o expirado.' });
             }
 
+            // Solo tokens de sesión (19/10). El de activación de cuenta ({ codCliente }, emailService) y el
+            // de reset de contraseña ({ codCliente, purpose }) se firman con la misma clave y pasaban acá como
+            // si fueran una sesión. Toda sesión (interna, cliente, Google, diseñador) trae id; esos dos no, y
+            // se validan aparte en webAuthController.
+            if (decoded.purpose || decoded.id === undefined || decoded.id === null) {
+                return res.status(401).json({ message: 'Token inválido o expirado.' });
+            }
+
             // Guardamos datos decodificados en req.user
             req.user = decoded;
 

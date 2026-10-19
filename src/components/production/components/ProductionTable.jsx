@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { Eye } from 'lucide-react';
+import { Eye, Loader2 } from 'lucide-react';
 import {
     useReactTable,
     getCoreRowModel,
@@ -22,7 +22,11 @@ const TABLET_HIDDEN_DEFAULT = {
     observations: false,  // Observaciones
 };
 
-export default function ProductionTable({ rowData = [], onRowSelected, selectedRowIds, onRowClick, columnDefs: propColumnDefs, toolbarContent, flashingRowIds = [] }) {
+// `loading`: la lista todavía se está pidiendo. Sin esto, mientras cargaba (al entrar a la planilla
+// o al pasar a Canceladas/Prontas/Consultas) se veía "No hay órdenes para mostrar" varios segundos.
+// `paginacionServidor` ({ pagina, tamPagina, total, totales, onPagina }): rowData es UNA página que ya
+// mandó el servidor (canceladas/prontas); el total y los totales del pie también vienen de ahí.
+export default function ProductionTable({ rowData = [], onRowSelected, selectedRowIds, onRowClick, columnDefs: propColumnDefs, toolbarContent, flashingRowIds = [], loading = false, paginacionServidor = null }) {
 
     const [rowSelection, setRowSelection] = useState({});
     // Orden por columna (hoy: botón en Material, para juntar todas las órdenes del mismo material)
@@ -367,8 +371,18 @@ export default function ProductionTable({ rowData = [], onRowSelected, selectedR
         state: {
             rowSelection,
             sorting,
-            columnVisibility: { ...emptyColumns, ...columnVisibility }
+            columnVisibility: { ...emptyColumns, ...columnVisibility },
+            ...(paginacionServidor ? { pagination: { pageIndex: paginacionServidor.pagina, pageSize: paginacionServidor.tamPagina } } : {})
         },
+        ...(paginacionServidor ? {
+            manualPagination: true,
+            pageCount: Math.max(1, Math.ceil((paginacionServidor.total || 0) / paginacionServidor.tamPagina)),
+            onPaginationChange: (updater) => {
+                const actual = { pageIndex: paginacionServidor.pagina, pageSize: paginacionServidor.tamPagina };
+                const nuevo = typeof updater === 'function' ? updater(actual) : updater;
+                if (nuevo.pageIndex !== actual.pageIndex) paginacionServidor.onPagina(nuevo.pageIndex);
+            },
+        } : {}),
         enableRowSelection: true,
         onRowSelectionChange: setRowSelection,
         onSortingChange: setSorting,
@@ -396,12 +410,13 @@ export default function ProductionTable({ rowData = [], onRowSelected, selectedR
     // Un total por unidad que aparezca (m, m2, u…), sin lista cerrada: si mañana entra otra UM se
     // muestra sola. El orden es el de ORDEN_UNIDADES y lo desconocido va al final.
     const ORDEN_UNIDADES = ['m', 'm2', 'u'];
-    const fmtTotal = (filas) => {
-        const totales = filas.reduce((acc, o) => {
-            const unidad = unidadDe(o);
-            acc[unidad] = (acc[unidad] || 0) + (parseFloat(o.magnitude) || 0);
-            return acc;
-        }, {});
+    const fmtTotal = (filas) => fmtTotales(filas.reduce((acc, o) => {
+        const unidad = unidadDe(o);
+        acc[unidad] = (acc[unidad] || 0) + (parseFloat(o.magnitude) || 0);
+        return acc;
+    }, {}));
+    // { unidad: suma } → "12.50 m · 3 u" (también para los totales que manda el servidor)
+    const fmtTotales = (totales) => {
         const peso = (k) => { const i = ORDEN_UNIDADES.indexOf(k); return i < 0 ? ORDEN_UNIDADES.length : i; };
         const partes = Object.keys(totales)
             .filter(k => totales[k] > 0)
@@ -451,7 +466,12 @@ export default function ProductionTable({ rowData = [], onRowSelected, selectedR
             </div>}
 
             {/* Contenedor de la tabla scrollable */}
-            {table.getRowModel().rows.length === 0 ? (
+            {table.getRowModel().rows.length === 0 && loading ? (
+                <div className="flex-1 flex flex-col items-center justify-center gap-3 text-zinc-400 bg-zinc-50">
+                    <Loader2 size={30} className="animate-spin text-brand-cyan" />
+                    <span className="text-sm font-medium">Cargando órdenes…</span>
+                </div>
+            ) : table.getRowModel().rows.length === 0 ? (
                 <div className="flex-1 flex flex-col items-center justify-center gap-3 text-zinc-400 bg-zinc-50">
                     <i className="fa-solid fa-inbox text-5xl text-zinc-200"></i>
                     <span className="text-sm font-medium">No hay órdenes para mostrar</span>
@@ -564,10 +584,10 @@ export default function ProductionTable({ rowData = [], onRowSelected, selectedR
                     <span className="bg-zinc-100 text-zinc-600 px-2 py-1 tablet:px-1.5 tablet:py-0.5 rounded-md">
                         Página {table.getState().pagination.pageIndex + 1} de {table.getPageCount() || 1}
                     </span>
-                    <span className="font-medium text-zinc-400 tablet:hidden">({rowData.length} órdenes en total)</span>
-                    <span className="hidden tablet:inline font-medium text-zinc-400">({rowData.length})</span>
+                    <span className="font-medium text-zinc-400 tablet:hidden">({paginacionServidor ? paginacionServidor.total : rowData.length} órdenes en total)</span>
+                    <span className="hidden tablet:inline font-medium text-zinc-400">({paginacionServidor ? paginacionServidor.total : rowData.length})</span>
                     <span className="bg-brand-cyan/10 text-brand-cyan px-2 py-1 tablet:px-1.5 tablet:py-0.5 rounded-md font-bold">
-                        {fmtTotal(rowData)}
+                        {paginacionServidor ? fmtTotales(paginacionServidor.totales || {}) : fmtTotal(rowData)}
                     </span>
                     {table.getSelectedRowModel().rows.length > 0 && (
                         <span className="bg-indigo-100 text-indigo-700 px-2 py-1 tablet:px-1.5 tablet:py-0.5 rounded-md font-bold">

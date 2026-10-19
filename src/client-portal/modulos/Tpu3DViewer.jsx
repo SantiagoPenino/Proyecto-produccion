@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { X, Loader2, Rotate3d, Sparkles, Save, Check, ChevronRight, ChevronLeft, Move, Eye, EyeOff, Lock, LockOpen } from 'lucide-react';
 import { API_BASE_URL } from '../api/apiClient';
+import Tpu3DCargando from './Tpu3DCargando';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Visor 3D del parche TPU (aprobación del cliente).
@@ -2566,11 +2567,16 @@ export const Tpu3DViewerAuto = (props) => {
             : `${API_BASE_URL}/web-orders/orden/${ordenId}/tpu-matriz`;
         (async () => {
             try {
-                const r = await fetch(base, { headers: authHeaders() });
+                // Las dos a la vez: antes la fuente se pedía recién al terminar el análisis y el PDF
+                // del cliente se bajaba de Drive dos veces seguidas (el backend ahora lo comparte).
+                // En una orden que no es de matriz las dos contestan 404 enseguida.
+                const [r, rf] = await Promise.all([
+                    fetch(base, { headers: authHeaders() }),
+                    fetch(`${base}/fuente`, { headers: authHeaders() }),
+                ]);
                 if (!r.ok) { if (vivo) setMatriz(null); return; }
                 const j = await r.json();
                 if (!j?.success || !j.analisis) { if (vivo) setMatriz(null); return; }
-                const rf = await fetch(`${base}/fuente`, { headers: authHeaders() });
                 if (!rf.ok) { if (vivo) setMatriz(null); return; }
                 const pdf = await rf.arrayBuffer();
                 if (vivo) setMatriz({
@@ -2585,7 +2591,7 @@ export const Tpu3DViewerAuto = (props) => {
     }, [ordenId, modo]);
 
     if (modo === 'matriz') return <Tpu3DViewer {...props} />;
-    if (matriz === undefined) return null;
+    if (matriz === undefined) return <Tpu3DCargando onClose={props.onClose} />;
     if (matriz) {
         return (
             <Tpu3DViewer

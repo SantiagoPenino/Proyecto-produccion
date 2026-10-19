@@ -5,6 +5,16 @@ export const ordersService = {
         const response = await api.get(`/orders?area=${areaCode}&mode=${mode}`);
         return response.data;
     },
+    // Finalizadas/canceladas paginadas en el servidor: { rows, total, totales: { m, u… } }.
+    // dias = ventana por fecha de ingreso (0 = todo); con texto en q se busca en todo el histórico.
+    getFinalizadasPaginado: async (areaCode, mode, { dias = 30, q = '', offset = 0, limit = 50 } = {}) => {
+        const response = await api.get('/orders', {
+            params: { area: areaCode, mode, paginado: 1, dias, q: q || undefined, offset, limit },
+        });
+        const d = response.data;
+        // Un área inválida contesta [] sin importar el modo.
+        return Array.isArray(d) ? { rows: d, total: d.length, totales: {} } : d;
+    },
     getActiveSummary: async (areaKey) => {
         const params = areaKey ? { area: areaKey } : {};
         const response = await api.get('/orders/active', { params });

@@ -1193,6 +1193,20 @@ exports.getOrdersByArea = async (req, res) => {
     let area = req.query.area || req.params.area;
     const { mode, q } = req.query;
 
+    // [FINALIZADAS PAGINADAS 19/10/2026] Prontas/canceladas traían TODO el histórico y el navegador
+    // paginaba: DF prontas = 18.976 órdenes y 16 MB por cada vez que se abría (11.496 y 9,9 MB el
+    // 31/08: crece para siempre). Con paginado=1 la página sale del servidor (diseño acordado 31/08):
+    //  - ventana por FechaIngreso: `dias` (30 por defecto, 0 = todo);
+    //  - con texto en `q` la ventana se ignora y se busca en TODO el histórico;
+    //  - `offset`/`limit` (50); el total y los totales por unidad del pie también salen de acá.
+    // Sin paginado=1 responde como siempre (el array entero), para cualquier otro llamador.
+    const paginado = req.query.paginado === '1' && ['pronto', 'cancelled', 'history'].includes(mode);
+    const qPag = paginado ? String(q || '').trim().slice(0, 100) : '';
+    const diasPag = paginado && !qPag
+        ? Math.max(0, req.query.dias === undefined ? 30 : (parseInt(req.query.dias, 10) || 0)) : 0;
+    const limitPag = Math.min(200, Math.max(1, parseInt(req.query.limit, 10) || 50));
+    const offsetPag = Math.max(0, parseInt(req.query.offset, 10) || 0);
+
     // logger.info(`🔎 [getOrdersByArea] Request for Area: '${area}', Mode: '${mode}'`);
 
     try {
@@ -1355,8 +1369,16 @@ exports.getOrdersByArea = async (req, res) => {
             WHERE o.AreaID IN (${areas.map((_, i) => `@Area${i}`).join(', ')})
         `;
 
-        const request = pool.request();
-        areas.forEach((a, i) => request.input(`Area${i}`, sql.VarChar(20), a));
+        // Mismos parámetros para la página y para el conteo del modo paginado.
+        const conParametros = (r) => {
+            areas.forEach((a, i) => r.input(`Area${i}`, sql.VarChar(20), a));
+            if (qPag) r.input('q', sql.NVarChar(110), `%${qPag}%`);
+            else if (diasPag > 0) r.input('dias', sql.Int, diasPag);
+            return r;
+        };
+        const request = conParametros(pool.request());
+        // Desde acá hasta el ORDER BY son los filtros: el conteo del modo paginado los reutiliza.
+        const inicioFiltros = query.length;
 
         const estadosFinales = "'Entregado', 'Finalizado', 'Cancelado'";
         if (mode === 'history') {
@@ -1387,23 +1409,53 @@ exports.getOrdersByArea = async (req, res) => {
             }
         }
 
-        if (q) {
+        if (paginado) {
+            if (qPag) {
+                // Los mismos campos que filtraba el navegador (cliente, código, ID de cliente,
+                // CodCliente, trabajo) más el IDCliente que muestra la columna Cliente y el N° de orden.
+                // Si faltara uno, buscar por ese dato dejaría de encontrar al pasar a paginado.
+                query += ` AND (o.Cliente LIKE @q OR o.CodigoOrden LIKE @q OR o.DescripcionTrabajo LIKE @q
+                           OR CAST(o.IdClienteReact AS VARCHAR(30)) LIKE @q OR CAST(o.CodCliente AS VARCHAR(30)) LIKE @q
+                           OR c.IDCliente LIKE @q OR CAST(o.OrdenID AS VARCHAR(30)) LIKE @q)`;
+            } else if (diasPag > 0) {
+                query += ' AND o.FechaIngreso >= DATEADD(day, -@dias, GETDATE())';
+            }
+        } else if (q) {
             query += ' AND (o.Cliente LIKE @q OR o.CodigoOrden LIKE @q OR CAST(o.OrdenID AS VARCHAR) LIKE @q)';
             request.input('q', sql.NVarChar(100), `%${q}%`);
         }
+        const filtrosSql = query.slice(inicioFiltros);
 
-        query += ` ORDER BY 
-            CASE 
+        if (paginado) {
+            // La lista de finalizadas se mira de lo más nuevo a lo más viejo (igual que la ordenaba el navegador).
+            query += ` ORDER BY o.FechaIngreso DESC, o.OrdenID DESC
+                       OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY`;
+            request.input('offset', sql.Int, offsetPag).input('limit', sql.Int, limitPag);
+        } else {
+        query += ` ORDER BY
+            CASE
                 WHEN o.Prioridad = 'Falla' OR o.CodigoOrden LIKE '%-F%' THEN 1
                 WHEN o.Prioridad = 'Reposición' OR o.CodigoOrden LIKE '%-R%' THEN 2
-                WHEN o.Prioridad = 'Urgente'    THEN 3 
-                WHEN o.Prioridad = 'Normal'     THEN 4 
-                ELSE 5 
+                WHEN o.Prioridad = 'Urgente'    THEN 3
+                WHEN o.Prioridad = 'Normal'     THEN 4
+                ELSE 5
             END ASC,
             ISNULL(o.Secuencia, 0) DESC,
             o.FechaIngreso ASC`;
+        }
 
-        const result = await request.query(query);
+        // Paginado: total y totales por unidad (el pie de la planilla), con los mismos filtros.
+        const unidadSql = "LOWER(ISNULL(NULLIF(LTRIM(RTRIM(o.UM)), ''), 'm'))";
+        const [result, resumen] = await Promise.all([
+            request.query(query),
+            paginado ? conParametros(pool.request()).query(`
+                SELECT ${unidadSql} AS U, COUNT(*) AS N, SUM(ISNULL(TRY_CAST(o.Magnitud AS FLOAT), 0)) AS Mag
+                FROM dbo.Ordenes o WITH(NOLOCK)
+                LEFT JOIN dbo.Clientes c WITH(NOLOCK) ON o.IdClienteReact = c.IDReact
+                WHERE o.AreaID IN (${areas.map((_, i) => `@Area${i}`).join(', ')})
+                ${filtrosSql}
+                GROUP BY ${unidadSql}`) : null,
+        ]);
 
         // Mapeo EXACTO para que tu Frontend AG Grid funcione
         const orders = result.recordset.map(o => ({
@@ -1525,6 +1577,15 @@ exports.getOrdersByArea = async (req, res) => {
             logger.warn('[getOrdersByArea] No se pudo calcular la cantidad de prendas: ' + ePrendas.message);
         }
 
+        if (paginado) {
+            const filasResumen = resumen?.recordset || [];
+            return res.json({
+                rows: orders,
+                total: filasResumen.reduce((a, x) => a + (x.N || 0), 0),
+                totales: Object.fromEntries(filasResumen.map(x => [x.U, x.Mag || 0])),
+                dias: diasPag,
+            });
+        }
         res.json(orders);
 
     } catch (err) {
@@ -2389,17 +2450,6 @@ exports.updateAreaStatus = async (req, res) => {
         logger.error("Error updateAreaStatus:", e);
         res.status(500).json({ error: e.message });
     }
-};
-
-// SIN USO (13/10): deleteOrder: el front no llama a DELETE /orders/:id. Además borra sin transacción ni cascada (hermanas, bultos). Confirmar con Yoania si se usa o se borra. Ver docs/auditoria-limpieza-2026-10-09.md.
-exports.deleteOrder = async (req, res) => {
-    const { id } = req.params;
-    try {
-        const pool = await getPool();
-        await pool.request().input('ID', id).query("DELETE FROM dbo.ArchivosOrden WHERE OrdenID = @ID");
-        await pool.request().input('ID', id).query("DELETE FROM dbo.Ordenes WHERE OrdenID = @ID");
-        res.json({ success: true });
-    } catch (e) { res.status(500).json({ error: e.message }); }
 };
 
 // (Duplicado antiguo eliminado)

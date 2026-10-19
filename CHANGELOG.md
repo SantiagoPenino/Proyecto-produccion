@@ -7,6 +7,122 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
 
 ---
 
+## [Sin deployar] — cambios desde el 19/10
+
+### Agregado
+- **Planilla de las áreas: el buscador también busca por trabajo (19/10).** Además de orden, cliente e ID de cliente, encuentra por la descripción del trabajo (la columna «Trabajo»), también en las bandejas de canceladas, prontas y consultas. El texto del buscador dice «Buscar orden, cliente, ID o trabajo…».
+- **Portal › Mi Fábrica: cada pedido muestra si es urgente o normal (19/10).** Al lado del número de pedido sale «Urgente» (magenta, con un rayo) o «Normal» (cian), los mismos colores que al elegir la prioridad en el formulario del pedido. Si alguna orden del pedido es urgente, el pedido figura urgente. Las reposiciones y los pedidos de mostrador no llevan la etiqueta.
+
+### Arreglado
+- **Reposiciones de ECOUV con terminaciones: ahora pasan por Terminaciones como el pedido original (19/10).**
+  - **El problema** (caso pedido 30736, REM-902601): la reposición copiaba el destino de la orden original, y Terminaciones ya le había puesto «Depósito», así que la -R se despachaba directo a Depósito. Además la XEUV de la reposición salía como una copia suelta, sin terminaciones ni instrucciones. Por eso no aparecía en la bandeja de Terminaciones, la cerraban a mano y sacaba su propia etiqueta. Quedaban dos paquetes para una sola lona; uno quedó en un remito que nadie retiró y el pedido se trancó en Depósito hasta que se forzó el ingreso.
+  - **Ahora:** al crear la reposición, las terminaciones de los archivos repuestos se copian a los archivos nuevos. La cantidad se escala a las copias repuestas: 1 de 4 copias con 4 ojales da 1. La hermana XEUV-…-R# se crea igual que en el ingreso del pedido: aparece en la bandeja de Terminaciones con las instrucciones del cliente («ojales c/50 cm…»), y la -R sale de ECOUV hacia Terminaciones. La etiqueta final sale a nombre de la -R, un solo paquete.
+  - **Archivos repuestos sin terminaciones:** si la original iba a Terminaciones por otros archivos, la -R va directo a Depósito.
+  - **Pantalla de Reposiciones:** la orden de Terminaciones ya no se ofrece en «Otros servicios relacionados», porque se crea sola. Al terminar se muestra su código.
+- **Planilla › Finalizadas y Canceladas: por página desde el servidor, últimos 30 días al abrir (19/10).** «Ver órdenes finalizadas» bajaba TODO el histórico y el navegador lo paginaba: DF eran 18.976 órdenes y 16 MB cada vez que se abría, y crece todos los días.
+  - Ahora trae páginas de 50 desde el servidor, de **41 KB**.
+  - Período por fecha de ingreso: **30 días · 3 meses · 12 meses · Todo**, con 30 días al abrir.
+  - **Con texto en el buscador se busca en todo el histórico**, sin importar el período, por los mismos campos que antes (cliente, código, ID de cliente, código de cliente, trabajo) más el IDCliente que muestra la columna y el N° de orden.
+  - El total de órdenes y los metros/unidades del pie salen del servidor y reflejan el filtro vigente.
+  - Es el diseño acordado el 31/08. «Esperando al cliente» y la planilla activa no cambian.
+- **Planilla de área: «Cargando órdenes…» en vez de «No hay órdenes para mostrar» mientras carga (19/10).** Al entrar a la planilla, cambiar de área (PRO «Ver área») o pasar a Canceladas, Prontas o Consultas, la lista quedaba vacía con el cartel de «No hay órdenes» hasta que llegaban los datos. Un refresco con órdenes ya en pantalla no las vacía.
+- **Visor 3D TPU: abre más rápido y muestra que está cargando (19/10).** El botón «Ver en 3D» parecía no hacer nada durante varios segundos.
+  - **Por qué:** en las órdenes de matriz propia, antes de mostrar el visor, el backend bajaba de Drive el JOB y el PDF del cliente, analizaba el PDF con Python y después volvía a bajar el MISMO PDF. Eran ~5 s medidos en órdenes reales (TPU-34674, TPU-34981), y todo ese tiempo la pantalla quedaba vacía. Dibujar el boceto en el navegador tarda ~0,1–0,5 s, así que eso no era el problema.
+  - **Ahora:**
+    - Aparece enseguida «Abriendo el visor 3D…», con una X para cerrar, en el detalle de la orden y en el portal.
+    - El visor pide el análisis y el PDF a la vez, y el backend comparte una sola descarga.
+    - Lo bajado y el análisis quedan 10 minutos en memoria (máximo 10, sin guardar PDFs de más de 8 MB), así que reabrir el visor no vuelve a Drive.
+    - Medido: de ~5,1 s a 1,6–2,8 s la primera vez y ~0 s al reabrir.
+- **Pagos online: un aviso posterior ya no anula un pago cobrado (19/10).**
+  - **Handy:** avisa cada intento del link por separado, y el aviso de un intento fallido puede llegar después del pago. Desde el 20/04, un «Fallido» sobre un link ya cobrado se tomaba como contracargo: anulaba el pago (monto en 0), desvinculaba el retiro y abría un ticket de «contracargo».
+    - El 13/10 le pasó a RW-32652 (Penna): el intento de las 16:06 avisó a las 16:37, con el pago de las 16:16 ya hecho. Se corrigió a mano con SQL.
+    - Antes le pasó a RW-6331, RW-6414, RW-6553, RW-7240 y RW-8104, con el aviso unas 24 h después del pago. Además hay 17 casos de marzo y abril que quedaron marcados «ANULADO-RETROACTIVO».
+    - **Ahora:** el estado «Pagado» no se pisa y nada se anula. Si el intento avisado es anterior al pago, solo se loguea; si no, se abre un ticket a Finanzas («REVISAR: aviso Fallido sobre un pago ya cobrado») para verlo en el panel de Handy.
+  - **MercadoPago:** el aviso de otro pago del mismo link (un intento rechazado) ya no pisa el estado ni el número del pago aprobado. El cobro solo se deshace con una devolución (`refunded`) o un contracargo (`charged_back`) del mismo pago aprobado; antes también con `rejected` o `cancelled` de cualquier pago del link.
+    - Si llega un segundo pago aprobado del mismo link, antes se ignoraba como duplicado. Ahora se abre un ticket «posible DOBLE COBRO» para devolverlo.
+- **Pagos › pestañas de fallidos (Handy y MercadoPago): por defecto muestran solo lo que sigue sin pagar (19/10).** Casi todos los intentos no pagados son reintentos de clientes que después pagaron: en producción, de las 85 órdenes con intentos fallidos de los últimos 30 días, quedaban unas 10 sin pagar.
+  - Botón «Solo sin pagar / Todos los intentos».
+  - Columna «Resultado»: «Pagó después», «Sin pagar», o «—» cuando no hay orden (tienda, billetera).
+  - Los links que el cliente abrió y nunca completó (Handy «Creado», MercadoPago «pending» sin aviso) se muestran como «Sin completar», no como fallidos.
+  - Handy no manda el motivo del rechazo (visto en el aviso real del 13/10), así que no hay motivo que mostrar.
+- **CFE: un e-Ticket con RUT se frena antes de pedir el número (19/10).** DGI no acepta un RUT en un e-Ticket. El doc 19154 (Serigrafia Seta) salió como e-Ticket con el RUT del cliente, DGI lo rechazó y el número de e-Ticket 55574 quedó gastado. Se reenvió como e-Factura y fue aceptado.
+  - Ahora la vista previa de la Bandeja y el envío lo frenan antes de pedirle el número a SISNET, con el mensaje: «cambiá el documento a e-Factura, o borrá el RUT si es consumidor final». El tipo no se cambia solo, lo sigue eligiendo el operador.
+  - Los frenos de validación de la emisión ahora devuelven 400 y se loguean como aviso, no como error 500.
+  - El mensaje del umbral de UI del e-Ticket ya no sugiere cargar un RUT.
+- **CFE: si SISNET rechaza un documento, el número pedido para ese intento se anula (19/10).** Antes quedaba gastado sin usar en cada rechazo, como pasó con el e-Ticket 55574.
+  - No se anula el número reservado por el POS: la terminal ya se lo informó a la procesadora, y el reenvío desde la Bandeja sale con ese mismo número.
+  - Tampoco se anula cuando la llamada falla por red, porque no se sabe si SISNET llegó a firmar el CFE. En ese caso el número queda anotado en el log para revisarlo.
+  - Si la anulación falla, se avisa en el log y el rechazo se muestra igual.
+- **CFE: el motivo de un rechazo de SISNET se ve entero (19/10).** SISNET manda el motivo en varias líneas («---- WsReceptor ----» y abajo el error). En el log y en el mensaje de la Bandeja quedaba a la vista solo el encabezado. Ahora va en una sola línea, junto con el número de factura que se pidió para ese intento.
+- **Seguridad: las rutas del servidor que seguían sin login ahora lo piden (19/10).** Antes de cerrar cada una se revisó quién la llama (pantallas internas, portal, registro, tótem) y el log de nginx de producción: todo lo que las usa es un navegador, ninguna integración de afuera.
+  - **Solo usuarios internos:** recepción, los «getway» de retiros y órdenes que estaban abiertos (estados, caja, lugar de retiro, búsqueda, modos), las 8 rutas de órdenes que estaban abiertas (dos desde un debug: búsqueda avanzada y detalle), reports, audit, measurements, wms-interno (68 rutas) y 12 de inventory. Hasta hoy, wms-interno e inventory aceptaban también la sesión de un cliente del portal.
+  - **Lo que nadie usaba se borró en vez de cerrarlo:** el chat con Gemini (ejecutaba SQL), las 3 rutas de prueba de SISNET contra el web service real, integration-logs (su `POST /clean` borraba filas) y las 5 rutas de Drive que pisaban `token.json`. Ver «Quitado».
+  - **Nomenclators, por ruta:** departamentos, localidades de un departamento, agencias y vendedores siguen sin login (las usa la página pública de registro). Los catálogos del formulario de pedido piden sesión, de cliente o interna, porque los usa el portal. El ABM de localidades y agencias queda para internos.
+  - **Stock del cliente en el portal:** un cliente o un diseñador ya no puede pedir las bobinas o prendas de otro cliente con `?clienteId=`. Ahora sale siempre de su sesión.
+  - **El token de activación de cuenta y el de reset de contraseña ya no sirven como sesión.** Se firman con la misma clave que el login y pasaban por `verifyToken`.
+  - **De paso:** las recepciones registran el usuario real. Antes quedaba siempre el usuario 1.
+
+### Quitado
+- **Código sin uso que quedaba de la auditoría (19/10).** Se verificó antes que nadie lo llama: ni el front, ni el backend, ni scripts. En el log de nginx de producción no hay llamadas a chat, SISNET, integration-logs ni Drive.
+  - **Chat con Gemini:** `chatController`, `chatRoutes`, `n8nService`, `localFileService` y `ChatWidget` (estaba importado en `MainAppContent` con el render comentado). Ejecutaba SQL armado por el modelo. El «pasar en limpio» del Helpdesk no se toca: usa otro servicio.
+  - **Rutas de prueba de SISNET:** `sisnetController` y `sisnetRoutes`. La emisión real sigue en `sisnetService`.
+  - **integration-logs:** controller y rutas. La tabla la sigue llenando `alertsService`.
+  - **`GET /api/debug/reprocess/:id`** y `debugController`: borraba las medidas de los archivos de una orden.
+  - **`DELETE /api/orders/:id`** (`deleteOrder`): borraba la orden y sus archivos sin transacción ni cascada. Y `reemplazarDeuda` de `contabilidadService`, que hacía DELETE de deudas.
+  - **Las 5 rutas de Drive** (`/api/drive-reauth`, `/api/drive-callback` y 3 de `/api/web-orders/drive/*`): pisaban `token.json` solo con el permiso de Drive. `driveService` sigue, lo usan las miniaturas.
+  - **TPU (decidido por Santiago):** `tpuPlanchaService` (el primer intento, del 14/08, de pasar a código el script de Illustrator de la plancha; nunca se usó) y `tpuPltService` (el `.plt` de la cortadora lo genera el Python desde el 15/10). También `_es_rectangulo` de `tpu_matriz.py`, que nadie llamaba. Se verificó en el repo, en todo el historial de git y en el servidor que nada los usaba.
+  - **Se quedan:** `FacturarAnticipoModal` (plan del anticipo facturable) y las 4 marcas de Solicitudes (trabajo en curso).
+
+### Notas de deploy
+- **Buscar por trabajo en la planilla:** front `production/areas/AreaView.jsx` (va en el build). Sin SQL ni backend. No se probó en el navegador.
+- **Reposiciones ECOUV con terminaciones:** backend `controllers/productionFileController.js` (`createCustomerReplacementOrder`; necesita reiniciar) y front `pages/customer-service/CustomerReplacementPage.jsx` (va en el build). Sin SQL. Probado el handler real contra la base local con EUV-32146, reponiendo 1 de 4 copias y con la XEUV marcada como relacionada; todo se deshizo con rollback. Resultado:
+  - EUV-32146-R1 con destino TERMINAC y las instrucciones en la nota.
+  - XEUV-32146-R1 con 1 línea de ojales (cantidad 1, separación 50) ligada al archivo nuevo.
+  - La XEUV relacionada no se clonó.
+  - Las líneas de la original no se tocaron.
+  - La pantalla no se probó en el navegador. Las reposiciones ya creadas (como la 30736-R1) no cambian.
+- **Finalizadas/Canceladas paginadas:** backend `controllers/ordersController.js` (`getOrdersByArea`, nuevos parámetros `paginado=1`, `dias`, `offset`, `limit`; sin `paginado` responde igual que antes, el array entero), necesita reiniciar. Front, que va en el build: `services/modules/ordersService.js`, `production/areas/AreaView.jsx` y `production/components/ProductionTable.jsx`. Sin SQL.
+  - Probado el handler contra la base local, DF prontas:
+    - 30 días = 4.237 órdenes, igual que el filtro equivalente sobre la lista completa.
+    - 3 meses = 12.780; 12 meses y todo = 18.976.
+    - Páginas de 41 KB en 84–151 ms; la 1 y la 2 no se pisan.
+    - Buscando por código viejo, IDCliente, CodCliente o IdClienteReact da los mismos totales que filtrar la lista completa.
+    - Canceladas: 309 en 30 días.
+    - La planilla activa sigue devolviendo el array de siempre.
+  - La pantalla no se probó en el navegador.
+- **Planilla «Cargando órdenes…»:** front `production/areas/AreaView.jsx` y `production/components/ProductionTable.jsx` (va en el build). Sin backend ni SQL. Revisada la sintaxis; no se probó en el navegador.
+- **Visor 3D TPU más rápido:** backend `services/tpuMatrizService.js` (necesita reiniciar). Front, que va en el build: `client-portal/modulos/Tpu3DViewer.jsx`, `Tpu3DCargando.jsx` (nuevo), `FactoryView.jsx` y `production/components/OrderDetailModal.jsx`. Sin SQL.
+  - Probado contra la base local con TPU-34674 y TPU-34981: los dos pedidos del visor juntos tardan 2,8 s y 1,6 s en frío, y 2–4 ms la segunda vez, con el mismo análisis.
+  - La pantalla de carga no se probó en el navegador.
+  - Las órdenes TPU que no son de matriz siguen bajando sus capas de Drive (~1,2 s), pero ahora con la pantalla de carga a la vista.
+- **Pagos online (webhooks y pestañas de fallidos):** backend `controllers/webOrdersController.js` (`handyWebhook`, `mpWebhook`) y `controllers/webRetirosController.js` (`getPagosOnlineFallidos`, `getPagosMpFallidos`, parámetro `soloSinResolver`), los dos necesitan reiniciar; front `pages/VerificarPagosOnlineView.jsx` (va en el build). Sin SQL obligatorio.
+  - **Probado contra la base local, con avisos simulados sobre pagos reales de la copia** (las filas tocadas se restauraron y los tickets de prueba se borraron):
+    - Handy, «Fallido» de un intento anterior al pago: sigue «Pagado», el retiro conserva el pago y no hay ticket.
+    - Handy, intento posterior: sigue «Pagado» y se abre ticket.
+    - MercadoPago, `rejected` de otro pago: sigue `approved` con el mismo PaymentId.
+    - MercadoPago, segundo `approved`: no se registra y se abre ticket de doble cobro.
+    - Los dos endpoints de fallidos responden con y sin el filtro.
+  - No se probó: la pantalla en el navegador, ni un `refunded` real (anula el pago y no quise tocar datos).
+  - El caso de Penna (RW-32652) se corrigió en producción el 19/10 con un script SQL: pago 73382 de vuelta a US$ 57 y vinculado al retiro y sus 3 órdenes, con respaldos en `_bk_RW32652_*_20261019`. Confirmado: sin transacciones abiertas y el pago se lee en US$ 57 vinculado al retiro.
+- **CFE (e-Ticket con RUT + rechazo en una línea):** backend `services/sisnetService.js` y `controllers/cfeController.js` (necesita reiniciar). Sin SQL. Probado `prepararCFE` contra la base local, sin llamar a SISNET:
+  - e-Ticket con RUT: frenado.
+  - e-Ticket con CI: sale con receptor 3.
+  - e-Ticket sin documento: sale sin receptor.
+  - e-Factura con RUT: sale como 111.
+  - Del rechazo en una línea se probó solo el armado del texto.
+- **Anulación del número tras un rechazo:** mismo archivo `services/sisnetService.js`. Probado `emitirCFE` con un SISNET simulado (sin llamadas reales), 4 casos:
+  - Rechazo: anula el número.
+  - Número reservado por el POS: no anula.
+  - Error de red: no anula.
+  - Anulación que falla: el rechazo sale igual y se avisa.
+  - **No probado contra SISNET real:** no está verificado que SISNET acepte anular un número que ya viajó en un CFE rechazado. La anulación de un número reservado y nunca enviado sí se probó el 12/10. Si SISNET no lo acepta, queda el aviso en el log y todo sigue como antes.
+- **Prioridad en Mi Fábrica:** backend `controllers/webOrdersController.js` (`getClientOrders` devuelve `Prioridad`; necesita reiniciar) y front `client-portal/modulos/FactoryView.jsx` (va en el build). Sin SQL. Probado el handler real contra la base local: devuelve Normal y Urgente en los pedidos de GERMANLF. La pantalla no se probó en el navegador.
+- **Seguridad, login en las rutas abiertas:** backend `middleware/authMiddleware.js`, `server.js`, `controllers/inventoryController.js` y `routes/` `receptionRoutes`, `getwayLugaresRetiro`, `getwayOrdenesRetiro`, `getwayOrdenes`, `ordersRoutes`, `webOrdersRoutes`, `nomenclatorsRoutes`, `reportsRoutes`, `auditRoutes`, `measurementRoutes`, `wmsInternoRoutes` e `inventoryRoutes` (necesita reiniciar). Sin SQL.
+  - **Probado:** con los routers reales y los controllers simulados, 299 casos en 6 suites (4 de hoy y las 2 del 13/10; ya sin las rutas borradas): sin sesión, con sesión de cliente, de cliente web, de diseñador, interna, de Admin y con los tokens de activación y reset. Cargan los 93 routers sin error. No se probó en el navegador.
+  - **Después del deploy:** la estación de impresión (`/print-station`) solo llamaba a una ruta que estaba abierta, así que su sesión puede tener más de 30 días. Si al reiniciar queda en el login, hay que volver a entrar.
+- **Código sin uso:** backend `server.js`, `controllers/ordersController.js`, `routes/ordersRoutes.js`, `services/contabilidadService.js` y `routes/webOrdersRoutes.js` (necesita reiniciar); front `layout/MainAppContent.jsx` (va en el build). Los 12 archivos borrados pueden quedar en el servidor: ya no los carga nadie. `python/tpu_matriz.py` solo pierde una función que no se llamaba: subirlo es opcional. Sin SQL.
+  - **Probado:** cargan los 90 routers (antes 93), el front compila, el grafo no tiene imports rotos y no queda ninguna referencia a lo borrado.
+
 ## [2026-10-19] — deployado el 19/10 (cambios del 08/10 al 16/10)
 
 ### Agregado

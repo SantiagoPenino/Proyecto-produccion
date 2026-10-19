@@ -2,12 +2,13 @@ import React, { useEffect, useState, lazy, Suspense } from 'react';
 import { createPortal } from 'react-dom';
 import { GlassCard } from '../pautas/GlassCard';
 import { apiClient } from '../api/apiClient';
-import { Loader2, RefreshCw, Layers, Trash2, Check, Settings, Circle, Ban, AlertTriangle, Search, Factory, Truck, MessageSquareWarning, Palette, ShieldCheck, X } from 'lucide-react';
+import { Loader2, RefreshCw, Layers, Trash2, Check, Settings, Circle, Ban, AlertTriangle, Search, Factory, Truck, MessageSquareWarning, Palette, ShieldCheck, X, Zap } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import { ConfirmationModal } from '../pautas/ConfirmationModal';
 // Visor 3D del parche TPU (aprobación): three.js adentro, se carga solo si se abre.
 const Tpu3DViewer = lazy(() => import('./Tpu3DViewer'));
+import Tpu3DCargando from './Tpu3DCargando';
 import ConsultaClienteModal from './ConsultaClienteModal';
 import { socket } from '../../services/socketService';
 import useRecargaConFreno from '../../hooks/useRecargaConFreno';
@@ -426,6 +427,7 @@ export const FactoryView = () => {
                 fechaEntrega: null,   // fecha real de entrega (tomada de la fila ERP entregada)
                 disenadorNombre: null,        // pedido creado por un diseñador autorizado
                 pendientesAprobacion: [],     // OrdenIDs retenidos esperando la aprobación del cliente (F4)
+                prioridad: null,              // 'Urgente' | 'Normal' (las reposiciones y los pedidos de mostrador, sin dato)
             };
         }
         // Preferir la info de la orden WEB (más completa: tiene área, descripción, etc.)
@@ -448,6 +450,10 @@ export const FactoryView = () => {
             if (order.AprobacionPendiente && order.OrdenID != null) {
                 projects[groupKey].pendientesAprobacion.push(order.OrdenID);
             }
+            // Prioridad del pedido: urgente si alguna de sus órdenes lo es.
+            const prioridad = String(order.Prioridad || '').trim().toLowerCase();
+            if (prioridad === 'urgente') projects[groupKey].prioridad = 'Urgente';
+            else if (prioridad === 'normal' && !projects[groupKey].prioridad) projects[groupKey].prioridad = 'Normal';
         }
         projects[groupKey].subOrders.push(order);
         if (order.Material) projects[groupKey].materials.add(order.Material);
@@ -717,6 +723,17 @@ export const FactoryView = () => {
                                         <span className="text-lg font-black text-zinc-100 tracking-tight font-barlow shrink-0">
                                             {(project.codigoVisible || project.id || '').replace(/\s*\(\d+\/\d+\)\s*$/, '')}
                                         </span>
+
+                                        {/* Prioridad con la que se hizo el pedido (mismos colores que al elegirla en el formulario) */}
+                                        {project.prioridad === 'Urgente' ? (
+                                            <span className="inline-flex items-center gap-1 text-[10px] text-custom-magenta bg-custom-magenta/10 border border-custom-magenta/40 px-2 py-0.5 rounded font-black uppercase tracking-wide shrink-0" title="Pedido urgente">
+                                                <Zap size={11} /> Urgente
+                                            </span>
+                                        ) : project.prioridad === 'Normal' ? (
+                                            <span className="inline-flex items-center text-[10px] text-cyan-400 bg-cyan-400/5 border border-cyan-500/25 px-2 py-0.5 rounded font-bold uppercase tracking-wide shrink-0" title="Prioridad normal">
+                                                Normal
+                                            </span>
+                                        ) : null}
 
                                         {/* Medio: badge "N telas" en multitela; si no, el material */}
                                         {isMultitela ? (
@@ -1132,7 +1149,7 @@ export const FactoryView = () => {
 
             {/* Visor 3D del parche TPU (aprobación) */}
             {tpu3D && (
-                <Suspense fallback={null}>
+                <Suspense fallback={<Tpu3DCargando onClose={() => setTpu3D(null)} />}>
                     <Tpu3DViewer
                         ordenId={tpu3D.ordenId}
                         codigo={tpu3D.codigo}

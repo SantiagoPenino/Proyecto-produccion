@@ -55,7 +55,6 @@ const PlanificacionPage = lazyWithRetry(() => import('../pages/PlanificacionPage
 const WebRetirosPage = lazyWithRetry(() => import('../logistics/WebRetirosPage'));
 const ClientsIntegration = lazyWithRetry(() => import('../pages/ClientsIntegration'));
 const PresupuestosPage = lazyWithRetry(() => import('../pages/ventas/PresupuestosPage'));
-import ChatWidget from '../common/ChatWidget';
 const ProductsIntegration = lazyWithRetry(() => import('../pages/ProductsIntegration'));
 const MarketingProductosPage = lazyWithRetry(() => import('../pages/MarketingProductosPage'));
 const MarketingPreciosPage = lazyWithRetry(() => import('../pages/MarketingPreciosPage'));
@@ -1008,7 +1007,6 @@ const MainAppContent = ({ menuItems = [] }) => {
                     </div>
                 </main>
             </div>
-            {/* <ChatWidget /> */}
         </div>
     );
 };

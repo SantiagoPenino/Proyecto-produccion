@@ -556,7 +556,7 @@ async function emitirDocumento(id, { wsCAE = null } = {}) {
             const umbralUYU = limiteUI * valorUI;
             const totalUYU = doc.MonIdMoneda === 2 ? Number(doc.DocTotal || 0) * cotDolar : Number(doc.DocTotal || 0);
             if (totalUYU > umbralUYU && !valReceptor.valido) {
-                throw errorEmision(400, `No se puede enviar a DGI: este e-Ticket equivale a $ ${totalUYU.toFixed(2)} UYU y supera el umbral de $ ${umbralUYU.toFixed(2)} (${limiteUI} UI), por lo que DGI exige identificar al comprador. ${valReceptor.motivo}. Solución: editá el documento, cargá la Cédula (6-8 dígitos) o el RUT (12 dígitos) del cliente y reenviá.`);
+                throw errorEmision(400, `No se puede enviar a DGI: este e-Ticket equivale a $ ${totalUYU.toFixed(2)} UYU y supera el umbral de $ ${umbralUYU.toFixed(2)} (${limiteUI} UI), por lo que DGI exige identificar al comprador. ${valReceptor.motivo}. Solución: editá el documento, cargá la Cédula (6-8 dígitos) del cliente y reenviá; si el cliente tiene RUT, emitilo como e-Factura (un e-Ticket con RUT lo rechaza DGI).`);
             }
         }
 

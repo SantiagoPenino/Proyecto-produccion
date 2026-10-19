@@ -218,15 +218,6 @@ class Forma:
         self.es_fondo = False
 
 
-# SIN USO (13/10): _es_rectangulo: definida y nunca llamada. Ver docs/auditoria-limpieza-2026-10-09.md.
-def _es_rectangulo(forma):
-    it = forma.items
-    if len(it) == 1 and it[0][0] == "re":
-        return True
-    if len(it) == 4 and all(x[0] == "l" for x in it):
-        return True
-    return False
-
 
 def leer_vector(ruta_pdf):
     """Abre el PDF del cliente y devuelve (doc fitz, page, formas, avisos, veredicto)."""
@@ -1388,7 +1379,7 @@ class Imposicion:
 
 # ── .plt (HPGL) para la cortadora ───────────────────────────────────────────────────────────────
 # Dialecto CALCADO de una muestra que la cortadora acepto (Desktop/tpu/TPU UV 10 cms/leones.plt, la
-# misma que uso backend/services/tpuPltService.js): cabecera IN / VS32 / WU0 / PW0.350 por pluma,
+# misma que usaba el viejo tpuPltService.js, borrado el 19/10): cabecera IN / VS32 / WU0 / PW0.350 por pluma,
 # 40 unidades por mm, origen en el CENTRO de la plancha con Y hacia arriba, marcas de registro con
 # pluma 1 (circulos de 16 lados, empezando por la izquierda) y contornos de corte con pluma 7,
 # cerrados (el ultimo punto repite el primero), lineas CRLF y SP0 al final.

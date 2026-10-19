@@ -14,13 +14,15 @@ router.post('/client', verifyToken, clientOrdersController.createClientOrder);
 // --- AQUÍ VAN LAS RUTAS DE CONSULTA ESPECÍFICA (Antes de las rutas con :id) ---
 
 // Reportes y Búsqueda Avanzada
-router.post('/search/advanced', ordersController.advancedSearchOrders); // TODO: Restaurar verifyToken luego de debug
-router.get('/details/:id', ordersController.getOrderFullDetails); // También liberamos detalles para prueba
-router.get('/search/integral/:ref', ordersController.getIntegralPedidoDetailsV2); // Nueva Ruta Integral (Version SQL SP)
-router.get('/priorities', ordersController.getPrioritiesConfig);
-router.get('/estados', ordersController.getEstadosConfig);
+// Estas 8 no tenían login (las 2 primeras, desde un debug). Solo usuarios internos (19/10): las usan
+// Consultas de órdenes y el detalle de la orden, todo dentro del sistema interno.
+router.post('/search/advanced', verifyToken, soloInternoConRol(), ordersController.advancedSearchOrders);
+router.get('/details/:id', verifyToken, soloInternoConRol(), ordersController.getOrderFullDetails);
+router.get('/search/integral/:ref', verifyToken, soloInternoConRol(), ordersController.getIntegralPedidoDetailsV2); // Nueva Ruta Integral (Version SQL SP)
+router.get('/priorities', verifyToken, soloInternoConRol(), ordersController.getPrioritiesConfig);
+router.get('/estados', verifyToken, soloInternoConRol(), ordersController.getEstadosConfig);
 // [PRO] Catálogo de tipos de archivo de referencia (selector del detalle de orden)
-router.get('/referencia-tipos', ordersController.getTiposArchivoReferencia);
+router.get('/referencia-tipos', verifyToken, soloInternoConRol(), ordersController.getTiposArchivoReferencia);
 
 // Ruta para el resumen de la ActiveOrdersCard.jsx (Protegida)
 router.get('/active', verifyToken, authorizeAdminOrArea, ordersController.getActiveOrdersSummary);
@@ -38,7 +40,6 @@ router.post('/cancel', verifyToken, ordersController.cancelOrder);
 router.post('/cancel-request', verifyToken, ordersController.cancelRequest);
 
 // Rutas con :id (DEBEN IR AL FINAL de los GET/PUT/DELETE específicos)
-router.delete('/:id', verifyToken, ordersController.deleteOrder);
 // Antes iban con verifyToken pelado, que acepta cualquier JWT válido — un cliente del portal
 // podía cambiar el estado de cualquier orden llamando la API directo. Ahora ambas exigen usuario
 // INTERNO, pero se restringen distinto según quién las usa:
@@ -116,7 +117,7 @@ router.put('/service/update', verifyToken, ordersController.updateService);
 router.delete('/file/:id', verifyToken, ordersController.deleteFile);
 
 // Extras (Safe Load) - Separados
-router.get('/:id/references', ordersController.getOrderReferences);
-router.get('/:id/services', ordersController.getOrderServices);
+router.get('/:id/references', verifyToken, soloInternoConRol(), ordersController.getOrderReferences);
+router.get('/:id/services', verifyToken, soloInternoConRol(), ordersController.getOrderServices);
 
 module.exports = router;

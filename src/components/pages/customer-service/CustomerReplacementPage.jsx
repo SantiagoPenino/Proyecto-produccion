@@ -92,7 +92,10 @@ const CustomerReplacementPage = () => {
             const archivos = data || [];
             // Las órdenes de FALLA (-F) son internas/efímeras: no se reponen, así que no se ofrecen
             // como "orden relacionada" para reponer (evita generar una -R de la falla).
-            const relacionadas = (related || []).filter(o => !(o.CodigoOrden || '').includes('-F'));
+            // Tampoco la hermana de terminaciones (TERMINAC): el servidor la crea solo, con sus
+            // terminaciones, cuando el archivo ECOUV repuesto las lleva.
+            const relacionadas = (related || []).filter(o =>
+                !(o.CodigoOrden || '').includes('-F') && String(o.AreaID || '').trim().toUpperCase() !== 'TERMINAC');
             setFiles(archivos);
             setRelatedOrders(relacionadas);
             return { archivos, relacionadas };
@@ -575,6 +578,11 @@ const CustomerReplacementPage = () => {
                         <div className="bg-slate-50 rounded-xl p-4 mb-6 border border-slate-200">
                             <div className="text-xs font-black text-slate-400 uppercase tracking-widest mb-1">CÓDIGO ORDEN</div>
                             <div className="text-xl font-black text-slate-700">{successData.newCode}</div>
+                            {successData.hermanaTerminaciones && (
+                                <div className="text-xs font-bold text-slate-500 mt-2">
+                                    + {successData.hermanaTerminaciones} para Terminaciones
+                                </div>
+                            )}
                         </div>
 
                         <button

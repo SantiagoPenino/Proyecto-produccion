@@ -2666,6 +2666,7 @@ exports.getClientOrders = async (req, res) => {
                         o.Magnitud      AS Magnitud,
                         o.UM            AS UM,
                         o.Variante      AS Variante,
+                        LTRIM(RTRIM(o.Prioridad)) AS Prioridad,   -- Normal / Urgente / Reposición: la card muestra normal o urgente
                         LTRIM(RTRIM(o.AreaID)) AS AreaCodigo,
                         (SELECT TOP 1 LTRIM(RTRIM(f.AreaID)) FROM Ordenes f WITH(NOLOCK) WHERE f.OrdenID = o.LiberaCuandoOrdenID) AS FuenteAreaCodigo,
                         -- TPU: el cliente ve el BOCETO DE PRODUCCIÓN (arte con 'boceto' en el nombre);
@@ -2730,6 +2731,7 @@ exports.getClientOrders = async (req, res) => {
                         NULL                AS Magnitud,
                         NULL                AS UM,
                         NULL                AS Variante,
+                        NULL                AS Prioridad,
                         NULL                AS AreaCodigo,
                         NULL                AS FuenteAreaCodigo,
                         NULL                AS PrimerArchivoID,
@@ -6386,9 +6388,12 @@ exports.handyWebhook = async (req, res) => {
             .input('status', sql.VarChar(20), statusLabel)
             .input('issuer', sql.VarChar(100), issuerName)
             .query(`
+                -- Un link cobrado no se pisa: Handy avisa cada INTENTO del link por separado y el aviso
+                -- de un intento fallido puede llegar DESPUÉS del pago (13/10, RW-32652: el intento de
+                -- las 16:06 avisó «Fallido» a las 16:37, con el pago de las 16:16 ya registrado).
                 UPDATE HandyTransactions
-                SET Status = @status,
-                    IssuerName = @issuer,
+                SET Status = CASE WHEN Status = 'Pagado' THEN Status ELSE @status END,
+                    IssuerName = CASE WHEN Status = 'Pagado' THEN IssuerName ELSE @issuer END,
                     PaidAt = CASE WHEN @status = 'Pagado' THEN GETDATE() ELSE PaidAt END,
                     WebhookReceivedAt = GETDATE()
                 WHERE TransactionId = @txId
@@ -6695,26 +6700,34 @@ exports.handyWebhook = async (req, res) => {
                     `Handy capturó ${totalAmount} (${currency === 840 ? 'USD' : 'UYU'}) pero el registro del pago falló:\n${reactErr.message}\n\nTransactionId: ${transactionId}${retiroEnCurso ? `\nRetiro: RW-${retiroEnCurso}` : ''}\n\nEl cliente YA pagó con tarjeta. NO volver a cobrar este retiro en caja: registrar el pago a mano o devolver la transacción en el panel de Handy.`);
             }
         } else if (status === 2 || status === 5) {
-            // --- ROLLBACK DE OPERACIONES: ESTADO CAYÓ A FALLIDO (CONTRACARGO O RECHAZO TARDÍO) ---
+            // «Fallido» sobre un link YA COBRADO: no se anula nada (19/10/2026). Antes se tomaba como
+            // contracargo y se deshacía el pago (performCheckoutRollback). Pero Handy avisa cada INTENTO
+            // del link por separado (PurchaseData.Created distingue cuál) y el aviso de un intento
+            // fallido anterior puede llegar después del pago: RW-32652 el 13/10 y 22 casos de marzo a
+            // mayo con el aviso ~24 h después, todos cobrados. Si el intento es anterior al pago, solo se
+            // loguea; si no se puede saber, ticket a Finanzas para revisarlo en el panel de Handy.
             try {
                 const txData = await pool.request()
                     .input('txIdRb', sql.VarChar(100), transactionId)
-                    .query('SELECT OrdersJson, CodCliente, PaidAt FROM HandyTransactions WHERE TransactionId = @txIdRb');
-                
-                if (txData.recordset.length > 0) {
-                    const tx = txData.recordset[0];
-                    // Si PaidAt NO es nulo, significa que ANTES fue pagado. (Gatilla el rollback)
-                    if (tx.PaidAt) {
-                        const storedData = JSON.parse(tx.OrdersJson || '{}');
-                        const storedOrdenRetiro = storedData.ordenRetiro;
-                        const ordenRetiroId = parseInt(String(storedOrdenRetiro || '').replace(/^[A-Za-z]+-0*/, ''), 10);
-                        if (!isNaN(ordenRetiroId)) {
-                            await performCheckoutRollback(pool, transactionId, ordenRetiroId, 'Handy', tx.CodCliente);
-                        }
+                    .query('SELECT OrdersJson, CodCliente, PaidAt, TotalAmount, Currency FROM HandyTransactions WHERE TransactionId = @txIdRb');
+                const tx = txData.recordset[0];
+                if (tx?.PaidAt) {
+                    const retiro = JSON.parse(tx.OrdersJson || '{}').ordenRetiro || 'sin retiro';
+                    const creado = payload.PurchaseData?.Created;
+                    const intento = creado ? new Date(creado) : null;
+                    if (intento && !isNaN(intento) && intento < new Date(tx.PaidAt)) {
+                        logger.info(`[HANDY WEBHOOK] «${statusLabel}» de un intento anterior al pago (intento ${creado}) en ${transactionId} (${retiro}): el pago sigue vigente.`);
+                    } else {
+                        logger.warn(`[HANDY WEBHOOK] «${statusLabel}» sobre ${transactionId} (${retiro}), ya cobrado: no se anula, ticket a Finanzas.`);
+                        await crearTicketFinanzas(pool, tx.CodCliente,
+                            `REVISAR: aviso «${statusLabel}» de Handy sobre un pago ya cobrado (${retiro})`,
+                            `Handy avisó «${statusLabel}» para la transacción ${transactionId} (intento del ${creado || 'sin fecha'}), que ya figura cobrada: ${tx.TotalAmount} ${tx.Currency === 840 ? 'USD' : 'UYU'}, retiro ${retiro}.\n\n` +
+                            `El sistema NO anuló el pago. Casi siempre es el aviso atrasado de otro intento del mismo link. ` +
+                            `Verificá en el panel de Handy que el cobro siga aprobado; si hubo un contracargo o una devolución real, anulá el pago a mano.`);
                     }
                 }
-            } catch(e) {
-                logger.error('[HANDY WEBHOOK ROLLBACK ERROR]', e.message);
+            } catch (e) {
+                logger.error('[HANDY WEBHOOK] Error revisando el aviso fallido sobre un pago cobrado:', e.message);
             }
         }
 
@@ -7129,40 +7142,60 @@ exports.mpWebhook = async (req, res) => {
         // OUTPUT DELETED.PaidAt permite detectar atómicamente si este webhook es el PRIMERO
         // en procesar este pago. Si DELETED.PaidAt ya tenía valor → otro webhook ya lo procesó → abort.
         // Esto resuelve la race condition entre IPN y Webhook moderno de MP que llegan simultáneos.
+        // Una preferencia cobrada no se pisa con el aviso de OTRO pago del mismo link (un intento
+        // rechazado del cliente llega como otro paymentId): Status y PaymentId quedan los del cobro.
         const updateResult = await pool.request()
             .input('txId',   sql.VarChar(100), externalRef)
             .input('status', sql.VarChar(50),  mpStatus)
             .input('mpId',   sql.VarChar(100), String(paymentId))
             .query(`
                 UPDATE MercadoPagoTransactions
-                SET Status = @status, PaymentId = @mpId,
-                    PaidAt = CASE WHEN @status = 'approved' THEN GETDATE() ELSE PaidAt END,
+                SET Status    = CASE WHEN PaidAt IS NOT NULL AND ISNULL(PaymentId, '') <> @mpId THEN Status    ELSE @status END,
+                    PaymentId = CASE WHEN PaidAt IS NOT NULL AND ISNULL(PaymentId, '') <> @mpId THEN PaymentId ELSE @mpId END,
+                    PaidAt = CASE WHEN @status = 'approved' AND (PaidAt IS NULL OR ISNULL(PaymentId, '') = @mpId) THEN GETDATE() ELSE PaidAt END,
                     WebhookReceivedAt = GETDATE()
-                OUTPUT DELETED.PaidAt AS OldPaidAt
+                OUTPUT DELETED.PaidAt AS OldPaidAt, DELETED.PaymentId AS OldPaymentId
                 WHERE TransactionId = @txId
             `);
 
         const oldPaidAt = updateResult.recordset[0]?.OldPaidAt ?? null;
+        const oldPaymentId = updateResult.recordset[0]?.OldPaymentId ?? null;
+        const esOtroPago = oldPaidAt !== null && String(oldPaymentId || '') !== String(paymentId);
 
-        // Si ya tenía PaidAt → este es un webhook duplicado (IPN + Webhook moderno del mismo pago)
+        // Si ya tenía PaidAt → webhook duplicado (IPN + Webhook moderno del mismo pago)... o un SEGUNDO
+        // pago aprobado del mismo link: ese no se registra solo, pero Finanzas tiene que enterarse.
         if (mpStatus === 'approved' && oldPaidAt !== null) {
+            if (esOtroPago) {
+                logger.warn(`[MP WEBHOOK] ⚠️ SEGUNDO pago aprobado (${paymentId}) en ${externalRef}, ya cobrado con ${oldPaymentId}: ticket a Finanzas.`);
+                await crearTicketFinanzas(pool, null,
+                    `ALERTA: posible DOBLE COBRO MercadoPago (Tx ${externalRef})`,
+                    `La preferencia ${externalRef} ya estaba cobrada con el pago ${oldPaymentId} y MercadoPago aprobó OTRO pago: ${paymentId}.\n\n` +
+                    `El segundo pago NO se registró en el sistema. Si el cliente pagó dos veces, corresponde devolverlo desde el panel de MercadoPago.`);
+                return;
+            }
             logger.warn(`[MP WEBHOOK] ⚠️ Pago ${externalRef} ya fue procesado anteriormente (PaidAt: ${oldPaidAt}). Webhook duplicado ignorado.`);
             return;
         }
 
-        logger.info(`[MP WEBHOOK] Estado actualizado a "${mpStatus}" para TX ${externalRef}`);
+        if (!esOtroPago) logger.info(`[MP WEBHOOK] Estado actualizado a "${mpStatus}" para TX ${externalRef}`);
 
         // Solo asentar el pago en el sistema si está aprobado
         if (mpStatus !== 'approved') {
             logger.info(`[MP WEBHOOK] Estado "${mpStatus}" no requiere acción de pago.`);
             
-            // --- ROLLBACK SI SE RECHAZÓ O CONTRACARGÓ POST-PAGO ---
-            if (mpStatus === 'rejected' || mpStatus === 'refunded' || mpStatus === 'cancelled' || mpStatus === 'charged_back') {
+            // Sobre una preferencia YA COBRADA: el aviso de otro pago (un intento rechazado del cliente)
+            // no toca nada. El cobro se deshace solo con una devolución o un contracargo DEL MISMO pago
+            // aprobado; antes también con rejected/cancelled de cualquier pago del link (19/10/2026).
+            if (oldPaidAt !== null && esOtroPago) {
+                logger.info(`[MP WEBHOOK] «${mpStatus}» del pago ${paymentId}, otro intento de ${externalRef} (cobrado con ${oldPaymentId}): no se toca.`);
+                return;
+            }
+            if (mpStatus === 'refunded' || mpStatus === 'charged_back') {
                 try {
                     const txData = await pool.request()
                         .input('txIdRb', sql.VarChar(100), externalRef)
                         .query('SELECT OrdersJson, CodCliente, PaidAt FROM MercadoPagoTransactions WHERE TransactionId = @txIdRb');
-                    
+
                     if (txData.recordset.length > 0) {
                         const tx = txData.recordset[0];
                         if (tx.PaidAt) {

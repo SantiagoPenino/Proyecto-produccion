@@ -290,6 +290,10 @@ const TablaPagosOnline = ({ endpoint, fallidos = false, gatewayLabel = 'Transacc
     const [selected, setSelected] = useState(null);
     const [filters, setFilters] = useState({ startDate: '', endDate: '', clientFilter: '' });
     const [hasMore, setHasMore] = useState(true);
+    // Fallidos: por defecto solo los intentos cuya orden SIGUE sin pagar. Casi todos los demás son
+    // reintentos de clientes que después pagaron (otro intento, la otra pasarela o caja).
+    const [soloSinPagar, setSoloSinPagar] = useState(true);
+    const soloSinPagarRef = useRef(true);
 
     const offsetRef = useRef(0);
     const loadingRef = useRef(false);
@@ -302,6 +306,7 @@ const TablaPagosOnline = ({ endpoint, fallidos = false, gatewayLabel = 'Transacc
         try {
             const params = new URLSearchParams();
             Object.entries(filters).forEach(([k, v]) => { if (v) params.append(k, v); });
+            if (fallidos && soloSinPagarRef.current) params.append('soloSinResolver', '1');
             params.append('offset', offsetRef.current);
             const res = await api.get(`${endpoint}?${params}`);
             const data = res.data;
@@ -321,6 +326,12 @@ const TablaPagosOnline = ({ endpoint, fallidos = false, gatewayLabel = 'Transacc
     };
 
     useEffect(() => { fetchOnline(false); }, []);
+
+    const cambiarSoloSinPagar = () => {
+        soloSinPagarRef.current = !soloSinPagarRef.current;
+        setSoloSinPagar(soloSinPagarRef.current);
+        handleSearch();
+    };
 
     useEffect(() => {
         const sentinel = sentinelRef.current;
@@ -345,6 +356,13 @@ const TablaPagosOnline = ({ endpoint, fallidos = false, gatewayLabel = 'Transacc
         'charged_back': 'Contracargo',
     };
     const normalizeStatus = (st) => MP_STATUS_MAP[(st || '').toLowerCase()] || st || 'Sin estado';
+    // Link generado sin respuesta de la pasarela (Handy «Creado», MP «pending» sin aviso): el cliente
+    // lo abrió y no terminó de pagar. No es un rechazo.
+    const etiquetaEstado = (pago) => {
+        const s = (pago.Status || '').toLowerCase();
+        if (s === 'creado' || (s === 'pending' && !pago.WebhookReceivedAt)) return 'Sin completar';
+        return normalizeStatus(pago.Status);
+    };
 
     const statusColor = (st) => {
         const s = (st || '').toLowerCase();
@@ -355,7 +373,15 @@ const TablaPagosOnline = ({ endpoint, fallidos = false, gatewayLabel = 'Transacc
 
     return (
         <div className="flex flex-col gap-3">
-            <FilterBar filters={filters} onChange={(k, v) => setFilters(f => ({ ...f, [k]: v }))} onSearch={handleSearch} loading={loading} />
+            <FilterBar filters={filters} onChange={(k, v) => setFilters(f => ({ ...f, [k]: v }))} onSearch={handleSearch} loading={loading}
+                extra={fallidos && (
+                    <button onClick={cambiarSoloSinPagar} disabled={loading}
+                        title="Oculta los intentos cuya orden ya se pagó por otro lado (otro intento, la otra pasarela o caja)"
+                        className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-bold border transition-all disabled:opacity-50 whitespace-nowrap
+                            ${soloSinPagar ? 'bg-rose-50 border-rose-300 text-rose-700' : 'bg-white border-slate-200 text-slate-500 hover:border-slate-300'}`}>
+                        <Filter size={13} /> {soloSinPagar ? 'Solo sin pagar' : 'Todos los intentos'}
+                    </button>
+                )} />
 
             <div className="overflow-auto rounded-xl border border-slate-200 bg-white">
                 <table className="w-full text-sm">
@@ -366,15 +392,18 @@ const TablaPagosOnline = ({ endpoint, fallidos = false, gatewayLabel = 'Transacc
                             <th className="px-4 py-3 text-left">Cliente</th>
                             <th className="px-4 py-3 text-right">Monto</th>
                             <th className="px-4 py-3 text-center">Estado</th>
+                            {fallidos && <th className="px-4 py-3 text-center">Resultado</th>}
                             <th className="px-4 py-3 text-center">Órdenes</th>
                         </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
                         {loading && pagos.length === 0 ? (
-                            <tr><td colSpan={6}><LottieSpinner size={72} /></td></tr>
+                            <tr><td colSpan={fallidos ? 7 : 6}><LottieSpinner size={72} /></td></tr>
                         ) : pagos.length === 0 ? (
-                            <tr><td colSpan={6} className="text-center py-10 text-slate-400">
-                                {fallidos ? '¡No hay pagos fallidos con esos filtros!' : 'No se encontraron pagos.'}
+                            <tr><td colSpan={fallidos ? 7 : 6} className="text-center py-10 text-slate-400">
+                                {fallidos
+                                    ? (soloSinPagar ? 'No hay intentos fallidos con la orden sin pagar.' : '¡No hay pagos fallidos con esos filtros!')
+                                    : 'No se encontraron pagos.'}
                             </td></tr>
                         ) : pagos.map(pago => {
                             // Usa el prefijo real de la BD devuelto por el backend
@@ -396,9 +425,16 @@ const TablaPagosOnline = ({ endpoint, fallidos = false, gatewayLabel = 'Transacc
                                     </td>
                                     <td className="px-4 py-3 text-center">
                                         <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-bold border ${statusColor(pago.Status)}`}>
-                                            {normalizeStatus(pago.Status)}
+                                            {etiquetaEstado(pago)}
                                         </span>
                                     </td>
+                                    {fallidos && (
+                                        <td className="px-4 py-3 text-center text-xs font-bold">
+                                            {pago.OrdenPagada === 1 ? <span className="text-emerald-600">Pagó después</span>
+                                                : pago.OrdenPagada === 0 ? <span className="text-rose-600">Sin pagar</span>
+                                                : <span className="text-slate-300">—</span>}
+                                        </td>
+                                    )}
                                     <td className="px-4 py-3 text-center">
                                         {orLabel
                                             ? <span className="bg-blue-50 text-blue-700 border border-blue-200 px-2 py-0.5 rounded text-xs font-bold">{orLabel}</span>
@@ -441,7 +477,7 @@ const TablaPagosOnline = ({ endpoint, fallidos = false, gatewayLabel = 'Transacc
                                         {selected.Currency === 858 || selected.Currency === 'UYU' ? 'UYU' : 'USD'} {Number(selected.TotalAmount || 0).toFixed(2)}
                                     </p>
                                     <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-bold border mt-1 ${statusColor(selected.Status)}`}>
-                                        {normalizeStatus(selected.Status)} {selected.IssuerName ? `· ${selected.IssuerName}` : ''}
+                                        {etiquetaEstado(selected)} {selected.IssuerName ? `· ${selected.IssuerName}` : ''}
                                     </span>
                                 </div>
                             </div>

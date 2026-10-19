@@ -1,6 +1,10 @@
 const express = require('express');
 const router = express.Router();
 const controller = require('../controllers/measurementController');
+const { verifyToken, soloInternoConRol } = require('../middleware/authMiddleware');
+
+// Solo usuarios internos (19/10): no tenía login. Lo usa solo el detalle del lote (RollDetailsModal).
+router.use(verifyToken, soloInternoConRol());
 
 // GET: Obtener lista de trabajo
 router.get('/', controller.getOrdersToMeasure);

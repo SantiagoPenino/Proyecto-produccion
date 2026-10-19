@@ -2261,6 +2261,8 @@ const createCustomerReplacementOrder = async (req, res) => {
         // Miniaturas a copiar del archivo original al clon (se hace DESPUÉS del commit: es I/O de
         // disco, no debe alargar ni poder tumbar la transacción).
         const thumbsAcopiar = [];
+        // Archivo original → clon, con las copias: de acá salen las terminaciones de la -R (paso 3b).
+        const archivosClonados = [];
 
         // 3. Insertar Archivos Seleccionados
         for (const file of files) {
@@ -2308,6 +2310,7 @@ const createCustomerReplacementOrder = async (req, res) => {
             const newFileId = insFileRes.recordset?.[0]?.ArchivoID;
             if (newFileId) {
                 thumbsAcopiar.push({ origId: oldFileId, newId: newFileId });
+                archivosClonados.push({ origId: oldFileId, newId: newFileId, copias: copiesToReprint, copiasOrig: parseInt(orig?.CopiasOrig) || copiesToReprint });
             }
 
             totalFiles++;
@@ -2361,6 +2364,69 @@ const createCustomerReplacementOrder = async (req, res) => {
                 `);
         } catch (e) { logger.info('Update Magnitud reposición failed (ignoring):', e.message); }
 
+        // 3b. TERMINACIONES DE LA REPOSICIÓN (ECOUV, 19/10/2026): la lona repuesta lleva las mismas
+        // terminaciones que la original. Se copian ligadas a los archivos NUEVOS y la hermana
+        // XEUV-…-R# se crea con el helper de siempre (marca "[TERMINACIONES DE …]" y la -R ruteada
+        // a TERMINAC), igual que en el ingreso del pedido. Antes la -R copiaba el ProximoServicio
+        // de la original — que terminaciones ya había pasado a DEPOSITO — y la XEUV salía como
+        // copia suelta sin terminaciones: no aparecía en la bandeja, se cerraba a mano, sacaba su
+        // propia etiqueta y la de la -R quedaba en un remito a Depósito que nadie retiraba
+        // (pedido 30736, REM-902601).
+        let hermanaRepo = null;
+        if (String(originalOrder.AreaID || '').trim().toUpperCase() === 'ECOUV') {
+            let terminacionesCopiadas = 0;
+            for (const a of archivosClonados) {
+                const r = await new sql.Request(transaction)
+                    .input('NewOID', sql.Int, newOrderId)
+                    .input('NewAID', sql.Int, a.newId)
+                    .input('OldAID', sql.Int, a.origId)
+                    .input('Copias', sql.Decimal(18, 4), a.copias)
+                    .input('CopiasOrig', sql.Decimal(18, 4), a.copiasOrig)
+                    .query(`
+                        -- Cantidad es el total de todas las copias: se escala a las copias repuestas
+                        -- (en unidades hacia arriba, no existe medio ojal). Las líneas siguen en la
+                        -- orden que tenga la original (su XEUV o, legacy, la ECOUV): se buscan por archivo.
+                        INSERT INTO OrdenTerminaciones (OrdenID, ArchivoID, TerminacionID, Cantidad, Ubicacion, ParamCliente)
+                        SELECT @NewOID, @NewAID, OT.TerminacionID,
+                               CASE WHEN @CopiasOrig <= 0 OR @Copias >= @CopiasOrig THEN OT.Cantidad
+                                    WHEN UPPER(LTRIM(RTRIM(ISNULL(T.UnidadCobro, 'U')))) = 'U' THEN CEILING(OT.Cantidad * @Copias / @CopiasOrig)
+                                    ELSE ROUND(OT.Cantidad * @Copias / @CopiasOrig, 2) END,
+                               OT.Ubicacion, OT.ParamCliente
+                        FROM OrdenTerminaciones OT
+                        LEFT JOIN Terminaciones T ON T.TerminacionID = OT.TerminacionID
+                        WHERE OT.ArchivoID = @OldAID AND ISNULL(OT.Estado, '') <> 'Cancelado'`);
+                terminacionesCopiadas += r.rowsAffected[0] || 0;
+            }
+
+            if (terminacionesCopiadas > 0) {
+                // La hermana copia la Nota de la -R: sin las instrucciones del cliente (ojales c/…,
+                // soldadura…) terminaciones solo veía el texto de la falla.
+                const instrucciones = (String(originalOrder.Nota || '').match(/\[TERMINACIONES: [^\]]*\]/) || [])[0];
+                if (instrucciones) {
+                    await new sql.Request(transaction)
+                        .input('ID', sql.Int, newOrderId)
+                        .input('Ins', sql.NVarChar(sql.MAX), instrucciones)
+                        .query("UPDATE Ordenes SET Nota = CONCAT(@Ins, ' ', ISNULL(Nota, '')) WHERE OrdenID = @ID");
+                }
+                const { crearHermanaTerminaciones } = require('../utils/hermanaTerminaciones');
+                hermanaRepo = await crearHermanaTerminaciones(transaction, newOrderId);
+                if (hermanaRepo) {
+                    await changeOrderState(transaction, {
+                        target : { type: 'ORDER', id: hermanaRepo.hermanaId },
+                        estado : 'Pendiente',
+                        userObj: req.user || 'Sistema',
+                        detalle: `Orden de terminaciones de la reposición ${newCode} (${hermanaRepo.cantTerm} terminaciones)`,
+                        io     : req.app.get('socketio'),
+                    });
+                }
+            } else if (String(originalOrder.ProximoServicio || '').trim().toUpperCase() === 'TERMINAC') {
+                // Los archivos repuestos no llevan terminaciones (otros archivos del pedido sí):
+                // la -R no tiene nada que hacer en el taller, va directo a Depósito.
+                await new sql.Request(transaction).input('ID', sql.Int, newOrderId)
+                    .query("UPDATE Ordenes SET ProximoServicio = 'DEPOSITO' WHERE OrdenID = @ID");
+            }
+        }
+
         // 4. Clonar Órdenes de Servicios Relacionados (Si existen)
         const relatedOrderIds = req.body.relatedOrderIds || [];
         if (relatedOrderIds.length > 0) {
@@ -2376,6 +2442,12 @@ const createCustomerReplacementOrder = async (req, res) => {
                     // una falla, no se le genera una -R (si no, quedaban 2 reposiciones: madre + falla).
                     if ((relOrder.CodigoOrden || '').includes('-F')) {
                         logger.info(`[Reposición] Salteada orden de falla ${relOrder.CodigoOrden} (las -F no se reponen).`);
+                        continue;
+                    }
+                    // La hermana de terminaciones no se clona suelta (quedaba sin terminaciones, fuera
+                    // de la bandeja): si corresponde, ya la creó el paso 3b desde la ECOUV repuesta.
+                    if (String(relOrder.AreaID || '').trim().toUpperCase() === 'TERMINAC') {
+                        logger.info(`[Reposición] Salteada ${relOrder.CodigoOrden}: ${hermanaRepo ? `su reposición es ${hermanaRepo.codigo}, creada con las terminaciones` : 'los archivos repuestos no llevan terminaciones'}.`);
                         continue;
                     }
                     const relNewCode = `${stripRepoSuffix(relOrder.CodigoOrden)}${suffix}`; // Mismo sufijo, sobre la raíz (evita apilar -R)
@@ -2434,7 +2506,7 @@ const createCustomerReplacementOrder = async (req, res) => {
             } catch (e) { logger.warn('[Reposición] copia de miniaturas: ' + e.message); }
         }
 
-        res.json({ success: true, newOrderId, newCode });
+        res.json({ success: true, newOrderId, newCode, hermanaTerminaciones: hermanaRepo?.codigo || null });
 
     } catch (error) {
         if (transaction) await transaction.rollback();
