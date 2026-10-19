@@ -157,6 +157,84 @@ class PricingService {
         return configs;
     }
 
+    /**
+     * Tarifa de bordado por puntadas, POR BORDADO y en pesos (guía de Emblemas, 19/10/2026):
+     * $ 8 cada 1.000 puntadas o fracción hasta 10.000 y $ 6 cada 1.000 o fracción de ahí en más.
+     * La usan el motor (calculatePrice) y la tabla de Precios por cantidad. Claves de
+     * ConfiguracionPrecios; si faltan, los valores de la guía.
+     */
+    static tarifaBordado(priceConfigs, puntadas) {
+        const num = (clave, def) => { const v = parseFloat(priceConfigs?.[clave]); return Number.isFinite(v) && v >= 0 ? v : def; };
+        const intervalo = num('BOR_PUNTADAS_INTERVALO', 1000) || 1000;
+        const precio1 = num('BOR_PRECIO_CADA_1000_UYU', 8);
+        const desde2 = num('BOR_PUNTADAS_TRAMO2_DESDE', 10000);
+        const precio2 = num('BOR_PRECIO_CADA_1000_TRAMO2_UYU', 6);
+        const p = Math.max(0, Number(puntadas) || 0);
+        const bloques1 = Math.ceil(Math.min(p, desde2) / intervalo);
+        const bloques2 = Math.ceil(Math.max(0, p - desde2) / intervalo);
+        return {
+            puntadas: p, intervalo, desde2, precio1, precio2, bloques1, bloques2,
+            precioUYU: r4(bloques1 * precio1 + bloques2 * precio2),
+        };
+    }
+
+    /**
+     * Tarifa de estampado por bajadas, POR TRABAJO y en pesos: si el trabajo tiene menos de
+     * EST_UMBRAL_BAJADAS bajadas en total (bajadas por prenda × prendas) se cobra el cargo fijo
+     * EST_CARGO_FIJO_UYU; desde ahí, EST_PRECIO_BAJADA_UYU por bajada. La usan el motor y las tablas
+     * de Precios por cantidad y Precios Estándar.
+     */
+    static tarifaEstampado(priceConfigs, totalBajadas) {
+        const umbral = parseFloat(priceConfigs?.EST_UMBRAL_BAJADAS) || 10;
+        const cargoFijo = parseFloat(priceConfigs?.EST_CARGO_FIJO_UYU) || 150;
+        const precioBajada = parseFloat(priceConfigs?.EST_PRECIO_BAJADA_UYU) || 15;
+        const b = Math.max(0, Number(totalBajadas) || 0);
+        const conCargoFijo = b < umbral;
+        return { umbral, cargoFijo, precioBajada, bajadas: b, conCargoFijo, totalUYU: r4(conCargoFijo ? cargoFijo : b * precioBajada) };
+    }
+
+    /**
+     * Qué de bordado NO se cobra por puntadas (los cargos, con su precio de lista) y la regla de la
+     * matriz sin cargo (guía de Emblemas: "realizando 10 bordados el costo de la matriz va de regalo").
+     */
+    static configBordado(priceConfigs) {
+        const cargos = String(priceConfigs?.BOR_CARGOS_CON_LISTA ?? '1568,1631,1632').split(',').map(s => s.trim()).filter(Boolean);
+        const gratis = parseFloat(priceConfigs?.BOR_MATRIZ_GRATIS_DESDE);
+        return {
+            cargos: new Set(cargos),
+            codMatriz: String(priceConfigs?.BOR_COD_MATRIZ ?? '1568').trim(),
+            matrizGratisDesde: Number.isFinite(gratis) ? gratis : 10,
+        };
+    }
+
+    // Cuántos bordados lleva la orden, para la matriz sin cargo: lo que mande quien llama
+    // (variables.cantidadBordados, el sync) o, con variables.ordenId (modal de cotización), las piezas
+    // de los diseños de bordado de la orden (ArchivosOrden.Piezas) y, si no hay, su Magnitud.
+    static async cantidadBordados(pool, variables) {
+        if (variables.cantidadBordados != null && Number.isFinite(Number(variables.cantidadBordados))) return Number(variables.cantidadBordados);
+        if (!variables.ordenId) return null;
+        try {
+            const id = String(variables.ordenId).trim();
+            const num = parseInt(id, 10);
+            const req = pool.request();
+            let cond;
+            if (!isNaN(num) && String(num) === id) { req.input('oid', sql.Int, num); cond = 'o.OrdenID = @oid'; }
+            else { req.input('cod', sql.VarChar(50), id); cond = 'LTRIM(RTRIM(o.CodigoOrden)) = @cod'; }
+            const r = await req.query(`
+                SELECT TOP 1
+                    (SELECT ISNULL(SUM(ISNULL(a.Piezas, 0)), 0) FROM dbo.ArchivosOrden a WITH(NOLOCK)
+                      WHERE a.OrdenID = o.OrdenID AND a.TipoArchivo = 'BORDADO' AND ISNULL(a.EstadoArchivo, '') <> 'CANCELADO') AS Piezas,
+                    TRY_CAST(REPLACE(LTRIM(RTRIM(o.Magnitud)), ',', '.') AS DECIMAL(18, 2)) AS Magnitud
+                FROM dbo.Ordenes o WITH(NOLOCK) WHERE ${cond}`);
+            const f = r.recordset[0];
+            if (!f) return null;
+            return Number(f.Piezas) > 0 ? Number(f.Piezas) : (Number(f.Magnitud) || null);
+        } catch (e) {
+            logger.warn('[PricingService] No se pudo leer cuántos bordados lleva la orden ' + variables.ordenId + ': ' + e.message);
+            return null;
+        }
+    }
+
     static async getPriceConfigs(pool) {
         try {
             const res = await pool.request().query("SELECT Clave, Valor FROM ConfiguracionPrecios");
@@ -285,24 +363,20 @@ class PricingService {
             return parseFloat(amount);
         };
 
-        // --- ESPECIAL: TARIFA BORDADO POR PUNTADAS (Hardcoded Logic) ---
+        // --- ESPECIAL: TARIFA BORDADO POR PUNTADAS ---
+        // Desde el 19/10/2026 es la de la guía de Emblemas (tarifaBordado): $ 8 cada 1.000 puntadas
+        // o fracción hasta 10.000 y $ 6 cada 1.000 de ahí en más. Antes: $ 50 hasta 5.000 y $ 10 cada
+        // 1.000 más. Los CARGOS del bordado (matriz, relieve 3D, aplicación: BOR_CARGOS_CON_LISTA) no
+        // se cobran por puntadas sino por su precio de lista: antes caían acá y salían a la tarifa
+        // mínima ($ 50 la matriz, sin puntadas).
         const isBordadoByDesc = variables._desc && variables._desc.toLowerCase().includes('bordado');
+        const cfgBordado = PricingService.configBordado(priceConfigs);
+        const esCargoBordado = !!cleanCod && cfgBordado.cargos.has(cleanCod);
 
-        if (areasBordado.includes(resolvedAreaId) || cleanCod === '109' || isBordadoByDesc) {
-            const baseStitches = parseFloat(priceConfigs['BOR_PUNTADAS_BASE']) || 5000;
-            const basePriceStitchesUYU = parseFloat(priceConfigs['BOR_PRECIO_BASE_UYU']) || 50;
-            const stepStitches = parseFloat(priceConfigs['BOR_PUNTADAS_INTERVALO']) || 1000;
-            const stepPriceUYU = parseFloat(priceConfigs['BOR_PRECIO_INTERVALO_UYU']) || 10;
-            
+        if ((areasBordado.includes(resolvedAreaId) || cleanCod === '109' || isBordadoByDesc) && !esCargoBordado) {
             // Usar el datoTecnicoValue si viene, sino fallback a variables.puntadas
             const totalPuntadas = parseFloat(datoTecnicoValue) || variables.puntadas || 0;
-
-            let priceBordadoUYU = basePriceStitchesUYU;
-            if (totalPuntadas > baseStitches) {
-                const extra = totalPuntadas - baseStitches;
-                const steps = Math.ceil(extra / stepStitches);
-                priceBordadoUYU += steps * stepPriceUYU;
-            }
+            const priceBordadoUYU = PricingService.tarifaBordado(priceConfigs, totalPuntadas).precioUYU;
 
             precioBase = toTarget(priceBordadoUYU, 'UYU');
             monedaBaseOriginal = 'UYU';
@@ -325,27 +399,26 @@ class PricingService {
         const isEstampadoByDesc = variables._desc && variables._desc.toLowerCase().includes('estampado');
 
         if (areasCalculoBajadas.includes(resolvedAreaId) || ['110', '113'].includes(cleanCod) || isEstampadoByDesc) {
-            const umbralBajadas = parseFloat(priceConfigs['EST_UMBRAL_BAJADAS']) || 10;
-            const cargoFijoUYU = parseFloat(priceConfigs['EST_CARGO_FIJO_UYU']) || 150;
-            const precioBajadaUYU = parseFloat(priceConfigs['EST_PRECIO_BAJADA_UYU']) || 15;
-            
-            // Dato técnico representa bajadas por prenda
+            // Dato técnico representa bajadas por prenda: solo dice que la línea se cobra por bajadas.
+            // La CANTIDAD de la línea ya son las bajadas EN TOTAL: el sync la arma como prendas × bajadas por
+            // prenda + bajadas adicionales (erpSyncService, "Cantidad Efectiva (Bajadas)", y los servicios
+            // 110/113) y el modal de cotización recalcula con esa misma cantidad. Hasta el 19/10/2026 se volvía
+            // a multiplicar por las bajadas por prenda y el trabajo salía al doble o más (20 prendas con 2
+            // bajadas: $ 1.200 en vez de $ 600).
             const bajadasPorPrenda = parseFloat(datoTecnicoValue) || variables.bajadas || 0;
-            const totalBajadas = bajadasPorPrenda * cantidad;
+            const totalBajadas = bajadasPorPrenda > 0 ? cantidad : 0;
 
             if (totalBajadas > 0) {
-                let precioTotalUYU = 0;
-                let descRegla = '';
+                // La tarifa (cargo fijo por debajo del umbral, precio por bajada desde ahí) la calcula
+                // tarifaEstampado: la misma que muestran Precios por cantidad y Precios Estándar (19/10/2026)
+                const te = PricingService.tarifaEstampado(priceConfigs, totalBajadas);
+                const precioTotalUYU = te.totalUYU;
+                const descRegla = te.conCargoFijo
+                    ? `Cargo Fijo Estampado (< ${te.umbral} bajadas)`
+                    : `Costo por Bajadas (${totalBajadas} b.)`;
 
-                if (totalBajadas < umbralBajadas) {
-                    precioTotalUYU = cargoFijoUYU;
-                    descRegla = `Cargo Fijo Estampado (< ${umbralBajadas} bajadas)`;
-                } else {
-                    precioTotalUYU = totalBajadas * precioBajadaUYU;
-                    descRegla = `Costo por Bajadas (${totalBajadas} b.)`;
-                }
-
-                // El motor espera el precio unitario, así que dividimos el total calculado entre la cantidad de prendas
+                // El motor devuelve el precio unitario: el total del trabajo entre la cantidad de la línea (las
+                // bajadas en total), o sea el precio por bajada
                 const unitPriceUYU = precioTotalUYU / cantidad;
                 nuevoPrecioBase = toTarget(unitPriceUYU, 'UYU');
 
@@ -734,7 +807,9 @@ class PricingService {
 
         const finalPU = precioFinalBase + totalRecargos;
         traceDecision += `\n= PRECIO FINAL CALCULADO: ${finalPU.toFixed(2)}\n`;
-        logger.info(traceDecision);
+        // variables.sinTraza: la vista Precios por cantidad llama al motor una vez por artículo y franja
+        // (cientos de veces por pantalla) y no necesita el detalle de cada cálculo en el log.
+        if (!variables.sinTraza) logger.info(traceDecision);
 
         // ---- LÓGICA DE PREPAGO (PlanesMetros) Y RESERVAS ----
         let finalPUWithPrepago = finalPU;
@@ -818,6 +893,19 @@ class PricingService {
             }
         }
 
+        // --- MATRIZ DE BORDADO SIN CARGO (guía de Emblemas, 19/10/2026) ---
+        // "Realizando 10 bordados el costo de la matriz va de regalo": la matriz (BOR_COD_MATRIZ) de una
+        // orden con BOR_MATRIZ_GRATIS_DESDE bordados o más sale en 0, como un descuento del 100 % (así
+        // queda registrado cuánto valía). Sin saber cuántos bordados lleva, se cobra.
+        let matrizSinCargo = null;
+        if (cleanCod && cleanCod === cfgBordado.codMatriz && cfgBordado.matrizGratisDesde > 0) {
+            const bordados = await PricingService.cantidadBordados(pool, variables);
+            if (bordados != null && bordados >= cfgBordado.matrizGratisDesde) {
+                matrizSinCargo = `Matriz sin cargo: ${bordados} bordados (va de regalo desde ${cfgBordado.matrizGratisDesde})`;
+                finalPUWithPrepago = 0;
+            }
+        }
+
         // --- Generar resumen textual ---
         let txt = `Base: ${cleanCurrency} ${precioBase.toFixed(2)}`;
         breakdown.forEach(b => {
@@ -837,6 +925,10 @@ class PricingService {
         } else if (isPrepagoParcial) {
             txt += `\nPrepago: Cubierto parcial (${availableMetersEfectivos.toFixed(2)}m cubiertos de ${totalAvailableRaw.toFixed(2)}m, Comprometido: ${totalCommitted.toFixed(2)}m, Excedente: ${(cantidad - availableMetersEfectivos).toFixed(2)}m)`;
             txt += `\nTotal Unit. Prepago: ${cleanCurrency} ${finalPUWithPrepago.toFixed(2)}`;
+        }
+
+        if (matrizSinCargo) {
+            txt += `\nDescuento: -${cleanCurrency} ${finalPU.toFixed(2)} (${matrizSinCargo})\nTotal Unit. Calculado: ${cleanCurrency} 0.00`;
         }
 
         // --- Recopilar Nombres de Perfiles SÓLO los que aplicaron ---
@@ -862,6 +954,8 @@ class PricingService {
             if (monedaBaseOriginal === 'UYU' && cleanCurrency === 'USD') precioOriginalCalculado = finalPU * actualExchangeRate;
             if (monedaBaseOriginal === 'USD' && cleanCurrency === 'UYU') precioOriginalCalculado = finalPU / actualExchangeRate;
         }
+
+        if (matrizSinCargo) precioOriginalCalculado = 0;
 
         // ---- DESGLOSE ESTRUCTURADO (specs/09 RN-PRE.12): lo que se congela con la línea ----
         // lista (después del override técnico) − descuento ganador + Σ recargos = neto.
@@ -972,7 +1066,8 @@ class PricingService {
             breakdown,
             txt,
             perfilesAplicados: [...appliedSet].filter(Boolean),
-            desglose,
+            // La matriz sin cargo va como descuento del 100 % sobre su lista (como una reposición)
+            desglose: matrizSinCargo ? (PricingService.desgloseSinCargo(desglose, 'MATRIZ', 'Matriz sin cargo (desde ' + cfgBordado.matrizGratisDesde + ' bordados)') || desglose) : desglose,
             // Beneficio pactado con el que se cotizó (specs/40): la línea y la orden lo guardan
             // para que el motor contable consuma SU bolsa y para reportar margen resignado.
             beneficioAplicado: beneficioSel ? { bclId: beneficioSel.bclId, benId: beneficioSel.benId, cueId: beneficioSel.cueId, nombre: beneficioSel.nombre } : null,

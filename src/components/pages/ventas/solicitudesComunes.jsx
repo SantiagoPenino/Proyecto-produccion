@@ -117,7 +117,8 @@ export function BuscadorCliente({ cliente, onPick, disabled }) {
                 <ul className="absolute z-20 mt-1 w-full bg-white border border-slate-200 rounded-lg shadow-lg max-h-64 overflow-y-auto text-sm">
                     {rows.map(c => (
                         <li key={c.CodCliente}>
-                            <button type="button" onClick={() => { onPick({ CodCliente: c.CodCliente, Nombre: String(c.Nombre || '').trim(), Codigo: String(c.IDCliente || '').trim() }); setQ(''); setRows([]); }}
+                            {/* CliIdCliente (19/10): lo usa Ventas de salón; Solicitudes sigue con CodCliente */}
+                            <button type="button" onClick={() => { onPick({ CodCliente: c.CodCliente, CliIdCliente: c.CliIdCliente, Nombre: String(c.Nombre || '').trim(), Codigo: String(c.IDCliente || '').trim() }); setQ(''); setRows([]); }}
                                 className="w-full text-left px-3 py-2 hover:bg-cyan-50">
                                 <b className="text-slate-800">{String(c.Nombre || '').trim()}</b>
                                 <span className="text-xs text-slate-500"> · {String(c.IDCliente || '').trim()}{c.NombreFantasia ? ` · ${String(c.NombreFantasia).trim()}` : ''}</span>

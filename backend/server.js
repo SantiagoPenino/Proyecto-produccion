@@ -263,6 +263,11 @@ try {
 } catch (e) { logger.error("❌ Error loading solicitudes vendedor routes:", e); }
 
 try {
+    // Ventas de salón: las ventas de promos que cargan los vendedores de salón y sus comisiones (19/10/2026)
+    app.use('/api/ventas-salon', require('./routes/ventasSalonRoutes'));
+} catch (e) { logger.error("❌ Error loading ventas salon routes:", e); }
+
+try {
     app.use('/api/reports', require('./routes/reportsRoutes'));
 } catch (e) { logger.error("❌ Error loading reports routes:", e); }
 

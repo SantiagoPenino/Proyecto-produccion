@@ -104,7 +104,10 @@ const AdminEditarOrdenView = lazyWithRetry(() => import('../pages/AdminEditarOrd
 const ClienteVista360            = lazyWithRetry(() => import('../pages/ClienteVista360'));
 const VendedorCliente360         = lazyWithRetry(() => import('../pages/VendedorCliente360'));
 const VendedorVentasMensuales    = lazyWithRetry(() => import('../pages/VendedorVentasMensuales'));
-const PreFacturaPage             = lazyWithRetry(() => import('../pages/PreFacturaPage'));
+const PreciosPorCantidad         = lazyWithRetry(() => import('../pages/PreciosPorCantidad'));
+const VentasSalonPage            = lazyWithRetry(() => import('../pages/ventas/VentasSalonPage'));
+const VentasSalonComisiones      = lazyWithRetry(() => import('../pages/ventas/VentasSalonComisiones'));
+const PreFacturaPage            = lazyWithRetry(() => import('../pages/PreFacturaPage'));
 const ContabilidadAntiguedadView  = lazyWithRetry(() => import('../pages/ContabilidadAntiguedadView'));
 const CajaTransaccionView          = lazyWithRetry(() => import('../pages/CajaTransaccionView'));
 const LibroMayorView               = lazyWithRetry(() => import('../pages/LibroMayorView'));
@@ -364,6 +367,11 @@ const lucideIconMapRaw = {
     'presupuestos': FileSignature,
     'ventas por vendedor': TrendingUp,
     'mis ventas': TrendingUp,
+    'precios por cantidad': BadgePercent,
+    'ventas de salón': Store,
+    'ventas de salon': Store,
+    'comisiones de salón': TrendingUp,
+    'comisiones de salon': TrendingUp,
     'cliente 360': ScanEye,
     'configuraciones ecouv': Settings,
     'configuracion ecouv': Settings,
@@ -1172,6 +1180,10 @@ const DynamicRouter = ({ menuItems }) => {
     if (menuItem.Ruta === '/beneficios/predefinidos')           return <BeneficiosPredefinidos />;
     if (menuItem.Ruta === '/beneficios/pactos')                 return <BeneficiosPactados />;
     if (menuItem.Ruta === '/vendedores/ventas')                 return <VendedorVentasMensuales />;
+    // 19/10/2026: solo por menú (sin <Route> fija), así cada rol entra solo si tiene la entrada
+    if (menuItem.Ruta === '/vendedores/precios-cantidad')       return <PreciosPorCantidad />;
+    if (menuItem.Ruta === '/vendedores/salon')                  return <VentasSalonPage />;
+    if (menuItem.Ruta === '/vendedores/salon-comisiones')       return <VentasSalonComisiones />;
     if (menuItem.Ruta === '/contabilidad/antiguedad')            return <ContabilidadAntiguedadView />;
     if (menuItem.Ruta === '/contabilidad/recursos')              return <ClienteVista360 />; // ventana vieja → 360
     if (menuItem.Ruta === '/caja/transaccion')                   return <CajaTransaccionView />;
