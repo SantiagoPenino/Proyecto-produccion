@@ -227,11 +227,19 @@ exports.getTickets = async (req, res) => {
                 -- OrdenesDeposito como respaldo por si algún ticket viejo guardó ese ID.
                 COALESCE(O.CodigoOrden, OD.OrdCodigoOrden) AS OrdCodigoOrden,
                 D.DepNombre as Departamento,
+                -- Tickets.CliIdCliente guarda el CodCliente (ver getOrdenesRecientes). Va para el
+                -- filtro por cliente del inbox; TOP 1 para no duplicar el ticket si el código se repite.
+                T.CliIdCliente, C.ClienteNombre,
                 (SELECT COUNT(*) FROM Tickets_Mensajes M WHERE M.TicIdTicket = T.TicIdTicket) as TotalMensajes
             FROM Tickets T
             LEFT JOIN Tickets_Departamentos D ON T.DepIdDepartamento = D.DepIdDepartamento
             LEFT JOIN Ordenes O WITH(NOLOCK) ON O.OrdenID = T.OrdIdOrden
             LEFT JOIN OrdenesDeposito OD ON OD.OrdIdOrden = T.OrdIdOrden
+            OUTER APPLY (
+                SELECT TOP 1 Cl.Nombre AS ClienteNombre
+                FROM Clientes Cl WITH(NOLOCK)
+                WHERE Cl.CodCliente = T.CliIdCliente
+            ) C
             WHERE 1=1
         `;
 

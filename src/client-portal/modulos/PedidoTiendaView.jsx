@@ -1,12 +1,12 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Toaster, toast } from 'sonner';
-import { AlertTriangle, ArrowLeft, Check, CheckCircle2, Circle, FileDown, ImageOff, Loader2, Lock, Plus, Send, Trash2, Upload, X } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, Check, CheckCircle2, Circle, FileDown, ImageOff, Loader2, Lock, Plus, RotateCw, Send, Trash2, Upload, X } from 'lucide-react';
 import { apiClient } from '../api/apiClient';
 import { solicitudesVendedorService as svc } from '../../services/modules/solicitudesVendedorService';
 import { Miniatura, errorDe } from '../../components/pages/ventas/solicitudesComunes';
 import { PrincipalBloque, useAccionesSolicitud } from '../../components/pages/ventas/SolicitudVendedorDetalle';
-import { VistaAMedida, bajarGuiaDe, dpiImpreso } from '../../components/pages/ventas/TizadaProAMedida';
+import { VistaAMedida, bajarGuiaDe, dpiImpreso, puntaDelArte, puntasDe, puntaDe, cajaFija } from '../../components/pages/ventas/TizadaProAMedida';
 // Los bloques de la Solicitud son claros: los pasa a oscuro la misma hoja que usa el Área PRO, con los colores del portal
 import '../../components/production/areas/areaProOscura.css';
 
@@ -41,6 +41,7 @@ export const PedidoTiendaView = () => {
     const [guiaDe, setGuiaDe] = useState(null);   // a medida: diseño cuya plantilla .ai se está bajando
     const [analisis, setAnalisis] = useState({});      // a medida: ArchivoID → si el arte sirve para imprimir (+ su vista)
     const [revisandoDe, setRevisandoDe] = useState(null);   // a medida: diseño cuyo arte se está revisando
+    const [puntaPropuesta, setPuntaPropuesta] = useState({});   // [PUNTA DEL ARTE 19/10] diseño → la punta que se puso sola mirando su arte
     const [rechazo, setRechazo] = useState({});        // a medida: diseño → el último arte que no sirvió y por qué
 
     const cargar = useCallback(async () => {
@@ -247,15 +248,46 @@ export const PedidoTiendaView = () => {
         const archivo = (aid) => s.Archivos.find(a => a.ArchivoID === aid && a.Vigente) || null;
         const arch = d.archivoCliente ? archivo(d.archivoCliente) : null;
         const an = arch ? analisis[arch.ArchivoID] : null;
+        // [19/10] sin "Que llene todo / Que entre entera": siempre llena (los pedidos de antes con "entera" la conservan)
         const ajuste = d.ajuste === 'entera' ? 'entera' : 'llenar';
+        const giro = [90, 180, 270].includes(Number(d.giro)) ? Number(d.giro) : 0;   // [GIRAR EL ARTE 19/10]
+        // armado sobre la plantilla de TIZADA (sus mesas dicen la pieza): va tal cual, no se gira (pedidoPortalService.armarArtesAMedida)
+        const sobrePlantilla = !!an?.ok && (an.paginas || []).some(pg => pg.pieza);
         const limpio = (a) => String(a?.NombreOriginal || '').replace(/^[^_]+__/, '');
-        const dpi = an?.ok && calc?.total_cm ? dpiImpreso(an.calidad, calc.total_cm.ancho, calc.total_cm.alto, ajuste) : null;
+        const dpi = an?.ok && calc?.total_cm ? dpiImpreso(an.calidad, calc.total_cm.ancho, calc.total_cm.alto, ajuste, giro) : null;
+        // lo que se recorta al llenar (cm por lado): si se ve (más de 0,5 cm por lado), se avisa
+        const recorte = (() => {
+            if (ajuste !== 'llenar' || sobrePlantilla || !an?.ok || !calc?.total_cm || !(an.calidad?.anchoPt > 0)) return null;
+            const [aw, ah] = giro % 180 ? [an.calidad.altoPt, an.calidad.anchoPt] : [an.calidad.anchoPt, an.calidad.altoPt];
+            const W = calc.total_cm.ancho, H = calc.total_cm.alto, k = Math.max(W / aw, H / ah);
+            const x = (aw * k - W) / 2, y = (ah * k - H) / 2;
+            return x > 0.5 ? { cm: x, donde: 'a cada costado' } : y > 0.5 ? { cm: y, donde: 'arriba y abajo' } : null;
+        })();
         // .ai / .pdf ya subidos a la producción principal que ningún diseño usa (no los armados por el sistema)
         const usados = new Set(disenos.flatMap(x => [x.archivoCliente, x.arteArchivoId]).filter(Boolean));
         const sueltas = archivosDe(a => a.ParteID === principal.ParteID && a.Rol === 'ARTE_CLIENTE' && /\.(ai|pdf)$/i.test(a.NombreOriginal || '')
             && !usados.has(a.ArchivoID) && !/__arte \d+x\d+ cm\.pdf$/i.test(a.NombreOriginal || ''));
         const asignar = (cambio) => guardarDisenos(x => (x.nombre === d.nombre ? { ...x, ...cambio } : x));
         const sinArmado = { arteArchivoId: null, arteAuto: null, editablesLeidoDe: null, editablesDetalle: [], editables: {} };
+        // [PUNTA DEL ARTE 19/10] la punta que dice el arte (null = no se sabe o el producto ofrece una sola)
+        const proponerPunta = async (r, g) => {
+            const cfg = am?.config;
+            if (!cfg || puntasDe(cfg).length < 2 || !r?.vista) return null;
+            const fijas = cfg.medidas?.modo === 'FIJAS' ? (cfg.medidas.fijas || []) : [];
+            const fija = fijas.find(x => x.nombre === d.medida?.fija) || (fijas.length === 1 ? fijas[0] : null);
+            if ((fija ? fija.forma : cfg.forma) !== 'triangulo') return null;
+            const pu = puntaDe(cfg, d.medida);
+            const m = d.medida || {};
+            const cajaV = fija ? cajaFija(fija, 'abajo') : (['abajo', 'arriba'].includes(pu) ? { ancho: m.ancho_m, alto: m.alto_m } : { ancho: m.alto_m, alto: m.ancho_m });
+            return puntaDelArte({ vista: r.vista, anchoPt: r.calidad?.anchoPt, altoPt: r.calidad?.altoPt, cajaV, puntas: puntasDe(cfg), giro: g });
+        };
+        // [GIRAR EL ARTE 19/10] de a 90° en el sentido del reloj; la punta se vuelve a proponer con el arte girado
+        const girar = async () => {
+            const g = (giro + 90) % 360;
+            const sug = an?.ok ? await proponerPunta(an, g) : null;
+            setPuntaPropuesta(x => ({ ...x, [d.nombre]: sug }));
+            await asignar({ giro: g, ...(sug ? { medida: { ...(d.medida || {}), orientacion: sug } } : {}) });
+        };
         // un arte (recién subido o de los ya subidos): se revisa y, si sirve, queda como el de este diseño
         const usar = async (aid, nombre, recienSubido) => {
             setRevisandoDe(d.nombre);
@@ -267,7 +299,11 @@ export const PedidoTiendaView = () => {
                     return;
                 }
                 setRechazo(m => ({ ...m, [d.nombre]: null }));
-                await asignar({ ...sinArmado, archivoCliente: aid });
+                // [PUNTA DEL ARTE 19/10] triángulo con varias puntas posibles: se pone sola la que dice el arte (el cliente la puede cambiar).
+                // Un arte nuevo empieza sin girar.
+                const sug = await proponerPunta(r, 0);
+                setPuntaPropuesta(x => ({ ...x, [d.nombre]: sug }));
+                await asignar({ ...sinArmado, archivoCliente: aid, giro: 0, ...(sug ? { medida: { ...(d.medida || {}), orientacion: sug } } : {}) });
             } finally { setRevisandoDe(null); }
         };
         const subirArte = async (file) => {
@@ -314,7 +350,7 @@ export const PedidoTiendaView = () => {
                 <div className="flex flex-wrap items-start gap-4">
                     {/* cómo queda: la forma con el arte y las tiras (sin arte todavía: la forma y las tiras) */}
                     <div className="relative">
-                        <VistaAMedida calc={calc} medida={d.medida} vista={an?.ok ? an.vista : null} ajuste={ajuste} />
+                        <VistaAMedida calc={calc} medida={d.medida} vista={an?.ok ? an.vista : null} ajuste={ajuste} giro={sobrePlantilla ? 0 : giro} />
                         {revisandoDe === d.nombre && <div className="absolute inset-0 flex items-center justify-center bg-black/40 rounded text-[11px] font-bold text-white gap-1"><Loader2 size={12} className="animate-spin" /> Revisando…</div>}
                     </div>
                     <div className="space-y-2 min-w-0 flex-1">
@@ -323,18 +359,19 @@ export const PedidoTiendaView = () => {
                             {!an && <p className="text-[11px] text-slate-500 inline-flex items-center gap-1"><Loader2 size={11} className="animate-spin" /> Revisando tu arte…</p>}
                             {an && !an.ok && <ul className="list-disc pl-4 text-[11px] text-rose-600">{(an.problemas || []).map((m, i) => <li key={i}>{m}</li>)}</ul>}
                             {calidad && <p className={`text-[11px] ${calidad.cls}`}>{calidad.txt}</p>}
-                            {editable && an?.ok && (
-                                <div className="flex flex-wrap gap-1.5">
-                                    {[['llenar', 'Que llene todo'], ['entera', 'Que entre entera']].map(([v, t]) => (
-                                        <button key={v} type="button" disabled={ocup} onClick={() => asignar({ ajuste: v })}
-                                            className={`rounded-lg border px-2 py-1 font-bold ${ajuste === v ? 'border-brand-cyan bg-brand-cyan text-white' : 'border-slate-200 text-slate-600 hover:border-slate-300'}`}>{t}</button>
-                                    ))}
-                                </div>
-                            )}
+                            {puntaPropuesta[d.nombre] && <p className="text-[11px] text-slate-500">Pusimos la punta <b>{({ abajo: 'hacia abajo', arriba: 'hacia arriba', izq: 'a la izquierda', der: 'a la derecha' })[puntaPropuesta[d.nombre]]}</b> mirando tu arte. Si no es, cambiala abajo en <b>Punta</b>.</p>}
+                            {recorte && <p className="text-[11px] font-bold text-amber-600">Tu arte no tiene la proporción de la pieza: se recortan {recorte.cm.toLocaleString('es-UY', { maximumFractionDigits: 1 })} cm {recorte.donde}. Para que no pase, armalo sobre la plantilla de esta medida.</p>}
+                            {sobrePlantilla && <p className="text-[11px] text-emerald-600">Armado sobre la plantilla: va tal cual.</p>}
                             {calc?.total_cm && an?.ok && <p className="text-[11px] text-slate-500">Al confirmar se arma solo a {Math.round(calc.total_cm.ancho)} × {Math.round(calc.total_cm.alto)} cm (la medida con el margen para coser).</p>}
                             {editable && (
                                 <div className="flex flex-wrap items-center gap-3">
                                     {subirBtn('Cambiar')}
+                                    {an?.ok && !sobrePlantilla && (
+                                        <button type="button" disabled={ocup} onClick={girar} title="Girar el arte 90° (en el sentido del reloj)"
+                                            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 py-1.5 font-bold text-slate-700 hover:border-brand-cyan disabled:opacity-50">
+                                            <RotateCw size={13} /> Girar el arte{giro ? ` (${giro}°)` : ''}
+                                        </button>
+                                    )}
                                     <button type="button" disabled={ocup} onClick={quitar} className="inline-flex items-center gap-1 font-bold text-slate-400 hover:text-rose-600"><X size={12} /> Quitar</button>
                                 </div>
                             )}

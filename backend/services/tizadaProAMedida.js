@@ -41,6 +41,20 @@ function forma(v) { const s = sinTilde(v); return FORMAS.includes(s) ? s : null;
 function punta(v) { const s = sinTilde(v); return s === 'izquierda' ? 'izq' : s === 'derecha' ? 'der' : (PUNTAS.includes(s) ? s : null); }
 function terminacion(v) { const s = sinTilde(v); return s === 'sin margen' ? 'sin' : (TERMINACIONES.includes(s) ? s : null); }
 
+// [PUNTA DEL ARTE 19/10] El triángulo es siempre isósceles: base × altura. La CAJA que va a TIZADA (ancho × alto, colgado
+// como se ve) depende de la punta: abajo/arriba → ancho = base, alto = altura; izq/der → ancho = altura, alto = base
+// (guía TIZADA §5.3). Así un solo producto sirve para las 4 puntas: la punta la decide el arte.
+const PUNTA_VERTICAL = ['abajo', 'arriba'];
+// base y altura de una medida guardada (ancho/alto con SU punta; sin punta = abajo)
+function baseAltura(m) {
+  const lateral = !PUNTA_VERTICAL.includes(punta(m?.orientacion) || 'abajo');
+  return { base: lateral ? m?.alto_m : m?.ancho_m, altura: lateral ? m?.ancho_m : m?.alto_m };
+}
+// la caja de un triángulo base × altura con esa punta
+function cajaTriangulo(base, altura, pu) {
+  return PUNTA_VERTICAL.includes(pu || 'abajo') ? { ancho_m: base, alto_m: altura } : { ancho_m: altura, alto_m: base };
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // 1. Las variables a medida de TIZADA (cacheadas 5 min; se refrescan si cambia la versión del catálogo)
 // ─────────────────────────────────────────────────────────────────────
@@ -103,15 +117,22 @@ function normalizarConfig(b, v) {
   if (!terms.length) terms = v ? p.terminaciones : TERMINACIONES;
   const f0 = formas.includes(forma(b.forma)) ? forma(b.forma) : (formas.includes(p.forma) ? p.forma : formas[0]);
   const t0 = terms.includes(terminacion(b.terminacion)) ? terminacion(b.terminacion) : (terms.includes(p.terminacion) ? p.terminacion : terms[0]);
-  const pu = punta(b.orientacion) || p.punta;
+  // Puntas que se ofrecen (las elige el cliente / vendedor según su arte). Configuraciones de antes (sin "puntas"): solo la suya.
+  let puntas = de(b.puntas, punta); if (v) puntas = puntas.filter(x => p.puntas.includes(x));
+  let pu = punta(b.orientacion) || p.punta;
+  if (!puntas.length) puntas = [pu];
+  if (!puntas.includes(pu)) pu = puntas[0];
   const md = b.medidas || {};
   const minimo = Math.max(p.minimo, metros(md.minimo_m) || p.minimo);
   const maximo = Math.min(p.maximo, metros(md.maximo_m) || p.maximo);
   const fijas = lista(md.fijas).slice(0, 30).map(x => {
     const fx = formas.includes(forma(x.forma)) ? forma(x.forma) : f0;
+    // triángulo: se guarda como base × altura (ancho = base, alto = altura, punta abajo); la punta la pone cada diseño
+    const ba = fx === 'triangulo' ? baseAltura({ ...x, orientacion: punta(x.orientacion) || pu }) : null;
     return {
-      nombre: String(x.nombre || '').trim().slice(0, 60), forma: fx, orientacion: fx === 'triangulo' ? (punta(x.orientacion) || pu) : null,
-      ancho_m: fx === 'circulo' ? null : metros(x.ancho_m), alto_m: fx === 'circulo' ? null : metros(x.alto_m), diametro_m: fx === 'circulo' ? metros(x.diametro_m ?? x.ancho_m) : null,
+      nombre: String(x.nombre || '').trim().slice(0, 60), forma: fx, orientacion: fx === 'triangulo' ? 'abajo' : null,
+      ancho_m: fx === 'circulo' ? null : metros(ba ? ba.base : x.ancho_m), alto_m: fx === 'circulo' ? null : metros(ba ? ba.altura : x.alto_m),
+      diametro_m: fx === 'circulo' ? metros(x.diametro_m ?? x.ancho_m) : null,
     };
   }).filter(x => x.nombre && (x.forma === 'circulo' ? x.diametro_m : x.ancho_m && x.alto_m));
   const telasOk = new Set(p.telas.map(t => t.id));
@@ -122,7 +143,7 @@ function normalizarConfig(b, v) {
     variableNombre: v?.nombre || String(b.variableNombre || '').trim().slice(0, 200) || null,
     molde: v?.molde || String(b.molde || '').trim().slice(0, 128) || null,
     pieza: p.pieza || b.pieza || null,
-    formas, forma: f0, orientacion: pu,
+    formas, forma: f0, orientacion: pu, puntas,
     terminaciones: terms, terminacion: t0,
     medidas: { modo: md.modo === 'FIJAS' && fijas.length ? 'FIJAS' : 'LIBRE', minimo_m: minimo, maximo_m: Math.max(minimo, maximo), fijas },
     telas,
@@ -170,13 +191,17 @@ function normalizarMedida(e, cfg, v) {
     if (!fija) errores.push(`Elegí una de las medidas del producto (${cfg.medidas.fijas.map(f => f.nombre).join(', ')}).`);
   }
   const fo = fija ? fija.forma : (cfg.formas.includes(forma(x.forma)) ? forma(x.forma) : cfg.forma);
-  const pu = fo === 'triangulo' ? (fija?.orientacion || (p.puntas.includes(punta(x.orientacion)) ? punta(x.orientacion) : cfg.orientacion)) : null;
+  // [PUNTA DEL ARTE 19/10] la del diseño si el producto la ofrece; si no, la que viene puesta
+  const ofrecidas = (cfg.puntas?.length ? cfg.puntas : [cfg.orientacion]).filter(o => p.puntas.includes(o));
+  const pu = fo === 'triangulo' ? (ofrecidas.includes(punta(x.orientacion)) ? punta(x.orientacion) : (ofrecidas.includes(cfg.orientacion) ? cfg.orientacion : ofrecidas[0] || 'abajo')) : null;
+  // medida fija de un triángulo: base × altura → la caja con esa punta
+  const cajaFija = fija && fo === 'triangulo' ? (() => { const ba = baseAltura(fija); return cajaTriangulo(ba.base, ba.altura, pu); })() : null;
   const te = cfg.terminaciones.includes(terminacion(x.terminacion)) ? terminacion(x.terminacion) : cfg.terminacion;
   const min = cfg.medidas.minimo_m, max = cfg.medidas.maximo_m;
   // Medida libre con mínimo = máximo: hay una sola medida posible → es esa (se carga sola, no se pide)
   const unica = !fija && cfg.medidas.modo !== 'FIJAS' && min > 0 && min === max ? min : null;
-  const ancho = fo === 'circulo' ? null : (fija ? fija.ancho_m : (metros(x.ancho_m) ?? unica));
-  const alto = fo === 'circulo' ? null : (fija ? fija.alto_m : (metros(x.alto_m) ?? unica));
+  const ancho = fo === 'circulo' ? null : (cajaFija ? cajaFija.ancho_m : fija ? fija.ancho_m : (metros(x.ancho_m) ?? unica));
+  const alto = fo === 'circulo' ? null : (cajaFija ? cajaFija.alto_m : fija ? fija.alto_m : (metros(x.alto_m) ?? unica));
   const diam = fo === 'circulo' ? (fija ? fija.diametro_m : (metros(x.diametro_m ?? x.ancho_m) ?? unica)) : null;
   const fuera = (n, que) => {
     if (n == null) errores.push(`Falta ${que} (en metros).`);
@@ -220,10 +245,11 @@ function paraPedido(m) {
   return { forma: m.forma, ...(m.forma === 'triangulo' ? { orientacion: m.orientacion } : {}), medida: medidaApi(m), terminacion: m.terminacion, tiras: tirasApi(m.tiras) };
 }
 // Cuerpo de POST /a_medida/calcular
-function paraCalcular(variable, m, tela) {
+// largoMaxM [16/10]: el largo máximo de mesa del pedido (mesas.largo_max_m): las cuentas con ese largo
+function paraCalcular(variable, m, tela, largoMaxM = null) {
   return {
     variable, forma: m.forma, ...(m.forma === 'triangulo' ? { orientacion: m.orientacion } : {}), ...medidaApi(m), terminacion: m.terminacion,
-    ...(tela ? { tela: String(tela) } : {}), tiras: tirasApi(m.tiras),
+    ...(tela ? { tela: String(tela) } : {}), tiras: tirasApi(m.tiras), ...(largoMaxM > 0 ? { largo_max_m: largoMaxM } : {}),
   };
 }
 // Una prenda a medida en POST /plantillas: { variable, medida } (+ forma, punta y terminación)
@@ -232,8 +258,8 @@ function paraPlantilla(variable, m) {
 }
 
 // Las cuentas de TIZADA para un diseño. Si TIZADA rechaza la medida, devuelve sus alarmas (no lanza).
-async function calcular(variable, m, tela) {
-  try { return { ok: true, ...(await api.aMedidaCalcular(paraCalcular(variable, m, tela))) }; }
+async function calcular(variable, m, tela, largoMaxM = null) {
+  try { return { ok: true, ...(await api.aMedidaCalcular(paraCalcular(variable, m, tela, largoMaxM))) }; }
   catch (e) {
     if (e.status === 422 || e.status === 404) return { ok: false, alarmas: e.alarmas || [], error: e.alarmas?.length ? null : e.message };
     logger.warn(`[TIZADAPRO] a_medida/calcular ${variable}: ${e.message}`);
@@ -250,13 +276,16 @@ async function calcular(variable, m, tela) {
 const PT_CM = 72 / 2.54;
 // La resolución más baja de las imágenes del arte una vez impreso a la medida total (null = todo vectores).
 // a = calidad de analizarArte ({ anchoPt, altoPt, imagenes:[{ px, py, wPt, hPt }] }), total en cm.
-function dpiImpreso(a, anchoCm, altoCm, ajuste = 'llenar') {
+// giro [19/10]: el arte girado 90/270° se apoya acostado (ancho y alto de la página se dan vuelta; la escala es la misma)
+function dpiImpreso(a, anchoCm, altoCm, ajuste = 'llenar', giro = 0) {
   if (!a?.imagenes?.length || !(a.anchoPt > 0 && a.altoPt > 0 && anchoCm > 0 && altoCm > 0)) return null;
-  const k = (ajuste === 'entera' ? Math.min : Math.max)((anchoCm * PT_CM) / a.anchoPt, (altoCm * PT_CM) / a.altoPt);
+  const [aw, ah] = giro % 180 ? [a.altoPt, a.anchoPt] : [a.anchoPt, a.altoPt];
+  const k = (ajuste === 'entera' ? Math.min : Math.max)((anchoCm * PT_CM) / aw, (altoCm * PT_CM) / ah);
   const dpis = a.imagenes.filter(i => i.wPt > 0.5 && i.hPt > 0.5).map(i => Math.min(i.px / ((i.wPt * k) / 72), i.py / ((i.hPt * k) / 72)));
   return dpis.length ? Math.round(Math.min(...dpis)) : null;
 }
-async function arteDesdePdf({ pdf, anchoCm, altoCm, pieza, ajuste = 'llenar' }) {
+// giro [19/10]: 0 · 90 · 180 · 270 grados, en el sentido de las agujas del reloj (como se ve en la tienda)
+async function arteDesdePdf({ pdf, anchoCm, altoCm, pieza, ajuste = 'llenar', giro = 0 }) {
   const { PDFDocument, PDFName, PDFHexString, StandardFonts } = require('pdf-lib');
   if (!(anchoCm > 0 && altoCm > 0)) throw fallo(400, 'Falta la medida total del diseño (TIZADA no la calculó).');
   // un .ai compatible con PDF es un PDF por dentro (a veces con algo antes del encabezado)
@@ -280,13 +309,17 @@ async function arteDesdePdf({ pdf, anchoCm, altoCm, pieza, ajuste = 'llenar' }) 
   const fmN = page.node.newXObject('Fm', im.ref).asString();
   const fN = page.node.newFontDictionary('F', font.ref).asString();
   // la página del cliente (un form de im.width × im.height pt) escalada para llenar o entrar entera, centrada
-  const k = (ajuste === 'entera' ? Math.min : Math.max)(W / im.width, H / im.height);
-  const w = im.width * k, h = im.height * k;
+  const g = [90, 180, 270].includes(Number(giro)) ? Number(giro) : 0;
+  const [aw, ah] = g % 180 ? [im.height, im.width] : [im.width, im.height];   // el arte ya girado
+  const k = (ajuste === 'entera' ? Math.min : Math.max)(W / aw, H / ah);
   const n = (v) => (Math.round(v * 100000) / 100000).toString();
+  // al centro de la mesa → girado (horario = ángulo negativo en PDF) → escalado → centrado en su propio medio
+  const cos = { 0: 1, 90: 0, 180: -1, 270: 0 }[g], sin = { 0: 0, 90: -1, 180: 0, 270: 1 }[g];
   const contenido = [
     '/OC /MC0 BDC', 'q', `0 0 ${n(W)} ${n(H)} re W n`,
     ...(ajuste === 'entera' ? ['1 1 1 rg', `0 0 ${n(W)} ${n(H)} re f`] : []),
-    'q', `${n(k)} 0 0 ${n(k)} ${n((W - w) / 2)} ${n((H - h) / 2)} cm`, `${fmN} Do`, 'Q', 'Q', 'EMC',
+    'q', `1 0 0 1 ${n(W / 2)} ${n(H / 2)} cm`, `${cos} ${sin} ${-sin} ${cos} 0 0 cm`, `${n(k)} 0 0 ${n(k)} 0 0 cm`,
+    `1 0 0 1 ${n(-im.width / 2)} ${n(-im.height / 2)} cm`, `${fmN} Do`, 'Q', 'Q', 'EMC',
     '/OC /MC1 BDC', 'BT', `${fN} 10 Tf`, '0 0 0 rg', `${n(Math.min(14, W / 4))} ${n(Math.max(4, H - 18))} Td`,
     `${font.encodeText(String(pieza || 'Pieza')).toString()} Tj`, 'ET', 'EMC',
   ].join('\n');
@@ -295,7 +328,7 @@ async function arteDesdePdf({ pdf, anchoCm, altoCm, pieza, ajuste = 'llenar' }) 
 }
 
 module.exports = {
-  FORMAS, PUNTAS, TERMINACIONES, LADOS, NOMBRE,
+  FORMAS, PUNTAS, TERMINACIONES, LADOS, NOMBRE, baseAltura, cajaTriangulo,
   variablesAMedida, variableAMedida, permitido, normalizarConfig, revisarConfig, telasOfrecidas,
   normalizarMedida, resumen, paraPedido, paraCalcular, paraPlantilla, calcular, arteDesdePdf, dpiImpreso,
 };

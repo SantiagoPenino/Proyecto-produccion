@@ -396,6 +396,10 @@ const fichaToForm = (d) => ({
     modoMolde: d.config?.AMedida ? 'A_MEDIDA' : 'TALLES',
     // Cómo arma TIZADA los archivos: '' = automático (lo del .env), 'normal', 'una_por_fila' (un archivo por fila con sus copias)
     tizadaMesasModo: d.config?.TizadaMesasModo || '',
+    // [MESAS 16/10] cada diseño en sus propias mesas y el largo máximo de cada mesa ('' = el del molde en TIZADA)
+    tizadaSepararDisenos: !!d.config?.TizadaSepararDisenos,
+    tizadaLargoMaxM: d.config?.TizadaLargoMaxM != null ? String(Number(d.config.TizadaLargoMaxM)) : '',
+    mesasExtraDisponible: !d.config || d.config.TizadaLargoMaxM !== undefined,
     // Talles que se venden: grupos del molde (Niño, Adulto, Femenino…); vacío = todos los del molde
     gruposTalle: String(d.config?.GruposTalle || '').split(',').map(x => x.trim()).filter(Boolean),
     gruposTalleDisponible: !d.config || d.config.GruposTalle !== undefined,
@@ -493,6 +497,7 @@ const formToPayload = (f) => ({
     // [A MEDIDA] null = no es a medida (o dejó de serlo)
     ...(f.esCombo || !f.aMedidaDisponible ? {} : { aMedida: f.modoMolde === 'A_MEDIDA' && f.aMedida?.variable ? f.aMedida : null }),
     ...(f.esCombo || !f.mesasModoDisponible ? {} : { tizadaMesasModo: f.tizadaMesasModo || null }),
+    ...(f.esCombo || !f.mesasExtraDisponible ? {} : { tizadaSepararDisenos: !!f.tizadaSepararDisenos, tizadaLargoMaxM: f.tizadaLargoMaxM === '' ? null : f.tizadaLargoMaxM }),
     ...(f.esCombo || !f.gruposTalleDisponible ? {} : { gruposTalle: f.gruposTalle || [] }),
     ...(f.esCombo ? {} : { tecnicaPrincipal: f.tecnicaPrincipal || 'SB', molde: f.molde || 'OBLIGATORIO', um: f.um || 'u', anchoM: f.anchoM === '' ? null : Number(f.anchoM), altoM: f.altoM === '' ? null : Number(f.altoM), bordeCm: f.bordeCm === '' ? null : Number(f.bordeCm) }),
     visiblePortal: !!f.visiblePortal, visibleTienda: !!f.visibleTienda, visibleInterno: f.visibleInterno !== false,
@@ -2700,11 +2705,13 @@ export default function ConfigurarProductosPage() {
                                                     {/* Cómo arma TIZADA PRO los archivos de este producto y las copias (pedido → mesas.modo) */}
                                                     {form.mesasModoDisponible && (form.tizadaProMoldeRef || form.modoMolde === 'A_MEDIDA') && (
                                                         <div className="border border-slate-200 rounded-xl p-4">
-                                                            {tituloSeccion('Archivos de impresión', 'Cómo arma TIZADA PRO los archivos que van a producción y cuántas copias lleva cada uno.')}
+                                                            {tituloSeccion('Archivos de impresión', 'Cómo arma TIZADA PRO los archivos que van a producción y cuántas veces se imprime cada uno.')}
                                                             <div className="grid gap-2" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))' }} role="radiogroup">
                                                                 {[
-                                                                    ['una_por_fila', 'Un archivo por diseño, con copias', form.modoMolde === 'A_MEDIDA' ? 'Cada diseño sale en UN archivo y la cantidad va como copias (ej. 15 toallas → 1 archivo × 15). Las banderas chicas van de a una por archivo.' : 'Una mesa por fila de la lista, con la cantidad de esa fila como copias.'],
-                                                                    ['normal', 'TIZADA acomoda todo', 'Aprovecha el ancho de la tela poniendo varias piezas juntas: un archivo por mesa (si salen mesas iguales, vienen repetidas).'],
+                                                                    // [16/10, TIZADA a20bc7e] Copia = la mesa LLENA se imprime varias veces; lo que no la llena va junto ×1
+                                                                    ['una_por_fila', 'Copias de una mesa llena', `TIZADA llena una mesa con todas las que entran a lo ancho y la manda a imprimir varias veces; lo que sobra va junto en otra mesa, 1 vez (ej. 19 ${form.modoMolde === 'A_MEDIDA' ? 'banderas' : 'prendas'} con lugar para 5 → 1 archivo de 5 × 3 copias + las 4 que sobran). Para lo que se repite igual.`],
+                                                                    ['normal', 'TIZADA acomoda todo', 'Todas juntas, mezcladas, para gastar la menor tela: un archivo por mesa, cada uno se imprime 1 vez.'],
+                                                                    ...(form.modoMolde === 'A_MEDIDA' ? [] : [['talles_separados', 'Talles separados en la misma mesa', 'Cada talle acomodado aparte, uno debajo del otro, con una línea punteada entre talles (para cortar y entregar por talle).']]),
                                                                     ['', 'Automático', form.modoMolde === 'A_MEDIDA' ? 'Lo que diga la configuración general para productos a medida.' : 'Lo que diga la configuración general para prendas.'],
                                                                 ].map(([k, t, a]) => {
                                                                     const sel = (form.tizadaMesasModo || '') === k;
@@ -2717,6 +2724,25 @@ export default function ConfigurarProductosPage() {
                                                                     );
                                                                 })}
                                                             </div>
+                                                            {/* [MESAS 16/10] separar diseños y largo máximo de mesa (van en el pedido a TIZADA: mesas.separar_disenos / largo_max_m) */}
+                                                            {form.mesasExtraDisponible && (
+                                                                <div className="mt-3 flex flex-wrap items-start gap-x-8 gap-y-3 border-t border-slate-100 pt-3">
+                                                                    <label className="flex max-w-md items-start gap-2 text-sm">
+                                                                        <input type="checkbox" className="mt-1" checked={!!form.tizadaSepararDisenos} onChange={e => setF({ tizadaSepararDisenos: e.target.checked })} />
+                                                                        <span><b className="text-slate-800">Cada diseño en sus propias mesas</b>
+                                                                            <span className="block text-[11px] text-slate-500">Sin tildar, TIZADA mezcla los diseños distintos en la misma mesa para gastar menos tela (ej. JUGADOR y GOLERO juntos). Tildalo si producción los corta o entrega por separado.</span></span>
+                                                                    </label>
+                                                                    <label className="text-sm">
+                                                                        <b className="text-slate-800">Largo máximo de cada mesa</b>
+                                                                        <span className="mt-1 flex items-center gap-1.5">
+                                                                            <input type="number" min="0.1" max="50" step="0.1" value={form.tizadaLargoMaxM} placeholder="el del molde" aria-label="Largo máximo de cada mesa, en metros"
+                                                                                onChange={e => setF({ tizadaLargoMaxM: e.target.value })} className={`w-28 ${claseCampo}`} />
+                                                                            <span className="text-xs text-slate-500">m</span>
+                                                                        </span>
+                                                                        <span className="block text-[11px] text-slate-500 mt-0.5">De 0,10 a 50 m. Vacío = el que tiene el molde en TIZADA. Lo que no entra sigue en otra mesa{form.modoMolde === 'A_MEDIDA' ? '; una bandera más larga que esto no se puede hacer (se avisa al calcular la medida)' : ''}.</span>
+                                                                    </label>
+                                                                </div>
+                                                            )}
                                                         </div>
                                                     )}
 

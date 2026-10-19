@@ -134,7 +134,15 @@ async function tieneGruposTalle(pool) {
 }
 
 // ¿Ya se corrió docs/migrations/configurador_tizadapro_mesas.sql? (ProductoVentaConfig.TizadaMesasModo: cómo arma TIZADA los archivos)
-const MESAS_MODOS = ['normal', 'una_por_fila'];
+const MESAS_MODOS = ['normal', 'una_por_fila', 'talles_separados'];   // talles_separados: TIZADA PRO 16/10 (prendas)
+// [MESAS 16/10] ¿Ya se corrió docs/migrations/tizadapro_mesas_novedades_16oct.sql? (separar diseños + largo máximo de mesa)
+let _tieneMesasExtra = false;
+async function tieneMesasExtra(pool) {
+    if (_tieneMesasExtra) return true;
+    const r = await pool.request().query(`SELECT COL_LENGTH('dbo.ProductoVentaConfig', 'TizadaSepararDisenos') AS s, COL_LENGTH('dbo.ProductoVentaConfig', 'TizadaLargoMaxM') AS l`);
+    _tieneMesasExtra = r.recordset[0].s != null && r.recordset[0].l != null;
+    return _tieneMesasExtra;
+}
 let _tieneMesasModo = false;
 async function tieneMesasModo(pool) {
     if (_tieneMesasModo) return true;
@@ -337,6 +345,7 @@ async function leerFicha(pool, proId) {
         const conTalle = conTizada && await tieneAviosTalle(pool);   // [AVÍOS POR TALLE]
         const conAM = await tieneAMedida(pool);   // [A MEDIDA]
         const conMesas = await tieneMesasModo(pool);   // cómo arma TIZADA los archivos
+        const conMesasExtra = conMesas && await tieneMesasExtra(pool);   // [MESAS 16/10] separar diseños + largo máximo
         const conGrupos = await tieneGruposTalle(pool);   // talles que se venden
         const conMed = await tieneMedidas(pool);   // [MEDIDAS]
         const rq = () => pool.request().input('PID', sql.Int, proId);
@@ -365,7 +374,7 @@ async function leerFicha(pool, proId) {
                                ValidarStock, Estado, EsCombo, FechaRegistro, FechaModif,
                                ${await variantesSvc.tieneVariantes(pool) ? 'PadreProIdProducto, ModeloClave,' : ''}
                                ${conTizada ? 'TizadaProMoldeRef' : 'CAST(NULL AS NVARCHAR(128)) AS TizadaProMoldeRef'}
-                               ${conF1 ? ', ' + F1_COLS : ''}${conAM ? ', AMedidaJson' : ''}${conMesas ? ', TizadaMesasModo' : ''}${conGrupos ? ', GruposTalle' : ''}
+                               ${conF1 ? ', ' + F1_COLS : ''}${conAM ? ', AMedidaJson' : ''}${conMesas ? ', TizadaMesasModo' : ''}${conMesasExtra ? ', TizadaSepararDisenos, TizadaLargoMaxM' : ''}${conGrupos ? ', GruposTalle' : ''}
                         FROM dbo.ProductoVentaConfig WHERE ProIdProducto = @PID`),
             rq().query(`SELECT AreaID, Obligatorio, Modo, Cobro
                         FROM dbo.ProductoTerminadoServicios WHERE ProIdProducto = @PID`),
@@ -972,6 +981,15 @@ exports.guardarProductoConfig = async (req, res) => {
                 const modo = MESAS_MODOS.includes(body.tizadaMesasModo) ? body.tizadaMesasModo : null;
                 await new sql.Request(transaction).input('PID', sql.Int, proId).input('M', sql.VarChar(20), modo)
                     .query('UPDATE dbo.ProductoVentaConfig SET TizadaMesasModo = @M WHERE ProIdProducto = @PID');
+            }
+            // [MESAS 16/10] cada diseño en sus propias mesas (null = se mezclan) y el largo máximo de cada mesa (null = el del molde)
+            if ((body.tizadaSepararDisenos !== undefined || body.tizadaLargoMaxM !== undefined) && await tieneMesasExtra(pool)) {
+                const largo = body.tizadaLargoMaxM === '' || body.tizadaLargoMaxM == null ? null : Number(String(body.tizadaLargoMaxM).replace(',', '.'));
+                if (largo != null && !(largo >= 0.1 && largo <= 50)) { const e = new Error('El largo máximo de mesa va de 0,10 a 50 m (o vacío = el del molde).'); e.status = 400; throw e; }
+                const rqX = new sql.Request(transaction).input('PID', sql.Int, proId); const sets = [];
+                if (body.tizadaSepararDisenos !== undefined) { sets.push('TizadaSepararDisenos = @SD'); rqX.input('SD', sql.Bit, body.tizadaSepararDisenos ? 1 : null); }
+                if (body.tizadaLargoMaxM !== undefined) { sets.push('TizadaLargoMaxM = @LM'); rqX.input('LM', sql.Decimal(5, 2), largo); }
+                await rqX.query(`UPDATE dbo.ProductoVentaConfig SET ${sets.join(', ')} WHERE ProIdProducto = @PID`);
             }
             if (aMedida !== undefined) {
                 await new sql.Request(transaction).input('PID', sql.Int, proId)
