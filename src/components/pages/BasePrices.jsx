@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import api from '../../services/api';
 import { toast } from 'sonner';
+import TablaTarifa from './TablaTarifa';
+import { tablaDeTarifa, CAMPOS_TARIFA, TEXTOS_TARIFA } from './tarifasCobro';
 
 // --- HELPERS PARA UNIDADES Y PRECIOS ---
 
@@ -169,12 +171,17 @@ const PriceRow = ({
     pendingTieredChanges = {},
     onTieredChange,
     profile,
-    hideAddCurrency = false
+    hideAddCurrency = false,
+    // [19/10/2026] Bordado y estampado: se cobran con la tarifa del recuadro de arriba. En bordado el motor no
+    // mira este precio (reemplazaLista: la fila no deja cargarlo); en estampado es el que se cobra si la orden
+    // no trae bajadas (sigue editable, con la aclaración debajo).
+    cobroTecnico = null
 }) => {
     const isTotalRow = item._isVirtualTotal || item.CodArticulo === 'TOTAL';
     const displayVal = changes?.precio !== undefined ? changes.precio : (item.Precio || 0);
     const displayMoneda = changes?.moneda !== undefined ? changes.moneda : (item.Moneda || 'UYU');
     const isDirty = changes !== undefined;
+    const sinLista = !!cobroTecnico?.reemplazaLista;
 
     const rowId = item.ID || item._tempID;
 
@@ -262,6 +269,11 @@ const PriceRow = ({
             <td className="p-3.5 text-right align-middle w-32">
                 {isTotalRow ? (
                     <span className="text-slate-300 font-extrabold text-center block">-</span>
+                ) : sinLista ? (
+                    <span className="inline-block text-[11px] font-extrabold text-indigo-600 bg-indigo-50 border border-indigo-100 px-2 py-1 rounded-lg whitespace-nowrap"
+                        title="Se cobra con la tarifa de arriba. Este precio no se usa.">
+                        {cobroTecnico.etiqueta}
+                    </span>
                 ) : (
                     <input
                         type="number" step="0.01"
@@ -278,10 +290,15 @@ const PriceRow = ({
                         onFocus={(e) => e.target.select()}
                     />
                 )}
+                {cobroTecnico && !sinLista && (
+                    <span className="block mt-1 text-[10px] leading-tight font-bold text-indigo-600 text-right">{cobroTecnico.pista}</span>
+                )}
             </td>
             <td className="p-3.5 text-center w-28 align-middle">
                 {isTotalRow ? (
                     <span className="text-slate-300 font-extrabold text-center block">-</span>
+                ) : sinLista ? (
+                    <span className="text-xs font-bold text-slate-500" title="La tarifa es en pesos">UYU</span>
                 ) : (
                     <select
                         className={`text-xs border rounded-lg p-1.5 font-bold outline-none transition-colors ${isDirty && changes?.moneda !== undefined ? 'bg-amber-50 text-slate-900 border-amber-400 ring-2 ring-amber-100' : 'bg-slate-50 border-slate-200 text-slate-700 hover:border-indigo-400 focus:ring-2 focus:ring-indigo-100'}`}
@@ -413,7 +430,7 @@ const PriceRow = ({
                 {!isTotalRow && (
                     <div className="flex justify-end items-center gap-2">
                         {isDirty && <span className="text-amber-500 animate-pulse text-[10px]">●</span>}
-                        {!hideAddCurrency && (
+                        {!hideAddCurrency && !sinLista && (
                             <button
                                 onClick={() => onAdd(item)}
                                 className="opacity-0 group-hover:opacity-100 transition-opacity text-slate-400 hover:text-indigo-600 p-1.5 rounded-lg hover:bg-indigo-50"
@@ -429,11 +446,83 @@ const PriceRow = ({
     );
 };
 
+// [19/10/2026] Tarifa por dato técnico del grupo (bordado: puntadas; estampado: bajadas). Los valores viven en
+// ConfiguracionPrecios y los lee el motor en cada cálculo (pricingService.tarifaBordado / tarifaEstampado):
+// GET/PUT /prices/tarifa/:tipo. Va arriba de la tabla del grupo. Campos, textos y tabla: tarifasCobro.js.
+const TarifaPanel = ({ tarifa, onGuardada }) => {
+    const campos = CAMPOS_TARIFA[tarifa.tipo];
+    const textos = TEXTOS_TARIFA[tarifa.tipo];
+    const guardados = () => Object.fromEntries(campos.map(c => [c.campo, String(tarifa[c.campo] ?? '')]));
+    const [valores, setValores] = useState(guardados);
+    const [guardando, setGuardando] = useState(false);
+    const cambiado = campos.some(c => String(tarifa[c.campo] ?? '') !== valores[c.campo]);
+    const actual = { ...tarifa, ...Object.fromEntries(Object.entries(valores).map(([k, v]) => [k, String(v).replace(',', '.')])) };
+
+    const guardar = async () => {
+        if (!window.confirm('La tarifa nueva se usa para todo lo que se cotice desde ahora (lo ya facturado no cambia). ¿Guardar?')) return;
+        setGuardando(true);
+        try {
+            const r = await api.put(`/prices/tarifa/${tarifa.tipo}`, valores);
+            toast.success(`${textos.titulo} guardada`);
+            onGuardada(r.data);
+        } catch (e) {
+            toast.error(e.response?.data?.error || `No se pudo guardar la ${textos.titulo.toLowerCase()}`);
+        } finally {
+            setGuardando(false);
+        }
+    };
+
+    return (
+        <div className="mb-4 rounded-xl border border-indigo-100 bg-indigo-50/40 p-4">
+            <div className="flex flex-wrap items-start justify-between gap-2 mb-3">
+                <div>
+                    <h3 className="text-sm font-extrabold text-slate-800">{textos.titulo}</h3>
+                    <p className="text-xs text-slate-500">{textos.descripcion}</p>
+                </div>
+                <div className="flex items-center gap-2">
+                    {cambiado && (
+                        <button onClick={() => setValores(guardados())}
+                            className="bg-white hover:bg-slate-50 text-slate-600 border border-slate-200 px-3 py-1.5 rounded-lg text-xs font-bold"
+                            title="Volver a los valores guardados">
+                            Descartar
+                        </button>
+                    )}
+                    <button onClick={guardar} disabled={!cambiado || guardando}
+                        className="bg-indigo-600 hover:bg-indigo-700 text-white px-3.5 py-1.5 rounded-lg text-xs font-bold disabled:opacity-40"
+                        title={cambiado ? `Guardar la ${textos.titulo.toLowerCase()}` : 'No hay cambios'}>
+                        {guardando ? 'Guardando…' : 'Guardar tarifa'}
+                    </button>
+                </div>
+            </div>
+            <div className={`grid grid-cols-2 gap-3 ${campos.length === 3 ? 'lg:grid-cols-3' : 'lg:grid-cols-4'}`}>
+                {campos.map(c => (
+                    <label key={c.campo} className="block">
+                        <span className="block text-[10px] font-extrabold uppercase tracking-wider text-slate-500">{c.etiqueta}</span>
+                        <input type="number" min="0" step={c.paso} value={valores[c.campo]}
+                            onChange={(e) => setValores(v => ({ ...v, [c.campo]: e.target.value }))}
+                            className={`mt-1 w-full text-right border rounded-lg px-2.5 py-1.5 outline-none font-mono font-bold text-sm ${String(tarifa[c.campo] ?? '') !== valores[c.campo] ? 'border-amber-400 bg-amber-50 ring-2 ring-amber-100' : 'border-slate-200 bg-white focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100'}`} />
+                        <span className="block text-[10px] text-slate-400 mt-0.5">{c.ayuda}</span>
+                    </label>
+                ))}
+            </div>
+            {/* La misma tabla que Precios por cantidad, con los valores que se están escribiendo */}
+            <div className="mt-3">
+                <TablaTarifa conTitulo={false} tabla={tablaDeTarifa(actual)} />
+            </div>
+            <p className="mt-2 text-[11px] text-slate-500">
+                {textos.nota}{cambiado ? ', con los valores sin guardar' : ''}. {textos.extra}
+            </p>
+        </div>
+    );
+};
+
 const BasePrices = ({ hideGeneralRow = false, hideAddCurrency = false }) => {
     // --- ESTADO ---
     const [prices, setPrices] = useState([]);
     const [profiles, setProfiles] = useState([]);
     const [tieredRules, setTieredRules] = useState([]);
+    // [19/10/2026] Tarifas por dato técnico, por tipo (null = no se pudo leer: ese grupo se ve como antes)
+    const [tarifas, setTarifas] = useState({ bordado: null, estampado: null });
     const [loading, setLoading] = useState(false);
     const [filter, setFilter] = useState('');
 
@@ -476,11 +565,15 @@ const BasePrices = ({ hideGeneralRow = false, hideAddCurrency = false }) => {
     const loadPrices = async () => {
         setLoading(true);
         try {
-            const [pricesRes, profilesRes, tieredRes] = await Promise.all([
+            const [pricesRes, profilesRes, tieredRes, bordadoRes, estampadoRes] = await Promise.all([
                 api.get('/prices/base'),
                 api.get('/profiles'),
-                api.get('/prices/tiered')
+                api.get('/prices/tiered'),
+                // Si fallan, la pantalla funciona igual que antes (sin recuadro ni "Por puntadas / bajadas")
+                api.get('/prices/tarifa/bordado').catch(() => ({ data: null })),
+                api.get('/prices/tarifa/estampado').catch(() => ({ data: null }))
             ]);
+            setTarifas({ bordado: bordadoRes.data || null, estampado: estampadoRes.data || null });
             
             const data = pricesRes.data.map(item => ({
                 ...item,
@@ -498,6 +591,16 @@ const BasePrices = ({ hideGeneralRow = false, hideAddCurrency = false }) => {
         } finally {
             setLoading(false);
         }
+    };
+
+    // [19/10/2026] La tarifa del área del artículo (por el área de su grupo) y cómo se cobra: en bordado todo
+    // menos los cargos (matriz, relieve 3D, aplicación), que van por su precio de lista; en estampado, todo
+    const tarifaDelArea = (item) => Object.values(tarifas).find(t => t && t.areas.includes(String(item.AreaGrupo || '').trim().toUpperCase())) || null;
+    const cobroDe = (item) => {
+        const t = tarifaDelArea(item);
+        if (!t || t.cargos.includes(String(item.CodArticulo || '').trim())) return null;
+        const tx = TEXTOS_TARIFA[t.tipo];
+        return { etiqueta: tx.cobro, reemplazaLista: tx.reemplazaLista, pista: tx.pista };
     };
 
     const handlePriceChange = (id, changes) => {
@@ -1124,6 +1227,11 @@ const BasePrices = ({ hideGeneralRow = false, hideAddCurrency = false }) => {
 
                                     {/* Table Grid container */}
                                     <div className="flex-1 overflow-auto custom-scrollbar p-4 bg-white">
+                                        {/* [19/10/2026] Grupo de Bordado o Estampado: su tarifa, arriba de la tabla */}
+                                        {!isAllTab && (() => {
+                                            const t = items.map(tarifaDelArea).find(Boolean);
+                                            return t ? <TarifaPanel key={JSON.stringify(t)} tarifa={t} onGuardada={(n) => setTarifas(prev => ({ ...prev, [n.tipo]: n }))} /> : null;
+                                        })()}
                                         {items.length === 0 ? (
                                             <div className="p-12 text-center text-slate-400 text-sm">
                                                 No se encontraron productos en esta sección.
@@ -1179,6 +1287,7 @@ const BasePrices = ({ hideGeneralRow = false, hideAddCurrency = false }) => {
                                                             onTieredChange={handleTieredChange}
                                                             profile={profile}
                                                             hideAddCurrency={hideAddCurrency}
+                                                            cobroTecnico={item._isVirtualTotal ? null : cobroDe(item)}
                                                         />
                                                     ))}
                                                 </tbody>

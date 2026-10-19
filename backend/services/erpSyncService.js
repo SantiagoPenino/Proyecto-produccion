@@ -622,7 +622,9 @@ class ERPSyncService {
                 // demás perfiles (urgencia, reposición) pero se filtra el de tinta.
                 const extraProfilesServicios = extraProfiles.filter(pid => Number(pid) !== 3);
                 for (const srv of srvRes.recordset) {
-                    const srvVars = { puntadas: srv.Puntadas || 0, bajadas: srv.Bajadas || 0, bajadasAdicionales: srv.BajadasAdicionales || 0, skipPrepago: true };
+                    // cantidadBordados (19/10/2026): la cantidad de la línea principal de la orden. La usa el
+                    // motor para la matriz de bordado, que va sin cargo desde 10 bordados (guía de Emblemas).
+                    const srvVars = { puntadas: srv.Puntadas || 0, bajadas: srv.Bajadas || 0, bajadasAdicionales: srv.BajadasAdicionales || 0, skipPrepago: true, cantidadBordados: effectiveQty };
                     let srvQty = srv.Cantidad || 1;
                     if (['110', '113'].includes(srv.CodArt?.trim())) {
                         srvQty = (srv.Cantidad || 1) * (srv.Bajadas || 1) + (srv.BajadasAdicionales || 0);

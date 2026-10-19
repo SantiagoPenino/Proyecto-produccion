@@ -17,5 +17,10 @@ router.put('/descripcion-lista', controller.saveDescripcionLista);
 router.get('/tiered', controller.getTieredPrices);
 router.post('/tiered/bulk', controller.saveTieredPricesBulk);
 router.post('/calculate', controller.calculatePriceEndpoint);
+// Precios por cantidad (solo lectura, /vendedores/precios-cantidad): sin ?area, las áreas; con ?area, la matriz
+router.get('/por-cantidad', controller.getPreciosPorCantidad);
+// Tarifas por dato técnico (bordado: puntadas; estampado: bajadas), en ConfiguracionPrecios: las muestra y edita Precios Estándar
+router.get('/tarifa/:tipo', controller.getTarifa);
+router.put('/tarifa/:tipo', controller.saveTarifa);
 
 module.exports = router;
