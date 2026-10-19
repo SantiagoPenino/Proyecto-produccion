@@ -928,15 +928,19 @@ exports.guardarProductoConfig = async (req, res) => {
             // el form de la ficha se guarda como una unidad, no campo por campo.
             if (body.fichaDiseno !== undefined) {
                 const fd = body.fichaDiseno || {};
+                // Cada campo recortado al tamaño de su columna: un texto más largo hacía que SQL Server
+                // rechazara el parámetro y NO se guardaba nada del producto (19/10, producto 504: el
+                // Material armado con todas sus telas pasaba los 200 caracteres).
+                const campo = (v, max) => { const t = v ? String(v).trim() : ''; return t ? t.slice(0, max) : null; };
                 await new sql.Request(transaction)
                     .input('PID', sql.Int, proId)
-                    .input('Ref', sql.VarChar(50), fd.ref ? String(fd.ref).trim() : null)
-                    .input('Marca', sql.VarChar(50), fd.marca ? String(fd.marca).trim() : 'USER')
-                    .input('Material', sql.VarChar(200), fd.material ? String(fd.material).trim() : null)
-                    .input('Tallas', sql.VarChar(200), fd.tallas ? String(fd.tallas).trim() : null)
-                    .input('Marcacion', sql.VarChar(500), fd.marcacion ? String(fd.marcacion).trim() : null)
-                    .input('Colores', sql.VarChar(200), fd.colores ? String(fd.colores).trim() : null)
-                    .input('Proveedor', sql.VarChar(200), fd.proveedor ? String(fd.proveedor).trim() : null)
+                    .input('Ref', sql.VarChar(50), campo(fd.ref, 50))
+                    .input('Marca', sql.VarChar(50), campo(fd.marca, 50) || 'USER')
+                    .input('Material', sql.VarChar(200), campo(fd.material, 200))
+                    .input('Tallas', sql.VarChar(200), campo(fd.tallas, 200))
+                    .input('Marcacion', sql.VarChar(500), campo(fd.marcacion, 500))
+                    .input('Colores', sql.VarChar(200), campo(fd.colores, 200))
+                    .input('Proveedor', sql.VarChar(200), campo(fd.proveedor, 200))
                     .query(`
                         IF EXISTS (SELECT 1 FROM dbo.ProductoFichaDiseno WHERE ProIdProducto = @PID)
                             UPDATE dbo.ProductoFichaDiseno SET

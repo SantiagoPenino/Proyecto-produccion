@@ -128,6 +128,26 @@ const claseSel = (clases) => `flex items-center gap-1.5 bg-white text-left text-
 // "Impresion Directa"). El CSS capitalize no baja el resto de las letras.
 const capitalizar = (v) => String(v || '').toLowerCase().replace(/\S+/g, w => w.charAt(0).toUpperCase() + w.slice(1));
 
+// Material de la ficha a partir de las telas marcadas: «Dry Pro (o Microfibra, Set)». La columna admite
+// 200 caracteres: con muchas telas se listan las que entran y el resto queda como «y N más» (19/10:
+// el producto 504 no se podía guardar porque el texto completo pasaba el límite).
+const MATERIAL_MAX = 200;
+const materialDeTelas = (telas) => {
+    if (!telas.length) return '';
+    const primera = telas.find(t => t.esDefault) || telas[0];
+    if (telas.length === 1) return String(primera.material || '').slice(0, MATERIAL_MAX);
+    const otras = telas.filter(t => t !== primera).map(t => t.material);
+    const armar = (n) => {
+        const resto = otras.length - n;
+        return `${primera.material} (o ${otras.slice(0, n).join(', ')}${resto > 0 ? `${n > 0 ? ' y' : ''} ${resto} más` : ''})`;
+    };
+    for (let n = otras.length; n >= 0; n--) {
+        const texto = armar(n);
+        if (texto.length <= MATERIAL_MAX) return texto;
+    }
+    return String(primera.material || '').slice(0, MATERIAL_MAX);
+};
+
 const Toggle = ({ on, onChange, disabled }) => (
     <button type="button" disabled={disabled} onClick={() => onChange(!on)}
         className={`w-10 h-[22px] rounded-full relative transition-colors flex-shrink-0 ${on ? 'bg-emerald-500' : 'bg-slate-300'} ${disabled ? 'opacity-50' : ''}`}>
@@ -1479,13 +1499,8 @@ export default function ConfigurarProductosPage() {
         // F1: el material sale de los materiales marcados, vengan del molde de TizadaPro o del área
         // (producto sin molde). Las tallas solo existen si hay molde.
         const telas = [...(form?.telas || new Map()).values()];
-        if (!moldeSel) {
-            const primera = telas.find(t => t.esDefault) || telas[0];
-            const material = telas.length ? (telas.length === 1 ? primera.material : `${primera.material} (o ${telas.filter(t => t !== primera).map(t => t.material).join(', ')})`) : '';
-            return { material, tallas: '' };
-        }
-        const primera = telas.find(t => t.esDefault) || telas[0];
-        const material = telas.length ? (telas.length === 1 ? primera.material : `${primera.material} (o ${telas.filter(t => t !== primera).map(t => t.material).join(', ')})`) : '';
+        const material = materialDeTelas(telas);
+        if (!moldeSel) return { material, tallas: '' };
         // Solo los grupos que vende el producto ("Talles que se venden"); sin ninguno marcado, todos los del molde
         const todos = agruparTalles(moldeSel.talles);
         const marcados = (form?.gruposTalle || []).filter(g => todos.some(([n]) => n === g));

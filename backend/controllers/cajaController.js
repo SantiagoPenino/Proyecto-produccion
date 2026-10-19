@@ -3179,10 +3179,13 @@ const generarNotaCredito = async (req, res) => {
       });
     } catch (errTx) { await rollbackSeguro(transaction, 'caja'); throw errTx; }
   } catch (err) {
-    logger.error('[NOTA-CREDITO]', err.message);
     // Víctima de deadlock: se relanza para que conReintentoDeadlock reejecute la operación.
     if (esDeadlock(err)) throw err;
-    return res.status(500).json({ error: err.message });
+    // Rechazos esperados (statusCode < 500, ej. rollo por adelantado ya consumido): aviso, no error.
+    const status = err.statusCode || 500;
+    if (status < 500) logger.warn('[NOTA-CREDITO] rechazada:', err.message);
+    else logger.error('[NOTA-CREDITO]', err.message);
+    return res.status(status).json({ error: err.message });
   }
 };
 

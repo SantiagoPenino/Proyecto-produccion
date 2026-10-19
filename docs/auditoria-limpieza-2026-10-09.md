@@ -6,6 +6,30 @@ Convención de las marcas, pedida por Santiago: **verificado** (se leyó el cód
 
 ---
 
+## 0. Estado al 16/10/2026
+
+Este reporte es del 09/10 y su texto queda como estaba. Las notas **«Estado al 16/10»** de cada sección dicen qué cambió desde entonces. Lo que hizo Yoania sale de su commit `1f34406` y de su PDF (`auditoria-limpieza-estado-2026-10-16.pdf`). Lo marcado **«según Yoania»** son datos de la base de producción que no se pueden verificar desde el repo.
+
+| Cuándo y quién | Qué | Commit |
+|---|---|---|
+| 13/10, Santiago | Paso 2: `.gitignore` por ruta y basura (§3, §14) | `734e3b3` |
+| 13/10, Santiago | Paso 3: 52 archivos de código y 26 imágenes borrados, 98 marcas SIN USO (§4, §5) | `2fd3c5f` |
+| 13/10, Santiago | Login en 7 routers, `CicAnulado`, avisos de socket después del commit, fuga de sockets (§17, §18) | `48a55b1` |
+| 14 al 16/10, Yoania | Los bugs de §18 que quedaban, más uno nuevo. 83 de las 98 marcas SIN USO resueltas (60 archivos borrados) | `1f34406` |
+| 16/10, Santiago | Merge: `*.sql` vuelve a ser global en el `.gitignore` (§14) | `f8fbc91` |
+
+**El plan (§15):**
+- **Paso 1, secretos:** pendiente (§17).
+- **Paso 2, `.gitignore` y basura:** hecho. El 16/10 `*.sql` volvió a ser global (§14).
+- **Paso 3, código muerto y SIN USO:** hecho. Quedan 15 marcas del 13/10 y 4 de Solicitudes del 06/10 (§5).
+- **Bugs de §18:** hechos. Aparecieron otros, que siguen pendientes (§18).
+- **Seguridad (§17):** 7 routers cerrados el 13/10; el resto sigue abierto.
+- **Pasos 4 y 5, carpetas y refactor:** pendientes. Dos archivos grandes ya bajaron (§9).
+
+La revisión del commit de Yoania y lo que quedó abierto después están en §19.
+
+---
+
 ## 1. Resumen
 
 | | Archivos | Líneas | No alcanzables desde el entry |
@@ -35,6 +59,8 @@ Convención de las marcas, pedida por Santiago: **verificado** (se leyó el cód
 13. **19 archivos `.sql` que el código cita no existen en el repo.** Nacieron ignorados por `*.sql`. **Descartado por Santiago (13/10):** ya corrieron en prod y no interesa recuperarlos. §14.
 14. **`prendasOrdersController.js` (5.806 líneas) es un fork declarado de `webOrdersController`: el 78% son líneas idénticas y ~3.000 líneas son exports que nadie llama.** Y el fork no recibió los fixes posteriores del original (candado anti doble envío, por ejemplo). §9, área Pedidos web.
 15. **Aparecieron bugs de paso** (no se buscaron, pero se vieron): `anularFactura` registra dos veces el input `CicAnulado` (mssql lo rechaza), `seedConfigEstantes` usa una variable que no existe (ReferenceError), `recomputarSaldoCuenta` usa una fórmula de saldo distinta a la canónica, `LogisticsCartModal` llama a un método que no existe. §18.
+
+> **Estado al 16/10:** resueltos el 1 (portal viejo borrado), el 2 (`.gitignore`; ver §14), el 3 (caja vieja borrada), el 4 (tablero viejo borrado), el 7 (`scheduler.js` borrado), el 14 (`prendasOrdersController` bajó a 2.540 líneas y el form de prendas tiene el candado) y el 15 (todos los bugs). Descartados el 12 y el 13. Siguen abiertos el 5 y el 6 (§17), el 8 (dependencias), el 9 y el 10 (duplicación) y el 11 (contraseña de la base). Ver §0.
 
 ---
 
@@ -162,6 +188,13 @@ Otros en `public/` sin ninguna referencia: `public/assets/images/maskable_icon_x
 ## 5. SIN USO — marcar con comentario, no borrar
 
 Cada uno con lo que se perdería si se borrara (es lo que justifica marcarlo en vez de borrarlo).
+
+> **Estado al 16/10:** Yoania revisó de a una las 98 marcas del 13/10 (15 y 16/10) y resolvió 83, casi todas borrando el código: 46 de los 60 archivos borrados en `1f34406` tenían marca, y según Yoania se fueron además unas 45 funciones con sus rutas. Quedan 15 (verificado con `grep -rn "SIN USO (13/10)" src backend`):
+> - **11 de seguridad:** el chat con Gemini (`chatController`, `chatRoutes`, `ChatWidget`, `n8nService`, `localFileService`), `integrationLogsController`, las rutas de prueba de SISNET (`sisnetController`, `sisnetRoutes`), `GET /api/debug/reprocess/:id`, `deleteOrder` y `reemplazarDeuda`.
+> - **3 de TPU:** `tpuPlanchaService`, `tpuPltService` y `tpu_matriz.py`. Los revisa Santiago.
+> - **`FacturarAnticipoModal`:** se queda, es del plan del anticipo facturable.
+>
+> Aparte hay 4 marcas del 06/10 en Solicitudes (`solicitudesComunes.jsx`, `SolicitudVendedorForm.jsx`): trabajo en curso. Las tablas de abajo quedan como estaban el 09/10.
 
 ### Frontend
 
@@ -349,6 +382,8 @@ Bloques que se pueden sacar sin cambiar comportamiento. Todos verificados por gr
 ## 9. Refactor — por prioridad
 
 Esfuerzo: S menos de 2 h, M menos de 1 día, L más de 1 día. Solo los de prioridad alta en detalle; el resto, resumido por área. Cada agente leyó los archivos completos (los grandes por tramos) y anotó rangos de líneas.
+
+> **Estado al 16/10 (Yoania, `1f34406`):** se resolvieron las «dos cajas» (se borró `CargaPagosView`; `/caja/pagos` vuelve al inicio), el tablero viejo de lotes, `scheduler.js` entero, el importador manual (`ImportadorManualView` + `importOnDemandController`; ver §19), los «Procesos Automáticos» (cron de Planillas, envío a React/Macrosoft, Stock del Depósito) y la cola de estados de cuenta. `prendasOrdersController` bajó de 5.806 a 2.540 líneas. `ContabilidadCuentasView` pasó a ser `cuentasComunes.jsx` (3.992 líneas, sin la ventana: `/contabilidad/cuentas` abre el Panel 360). Los tamaños de esta sección son del 09/10.
 
 ### 9.1 Prioridad alta
 
@@ -579,6 +614,8 @@ Verificado con grep del nombre del paquete en `src/`, `backend/`, `scripts/`, co
 
 ## 14. `.gitignore` — qué está mal y qué hacer
 
+> **Estado al 16/10:** el `.gitignore` por ruta entró el 13/10 (`734e3b3`). El 16/10, en el merge `f8fbc91`, `*.sql` volvió a ser global a pedido de Santiago, con una sola excepción: `backend/scripts/sql/poslink_2026-10-12.sql`, que el código lee. Con eso salieron de git los 22 `.sql` que se habían sumado el 13/10 (siguen en disco) y casi todo lo que subió `1f34406` (651 archivos: 558 `.sql`, `.md`, `.json`, `.bat`). Siguen en la historia: ver §19.
+
 **Problemas verificados:**
 1. `*.json` (línea 30) + `!src/assets/animations/` (34): la negación de un directorio **no re-incluye** los `.json` de adentro. Hoy `src/assets/animations/*.json`, `backend/scripts/preflight/reglas_user.json`, `public/manifest.json` y `public/assets/textures/texturas.json` están ignorados. `manifest.json` es el que define los íconos maskable de la PWA y `reglas_user.json` lo lee `user_preflight.py:70`: **un clone no los tiene**.
 2. `*.sql` (45): dejó afuera `backend/scripts/sql/*.sql` (7, citados en el CHANGELOG), `docs/servicio-tecnico/*.sql` (9, citados desde el código), `docs/wms-data/DDL-*.sql` (2, citados desde `wmsInternoService.js:11`) y **perdió** los `.sql` que citan los runbooks de julio (`fix_saldo_por_cliente.sql`, `add_PagIdCheque.sql`, `fix_pago_mal_aplicado_pc2220.sql`…), `diag_reconciliacion_cliente.sql` (rompe `diag_reconciliacion_lote.js`) y `docs/migrations/configurador_*.sql` que citan `configuradorController.js` y `ConfiguradorPasosCostura.jsx` (la carpeta no existe en disco). **Si existen en la PC de Santiago, rescatarlos antes de nada.**
@@ -662,6 +699,12 @@ Resumen de las 16 propuestas del agente de orden (detalle con comandos exactos e
 
 **Lote final:** los refactors de §9, un archivo grande por deploy, empezando por los que tienen bug confirmado (§18) para que el fix sea un diff chico antes de mover.
 
+> **Estado al 16/10:**
+> - **Lote 0:** hechos el 2 y el 4. Pendientes el 3 (secretos), el 5 (archivar) y el 6 (`scripts/dev/`).
+> - **Lote 1:** hecho, el 13/10 y del 14 al 16/10.
+> - **Lote 2** (dependencias) **y lotes 3..N** (carpetas): pendientes.
+> - **Lote final:** ya bajaron `prendasOrdersController` y la ventana de Cuentas.
+
 ### Estructura objetivo (resumen; árbol completo en `estructura-objetivo.txt`)
 
 - **Front:** `src/components/<dominio>/{pages,modals,components}` con dominios `publico`, `caja`, `contabilidad`, `produccion`, `logistica`, `stock`, `ventas`, `servicio-tecnico`, `admin`; `src/routes/` (`DynamicRouter.jsx`, `rutas.js` como **una sola tabla** ruta → componente, `menuIcons.js`, `secciones.js`); `src/dominio/` (reglas puras compartidas: `estados.js`, `facturacion/`, `solicitudes/`); `src/utils/` solo puras sin dominio; `src/components/ui/` sin dominio (Selector, SelectorFecha, Ventana, ConfirmationModal, MiniModal…); `src/client-portal/` solo lo del cliente (fuera: `pedido-prenda` → ventas, `totem` → `src/totem/`, `Tpu3DViewer` → shared); `src/assets/` solo lo importado.
@@ -722,6 +765,10 @@ Reportado, no tocado. Son hallazgos de seguridad/operación que salieron al leer
 
 > **Hecho el 13/10 (sin deployar):** quedan con `verifyToken + soloInternoConRol()` en todo el router `clientsRoutes` (menos `POST /external-create`, que sigue con x-api-key), `empresasRoutes`, `tesoreriaRoutes`, `pricesRoutes`, `specialPricesRoutes`, `logisticsRoutes` y `rollsRoutes`. Antes se revisó ruta por ruta quién las llama: todos son pantallas de la app interna que mandan token, nada del portal, el tótem ni páginas públicas. `GET /api/debug/reprocess/:id` quedó solo para Admin y marcado SIN USO. El resto de esta lista sigue abierto (nomenclators, reports, integration-logs, chat, sisnet, drive, reception, stock, getway*, measurement, audit y los 2 de `ordersRoutes` con TODO).
 
+> **Estado al 16/10:** de esta lista sigue abierto todo, salvo los 7 routers y `/api/debug/reprocess/:id` (13/10) y lo que se borró en `1f34406`: `/api/stock` entero, `/api/configuraciones`, `/api/stats/public` y `/apicotizaciones/insertar`. Se suman dos cosas:
+> - **Token de activación de cuenta:** el que va por mail se firma con la misma clave que el login (`emailService.js:40`). Una ruta con solo `verifyToken` lo acepta como sesión; las que tienen `soloInternoConRol` no.
+> - **Quedó en la historia de GitHub con `1f34406`:** la clave del usuario de lectura de TizadaPro y archivos con datos de clientes (§19).
+
 - **Secretos en el repo:** `backend/scripts/analizar_tizadapro.js:18` (`password: '2441'` de `sa` de la base local); `docs/API_Telas_Activas.md` (valor literal de `x-api-key`; el código lee `EXTERNAL_API_KEY` del `.env`; no lo sé si coincide); `erpSyncService.js:1260` y `clientsController.js:39-40` (`user`/`1234` hardcodeados/default); `googleSheetsService.js:7` y `ordenesExternasService.js:36` (`SCRIPT_ID` de Apps Script); `server.js:12` loguea 5 caracteres de `GEMINI_API_KEY` en cada arranque; `backend/token.json` y `oauth-credentials.json` viven en la carpeta deployada.
 - **Endpoints sin auth:** `GET /api/debug/reprocess/:id` (`server.js:149`, pone en 0 medidas y relanza procesado); `GET /api/drive-reauth` y `/api/drive-callback` (`server.js:431-446`, "BORRAR DESPUÉS DE USARLAS", guardan el token de Drive); `/api/sisnet/*` (3 rutas de prueba contra el WS real); `/api/chat/*` (Gemini que ejecuta SQL, `test-gemini` público); `/api/nomenclators/*` (22 rutas, ABM incluido); `/api/reports/*`; `/api/integration-logs/*` (incluye `POST /clean` que borra filas); `ordersRoutes.js:17-18` (`/search/advanced` y `/details/:id` con "TODO: Restaurar verifyToken luego de debug"); `clientsRoutes` sin middleware (`DELETE /:cod`); `empresasRoutes` (edita emisor y clave SISNET).
 - **Front:** `ClientsIntegration.jsx:258,303` asigna vendedor **al azar** (`Math.random()`) a clientes nuevos; `CreateDispatchModal` y `TransportControlPage` piden usuario y contraseña y hacen un `authService.login` completo para "firmar" (emite token nuevo); `AuthContext.jsx` imprime el token en consola en dev; 8 lugares con `usuarioId: 1` o `user?.id || 1` (`PackingView`, `ReceiveDispatchModal`, `EsperandoBultosView`, `ReceptionView` ×4): la auditoría de recepciones puede quedar atribuida al usuario 1.
@@ -741,6 +788,31 @@ Reportado, no tocado. Son hallazgos de seguridad/operación que salieron al leer
 No se buscaron bugs, pero al leer el código aparecieron estos. **Ninguno se probó contra la base**: son lecturas del código. Conviene confirmarlos y arreglarlos antes de mover sus archivos, para que el fix sea un diff chico y rastreable.
 
 > **Hecho el 13/10 (sin deployar):** `anularFactura` ya no declara dos veces `CicAnulado` (verificado que mssql tira EDUPEPARAM, `node_modules/mssql/lib/base/request.js:137`). `LogisticsCartModal` resultó no ser un bug en vivo: `AreaView` lo importa pero nunca lo abre; quedó marcado SIN USO.
+
+> **Hecho del 14 al 16/10 (Yoania, `1f34406`). Cada arreglo se verificó en el código el 16/10:**
+> - **`seedConfigEstantes`:** se borró con su ruta.
+> - **`recomputarSaldoCuenta`:** usa la fórmula de siempre, sin `ORDEN`/`ORDEN_ANTICIPO`.
+> - **`importOnDemandController`:** se arregló y después se borró entero con el importador manual. Ver §19: hay uso reciente en nginx.
+> - **`LogisticsCartModal` y el tablero viejo (`closeRoll`):** borrados.
+> - **Cola de estados de cuenta:** el PATCH contra POST y las clases Tailwind dinámicas se fueron con la cola. Se sacaron la pantalla, sus 8 rutas y la generación de los jueves.
+> - **`CajaPanelPago` (`notes`):** se borró `CajaCobroLibreTab`, el único que lo pasaba.
+> - **`ModalPago` («1 undefined =»):** se arregló, y después se sacó la ventana de Cuentas.
+> - **`generarPdfFacturaDGI`:** trabaja sobre una copia del documento.
+> - **MercadoPago:** el rollback del checkout usa el método 10. Según Yoania, en `dbo.MetodosPagos` 10 = MercadoPago, y en producción no hubo casos.
+> - **`anularCheque`:** revierte el asiento del alta, que ahora se guarda en la columna nueva `TesoreriaCheques.AsiIdAlta`, y solo anula en `EN_CARTERA` o `EMITIDO`. Según Yoania, la columna ya se creó en producción el 14/10 y se completó para 12 cheques.
+> - **`cerrarCicloCompleto`:** frena con 409 si el ciclo ya tiene factura. La transacción completa queda para cuando se parta `contabilidadService`.
+> - **Numeración `MAX()+1`:** helper `utils/numeroTransaccionCaja.js` con `sp_getapplock` y `TRY_CAST` a número. El `MAX` sobre texto repetía «A-10»: según Yoania, 36 anticipos, que no se renumeran. Se borró el `insertar` manual de cotizaciones; el job del BCU no se revisó.
+> - **`sysadminController`:** mide el disco con `statfs`.
+> - **Exports duplicados** de `inventoryController` y `logisticsController`: borrados (verificado: no queda ninguno).
+> - **`ClientsIntegration`:** ya no asigna vendedor al azar; queda vacío.
+> - **`PrendaOrderForm`:** tiene el candado `enviandoRef`.
+> - **Nuevo, `procesarEventoContable`:** declaraba `cueId` adentro de un `if` y lo usaba afuera. Según Yoania, desde el 21/05 cada pago de `realizarPago` quedaba sin imputar y sin asiento; quedan 2 pagos sueltos (cuentas 1443 y 1782).
+>
+> **Encontrados en el camino, pendientes (según Yoania):**
+> - **`anticipoService.aplicarAnticipoAOrden` nunca funcionó:** hace un INSERT en columnas que no existen en `TransaccionesCaja` y se traga el error.
+> - **Cheques:** el rebote acredita siempre 1.1.5, y `cambiarEstadoCheque` no pasa moneda ni cotización. Hay 4 pares que pueden ser el mismo cheque con prefijo.
+> - **Endpoints que solo usaba la ventana Cuentas:** ciclos, pago-cruzado, pago-anticipado, `cuentas/:id/deudas` y `caja/anular-factura`. Revisarlos antes de borrarlos, porque alguno puede usarlo Caja.
+> - **Unas 2.564 cuentas con `CueSaldoActual` mal:** el recálculo masivo nunca se corrió.
 
 | Dónde | Qué | Evidencia |
 |---|---|---|
@@ -766,9 +838,32 @@ No se buscaron bugs, pero al leer el código aparecieron estos. **Ninguno se pro
 
 ---
 
+## 19. Revisión del commit de Yoania (16/10)
+
+`1f34406` («bomba», 16/10 10:34) toca 822 archivos (+98.450 / −28.320 líneas) y mezcla la auditoría con trabajo propio (Solicitudes, Configurador). Santiago lo mergeó en `f8fbc91`.
+
+**Verificado sobre `main` el 16/10, después del merge:**
+- **Compila y carga:** el front compila con Vite (a una carpeta temporal) y los 93 routers del backend cargan sin error.
+- **Imports:** el grafo da 0 imports rotos en el front. En el backend sale solo el falso positivo de pdfjs de siempre.
+- **Nada quedó colgado:** ninguna pantalla ni archivo del backend llama a una ruta o función que se borró. Se buscaron todas las rutas borradas y ~280 nombres de funciones.
+- **Login:** el de los 7 routers del 13/10 sigue igual y sus pruebas pasan.
+- **Job de los jueves:** `deudasVencidas.job.js` corre el mismo SQL que el viejo `estadosCuenta.job` para vencer deudas y abrir ciclos. Solo dejó de llenar la cola.
+- **«Enviar a React» y Stock del Depósito:** dependían del interruptor `ConfiguracionesSync` (`SYNC_REACT_CORE` / `SYNC_ERP_MACROSOFT`). Si estaba apagado, sacarlos no cambia nada. Que estuviera apagado lo dicen Yoania y un comentario del código; desde el repo no lo sé. Consulta: `SELECT ProcesoID, NombreProceso, Activo FROM dbo.ConfiguracionesSync`.
+
+**Abierto:**
+1. **Importador manual o Stock del Depósito, con uso.** El log de nginx de producción tiene 4 llamadas a `rest-sync/(import|preview)-on-demand` o `logistics/deposit-*`: el 07/10, dos el 12/10 y una el 16/10. Falta ver cuál fue y desde qué IP. Hasta saberlo, no deployar ese borrado sin hablarlo con Yoania.
+2. **El pull de Yoania.** Al bajar `f8fbc91`, git le borra de su disco los ~640 archivos que `1f34406` había subido (los `.sql`, `docs/migrations`, los `PROD_*`), porque en su commit estaban en git y en el merge no. Copiar la carpeta antes del pull. Si ya lo hizo, se recuperan con `git show 1f34406:<ruta>`.
+3. **Quedó en la historia de GitHub:** la clave del usuario `tizadapro_lectura` (`docs/migrations/PROD_tizadapro_usuario_lectura.sql`) y archivos con datos de clientes (los scripts del cliente 854, los `.bat` de snapshot y `backend/respaldos/productos_borrados/`). Sacarlos del árbol ya no alcanza: si la clave es real, hay que cambiarla. No se pudo comparar porque el `.env` local no tiene `TIZADAPRO_DB_PASSWORD`.
+4. **Scripts para después del deploy:** `PROD_verificar_` y `PROD_quitar_cola_estados_cuenta.sql`, `PROD_verificar_` y `PROD_quitar_menu_cuentas.sql`, `menu_quitar_enviar_a_react.sql` y `sql/quitar_sync_planillas_react_erp_2026-10-15.sql`. No están en `main` por el `*.sql` global; se recuperan con `git show 1f34406:<ruta>`. Los de cheques ya se corrieron, según Yoania.
+5. **Menú en producción (consulta del 16/10):** «Caja ACTUAL» (`/caja/pagos`) no apareció con la ruta exacta; salió solo `/caja/pagos-online`, que es otra pantalla. «Cuentas» (2063) y «Estados de Cuenta» (2065) sí están: los sacan los scripts del punto 4.
+6. **CHANGELOG:** de `1f34406` solo están la caja vieja y los Procesos Automáticos. El resto está en el PDF de Yoania.
+7. **Sin probar en el navegador** (lo dice Yoania). Lo que más importa abrir es el Panel 360 desde `/contabilidad/cuentas`, porque reemplaza a la ventana vieja.
+
+---
+
 ## Anexo — archivos de trabajo de la auditoría
 
-En `docs/auditoria-limpieza-2026-10-09/` (carpeta hermana de este reporte; `docs/` está ignorada por git hoy):
+En `docs/auditoria-limpieza-2026-10-09/` (carpeta hermana de este reporte):
 - `grafo.cjs`: script del grafo de imports, sin dependencias. Se re-corre con `node docs/auditoria-limpieza-2026-10-09/grafo.cjs . salida.json` y sirve como "knip casero" hasta que se adopte una herramienta.
 - `grafo.json` (sobre el commit d8404af de las 16:24), `extras.json` (fechas de último commit, duplicados por nombre, `public/` sin referencia, tracked-ignored).
 - `verificar-borrar.cjs` + `_borrar-verificados.json`: la verificación cruzada de cada borrable (hits de nombre base, exports y path en el repo vivo).

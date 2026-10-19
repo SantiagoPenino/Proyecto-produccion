@@ -4425,11 +4425,12 @@ async function revertirRecursosPorTransaccion(tcaId, usuarioId, transaction) {
 
         // Guardia: no permitir anular si el recurso ya fue consumido (parcial o total)
         if (total - metros < usada - 0.0001) {
-          throw new Error(
+          // 409: rechazo esperado (la regla funcionando), no una falla del servidor.
+          throw Object.assign(new Error(
             `No se puede revertir la compra del recurso: el rollo por adelantado del plan #${plaId} ` +
             `ya fue consumido (usados ${usada} de ${total} metros). Revertí esos consumos desde el ` +
             `libro del plan antes de anular la venta o emitir la Nota de Crédito.`
-          );
+          ), { statusCode: 409 });
         }
 
         // Restar los metros comprados; desactivar el plan si queda vacío

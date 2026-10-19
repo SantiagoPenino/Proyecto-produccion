@@ -446,9 +446,14 @@ app.get('/fnc', (req, res) => {
 });
 
 // --- SERVIR FRONTEND EN PRODUCCIÓN ---
+// Se registra SIEMPRE, aunque public/ no exista al arrancar: durante un deploy la carpeta se copia
+// con el servidor andando, y mientras falte el index.html se muestra «Estamos actualizando»
+// (utils/paginaActualizando.js) en vez de un 404 por pedido (19/10/2026: 3 min y medio así).
 const publicPath = path.join(__dirname, 'public');
-if (require('fs').existsSync(publicPath)) {
-    logger.info('📂 Sirviendo archivos estáticos desde:', publicPath);
+const { responderActualizando } = require('./utils/paginaActualizando');
+{
+    if (require('fs').existsSync(publicPath)) logger.info('📂 Sirviendo archivos estáticos desde:', publicPath);
+    else logger.warn('⚠️ No se encontró la carpeta "public": hasta que se copie el build se muestra «Estamos actualizando».');
     // Los bundles de Vite llevan hash de contenido en el nombre (AreaView-BHH8rdGj.js):
     // si cambia el contenido cambia la URL, así que se pueden cachear para siempre.
     // El resto conserva el nombre entre deploys, así que se revalida o no se cachea.
@@ -484,10 +489,13 @@ if (require('fs').existsSync(publicPath)) {
         if (req.url.startsWith('/thumbnails/') || req.url.startsWith('/fallas/')) {
             return res.status(404).send('Not found');
         }
-        res.sendFile(path.join(publicPath, 'index.html'));
+        const indexPath = path.join(publicPath, 'index.html');
+        if (!require('fs').existsSync(indexPath)) return responderActualizando(req, res);
+        // Si justo se borra entre el chequeo y el envío, también «Estamos actualizando».
+        res.sendFile(indexPath, (err) => {
+            if (err && !res.headersSent) responderActualizando(req, res);
+        });
     });
-} else {
-    logger.info('⚠️ No se encontró la carpeta "public". Ejecuta "npm run build" en el frontend y copia el contenido de "dist" a "backend/public".');
 }
 
 // ─── GLOBAL ERROR HANDLER ───

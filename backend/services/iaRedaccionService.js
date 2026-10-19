@@ -14,7 +14,12 @@ const logger = require('../utils/logger');
 const MODELO_DEFAULT = 'gemini-3.1-flash-lite';   // probado 15/10: mejor que el 3.5-lite (saludos y trato) y más barato; el 2.5-lite ya no se habilita a claves nuevas
 const MODELO_RESPALDO = 'gemini-flash-lite-latest';
 const MAX_CARACTERES = 4000;
-const TIMEOUT_MS = 20000;
+// Tiempos (19/10): Google tardó más de 20 s y el operador esperó 20 y 27 s para recibir un error.
+// Ahora cada llamada espera hasta 12 s y todo el pedido hasta 25 s: si el modelo principal no
+// contesta a tiempo se prueba el de respaldo (antes se abandonaba en la primera demora).
+const TIMEOUT_MS = 12000;
+const TOTAL_MS = 25000;
+const MINIMO_PARA_INTENTAR_MS = 4000;
 
 const INSTRUCCIONES = `Sos el asistente de redacción del equipo de atención al cliente de USER, una empresa uruguaya de producción textil y gráfica.
 Recibís el BORRADOR de un mensaje que escribió un operador. Devolvé ese MISMO mensaje pasado en limpio y con un tono amigable.
@@ -46,9 +51,9 @@ class ErrorIA extends Error {
     constructor(mensaje, status = 503) { super(mensaje); this.status = status; }
 }
 
-async function llamarGemini(modelo, texto, esNotaInterna, apiKey) {
+async function llamarGemini(modelo, texto, esNotaInterna, apiKey, timeoutMs = TIMEOUT_MS) {
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
         const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelo}:generateContent`, {
             method: 'POST',
@@ -84,20 +89,31 @@ async function pasarEnLimpio(texto, { esNotaInterna = false } = {}) {
 
     const modelos = [...new Set([(process.env.GEMINI_MODEL || '').trim() || MODELO_DEFAULT, MODELO_RESPALDO])];
     let ultimo = null;
+    const limite = Date.now() + TOTAL_MS;
+    const restante = () => limite - Date.now();
     for (const modelo of modelos) {
+        const esUltimo = modelo === modelos[modelos.length - 1];
+        if (restante() < MINIMO_PARA_INTENTAR_MS) break;
         let r;
         try {
-            r = await llamarGemini(modelo, borrador, esNotaInterna, apiKey);
-            // Google saturado ("high demand", 503/500) o límite momentáneo (429): un reintento corto
-            if ([429, 500, 503].includes(r.status)) {
+            r = await llamarGemini(modelo, borrador, esNotaInterna, apiKey, Math.min(TIMEOUT_MS, restante()));
+            // Google saturado ("high demand", 503/500) o límite momentáneo (429): un reintento corto,
+            // si queda tiempo para esperarlo
+            if ([429, 500, 503].includes(r.status) && restante() > 1200 + MINIMO_PARA_INTENTAR_MS) {
                 logger.warn(`[IA-REDACCION] ${modelo}: ${r.data?.error?.message || r.status} — reintento`);
                 await new Promise(ok => setTimeout(ok, 1200));
-                r = await llamarGemini(modelo, borrador, esNotaInterna, apiKey);
+                r = await llamarGemini(modelo, borrador, esNotaInterna, apiKey, Math.min(TIMEOUT_MS, restante()));
             }
         } catch (e) {
-            const msg = e.name === 'AbortError' ? 'la IA tardó demasiado en responder' : e.message;
+            const tarde = e.name === 'AbortError';
+            const msg = tarde ? 'la IA tardó demasiado en responder' : e.message;
+            // Demora o red caída en el principal: el respaldo corre en otros servidores de Google
+            if (!esUltimo && restante() >= MINIMO_PARA_INTENTAR_MS) {
+                logger.warn(`[IA-REDACCION] ${modelo}: ${msg} — pruebo el siguiente`);
+                continue;
+            }
             logger.warn(`[IA-REDACCION] ${modelo}: ${msg}`);
-            throw new ErrorIA(`No se pudo pasar en limpio: ${msg}. Probá de nuevo.`);
+            throw new ErrorIA(`No se pudo pasar en limpio: ${msg}. Probá de nuevo en un rato o mandalo como está.`);
         }
         if (r.status === 404) { ultimo = r; logger.warn(`[IA-REDACCION] el modelo ${modelo} no existe (404), pruebo el siguiente`); continue; }
         // Sigue saturado: el modelo de respaldo corre en otros servidores de Google
@@ -118,6 +134,10 @@ async function pasarEnLimpio(texto, { esNotaInterna = false } = {}) {
             throw new ErrorIA('La IA no devolvió texto. Probá de nuevo o mandalo como está.');
         }
         return { texto: salida.replace(/^["“”«»']+|["“”«»']+$/g, '').trim(), modelo };
+    }
+    if (restante() < MINIMO_PARA_INTENTAR_MS) {
+        logger.warn(`[IA-REDACCION] sin respuesta en ${TOTAL_MS / 1000} s`);
+        throw new ErrorIA('La IA está tardando demasiado en este momento. Probá de nuevo en un rato o mandalo como está.');
     }
     logger.error(`[IA-REDACCION] ningún modelo disponible: ${ultimo?.data?.error?.message || ''}`);
     throw new ErrorIA('No hay un modelo de IA disponible. Revisá GEMINI_MODEL en el servidor.');

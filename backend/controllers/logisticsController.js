@@ -799,6 +799,46 @@ exports.createRemito = async (req, res) => {
 
             const idsGate = finalBultosIds.filter(id => !isNaN(id)).join(',');
 
+            // --- BULTO YA DESPACHADO EN OTRO REMITO (19/10) ---
+            // El 16/10 los mismos 72 bultos de SB salieron en REM-929071 (14:12) y en REM-966403 (14:13):
+            // se recibieron por el segundo y el primero quedó abierto para siempre en la recepción de
+            // Depósito, con todo "faltante". Acá no se revisaba: el bulto pasaba a EN_TRANSITO igual.
+            // Frena si el bulto está PENDIENTE en un remito que todavía no se recibió. Un remito
+            // RECIBIDO_PARCIAL no frena: el bulto que faltó puede viajar en un segundo envío.
+            // UPDLOCK sobre los bultos: dos despachos simultáneos de los mismos bultos (doble clic) se
+            // ordenan, y el segundo ya ve los ítems que dejó el primero.
+            if (idsGate.length > 0) {
+                const idsLock = finalBultosIds.map(Number).filter(Number.isInteger).join(',');
+                await new sql.Request(transaction).query(`
+                    SELECT BultoID FROM Logistica_Bultos WITH (UPDLOCK, HOLDLOCK) WHERE BultoID IN (${idsLock})
+                `);
+                const enOtro = await new sql.Request(transaction).query(`
+                    SELECT b.CodigoEtiqueta, e.CodigoRemito, e.Estado
+                    FROM Logistica_EnvioItems ei
+                    JOIN Logistica_Envios e ON e.EnvioID = ei.EnvioID
+                    JOIN Logistica_Bultos b ON b.BultoID = ei.BultoID
+                    WHERE ei.BultoID IN (${idsLock})
+                      AND ei.EstadoRecepcion = 'PENDIENTE'
+                      AND e.Estado IN ('ESPERANDO_RETIRO', 'EN_TRANSITO', 'EN_TRANSITO_PARCIAL', 'DESPACHADO')
+                    ORDER BY e.CodigoRemito, b.CodigoEtiqueta
+                `);
+                if (enOtro.recordset.length > 0) {
+                    const filas = enOtro.recordset;
+                    const remitos = [...new Set(filas.map(f => String(f.CodigoRemito).trim()))];
+                    const muestra = filas.slice(0, 8).map(f => remitos.length === 1
+                        ? String(f.CodigoEtiqueta).trim()
+                        : `${String(f.CodigoEtiqueta).trim()} (en ${String(f.CodigoRemito).trim()})`).join(', ');
+                    const resto = filas.length > 8 ? ` y ${filas.length - 8} más` : '';
+                    const err = new Error(
+                        `${filas.length === 1 ? 'Este bulto ya salió' : `Estos ${filas.length} bultos ya salieron`} en ${remitos.length === 1 ? 'el remito' : 'los remitos'} ${remitos.join(', ')}, que todavía no se ${remitos.length === 1 ? 'recibió' : 'recibieron'}: ${muestra}${resto}. ` +
+                        `No hace falta armar otro: usá ese. Si ese remito quedó mal, pedile a Sistemas que lo cancele.`
+                    );
+                    err.statusCode = 409;
+                    err.codigo = 'BULTOS_EN_OTRO_REMITO';
+                    throw err;
+                }
+            }
+
             // --- ORDEN CANCELADA (25/09) ---
             // El bulto del producto de una orden cancelada no se despacha: no hay nada que entregar y
             // el remito queda esperándolo para siempre. Caso DTF-21591: cancelada el 08/09, su bulto
