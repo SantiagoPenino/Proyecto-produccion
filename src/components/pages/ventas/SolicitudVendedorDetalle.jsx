@@ -1887,7 +1887,7 @@ function TelaCopias({ a, telas, puede, busy, onGuardar, soloCopias, filmes = nul
     if (!puede) {
         return (
             <div className={`text-[11px] mt-0.5 ${a.Material ? 'text-slate-700' : 'text-rose-600 font-bold'}`}>
-                {a.Material ? <>Tela: <b>{a.Material}</b> · {a.Copias || 1} {(a.Copias || 1) === 1 ? 'copia' : 'copias'}</> : 'Falta elegir la tela (la elige el diseñador que tiene el trabajo)'}
+                {a.Material ? <>Tela: <b>{a.Material}</b> · {a.Copias || 1} {(a.Copias || 1) === 1 ? 'copia' : 'copias'}{porMesaTexto(a, a.Copias)}</> : 'Falta elegir la tela (la elige el diseñador que tiene el trabajo)'}
             </div>
         );
     }
@@ -1907,9 +1907,21 @@ function TelaCopias({ a, telas, puede, busy, onGuardar, soloCopias, filmes = nul
                 <input type="number" min="1" step="1" value={copias} disabled={busy} onChange={e => setCopias(e.target.value)} onBlur={guardarCopias}
                     className="block w-14 border border-slate-200 rounded-lg px-2 py-1 text-xs bg-white text-slate-800" />
             </label>
+            {porMesaTexto(a, parseInt(copias, 10) || 1) && <span className="text-[10px] font-bold text-slate-600 pb-1">{porMesaTexto(a, parseInt(copias, 10) || 1).replace(/^ · /, '')}</span>}
             <span className="text-[10px] text-slate-400 pb-1">{soloCopias && a.AltoM ? `= ${(Number(a.AltoM) * (parseInt(copias, 10) || 1)).toFixed(2)} m de film · ` : ''}Se guarda solo al cambiar</span>
         </div>
     );
+}
+
+// [TIZADA 16/10] Con "Copias" de TIZADA, cada impresión trae varias unidades (PorMesa): las unidades del archivo son
+// por mesa × copias. MesaDetalleJson dice de qué filas / diseño / talles es la mesa.
+function porMesaTexto(a, copias) {
+    const pm = Number(a.PorMesa) || 0;
+    let det = null; try { det = a.MesaDetalleJson ? JSON.parse(a.MesaDetalleJson) : null; } catch { det = null; }
+    const quien = [det?.diseno ? `diseño ${det.diseno}` : null, det?.filas?.length ? `filas ${det.filas.map(f => (f.por_mesa ? `${f.fila} (${f.por_mesa})` : f.fila)).join(', ')}` : null,
+        det?.talles?.length ? `talles ${det.talles.join('-')}` : null].filter(Boolean).join(' · ');
+    if (pm <= 1 && !quien) return '';
+    return `${pm > 1 ? ` · ${pm} por mesa = ${pm * (Number(copias) || 1)} unidades` : ''}${quien ? ` · ${quien}` : ''}`;
 }
 
 // La miniatura de un archivo de Drive (Miniatura) está en solicitudesComunes: la usa también TizadaProBloque.

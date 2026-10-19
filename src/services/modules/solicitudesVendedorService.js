@@ -92,7 +92,11 @@ export const solicitudesVendedorService = {
     /** Calendario: entregas comprometidas + trabajo planificado de los pedidos ya convertidos. */
     calendario: (desde, hasta) => dato(api.get(`${BASE}/calendario`, { params: { desde, hasta } })),
     bandeja: () => dato(api.get(`${BASE}/bandeja-diseno`)),
-    disenosHechos: (desde, hasta) => dato(api.get(`${BASE}/bandeja-diseno/hechos`, { params: { desde, hasta } })),   // [15/10] pestaña "Hechos"
+    disenosHechos: (desde, hasta) => dato(api.get(`${BASE}/bandeja-diseno/hechos`, { params: { desde, hasta } })),
+    // [20/10] pestaña "Del portal", cancelar con motivo (el cliente lo ve) y buscar en todo Diseño
+    bandejaPortal: () => dato(api.get(`${BASE}/bandeja-diseno/portal`)),
+    cancelarDelPortal: (id, Motivo) => dato(api.post(`${BASE}/bandeja-diseno/portal/${id}/cancelar`, { Motivo })),
+    buscarDiseno: (q) => dato(api.get(`${BASE}/bandeja-diseno/buscar`, { params: { q } })),   // [15/10] pestaña "Hechos"
     /** Órdenes de Bordado y TPU que ya están en producción y todavía esperan su diseño (solo lectura). */
     disenosEnProduccion: () => dato(api.get(`${BASE}/disenos-en-produccion`)),
     // Tizada: true = la principal sale ya a TIZADA PRO (arma el PDF); false = no; sin dato = como diga el .env

@@ -44,6 +44,10 @@ function clienteDe(user) {
 
 // El asesor del cliente (Clientes.VendedorID → Trabajadores → Usuarios por cédula: el mismo "Tu asesor" del portal).
 // Sin asesor con usuario: PORTAL_PEDIDOS_VENDEDOR_ID del .env, o el usuario 1.
+// Motivos de cancelación que NO son del equipo (el cliente no los ve como "cancelado": ver listar)
+const MOTIVO_DESCARTE_CLIENTE = 'El cliente descartó el pedido que estaba armando en la tienda del portal.';
+const MOTIVO_SISTEMA = 'No se pudo marcar como pedido del portal.';
+
 async function vendedorDe(pool, codCliente) {
   try {
     const r = await pool.request().input('C', sql.Int, codCliente).query(`
@@ -255,7 +259,7 @@ async function crear(pool, token, b) {
   try {
     await pool.request().input('S', sql.Int, SolicitudID).query("UPDATE dbo.SolicitudesVendedor SET Origen = 'PORTAL' WHERE SolicitudID = @S");
   } catch (e) {
-    await svc.cancelar(pool, user, SolicitudID, { Motivo: 'No se pudo marcar como pedido del portal.' }).catch(() => { });
+    await svc.cancelar(pool, user, SolicitudID, { Motivo: MOTIVO_SISTEMA }).catch(() => { });
     throw e;
   }
   const p = (await svc.obtener(pool, user, SolicitudID)).Productos[0];
@@ -333,7 +337,7 @@ async function cambiarExtra(pool, token, id, tipo, b) {
 
 async function descartar(pool, token, id) {
   const s = await solicitudDelCliente(pool, token, id, { escribir: true });
-  await svc.cancelar(pool, s.user, s.SolicitudID, { Motivo: 'El cliente descartó el pedido que estaba armando en la tienda del portal.' });
+  await svc.cancelar(pool, s.user, s.SolicitudID, { Motivo: MOTIVO_DESCARTE_CLIENTE });
   return { ok: true };
 }
 
@@ -342,14 +346,19 @@ async function descartar(pool, token, id) {
 async function listar(pool, token) {
   await exigirColumnas(pool);
   const cli = clienteDe(token);
-  const r = await pool.request().input('C', sql.Int, cli.codCliente).query(`
+  // [20/10] + los que canceló el equipo en los últimos 15 días, con el motivo (no los que descartó el cliente ni los del sistema)
+  const r = await pool.request().input('C', sql.Int, cli.codCliente)
+    .input('Desc', sql.NVarChar(500), MOTIVO_DESCARTE_CLIENTE).input('Sis', sql.NVarChar(500), MOTIVO_SISTEMA).query(`
     SELECT TOP 30 s.SolicitudID, s.PortalConfirmado, s.NombreTrabajo, s.FechaSolicitud, p.ProductoNombre, p.Cantidad, p.PedidoNoDocERP, p.DatosJson,
+           s.Estado AS SolEstado, s.MotivoCancelacion,
            (SELECT TOP 1 pa.Estado FROM dbo.SolicitudesVendedorPartes pa WHERE pa.ProductoSolID = p.ProductoSolID AND pa.Tipo = 'PRINCIPAL' AND pa.Activo = 1) AS EstadoPrincipal
     FROM dbo.SolicitudesVendedor s
     JOIN dbo.SolicitudesVendedorProductos p ON p.SolicitudID = s.SolicitudID AND p.Activo = 1
-    WHERE s.CodCliente = @C AND s.Origen = 'PORTAL' AND s.Estado <> 'CANCELADA' AND p.PedidoNoDocERP IS NULL
-      AND (s.PortalConfirmado IS NULL OR s.PortalConfirmado > DATEADD(DAY, -45, GETDATE()))
-    ORDER BY CASE WHEN s.PortalConfirmado IS NULL THEN 0 ELSE 1 END, s.SolicitudID DESC`);
+    WHERE s.CodCliente = @C AND s.Origen = 'PORTAL' AND p.PedidoNoDocERP IS NULL
+      AND ((s.Estado <> 'CANCELADA' AND (s.PortalConfirmado IS NULL OR s.PortalConfirmado > DATEADD(DAY, -45, GETDATE())))
+        OR (s.Estado = 'CANCELADA' AND s.FechaCancelacion > DATEADD(DAY, -15, GETDATE())
+            AND ISNULL(s.MotivoCancelacion, '') NOT IN (@Desc, @Sis)))
+    ORDER BY CASE WHEN s.Estado = 'CANCELADA' THEN 2 WHEN s.PortalConfirmado IS NULL THEN 0 ELSE 1 END, s.SolicitudID DESC`);
   // Mientras lo arma, las prendas salen de la lista de jugadores (Cantidad vacía = 1); al confirmar quedan en Cantidad.
   // [A MEDIDA] la cantidad de cada diseño (los diseños con medida)
   const prendasDeLista = (datosJson) => {
@@ -366,7 +375,8 @@ async function listar(pool, token) {
     pedido: x.PedidoNoDocERP || null,
     prendas: x.PortalConfirmado ? x.Cantidad : prendasDeLista(x.DatosJson),
     aMedida: (() => { try { return (JSON.parse(x.DatosJson || '{}').tizadaPro?.disenos || []).some(d => d.medida); } catch (_) { return false; } })(),
-    etapa: !x.PortalConfirmado ? 'ARMANDO' : x.PedidoNoDocERP ? 'PEDIDO' : x.EstadoPrincipal === 'DISENADO' ? 'LISTO' : 'TIZADA',
+    etapa: x.SolEstado === 'CANCELADA' ? 'CANCELADO' : !x.PortalConfirmado ? 'ARMANDO' : x.PedidoNoDocERP ? 'PEDIDO' : x.EstadoPrincipal === 'DISENADO' ? 'LISTO' : 'TIZADA',
+    motivo: x.SolEstado === 'CANCELADA' ? (x.MotivoCancelacion || null) : null,   // [20/10] lo canceló el equipo
   }));
 }
 
@@ -436,9 +446,10 @@ async function armarArtesAMedida(pool, s, sol, tz) {
   let cambio = false;
   for (const d of tz.datos?.disenos || []) {
     const origen = d.archivoCliente;
-    const firma = { origen, medida: am.resumen(d.medida), ajuste: d.ajuste === 'entera' ? 'entera' : 'llenar' };
+    // [GIRAR EL ARTE 19/10] el giro también es parte de la firma: si cambia, se vuelve a armar
+    const firma = { origen, medida: am.resumen(d.medida), ajuste: d.ajuste === 'entera' ? 'entera' : 'llenar', giro: [90, 180, 270].includes(Number(d.giro)) ? Number(d.giro) : 0 };
     const hecho = (d.arteArchivoId === origen && !d.arteAuto)
-      || (d.arteAuto && d.arteArchivoId && d.arteAuto.origen === firma.origen && d.arteAuto.medida === firma.medida && d.arteAuto.ajuste === firma.ajuste);
+      || (d.arteAuto && d.arteArchivoId && d.arteAuto.origen === firma.origen && d.arteAuto.medida === firma.medida && d.arteAuto.ajuste === firma.ajuste && (Number(d.arteAuto.giro) || 0) === firma.giro);
     // sin arte, ya armado, o sin medida todavía (eso lo dice la revisión): queda como está
     if (!origen || hecho || am.normalizarMedida(d.medida, cfg, null).errores.length) { disenos.push(d); continue; }
     const arch = sol.Archivos.find(a => a.ArchivoID === origen && a.Vigente);
@@ -454,7 +465,7 @@ async function armarArtesAMedida(pool, s, sol, tz) {
       }
       const c = await svc.tizadaProCalcular(pool, s.user, s.SolicitudID, s.ProductoSolID, { medida: d.medida, tela: d.tela });
       if (!c.ok || !c.total_cm?.ancho) throw new Error([...(c.errores || []), ...(c.alarmas || []).map(a => a.mensaje || a.codigo), c.sinTizada, c.error].filter(Boolean).join(' ') || 'TIZADA no calculó la medida');
-      const dpi = am.dpiImpreso(an.calidad, c.total_cm.ancho, c.total_cm.alto, firma.ajuste);
+      const dpi = am.dpiImpreso(an.calidad, c.total_cm.ancho, c.total_cm.alto, firma.ajuste, firma.giro);
       if (dpi != null && dpi < DPI_MIN()) {
         problemas.push(`${d.nombre}: las imágenes de tu arte quedan a ${dpi} dpi impresas a esta medida (mínimo ${DPI_MIN()}): se verían pixeladas. Usá imágenes de más resolución o vectores.`);
         disenos.push(d);
@@ -462,7 +473,7 @@ async function armarArtesAMedida(pool, s, sol, tz) {
       }
       const pdf = await am.arteDesdePdf({
         pdf: await require('./solicitudesVendedorTizadaPro').bajarDeDrive(arch.UrlDrive),
-        anchoCm: c.total_cm.ancho, altoCm: c.total_cm.alto, pieza, ajuste: firma.ajuste,
+        anchoCm: c.total_cm.ancho, altoCm: c.total_cm.alto, pieza, ajuste: firma.ajuste, giro: firma.giro,
       });
       const nombre = `${d.nombre}__arte ${Math.round(c.total_cm.ancho)}x${Math.round(c.total_cm.alto)} cm.pdf`;   // la medida total (con el margen)
       const sub = await svc.subirArchivo(pool, s.user, s.SolicitudID, { Rol: 'ARTE_CLIENTE', ParteID: principal.ParteID }, { buffer: pdf, size: pdf.length, originalname: nombre });

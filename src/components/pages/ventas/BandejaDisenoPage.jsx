@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
-import { Clock, ListTodo, Loader2, Palette, RefreshCw, Search, Send, UserCheck, UserMinus, UserPlus, Users, X } from 'lucide-react';
+import { AlertTriangle, Ban, Clock, Globe, ListTodo, Loader2, Palette, RefreshCw, Search, Send, UserCheck, UserMinus, UserPlus, Users, X } from 'lucide-react';
 import { solicitudesVendedorService as svc } from '../../../services/modules/solicitudesVendedorService';
 import { fmtFechaHora } from '../../../utils/fechas';
 import OrderDetailModal from '../../production/components/OrderDetailModal';
@@ -26,6 +26,10 @@ export default function BandejaDisenoPage() {
     const [busy, setBusy] = useState(false);
     const [verDisenadores, setVerDisenadores] = useState(false);
     const [enProduccion, setEnProduccion] = useState([]);   // Bordado / TPU ya en planta que esperan su diseño
+    const [portal, setPortal] = useState([]);               // [20/10] lo de la tienda del portal que todavía no es pedido
+    const [cancelando, setCancelando] = useState(null);     // [20/10] pedido del portal que se está por cancelar (pide el motivo)
+    const [global, setGlobal] = useState(null);             // [20/10] resultados del buscador en todo Diseño (null = sin buscar)
+    const [buscando, setBuscando] = useState(false);
     const [ficha, setFicha] = useState(null);               // orden abierta en la ficha de producción
     const [dialogo, preguntar] = useConfirmar();             // confirmaciones con el estilo del sistema (06/10)
     const [pestana, setPestana] = useState(null);           // 'mias' | 'disponibles' | 'produccion' (null hasta la 1.ª carga)
@@ -50,10 +54,12 @@ export default function BandejaDisenoPage() {
         catch (e) { if (e?.response?.status !== 403) toast.error(errorDe(e)); }
         try { produccion = await svc.disenosEnProduccion(); setEnProduccion(produccion); }
         catch (e) { setEnProduccion([]); }
+        try { setPortal(await svc.bandejaPortal()); } catch (e) { setPortal([]); }   // [20/10] pestaña "Del portal"
         finally { setLoading(false); }
         // La primera vez abre la primera pestaña que tenga algo; después queda la que elija el diseñador
         // (que no salte sola cuando se vuelve a leer cada minuto).
-        setPestana(p => p ?? (produccion.length ? 'produccion' : bandeja?.mias?.length ? 'mias' : bandeja?.disponibles?.length ? 'disponibles' : 'produccion'));
+        // [20/10] en el orden de las pestañas: Para tomar · Mis trabajos · En producción
+        setPestana(p => p ?? (bandeja?.disponibles?.length ? 'disponibles' : bandeja?.mias?.length ? 'mias' : produccion.length ? 'produccion' : 'disponibles'));
     }, []);
     useEffect(() => { svc.miPerfil().then(p => { setPerfil(p); if (p.esDisenador) cargar(); }).catch(e => toast.error(errorDe(e))); }, [cargar]);
     useEffect(() => { if (perfil?.esDisenador) cargarHechos(); }, [perfil, cargarHechos]);
@@ -67,6 +73,44 @@ export default function BandejaDisenoPage() {
         document.addEventListener('visibilitychange', leer);
         return () => { clearInterval(t); document.removeEventListener('visibilitychange', leer); };
     }, [perfil, ficha, cargar, cargarHechos]);
+
+    // [BUSCAR 20/10] El buscador busca en TODO Diseño (también lo tomado por otros diseñadores, lo del portal, lo ya pedido
+    // y lo cancelado): el servidor (buscarDiseno) + las órdenes en producción que ya están en pantalla.
+    useEffect(() => {
+        const q = filtro.q.trim();
+        if (!perfil?.esDisenador || q.length < 2) { setGlobal(null); return undefined; }
+        let vivo = true;
+        const t = setTimeout(async () => {
+            setBuscando(true);
+            try { const r = await svc.buscarDiseno(q); if (vivo) setGlobal(r); }
+            catch (e) { if (vivo) { setGlobal([]); toast.error(errorDe(e)); } }
+            finally { if (vivo) setBuscando(false); }
+        }, 450);
+        return () => { vivo = false; clearTimeout(t); };
+    }, [filtro.q, perfil]);
+
+    // [20/10] Pedido del portal: reenviar a TIZADA (después de corregir lo que rechazó) y cancelar con motivo (el cliente lo ve)
+    const reenviarTizada = async (x) => {
+        const ok = await preguntar({
+            Icono: Send, titulo: 'Reenviar a TIZADA PRO', boton: 'Reenviar a TIZADA PRO',
+            texto: `Pedido del portal de ${x.ClienteNombre} (#${x.SolicitudID}). Se vuelven a revisar el arte y los datos; si TIZADA lo acepta, la tizada vuelve sola y el pedido se arma solo.`,
+            nota: x.Detalle ? `La última vez TIZADA dijo: ${x.Detalle}` : null,
+        });
+        if (!ok) return;
+        setBusy(true);
+        try {
+            const r = await svc.tizadaProEnviar(x.SolicitudID, x.ProductoSolID, false);
+            if (r.Estado === 'RECHAZADO') toast.error(`TIZADA no lo acepta: ${r.mensaje || 'mirá las alarmas en la solicitud'}.`);
+            else toast.success(`Mandado a TIZADA PRO (${r.Referencia}). La tizada vuelve sola cuando termine.`);
+        } catch (e) { toast.error(errorDe(e)); }
+        finally { setBusy(false); await cargar(); }
+    };
+    const confirmarCancelacion = async (x, motivo) => {
+        setBusy(true);
+        try { await svc.cancelarDelPortal(x.SolicitudID, motivo); toast.success(`Pedido #${x.SolicitudID} cancelado. El cliente lo ve en su portal con el motivo.`); setCancelando(null); await cargar(); }
+        catch (e) { toast.error(errorDe(e)); }
+        finally { setBusy(false); }
+    };
 
     const tomar = async (pa) => {
         const ok = await preguntar({
@@ -90,39 +134,24 @@ export default function BandejaDisenoPage() {
         finally { setAbriendo(null); }
     };
 
-    // Producción principal de un producto con molde de TIZADA PRO: no se toma, se manda a TIZADA y vuelve sola.
-    // [15/10] Quien la manda se queda con el trabajo: pasa a sus "Mis trabajos" (solicitudesVendedorTizadaPro.quedarseConLaPrincipal)
+    // Producción principal de un producto con molde de TIZADA PRO: [20/10] se toma como cualquier trabajo y se manda a TIZADA
+    // desde la pantalla de Diseño (en "Mis trabajos": "Abrir y enviar a TIZADA PRO"); la tizada vuelve sola como diseño pronto.
     const esTizada = (pa) => pa.Tipo === 'PRINCIPAL' && pa.TipoFabricacion === 'PRODUCTO_TERMINADO' && !!pa.TizadaProMoldeRef;
-    const enviarTizada = async (pa) => {
-        const ok = await preguntar({
-            Icono: Send, titulo: 'Mandar a TIZADA PRO', boton: 'Mandar a TIZADA PRO',
-            texto: `"${NOMBRE_PARTE[pa.Tipo]}" de ${pa.ClienteNombre} (${pa.NombreTrabajo}). Antes se revisan el arte y los datos; si TIZADA lo acepta, la tizada vuelve sola como diseño pronto.`,
-        });
-        if (!ok) return;
-        setBusy(true);
-        try {
-            const r = await svc.tizadaProEnviar(pa.SolicitudID, pa.ProductoSolID, false);
-            if (r.Estado === 'RECHAZADO') toast.error(`TIZADA no lo acepta: ${r.mensaje || 'mirá las alarmas en la solicitud'}.`);
-            else toast.success(`Mandado a TIZADA PRO (${r.Referencia}). La tizada vuelve sola cuando termine.`);
-            navigate(`/ventas/solicitudes/${pa.SolicitudID}/diseno`);
-        } catch (e) { toast.error(errorDe(e)); await cargar(); }
-        finally { setBusy(false); }
-    };
 
     if (!perfil) return <div className="p-10 flex justify-center"><Loader2 className="animate-spin text-brand-cyan" /></div>;
-    const vista = pestana ?? 'produccion';
+    const vista = pestana ?? 'disponibles';
 
     // [FILTROS 14/10] El texto y el servicio valen para las tres pestañas (los contadores dicen cuántos coinciden en
     // cada una); el estado es de la pestaña abierta (cada una tiene los suyos) y se limpia al cambiar de pestaña.
     // [15/10] "Mis trabajos" suma las órdenes en producción de servicios que tomé en la solicitud y todavía esperan
     // su diseño (misProduccion): tomé el trabajo, entonces lo sigo viendo aunque ya sea pedido. También siguen en "En producción".
     const misProduccion = enProduccion.filter(o => o.EsMia);
-    const listas = { produccion: enProduccion, mias: data.mias, misProduccion, disponibles: data.disponibles, hechos: hechos || [] };
+    const listas = { produccion: enProduccion, mias: data.mias, misProduccion, disponibles: data.disponibles, hechos: hechos || [], portal };
     const deProduccion = (k) => k === 'produccion' || k === 'misProduccion';
     // [HECHOS 15/10] además del texto y el servicio: quién lo hizo, el pedido y "Solo los míos" (el estado no aplica)
     const propiosHechos = (x) => (!fh.quien || x.Quien === fh.quien) && (!fh.pedido || estadoPedidoDe(x) === fh.pedido) && (!fh.mios || x.EsMia);
     const filtrada = (k, conEstado) => {
-        const r = filtrar(listas[k], deProduccion(k), filtro, conEstado && k !== 'hechos');
+        const r = filtrar(listas[k], deProduccion(k), filtro, conEstado && k !== 'hechos' && k !== 'portal');
         return k === 'hechos' ? r.filter(propiosHechos) : r;
     };
     const visibles = filtrada(vista, true);
@@ -130,11 +159,14 @@ export default function BandejaDisenoPage() {
     const hayFiltro = !!(filtro.q.trim() || filtro.servicio || filtro.estado || (vista === 'hechos' && (fh.quien || fh.pedido || fh.mios)));
     const servicios = [...new Set([...enProduccion.map(servicioOrden), ...data.mias.map(pa => pa.Tipo), ...data.disponibles.map(pa => pa.Tipo), ...(hechos || []).map(x => x.Tipo)])]
         .sort((a, b) => ORDEN_SERVICIO.indexOf(a) - ORDEN_SERVICIO.indexOf(b));
-    const estados = vista === 'hechos' ? [] : vista === 'mias' ? [...estadosDe(data.mias, false), ...estadosDe(misProduccion, true)] : estadosDe(listas[vista], deProduccion(vista));
+    const estados = vista === 'hechos' || vista === 'portal' ? [] : vista === 'mias' ? [...estadosDe(data.mias, false), ...estadosDe(misProduccion, true)] : estadosDe(listas[vista], deProduccion(vista));
     const cambiarPestana = (v) => { setPestana(v); setFiltro(f => ({ ...f, estado: '' })); };
     const contador = (k) => (k === 'hechos' && hechos === null ? null
         : k === vista ? visibles.length + visiblesMiProd.length : filtrada(k, false).length + (k === 'mias' ? filtrada('misProduccion', false).length : 0));
     const abrirOrden = (o) => setFicha({ id: o.OrdenID, area: o.AreaID, codigo: o.CodigoOrden, cliente: o.Cliente });
+    // [BUSCAR 20/10] con 2 letras o más el buscador muestra lo de todo Diseño (el filtro de servicio también vale)
+    const busquedaGlobal = filtro.q.trim().length >= 2;
+    const globalFiltrado = (global || []).filter(x => !filtro.servicio || x.Tipo === filtro.servicio);
     const vacioCon = (txt) => (hayFiltro ? 'Ningún trabajo coincide con los filtros.' : txt);
 
     // Tema claro, como el resto del sistema (06/10). Antes iba dentro de .fp-oscuro, el tema oscuro de las
@@ -165,16 +197,22 @@ export default function BandejaDisenoPage() {
             ) : (
                 <>
                     <Pestanas actual={vista} onCambiar={cambiarPestana} pestanas={[
-                        // En producción primero (06/10, pedido de Santiago)
-                        ['produccion', 'En producción', contador('produccion')],
-                        ['mias', 'Mis trabajos', contador('mias')],
+                        // [20/10] Para tomar · Mis trabajos · En producción · Hechos (pedido de Yoania)
                         ['disponibles', 'Para tomar', contador('disponibles')],
+                        ['mias', 'Mis trabajos', contador('mias')],
+                        ['produccion', 'En producción', contador('produccion')],
                         ['hechos', 'Hechos', contador('hechos')],   // [HECHOS 15/10] lo ya diseñado (por defecto, hoy)
+                        ['portal', 'Del portal', contador('portal')],   // [20/10] lo de la tienda que todavía no es pedido
                     ]} />
                     <Filtros filtro={filtro} onCambiar={c => setFiltro(f => ({ ...f, ...c }))} servicios={servicios} estados={estados} hayFiltro={hayFiltro}
                         onLimpiar={() => { setFiltro({ q: '', servicio: '', estado: '' }); setFh({ quien: '', pedido: '', mios: false }); }}>
                         {vista === 'hechos' && <FiltrosHechos periodo={periodo} onPeriodo={setPeriodo} fh={fh} onFh={c => setFh(f => ({ ...f, ...c }))} />}
                     </Filtros>
+                    {busquedaGlobal ? (
+                        <ResultadosBusqueda q={filtro.q.trim()} rows={globalFiltrado} buscando={buscando} produccion={filtrar(enProduccion, true, filtro, false)}
+                            perfil={perfil} busy={busy} abriendo={abriendo} onVerSolicitud={verSolicitud} onTomar={tomar} onAbrirOrden={abrirOrden}
+                            onAbrir={(x) => navigate(`/ventas/solicitudes/${x.SolicitudID}/diseno`)} />
+                    ) : (<>
                     {vista === 'mias' && visiblesMiProd.length > 0 && visibles.length > 0 && <h3 className={`${ROTULO} -mb-2`}>En las solicitudes</h3>}
                     {vista === 'mias' && (visibles.length > 0 || !visiblesMiProd.length) && (
                         <Tabla vacio={vacioCon('No tenés trabajos tomados.')} rows={visibles} mias
@@ -192,9 +230,8 @@ export default function BandejaDisenoPage() {
                             accion={(pa) => (
                                 <span className="flex flex-wrap justify-end gap-1">
                                     <button disabled={abriendo === pa.SolicitudID} onClick={() => verSolicitud(pa.SolicitudID)} className={BTN_SECUNDARIO} title="La ficha de la solicitud en PDF">{abriendo === pa.SolicitudID ? <Loader2 size={12} className="animate-spin" /> : null} Ver solicitud</button>
-                                    {esTizada(pa)
-                                        ? <button disabled={busy} onClick={() => enviarTizada(pa)} className={BTN_PRINCIPAL} title="Revisa arte y datos, y lo manda a TIZADA PRO: la tizada vuelve sola como diseño pronto">Enviar a TIZADA PRO</button>
-                                        : <button disabled={busy} onClick={() => tomar(pa)} className={BTN_PRINCIPAL}>Tomar este trabajo</button>}
+                                    {/* [20/10] siempre se toma: el de TIZADA PRO se revisa y se manda desde la pantalla de Diseño, ya tomado */}
+                                    <button disabled={busy} onClick={() => tomar(pa)} className={BTN_PRINCIPAL}>Tomar este trabajo</button>
                                 </span>
                             )} />
                     )}
@@ -205,6 +242,11 @@ export default function BandejaDisenoPage() {
                         ? <div className="flex justify-center py-10"><Loader2 className="animate-spin text-brand-cyan" /></div>
                         : <ListaHechos rows={visibles} abriendo={abriendo} onVerSolicitud={verSolicitud} onAbrir={(x) => navigate(`/ventas/solicitudes/${x.SolicitudID}/diseno`)}
                             vacio={vacioCon(periodo.clave === 'hoy' ? 'Hoy todavía no se terminó ningún diseño.' : 'No hay diseños terminados en ese período.')} />)}
+                    {vista === 'portal' && (
+                        <DelPortal rows={visibles} vacio={vacioCon('No hay pedidos del portal sin convertir.')} busy={busy} abriendo={abriendo}
+                            onVerSolicitud={verSolicitud} onReenviar={reenviarTizada} onCancelar={setCancelando} />
+                    )}
+                    </>)}
                 </>
             )}
         </div>
@@ -212,6 +254,7 @@ export default function BandejaDisenoPage() {
             <OrderDetailModal order={ficha} onClose={() => { setFicha(null); cargar(); }} onOrderUpdated={cargar} />
             <VisorPdf blob={pdf?.blob || null} nombre={`Ficha pedido SOL-${pdf?.sid}.pdf`} onClose={() => setPdf(null)} />
             {dialogo}
+            {cancelando && <CancelarPortal x={cancelando} busy={busy} onClose={() => setCancelando(null)} onConfirmar={(m) => confirmarCancelacion(cancelando, m)} />}
         </>
     );
 }
@@ -262,7 +305,7 @@ function Filtros({ filtro, onCambiar, servicios, estados, hayFiltro, onLimpiar, 
         <div className="flex flex-wrap items-center gap-2">
             <div className="relative min-w-[220px] flex-1 sm:max-w-md">
                 <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" aria-hidden="true" />
-                <input value={filtro.q} onChange={e => onCambiar({ q: e.target.value })} placeholder="Buscar cliente, trabajo, orden, pedido o solicitud" aria-label="Buscar en la bandeja"
+                <input value={filtro.q} onChange={e => onCambiar({ q: e.target.value })} placeholder="Buscar en todo Diseño: cliente, trabajo, orden, pedido, solicitud o diseñador" aria-label="Buscar en todo Diseño"
                     className="w-full rounded-xl border border-slate-200 bg-white py-2 pl-9 pr-3 text-sm text-slate-800 outline-none transition-colors placeholder:text-slate-400 hover:border-slate-300 focus:border-brand-cyan focus:ring-2 focus:ring-brand-cyan/15" />
             </div>
             {(servicios.length > 1 || filtro.servicio) && (
@@ -477,7 +520,8 @@ function Tabla({ vacio, rows, accion, mias }) {
                 <>
                     <div className="font-bold text-slate-800">{pa.ClienteNombre}</div>
                     <div className="text-slate-500">#{pa.SolicitudID} · {pa.NombreTrabajo}</div>
-                    <div className="text-xs text-slate-400">vendedor {pa.VendedorNombre || '—'}</div>
+                    {/* [20/10] del portal: lo pidió el cliente; el "vendedor" es la asesora de su ficha de cliente */}
+                    <div className="text-xs text-slate-400">{pa.Origen === 'PORTAL' ? <><span className="font-bold text-brand-cyan">Pedido desde el portal</span> · asesora {pa.VendedorNombre || '—'}</> : <>vendedor {pa.VendedorNombre || '—'}</>}</div>
                 </>
             ),
             hacer: (
@@ -499,6 +543,143 @@ function Tabla({ vacio, rows, accion, mias }) {
         };
     });
     return <Seccion cantidad={rows.length} vacio={vacio} fecha={mias ? 'Tomado' : 'Enviado'} grupos={[{ filas }]} />;
+}
+
+// ── [DEL PORTAL 20/10] Lo de la tienda del portal que todavía no es pedido ──
+// En qué está cada uno (lo decide el servidor: portalDiseno) y qué se puede hacer: ver la solicitud, reenviar a TIZADA (si
+// la rechazó) y cancelar con motivo (el cliente lo ve en su portal). Primero lo que necesita una persona.
+const SITUACION_PORTAL = {
+    TIZADA_RECHAZO: { txt: 'TIZADA lo rechazó', cls: 'bg-rose-50 text-rose-700', hacer: 'Corregir lo que dice TIZADA y reenviar, o cancelar' },
+    ERROR_CONVERSION: { txt: 'No se pudo armar el pedido', cls: 'bg-rose-50 text-rose-700', hacer: 'Mirar el error y convertir desde la solicitud, o cancelar' },
+    EN_DISENO: { txt: 'En Diseño', cls: 'bg-sky-50 text-sky-700', hacer: 'Lo tiene Diseño (Para tomar o Mis trabajos)' },
+    EN_TIZADA: { txt: 'En TIZADA PRO', cls: 'bg-sky-50 text-sky-700', hacer: 'TIZADA está armando la tizada: vuelve sola' },
+    POR_CONVERTIR: { txt: 'Diseñado · se arma solo', cls: 'bg-emerald-50 text-emerald-700', hacer: 'El pedido se arma solo en unos minutos' },
+    ARMANDO: { txt: 'El cliente lo está armando', cls: 'bg-amber-50 text-amber-700', hacer: 'Todavía no lo confirmó' },
+};
+function DelPortal({ rows, vacio, busy, abriendo, onVerSolicitud, onReenviar, onCancelar }) {
+    const fila = (x) => {
+        const si = SITUACION_PORTAL[x.Situacion] || { txt: x.Situacion, cls: 'bg-slate-100 text-slate-600', hacer: '' };
+        return {
+            key: x.ProductoSolID,
+            estado: <PastillaEstado txt={si.txt} cls={si.cls} />,
+            cliente: (
+                <>
+                    <div className="font-bold text-slate-800">{x.ClienteNombre}</div>
+                    <div className="text-slate-500">#{x.SolicitudID} · {x.NombreTrabajo}</div>
+                    <div className="text-xs text-slate-400">asesora {x.VendedorNombre || '—'}{x.DisenadorNombre ? <> · lo tiene <b>{x.DisenadorNombre}</b></> : null}</div>
+                </>
+            ),
+            hacer: (
+                <>
+                    <div className="text-slate-700">{si.hacer}</div>
+                    {x.Detalle ? <div className="mt-0.5 flex items-start gap-1 text-xs text-rose-700"><AlertTriangle size={12} className="mt-0.5 shrink-0" /><span className="line-clamp-3" title={x.Detalle}>{x.Detalle}</span></div> : null}
+                </>
+            ),
+            producto: (
+                <>
+                    <div className="text-slate-700">{x.ProductoNombre}</div>
+                    <div className="text-xs text-slate-400">{x.Cantidad} {Number(x.Cantidad) === 1 ? 'unidad' : 'unidades'}</div>
+                </>
+            ),
+            fecha: fmtFechaHora(x.PortalConfirmado || x.FechaSolicitud),
+            accion: (
+                <span className="flex flex-wrap justify-end gap-1">
+                    <button disabled={abriendo === x.SolicitudID} onClick={() => onVerSolicitud(x.SolicitudID)} className={BTN_SECUNDARIO} title="La ficha de la solicitud en PDF">{abriendo === x.SolicitudID ? <Loader2 size={12} className="animate-spin" /> : null} Ver solicitud</button>
+                    {x.Situacion === 'TIZADA_RECHAZO' && <button disabled={busy} onClick={() => onReenviar(x)} className={BTN_PRINCIPAL}><Send size={12} /> Reenviar a TIZADA</button>}
+                    <button disabled={busy} onClick={() => onCancelar(x)} className="px-3 py-1.5 rounded-lg border border-rose-200 bg-white text-rose-600 hover:bg-rose-50 text-xs font-bold inline-flex items-center gap-1 disabled:opacity-50"><Ban size={12} /> Cancelar</button>
+                </span>
+            ),
+        };
+    };
+    const atencion = rows.filter(x => ['TIZADA_RECHAZO', 'ERROR_CONVERSION'].includes(x.Situacion));
+    const enCurso = rows.filter(x => ['EN_DISENO', 'EN_TIZADA', 'POR_CONVERTIR'].includes(x.Situacion));
+    const armando = rows.filter(x => x.Situacion === 'ARMANDO');
+    const grupos = [['Necesitan una persona', AlertTriangle, atencion], ['En curso', Clock, enCurso], ['El cliente lo está armando', Globe, armando]]
+        .filter(([, , l]) => l.length).map(([titulo, Icono, l]) => ({ titulo, Icono, filas: l.map(fila) }));
+    return <Seccion cantidad={rows.length} vacio={vacio} fecha="Confirmado" grupos={grupos} tituloHacer="Qué pasa"
+        ayuda="Lo que los clientes pidieron desde la tienda del portal y todavía no es pedido de producción. Al cancelar, el cliente ve en su portal que se canceló y el motivo." />;
+}
+
+// Cancelar un pedido del portal: el motivo es obligatorio y lo ve el cliente
+function CancelarPortal({ x, busy, onClose, onConfirmar }) {
+    const [motivo, setMotivo] = useState('');
+    const ok = motivo.trim().length >= 5;
+    return (
+        <Ventana chica Icono={Ban} titulo={`Cancelar el pedido #${x.SolicitudID}`} onClose={onClose}
+            pie={<>
+                <button type="button" onClick={onClose} className={BTN_SECUNDARIO}>Volver</button>
+                <button type="button" disabled={!ok || busy} onClick={() => onConfirmar(motivo.trim())}
+                    className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold inline-flex items-center gap-1 disabled:opacity-50">
+                    {busy ? <Loader2 size={12} className="animate-spin" /> : <Ban size={12} />} Cancelar el pedido
+                </button>
+            </>}>
+            <p className="text-sm text-slate-600">{x.ClienteNombre} · {x.ProductoNombre}. <b>El cliente ve en su portal que se canceló y el motivo</b>, así que escribilo para él.</p>
+            <label className="mt-3 block text-xs font-bold text-slate-600">Motivo
+                <textarea data-autofocus rows={3} value={motivo} onChange={e => setMotivo(e.target.value)} maxLength={500}
+                    placeholder="Ej.: el arte no tiene la medida del banderín. Bajá la plantilla de la tienda, armalo encima y volvé a pedirlo."
+                    className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm font-normal text-slate-800 outline-none focus:border-brand-cyan focus:ring-2 focus:ring-brand-cyan/15" />
+            </label>
+        </Ventana>
+    );
+}
+
+// ── [BUSCAR 20/10] Resultados del buscador en todo Diseño ──
+// Dónde está cada servicio (en el orden de las pestañas) y qué se puede hacer desde acá.
+function dondeEsta(x) {
+    if (x.SolEstado === 'CANCELADA') return { txt: 'Solicitud cancelada', cls: 'bg-slate-100 text-slate-500' };
+    if (x.PedidoNoDocERP) return { txt: `Ya es pedido ${x.PedidoNoDocERP}`, cls: 'bg-emerald-50 text-emerald-700' };
+    if (x.Estado === 'INGRESADO') return x.Origen === 'PORTAL' && !x.PortalConfirmado
+        ? { txt: 'Del portal · el cliente lo está armando', cls: 'bg-amber-50 text-amber-700' }
+        : { txt: 'Todavía con el vendedor', cls: 'bg-slate-100 text-slate-600' };
+    if (x.Estado === 'ENVIADO_DISENO') return { txt: 'Para tomar', cls: 'bg-sky-50 text-sky-700' };
+    if (x.Estado === 'DISENADO') return { txt: `Hecho${x.DisenadorNombre ? ` por ${x.DisenadorNombre}` : ''}`, cls: 'bg-emerald-50 text-emerald-700' };
+    return x.EsMia ? { txt: 'Mis trabajos', cls: 'bg-indigo-50 text-indigo-700' } : { txt: `Lo tiene ${x.DisenadorNombre || 'otro diseñador'}`, cls: 'bg-violet-50 text-violet-700' };
+}
+function ResultadosBusqueda({ q, rows, buscando, produccion, busy, abriendo, onVerSolicitud, onTomar, onAbrir, onAbrirOrden }) {
+    if (rows === null || (buscando && !rows.length)) return <div className="flex justify-center py-10"><Loader2 className="animate-spin text-brand-cyan" /></div>;
+    const filas = (rows || []).map(x => {
+        const d = dondeEsta(x);
+        const puedeTomar = x.Estado === 'ENVIADO_DISENO' && x.SolEstado !== 'CANCELADA' && !x.PedidoNoDocERP;
+        const puedeAbrir = x.EsMia && ['DISENO_INICIADO', 'DISENADO'].includes(x.Estado) && x.SolEstado !== 'CANCELADA';
+        return {
+            key: x.ParteID,
+            estado: <PastillaEstado txt={d.txt} cls={d.cls} />,
+            cliente: (
+                <>
+                    <div className="font-bold text-slate-800">{x.ClienteNombre}</div>
+                    <div className="text-slate-500">#{x.SolicitudID} · {x.NombreTrabajo}</div>
+                    <div className="text-xs text-slate-400">{x.Origen === 'PORTAL' ? <><span className="font-bold text-brand-cyan">Pedido desde el portal</span> · asesora {x.VendedorNombre || '—'}</> : <>vendedor {x.VendedorNombre || '—'}</>}</div>
+                </>
+            ),
+            hacer: <div className="font-semibold text-slate-800">{NOMBRE_PARTE[x.Tipo] || x.Tipo}</div>,
+            producto: (
+                <>
+                    <div className="text-slate-700">{x.ProductoNombre || 'Personalizado'}</div>
+                    <div className="text-xs text-slate-400">{x.CantidadPrendas} prendas</div>
+                </>
+            ),
+            fecha: fmtFechaHora(x.FechaDisenado || x.FechaEnvioDiseno),
+            accion: (
+                <span className="flex flex-wrap justify-end gap-1">
+                    <button disabled={abriendo === x.SolicitudID} onClick={() => onVerSolicitud(x.SolicitudID)} className={BTN_SECUNDARIO}>{abriendo === x.SolicitudID ? <Loader2 size={12} className="animate-spin" /> : null} Ver solicitud</button>
+                    {puedeTomar && <button disabled={busy} onClick={() => onTomar(x)} className={BTN_PRINCIPAL}>Tomar este trabajo</button>}
+                    {puedeAbrir && <button onClick={() => onAbrir(x)} className={BTN_PRINCIPAL}>Abrir</button>}
+                </span>
+            ),
+        };
+    });
+    return (
+        <div className="space-y-3">
+            <p className="text-xs text-slate-500">Buscando «{q}» en todo Diseño: todos los diseñadores, lo del portal, lo ya pedido y lo cancelado.{buscando ? ' Actualizando…' : ''} Borrá la búsqueda para volver a la pestaña.</p>
+            <Seccion cantidad={filas.length} vacio={`Ninguna solicitud coincide con «${q}».`} fecha="Fecha" grupos={[{ filas }]} tituloHacer="Servicio" />
+            {produccion.length > 0 && (
+                <>
+                    <h3 className={`${ROTULO} -mb-2`}>Órdenes en producción que esperan diseño</h3>
+                    <EnProduccion rows={produccion} vacio="" onVerSolicitud={onVerSolicitud} onAbrir={onAbrirOrden} />
+                </>
+            )}
+        </div>
+    );
 }
 
 // ── [HECHOS 15/10] Lo que Diseño ya terminó ──

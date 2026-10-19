@@ -62,6 +62,15 @@ async function conMesasCol(cx) {
   return _conMesas;
 }
 
+// [MESAS 16/10] separar diseños + largo máximo de mesa del producto (docs/migrations/tizadapro_mesas_novedades_16oct.sql)
+let _conMesasExtra = false;
+async function conMesasExtraCol(cx) {
+  if (_conMesasExtra) return true;
+  const r = (await new sql.Request(cx).query("SELECT COL_LENGTH('dbo.ProductoVentaConfig', 'TizadaLargoMaxM') AS c, COL_LENGTH('dbo.SolicitudesVendedorArchivos', 'PorMesa') AS p")).recordset[0];
+  _conMesasExtra = r.c != null && r.p != null;
+  return _conMesasExtra;
+}
+
 // Talles que se venden (configurador › "Talles que se venden"): ProductoVentaConfig.GruposTalle = 'Niño,Adulto'
 let _conGrupos = false;
 async function conGruposCol(cx) {
@@ -93,9 +102,10 @@ async function productoConMolde(cx, solicitudId, productoSolId) {
   const am = await conAMedidaCol(cx);
   const mesas = await conMesasCol(cx);
   const grupos = await conGruposCol(cx);
+  const extra = mesas && await conMesasExtraCol(cx);
   const r = await new sql.Request(cx).input('S', sql.Int, solicitudId).input('P', sql.Int, productoSolId).query(`
     SELECT p.ProductoSolID, p.SolicitudID, p.TipoFabricacion, p.ProIdProducto, p.ProductoNombre, p.Cantidad, p.DatosJson, p.PedidoNoDocERP,
-           LTRIM(RTRIM(v.TizadaProMoldeRef)) AS MoldeRef${am ? ', v.AMedidaJson' : ''}${mesas ? ', LTRIM(RTRIM(v.TizadaMesasModo)) AS MesasModo' : ''}${grupos ? ', v.GruposTalle' : ''}
+           LTRIM(RTRIM(v.TizadaProMoldeRef)) AS MoldeRef${am ? ', v.AMedidaJson' : ''}${mesas ? ', LTRIM(RTRIM(v.TizadaMesasModo)) AS MesasModo' : ''}${extra ? ', v.TizadaSepararDisenos AS SepararDisenos, v.TizadaLargoMaxM AS LargoMaxM' : ''}${grupos ? ', v.GruposTalle' : ''}
     FROM dbo.SolicitudesVendedorProductos p
     LEFT JOIN dbo.ProductoVentaConfig v ON v.ProIdProducto = p.ProIdProducto
     WHERE p.ProductoSolID = @P AND p.SolicitudID = @S AND p.Activo = 1`);
@@ -360,7 +370,8 @@ async function exigirVendedorODisenador(pool, user, base) {
 // [A MEDIDA · PORTAL] El cliente de la Tienda no cambia nada de lo que establece el producto (por ahora): forma, punta,
 // medida, terminación y tiras salen del producto; solo elige la tela (y la cantidad). Si el producto tiene varias medidas
 // fijas, elige entre ESAS. Lo demás que mande se ignora acá, en el servidor.
-const medidaDelCliente = (user, m) => (user?.portal ? { fija: m?.fija || null } : m);
+// [PUNTA DEL ARTE 19/10] + la punta del triángulo (normalizarMedida solo acepta las que ofrece el producto)
+const medidaDelCliente = (user, m) => (user?.portal ? { fija: m?.fija || null, orientacion: m?.orientacion || null } : m);
 
 // [EXTRAS EN LA TABLA 14/10] Las filas de un extra en un diseño: los objetos del arte que van en ese proceso y los archivos
 // subidos aparte. "Dónde va" = "logo (Frente) · Frente: pecho izquierdo 8 cm".
@@ -412,7 +423,8 @@ async function guardar(pool, user, base, solicitudId, productoSolId, b) {
       // [PORTAL] el .ai / .pdf del cliente con el que el arte para TIZADA se arma solo al confirmar, cómo va (llenar / entera)
       // y de qué archivo, medida y ajuste salió el arte armado (si cambia algo, se vuelve a armar)
       archivoCliente: parseInt(d.archivoCliente, 10) || null, ajuste: d.ajuste === 'entera' ? 'entera' : 'llenar',
-      arteAuto: parseInt(d.arteAuto?.origen, 10) > 0 ? { origen: parseInt(d.arteAuto.origen, 10), medida: txt(d.arteAuto.medida, 200), ajuste: d.arteAuto.ajuste === 'entera' ? 'entera' : 'llenar' } : null } : {}),
+      giro: [90, 180, 270].includes(Number(d.giro)) ? Number(d.giro) : 0,   // [GIRAR EL ARTE 19/10] grados, horario
+      arteAuto: parseInt(d.arteAuto?.origen, 10) > 0 ? { origen: parseInt(d.arteAuto.origen, 10), medida: txt(d.arteAuto.medida, 200), ajuste: d.arteAuto.ajuste === 'entera' ? 'entera' : 'llenar', giro: [90, 180, 270].includes(Number(d.arteAuto.giro)) ? Number(d.arteAuto.giro) : 0 } : null } : {}),
   }));
   // [EXTRAS EN LA TABLA] Con la tabla nueva (manda extrasArchivos), cada extra del diseño sale de sus filas: lo lleva si
   // tiene alguna (un objeto del arte en ese proceso o un archivo subido aparte) y "dónde va" se arma solo con ellas.
@@ -476,10 +488,13 @@ async function guardar(pool, user, base, solicitudId, productoSolId, b) {
 // ─────────────────────────────────────────────────────────────────────
 // Armar y mandar
 // ─────────────────────────────────────────────────────────────────────
-// Cómo arma TIZADA las mesas (FORMATO_PEDIDO.md › mesas): normal | una_por_fila (una mesa por fila; la cantidad pasa a
-// ser COPIAS de esa mesa: vuelve UN PDF con archivos[].copias) | por_talles. Los productos a medida (banderas…) pueden
-// ir con su propio modo (TIZADAPRO_MESAS_MODO_A_MEDIDA); las prendas con talles, con TIZADAPRO_MESAS_MODO.
-const MODOS_MESAS = ['normal', 'una_por_fila', 'por_talles'];
+// Cómo arma TIZADA las mesas (FORMATO_PEDIDO.md › mesas): normal | una_por_fila | por_talles | talles_separados. Los productos
+// a medida (banderas…) pueden ir con su propio modo (TIZADAPRO_MESAS_MODO_A_MEDIDA); las prendas, con TIZADAPRO_MESAS_MODO.
+// [16/10, TIZADA a20bc7e] una_por_fila = "Copia": la cantidad son COPIAS; las copias se acomodan JUNTAS en una mesa del largo
+// máximo y, si la llenan, sale UN archivo con la mesa llena que se imprime `copias` veces y trae `por_mesa` unidades
+// (19 con lugar para 5 → 5 × 3 + 4 con el resto). Lo que no llena una mesa, de cualquier fila, va JUNTO ×1. Unidades de cada
+// archivo = por_mesa × copias. Sin separar_disenos, el mismo molde se MEZCLA aunque cambie el diseño (`filas` en el archivo).
+const MODOS_MESAS = ['normal', 'una_por_fila', 'por_talles', 'talles_separados'];
 // El producto lo puede fijar (configurador › Molde: "Archivos de impresión" = ProductoVentaConfig.TizadaMesasModo).
 function modoMesas(datos, p) {
   const aMedida = (datos?.disenos || []).some(d => d.medida);
@@ -507,7 +522,12 @@ function armarPedidoJson(sol, p, datos, est, referencia, rutasArte, editablesPor
       si_falta_tipografia: String(process.env.TIZADAPRO_SI_FALTA_TIPOGRAFIA || 'rechazar'),
       carpeta: `${PREFIJO()}-${sol.SolicitudID}/${referencia}`,
     },
-    mesas: { modo: modoMesas(datos, p) },
+    mesas: {
+      modo: modoMesas(datos, p),
+      // [MESAS 16/10] del producto: cada diseño en sus propias mesas (sin esto se mezclan) y el largo máximo de cada mesa
+      ...(p?.SepararDisenos ? { separar_disenos: true } : {}),
+      ...(Number(p?.LargoMaxM) > 0 ? { largo_max_m: Number(p.LargoMaxM) } : {}),
+    },
     disenos: datos.disenos.map(d => {
       const editablesRaw = { ...(d.editables || {}), ...(editablesPorDiseno[d.nombre] || {}) };
       const editables = {};
@@ -934,6 +954,24 @@ async function quedarseConLaPrincipal(pool, user, productoSolId) {
   } catch (e) { logger.warn(`[TIZADAPRO] P${productoSolId}: la principal no quedó a nombre de ${user.id}: ${e.message}`); }
 }
 
+// [ARTE A MEDIDA EN LA SOLICITUD 19/10] El arte de un diseño a medida armado para TIZADA (lo mismo que hace la tienda,
+// pedidoPortalService.armarArtesAMedida, pero en memoria: no se sube nada). null = va tal cual: ya está armado sobre la
+// plantilla de TIZADA (sus mesas dicen la pieza), no se puede abrir, la medida está incompleta o TIZADA no la calculó.
+async function arteAMedidaArmado(buffer, d, p, est) {
+  let an;
+  try { an = await require('./tizadaProEditables').analizarArte(buffer); } catch (_) { return null; }
+  if ((an.paginas || []).some(m => m.pieza)) return null;
+  const { medida, errores } = aMedidaSvc.normalizarMedida(d.medida, p.AMedida, null);
+  if (errores.length) return null;
+  const c = await aMedidaSvc.calcular(p.AMedida.variable, medida, d.tela ? String(d.tela) : null, Number(p.LargoMaxM) > 0 ? Number(p.LargoMaxM) : null);
+  if (!c.ok || !(c.total_cm?.ancho > 0)) return null;
+  const pdf = await aMedidaSvc.arteDesdePdf({
+    pdf: buffer, anchoCm: c.total_cm.ancho, altoCm: c.total_cm.alto, pieza: p.AMedida.pieza || est?.piezas?.[0],
+    ajuste: d.ajuste === 'entera' ? 'entera' : 'llenar', giro: [90, 180, 270].includes(Number(d.giro)) ? Number(d.giro) : 0,
+  });
+  return { buffer: pdf, nombre: `${d.nombre}__arte ${Math.round(c.total_cm.ancho)}x${Math.round(c.total_cm.alto)} cm.pdf` };
+}
+
 async function enviar(pool, user, base, solicitudId, productoSolId, b = {}, interno = false) {
   // Revisar: vendedor o diseñador. Generar: diseñador (o el envío automático), y solo después de "Enviar a Diseño".
   if (b.soloRevisar) await exigirVendedorODisenador(pool, user, base);
@@ -973,9 +1011,17 @@ async function enviar(pool, user, base, solicitudId, productoSolId, b = {}, inte
   for (const [i, d] of datos.disenos.entries()) {
     if (rutasArte[d.arteArchivoId]) continue;
     const a = sol.Archivos.find(x => x.ArchivoID === Number(d.arteArchivoId));
-    const ruta = `artes/${slug(d.nombre)}_${slug(String(a.NombreOriginal).replace(/\.[^.]+$/, ''))}.${(String(a.NombreOriginal).split('.').pop() || 'pdf').toLowerCase()}`;
-    try { artes.push({ ruta, buffer: await bajarDeDrive(a.UrlDrive), nombre: a.NombreOriginal, campo: `disenos[${i}].arte` }); }
+    let buffer;
+    try { buffer = await bajarDeDrive(a.UrlDrive); }
     catch (e) { throw fallo(502, `No se pudo leer el arte "${a.NombreOriginal}" de Drive: ${e.message}`); }
+    // [ARTE A MEDIDA EN LA SOLICITUD 19/10] a medida y no armado sobre la plantilla: se arma solo a la medida total
+    let nombreArte = a.NombreOriginal;
+    if (p.AMedida && d.medida) {
+      try { const x = await arteAMedidaArmado(buffer, d, p, est); if (x) { buffer = x.buffer; nombreArte = x.nombre; } }
+      catch (e) { logger.warn(`[TIZADAPRO] SOL-${solicitudId} ${d.nombre}: no se pudo armar el arte a medida (${e.message}); va tal cual`); }
+    }
+    const ruta = `artes/${slug(d.nombre)}_${slug(String(nombreArte).replace(/\.[^.]+$/, ''))}.${(String(nombreArte).split('.').pop() || 'pdf').toLowerCase()}`;
+    artes.push({ ruta, buffer, nombre: nombreArte, campo: `disenos[${i}].arte` });
     rutasArte[d.arteArchivoId] = ruta;
   }
 
@@ -1156,11 +1202,25 @@ async function aplicarResultado(pool, envioId, resultado) {
       if (Number(a.ancho_cm) > 0) tela.anchoM = Number(a.ancho_cm) / 100;   // el ancho real de la mesa lo manda TIZADA
       const metros = (Number(a.consumo_cm) || 0) / 100;   // el largo de UNA mesa (el pedido multiplica por las copias)
       const copias = parseInt(a.copias, 10) >= 1 ? parseInt(a.copias, 10) : 1;
-      // Nombre: <referencia>_<tela sin el ancho>[_fila<N>]_<metros>m[_x<copias>].pdf  (ej. SOL-12-P34-1_Dry_Fit_3.21m.pdf,
-      // LOCAL-20-P20-1_Bandera_fila1_1.04m_x12.pdf). La fila distingue los PDF de una mesa por fila.
-      const nombre = `${env.Referencia}_${slug(String(tela.material || a.tela || '').replace(/\(\d+[.,]\d+\)\s*$/, ''))}${a.fila != null ? `_fila${slug(String(a.fila))}` : ''}_${metros.toFixed(2)}m${copias > 1 ? `_x${copias}` : ''}.pdf`;
+      // [16/10] unidades que trae cada impresión (Copia: la mesa llena); unidades del archivo = por_mesa × copias
+      const porMesa = parseInt(a.por_mesa, 10) >= 1 ? parseInt(a.por_mesa, 10) : null;
+      const filas = Array.isArray(a.filas) ? a.filas.filter(f => f && f.fila != null).map(f => ({ fila: f.fila, por_mesa: parseInt(f.por_mesa, 10) || null })) : [];
+      const detalle = {
+        ...(filas.length ? { filas } : {}), ...(a.diseno ? { diseno: String(a.diseno) } : {}),
+        ...(Array.isArray(a.talles) && a.talles.length ? { talles: a.talles.map(String) } : {}), ...(a.separados ? { separados: true } : {}),
+      };
+      // Nombre: <referencia>_<tela sin el ancho>[_<diseño>][_fila<N> | _filas<1-2>][_talles<S-M>]_<metros>m[_<por_mesa>xmesa][_x<copias>].pdf
+      // (ej. SOL-12-P34-1_Dry_Fit_3.21m.pdf, LOCAL-20-P20-1_Bandera_fila1_1.04m_5xmesa_x3.pdf). Si igual se repite, _2, _3…
+      const quien = [
+        detalle.diseno ? `_${slug(detalle.diseno)}` : '',
+        a.fila != null ? `_fila${slug(String(a.fila))}` : filas.length ? `_filas${filas.map(f => slug(String(f.fila))).join('-')}` : '',
+        detalle.talles ? `_talles${detalle.talles.map(x => slug(x)).join('-')}` : '',
+      ].join('');
+      const base0 = `${env.Referencia}_${slug(String(tela.material || a.tela || '').replace(/\(\d+[.,]\d+\)\s*$/, ''))}${quien}_${metros.toFixed(2)}m${porMesa > 1 ? `_${porMesa}xmesa` : ''}${copias > 1 ? `_x${copias}` : ''}`;
+      let nombre = `${base0}.pdf`;
+      for (let k = 2; listos.some(x => x.nombre === nombre); k++) nombre = `${base0}_${k}.pdf`;
       const t = await traerPdf(a, nombre);
-      listos.push({ nombre, url: t.url, bytes: t.bytes || a.bytes || null, como: t.como, tela, metros, copias, mesas: a.mesas || null, aprovechamiento: a.aprovechamiento ?? null, original: a.nombre });
+      listos.push({ nombre, url: t.url, bytes: t.bytes || a.bytes || null, como: t.como, tela, metros, copias, porMesa, detalle, mesas: a.mesas || null, aprovechamiento: a.aprovechamiento ?? null, original: a.nombre });
     }
     let fichaLista = null;
     if (ficha) {
@@ -1180,15 +1240,17 @@ async function aplicarResultado(pool, envioId, resultado) {
       // Los diseños prontos anteriores de la producción principal quedan reemplazados por la tizada
       await new sql.Request(transaction).input('Pa', sql.Int, pa.ParteID)
         .query("UPDATE dbo.SolicitudesVendedorArchivos SET Vigente = 0 WHERE ParteID = @Pa AND Rol = 'DISENO_PRONTO' AND Vigente = 1");
+      const conPorMesa = await conMesasExtraCol(transaction);   // [16/10] por_mesa + filas/diseño/talles de cada archivo
       for (const x of listos) {
         const r = await new sql.Request(transaction)
           .input('S', sql.Int, env.SolicitudID).input('P', sql.Int, env.ProductoSolID).input('Pa', sql.Int, pa.ParteID)
           .input('N', sql.NVarChar(260), x.nombre).input('U', sql.NVarChar(sql.MAX), x.url).input('B', sql.BigInt, x.bytes)
           .input('An', sql.Decimal(10, 4), x.tela.anchoM).input('Al', sql.Decimal(10, 4), x.metros)
           .input('M', sql.NVarChar(200), x.tela.material).input('C', sql.VarChar(50), x.tela.codArticulo).input('Us', sql.Int, user.id).input('Cop', sql.Int, x.copias)
-          .query(`INSERT INTO dbo.SolicitudesVendedorArchivos (SolicitudID, ProductoSolID, ParteID, Rol, NombreOriginal, UrlDrive, TamanoBytes, AnchoM, AltoM, Vigente, UsuarioSube, Material, CodArticulo, Copias)
-                  OUTPUT INSERTED.ArchivoID VALUES (@S, @P, @Pa, 'DISENO_PRONTO', @N, @U, @B, @An, @Al, 1, @Us, @M, @C, @Cop)`);
-        creados.push({ ArchivoID: r.recordset[0].ArchivoID, nombre: x.nombre, tipo: 'tizada', url: x.url, tela: x.tela.material, metros: x.metros, copias: x.copias, como: x.como });
+          .input('PM', sql.Int, x.porMesa).input('MD', sql.NVarChar(1000), Object.keys(x.detalle).length ? JSON.stringify(x.detalle).slice(0, 1000) : null)
+          .query(`INSERT INTO dbo.SolicitudesVendedorArchivos (SolicitudID, ProductoSolID, ParteID, Rol, NombreOriginal, UrlDrive, TamanoBytes, AnchoM, AltoM, Vigente, UsuarioSube, Material, CodArticulo, Copias${conPorMesa ? ', PorMesa, MesaDetalleJson' : ''})
+                  OUTPUT INSERTED.ArchivoID VALUES (@S, @P, @Pa, 'DISENO_PRONTO', @N, @U, @B, @An, @Al, 1, @Us, @M, @C, @Cop${conPorMesa ? ', @PM, @MD' : ''})`);
+        creados.push({ ArchivoID: r.recordset[0].ArchivoID, nombre: x.nombre, tipo: 'tizada', url: x.url, tela: x.tela.material, metros: x.metros, copias: x.copias, porMesa: x.porMesa, detalle: x.detalle, como: x.como });
       }
       if (fichaLista) {
         const r = await new sql.Request(transaction)
@@ -1344,7 +1406,8 @@ async function calcularMedida(pool, user, base, solicitudId, productoSolId, b = 
   if (errores.length) return { ok: false, errores, medida };
   const conf = api.estadoConfig();
   if (!conf.ok) return { ok: false, errores: [], medida, sinTizada: conf.motivo };
-  const r = await aMedidaSvc.calcular(p.AMedida.variable, medida, b.tela ? String(b.tela) : null);
+  // [MESAS 16/10] con el largo máximo de mesa del producto (el que irá en mesas.largo_max_m): avisa antes si no entra
+  const r = await aMedidaSvc.calcular(p.AMedida.variable, medida, b.tela ? String(b.tela) : null, Number(p.LargoMaxM) > 0 ? Number(p.LargoMaxM) : null);
   // Las telas que no ofrece el producto no se muestran
   if (r.ok && Array.isArray(r.telas) && p.AMedida.telas?.length) r.telas = r.telas.filter(t => p.AMedida.telas.includes(String(t.id)));
   return { ...r, medida, resumen: aMedidaSvc.resumen(medida) };
@@ -1359,7 +1422,8 @@ async function vistaArte(pool, user, base, solicitudId, productoSolId, archivoId
   if (!p.AMedida) throw fallo(409, 'Este producto no es a medida.');
   const r = await require('./pedidoPortalService').analisisDeArte(pool, solicitudId, archivoId);
   // acá solo importa poder dibujarlo: lo de "textos en curvas" es del portal (autogestión); TIZADA hace sus propias revisiones
-  return r.vista ? { ok: true, vista: r.vista, problemas: [] } : { ok: false, vista: null, problemas: r.problemas || [] };
+  // anchoPt/altoPt: el tamaño de la página del arte (con eso se propone la punta del triángulo: vertical u horizontal)
+  return r.vista ? { ok: true, vista: r.vista, anchoPt: r.calidad?.anchoPt ?? null, altoPt: r.calidad?.altoPt ?? null, sobrePlantilla: (r.paginas || []).some(m => m.pieza), problemas: [] } : { ok: false, vista: null, problemas: r.problemas || [] };
 }
 
 // [A MEDIDA] La plantilla para el diseñador (Illustrator, CorelDRAW y la guía .ai) con la medida de cada diseño:

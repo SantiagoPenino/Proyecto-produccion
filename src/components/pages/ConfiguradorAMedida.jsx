@@ -37,7 +37,7 @@ const desdeVariable = (v) => {
     const p = v.permitido;
     return {
         variable: v.clave, variableNombre: v.nombre, molde: v.molde, pieza: p.pieza || null,
-        formas: [...p.formas], forma: p.forma, orientacion: p.punta,
+        formas: [...p.formas], forma: p.forma, orientacion: p.punta, puntas: [...(p.puntas || ['abajo', 'arriba', 'izq', 'der'])],
         terminaciones: [...p.terminaciones], terminacion: p.terminacion,
         medidas: { modo: 'LIBRE', minimo_m: p.minimo, maximo_m: p.maximo, fijas: [] },
         telas: [],
@@ -125,29 +125,29 @@ export default function ConfiguradorAMedida({ valor, onChange, deshabilitado = f
                     )}
                     {valor.formas.includes('triangulo') && (
                         <div className="mt-3">
-                            <p className="text-xs font-bold text-slate-600 mb-1.5">Triángulo: hacia dónde va la punta por defecto <span className="font-normal text-slate-400">(abajo = banderín)</span></p>
-                            <div className="flex flex-wrap gap-2">
-                                {/* 16/10: cambiar la punta por defecto también cambia las medidas fijas que tenían la anterior
-                                    (antes quedaban con la vieja y la tienda seguía dibujando esa) */}
-                                {(p?.puntas || ['abajo', 'arriba', 'izq', 'der']).map(o => (
-                                    <button key={o} type="button" aria-pressed={valor.orientacion === o} disabled={deshabilitado}
-                                        onClick={() => set({
-                                            orientacion: o,
-                                            medidas: { ...valor.medidas, fijas: valor.medidas.fijas.map(fx => ((valor.formas.includes(fx.forma) ? fx.forma : valor.forma) === 'triangulo' && (fx.orientacion || valor.orientacion) === valor.orientacion ? { ...fx, orientacion: o } : fx)) },
-                                        })} className={chip(valor.orientacion === o)}>
-                                        <IconoForma forma="triangulo" punta={o} className={valor.orientacion === o ? 'text-emerald-600' : 'text-slate-400'} />{NOMBRE[o]}
-                                    </button>
-                                ))}
+                            {/* [PUNTA DEL ARTE 19/10] la punta la decide el arte de cada diseño: acá se marcan las que se pueden pedir
+                                (un solo producto para todas) y la que viene puesta. Con una sola marcada, nadie la cambia. */}
+                            <p className="text-xs font-bold text-slate-600 mb-1.5">Triángulo: puntas que se pueden pedir <span className="font-normal text-slate-400">— la elige el arte de cada diseño (en la tienda se propone sola mirando el arte)</span></p>
+                            <div className="grid gap-2" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(190px, 1fr))' }}>
+                                {(p?.puntas || ['abajo', 'arriba', 'izq', 'der']).map(o => {
+                                    const puntas = valor.puntas?.length ? valor.puntas : [valor.orientacion || 'abajo'];
+                                    const sel = puntas.includes(o);
+                                    const def = valor.orientacion === o;
+                                    return (
+                                        <div key={o} className={`rounded-xl border-2 p-2.5 ${def ? 'border-amber-400 bg-amber-50/40' : sel ? 'border-emerald-500 bg-emerald-50/40' : 'border-slate-200'}`}>
+                                            <label className="flex items-center gap-2 text-sm font-black text-slate-800">
+                                                <input type="checkbox" checked={sel} disabled={deshabilitado || (sel && puntas.length === 1)}
+                                                    onChange={() => { const ps = alternar(puntas, o); set({ puntas: ps, orientacion: ps.includes(valor.orientacion) ? valor.orientacion : ps[0] }); }} />
+                                                <IconoForma forma="triangulo" punta={o} className={sel ? 'text-emerald-600' : 'text-slate-400'} />{NOMBRE[o]}
+                                            </label>
+                                            {sel && (def
+                                                ? <p className="text-[11px] font-bold text-amber-600 mt-1">Viene puesta</p>
+                                                : <button type="button" disabled={deshabilitado} onClick={() => set({ orientacion: o })} className="text-[11px] font-bold text-brand-cyan hover:underline mt-1">Que venga puesta</button>)}
+                                        </div>
+                                    );
+                                })}
                             </div>
-                            {/* las medidas fijas con otra punta (cada una tiene la suya: es la que se dibuja y se pide) */}
-                            {valor.medidas.modo === 'FIJAS' && (() => {
-                                const otras = valor.medidas.fijas.filter(fx => (valor.formas.includes(fx.forma) ? fx.forma : valor.forma) === 'triangulo' && fx.orientacion && fx.orientacion !== valor.orientacion);
-                                return otras.length > 0 && (
-                                    <p className="mt-1.5 text-[11px] font-bold text-amber-600">
-                                        Ojo: {otras.map(fx => `${fx.nombre || 'una medida'} (${String(NOMBRE[fx.orientacion] || fx.orientacion).toLowerCase()})`).join(', ')} tiene{otras.length === 1 ? '' : 'n'} su propia punta: es la que se usa. Se cambia abajo, en Medidas.
-                                    </p>
-                                );
-                            })()}
+                            <p className="mt-1.5 text-[11px] text-slate-500">La medida del triángulo se carga como <b>base × altura</b>: con la punta abajo o arriba el ancho es la base; con la punta a un costado, el ancho es la altura. El sistema da vuelta las medidas solo.</p>
                         </div>
                     )}
                 </div>
@@ -207,21 +207,25 @@ export default function ConfiguradorAMedida({ valor, onChange, deshabilitado = f
                                         )}
                                         {forma === 'circulo' ? (
                                             <label className="flex items-center gap-1 text-xs font-bold text-slate-600">Diámetro <input type="number" step="0.01" className={claseInput} value={fx.diametro_m ?? ''} disabled={deshabilitado} onChange={e => setFija({ diametro_m: num(e.target.value) })} /> m</label>
-                                        ) : (<>
+                                        ) : forma === 'triangulo' ? (() => {
+                                            // las de antes pueden venir con la punta a un costado (ancho = altura): se muestran como base × altura
+                                            const lateral = ['izq', 'der'].includes(fx.orientacion);
+                                            const base = lateral ? fx.alto_m : fx.ancho_m, altura = lateral ? fx.ancho_m : fx.alto_m;
+                                            const setBA = (b, h) => setFija({ orientacion: 'abajo', ancho_m: b, alto_m: h });
+                                            return (<>
+                                                <label className="flex items-center gap-1 text-xs font-bold text-slate-600">Base <input type="number" step="0.01" className={claseInput} value={base ?? ''} disabled={deshabilitado} onChange={e => setBA(num(e.target.value), altura)} /> m</label>
+                                                <label className="flex items-center gap-1 text-xs font-bold text-slate-600" title="De la base a la punta">Altura <input type="number" step="0.01" className={claseInput} value={altura ?? ''} disabled={deshabilitado} onChange={e => setBA(base, num(e.target.value))} /> m</label>
+                                            </>);
+                                        })() : (<>
                                             <label className="flex items-center gap-1 text-xs font-bold text-slate-600">Ancho <input type="number" step="0.01" className={claseInput} value={fx.ancho_m ?? ''} disabled={deshabilitado} onChange={e => setFija({ ancho_m: num(e.target.value) })} /> m</label>
                                             <label className="flex items-center gap-1 text-xs font-bold text-slate-600">Alto <input type="number" step="0.01" className={claseInput} value={fx.alto_m ?? ''} disabled={deshabilitado} onChange={e => setFija({ alto_m: num(e.target.value) })} /> m</label>
                                         </>)}
-                                        {forma === 'triangulo' && (
-                                            <Selector value={fx.orientacion || valor.orientacion} disabled={deshabilitado} onChange={e => setFija({ orientacion: e.target.value })} claseBoton={claseSel('border border-slate-200 rounded-lg px-2 py-1.5 text-xs font-bold text-slate-800 min-w-[150px]')}>
-                                                {(p?.puntas || ['abajo', 'arriba', 'izq', 'der']).map(o => <option key={o} value={o}>{NOMBRE[o]}</option>)}
-                                            </Selector>
-                                        )}
                                         <button type="button" disabled={deshabilitado} onClick={() => set({ medidas: { ...valor.medidas, fijas: valor.medidas.fijas.filter((_, j) => j !== i) } })}
                                             className="ml-auto text-slate-400 hover:text-rose-600" title="Quitar esta medida" aria-label="Quitar esta medida"><Trash2 size={15} /></button>
                                     </div>
                                 );
                             })}
-                            <button type="button" disabled={deshabilitado} onClick={() => set({ medidas: { ...valor.medidas, fijas: [...valor.medidas.fijas, { nombre: '', forma: valor.forma, orientacion: valor.orientacion, ancho_m: '', alto_m: '', diametro_m: '' }] } })}
+                            <button type="button" disabled={deshabilitado} onClick={() => set({ medidas: { ...valor.medidas, fijas: [...valor.medidas.fijas, { nombre: '', forma: valor.forma, orientacion: valor.forma === 'triangulo' ? 'abajo' : null, ancho_m: '', alto_m: '', diametro_m: '' }] } })}
                                 className="inline-flex items-center gap-1.5 text-xs font-bold text-brand-cyan hover:underline"><Plus size={13} />Agregar medida</button>
                             {!valor.medidas.fijas.length && <p className="text-[11px] font-bold text-amber-600">Sin ninguna medida en la lista, al guardar queda como "La escribe el vendedor".</p>}
                         </div>

@@ -461,6 +461,21 @@ export const TiendaView = () => {
         } finally { setBajandoPlantilla(false); }
     };
     const [misPedidos, setMisPedidos] = useState([]);
+    // [20/10] Cancelados por el equipo: al tocarlo se abre el aviso con el motivo; con "Entendido" no se vuelve a mostrar en
+    // este navegador (en otro dispositivo se ve una vez más, hasta los 15 días que lo trae el servidor). localStorage puede
+    // no estar (ventana privada): entonces solo se esconde mientras la página está abierta.
+    const CLAVE_CANCELADOS = 'tienda-cancelados-vistos';
+    const [canceladosVistos, setCanceladosVistos] = useState(() => {
+        try { return new Set(JSON.parse(localStorage.getItem(CLAVE_CANCELADOS) || '[]')); } catch { return new Set(); }
+    });
+    const [avisoCancelado, setAvisoCancelado] = useState(null);
+    const entendido = (id) => {
+        const vistos = new Set(canceladosVistos); vistos.add(id);
+        setCanceladosVistos(vistos);
+        try { localStorage.setItem(CLAVE_CANCELADOS, JSON.stringify([...vistos].slice(-100))); } catch { /* sin localStorage */ }
+        setAvisoCancelado(null);
+    };
+    const pedidosVisibles = misPedidos.filter(x => !(x.etapa === 'CANCELADO' && canceladosVistos.has(x.id)));
     useEffect(() => {
         apiClient.get('/web-orders/tienda/pedidos/armables').then(r => setArmables(new Set(r?.data || []))).catch(() => { });
         apiClient.get('/web-orders/tienda/pedidos/plantillas').then(r => setConPlantilla(new Set(r?.data || []))).catch(() => { });
@@ -512,22 +527,26 @@ export const TiendaView = () => {
             </div>
 
             {/* [ARMAR PEDIDO] Pedidos de la tienda en curso: el que está armando (para seguirlo) y los confirmados */}
-            {misPedidos.length > 0 && (
+            {pedidosVisibles.length > 0 && (
                 <div className="flex gap-2 overflow-x-auto no-scrollbar -mx-4 px-4 md:mx-0 md:px-0">
-                    {misPedidos.map(x => {
+                    {pedidosVisibles.map(x => {
                         const etapa = {
                             ARMANDO: { dot: 'bg-amber-400', txt: 'Sin confirmar · continuar' },
                             TIZADA: { dot: 'bg-brand-cyan animate-pulse', txt: 'TIZADA PRO arma la tizada' },
                             LISTO: { dot: 'bg-brand-cyan animate-pulse', txt: 'Armando tu pedido' },
                             PEDIDO: { dot: 'bg-emerald-400', txt: `Pedido ${x.pedido} en producción` },
+                            // [20/10] lo canceló el equipo: el motivo, y no se abre (ya no se puede seguir)
+                            CANCELADO: { dot: 'bg-rose-500', txt: `Cancelado${x.motivo ? `: ${x.motivo}` : ''}` },
                         }[x.etapa] || { dot: 'bg-zinc-500', txt: '' };
+                        const cancelado = x.etapa === 'CANCELADO';
                         return (
-                            <button key={x.id} onClick={() => navigate(`/portal/tienda/pedido/${x.id}`)}
-                                className="shrink-0 flex items-center gap-2.5 rounded-xl border border-zinc-800 bg-[#202024] px-3 py-2 text-left hover:border-brand-cyan/40 transition-colors">
+                            <button key={x.id} onClick={() => (cancelado ? setAvisoCancelado(x) : navigate(`/portal/tienda/pedido/${x.id}`))}
+                                title={cancelado ? etapa.txt : undefined}
+                                className={`shrink-0 flex items-center gap-2.5 rounded-xl border px-3 py-2 text-left transition-colors ${cancelado ? 'border-rose-900/60 bg-rose-950/20 hover:border-rose-700/60' : 'border-zinc-800 bg-[#202024] hover:border-brand-cyan/40'}`}>
                                 <span className={`w-2 h-2 rounded-full shrink-0 ${etapa.dot}`} />
                                 <span className="min-w-0">
                                     <span className="block text-[11px] font-bold text-zinc-200 uppercase max-w-[220px] truncate">{x.nombre || x.producto}</span>
-                                    <span className="block text-[10px] text-zinc-500">{etapa.txt}{x.prendas ? ` · ${x.prendas} ${x.aMedida ? (x.prendas === 1 ? 'unidad' : 'unidades') : (x.prendas === 1 ? 'prenda' : 'prendas')}` : ''}</span>
+                                    <span className={`block text-[10px] ${cancelado ? 'text-rose-300 max-w-[260px] truncate' : 'text-zinc-500'}`}>{etapa.txt}{x.prendas && !cancelado ? ` · ${x.prendas} ${x.aMedida ? (x.prendas === 1 ? 'unidad' : 'unidades') : (x.prendas === 1 ? 'prenda' : 'prendas')}` : ''}</span>
                                 </span>
                                 <ArrowRight size={13} className="text-zinc-600 shrink-0" />
                             </button>
@@ -663,6 +682,32 @@ export const TiendaView = () => {
 
             {/* Carrito — mismo formato que el modal del producto (18/08): portal al body,
                 pantalla completa en mobile y card centrada con borde/redondeo en md+. */}
+            {/* [20/10] El aviso del pedido cancelado: el motivo y "Entendido" (después no se vuelve a mostrar) */}
+            {avisoCancelado && createPortal(
+                <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/70 p-4" onClick={() => setAvisoCancelado(null)}>
+                    <div role="dialog" aria-modal="true" aria-labelledby="aviso-cancelado-titulo" onClick={e => e.stopPropagation()}
+                        className="w-full max-w-md rounded-2xl border border-rose-900/60 bg-[#19191c] p-5 shadow-2xl">
+                        <div className="flex items-start justify-between gap-3">
+                            <div>
+                                <h2 id="aviso-cancelado-titulo" className="text-lg font-black text-zinc-100">Pedido cancelado</h2>
+                                <p className="mt-0.5 text-xs font-bold uppercase text-zinc-400">{avisoCancelado.nombre || avisoCancelado.producto}</p>
+                            </div>
+                            <button type="button" onClick={() => setAvisoCancelado(null)} aria-label="Cerrar" className="text-zinc-500 hover:text-zinc-200"><X size={18} /></button>
+                        </div>
+                        <p className="mt-4 text-sm text-zinc-300">Nuestro equipo canceló este pedido.</p>
+                        {avisoCancelado.motivo && (
+                            <div className="mt-3 rounded-xl border border-zinc-800 bg-[#202024] px-3 py-2.5">
+                                <p className="text-[10px] font-black uppercase tracking-wide text-zinc-500">Motivo</p>
+                                <p className="mt-1 whitespace-pre-line text-sm text-zinc-200">{avisoCancelado.motivo}</p>
+                            </div>
+                        )}
+                        <p className="mt-3 text-xs text-zinc-500">Si tenés dudas, escribinos desde Soporte / Ayuda.</p>
+                        <button type="button" autoFocus onClick={() => entendido(avisoCancelado.id)}
+                            className="mt-5 w-full rounded-xl bg-brand-cyan py-2.5 text-sm font-black text-zinc-900 hover:bg-brand-cyan/90">Entendido</button>
+                    </div>
+                </div>,
+                document.body
+            )}
             {carritoAbierto && createPortal(
                 // Mobile: pantalla completa con el pop de la ficha. Desktop (md+): drawer
                 // lateral que entra deslizándose desde la derecha, alto completo.

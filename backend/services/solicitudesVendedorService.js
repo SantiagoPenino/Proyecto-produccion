@@ -608,6 +608,13 @@ async function enviarADiseno(pool, user, parteId, b) {
   }
 }
 
+// [20/10] ¿la solicitud tiene Origen? (scripts/add_solicitudes_portal.sql): los pedidos del portal se marcan en la bandeja
+let _conOrigen = false;
+async function conOrigenSol(pool) {
+  if (_conOrigen) return true;
+  _conOrigen = (await pool.request().query("SELECT COL_LENGTH('dbo.SolicitudesVendedor', 'Origen') AS c")).recordset[0].c != null;
+  return _conOrigen;
+}
 const SQL_BANDEJA = `
   SELECT pa.ParteID, pa.SolicitudID, pa.ProductoSolID, pa.Tipo, pa.Estado, pa.TipoTrabajo, pa.CantidadTotal, pa.PorPrenda, pa.Ubicacion,
          pa.ArteOrigen, pa.Observaciones, pa.DisenadorID, pa.FechaEnvioDiseno, pa.FechaInicioDiseno, pa.FechaDisenado,
@@ -629,12 +636,97 @@ const SQL_BANDEJA = `
 // RN-SOL.31: el diseñador ve la bandeja común (nadie la tomó) y lo que él tomó.
 async function bandeja(pool, user) {
   if (!(await esDisenador(pool, user))) throw fallo(403, 'La bandeja de Diseño es solo para diseñadores habilitados.');
-  const disponibles = (await pool.request().query(`${SQL_BANDEJA} AND pa.Estado = 'ENVIADO_DISENO' ORDER BY pa.FechaEnvioDiseno ASC`)).recordset;
+  // [20/10] Origen: 'PORTAL' = lo pidió el cliente desde la tienda (el "vendedor" es la asesora de su ficha)
+  const SQL = (await conOrigenSol(pool)) ? SQL_BANDEJA.replace('s.NombreTrabajo, s.CodCliente,', 's.NombreTrabajo, s.CodCliente, s.Origen,') : SQL_BANDEJA;
+  const disponibles = (await pool.request().query(`${SQL} AND pa.Estado = 'ENVIADO_DISENO' ORDER BY pa.FechaEnvioDiseno ASC`)).recordset;
   const mias = (await pool.request().input('U', sql.Int, user.id)
-    .query(`${SQL_BANDEJA} AND pa.DisenadorID = @U AND pa.Estado IN ('DISENO_INICIADO','DISENADO')
+    .query(`${SQL} AND pa.DisenadorID = @U AND pa.Estado IN ('DISENO_INICIADO','DISENADO')
             ORDER BY CASE WHEN pa.Estado = 'DISENO_INICIADO' THEN 0 ELSE 1 END, pa.Modificada DESC, pa.FechaInicioDiseno ASC`)).recordset;
   await completarBandeja(pool, [...disponibles, ...mias]);
   return { disponibles, mias };
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// [BANDEJA · DEL PORTAL 20/10] Lo que llegó de la tienda del portal y todavía no es pedido de producción, con en qué está:
+//   ARMANDO          el cliente lo está armando (no confirmó)
+//   EN_DISENO        confirmado: lo tiene Diseño (para tomar o tomado)
+//   EN_TIZADA        TIZADA PRO lo está procesando
+//   TIZADA_RECHAZO   TIZADA no lo aceptó (Detalle = por qué)
+//   POR_CONVERTIR    diseñado: el pedido se arma solo (barrido de pedidoPortalService.convertirListos)
+//   ERROR_CONVERSION diseñado, pero el pedido no se pudo armar solo (Detalle = el último error)
+// ─────────────────────────────────────────────────────────────────────
+async function portalDiseno(pool, user) {
+  if (!(await esDisenador(pool, user))) throw fallo(403, 'La bandeja de Diseño es solo para diseñadores habilitados.');
+  if (!(await conOrigenSol(pool))) return [];
+  const conEnvios = (await pool.request().query("SELECT OBJECT_ID('dbo.TizadaProEnvios', 'U') AS t")).recordset[0].t != null;
+  const r = await pool.request().query(`
+    SELECT TOP 300 s.SolicitudID, s.NombreTrabajo, s.FechaSolicitud, s.PortalConfirmado, s.CodCliente, LTRIM(RTRIM(c.Nombre)) AS ClienteNombre,
+           uv.Nombre AS VendedorNombre, p.ProductoSolID, p.ProductoNombre, p.Cantidad,
+           pa.ParteID, pa.Estado AS EstadoPrincipal, pa.DisenadorID, ud.Nombre AS DisenadorNombre,
+           ${conEnvios ? 'env.Estado AS TizadaEstado, env.Etapa AS TizadaEtapa, env.ErrorTexto AS TizadaError, env.Referencia AS TizadaRef, env.FechaActualizado AS TizadaFecha,' : ''}
+           ev.Texto AS ErrorConversion, ev.Fecha AS ErrorConversionFecha
+    FROM dbo.SolicitudesVendedor s
+    JOIN dbo.SolicitudesVendedorProductos p ON p.SolicitudID = s.SolicitudID AND p.Activo = 1 AND p.PedidoNoDocERP IS NULL
+    LEFT JOIN dbo.Clientes c  ON c.CodCliente = s.CodCliente
+    LEFT JOIN dbo.Usuarios uv ON uv.IdUsuario = s.VendedorID
+    OUTER APPLY (SELECT TOP 1 x.ParteID, x.Estado, x.DisenadorID FROM dbo.SolicitudesVendedorPartes x
+                 WHERE x.ProductoSolID = p.ProductoSolID AND x.Tipo = 'PRINCIPAL' AND x.Activo = 1) pa
+    LEFT JOIN dbo.Usuarios ud ON ud.IdUsuario = pa.DisenadorID
+    ${conEnvios ? `OUTER APPLY (SELECT TOP 1 e.Estado, e.Etapa, e.ErrorTexto, e.Referencia, e.FechaActualizado FROM dbo.TizadaProEnvios e
+                 WHERE e.Origen = 'SOLICITUD' AND e.OrigenItemID = p.ProductoSolID AND ISNULL(e.SoloRevision, 0) = 0 ORDER BY e.EnvioID DESC) env` : ''}
+    OUTER APPLY (SELECT TOP 1 v.Texto, v.Fecha FROM dbo.SolicitudesVendedorEventos v
+                 WHERE v.SolicitudID = s.SolicitudID AND v.Texto LIKE 'El pedido del portal no se pudo armar solo%' ORDER BY v.Fecha DESC) ev
+    WHERE s.Origen = 'PORTAL' AND s.Estado <> 'CANCELADA'
+    ORDER BY CASE WHEN s.PortalConfirmado IS NULL THEN 1 ELSE 0 END, ISNULL(s.PortalConfirmado, s.FechaSolicitud) DESC`);
+  return r.recordset.map(x => {
+    const enTizada = ['EN_COLA', 'PROCESANDO', 'LISTO', 'APLICANDO'].includes(x.TizadaEstado);
+    const rechazo = ['RECHAZADO', 'ERROR'].includes(x.TizadaEstado) && x.EstadoPrincipal !== 'DISENADO';
+    const situacion = !x.PortalConfirmado ? 'ARMANDO'
+      : enTizada ? 'EN_TIZADA'
+        : rechazo ? 'TIZADA_RECHAZO'
+          : x.EstadoPrincipal === 'DISENADO' ? (x.ErrorConversion ? 'ERROR_CONVERSION' : 'POR_CONVERTIR')
+            : 'EN_DISENO';
+    const detalle = situacion === 'TIZADA_RECHAZO' ? (x.TizadaError || x.TizadaEtapa || null)
+      : situacion === 'ERROR_CONVERSION' ? String(x.ErrorConversion).replace(/^El pedido del portal no se pudo armar solo \([^)]*\):\s*/, '')
+        : situacion === 'EN_TIZADA' ? (x.TizadaEtapa || null) : null;
+    return { ...x, Situacion: situacion, Detalle: detalle, EsMia: x.DisenadorID === user.id };
+  });
+}
+
+// Cancelar un pedido del portal desde la bandeja (con motivo; el cliente lo ve en su portal: pedidoPortalService.listar)
+async function cancelarDelPortal(pool, user, solicitudId, b) {
+  if (!(await esDisenador(pool, user)) && !esVendedor(user)) throw fallo(403, 'Solo Diseño o un vendedor pueden cancelar un pedido del portal.');
+  if (!(await conOrigenSol(pool))) throw fallo(409, 'Falta scripts/add_solicitudes_portal.sql en esta base.');
+  const s = (await pool.request().input('S', sql.Int, solicitudId).query('SELECT Origen FROM dbo.SolicitudesVendedor WHERE SolicitudID = @S')).recordset[0];
+  if (!s) throw fallo(404, 'Esa solicitud no existe.');
+  if (s.Origen !== 'PORTAL') throw fallo(409, 'Desde la bandeja solo se cancelan pedidos que vinieron del portal.');
+  return cancelar(pool, user, solicitudId, b, { diseno: true });
+}
+
+// [BANDEJA · BUSCAR 20/10] Buscar en todo Diseño: cualquier servicio de cualquier solicitud (de cualquier diseñador, del
+// portal, ya pedido o cancelada), por cliente, trabajo, #solicitud, vendedor, diseñador, producto o pedido. Hasta 80.
+async function buscarDiseno(pool, user, q) {
+  if (!(await esDisenador(pool, user))) throw fallo(403, 'La bandeja de Diseño es solo para diseñadores habilitados.');
+  const palabras = String(q || '').trim().split(/\s+/).filter(w => w.length >= 1).slice(0, 6);
+  if (!palabras.length || String(q).trim().length < 2) return [];
+  const origen = await conOrigenSol(pool);
+  const rq = pool.request();
+  const texto = `(ISNULL(c.Nombre, '') + ' ' + ISNULL(s.NombreTrabajo, '') + ' #' + CAST(s.SolicitudID AS varchar(20)) + ' ' + ISNULL(uv.Nombre, '') + ' '
+    + ISNULL(ud.Nombre, '') + ' ' + ISNULL(p.ProductoNombre, '') + ISNULL(' pedido ' + CAST(p.PedidoNoDocERP AS varchar(30)), '')) COLLATE Latin1_General_CI_AI`;
+  const conds = palabras.map((w, i) => { rq.input(`w${i}`, sql.NVarChar(120), `%${w.replace(/[%_[]/g, ch => `[${ch}]`)}%`); return `${texto} LIKE @w${i}`; });
+  const r = await rq.query(`
+    SELECT TOP 80 pa.ParteID, pa.SolicitudID, pa.ProductoSolID, pa.Tipo, pa.Estado, pa.DisenadorID, pa.Modificada, pa.FechaEnvioDiseno, pa.FechaDisenado,
+           s.NombreTrabajo, s.Estado AS SolEstado, ${origen ? 's.Origen, s.PortalConfirmado,' : ''} LTRIM(RTRIM(c.Nombre)) AS ClienteNombre,
+           p.ProductoNombre, p.Cantidad AS CantidadPrendas, p.PedidoNoDocERP, uv.Nombre AS VendedorNombre, ud.Nombre AS DisenadorNombre
+    FROM dbo.SolicitudesVendedorPartes pa
+    JOIN dbo.SolicitudesVendedor s          ON s.SolicitudID = pa.SolicitudID
+    JOIN dbo.SolicitudesVendedorProductos p ON p.ProductoSolID = pa.ProductoSolID AND p.Activo = 1
+    LEFT JOIN dbo.Clientes c  ON c.CodCliente = s.CodCliente
+    LEFT JOIN dbo.Usuarios uv ON uv.IdUsuario = s.VendedorID
+    LEFT JOIN dbo.Usuarios ud ON ud.IdUsuario = pa.DisenadorID
+    WHERE pa.Activo = 1 AND ${conds.join(' AND ')}
+    ORDER BY CASE WHEN s.Estado = 'CANCELADA' THEN 1 ELSE 0 END, pa.SolicitudID DESC, pa.ParteID`);
+  return r.recordset.map(x => ({ ...x, EsMia: x.DisenadorID === user.id }));
 }
 
 // [BANDEJA · HECHOS 15/10] Lo que Diseño ya terminó: todo servicio "Diseñado" entre b.desde y b.hasta ('AAAA-MM-DD', los
@@ -961,8 +1053,9 @@ async function quitarArchivo(pool, user, solicitudId, archivoId) {
 // ---------------------------------------------------------------------
 // Cancelar (RN-SOL.24b)
 // ---------------------------------------------------------------------
-async function cancelar(pool, user, solicitudId, b) {
-  exigirVendedor(user);
+// opts.diseno [20/10]: lo cancela un diseñador desde la bandeja (pestaña "Del portal"); el permiso ya lo controló cancelarDelPortal
+async function cancelar(pool, user, solicitudId, b, opts = {}) {
+  if (!opts.diseno) exigirVendedor(user);
   const motivo = txt(b.Motivo, 500);
   if (!motivo) throw fallo(400, 'Para cancelar la solicitud hay que escribir el motivo.');
   const transaction = new sql.Transaction(pool);
@@ -1086,7 +1179,10 @@ async function obtener(pool, user, solicitudId) {
   const productos = (await pool.request().input('Sol', sql.Int, solicitudId)
     .query('SELECT * FROM dbo.SolicitudesVendedorProductos WHERE SolicitudID = @Sol AND Activo = 1 ORDER BY Orden')).recordset;
   const archivos = (await pool.request().input('Sol', sql.Int, solicitudId).query(`
-    SELECT a.*, u.Nombre AS UsuarioNombre FROM dbo.SolicitudesVendedorArchivos a
+    SELECT a.*, u.Nombre AS UsuarioNombre,
+           -- [19/10] unidad del artículo de la tela (1 = Cantidades): ver faltantesConversion › por mesa
+           (SELECT TOP 1 ar.UniIdUnidad FROM dbo.Articulos ar WHERE a.CodArticulo IS NOT NULL AND LTRIM(RTRIM(ar.CodArticulo)) = LTRIM(RTRIM(a.CodArticulo))) AS TelaUniIdUnidad
+    FROM dbo.SolicitudesVendedorArchivos a
     LEFT JOIN dbo.Usuarios u ON u.IdUsuario = a.UsuarioSube
     WHERE a.SolicitudID = @Sol AND a.UrlDrive <> 'Pendiente' ORDER BY a.FechaSubida`)).recordset;
   const eventos = (await pool.request().input('Sol', sql.Int, solicitudId)
@@ -1191,11 +1287,15 @@ async function sellarLista(pool, filas) {
   for (const s of filas) { s.Ficha = jsonObj(s.FichaJson); delete s.FichaJson; s.Listo = null; s.Faltan = 0; s.Unidades = 0; }
   if (!abiertas.length) return filas;
   const ids = abiertas.map(s => s.SolicitudID).join(',');
+  // [19/10] PorMesa existe si se corrió docs/migrations/tizadapro_mesas_novedades_16oct.sql
+  const conPorMesa = (await pool.request().query("SELECT COL_LENGTH('dbo.SolicitudesVendedorArchivos', 'PorMesa') AS c")).recordset[0].c != null;
   const [prods, partes, archs] = await Promise.all([
     // F1: Molde del producto del catálogo, para que el checklist de la lista no pida talles a los que van por unidad
     pool.request().query(`SELECT p.*, CASE WHEN COL_LENGTH('dbo.ProductoVentaConfig', 'Molde') IS NULL THEN NULL ELSE (SELECT vc.Molde FROM dbo.ProductoVentaConfig vc WHERE vc.ProIdProducto = p.ProIdProducto) END AS Molde FROM dbo.SolicitudesVendedorProductos p WHERE p.Activo = 1 AND p.SolicitudID IN (${ids})`),
     pool.request().query(`SELECT ParteID, SolicitudID, ProductoSolID, Tipo, Estado, DatosJson, CantidadTotal, PorPrenda, Modificada, DisenadorID FROM dbo.SolicitudesVendedorPartes WHERE Activo = 1 AND SolicitudID IN (${ids})`),
-    pool.request().query(`SELECT ArchivoID, SolicitudID, ProductoSolID, ParteID, EventoID, Rol, Vigente, Material, NombreOriginal FROM dbo.SolicitudesVendedorArchivos WHERE Vigente = 1 AND UrlDrive <> 'Pendiente' AND SolicitudID IN (${ids})`),
+    pool.request().query(`SELECT a.ArchivoID, a.SolicitudID, a.ProductoSolID, a.ParteID, a.EventoID, a.Rol, a.Vigente, a.Material, a.NombreOriginal, a.Copias${conPorMesa ? ', a.PorMesa' : ''},
+                                (SELECT TOP 1 ar.UniIdUnidad FROM dbo.Articulos ar WHERE a.CodArticulo IS NOT NULL AND LTRIM(RTRIM(ar.CodArticulo)) = LTRIM(RTRIM(a.CodArticulo))) AS TelaUniIdUnidad
+                         FROM dbo.SolicitudesVendedorArchivos a WHERE a.Vigente = 1 AND a.UrlDrive <> 'Pendiente' AND a.SolicitudID IN (${ids})`),
   ]);
   const { evaluarProducto } = require('./solicitudesVendedorChecklist');
   for (const s of abiertas) {
@@ -1280,6 +1380,10 @@ function faltantesConversion(sol, p, archivos) {
     if (pa.Tipo === 'PRINCIPAL') {
       archivos.filter(a => a.Vigente && a.ParteID === pa.ParteID && a.Rol === 'DISENO_PRONTO' && !a.Material)
         .forEach(a => f.push(`${n}: falta elegir la tela de "${a.NombreOriginal}" (la carga el diseñador).`));
+      // [19/10] TIZADA "Copias": cada impresión trae PorMesa unidades. Si la tela se cobra por unidad (Cantidades), el cobro de
+      // Sublimación por pieza suma las COPIAS (impresiones) y no las unidades: se frena. Producción no cambia (copias = impresiones).
+      archivos.filter(a => a.Vigente && a.ParteID === pa.ParteID && a.Rol === 'DISENO_PRONTO' && Number(a.PorMesa) > 1 && Number(a.TelaUniIdUnidad) === 1)
+        .forEach(a => f.push(`${n}: "${a.NombreOriginal}" trae ${a.PorMesa} unidades por impresión y su tela (${a.Material}) está cargada para cobrarse por unidad: se cobrarían ${a.Copias || 1} en vez de ${(a.Copias || 1) * Number(a.PorMesa)}. Pasá esa tela a metros en el artículo (o avisá a Sistemas) antes de convertir.`));
     }
     const d = pa.Datos || {};
     // [15/10] La cantidad total y las bajadas por prenda ya no frenan: salen de la lista de jugadores (cada objeto × las
@@ -1598,6 +1702,6 @@ module.exports = {
   tizadaProVer, tizadaProEditables, piezasDelArte, tizadaProGuardar, tizadaProCalcular, tizadaProArteVista, tizadaProPlantillaPedir, tizadaProPlantillaEstado, tizadaProPlantillaBajar, tizadaProEnviar, tizadaProActualizar, _baseTizadaPro: () => baseTizadaPro(),
   materialesPrincipal, definirProduccionArchivo, tizadasTizadaPro, vincularTizada, moldeDelProducto, guardarSublimacion, guardarTalles, convertir, reintentarArchivos, recuperarArchivos, bobinasDelCliente, disenosEnProduccion, estimarPlazo, calendario,
   crear, actualizar, listar, obtener, guardarPrecio, confirmarSena, agregarInteraccion,
-  enviarADiseno, bandeja, tomarParte, aceptarCambio, subirArchivo, quitarArchivo, cancelar,
+  enviarADiseno, bandeja, portalDiseno, cancelarDelPortal, buscarDiseno, tomarParte, aceptarCambio, subirArchivo, quitarArchivo, cancelar,
   listarVendedores, listarDisenadores, definirDisenador, miPerfil,
 };

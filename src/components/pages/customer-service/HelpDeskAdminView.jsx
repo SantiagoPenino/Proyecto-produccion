@@ -8,6 +8,11 @@ import { Search, Filter, MessageSquare, Clock, AlertCircle, FileText, Send, Lock
 import { useAuth } from '../../../context/AuthContext';
 import { toast } from 'sonner';
 import { Listbox, Transition } from '@headlessui/react';
+import SelectorFecha from '../../ui/SelectorFecha';
+import { aInputLocal } from '../../../utils/fechas';
+
+// Para buscar órdenes sin importar mayúsculas, espacios ni guiones: "Tpu 29030" encuentra "TPU-29030".
+const normalizarBusqueda = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 
 const CustomSelect = ({ value, onChange, options, className, placeholder = "Seleccionar..." }) => {
     const [open, setOpen] = useState(false);
@@ -131,6 +136,24 @@ export const HelpDeskAdminView = () => {
     // Filtros inbox
     const [filterDep, setFilterDep] = useState('ALL');
     const [filterEstado, setFilterEstado] = useState('ALL'); // Todos por defecto
+    const [filterOrden, setFilterOrden] = useState('');
+    const [filterCliente, setFilterCliente] = useState('');
+    const [filterDesde, setFilterDesde] = useState(''); // 'AAAA-MM-DD'
+    const [filterHasta, setFilterHasta] = useState('');
+
+    // Elegir solo "Desde" busca ese día: "Hasta" se completa con la misma fecha y se cambia para un rango.
+    const handleDesde = (e) => {
+        const v = e.target.value;
+        setFilterDesde(v);
+        if (v && (!filterHasta || filterHasta < v)) setFilterHasta(v);
+    };
+
+    const limpiarBusqueda = () => {
+        setFilterOrden('');
+        setFilterCliente('');
+        setFilterDesde('');
+        setFilterHasta('');
+    };
 
     // Auto-seleccionar ticket desde los query params (e.g. ?ticketId=123)
     useEffect(() => {
@@ -179,13 +202,30 @@ export const HelpDeskAdminView = () => {
         }
     };
 
+    const ordenQ = normalizarBusqueda(filterOrden);
+    const clienteQ = filterCliente.trim();
+    const hayBusqueda = !!(ordenQ || clienteQ || filterDesde || filterHasta);
+
     const displayTickets = tickets.filter(t => {
         let matchDep = filterDep === 'ALL' || t.DepIdDepartamento === parseInt(filterDep);
         // "Todos" omite los estados terminales (Resuelto=4 y Cerrado=5); se ven con su filtro específico.
+        // Buscando por orden, cliente o fecha sí entran: lo que se busca tiene que aparecer aunque esté resuelto.
         let matchEst = filterEstado === 'ALL'
-            ? (Number(t.TicEstado) !== 4 && Number(t.TicEstado) !== 5)
+            ? (hayBusqueda || (Number(t.TicEstado) !== 4 && Number(t.TicEstado) !== 5))
             : String(t.TicEstado) === String(filterEstado);
-        return matchDep && matchEst;
+        // La orden se busca en la vinculada y en el asunto: muchos clientes la escriben ahí ("orden tpu-30335").
+        let matchOrden = !ordenQ
+            || normalizarBusqueda(t.OrdCodigoOrden).includes(ordenQ)
+            || normalizarBusqueda(t.TicAsunto).includes(ordenQ);
+        // Un número busca el ID de cliente exacto; un texto, por nombre.
+        let matchCliente = !clienteQ || (/^\d+$/.test(clienteQ)
+            ? String(t.CliIdCliente ?? '').trim() === clienteQ
+            : (t.ClienteNombre || '').toLowerCase().includes(clienteQ.toLowerCase()));
+        // Mismo día que muestra la tarjeta (hora local); las fechas 'AAAA-MM-DD' se comparan como texto.
+        const fecha = t.TicFechaAlta ? aInputLocal(new Date(t.TicFechaAlta)) : '';
+        let matchFecha = (!filterDesde || (fecha && fecha >= filterDesde))
+            && (!filterHasta || (fecha && fecha <= filterHasta));
+        return matchDep && matchEst && matchOrden && matchCliente && matchFecha;
     });
 
     const handleSelectTicket = (id) => {
@@ -234,11 +274,71 @@ export const HelpDeskAdminView = () => {
                             ]}
                         />
                     </div>
+
+                    <div className="space-y-2 text-sm">
+                        <div className="grid grid-cols-2 gap-2">
+                            <div className="relative">
+                                <Search size={15} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-400 pointer-events-none" />
+                                <input
+                                    type="text"
+                                    value={filterOrden}
+                                    onChange={(e) => setFilterOrden(e.target.value)}
+                                    placeholder="Orden (TPU-30335)"
+                                    className={`w-full rounded-lg border pl-8 pr-3 py-1.5 outline-none transition-colors placeholder-zinc-400 focus:border-brand-cyan ${filterOrden ? 'border-brand-cyan/40 bg-brand-cyan/5 text-brand-cyan font-semibold' : 'border-zinc-300 bg-white text-zinc-700 hover:border-brand-cyan/50'}`}
+                                />
+                            </div>
+                            <input
+                                type="text"
+                                value={filterCliente}
+                                onChange={(e) => setFilterCliente(e.target.value)}
+                                placeholder="ID o nombre de cliente"
+                                title="Un número busca el ID de cliente exacto; un texto, por nombre"
+                                className={`w-full rounded-lg border px-3 py-1.5 outline-none transition-colors placeholder-zinc-400 focus:border-brand-cyan ${filterCliente ? 'border-brand-cyan/40 bg-brand-cyan/5 text-brand-cyan font-semibold' : 'border-zinc-300 bg-white text-zinc-700 hover:border-brand-cyan/50'}`}
+                            />
+                        </div>
+                        <div className="flex items-center gap-2">
+                            <SelectorFecha
+                                filtro
+                                vaciable
+                                placeholder="Desde"
+                                title="Fecha de alta desde (sola, busca ese día)"
+                                value={filterDesde}
+                                onChange={handleDesde}
+                                max={filterHasta || undefined}
+                                className="flex-1 !rounded-lg !py-1.5"
+                            />
+                            <SelectorFecha
+                                filtro
+                                vaciable
+                                placeholder="Hasta"
+                                title="Fecha de alta hasta"
+                                value={filterHasta}
+                                onChange={(e) => setFilterHasta(e.target.value)}
+                                min={filterDesde || undefined}
+                                className="flex-1 !rounded-lg !py-1.5"
+                            />
+                            {hayBusqueda && (
+                                <button
+                                    type="button"
+                                    onClick={limpiarBusqueda}
+                                    title="Limpiar búsqueda"
+                                    className="p-2 rounded-lg text-zinc-400 hover:text-red-500 hover:bg-red-50 transition-colors shrink-0"
+                                >
+                                    <X size={16} />
+                                </button>
+                            )}
+                        </div>
+                        {hayBusqueda && !loading && (
+                            <p className="text-xs text-zinc-500 font-medium">
+                                {displayTickets.length} {displayTickets.length === 1 ? 'ticket encontrado' : 'tickets encontrados'}
+                            </p>
+                        )}
+                    </div>
                 </div>
 
                 <div className="flex-1 overflow-y-auto space-y-2 pr-2 custom-scrollbar">
                     {loading && <div className="text-center py-4 text-zinc-500"><Clock className="animate-spin mx-auto mb-2" /> Cargando...</div>}
-                    {!loading && displayTickets.length === 0 && <div className="text-center py-4 text-zinc-500">Bandeja limpia ✨</div>}
+                    {!loading && displayTickets.length === 0 && <div className="text-center py-4 text-zinc-500">{hayBusqueda ? 'Ningún ticket coincide con la búsqueda.' : 'Bandeja limpia ✨'}</div>}
 
                     {displayTickets.map(t => (
                         <div

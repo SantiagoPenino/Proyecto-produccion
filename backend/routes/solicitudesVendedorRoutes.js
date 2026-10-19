@@ -22,7 +22,10 @@ router.put('/disenadores/:idUsuario', ctrl.definirDisenador);
 
 // Bandeja común de Diseño y trabajo sobre cada parte
 router.get('/bandeja-diseno', ctrl.bandeja);
-router.get('/bandeja-diseno/hechos', ctrl.disenosHechos);   // [15/10] lo que Diseño ya terminó (?desde=AAAA-MM-DD&hasta=…; sin fechas, hoy)
+router.get('/bandeja-diseno/hechos', ctrl.disenosHechos);
+router.get('/bandeja-diseno/portal', ctrl.bandejaPortal);                 // [20/10] lo de la tienda del portal que todavía no es pedido
+router.get('/bandeja-diseno/buscar', ctrl.buscarDiseno);                  // [20/10] ?q= — busca en todo Diseño (todos los diseñadores)
+router.post('/bandeja-diseno/portal/:id/cancelar', ctrl.cancelarDelPortal); // [20/10] { Motivo } — el cliente lo ve en su portal   // [15/10] lo que Diseño ya terminó (?desde=AAAA-MM-DD&hasta=…; sin fechas, hoy)
 router.get('/disenos-en-produccion', ctrl.disenosEnProduccion);   // Bordado / TPU ya en planta que esperan su diseño (solo lectura)
 router.post('/partes/:parteId/enviar-diseno', ctrl.enviarADiseno);
 router.post('/partes/:parteId/tomar', ctrl.tomarParte);

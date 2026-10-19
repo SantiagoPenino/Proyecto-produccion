@@ -86,6 +86,10 @@ exports.tizadaProActualizar = accion('tizadaProActualizar', (pool, req) => svc.t
 exports.estimarPlazo      = accion('estimarPlazo',      (pool, req) => svc.estimarPlazo(pool, req.user, id(req.params.id)));
 exports.calendario        = accion('calendario',        (pool, req) => svc.calendario(pool, req.user, req.query || {}));
 exports.bandeja           = accion('bandeja',           (pool, req) => svc.bandeja(pool, req.user));
+// [20/10] pestaña "Del portal" + cancelar con motivo, y el buscador en todo Diseño
+exports.bandejaPortal     = accion('bandejaPortal',     (pool, req) => svc.portalDiseno(pool, req.user));
+exports.cancelarDelPortal = accion('cancelarDelPortal', (pool, req) => svc.cancelarDelPortal(pool, req.user, id(req.params.id), req.body || {}));
+exports.buscarDiseno      = accion('buscarDiseno',      (pool, req) => svc.buscarDiseno(pool, req.user, req.query?.q));
 exports.correccionAbrir   = accion('correccionAbrir',   (pool, req) => svc.correccionAbrir(pool, req.user, id(req.params.id), id(req.params.productoSolId), req.body || {}));   // [15/10] corregir el diseño de un pedido
 exports.correccionCancelar = accion('correccionCancelar', (pool, req) => svc.correccionCancelar(pool, req.user, id(req.params.id), id(req.params.productoSolId)));
 exports.correccionAplicar = accion('correccionAplicar', (pool, req) => svc.correccionAplicar(pool, req.user, id(req.params.id), id(req.params.productoSolId), req.app));   // "Pasar al pedido"
