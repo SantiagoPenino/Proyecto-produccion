@@ -15,6 +15,7 @@
     {"codigo":"USR-4010","nombre":"Verde Botella","hex":"#0B4A2F"},
     {"codigo":"USR-5001","nombre":"Celeste","hex":"#57C3E8"},
     {"codigo":"USR-5005","nombre":"Azul Francia","hex":"#1B6ACB"},
+    {"codigo":"USR-5008","nombre":"Azul Rey","hex":"#2A46B5"},
     {"codigo":"USR-5010","nombre":"Azul Marino","hex":"#12275B"},
     {"codigo":"USR-5015","nombre":"Turquesa","hex":"#00A99D"},
     {"codigo":"USR-6001","nombre":"Violeta","hex":"#6B3FA0"},

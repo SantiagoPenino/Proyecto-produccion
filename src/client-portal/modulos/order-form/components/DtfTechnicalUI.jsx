@@ -2,6 +2,36 @@ import React from 'react';
 import { Layers, Trash2, Lock } from 'lucide-react';
 import { FileUploadZone } from './FileUploadZone';
 import { CustomSelect } from '../../../pautas/CustomSelect';
+import { idArchivo } from '../utils/idArchivo';
+
+// [DTF] Un archivo = un arte = un estampado en cada prenda que lo lleva. Los artes tienen que cubrir
+// justo los estampados del pedido: prendas × estampados por prenda (10 prendas × 2 = frente en 10 y
+// espalda en 10, o dos frentes en 6 y 4 más la espalda en 10). Las copias de un arte (veces que se
+// imprime el archivo) no pueden superar las prendas que lo llevan. La usan el panel y el envío del pedido.
+export const revisarArtesDtf = ({ archivos = [], meta = {}, clave = idArchivo, prendas, porPrenda }) => {
+    const total = parseInt(prendas, 10) || 0;
+    const xPrenda = parseInt(porPrenda, 10) || 0;
+    const prendasDe = (f) => {
+        const v = meta[clave(f)]?.prendas;
+        return v === undefined || v === '' ? total : (parseInt(v, 10) || 0);
+    };
+    const errores = [];
+    archivos.forEach(f => {
+        const m = meta[clave(f)] || {};
+        const p = prendasDe(f);
+        const c = parseInt(m.copias ?? 1, 10) || 0;
+        if (!(m.anchoM > 0 && m.altoM > 0)) errores.push(`«${f.name}» no tiene medida: volvé a subirlo (PDF o PNG con DPI).`);
+        if (p < 1 || (total > 0 && p > total)) errores.push(`«${f.name}»: las prendas que lo llevan tienen que ser entre 1 y ${total}.`);
+        else if (c < 1 || c > p) errores.push(`«${f.name}»: las copias tienen que ser entre 1 y ${p} (las prendas que lo llevan).`);
+    });
+    const estampados = archivos.reduce((s, f) => s + prendasDe(f), 0);
+    const requeridos = total * xPrenda;
+    if (archivos.length && xPrenda < 1) errores.push('Indicá los estampados por prenda.');
+    else if (archivos.length && estampados !== requeridos) {
+        errores.push(`Los artes suman ${estampados} estampados y ${total} prendas × ${xPrenda} por prenda son ${requeridos}: ajustá «Estampados por prenda» o en cuántas prendas va cada arte.`);
+    }
+    return { estampados, requeridos, prendasDe, errores };
+};
 
 // [PRENDAS] DTF como servicio complementario — un solo toggle con dos archivos:
 // el arte a imprimir (uno o más) y el boceto que muestra dónde va en la prenda.
@@ -9,15 +39,15 @@ import { CustomSelect } from '../../../pautas/CustomSelect';
 export const DtfTechnicalUI = ({
     garmentQuantity, setGarmentQuantity,
     dtfArchivos, removeDtfArchivo,
-    // [DTF COMO PORTAL] copias y medida por archivo (las carga PrendaOrderForm al medir)
-    dtfMeta = {}, setDtfMeta, dtfKey = (f) => `${f.name}::${f.size}`,
+    // [DTF COMO PORTAL] copias, prendas y medida por archivo (las carga PrendaOrderForm al medir)
+    dtfMeta = {}, setDtfMeta, dtfKey = idArchivo,
     dtfBocetoFile, setDtfBocetoFile,
     dtfMaterial, dtfMaterials, setDtfMaterial,
     handleSpecializedFileUpload,
     handleMultipleSpecializedFileUpload,
     // [PRENDAS] Estampado fusionado: DTF ES una forma de estampar, así que "Estampados
-    // por Prenda" viaja acá, mismo estado que el panel Estampado. Variante ("DTF Textil")
-    // y Origen ("Stock User") son siempre los mismos — ya no se eligen, no hay campo.
+    // por Prenda" viaja acá — PROPIO de DTF, no el mismo que el de TPU. Variante ("DTF Textil")
+    // ya no se elige, y el origen de las prendas sale de lo que se eligió arriba.
     printsPerGarment, setPrintsPerGarment,
     compact = true,
     // [COMBOS] Técnica FIJADA por el Configurador — reemplaza el selector de material.
@@ -26,6 +56,25 @@ export const DtfTechnicalUI = ({
     // lockedSpec, en vez de un input que parece editable pero no hace nada al tocarlo.
     lockedQuantity = false,
 }) => {
+    const totalPrendas = parseInt(garmentQuantity, 10) || 0;
+    const revision = revisarArtesDtf({ archivos: dtfArchivos, meta: dtfMeta, clave: dtfKey, prendas: garmentQuantity, porPrenda: printsPerGarment });
+    // Prendas que llevan el arte: entre 1 y las del pedido. Si bajan por debajo de las copias, las copias bajan con ellas.
+    const cambiarPrendas = (f, valor) => {
+        let v = valor;
+        const n = parseInt(v, 10);
+        if (totalPrendas > 0 && n > totalPrendas) v = String(totalPrendas);
+        const patch = { prendas: v };
+        const copias = parseInt(dtfMeta[dtfKey(f)]?.copias ?? 1, 10);
+        if (parseInt(v, 10) >= 1 && copias > parseInt(v, 10)) patch.copias = v;
+        setDtfMeta(dtfKey(f), patch);
+    };
+    // Copias de ESE archivo: no más que las prendas que lo llevan
+    const cambiarCopias = (f, valor) => {
+        let v = valor;
+        const tope = revision.prendasDe(f);
+        if (tope > 0 && parseInt(v, 10) > tope) v = String(tope);
+        setDtfMeta(dtfKey(f), { copias: v });
+    };
     return (
         <div className={`animate-in slide-in-from-top duration-500 ${compact ? 'mb-0' : 'mb-8'}`}>
             <div className={`${compact ? 'bg-zinc-900/40 p-6' : 'bg-zinc-900/60 p-8'} rounded-[2rem] border border-zinc-700/50 relative`}>
@@ -105,7 +154,7 @@ export const DtfTechnicalUI = ({
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                             <div>
                                 <label className="block text-[10px] uppercase font-black text-zinc-500 mb-2 tracking-widest text-center">Archivo pronto para imprimir (uno o más)</label>
-                                <p className="text-[10px] text-zinc-500 text-center mb-2">Igual que en el portal: el archivo va tal cual a la impresora y decís cuántas <b>copias</b> de ese archivo se imprimen (ej: 100 prendas, un archivo con 50 escudos → 2 copias). Se mide al subirlo.</p>
+                                <p className="text-[10px] text-zinc-500 text-center mb-2">Igual que en el portal: el archivo va tal cual a la impresora y decís cuántas <b>copias</b> de ese archivo se imprimen (ej: 100 prendas, un archivo con 50 escudos → 2 copias). Se mide al subirlo. Cada archivo es un arte: indicá en cuántas <b>prendas</b> va; cada arte sale con su orden de Estampado.</p>
                                 <FileUploadZone
                                     id="dtf-archivo"
                                     label="SUBIR ARCHIVO"
@@ -118,16 +167,23 @@ export const DtfTechnicalUI = ({
                                     <div className="mt-3 flex flex-wrap gap-2 justify-center">
                                         {dtfArchivos.map((f, idx) => {
                                             const m = dtfMeta[dtfKey(f)] || {};
+                                            const prendasArte = m.prendas ?? (totalPrendas || '');
                                             return (
-                                            <div key={idx} className="flex items-center gap-2 bg-zinc-800/50 border border-emerald-500/30 px-4 py-2 rounded-xl">
+                                            <div key={dtfKey(f) || idx} className="flex items-center gap-2 bg-zinc-800/50 border border-emerald-500/30 px-4 py-2 rounded-xl">
                                                 <span className="text-[10px] font-bold text-zinc-300 max-w-[140px] truncate" title={f.name}>{f.name}</span>
-                                                {/* [DTF COMO PORTAL] medida del archivo y copias de ESE archivo */}
+                                                {/* [DTF COMO PORTAL] medida del archivo, prendas que lo llevan y copias de ESE archivo */}
                                                 <span className="text-[10px] text-zinc-500 whitespace-nowrap">{m.anchoM > 0 && m.altoM > 0 ? `${Number(m.anchoM).toFixed(2)} × ${Number(m.altoM).toFixed(2)} m` : 'sin medida'}</span>
                                                 {setDtfMeta && (
-                                                    <label className="flex items-center gap-1 text-[10px] text-zinc-400 whitespace-nowrap">copias
-                                                        <input type="number" min="1" value={m.copias ?? 1} onChange={(e) => setDtfMeta(dtfKey(f), { copias: e.target.value })}
-                                                            className="w-14 h-7 px-2 bg-zinc-900 border border-zinc-700 rounded-lg text-zinc-100 text-xs font-bold text-center" />
-                                                    </label>
+                                                    <>
+                                                        <label className="flex items-center gap-1 text-[10px] text-zinc-400 whitespace-nowrap" title="En cuántas prendas va este arte">prendas
+                                                            <input type="number" min="1" max={totalPrendas || undefined} value={prendasArte} onChange={(e) => cambiarPrendas(f, e.target.value)}
+                                                                className="w-14 h-7 px-2 bg-zinc-900 border border-zinc-700 rounded-lg text-zinc-100 text-xs font-bold text-center" />
+                                                        </label>
+                                                        <label className="flex items-center gap-1 text-[10px] text-zinc-400 whitespace-nowrap" title="Cuántas veces se imprime este archivo (no más que sus prendas)">copias
+                                                            <input type="number" min="1" max={revision.prendasDe(f) || undefined} value={m.copias ?? 1} onChange={(e) => cambiarCopias(f, e.target.value)}
+                                                                className="w-14 h-7 px-2 bg-zinc-900 border border-zinc-700 rounded-lg text-zinc-100 text-xs font-bold text-center" />
+                                                        </label>
+                                                    </>
                                                 )}
                                                 <button
                                                     type="button"
@@ -140,6 +196,14 @@ export const DtfTechnicalUI = ({
                                             );
                                         })}
                                     </div>
+                                )}
+                                {/* Estampados por prenda contra los artes subidos */}
+                                {setDtfMeta && dtfArchivos.length > 0 && parseInt(printsPerGarment, 10) >= 1 && (
+                                    revision.estampados === revision.requeridos ? (
+                                        <p className="mt-2 text-[10px] text-emerald-400 text-center">Los artes cubren los {revision.requeridos} estampados ({totalPrendas} prendas × {printsPerGarment} por prenda).</p>
+                                    ) : (
+                                        <p className="mt-2 text-[10px] text-amber-400 text-center">Los artes suman {revision.estampados} estampados y {totalPrendas} prendas × {printsPerGarment} por prenda son {revision.requeridos}: ajustá «Estampados por prenda» o en cuántas prendas va cada arte.</p>
+                                    )
                                 )}
                             </div>
                             <div>

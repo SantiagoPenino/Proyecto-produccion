@@ -30,22 +30,34 @@ const TIPO_REFERENCIA = 'MATRIZ AUTOMATICA';
 const TIPO_REFERENCIA_PES = 'MATRIZ AUTOMATICA PES';
 
 // ── Carta de hilos ───────────────────────────────────────────────────────────
-// La misma del portal (src/client-portal/modulos/order-form/utils/cartaHilosBordado.json): la paleta
-// guarda solo el código de cada hilo. Si el archivo no está (un servidor sin la carpeta del portal),
-// el borrador sale igual, con los códigos y el color del arte.
+// La paleta guarda solo el código de cada hilo; el nombre y el color salen del nomenclador
+// (dbo.CatalogoHilos, Configurar Productos › Hilos), con los inactivos incluidos: un pedido viejo
+// puede usar uno que ya no se ofrece. Sin la tabla (falta configurador_hilos.sql), del JSON del
+// portal; sin ninguno de los dos, el borrador sale igual, con los códigos y el color del arte.
+// Se vuelve a leer cada minuto, así lo que se edita en el configurador llega sin reiniciar.
 const RUTA_CARTA = path.join(__dirname, '..', '..', 'src', 'client-portal', 'modulos', 'order-form', 'utils', 'cartaHilosBordado.json');
+const CARTA_TTL_MS = 60 * 1000;
 let carta = null;
-const hiloDe = (codigo) => {
-    if (!carta) {
-        try {
-            carta = new Map(JSON.parse(fs.readFileSync(RUTA_CARTA, 'utf8')).map(h => [h.codigo, h]));
-        } catch (e) {
-            logger.warn('[Bordado-Matriz] no se pudo leer la carta de hilos: ' + e.message);
-            carta = new Map();
+let cartaHasta = 0;
+async function cargarCarta() {
+    if (carta && Date.now() < cartaHasta) return;
+    let filas = null;
+    try {
+        const pool = await getPool();
+        const t = await pool.request().query(`SELECT OBJECT_ID('dbo.CatalogoHilos', 'U') AS t`);
+        if (t.recordset[0].t != null) {
+            filas = (await pool.request().query(`SELECT Codigo AS codigo, Nombre AS nombre, Hex AS hex FROM dbo.CatalogoHilos`)).recordset;
         }
+    } catch (e) {
+        logger.warn('[Bordado-Matriz] no se pudo leer el nomenclador de hilos: ' + e.message);
     }
-    return carta.get(codigo) || null;
-};
+    if (!filas || !filas.length) {
+        try { filas = JSON.parse(fs.readFileSync(RUTA_CARTA, 'utf8')); } catch (e) { filas = []; }
+    }
+    carta = new Map(filas.map(h => [h.codigo, h]));
+    cartaHasta = Date.now() + CARTA_TTL_MS;
+}
+const hiloDe = (codigo) => (carta && carta.get(codigo)) || null;
 
 const NOMBRE_PUNTADA = { TATAMI: 'relleno', SATEN: 'satén', PESPUNTE: 'pespunte', ZIGZAG: 'zigzag', TAFETA: 'tafeta' };
 const TIMEOUT_MS = 3 * 60 * 1000;
@@ -54,6 +66,11 @@ const TIMEOUT_MS = 3 * 60 * 1000;
 const INKSTITCH_SVG_VERSION = 3;
 // Una parte más chica que esto no se puede rellenar (Ink/Stitch la descarta con aviso): se saltea.
 const AREA_MINIMA_MM2 = 0.5;
+// Ancho medio mínimo (mm) de una parte de relleno o satén. Más angosta es una tira del borde
+// difuminado del PNG (el antialias entre dos colores: en XLEGA, BOR-31892, una parada «Gris Perla»
+// del 0,2 % que salía como puntaditas sueltas y un cambio de hilo de más). El hilo más fino que
+// se borda en satén anda por 0,8-1 mm. El pespunte no se filtra: es una línea a propósito.
+const ANCHO_MINIMO_MM = 0.6;
 
 const binario = () => {
     const b = process.env.INKSTITCH_BIN;
@@ -71,6 +88,19 @@ const areaAnillo = (a) => {
     let s = 0;
     for (let i = 0, j = a.length - 1; i < a.length; j = i++) s += (a[j][0] + a[i][0]) * (a[j][1] - a[i][1]);
     return Math.abs(s / 2);
+};
+
+const perimetroAnillo = (a) => {
+    let p = 0;
+    for (let i = 0, j = a.length - 1; i < a.length; j = i++) p += Math.hypot(a[i][0] - a[j][0], a[i][1] - a[j][1]);
+    return p;
+};
+
+/** Ancho medio de una parte (mm): 2 × área / perímetro. Para una tira larga y angosta es su ancho. */
+const anchoMedio = (pt) => {
+    const area = areaAnillo(pt.exterior) - pt.huecos.reduce((s, h) => s + areaAnillo(h), 0);
+    const perimetro = perimetroAnillo(pt.exterior) + pt.huecos.reduce((s, h) => s + perimetroAnillo(h), 0);
+    return perimetro > 0 ? (2 * area) / perimetro : 0;
 };
 
 const adentro = ([x, y], anillo) => {
@@ -154,22 +184,28 @@ function armarSvg(paleta, anchoMm, altoMm) {
         // El color del HILO elegido (no el del arte): es lo que el PES le pasa a Wilcom.
         const hilo = hiloDe(p.hilo);
         const color = esc((hilo && hilo.hex) || p.colorOriginal || '#000000');
+        const puntada = p.relieve ? 'SATEN' : String(p.puntada || 'TATAMI').toUpperCase();
+        const esLinea = puntada === 'PESPUNTE' || puntada === 'TAFETA';
         const ps = partes(p.anillos)
             .map(pt => ({ exterior: aMm(pt.exterior), huecos: pt.huecos.map(aMm) }))
-            .filter(pt => areaAnillo(pt.exterior) >= AREA_MINIMA_MM2);
+            .filter(pt => areaAnillo(pt.exterior) >= AREA_MINIMA_MM2 && (esLinea || anchoMedio(pt) >= ANCHO_MINIMO_MM));
         if (!ps.length) return '';
         const id = `p${i + 1}`;
-        const puntada = p.relieve ? 'SATEN' : String(p.puntada || 'TATAMI').toUpperCase();
         paradas.push({ codigo: p.hilo || '', nombre: hilo ? hilo.nombre : '', hex: hilo ? hilo.hex : (p.colorOriginal || ''), puntada });
+        // Un objeto por parte separada, con CORTE de hilo al terminarla (salvo la última: ahí viene
+        // el cambio de hilo). Todo en un solo objeto, Ink/Stitch pasaba de una letra a la otra con una
+        // puntada larga que quedaba a la vista (en XLEGA, el hilo blanco cruzando el borde azul).
+        // Es lo que hace Wilcom: cortar entre partes que no se tocan.
+        const corte = (k, n) => (k < n - 1 ? ' inkstitch:trim_after="true"' : '');
         let elementos;
-        if (puntada === 'PESPUNTE' || puntada === 'TAFETA') {
+        if (esLinea) {
             if (puntada === 'TAFETA') avisos.add('La tafeta va solo con la línea de colocación: el borde que sujeta la tela lo agrega el diseñador.');
-            const d = dDe(ps.flatMap(pt => [pt.exterior, ...pt.huecos]));
-            elementos = `<path id="${id}" d="${d}" style="fill:none;stroke:${color};stroke-width:0.3" inkstitch:stroke_method="running_stitch" inkstitch:running_stitch_length_mm="2"/>`;
+            const anillos = ps.flatMap(pt => [pt.exterior, ...pt.huecos]);
+            elementos = anillos.map((a, k) => `<path id="${id}_${k + 1}" d="${dDe([a])}" style="fill:none;stroke:${color};stroke-width:0.3" inkstitch:stroke_method="running_stitch" inkstitch:running_stitch_length_mm="2"${corte(k, anillos.length)}/>`).join('\n    ');
         } else if (puntada === 'SATEN' || puntada === 'ZIGZAG') {
-            elementos = ps.map((pt, k) => `<path id="${id}_${k + 1}" d="${dDe([pt.exterior, ...pt.huecos])}" style="fill:${color};fill-rule:evenodd;stroke:none" inkstitch:fill_method="auto_fill" inkstitch:angle="${anguloAtravesado(pt.exterior)}" inkstitch:max_stitch_length_mm="7" inkstitch:row_spacing_mm="0.25"/>`).join('\n    ');
+            elementos = ps.map((pt, k) => `<path id="${id}_${k + 1}" d="${dDe([pt.exterior, ...pt.huecos])}" style="fill:${color};fill-rule:evenodd;stroke:none" inkstitch:fill_method="auto_fill" inkstitch:angle="${anguloAtravesado(pt.exterior)}" inkstitch:max_stitch_length_mm="7" inkstitch:row_spacing_mm="0.25"${corte(k, ps.length)}/>`).join('\n    ');
         } else {
-            elementos = `<path id="${id}" d="${dDe(ps.flatMap(pt => [pt.exterior, ...pt.huecos]))}" style="fill:${color};fill-rule:evenodd;stroke:none" inkstitch:fill_method="auto_fill" inkstitch:angle="${i % 2 ? 135 : 45}"/>`;
+            elementos = ps.map((pt, k) => `<path id="${id}_${k + 1}" d="${dDe([pt.exterior, ...pt.huecos])}" style="fill:${color};fill-rule:evenodd;stroke:none" inkstitch:fill_method="auto_fill" inkstitch:angle="${i % 2 ? 135 : 45}"${corte(k, ps.length)}/>`).join('\n    ');
         }
         return `  <g id="parada${i + 1}">\n    ${elementos}\n  </g>`;
     }).filter(Boolean);
@@ -194,17 +230,17 @@ const textoParadas = (paradas) => paradas.map((h, i) =>
 // Cómo se reconoce cada formato que devuelve Ink/Stitch (la cabecera del archivo).
 const FIRMAS = { dst: (b) => b.length >= 512 && b.slice(0, 3).toString('latin1') === 'LA:', pes: (b) => b.slice(0, 4).toString('latin1') === '#PES' };
 
-/** Corre Ink/Stitch sobre el SVG y devuelve el archivo de máquina (Buffer) en `formato` ('dst' | 'pes'). */
-async function generarArchivo(svg, formato) {
+/** Corre una extensión de Ink/Stitch sobre el SVG y devuelve lo que escribe (Buffer). */
+async function correrInkstitch(svg, args) {
     const bin = binario();
     if (!bin) throw new Error('Ink/Stitch no está configurado en el servidor (INKSTITCH_BIN)');
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bordado-matriz-'));
     const svgPath = path.join(dir, 'diseno.svg');
     fs.writeFileSync(svgPath, svg);
     try {
-        const archivo = await new Promise((resolve, reject) => {
-            execFile(bin, ['--extension=output', `--format=${formato}`, svgPath], {
-                cwd: dir, encoding: 'buffer', maxBuffer: 64 * 1024 * 1024, timeout: TIMEOUT_MS, windowsHide: true,
+        return await new Promise((resolve, reject) => {
+            execFile(bin, [...args, svgPath], {
+                cwd: dir, encoding: 'buffer', maxBuffer: 256 * 1024 * 1024, timeout: TIMEOUT_MS, windowsHide: true,
             }, (err, stdout, stderr) => {
                 const avisos = String(stderr || '').trim();
                 if (avisos) logger.warn('[Bordado-Matriz] Ink/Stitch: ' + avisos.slice(0, 500));
@@ -212,11 +248,46 @@ async function generarArchivo(svg, formato) {
                 resolve(stdout);
             });
         });
-        if (!archivo || !FIRMAS[formato](archivo)) throw new Error(`Ink/Stitch no devolvió un ${formato.toUpperCase()}`);
-        return archivo;
     } finally {
         try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) { }
     }
+}
+
+/** El archivo de máquina (Buffer) en `formato` ('dst' | 'pes'). */
+async function generarArchivo(svg, formato) {
+    const archivo = await correrInkstitch(svg, ['--extension=output', `--format=${formato}`]);
+    if (!archivo || !FIRMAS[formato](archivo)) throw new Error(`Ink/Stitch no devolvió un ${formato.toUpperCase()}`);
+    return archivo;
+}
+
+/**
+ * VISTA DE PUNTADAS: lo que se va a bordar, dibujado puntada por puntada con el brillo del hilo
+ * (Ink/Stitch «stitch plan preview», modo realistic-vector: filtros SVG, sin Inkscape). La pide el
+ * portal apenas analiza el logo, para mostrarla en «Viendo tu diseño» en lugar del prediseño: son
+ * las mismas puntadas del borrador que recibe el taller. Devuelve el SVG (texto); lo dibuja el
+ * navegador (librsvg, el de sharp, lo dibujaba con puntadas gruesas y el negro gris, y tardaba más).
+ * Se guardan las últimas en memoria: el portal la vuelve a pedir si el cliente cambia algo y vuelve.
+ */
+const cacheVistas = new Map();
+const CACHE_VISTAS_MAX = 20;
+async function vistaPuntadas(paleta, anchoMm, altoMm) {
+    await cargarCarta();
+    const { svg } = armarSvg(paleta, anchoMm, altoMm);
+    const clave = require('crypto').createHash('sha1').update(svg).digest('hex');
+    if (cacheVistas.has(clave)) return cacheVistas.get(clave);
+    const vista = await enCola(async () => {
+        const out = await correrInkstitch(svg, [
+            '--extension=stitch_plan_preview', '--render-mode=realistic-vector', '--layer-visibility=hidden',
+            '--move-to-side=False', '--render-jumps=False', '--needle-points=False', '--visual-commands=False',
+        ]);
+        const texto = out.toString('utf8');
+        if (!/__inkstitch_stitch_plan__/.test(texto)) throw new Error('Ink/Stitch no devolvió la vista de puntadas');
+        // Fuera el diseño de entrada (las capas paradaN, ocultas): no se ve y solo pesa.
+        return texto.replace(/<g[^>]*\bid="parada\d+"[^>]*>[\s\S]*?<\/g>/g, '');
+    });
+    cacheVistas.set(clave, vista);
+    if (cacheVistas.size > CACHE_VISTAS_MAX) cacheVistas.delete(cacheVistas.keys().next().value);
+    return vista;
 }
 const generarDst = (svg) => generarArchivo(svg, 'dst');
 
@@ -275,6 +346,7 @@ async function generarParaOrden(ordenId, usuario = 'Sistema') {
 
     const anchoMm = (parseFloat(ficha.Ancho) || 0) * 10;
     const altoMm = (parseFloat(ficha.Alto) || 0) * 10;
+    await cargarCarta();
     const { svg, avisos, paradas } = armarSvg(paleta, anchoMm, altoMm);
     const t0 = Date.now();
     const dst = await generarDst(svg);
@@ -378,7 +450,9 @@ module.exports = {
     leerCabeceraDst,
     generarDst,
     generarArchivo,
+    vistaPuntadas,
     textoParadas,
+    cargarCarta,
     generarParaOrden,
     generarEnCola,
     encolarGeneracion,

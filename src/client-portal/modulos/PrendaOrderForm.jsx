@@ -61,8 +61,9 @@ import CosturaTechnicalUI from './order-form/components/CosturaTechnicalUI';
 import BordadoTechnicalUI from './order-form/components/BordadoTechnicalUI';
 import { puntadasDePaleta, estimarMinutos } from './order-form/utils/bordadoHilos';
 import { EstampadoTechnicalUI } from './order-form/components/EstampadoTechnicalUI';
-import DtfTechnicalUI from './order-form/components/DtfTechnicalUI';
-import TpuTechnicalUI from './order-form/components/TpuTechnicalUI';
+import DtfTechnicalUI, { revisarArtesDtf } from './order-form/components/DtfTechnicalUI';
+import { idArchivo } from './order-form/utils/idArchivo';
+import TpuTechnicalUI, { medidaMaximaTPU } from './order-form/components/TpuTechnicalUI';
 import EcouvTerminacionesUI from './EcouvTerminacionesUI';
 import PrendaClienteSelector from './order-form/components/PrendaClienteSelector';
 
@@ -126,6 +127,31 @@ const VARIANTE_PRO = {
 // Estampado NO está en la lista a propósito: no se elige suelto, lo arrastra DTF o TPU
 // (es la prensa que pega el transfer que esos imprimen).
 const SERVICIOS_POR_ITEM = ['EMB', 'DF', 'TPU'];
+
+// [BORDADO] Diseños completos (mismo criterio y mensajes que el form de bordado del portal): cada uno con
+// su logo, sus medidas y sus prendas, sin pasar las disponibles. Lo usan el Bordado de cada artículo
+// (donde = 'Bordado de "Short"', de = 'el componente') y el del panel general ('Bordado', 'el pedido').
+// Devuelve el primer problema, o null.
+const problemaDisenosBordado = (disenos, prendasTope, donde, de) => {
+    if (!disenos.length) return `${donde}: agregá al menos un diseño a bordar antes de confirmar.`;
+    for (let i = 0; i < disenos.length; i++) {
+        const d = disenos[i];
+        const que = `${donde}, diseño ${i + 1}`;
+        if (!d.file) return `${que}: falta subir el logo a bordar.`;
+        if (!(parseFloat(d.ancho) > 0) || !(parseFloat(d.alto) > 0)) return `${que}: cargá el ancho y el largo del bordado en cm.`;
+        const prendasD = parseInt(d.cantidad) || 0;
+        if (prendasD < 1) return `${que}: indicá cuántas prendas llevan este logo.`;
+        if (prendasTope > 0 && prendasD > prendasTope) return `${que}: ${de} tiene ${prendasTope} prendas y el diseño pide ${prendasD}.`;
+    }
+    return null;
+};
+
+// [TPU] Varios diseños = una orden TPU por diseño: cada uno con entre 1 y las prendas disponibles.
+const problemaPrendasTpu = (archivos, prendasDe, prendasTope, donde) => {
+    if (archivos.length < 2) return null;
+    const f = archivos.find(a => { const p = parseInt(prendasDe(a), 10) || 0; return p < 1 || (prendasTope > 0 && p > prendasTope); });
+    return f ? `${donde}: «${f.name}» tiene que ir en entre 1 y ${prendasTope} prendas.` : null;
+};
 
 // [PRENDAS] Mismo contenido (Talles/Bocetos/Servicios/Confirmar), dos envoltorios:
 // en "Fabricar a medida" va siempre visible; en "Comprar" queda adentro de un
@@ -310,10 +336,17 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
     const [precioAuto, setPrecioAuto] = useState(true);   // el precio establecido se cargó solo (cantidad × catálogo) y se recalcula
     // [ACCESORIOS] artículos de stock del producto del catálogo (mástil, base…): cuáles van y con qué variante
     const [accesoriosSel, setAccesoriosSel] = useState([]);
-    // [DTF COMO PORTAL] por archivo de DTF: copias (cuántas veces se imprime ESE archivo) y medida en m.
-    // Como en /portal/order/dtf: el lote puede ser de 100 prendas y el archivo traer 50 escudos → 2 copias.
+    // [DTF COMO PORTAL] por archivo de DTF: copias (cuántas veces se imprime ESE archivo), prendas que llevan
+    // ese arte y medida en m. Como en /portal/order/dtf: el lote puede ser de 100 prendas y el archivo traer
+    // 50 escudos → 2 copias. Clave por archivo (no por nombre): el mismo archivo subido dos veces son dos artes.
+    // Sirve para el panel general y para el DTF de cada artículo (las claves no se repiten).
     const [dtfMeta, setDtfMeta] = useState({});
-    const dtfKey = (f) => `${f.name}::${f.size}`;
+    const dtfKey = idArchivo;
+    const patchDtfMeta = (k, patch) => setDtfMeta(prev => ({ ...prev, [k]: { ...(prev[k] || {}), ...patch } }));
+    // [DTF] Estampados por prenda PROPIOS de DTF: el de TPU (estampadoPrints) es otro y no se pisan.
+    const [dtfPorPrenda, setDtfPorPrenda] = useState(1);
+    // [PRENDAS] De dónde salen las prendas para Estampado/TPU: lo dice lo elegido arriba, no se vuelve a preguntar.
+    const origenPrendas = queDesea === 'PRENDA_CLIENTE' ? 'Prendas del Cliente' : 'Stock User';
     // [F1] Árbol para elegir el producto del catálogo: Familia (StockArt) › Etiqueta (para qué es) › producto — mismo que la solicitud
     const [familiaSel, setFamiliaSel] = useState('');
     const [etiquetaSel, setEtiquetaSel] = useState('');   // '' = todas · '__sin__' = sin etiqueta
@@ -339,7 +372,7 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
         selectedBobinaId, selectedBobinaAncho, selectedBobinaMetros, bobinasDisponibles,
         pedidoExcelFile, enableCorte, enableCostura, garmentQuantity,
         ponchadoFiles, bocetoFile, bordadoBocetoFile, costuraNote,
-        bordadoMaterial, bordadoVariant,
+        bordadoMaterial, bordadoVariant, disenosBordado,
         // [PRENDAS] DTF complementario
         dtfArchivos, dtfBocetoFile, dtfMaterial, dtfVariant, dtfMaterials,
         // [PRENDAS] TPU complementario
@@ -356,16 +389,16 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
 
     // [UNA ORDEN POR ARCHIVO] TPU y Bordado con más de un archivo (diseño / logo) salen como UNA ORDEN POR
     // ARCHIVO: cada TPU con su matriz y su Estampado, cada Bordado con su ponchado. Cada orden lleva sus
-    // prendas: por defecto todas las del pedido, editable por archivo.
+    // prendas: por defecto todas las del pedido (o las del artículo: `todas`), editable por archivo.
     const [prendasPorArchivo, setPrendasPorArchivo] = useState({});
-    const claveArchivo = (f) => `${f?.name || ''}|${f?.size || 0}`;
-    const prendasDeArchivo = (f) => {
+    const claveArchivo = idArchivo; // por archivo, no por nombre: el mismo logo subido dos veces lleva sus propias prendas
+    const prendasDeArchivo = (f, todas = garmentQuantity) => {
         const v = prendasPorArchivo[claveArchivo(f)];
         if (v !== undefined && v !== '') return v;
-        return parseInt(garmentQuantity, 10) || '';
+        return parseInt(todas, 10) || '';
     };
     const setPrendasArchivo = (f, v) => setPrendasPorArchivo(p => ({ ...p, [claveArchivo(f)]: v }));
-    const prendasNumArchivo = (f) => parseInt(prendasDeArchivo(f), 10) || parseInt(garmentQuantity, 10) || 0;
+    const prendasNumArchivo = (f, todas = garmentQuantity) => parseInt(prendasDeArchivo(f, todas), 10) || parseInt(todas, 10) || 0;
     // [F1] Con producto del catálogo, los materiales de la producción principal son los del producto
     // (sus telas o los del área que lo produce), no los de Sublimación de la URL.
     const dynamicMaterials = (principalProd?.materiales?.length ? principalProd.materiales : dynamicMaterialsHook);
@@ -1051,7 +1084,8 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
     // [DTF COMO PORTAL] Los archivos de DTF se MIDEN al subirlos (misma medición que el portal y que la
     // principal: fileService.uploadFile lee DPI/MediaBox). Sin medida no entran: el área cotiza y
     // planifica por metros (alto × copias). Las copias arrancan en 1 y se editan por archivo.
-    const handleDtfFilesUpload = async (filesInput) => {
+    // addArchivos: a dónde van los medidos (el panel general, o el DTF de un artículo / componente).
+    const handleDtfFilesUpload = async (filesInput, addArchivos = actions.addDtfArchivos) => {
         if (!filesInput) return;
         const files = filesInput instanceof FileList ? Array.from(filesInput) : (Array.isArray(filesInput) ? filesInput : [filesInput]);
         const valid = files.filter(f => (f instanceof Blob || f instanceof File));
@@ -1071,7 +1105,7 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                 addToast(`"${file.name}": no se pudo medir: ${e.message}`, 'error');
             }
         }
-        if (ok.length) { actions.addDtfArchivos(ok); addToast(`${ok.length} archivo(s) de DTF medido(s)`); }
+        if (ok.length) { addArchivos(ok); addToast(`${ok.length} archivo(s) de DTF medido(s)`); }
     };
 
     const handleMultipleSpecializedFileUpload = (addFilesAction, filesInput) => {
@@ -1608,20 +1642,22 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
             const mt = String(tpuMaterial || '').match(/(\d+(?:[.,]\d+)?)\s*[x×]\s*(\d+(?:[.,]\d+)?)/i);
             if (mt && !(tpuAlto && tpuAncho)) return addToast(`Indicá alto y ancho del TPU (máximo ${mt[1]} x ${mt[2]} cm).`, 'error');
         }
-        // [DTF COMO PORTAL] cada archivo de DTF tiene que estar medido y con copias ≥ 1
+        // [DTF COMO PORTAL] cada archivo de DTF medido, con sus prendas y copias (copias ≤ prendas), y los artes
+        // sumando justo prendas × estampados por prenda (ver revisarArtesDtf)
         if (selectedComplementary['DF']?.active && dtfArchivos.length > 0) {
-            const sinMedida = dtfArchivos.filter(f => !(dtfMeta[dtfKey(f)]?.anchoM > 0 && dtfMeta[dtfKey(f)]?.altoM > 0));
-            if (sinMedida.length) return addToast(`DTF: ${sinMedida.map(f => f.name).join(', ')} sin medida. Volvé a subirlo (PDF o PNG con DPI).`, 'error');
-            const sinCopias = dtfArchivos.filter(f => !(parseInt(dtfMeta[dtfKey(f)]?.copias) >= 1));
-            if (sinCopias.length) return addToast(`DTF: indicá las copias de ${sinCopias.map(f => f.name).join(', ')}.`, 'error');
+            const { errores } = revisarArtesDtf({ archivos: dtfArchivos, meta: dtfMeta, clave: dtfKey, prendas: garmentQuantity, porPrenda: dtfPorPrenda });
+            if (errores.length) return addToast(`DTF: ${errores[0]}`, 'error');
         }
-        // [PRENDAS] Bordado no tenía este chequeo (a diferencia de DTF/TPU) — se podía
-        // confirmar el pedido con EMB activo sin logo ni boceto.
-        if (selectedComplementary['EMB']?.active && !bordadoBocetoFile && ponchadoFiles.length === 0) {
-            return addToast('Subí el logo o el boceto de Bordado antes de confirmar.', 'error');
+        // [BORDADO] Diseños, igual que el Bordado de cada artículo: logo, medidas y prendas de cada uno
+        if (selectedComplementary['EMB']?.active) {
+            const problema = problemaDisenosBordado(disenosBordado || [], parseInt(garmentQuantity, 10) || 0, 'Bordado', 'el pedido');
+            if (problema) return addToast(problema, 'error');
         }
-        if ((selectedComplementary['DF']?.active || selectedComplementary['TPU']?.active) && (!estampadoPrints || !estampadoOrigin)) {
-            return addToast('Completá "Estampados por Prenda" y "Origen de las Prendas" antes de confirmar.', 'error');
+        // El origen de las prendas ya no se pide: sale de lo elegido arriba (origenPrendas)
+        if (selectedComplementary['TPU']?.active) {
+            const problema = problemaPrendasTpu(tpuArchivos, (f) => prendasDeArchivo(f), parseInt(garmentQuantity, 10) || 0, 'TPU');
+            if (problema) return addToast(problema, 'error');
+            if (!(parseInt(estampadoPrints, 10) >= 1)) return addToast('Completá "Estampados por Prenda" de TPU antes de confirmar.', 'error');
         }
 
         // [COMBOS] Sin wmsVarianteId no se puede generar la venta de retiro de este componente
@@ -1646,35 +1682,34 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
         for (const [comboItemId, comp] of Object.entries(comboServicios)) {
             for (const [areaId, srv] of Object.entries(comp.servicios || {})) {
                 if (!srv.active || areaId === 'EST') continue; // EST hereda el arte de su DF/TPU
-                // [BORDADO] Diseños (mismo criterio y mensajes que el form de bordado del portal):
-                // cada uno con su logo, sus medidas y sus prendas, sin pasar las del componente.
+                // [BORDADO] Diseños: cada uno con su logo, sus medidas y sus prendas, sin pasar las del componente.
+                const prendasComp = (comp.esItemCarrito || comp.esPrendaCliente)
+                    ? (parseFloat(comp.cantidad) || 1)
+                    : (parseFloat(garmentQuantity) || 0) * (comp.cantidad || 1);
                 if (areaId === 'EMB') {
-                    const disenos = srv.disenos || [];
-                    const prendasComp = (comp.esItemCarrito || comp.esPrendaCliente)
-                        ? (parseFloat(comp.cantidad) || 1)
-                        : (parseFloat(garmentQuantity) || 0) * (comp.cantidad || 1);
-                    if (disenos.length === 0) {
-                        return addToast(`Bordado de "${comp.descripcion}": agregá al menos un diseño a bordar antes de confirmar.`, 'error');
-                    }
-                    for (let i = 0; i < disenos.length; i++) {
-                        const d = disenos[i];
-                        const que = `Bordado de "${comp.descripcion}", diseño ${i + 1}`;
-                        if (!d.file) return addToast(`${que}: falta subir el logo a bordar.`, 'error');
-                        if (!(parseFloat(d.ancho) > 0) || !(parseFloat(d.alto) > 0)) {
-                            return addToast(`${que}: cargá el ancho y el largo del bordado en cm.`, 'error');
-                        }
-                        const prendasD = parseInt(d.cantidad) || 0;
-                        if (prendasD < 1) return addToast(`${que}: indicá cuántas prendas llevan este logo.`, 'error');
-                        if (prendasComp > 0 && prendasD > prendasComp) {
-                            return addToast(`${que}: el componente tiene ${prendasComp} prendas y el diseño pide ${prendasD}.`, 'error');
-                        }
-                    }
+                    const problema = problemaDisenosBordado(srv.disenos || [], prendasComp, `Bordado de "${comp.descripcion}"`, 'el componente');
+                    if (problema) return addToast(problema, 'error');
                     continue;
                 }
                 const tieneArchivo = (srv.archivos || []).length > 0 || !!srv.boceto;
                 if (!tieneArchivo) {
                     const nombreServicio = { EMB: 'Bordado', DF: 'DTF', TPU: 'TPU' }[areaId] || areaId;
                     return addToast(`Subí el arte de ${nombreServicio} para "${comp.descripcion}" antes de confirmar.`, 'error');
+                }
+                // [DTF] Mismo control que el panel general, con las prendas de ESTE artículo y SUS estampados por prenda
+                if (areaId === 'DF' && (srv.archivos || []).length > 0) {
+                    const { errores } = revisarArtesDtf({ archivos: srv.archivos, meta: dtfMeta, clave: dtfKey, prendas: prendasComp, porPrenda: srv.porPrenda ?? 1 });
+                    if (errores.length) return addToast(`DTF de "${comp.descripcion}": ${errores[0]}`, 'error');
+                }
+                // [TPU] Mismos controles que el panel general: boceto del diseño, medida del parche si el tipo
+                // tiene tope, prendas de cada diseño y estampados por prenda
+                if (areaId === 'TPU') {
+                    if (!(srv.archivos || []).length) return addToast(`Subí el boceto del diseño de TPU para "${comp.descripcion}" antes de confirmar.`, 'error');
+                    const max = srv.tecnicaOpcionId ? null : medidaMaximaTPU(srv.material);
+                    if (max && !(srv.alto && srv.ancho)) return addToast(`TPU de "${comp.descripcion}": indicá alto y ancho (máximo ${max.alto} x ${max.ancho} cm).`, 'error');
+                    const problema = problemaPrendasTpu(srv.archivos, (f) => prendasDeArchivo(f, prendasComp), prendasComp, `TPU de "${comp.descripcion}"`);
+                    if (problema) return addToast(problema, 'error');
+                    if (!(parseInt(srv.porPrenda ?? 1, 10) >= 1)) return addToast(`TPU de "${comp.descripcion}": completá "Estampados por Prenda".`, 'error');
                 }
             }
         }
@@ -1712,6 +1747,8 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
             if (Array.isArray(tizadaFiles)) tizadaFiles.forEach(addToMap);
             if (pedidoExcelFile) addToMap(pedidoExcelFile);
             if (Array.isArray(ponchadoFiles)) ponchadoFiles.forEach(addToMap);
+            // [BORDADO] Logo, boceto y prediseño de cada diseño del panel general
+            if (selectedComplementary['EMB']?.active) (disenosBordado || []).forEach(d => [d.file, d.boceto, d.arteDisenado].forEach(f => { if (f) addToMap(f); }));
             if (dtfBocetoFile) addToMap(dtfBocetoFile);
             if (Array.isArray(dtfArchivos)) dtfArchivos.forEach(addToMap);
             if (tpuBocetoFile) addToMap(tpuBocetoFile);
@@ -1747,6 +1784,51 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                 const found = (searchList || []).find(m => m.Material === matName);
                 if (found) return { name: found.Material, codArt: found.CodArticulo, codStock: found.CodStock, variante: found.Variante || null };
                 return { name: matName };
+            };
+
+            // [BORDADO] UNA ORDEN POR DISEÑO, como el form de bordado del portal (webOrdersController): cada
+            // logo con sus prendas, sus medidas, su boceto y su prediseño. La nota lleva los mismos datos
+            // técnicos que manda el portal, y `disenoBordado` va para que el backend guarde la ficha del
+            // diseño (de ahí sale la matriz automática). La usan el Bordado de cada artículo y el del panel general.
+            const ordenDisenoBordado = (d, i, total, { cabecera, destino = {}, etiqueta = '', metadata = {}, chainKey }) => {
+                const prendasD = parseInt(d.cantidad) || 0;
+                const punt = puntadasDePaleta(d.paleta, d.ancho, d.alto);
+                const hilos = (d.paleta || []).length;
+                const datos = [`Diseño ${i + 1} de ${total}`, `Tamaño: ${d.ancho} x ${d.alto} cm`, `Prendas: ${prendasD}`];
+                if (punt) datos.push(`Puntadas estimadas: ${Number(punt).toLocaleString('es-UY')} c/u`);
+                if (hilos) datos.push(`Hilos: ${hilos}`);
+                const minutos = punt ? Math.round(estimarMinutos(punt, hilos) * (prendasD || 1)) : 0;
+                if (minutos) datos.push(`Tiempo de máquina estimado: ${minutos < 60 ? `${minutos} min` : `${Math.floor(minutos / 60)} h ${minutos % 60} min`}`);
+
+                const archivosD = [{ name: d.file.name, fileKey: keyOf(d.file), tipo: 'LOGO_BORDADO' }];
+                if (d.boceto) archivosD.push({ name: d.boceto.name, fileKey: keyOf(d.boceto), tipo: 'BOCETO_BORDADO' });
+                if (d.arteDisenado) archivosD.push({ name: d.arteDisenado.name, fileKey: keyOf(d.arteDisenado), tipo: 'PREDISENO_BORDADO' });
+
+                return {
+                    esPrincipal: false,
+                    areaId: 'EMB',
+                    ...destino,
+                    cabecera,
+                    archivos: archivosD,
+                    items: [],
+                    notas: [etiqueta, `[BORDADO] ${datos.join(', ')}`].filter(Boolean).join(' '),
+                    metadata: {
+                        ...metadata,
+                        prendas: prendasD,
+                        disenoBordado: {
+                            logo: d.file.name,
+                            anchoCm: parseFloat(d.ancho) || null,
+                            altoCm: parseFloat(d.alto) || null,
+                            cantidad: prendasD,
+                            paleta: d.paleta || [],
+                            puntadasEstimadas: punt || null,
+                            hilos,
+                        },
+                    },
+                    chainedAfterAreaId: null,
+                    chainKey,
+                    porArchivo: true,
+                };
             };
 
             // Enriched Complementary Services Metadata
@@ -1835,8 +1917,11 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                                 ? { prendas: estampadoQuantity, estampadosPorPrenda: estampadoPrints, origen: estampadoOrigin }
                                 // [TPU COMO PORTAL] misma info que un TPU del portal: prendas, bajadas, origen y medida del parche
                                 : id === 'TPU'
-                                    ? { prendas: garmentQuantity, estampadosPorPrenda: estampadoPrints, origen: estampadoOrigin, tipoTpu: tpuMaterial || null, medidaTpu: (tpuAlto && tpuAncho) ? `${tpuAlto} x ${tpuAncho} cm` : null }
-                                    : (['EMB', 'BORDADO', 'DF'].includes(id) ? { prendas: garmentQuantity } : {})
+                                    ? { prendas: garmentQuantity, estampadosPorPrenda: estampadoPrints, origen: origenPrendas, tipoTpu: tpuMaterial || null, medidaTpu: (tpuAlto && tpuAncho) ? `${tpuAlto} x ${tpuAncho} cm` : null }
+                                    // [DTF] sus propios estampados por prenda (no los de TPU)
+                                    : id === 'DF'
+                                        ? { prendas: garmentQuantity, estampadosPorPrenda: dtfPorPrenda, origen: origenPrendas }
+                                        : (['EMB', 'BORDADO'].includes(id) ? { prendas: garmentQuantity } : {})
                         };
                     }
                 });
@@ -2208,7 +2293,8 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                             if (areaId === 'EMB') {
                                 if (srv.boceto) archivosSrv.push({ name: srv.boceto.name, tipo: 'BOCETO_BORDADO' });
                                 (srv.archivos || []).forEach(f => archivosSrv.push({ name: f.name, tipo: 'LOGO_BORDADO' }));
-                            } else if (areaId === 'DF' || areaId === 'TPU') {
+                            } else if (areaId === 'DF') {
+                                // (El TPU arma sus archivos aparte: el boceto del diseño va como referencia)
                                 (srv.archivos || []).forEach(f => archivosSrv.push({ name: f.name, fileKey: keyOf(f), tipo: 'PRODUCCION' }));
                                 if (srv.boceto) archivosSrv.push({ name: srv.boceto.name, tipo: 'REFERENCIA' });
                             } else if (areaId === 'EST') {
@@ -2239,8 +2325,14 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                                 cabecera = { variante: 'Estampado', material: { name: 'Estampado (Servicio)', codArt: '110', codStock: '1.1.5.1' } };
                             }
 
-                            const itemsProduccion = (areaId === 'DF' || areaId === 'TPU')
-                                ? (srv.archivos || []).map(f => ({ fileName: f.name, fileKey: keyOf(f), cantidad: cantidadComponente || 1 }))
+                            // [DTF COMO PORTAL] DTF del artículo igual que el panel general: cada archivo con SUS
+                            // copias y su medida (los metros = alto × copias), no una copia por prenda.
+                            // (El TPU no lleva ítems: su boceto va como referencia, ver más abajo.)
+                            const itemsProduccion = areaId === 'DF'
+                                ? (srv.archivos || []).map(f => {
+                                    const m = dtfMeta[dtfKey(f)] || {};
+                                    return { fileName: f.name, fileKey: keyOf(f), cantidad: parseInt(m.copias) || 1, width: m.anchoM, height: m.altoM };
+                                })
                                 : [];
 
                             const destinoOrden = comp.esPrendaCliente
@@ -2248,51 +2340,92 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                                 : { comboItemId };
                             const etiquetaComp = `[${comp.esPrendaCliente ? 'PRENDA CLIENTE' : (comp.esItemCarrito ? 'VENTA' : 'COMBO')}: ${comp.descripcion}]`;
 
-                            // [BORDADO] UNA ORDEN POR DISEÑO, como el form de bordado del portal
-                            // (webOrdersController): cada logo con sus prendas, sus medidas, su boceto y
-                            // su prediseño. La nota lleva los mismos datos técnicos que manda el portal, y
-                            // `disenoBordado` va para que el backend guarde la ficha del diseño.
+                            // [BORDADO] Una orden por diseño (ver ordenDisenoBordado)
                             const disenos = areaId === 'EMB' ? (srv.disenos || []) : [];
                             if (disenos.length) {
-                                disenos.forEach((d, i) => {
-                                    const prendasD = parseInt(d.cantidad) || 0;
-                                    const punt = puntadasDePaleta(d.paleta, d.ancho, d.alto);
-                                    const hilos = (d.paleta || []).length;
-                                    const datos = [`Diseño ${i + 1} de ${disenos.length}`, `Tamaño: ${d.ancho} x ${d.alto} cm`, `Prendas: ${prendasD}`];
-                                    if (punt) datos.push(`Puntadas estimadas: ${Number(punt).toLocaleString('es-UY')} c/u`);
-                                    if (hilos) datos.push(`Hilos: ${hilos}`);
-                                    const minutos = punt ? Math.round(estimarMinutos(punt, hilos) * (prendasD || 1)) : 0;
-                                    if (minutos) datos.push(`Tiempo de máquina estimado: ${minutos < 60 ? `${minutos} min` : `${Math.floor(minutos / 60)} h ${minutos % 60} min`}`);
+                                disenos.forEach((d, i) => listaServicios.push(ordenDisenoBordado(d, i, disenos.length, {
+                                    cabecera, destino: destinoOrden, etiqueta: etiquetaComp, chainKey: `EMB#${comboItemId}#${i + 1}`,
+                                })));
+                                return;
+                            }
 
-                                    const archivosD = [{ name: d.file.name, fileKey: keyOf(d.file), tipo: 'LOGO_BORDADO' }];
-                                    if (d.boceto) archivosD.push({ name: d.boceto.name, fileKey: keyOf(d.boceto), tipo: 'BOCETO_BORDADO' });
-                                    if (d.arteDisenado) archivosD.push({ name: d.arteDisenado.name, fileKey: keyOf(d.arteDisenado), tipo: 'PREDISENO_BORDADO' });
-
-                                    listaServicios.push({
-                                        esPrincipal: false,
-                                        areaId,
-                                        ...destinoOrden,
-                                        cabecera,
-                                        archivos: archivosD,
-                                        items: [],
-                                        notas: `${etiquetaComp} [BORDADO] ${datos.join(', ')}`,
-                                        metadata: {
-                                            prendas: prendasD,
-                                            disenoBordado: {
-                                                logo: d.file.name,
-                                                anchoCm: parseFloat(d.ancho) || null,
-                                                altoCm: parseFloat(d.alto) || null,
-                                                cantidad: prendasD,
-                                                paleta: d.paleta || [],
-                                                puntadasEstimadas: punt || null,
-                                                hilos,
-                                            },
-                                        },
-                                        chainedAfterAreaId: null,
-                                        chainKey: `EMB#${comboItemId}#${i + 1}`,
-                                        porArchivo: true,
-                                    });
+                            // [TPU COMO PORTAL] El TPU del artículo como el del panel general: lo que se sube es el
+                            // BOCETO del diseño (referencia, nunca archivo de impresión: si no contaría como capa y la
+                            // orden pasaría a "Diseñado" antes de tiempo), la cantidad sale de prendas × estampados por
+                            // prenda, y con varios diseños sale una orden TPU por diseño (su matriz), cada una con sus
+                            // prendas y su Estampado (chainKey).
+                            if (areaId === 'TPU') {
+                                const disenosTpu = srv.archivos || [];
+                                const metaTpu = {
+                                    prendas: cantidadComponente,
+                                    estampadosPorPrenda: srv.porPrenda ?? 1,
+                                    origen: origenPrendas,
+                                    tipoTpu: srv.tecnicaOpcionNombre || srv.material || null,
+                                    medidaTpu: (srv.alto && srv.ancho) ? `${srv.alto} x ${srv.ancho} cm` : null,
+                                };
+                                const ubicacion = srv.boceto ? [{ name: srv.boceto.name, fileKey: keyOf(srv.boceto), tipo: 'REFERENCIA' }] : [];
+                                const ordenTpu = (archivosDisenos, extra) => ({
+                                    esPrincipal: false,
+                                    areaId,
+                                    ...destinoOrden,
+                                    cabecera,
+                                    archivos: [...archivosDisenos.map(f => ({ name: f.name, fileKey: keyOf(f), tipo: 'ARCHIVO DE BOCETO' })), ...ubicacion],
+                                    items: [],
+                                    chainedAfterAreaId: null,
+                                    ...extra,
                                 });
+                                if (disenosTpu.length > 1) {
+                                    disenosTpu.forEach((f, i) => listaServicios.push(ordenTpu([f], {
+                                        notas: `${etiquetaComp} [DISEÑO ${i + 1}/${disenosTpu.length}: ${f.name}]`,
+                                        metadata: { ...metaTpu, prendas: prendasNumArchivo(f, cantidadComponente) },
+                                        chainKey: `TPU#${comboItemId}#${i + 1}`,
+                                        porArchivo: true,
+                                    })));
+                                } else {
+                                    listaServicios.push(ordenTpu(disenosTpu, { notas: etiquetaComp, metadata: metaTpu }));
+                                }
+                                return;
+                            }
+
+                            // [ESTAMPADO POR ARTE] El Estampado del artículo: uno por arte de su DTF (con las prendas
+                            // que lo llevan, un estampado en cada una) y uno para su TPU (con SUS estampados por
+                            // prenda). Cada uno espera a su DTF / TPU del mismo artículo. Origen: lo elegido arriba.
+                            if (areaId === 'EST') {
+                                const cadenasEst = [];
+                                const dtf = comp.servicios['DF'];
+                                if (dtf?.active) {
+                                    const artes = dtf.archivos || [];
+                                    const { prendasDe } = revisarArtesDtf({ archivos: artes, meta: dtfMeta, clave: dtfKey, prendas: cantidadComponente, porPrenda: dtf.porPrenda ?? 1 });
+                                    if (artes.length > 0) {
+                                        artes.forEach((f, i) => cadenasEst.push({ area: 'DF', prendas: prendasDe(f), porPrenda: 1, porArchivo: true, nota: `[ESTAMPA EL ARTE DTF ${i + 1}/${artes.length}: ${f.name}]` }));
+                                    } else {
+                                        cadenasEst.push({ area: 'DF', prendas: cantidadComponente, porPrenda: dtf.porPrenda ?? 1 });
+                                    }
+                                }
+                                const tpu = comp.servicios['TPU'];
+                                if (tpu?.active) {
+                                    // Varios diseños = varias órdenes TPU: cada Estampado espera al SUYO (chainedAfterKey)
+                                    const disenosTpu = tpu.archivos || [];
+                                    if (disenosTpu.length > 1) {
+                                        disenosTpu.forEach((f, i) => cadenasEst.push({ area: 'TPU', key: `TPU#${comboItemId}#${i + 1}`, prendas: prendasNumArchivo(f, cantidadComponente), porPrenda: tpu.porPrenda ?? 1, porArchivo: true, nota: `[ESTAMPA EL DISEÑO TPU: ${f.name}]` }));
+                                    } else {
+                                        cadenasEst.push({ area: 'TPU', prendas: cantidadComponente, porPrenda: tpu.porPrenda ?? 1 });
+                                    }
+                                }
+                                if (cadenasEst.length === 0) cadenasEst.push({ area: null, prendas: cantidadComponente });
+                                cadenasEst.forEach(c => listaServicios.push({
+                                    esPrincipal: false,
+                                    areaId,
+                                    ...destinoOrden,
+                                    cabecera: { ...cabecera, variante: c.area === 'TPU' ? 'Estampado TPU' : (c.area === 'DF' ? 'Estampado DTF' : cabecera.variante) },
+                                    archivos: archivosSrv,
+                                    items: [],
+                                    notas: [etiquetaComp, c.nota].filter(Boolean).join(' '),
+                                    metadata: { prendas: c.prendas, ...(c.porPrenda ? { estampadosPorPrenda: c.porPrenda } : {}), origen: origenPrendas },
+                                    chainedAfterAreaId: c.area,
+                                    chainedAfterKey: c.key || null,
+                                    ...(c.porArchivo ? { porArchivo: true } : {}),
+                                }));
                                 return;
                             }
 
@@ -2316,8 +2449,11 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                                 // prenda del combo se trata — el operario no podía saber si el
                                 // bordado que tenía delante era del Gorro o de otro componente.
                                 notas: `[${comp.esPrendaCliente ? 'PRENDA CLIENTE' : (comp.esItemCarrito ? 'VENTA' : 'COMBO')}: ${comp.descripcion}]`,
-                                metadata: { prendas: cantidadComponente },
-                                chainedAfterAreaId: areaId === 'EST' ? (comp.servicios['DF'] ? 'DF' : (comp.servicios['TPU'] ? 'TPU' : null)) : null,
+                                // [DTF] sus propios estampados por prenda y el origen de lo elegido arriba (van en la nota técnica)
+                                metadata: areaId === 'DF'
+                                    ? { prendas: cantidadComponente, estampadosPorPrenda: srv.porPrenda ?? 1, origen: origenPrendas }
+                                    : { prendas: cantidadComponente },
+                                chainedAfterAreaId: null,
                             });
                         });
                     });
@@ -2443,6 +2579,14 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                                 material: bordadoMaterial,
                                 variante: bordadoVariant
                             };
+                            // [BORDADO] Diseños, igual que el Bordado de cada artículo: una orden por diseño, con la
+                            // ficha que usa la matriz automática (ver ordenDisenoBordado)
+                            if (disenosBordado.length > 0) {
+                                disenosBordado.forEach((d, i) => listaServicios.push(ordenDisenoBordado(d, i, disenosBordado.length, {
+                                    cabecera: comp.cabecera, etiqueta: comp.observacion || '', metadata: comp.metadata, chainKey: `EMB#${i + 1}`,
+                                })));
+                                return;
+                            }
                         }
 
                         // Si es Estampado (EST), adjuntar archivos y metadata (FIX: Faltaba este bloque)
@@ -2471,11 +2615,21 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
 
                             // [UNA ORDEN POR ARCHIVO] Con varios diseños de TPU hay una orden TPU por diseño, y cada
                             // una necesita SU Estampado, encadenado a ella (chainedAfterKey) y con sus prendas.
+                            // [ESTAMPADO POR ARTE] DTF: una orden de Estampado por arte, con las prendas que lo llevan
+                            // y un estampado en cada una (los artes ya suman prendas × estampados por prenda). Todas
+                            // esperan a la orden DTF, que imprime todos los artes.
                             const cadenas = [];
-                            if (selectedComplementary['DF']) cadenas.push({ area: 'DF' });
+                            if (selectedComplementary['DF']) {
+                                const { prendasDe } = revisarArtesDtf({ archivos: dtfArchivos, meta: dtfMeta, clave: dtfKey, prendas: garmentQuantity, porPrenda: dtfPorPrenda });
+                                if (dtfArchivos.length > 0) {
+                                    dtfArchivos.forEach((f, i) => cadenas.push({ area: 'DF', prendas: prendasDe(f), porPrenda: 1, porArchivo: true, nota: `[ESTAMPA EL ARTE DTF ${i + 1}/${dtfArchivos.length}: ${f.name}]` }));
+                                } else {
+                                    cadenas.push({ area: 'DF', porPrenda: dtfPorPrenda });
+                                }
+                            }
                             if (selectedComplementary['TPU']) {
                                 if (tpuArchivos.length > 1) {
-                                    tpuArchivos.forEach((f, i) => cadenas.push({ area: 'TPU', key: `TPU#${i + 1}`, prendas: prendasNumArchivo(f), nombre: f.name }));
+                                    tpuArchivos.forEach((f, i) => cadenas.push({ area: 'TPU', key: `TPU#${i + 1}`, prendas: prendasNumArchivo(f), nota: `[ESTAMPA EL DISEÑO TPU: ${f.name}]` }));
                                 } else {
                                     cadenas.push({ area: 'TPU' });
                                 }
@@ -2491,10 +2645,18 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                                     cabecera: { ...comp.cabecera, variante: chainedAfterAreaId === 'TPU' ? 'Estampado TPU' : (chainedAfterAreaId === 'DF' ? 'Estampado DTF' : (comp.cabecera?.variante || 'Estampado')) },
                                     archivos: archivosExtra,
                                     items: [],
-                                    notas: [comp.observacion, c.nombre ? `[ESTAMPA EL DISEÑO TPU: ${c.nombre}]` : null].filter(Boolean).join(' '),
-                                    metadata: c.prendas ? { ...(comp.metadata || {}), prendas: c.prendas } : (comp.metadata || {}),
+                                    notas: [comp.observacion, c.nota].filter(Boolean).join(' '),
+                                    // Encadenado a DTF/TPU: el origen sale de lo elegido arriba
+                                    metadata: {
+                                        ...(comp.metadata || {}),
+                                        ...(c.area ? { origen: origenPrendas } : {}),
+                                        ...(c.prendas ? { prendas: c.prendas } : {}),
+                                        ...(c.porPrenda ? { estampadosPorPrenda: c.porPrenda } : {}),
+                                    },
                                     chainedAfterAreaId,
                                     chainedAfterKey: c.key || null,
+                                    // Lleva menos prendas que el pedido: el backend no la toma como referencia de prendas
+                                    ...(c.porArchivo ? { porArchivo: true } : {}),
                                 });
                             });
                             return; // ya se empujaron su(s) orden(es), no caer al push genérico de abajo
@@ -4064,6 +4226,12 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                                         compMaterial={bordadoMaterial} setCompMaterial={actions.setBordadoMaterial}
                                         compVariant={bordadoVariant} setCompVariant={(v) => actions.handleEmbroideryVariantChange(v)}
                                         compVariants={embroideryVariants} compMaterials={embroideryMaterials}
+                                        // [BORDADO] Diseños como el Bordado de cada artículo: uno por logo, con medidas,
+                                        // prendas y prediseño. Cada uno sale como su orden y trae la ficha para la matriz automática.
+                                        disenosBordado={disenosBordado || []}
+                                        addDiseno={() => actions.addDisenoBordado(garmentQuantity)}
+                                        updateDiseno={actions.updateDisenoBordado}
+                                        removeDiseno={actions.removeDisenoBordado}
                                     />
                                 )}
 
@@ -4076,10 +4244,10 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                                         dtfArchivos={dtfArchivos} removeDtfArchivo={actions.removeDtfArchivo}
                                         dtfBocetoFile={dtfBocetoFile} setDtfBocetoFile={actions.setDtfBocetoFile}
                                         dtfMaterial={dtfMaterial} dtfMaterials={dtfMaterials} setDtfMaterial={actions.setDtfMaterial}
-                                        dtfMeta={dtfMeta} dtfKey={dtfKey} setDtfMeta={(k, patch) => setDtfMeta(prev => ({ ...prev, [k]: { ...(prev[k] || {}), ...patch } }))}
+                                        dtfMeta={dtfMeta} dtfKey={dtfKey} setDtfMeta={patchDtfMeta}
                                         handleSpecializedFileUpload={(f) => handleSpecializedFileUpload(actions.setDtfBocetoFile, f)}
                                         handleMultipleSpecializedFileUpload={(fs) => handleDtfFilesUpload(fs)}
-                                        printsPerGarment={estampadoPrints} setPrintsPerGarment={actions.setEstampadoPrints}
+                                        printsPerGarment={dtfPorPrenda} setPrintsPerGarment={setDtfPorPrenda}
                                         compact={true}
                                     />
                                 )}
@@ -4097,7 +4265,6 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                                         handleSpecializedFileUpload={(f) => handleSpecializedFileUpload(actions.setTpuBocetoFile, f)}
                                         handleMultipleSpecializedFileUpload={(fs) => handleMultipleSpecializedFileUpload(actions.addTpuArchivos, fs)}
                                         printsPerGarment={estampadoPrints} setPrintsPerGarment={actions.setEstampadoPrints}
-                                        origin={estampadoOrigin} setOrigin={actions.setEstampadoOrigin}
                                         compact={true}
                                     />
                                 )}
@@ -4244,9 +4411,12 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                                     dtfBocetoFile={comp.servicios.DF.boceto} setDtfBocetoFile={(f) => actions.updateComboServicioBoceto(comboItemId, 'DF', f)}
                                     lockedSpec={comp.servicios.DF.tecnicaOpcionNombre || ''}
                                     dtfMaterial={comp.servicios.DF.material} dtfMaterials={comp.servicios.DF.materialOptions} setDtfMaterial={(m) => actions.updateComboServicioCampo(comboItemId, 'DF', { material: m })}
+                                    // [DTF COMO PORTAL] igual que el panel general: se mide al subir y cada arte lleva sus prendas y copias
+                                    dtfMeta={dtfMeta} dtfKey={dtfKey} setDtfMeta={patchDtfMeta}
                                     handleSpecializedFileUpload={(f) => handleSpecializedFileUpload((file) => actions.updateComboServicioBoceto(comboItemId, 'DF', file), f)}
-                                    handleMultipleSpecializedFileUpload={(fs) => handleMultipleSpecializedFileUpload((nuevos) => actions.updateComboServicioArchivos(comboItemId, 'DF', [...(comp.servicios.DF.archivos || []), ...nuevos]), fs)}
-                                    printsPerGarment={estampadoPrints} setPrintsPerGarment={actions.setEstampadoPrints}
+                                    handleMultipleSpecializedFileUpload={(fs) => handleDtfFilesUpload(fs, (nuevos) => actions.updateComboServicioArchivos(comboItemId, 'DF', [...(comp.servicios.DF.archivos || []), ...nuevos]))}
+                                    // Estampados por prenda de ESTE artículo y de su DTF (no los de TPU ni los de otro artículo)
+                                    printsPerGarment={comp.servicios.DF.porPrenda ?? 1} setPrintsPerGarment={(v) => actions.updateComboServicioCampo(comboItemId, 'DF', { porPrenda: v })}
                                     compact={true}
                                 />
                             )}
@@ -4257,11 +4427,16 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                                     tpuBocetoFile={comp.servicios.TPU.boceto} setTpuBocetoFile={(f) => actions.updateComboServicioBoceto(comboItemId, 'TPU', f)}
                                     lockedSpec={comp.servicios.TPU.tecnicaOpcionNombre || ''}
                                     tpuVariant={comp.servicios.TPU.variant} tpuVariants={comp.servicios.TPU.variantOptions} handleTpuVariantChange={(v) => handleComboVarianteChange(comboItemId, 'TPU', v)}
-                                    tpuMaterial={comp.servicios.TPU.material} tpuMaterials={comp.servicios.TPU.materialOptions} setTpuMaterial={(m) => actions.updateComboServicioCampo(comboItemId, 'TPU', { material: m })}
+                                    // Como el panel general: cambiar el tipo de TPU borra la medida (el tope es otro)
+                                    tpuMaterial={comp.servicios.TPU.material} tpuMaterials={comp.servicios.TPU.materialOptions} setTpuMaterial={(m) => actions.updateComboServicioCampo(comboItemId, 'TPU', { material: m, alto: '', ancho: '' })}
+                                    // [TPU COMO PORTAL] medida del parche (si el tipo trae tope) y prendas de cada diseño, como el panel general
+                                    tpuAlto={comp.servicios.TPU.alto || ''} tpuAncho={comp.servicios.TPU.ancho || ''}
+                                    setTpuAlto={(v) => actions.updateComboServicioCampo(comboItemId, 'TPU', { alto: v })} setTpuAncho={(v) => actions.updateComboServicioCampo(comboItemId, 'TPU', { ancho: v })}
+                                    prendasDeArchivo={(f) => prendasDeArchivo(f, cantidadComponente)} setPrendasArchivo={setPrendasArchivo}
                                     handleSpecializedFileUpload={(f) => handleSpecializedFileUpload((file) => actions.updateComboServicioBoceto(comboItemId, 'TPU', file), f)}
                                     handleMultipleSpecializedFileUpload={(fs) => handleMultipleSpecializedFileUpload((nuevos) => actions.updateComboServicioArchivos(comboItemId, 'TPU', [...(comp.servicios.TPU.archivos || []), ...nuevos]), fs)}
-                                    printsPerGarment={estampadoPrints} setPrintsPerGarment={actions.setEstampadoPrints}
-                                    origin={estampadoOrigin} setOrigin={actions.setEstampadoOrigin}
+                                    // Estampados por prenda de ESTE artículo y de su TPU; el origen sale de lo elegido arriba
+                                    printsPerGarment={comp.servicios.TPU.porPrenda ?? 1} setPrintsPerGarment={(v) => actions.updateComboServicioCampo(comboItemId, 'TPU', { porPrenda: v })}
                                     compact={true}
                                 />
                             )}

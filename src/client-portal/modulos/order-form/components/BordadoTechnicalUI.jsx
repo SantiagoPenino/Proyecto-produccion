@@ -6,8 +6,10 @@ import PrendaClienteSelector from './PrendaClienteSelector';
 import PredisenoBordadoModal from './PredisenoBordadoModal';
 import {
     analizarArteAutomatico, puntadasDePaleta, leerProporcionArte, canvasSimulado, RELIEVE_3D_HABILITADO,
+    cargarCartaHilos,
 } from '../utils/bordadoHilos';
 import { esVectorBordado, analizarVectorBordado } from '../utils/bordadoVector';
+import { claveVista, pedirVistaPuntadas } from '../utils/vistaPuntadas';
 
 // [BORDADO] Form de ingreso.
 //
@@ -110,6 +112,9 @@ export const BordadoTechnicalUI = ({
             analizadosRef.current.add(d.file);
             setAnalizando(prev => [...prev, d.id]);
             try {
+                // Los hilos salen del nomenclador (Configurar Productos › Hilos): se espera a
+                // tenerlo, así el logo no se analiza con la carta de respaldo. Una vez por sesión.
+                await cargarCartaHilos();
                 // PDF o AI: el control de vector de TPU, con colores y medida exactos.
                 const esVector = esVectorBordado(d.file);
                 const r = esVector
@@ -148,6 +153,40 @@ export const BordadoTechnicalUI = ({
         });
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [disenosBordado, usaDisenos, usaTafeta]);
+
+    // ── Vista de puntadas ─────────────────────────────────────────────────
+    // En «Viendo tu diseño» va lo que se va a bordar: las puntadas que arma Ink/Stitch con la
+    // paleta y las medidas (ver utils/vistaPuntadas.js), las mismas del borrador de matriz que
+    // recibe el taller. Se pide cuando el diseño tiene paleta, ancho y largo, y otra vez si cambian
+    // (el cliente corrige la medida o guarda el editor de hilos), con un rato de espera para no pedir
+    // una por cada número que tipea. Mientras tanto, y si el servidor no puede, queda el prediseño.
+    const [generandoVista, setGenerandoVista] = useState([]);
+    const vistaPedidaRef = useRef({});   // id del diseño → clave de la última vista pedida
+    useEffect(() => {
+        if (!usaDisenos) return;
+        const timers = [];
+        disenosBordado.forEach(d => {
+            if (!d.file || !(d.paleta || []).length || !(parseFloat(d.ancho) > 0) || !(parseFloat(d.alto) > 0)) return;
+            const clave = claveVista(d);
+            if (d.vistaKey === clave || vistaPedidaRef.current[d.id] === clave) return;
+            timers.push(setTimeout(async () => {
+                vistaPedidaRef.current[d.id] = clave;
+                setGenerandoVista(prev => (prev.includes(d.id) ? prev : [...prev, d.id]));
+                const png = await pedirVistaPuntadas({
+                    paleta: d.paleta, anchoCm: d.ancho, altoCm: d.alto, nombre: d.file.name.replace(/\.[^.]+$/, ''),
+                });
+                setGenerandoVista(prev => prev.filter(x => x !== d.id));
+                if (!png) return;
+                // Sobre el diseño de AHORA: si mientras tanto cambió el logo, la paleta o la medida,
+                // esta vista ya no corresponde (la que sigue la pide ese cambio).
+                updateDiseno(d.id, (actual) => (actual.file !== d.file || claveVista(actual) !== clave)
+                    ? {}
+                    : { arteDisenado: png, vistaKey: clave });
+            }, 1200));
+        });
+        return () => timers.forEach(clearTimeout);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [disenosBordado, usaDisenos]);
 
     // Diseños donde el cliente pidió VER el arte original teniendo un prediseño
     // guardado. Es solo un cambio de vista: no borra nada.
@@ -233,7 +272,9 @@ export const BordadoTechnicalUI = ({
             // Cómo había dejado el fondo en el editor: era del logo anterior.
             sinFondo: undefined,
             // Lo que trajo el vector anterior (PDF / AI)
-            medidaVector: null, rasterVector: null, coloresExactos: null, avisosVector: null
+            medidaVector: null, rasterVector: null, coloresExactos: null, avisosVector: null,
+            // La vista de puntadas era del logo anterior
+            vistaKey: null
         });
         setVerOriginal(prev => prev.filter(x => x !== d.id));
 
@@ -585,6 +626,16 @@ export const BordadoTechnicalUI = ({
                                                                             </span>
                                                                         </button>
                                                                     )}
+                                                                    {/* Vista de puntadas: se está armando, o ya es lo que se ve arriba */}
+                                                                    {generandoVista.includes(d.id) ? (
+                                                                        <p className="text-[10px] font-bold text-brand-gold text-center animate-pulse">
+                                                                            Generando la vista de puntadas…
+                                                                        </p>
+                                                                    ) : (d.vistaKey && d.vistaKey === claveVista(d) && !mostrandoOriginal(d.id)) ? (
+                                                                        <p className="text-[10px] text-zinc-500 text-center">
+                                                                            Así se va a bordar: vista de las puntadas.
+                                                                        </p>
+                                                                    ) : null}
 
                                                                     <button
                                                                         type="button"

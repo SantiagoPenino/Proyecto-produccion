@@ -1,5 +1,6 @@
 import { contours } from 'd3-contour';
 import cartaHilos from './cartaHilosBordado.json';
+import { apiClient } from '../../../api/apiClient';
 
 // [BORDADO] Carta de hilos y cálculo de puntadas.
 //
@@ -16,10 +17,31 @@ import cartaHilos from './cartaHilosBordado.json';
 // se reemplaza el JSON por la importación de su archivo .TCH y el resto del
 // código sigue igual: solo necesita {codigo, nombre, hex}.
 //
-// Vive en un JSON (cartaHilosBordado.json) porque también la lee el servidor: la
-// matriz automática (backend/services/bordadoMatrizService.js) pone el nombre y
-// el color de cada hilo en el borrador y en el PES.
-export const CARTA_HILOS = cartaHilos;
+// La carta de verdad es el nomenclador de Configurar Productos › Hilos (dbo.CatalogoHilos),
+// que también usa la matriz automática del servidor. Acá arranca con el JSON
+// (cartaHilosBordado.json, la carga inicial y el respaldo si la tabla no está) y
+// cargarCartaHilos() la reemplaza por la del nomenclador, en el MISMO arreglo: todo lo que
+// usa CARTA_HILOS (hiloMasCercano, el editor de hilos) ve la nueva sin cambiar nada.
+export const CARTA_HILOS = [...cartaHilos];
+
+let cartaCargada = null;
+/** Trae los hilos activos del nomenclador, una vez por sesión. Devuelve una promesa (true si los trajo). */
+export function cargarCartaHilos() {
+    if (!cartaCargada) {
+        cartaCargada = apiClient.get('/web-orders/hilos-bordado')
+            .then((r) => {
+                const hilos = (r?.data || []).filter(h => h.codigo && h.nombre && /^#[0-9A-Fa-f]{6}$/.test(h.hex || ''));
+                if (hilos.length) CARTA_HILOS.splice(0, CARTA_HILOS.length, ...hilos);
+                return hilos.length > 0;
+            })
+            .catch((e) => {
+                console.warn('[BORDADO] Sin el nomenclador de hilos, queda la carta de respaldo:', e?.message);
+                cartaCargada = null;   // se reintenta la próxima vez
+                return false;
+            });
+    }
+    return cartaCargada;
+}
 
 // Las tres puntadas reales + dos casos que el taller igual necesita distinguir.
 // `densidad` = puntadas por pulgada² (rango de la industria, tomado al medio).

@@ -1876,6 +1876,69 @@ exports.updateMedida = async (req, res) => {
 };
 
 // ═════════════════════════════════════════════════════════════════════════
+//  CATÁLOGO DE HILOS (dbo.CatalogoHilos — configurador_hilos.sql)
+//  La carta de hilos: código interno, nombre, color y, si es de una carta de marca, marca y código.
+//  La usan el pedido de bordado del portal (GET /web-orders/hilos-bordado) y la matriz automática.
+//  Los pedidos guardan el CÓDIGO: renombrar o cambiar el color acá no toca pedidos ya hechos.
+// ═════════════════════════════════════════════════════════════════════════
+const FALTA_SQL_HILOS = 'Falta correr docs/migrations/configurador_hilos.sql en esta base.';
+async function tieneHilos(pool) {
+    const r = await pool.request().query(`SELECT OBJECT_ID('dbo.CatalogoHilos', 'U') AS t`);
+    return r.recordset[0].t != null;
+}
+exports.tieneHilos = tieneHilos;
+const errDupHilo = (e) => { if (/UQ_CatalogoHilos/.test(e.message)) { const x = new Error('Ya hay un hilo con ese código.'); x.status = 409; throw x; } throw e; };
+const hexValido = (v) => (/^#[0-9A-Fa-f]{6}$/.test(String(v || '').trim()) ? String(v).trim().toUpperCase() : null);
+// GET /api/configurador/hilos (?all=1 incluye inactivos)
+exports.getHilos = async (req, res) => {
+    try {
+        const pool = await getPool();
+        if (!(await tieneHilos(pool))) return res.json({ success: true, data: [], faltaSql: true });
+        const r = await pool.request().query(`
+            SELECT HiloID, Codigo, Nombre, Hex, Marca, CodigoMarca, Activo, Orden
+            FROM dbo.CatalogoHilos
+            ${req.query.all === '1' ? '' : 'WHERE Activo = 1'} ORDER BY ISNULL(Orden, 999), Nombre`);
+        res.json({ success: true, data: r.recordset });
+    } catch (e) { logger.error('[Configurador] getHilos:', e); res.status(500).json({ error: e.message }); }
+};
+// POST /api/configurador/hilos — { codigo, nombre, hex, marca?, codigoMarca? }
+exports.crearHilo = async (req, res) => {
+    const codigo = txtMed(req.body?.codigo, 30), nombre = txtMed(req.body?.nombre, 80), hex = hexValido(req.body?.hex);
+    if (!codigo || !nombre) return res.status(400).json({ error: 'Poné el código y el nombre del hilo.' });
+    if (!hex) return res.status(400).json({ error: 'El color tiene que ser #RRGGBB (por ejemplo #2A46B5).' });
+    try {
+        const pool = await getPool();
+        if (!(await tieneHilos(pool))) return res.status(409).json({ error: FALTA_SQL_HILOS });
+        const r = await pool.request().input('Cod', sql.NVarChar(30), codigo).input('Nom', sql.NVarChar(80), nombre).input('Hex', sql.Char(7), hex)
+            .input('Mar', sql.NVarChar(60), txtMed(req.body?.marca, 60)).input('CodM', sql.NVarChar(30), txtMed(req.body?.codigoMarca, 30))
+            .query(`INSERT INTO dbo.CatalogoHilos (Codigo, Nombre, Hex, Marca, CodigoMarca, Orden)
+                    OUTPUT INSERTED.HiloID VALUES (@Cod, @Nom, @Hex, @Mar, @CodM, (SELECT ISNULL(MAX(Orden), 0) + 1 FROM dbo.CatalogoHilos))`)
+            .catch(errDupHilo);
+        res.json({ success: true, data: { HiloID: r.recordset[0].HiloID } });
+    } catch (e) { if (e.status) return res.status(e.status).json({ error: e.message }); logger.error('[Configurador] crearHilo:', e); res.status(500).json({ error: e.message }); }
+};
+// PUT /api/configurador/hilos/:id — { nombre?, hex?, marca?, codigoMarca?, activo?, orden? }
+// El código no se cambia: es lo que guardan los pedidos.
+exports.updateHilo = async (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isInteger(id)) return res.status(400).json({ error: 'Hilo inválido.' });
+    const b = req.body || {}; const sets = [];
+    const rq = (await getPool()).request().input('ID', sql.Int, id);
+    if (b.nombre !== undefined) { const n = txtMed(b.nombre, 80); if (!n) return res.status(400).json({ error: 'El nombre no puede quedar vacío.' }); sets.push('Nombre = @Nom'); rq.input('Nom', sql.NVarChar(80), n); }
+    if (b.hex !== undefined) { const h = hexValido(b.hex); if (!h) return res.status(400).json({ error: 'El color tiene que ser #RRGGBB (por ejemplo #2A46B5).' }); sets.push('Hex = @Hex'); rq.input('Hex', sql.Char(7), h); }
+    if (b.marca !== undefined) { sets.push('Marca = @Mar'); rq.input('Mar', sql.NVarChar(60), txtMed(b.marca, 60)); }
+    if (b.codigoMarca !== undefined) { sets.push('CodigoMarca = @CodM'); rq.input('CodM', sql.NVarChar(30), txtMed(b.codigoMarca, 30)); }
+    if (b.activo !== undefined) { sets.push('Activo = @Act'); rq.input('Act', sql.Bit, b.activo ? 1 : 0); }
+    if (b.orden !== undefined) { sets.push('Orden = @Ord'); rq.input('Ord', sql.Int, Number.isInteger(Number(b.orden)) ? Number(b.orden) : null); }
+    if (!sets.length) return res.status(400).json({ error: 'Nada para cambiar.' });
+    try {
+        const r = await rq.query(`UPDATE dbo.CatalogoHilos SET ${sets.join(', ')} WHERE HiloID = @ID; SELECT @@ROWCOUNT AS n;`);
+        if (!r.recordset[0].n) return res.status(404).json({ error: 'Hilo no encontrado.' });
+        res.json({ success: true });
+    } catch (e) { logger.error('[Configurador] updateHilo:', e); res.status(500).json({ error: e.message }); }
+};
+
+// ═════════════════════════════════════════════════════════════════════════
 //  CATÁLOGO DE AVÍOS (dbo.CatalogoAvios — sección H de configurador_tizadapro.sql)
 //  Cierres, botones, elásticos, etiquetas… con su unidad. Los productos eligen de acá.
 // ═════════════════════════════════════════════════════════════════════════

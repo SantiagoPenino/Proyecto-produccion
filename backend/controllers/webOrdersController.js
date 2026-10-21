@@ -3649,6 +3649,52 @@ exports.analizarVectorBordado = async (req, res) => {
     }
 };
 
+// ─── BORDADO: carta de hilos para el portal ──────────────────────────────────
+// GET /api/web-orders/hilos-bordado — los hilos ACTIVOS del nomenclador (Configurar Productos ›
+// Hilos, dbo.CatalogoHilos), en el formato que usa el portal: [{ codigo, nombre, hex }]. Solo
+// lectura. Sin la tabla (falta configurador_hilos.sql) devuelve vacío y el portal sigue con su JSON.
+exports.getHilosBordado = async (req, res) => {
+    try {
+        const pool = await getPool();
+        if (!(await require('./configuradorController').tieneHilos(pool))) return res.json({ success: true, data: [], faltaSql: true });
+        const r = await pool.request().query(`
+            SELECT Codigo AS codigo, Nombre AS nombre, Hex AS hex
+            FROM dbo.CatalogoHilos WHERE Activo = 1 ORDER BY ISNULL(Orden, 999), Nombre`);
+        res.json({ success: true, data: r.recordset });
+    } catch (e) {
+        logger.error('[Bordado-Hilos] ' + e.message);
+        res.status(500).json({ error: e.message });
+    }
+};
+
+// ─── BORDADO: vista de puntadas para el portal ───────────────────────────────
+// POST /api/web-orders/bordado/vista-puntadas — body JSON { paleta, anchoCm, altoCm } (la paleta
+// que calculó el portal al analizar el logo). Devuelve { svg }: las puntadas que se van a bordar,
+// dibujadas con el brillo del hilo (bordadoMatrizService.vistaPuntadas). El portal la muestra en
+// «Viendo tu diseño» en lugar del prediseño. Va comprimida: el SVG trae una forma por puntada
+// (2,3 MB un logo de 4 cm; 240 KB en gzip) y el servidor no tiene compresión general.
+exports.vistaPuntadasBordado = async (req, res) => {
+    const svc = require('../services/bordadoMatrizService');
+    if (!svc.habilitado()) return res.status(503).json({ error: 'La vista de puntadas no está disponible.' });
+    const { paleta, anchoCm, altoCm } = req.body || {};
+    const ancho = parseFloat(anchoCm), alto = parseFloat(altoCm);
+    if (!Array.isArray(paleta) || !paleta.length) return res.status(400).json({ error: 'Falta la paleta de hilos.' });
+    if (!(ancho > 0 && alto > 0) || ancho > 60 || alto > 60) return res.status(400).json({ error: 'El ancho y el largo tienen que estar entre 0 y 60 cm.' });
+    try {
+        const svg = await svc.vistaPuntadas(paleta, ancho * 10, alto * 10);
+        const cuerpo = JSON.stringify({ success: true, svg });
+        res.set('Content-Type', 'application/json; charset=utf-8');
+        if (/\bgzip\b/.test(String(req.headers['accept-encoding'] || ''))) {
+            res.set('Content-Encoding', 'gzip');
+            return res.end(require('zlib').gzipSync(cuerpo));
+        }
+        res.end(cuerpo);
+    } catch (e) {
+        logger.warn('[Bordado-Vista] ' + e.message);
+        res.status(500).json({ error: 'No se pudo armar la vista de puntadas: ' + e.message });
+    }
+};
+
 // ─── TPU: BOCETO APROBADO (imagen de archivo) ────────────────────────────────
 // Al aprobar, el visor 3D arma un PNG con el parche renderizado + la referencia de qué textura,
 // escala y altura le tocó a cada zona, y lo manda acá. Queda como archivo de REFERENCIA de la

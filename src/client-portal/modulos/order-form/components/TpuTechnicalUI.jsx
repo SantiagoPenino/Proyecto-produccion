@@ -31,9 +31,11 @@ export const TpuTechnicalUI = ({
     handleSpecializedFileUpload,
     handleMultipleSpecializedFileUpload,
     // [PRENDAS] Estampado fusionado: TPU ES una forma de estampar, así que sus campos
-    // de estampado (por prenda / origen) viajan acá, mismo estado que el panel Estampado.
+    // de estampado viajan acá. "Por prenda" es PROPIO de TPU (no el de DTF). El origen de
+    // las prendas solo se pide si se pasa setOrigin: en el pedido de prendas sale de lo
+    // elegido arriba (prenda del cliente o de stock) y no se vuelve a preguntar.
     printsPerGarment, setPrintsPerGarment,
-    origin, setOrigin,
+    origin, setOrigin = null,
     compact = true,
     // [COMBOS] Técnica FIJADA por el Configurador — reemplaza Tipo/Variante + Tipo de TPU.
     lockedSpec = '',
@@ -146,6 +148,7 @@ export const TpuTechnicalUI = ({
                                     onChange={(e) => setPrintsPerGarment(e.target.value)}
                                 />
                             </div>
+                            {setOrigin && (
                             <div>
                                 <label className="block text-[10px] uppercase font-black text-zinc-500 mb-2 tracking-widest">Origen de las Prendas *</label>
                                 <CustomSelect
@@ -159,6 +162,7 @@ export const TpuTechnicalUI = ({
                                     className="h-[55px]"
                                 />
                             </div>
+                            )}
                         </div>
 
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">

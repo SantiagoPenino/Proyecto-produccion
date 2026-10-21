@@ -162,9 +162,35 @@ function htmlFichaPedido(d) {
 
 const nombreArchivo = (noDocERP) => `Ficha pedido ${t(noDocERP)}.pdf`;
 
-async function generarPdfPedido(pool, noDocERP) {
+// Drive arma la miniatura unos segundos DESPUÉS de subir el archivo: la ficha que se genera al crear el
+// pedido salía con "PDF"/"PNG" en lugar de la imagen. Antes de armarla espera (con tope) a que estén.
+// Solo los tipos de los que Drive hace miniatura (un DST o un PES no tiene nunca: no se esperan).
+const CON_MINIATURA = /\.(pdf|png|jpe?g|gif|webp|bmp|tiff?)$/i;
+async function esperarMiniaturas(d, topeMs = 60000) {
+  const pendientes = new Set([
+    ...d.archivos.map(a => [a.RutaAlmacenamiento, a.NombreArchivo]),
+    ...d.referencias.filter(r => t(r.TipoArchivo) !== 'FICHA_PEDIDO').map(r => [r.UbicacionStorage, r.NombreOriginal]),
+  ].filter(([, nombre]) => CON_MINIATURA.test(t(nombre))).map(([url]) => base.driveIdDe(url)).filter(Boolean));
+  const lista = async (id) => {
+    try {
+      const r = await fetch(`https://drive.google.com/thumbnail?id=${id}&sz=w400`, { signal: AbortSignal.timeout(10000) });
+      await r.arrayBuffer();
+      return r.ok && /^image\//.test(r.headers.get('content-type') || '');
+    } catch (_) { return false; }
+  };
+  const fin = Date.now() + topeMs;
+  while (pendientes.size) {
+    for (const id of [...pendientes]) if (await lista(id)) pendientes.delete(id);
+    if (!pendientes.size || Date.now() > fin) break;
+    await new Promise(r => setTimeout(r, 4000));
+  }
+  if (pendientes.size) logger.warn(`[FICHA-PEDIDO] ${d.noDocERP}: ${pendientes.size} miniatura(s) de Drive sin generar tras ${topeMs / 1000} s; salen con la extensión.`);
+}
+
+async function generarPdfPedido(pool, noDocERP, { conMiniaturas = false } = {}) {
   const d = await datosPedido(pool, noDocERP);
   if (!d) { const e = new Error(`El pedido ${noDocERP} no tiene órdenes.`); e.status = 404; throw e; }
+  if (conMiniaturas) await esperarMiniaturas(d);
   return { pdf: await base.pdfDesdeHtml(htmlFichaPedido(d)), datos: d };
 }
 
@@ -182,7 +208,8 @@ async function adjuntarAlPedido(noDocERP, user, app, { forzar = false } = {}) {
     if (!orden) { logger.info(`[FICHA-PEDIDO] ${noDocERP}: sin orden madre PRO, no se adjunta ficha.`); return null; }
     const ya = (await pool.request().input('O', sql.Int, orden.OrdenID).query(`SELECT RefID FROM dbo.ArchivosReferencia WHERE OrdenID = @O AND LTRIM(RTRIM(TipoArchivo)) = 'FICHA_PEDIDO'`)).recordset;
     if (ya.length && !forzar) { logger.info(`[FICHA-PEDIDO] ${noDocERP}: ${orden.CodigoOrden} ya tiene ficha (${ya.length}); no se duplica.`); return { ordenId: orden.OrdenID, codigoOrden: orden.CodigoOrden, yaExistia: true }; }
-    const { pdf } = await generarPdfPedido(pool, noDocERP);
+    // La que se guarda espera las miniaturas de Drive (la de "ver" sale con lo que haya en el momento)
+    const { pdf } = await generarPdfPedido(pool, noDocERP, { conMiniaturas: true });
     tmp = path.join(os.tmpdir(), `ficha-pedido-${t(noDocERP)}-${Date.now()}.pdf`);
     fs.writeFileSync(tmp, pdf);
     const { uploadReferenceFile } = require('../controllers/ordersController');
