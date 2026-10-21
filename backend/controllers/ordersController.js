@@ -29,10 +29,13 @@ const recalculateOrderMagnitude = async (transaction, ordenId) => {
         // [PRO] Producción (prendas) también queda AFUERA: su Magnitud es la CANTIDAD DE PRENDAS
         // a fabricar, se fija en el pedido y se edita a mano desde el detalle (PUT /:ordenId/magnitud).
         // Sus archivos son artes/guías, no unidades.
+        // [BORDADO] EMB también: su Magnitud son las prendas (o parches) del diseño, y la usa
+        // el precio. Sus archivos son la ficha del diseño y la matriz (DST/EMB): sumar sus
+        // copias la pisaba con 1 o 2 al editar, agregar o borrar un archivo.
         const areaRes = await new sql.Request(transaction)
             .input('OID', sql.Int, ordenId)
             .query('SELECT AreaID FROM dbo.Ordenes WHERE OrdenID = @OID');
-        if (['TPU', 'PRO'].includes(String(areaRes.recordset[0]?.AreaID || '').trim().toUpperCase())) return;
+        if (['TPU', 'PRO', 'EMB'].includes(String(areaRes.recordset[0]?.AreaID || '').trim().toUpperCase())) return;
 
         await new sql.Request(transaction)
             .input('OID', sql.Int, ordenId)
@@ -354,6 +357,140 @@ exports.uploadProductionFile = async (req, res) => {
         res.status(500).json({ error: err.message });
     } finally {
         if (tmpPath) { try { fs.unlinkSync(tmpPath); } catch (_) {} }
+    }
+};
+
+// =====================================================================
+// [BORDADO] MATRIZ AUTOMÁTICA — borrador de Ink/Stitch (services/bordadoMatrizService.js)
+// Se genera sola al entrar el pedido y queda en Archivos de Referencia. Desde el detalle se
+// puede generar a mano (órdenes viejas, o si falló) y pasar a matriz de la orden.
+// =====================================================================
+
+// Marca en las notas del borrador cuando ya se usó como matriz (el detalle oculta el botón).
+const MARCA_MATRIZ_USADA = 'Usado como matriz';
+
+// POST /orders/:ordenId/matriz-automatica — genera (o vuelve a generar) el borrador.
+exports.generarMatrizAutomatica = async (req, res) => {
+    const svc = require('../services/bordadoMatrizService');
+    if (!svc.habilitado()) {
+        return res.status(503).json({ error: 'La matriz automática no está disponible: falta configurar Ink/Stitch en el servidor (INKSTITCH_BIN).' });
+    }
+    try {
+        const usuario = req.user?.usuario || req.user?.name || req.user?.id || 'Sistema';
+        const data = await svc.generarEnCola(parseInt(req.params.ordenId, 10), usuario);
+        res.json({ success: true, data });
+    } catch (e) {
+        logger.warn('[generarMatrizAutomatica] ' + e.message);
+        res.status(400).json({ error: 'No se pudo generar la matriz automática: ' + e.message });
+    }
+};
+
+// POST /orders/:ordenId/matriz-automatica/:refId/usar — el borrador pasa a ser LA matriz.
+// Va por la subida de siempre, la del botón «Subir Matriz de Bordado» (uploadProductionFile con
+// tipoArchivo 'MATRIZ'): inserta la matriz, la sube a Drive y cumple el requisito MATRIZ.
+exports.usarMatrizAutomatica = async (req, res) => {
+    const fs = require('fs');
+    const os = require('os');
+    const path = require('path');
+    const svc = require('../services/bordadoMatrizService');
+    const ordenId = parseInt(req.params.ordenId, 10);
+    const refId = parseInt(req.params.refId, 10);
+    try {
+        const pool = await getPool();
+        const ref = (await pool.request()
+            .input('R', sql.Int, refId)
+            .input('O', sql.Int, ordenId)
+            .query(`SELECT RefID, TipoArchivo, NombreOriginal, UbicacionStorage, NotasAdicionales
+                    FROM ArchivosReferencia WHERE RefID = @R AND OrdenID = @O`)).recordset[0];
+        if (!ref || String(ref.TipoArchivo || '').trim().toUpperCase() !== svc.TIPO_REFERENCIA) {
+            return res.status(404).json({ error: 'No se encontró el borrador de la matriz en esta orden.' });
+        }
+        const { buffer } = await svc.descargarReferencia(ref.UbicacionStorage);
+        const tmp = path.join(os.tmpdir(), `${Date.now()}-matriz-${refId}.dst`);
+        fs.writeFileSync(tmp, buffer);
+
+        // Si la subida sale bien, el borrador queda marcado como usado.
+        const usuario = req.user?.usuario || req.user?.name || 'Sistema';
+        const responder = res.json.bind(res);
+        res.json = (body) => {
+            if (body && body.success) {
+                pool.request()
+                    .input('R', sql.Int, refId)
+                    .input('N', sql.NVarChar(sql.MAX), `${MARCA_MATRIZ_USADA} el ${new Date().toLocaleDateString('es-UY')} por ${usuario}.`)
+                    .query(`UPDATE ArchivosReferencia SET NotasAdicionales = @N + ' ' + ISNULL(NotasAdicionales, '') WHERE RefID = @R`)
+                    .catch(e => logger.warn('[usarMatrizAutomatica] no se pudo marcar el borrador: ' + e.message));
+            }
+            return responder(body);
+        };
+
+        // El mismo pedido que manda el botón de subir matriz, con el borrador como archivo. El resto
+        // del request (usuario, app) se hereda; uploadProductionFile borra el temporal al terminar.
+        const subida = Object.create(req);
+        subida.params = { ...req.params, ordenId: String(ordenId) };
+        subida.file = { path: tmp, originalname: ref.NombreOriginal || `matriz-${ordenId}.dst`, mimetype: 'application/octet-stream' };
+        subida.body = { tipoArchivo: 'MATRIZ' };
+        return exports.uploadProductionFile(subida, res);
+    } catch (e) {
+        logger.error('[usarMatrizAutomatica] ' + e.message);
+        res.status(500).json({ error: 'No se pudo usar el borrador como matriz: ' + e.message });
+    }
+};
+
+// DELETE /orders/:ordenId/matriz/:archivoId — [BORDADO] borra una matriz subida por error.
+// No usa el borrado general (deleteFile), que borra por número también en ServiciosExtraOrden: acá
+// solo se toca una fila MATRIZ de ESA orden. Si no le queda otra matriz, el requisito «Matriz»
+// vuelve a pendiente (lo cumplió la subida, ver uploadProductionFile).
+exports.borrarMatrizBordado = async (req, res) => {
+    const ordenId = parseInt(req.params.ordenId, 10);
+    const archivoId = parseInt(req.params.archivoId, 10);
+    try {
+        const pool = await getPool();
+        const tx = new sql.Transaction(pool);
+        await tx.begin();
+        try {
+            const f = (await new sql.Request(tx)
+                .input('A', sql.Int, archivoId)
+                .input('O', sql.Int, ordenId)
+                .query(`SELECT ArchivoID, NombreArchivo FROM ArchivosOrden
+                        WHERE ArchivoID = @A AND OrdenID = @O AND TipoArchivo = 'MATRIZ'`)).recordset[0];
+            if (!f) {
+                await tx.rollback();
+                return res.status(404).json({ error: 'No se encontró esa matriz en la orden.' });
+            }
+            await new sql.Request(tx).input('A', sql.Int, archivoId)
+                .query(`DELETE FROM ArchivosOrden WHERE ArchivoID = @A AND TipoArchivo = 'MATRIZ'`);
+            const quedan = (await new sql.Request(tx).input('O', sql.Int, ordenId)
+                .query(`SELECT COUNT(*) AS n FROM ArchivosOrden
+                        WHERE OrdenID = @O AND TipoArchivo = 'MATRIZ' AND ISNULL(EstadoArchivo, '') <> 'Cancelado'`)).recordset[0].n;
+            if (!quedan) {
+                await new sql.Request(tx).input('O', sql.Int, ordenId).query(`
+                    UPDATE c SET Estado = 'PENDIENTE', FechaCumplimiento = NULL, Observaciones = 'Matriz borrada'
+                    FROM OrdenCumplimientoRequisitos c
+                    JOIN ConfigRequisitosProduccion r ON r.RequisitoID = c.RequisitoID
+                    WHERE c.OrdenID = @O AND r.AreaID = 'EMB' AND r.CodigoRequisito = 'MATRIZ'
+                `);
+            }
+            const usuario = String(req.user?.usuario || req.user?.name || req.user?.id || 'Sistema');
+            await new sql.Request(tx)
+                .input('O', sql.Int, ordenId)
+                .input('User', sql.VarChar, usuario)
+                .input('Det', sql.NVarChar, `Matriz borrada: ${f.NombreArchivo}${quedan ? '' : ' — el requisito «Matriz» vuelve a pendiente'}`.substring(0, 499))
+                .query(`
+                    INSERT INTO HistorialOrdenes (OrdenID, Estado, FechaInicio, FechaFin, Usuario, Detalle)
+                    SELECT @O, ISNULL(EstadoenArea, 'Pendiente'), GETDATE(), GETDATE(), @User, @Det FROM Ordenes WHERE OrdenID = @O
+                `);
+            await tx.commit();
+            logger.info(`[borrarMatrizBordado] Orden ${ordenId}: matriz ${f.NombreArchivo} borrada por ${usuario}${quedan ? '' : ' (requisito MATRIZ pendiente)'}`);
+            const io = req.app.get('socketio');
+            if (io) io.emit('server:order_updated', { orderId: ordenId });
+            res.json({ success: true, requisitoPendiente: !quedan });
+        } catch (inner) {
+            try { await tx.rollback(); } catch (_) { }
+            throw inner;
+        }
+    } catch (e) {
+        logger.error('[borrarMatrizBordado] ' + e.message);
+        res.status(500).json({ error: 'No se pudo borrar la matriz: ' + e.message });
     }
 };
 

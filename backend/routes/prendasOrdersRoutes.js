@@ -187,16 +187,20 @@ router.get('/productos-terminados/:proIdProducto/servicios', verifyToken, async 
             const acc = await pool.request().input('PID', sql.Int, proId).query(`
                 IF OBJECT_ID('dbo.ProductoAccesorios', 'U') IS NOT NULL
                 SELECT ac.ID, ac.ItemProIdProducto, ac.WmsVarianteId, ac.Cantidad, ac.Obligatorio, ac.Cobro, ac.WmsDepositoId,
-                       LTRIM(RTRIM(a.Descripcion)) AS ItemDescripcion, v.nombre_variante AS VarianteNombre, v.sku AS Sku
+                       ISNULL(LTRIM(RTRIM(a.Descripcion)), wpm.Nombre) AS ItemDescripcion,
+                       ISNULL(v.nombre_variante, wv.NombreVariante) AS VarianteNombre, v.sku AS Sku
                 FROM dbo.ProductoAccesorios ac
                 LEFT JOIN dbo.Articulos a ON a.ProIdProducto = ac.ItemProIdProducto
                 LEFT JOIN dbo.Articulos_WMS_Variantes v ON v.wms_variante_id = ac.WmsVarianteId
+                -- [ACCESORIOS SOLO STOCK] sin artículo: nombre y variante del stock del WMS (la variante es fija)
+                LEFT JOIN dbo.Wms_Variantes wv ON wv.VarId = ac.WmsVarianteId
+                LEFT JOIN dbo.Wms_ProductosMaestros wpm ON wpm.PmaId = wv.PmaId
                 WHERE ac.ProIdProducto = @PID ORDER BY ISNULL(ac.Orden, 999), ac.ID`);
             accesorios = acc.recordset || [];
             // Sin variante fija, quien carga el pedido elige talle/color: se mandan las variantes del artículo
             // Un artículo con UNA sola variante (ej. "Auriculares" = el artículo mismo) no da nada a elegir:
             // se resuelve sola y VarianteUnica avisa a los formularios que no la muestren.
-            const ids = [...new Set(accesorios.map(a => a.ItemProIdProducto))];
+            const ids = [...new Set(accesorios.map(a => a.ItemProIdProducto).filter(Boolean))];
             if (ids.length) {
                 const vs = await pool.request().query(`SELECT Idproid, wms_variante_id, nombre_variante, sku FROM dbo.Articulos_WMS_Variantes WHERE Idproid IN (${ids.join(',')}) ORDER BY nombre_variante`);
                 accesorios = accesorios.map(a => {

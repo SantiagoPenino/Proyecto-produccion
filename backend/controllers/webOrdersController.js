@@ -2154,6 +2154,20 @@ exports.createWebOrder = async (req, res) => {
                 logger.error(`[TPU-Matriz] no se pudo encolar la generación: ${matrizErr.message}`);
             }
 
+            // --- BORDADO: matriz automática (BORRADOR) en segundo plano ---
+            // Con la ficha del diseño ya guardada (paleta + medidas), Ink/Stitch arma un DST que queda
+            // en Archivos de Referencia para que el diseñador lo revise. No cumple el requisito MATRIZ.
+            try {
+                const bordadoMatrizService = require('../services/bordadoMatrizService');
+                if (bordadoMatrizService.habilitado()) {
+                    pendingOrderExecutions
+                        .filter(e => e.disenoBordado && e.newOrdenID)
+                        .forEach(e => bordadoMatrizService.encolarGeneracion({ ordenId: e.newOrdenID }));
+                }
+            } catch (bordadoErr) {
+                logger.error(`[Bordado-Matriz] no se pudo encolar la generación: ${bordadoErr.message}`);
+            }
+
             // --- AUTO-COTIZACIÓN ASÍNCRONA ---
             // Disparar el cálculo de precios en segundo plano para que la orden
             // aparezca cotizada en Caja sin requerir un sync manual del ERP.
@@ -3608,6 +3622,91 @@ exports.analizarMatrizTpu = async (req, res) => {
         borrarTmp();
         logger.error('[TPU-Matriz] analizar: ' + err.message);
         res.status(500).json({ error: 'No se pudo analizar el PDF: ' + err.message });
+    }
+};
+
+// ─── BORDADO: logo en vector (PDF o AI) ──────────────────────────────────────
+// POST /api/web-orders/bordado/analizar-vector (multipart 'file'). El MISMO control que TPU "Hago mi
+// matriz" (tpu_matriz.py analizar): una sola página, sin imágenes, textos convertidos a curvas. Si pasa,
+// devuelve los colores de relleno exactos, las formas (sin el fondo blanco de la hoja) y la medida real
+// del dibujo en mm, y el portal arma con eso la paleta de hilos.
+// A diferencia de TPU no guarda nada (no hay token): el archivo se lee y se borra, y el logo viaja con el
+// pedido como siempre. Un archivo que no pasa el control NO se rechaza —bordado acepta igual PNG y JPG—:
+// vuelve con su motivo y el pedido sigue, como hoy, sin análisis.
+exports.analizarVectorBordado = async (req, res) => {
+    const tpuMatrizService = require('../services/tpuMatrizService');
+    const file = req.file;
+    if (!file) return res.status(400).json({ error: 'Falta el archivo.' });
+    const borrarTmp = () => { try { if (file.path && fs.existsSync(file.path)) fs.unlinkSync(file.path); } catch (_) { } };
+    const noVector = (motivo) => res.json({
+        success: true,
+        analisis: { vector: false, motivo, bbox: null, bbox_mm: null, formas: [], colores: [], avisos: [] },
+    });
+    try {
+        if (!/\.(pdf|ai)$/i.test(file.originalname || '')) return noVector('Solo se analizan vectores en PDF o AI.');
+        if (file.size > tpuMatrizService.MAX_PDF_BYTES) {
+            return noVector('El archivo supera los 50 MB. Un vector limpio pesa mucho menos: revisá que no tenga imágenes incrustadas.');
+        }
+        const analisis = await tpuMatrizService.analizar(file.path);
+        res.json({ success: true, analisis });
+    } catch (err) {
+        // Sin Python o sin sus librerías el problema es del servidor, no del archivo: el portal sigue
+        // como si no se pudiera analizar, sin culpar al logo.
+        if (/ENOENT|No module named|ModuleNotFoundError|no se encontr/i.test(err.message)) {
+            logger.error('[Bordado-Vector] el análisis no está disponible: ' + err.message);
+            return res.status(503).json({ error: 'El análisis de vectores no está disponible por el momento.' });
+        }
+        // No abre como PDF: un .ai viejo (PostScript, Illustrator 10 o anterior) o un archivo dañado.
+        logger.warn('[Bordado-Vector] no abre como vector: ' + err.message);
+        noVector('No se pudo leer como vector. Exportalo como PDF desde el programa donde lo diseñaste (Illustrator, CorelDRAW, Inkscape…).');
+    } finally {
+        borrarTmp();
+    }
+};
+
+// ─── BORDADO: carta de hilos para el portal ──────────────────────────────────
+// GET /api/web-orders/hilos-bordado — los hilos ACTIVOS del nomenclador (Configurar Productos ›
+// Hilos, dbo.CatalogoHilos), en el formato que usa el portal: [{ codigo, nombre, hex }]. Solo
+// lectura. Sin la tabla (falta configurador_hilos.sql) devuelve vacío y el portal sigue con su JSON.
+exports.getHilosBordado = async (req, res) => {
+    try {
+        const pool = await getPool();
+        if (!(await require('./configuradorController').tieneHilos(pool))) return res.json({ success: true, data: [], faltaSql: true });
+        const r = await pool.request().query(`
+            SELECT Codigo AS codigo, Nombre AS nombre, Hex AS hex
+            FROM dbo.CatalogoHilos WHERE Activo = 1 ORDER BY ISNULL(Orden, 999), Nombre`);
+        res.json({ success: true, data: r.recordset });
+    } catch (e) {
+        logger.error('[Bordado-Hilos] ' + e.message);
+        res.status(500).json({ error: e.message });
+    }
+};
+
+// ─── BORDADO: vista de puntadas para el portal ───────────────────────────────
+// POST /api/web-orders/bordado/vista-puntadas — body JSON { paleta, anchoCm, altoCm } (la paleta
+// que calculó el portal al analizar el logo). Devuelve { svg }: las puntadas que se van a bordar,
+// dibujadas con el brillo del hilo (bordadoMatrizService.vistaPuntadas). El portal la muestra en
+// «Viendo tu diseño» en lugar del prediseño. Va comprimida: el SVG trae una forma por puntada
+// (2,3 MB un logo de 4 cm; 240 KB en gzip) y el servidor no tiene compresión general.
+exports.vistaPuntadasBordado = async (req, res) => {
+    const svc = require('../services/bordadoMatrizService');
+    if (!svc.habilitado()) return res.status(503).json({ error: 'La vista de puntadas no está disponible.' });
+    const { paleta, anchoCm, altoCm } = req.body || {};
+    const ancho = parseFloat(anchoCm), alto = parseFloat(altoCm);
+    if (!Array.isArray(paleta) || !paleta.length) return res.status(400).json({ error: 'Falta la paleta de hilos.' });
+    if (!(ancho > 0 && alto > 0) || ancho > 60 || alto > 60) return res.status(400).json({ error: 'El ancho y el largo tienen que estar entre 0 y 60 cm.' });
+    try {
+        const svg = await svc.vistaPuntadas(paleta, ancho * 10, alto * 10);
+        const cuerpo = JSON.stringify({ success: true, svg });
+        res.set('Content-Type', 'application/json; charset=utf-8');
+        if (/\bgzip\b/.test(String(req.headers['accept-encoding'] || ''))) {
+            res.set('Content-Encoding', 'gzip');
+            return res.end(require('zlib').gzipSync(cuerpo));
+        }
+        res.end(cuerpo);
+    } catch (e) {
+        logger.warn('[Bordado-Vista] ' + e.message);
+        res.status(500).json({ error: 'No se pudo armar la vista de puntadas: ' + e.message });
     }
 };
 

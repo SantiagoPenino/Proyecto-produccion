@@ -123,12 +123,14 @@ async function permitidoPor(cx, padreId) {
     const opc = await req(cx).input('P', sql.Int, padreId).query(`SELECT pto.TecnicaOpcionID AS id, t.AreaID FROM dbo.ProductoTecnicaOpciones pto JOIN dbo.TecnicaOpciones t ON t.TecnicaOpcionID = pto.TecnicaOpcionID WHERE pto.ProIdProducto = @P`);
     const hay = (await req(cx).query("SELECT OBJECT_ID('dbo.ProductoTelas', 'U') AS t, OBJECT_ID('dbo.ProductoAccesorios', 'U') AS a")).recordset[0];
     const tel = hay.t ? await req(cx).input('P', sql.Int, padreId).query('SELECT TelaProIdProducto AS id FROM dbo.ProductoTelas WHERE ProIdProducto = @P') : { recordset: [] };
-    const acc = hay.a ? await req(cx).input('P', sql.Int, padreId).query('SELECT ItemProIdProducto AS id FROM dbo.ProductoAccesorios WHERE ProIdProducto = @P') : { recordset: [] };
+    const acc = hay.a ? await req(cx).input('P', sql.Int, padreId).query('SELECT ItemProIdProducto AS id, WmsVarianteId AS varId FROM dbo.ProductoAccesorios WHERE ProIdProducto = @P') : { recordset: [] };
     return {
         tecnicas: tec.recordset.map(t => ({ areaId: t.AreaID, modo: t.Modo || 'LIBRE' })),
         opciones: opc.recordset.map(o => o.id),
         telas: tel.recordset.map(t => t.id),
-        accesorios: acc.recordset.map(a => a.id),
+        accesorios: acc.recordset.filter(a => a.id != null).map(a => a.id),
+        // [ACCESORIOS SOLO STOCK] los del padre sin artículo, por su variante del WMS
+        accesoriosStock: acc.recordset.filter(a => a.id == null && a.varId != null).map(a => a.varId),
     };
 }
 
@@ -324,7 +326,9 @@ async function prepararGuardarVariante(cx, varId, padreId, body) {
     }
     if (b.accesorios !== undefined) {
         const delPadre = new Set(per.accesorios);
-        if ((b.accesorios || []).some(a => !delPadre.has(Number(a.itemProIdProducto)))) throw fallo(400, 'La variante solo puede llevar accesorios que lleva el padre.');
+        const delPadreStock = new Set(per.accesoriosStock);
+        const esDelPadre = (a) => (Number(a.itemProIdProducto) > 0 ? delPadre.has(Number(a.itemProIdProducto)) : delPadreStock.has(Number(a.wmsVarianteId)));
+        if ((b.accesorios || []).some(a => !esDelPadre(a))) throw fallo(400, 'La variante solo puede llevar accesorios que lleva el padre.');
     }
     return b;
 }
@@ -369,7 +373,9 @@ async function podarVariantes(tx, padreId) {
         WHERE pto.ProIdProducto IN (${ids}) AND (t.AreaID NOT IN (${areas}) OR (t.AreaID IN (${restringidas}) AND pto.TecnicaOpcionID NOT IN (${lista(per.opciones)})))`);
     await borrar('telas', `DELETE FROM dbo.ProductoTelas WHERE ProIdProducto IN (${ids}) AND TelaProIdProducto NOT IN (${lista(per.telas)})`);
     if ((await req(tx).query("SELECT OBJECT_ID('dbo.ProductoAccesorios', 'U') AS t")).recordset[0].t) {
-        await borrar('accesorios', `DELETE FROM dbo.ProductoAccesorios WHERE ProIdProducto IN (${ids}) AND ItemProIdProducto NOT IN (${lista(per.accesorios)})`);
+        await borrar('accesorios', `DELETE FROM dbo.ProductoAccesorios WHERE ProIdProducto IN (${ids})
+            AND ((ItemProIdProducto IS NOT NULL AND ItemProIdProducto NOT IN (${lista(per.accesorios)}))
+              OR (ItemProIdProducto IS NULL AND ISNULL(WmsVarianteId, 0) NOT IN (${lista(per.accesoriosStock)})))`);
     }
     return hecho;
 }

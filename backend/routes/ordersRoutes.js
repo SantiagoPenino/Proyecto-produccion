@@ -92,6 +92,12 @@ router.post('/:ordenId/boceto-aprobado', verifyToken, uploadProdFile.single('fil
 
 // [PRO] Archivos de referencia: subir (multipart {file, tipo, nota}) y eliminar.
 router.post('/:ordenId/reference-file', verifyToken, uploadProdFile.single('file'), ordersController.uploadReferenceFile);
+// [BORDADO] Matriz automática (borrador de Ink/Stitch, ver services/bordadoMatrizService.js):
+// generarla a mano y pasarla a matriz de la orden (va por la misma subida que production-file).
+router.post('/:ordenId/matriz-automatica', verifyToken, ordersController.generarMatrizAutomatica);
+router.post('/:ordenId/matriz-automatica/:refId/usar', verifyToken, ordersController.usarMatrizAutomatica);
+// [BORDADO] Borrar una matriz subida por error (vuelve el requisito «Matriz» a pendiente si no queda otra).
+router.delete('/:ordenId/matriz/:archivoId', verifyToken, ordersController.borrarMatrizBordado);
 router.delete('/reference/:refId', verifyToken, ordersController.deleteReferenceFile);
 // [FICHA DEL PEDIDO] generar/actualizar (se pega a la PRO como FICHA_PEDIDO) y ver el PDF
 router.post('/:ordenId/ficha-pedido', verifyToken, ordersController.generarFichaPedido);

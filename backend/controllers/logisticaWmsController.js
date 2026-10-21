@@ -158,14 +158,16 @@ exports.getPendingOrders = async (req, res) => {
                 p.ID as PedidoID, p.NoDocERP, p.ClienteID, p.MontoTotal, p.Moneda, p.FechaGeneracion, p.EstadoCobro,
                 c.Nombre as ClienteNombre,
                 d.CodArticulo as wms_variante_id, d.Cantidad,
-                a.Descripcion as nombre_producto,
-                awv.sku, awv.nombre_variante,
+                ISNULL(a.Descripcion, wpm.Nombre) as nombre_producto,   -- [ACCESORIOS SOLO STOCK] sin artículo: el nombre del WMS
+                awv.sku, ISNULL(awv.nombre_variante, wv.NombreVariante) AS nombre_variante,
                 loc.pasillo, loc.estante
             FROM PedidosCobranza p
             LEFT JOIN Clientes c ON p.ClienteID = c.CliIdCliente
             INNER JOIN PedidosCobranzaDetalle d ON p.ID = d.PedidoCobranzaID
             LEFT JOIN Articulos a ON d.ProIdProducto = a.ProIdProducto
             LEFT JOIN Articulos_WMS_Variantes awv ON CAST(awv.wms_variante_id AS VARCHAR(100)) = CAST(d.CodArticulo AS VARCHAR(100))
+            LEFT JOIN Wms_Variantes wv ON wv.VarId = TRY_CAST(d.CodArticulo AS INT)
+            LEFT JOIN Wms_ProductosMaestros wpm ON wpm.PmaId = wv.PmaId
             LEFT JOIN Articulos_UbicacionLocal loc ON a.ProIdProducto = loc.Idproid
             WHERE p.NoDocERP LIKE 'VEN-%'
               AND p.EstadoCobro IN ('PENDIENTE', 'EN_PREPARACION')
@@ -998,14 +1000,16 @@ exports.getPreparedOrders = async (req, res) => {
                 p.ID as PedidoID, p.NoDocERP, p.ClienteID, p.MontoTotal, p.Moneda, p.FechaGeneracion, p.EstadoCobro, 
                 c.Nombre as ClienteNombre, 
                 d.CodArticulo as wms_variante_id, d.Cantidad, 
-                a.Descripcion as nombre_producto,
-                awv.sku, awv.nombre_variante, 
+                ISNULL(a.Descripcion, wpm.Nombre) as nombre_producto,   -- [ACCESORIOS SOLO STOCK] sin artículo: el nombre del WMS
+                awv.sku, ISNULL(awv.nombre_variante, wv.NombreVariante) AS nombre_variante, 
                 loc.pasillo, loc.estante 
             FROM PedidosCobranza p 
             LEFT JOIN Clientes c ON p.ClienteID = c.CliIdCliente 
             INNER JOIN PedidosCobranzaDetalle d ON p.ID = d.PedidoCobranzaID 
             LEFT JOIN Articulos a ON d.ProIdProducto = a.ProIdProducto
             LEFT JOIN Articulos_WMS_Variantes awv ON CAST(awv.wms_variante_id AS VARCHAR(100)) = CAST(d.CodArticulo AS VARCHAR(100)) 
+            LEFT JOIN Wms_Variantes wv ON wv.VarId = TRY_CAST(d.CodArticulo AS INT)
+            LEFT JOIN Wms_ProductosMaestros wpm ON wpm.PmaId = wv.PmaId
             LEFT JOIN Articulos_UbicacionLocal loc ON a.ProIdProducto = loc.Idproid 
             WHERE p.NoDocERP LIKE 'VEN-%' AND p.EstadoCobro = 'PREPARADO' 
             ORDER BY p.FechaGeneracion ASC
@@ -1086,14 +1090,16 @@ exports.getHistorialPedidos = async (req, res) => {
                     p.ID as PedidoID, p.NoDocERP, p.ClienteID, p.MontoTotal, p.Moneda, p.FechaGeneracion, p.EstadoCobro,
                     c.Nombre as ClienteNombre,
                     d.CodArticulo as wms_variante_id, d.Cantidad,
-                    a.Descripcion as nombre_producto,
-                    awv.sku, awv.nombre_variante,
+                    ISNULL(a.Descripcion, wpm.Nombre) as nombre_producto,   -- [ACCESORIOS SOLO STOCK] sin artículo: el nombre del WMS
+                    awv.sku, ISNULL(awv.nombre_variante, wv.NombreVariante) AS nombre_variante,
                     loc.pasillo, loc.estante
                 FROM PedidosCobranza p
                 LEFT JOIN Clientes c ON p.ClienteID = c.CliIdCliente
                 INNER JOIN PedidosCobranzaDetalle d ON p.ID = d.PedidoCobranzaID
                 LEFT JOIN Articulos a ON d.ProIdProducto = a.ProIdProducto
                 LEFT JOIN Articulos_WMS_Variantes awv ON CAST(awv.wms_variante_id AS VARCHAR(100)) = CAST(d.CodArticulo AS VARCHAR(100))
+                LEFT JOIN Wms_Variantes wv ON wv.VarId = TRY_CAST(d.CodArticulo AS INT)
+                LEFT JOIN Wms_ProductosMaestros wpm ON wpm.PmaId = wv.PmaId
                 LEFT JOIN Articulos_UbicacionLocal loc ON a.ProIdProducto = loc.Idproid
                 WHERE p.ID IN (
                     SELECT TOP 50 p2.ID FROM PedidosCobranza p2

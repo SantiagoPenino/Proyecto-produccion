@@ -12,6 +12,7 @@ import OrdenProntaModal from './components/OrdenProntaModal';
 import ReportarFallaModal from './components/ReportarFallaModal';
 import PendientesPedidoPanel from './components/PendientesPedidoPanel';
 import { logisticsService } from '../../services/modules/logisticsService';
+import { API_URL } from '../../services/apiClient';
 
 // Mismos 3 colores que usa el semáforo de PlanificacionPage.jsx (duplicado acá a propósito:
 // son 2 líneas, no vale la pena acoplar este archivo a otro solo para reusarlas).
@@ -36,8 +37,9 @@ const AREA_META = {
  * La miniatura de Drive solo carga si el archivo quedó compartido; si no, devuelve
  * error y ANTES el recuadro quedaba en blanco, sin ícono ni nombre — el bordador
  * no sabía si no había arte o si no se veía. Ahora intenta en orden:
- *   1. la miniatura de Drive
- *   2. la miniatura local que genera el sistema al subir (thumbnailGenerator)
+ *   1. la miniatura local que el backend confirmó que existe (thumbLocal: carpeta
+ *      de la orden o REF-<pedido>, donde la deja el portal)
+ *   2. la miniatura de Drive
  *   3. un recuadro con el nombre del archivo, igual clickeable
  *
  * Y el link va SIEMPRE al archivo real (UbicacionStorage), no a la miniatura:
@@ -46,13 +48,28 @@ const AREA_META = {
 // [VISOR] Archivo grande adentro de la bandeja: imagen si hay miniatura/previsualización, si no el
 // visor de Drive en un iframe. "Pendiente" = el archivo nunca terminó de subirse (no hay qué abrir).
 const driveIdDe = (u) => { const m = String(u || '').match(/\/d\/([A-Za-z0-9_-]{10,})|[?&]id=([A-Za-z0-9_-]{10,})/); return m ? (m[1] || m[2]) : null; };
+// El archivo de Drive a través del backend (/view-drive-file, sin token, igual que FileControlCard):
+// lo baja con la cuenta del sistema, así se ve aunque no esté compartido. El link directo de
+// Drive (uc?export=view, /preview) redirige al login si el navegador no tiene una cuenta con
+// acceso, y el visor quedaba en blanco.
+const urlProxyDrive = (destino) => {
+    const base = API_URL.endsWith('/api') ? API_URL.replace('/api', '') : API_URL;
+    return `${base}/api/production-file-control/view-drive-file?url=${encodeURIComponent(destino)}`;
+};
 const VisorArchivo = ({ archivo, onClose }) => {
+    // Imagen: primero el archivo real por el backend, después la miniatura local; si nada carga, aviso.
+    const [intento, setIntento] = useState(0);
     if (!archivo) return null;
     const destino = archivo.UbicacionStorage || archivo.destino || '';
     const pendiente = !destino || /^pendiente$/i.test(String(destino).trim());
     const id = driveIdDe(destino);
-    const esImagen = /\.(png|jpe?g|webp|gif)$/i.test(String(archivo.NombreOriginal || archivo.nombre || ''));
-    const src = id ? (esImagen ? `https://drive.google.com/uc?export=view&id=${id}` : `https://drive.google.com/file/d/${id}/preview`) : destino;
+    const nombreArchivo = String(archivo.NombreOriginal || archivo.nombre || '');
+    const esImagen = /\.(png|jpe?g|webp|gif)$/i.test(nombreArchivo);
+    const esPdf = /\.pdf$/i.test(nombreArchivo);
+    const fuentesImagen = id ? [urlProxyDrive(destino), archivo.thumbLocal].filter(Boolean) : [destino];
+    const src = esImagen
+        ? fuentesImagen[intento]
+        : (id ? (esPdf ? urlProxyDrive(destino) : `https://drive.google.com/file/d/${id}/preview`) : destino);
     const nombre = archivo.NombreOriginal || archivo.nombre || archivo.label || 'Archivo';
     return (
         <div className="fixed inset-0 bg-black/70 z-[6000] flex items-center justify-center p-3" onClick={onClose}>
@@ -60,14 +77,20 @@ const VisorArchivo = ({ archivo, onClose }) => {
                 <div className="flex items-center justify-between gap-3 px-4 py-2.5 border-b border-zinc-200">
                     <h3 className="text-sm font-black text-zinc-800 truncate">{archivo.label ? `${archivo.label} · ` : ''}{String(nombre).replace(/^REF-\d+-/, '')}</h3>
                     <div className="flex items-center gap-2">
-                        {!pendiente && <a href={destino} target="_blank" rel="noopener noreferrer" className="text-xs font-bold text-brand-cyan border border-brand-cyan/30 rounded-lg px-3 py-1.5 hover:bg-brand-cyan/5">Abrir en pestaña nueva</a>}
+                        {!pendiente && <a href={id && (esImagen || esPdf) ? urlProxyDrive(destino) : destino} target="_blank" rel="noopener noreferrer" className="text-xs font-bold text-brand-cyan border border-brand-cyan/30 rounded-lg px-3 py-1.5 hover:bg-brand-cyan/5">Abrir en pestaña nueva</a>}
                         <button type="button" onClick={onClose} className="text-xs font-bold text-zinc-600 border border-zinc-300 rounded-lg px-3 py-1.5 hover:bg-zinc-100">Cerrar</button>
                     </div>
                 </div>
                 {pendiente ? (
                     <div className="flex-1 flex items-center justify-center text-sm text-zinc-500 p-6 text-center">Este archivo todavía no terminó de subirse al Drive (quedó "Pendiente" al crear el pedido). Volvé a subirlo desde la ficha de la orden.</div>
                 ) : esImagen && id ? (
-                    <div className="flex-1 overflow-auto flex items-center justify-center bg-zinc-100 rounded-b-2xl"><img src={src} alt={nombre} className="max-w-full max-h-full object-contain" onError={(e) => { e.currentTarget.style.display = 'none'; }} /></div>
+                    <div className="flex-1 overflow-auto flex items-center justify-center bg-zinc-100 rounded-b-2xl">
+                        {src ? (
+                            <img key={src} src={src} alt={nombre} className="max-w-full max-h-full object-contain" onError={() => setIntento(n => n + 1)} />
+                        ) : (
+                            <p className="text-sm text-zinc-500 p-6 text-center">No se pudo mostrar la imagen. Probá con «Abrir en pestaña nueva».</p>
+                        )}
+                    </div>
                 ) : (
                     <iframe title={nombre} src={src} className="flex-1 w-full rounded-b-2xl" allow="autoplay" />
                 )}
@@ -80,7 +103,8 @@ const MiniaturaRef = ({ archivo, codigoOrden, onOpen }) => {
     const localUrl = archivo.RefID && codigoOrden
         ? `/thumbnails/${encodeURIComponent(codigoOrden)}/${archivo.RefID}.jpg`
         : null;
-    const fuentes = [archivo.previewUrl, localUrl].filter(Boolean);
+    // Primero la miniatura local que el backend confirmó que existe (thumbLocal), después Drive.
+    const fuentes = [...new Set([archivo.thumbLocal, archivo.previewUrl, localUrl].filter(Boolean))];
     const [intento, setIntento] = useState(0);
 
     const src = fuentes[intento] || null;

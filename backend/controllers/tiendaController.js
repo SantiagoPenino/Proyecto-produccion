@@ -1,7 +1,7 @@
 const { getPool, sql } = require('../config/db');
 const { siguienteCodigoVenta } = require('../utils/codigoVenta');
 const logger = require('../utils/logger');
-const { calcularFechasOrden } = require('../services/fechaPrometidaService');
+const { calcularFechasOrden, tieneDiasEntrega } = require('../services/fechaPrometidaService');
 
 // [TIENDA] E-commerce del portal de clientes — F0: modelo de publicación + catálogo.
 // Plan: docs/ecommerce-portal-plan.md. La tabla TiendaProductos decide QUÉ artículos se ven
@@ -301,15 +301,19 @@ exports.getTiendaCatalogo = async (req, res) => {
 
         // 1. Productos publicados + precio base. Mismos filtros de higiene que
         //    /prendas-orders/productos-terminados (borrar/Mostrar).
+        //    + días hábiles de entrega del configurador (si ya se corrió configurador_dias_entrega.sql)
+        const conDias = await tieneDiasEntrega(pool);
         const prods = await pool.request().query(`
             SELECT tp.ProIdProducto, tp.TipoVitrina, tp.TituloVenta, tp.DescripcionVenta,
                    tp.CategoriaVitrina, tp.Orden, tp.PagoOnline,
                    LTRIM(RTRIM(a.Descripcion)) AS Descripcion,
                    LTRIM(RTRIM(a.CodArticulo)) AS CodArticulo,
-                   pb.Precio, pb.Moneda
+                   pb.Precio, pb.Moneda,
+                   ${conDias ? 'vc.DiasEntrega' : 'CAST(NULL AS INT) AS DiasEntrega'}
             FROM dbo.TiendaProductos tp
             INNER JOIN dbo.Articulos a ON a.ProIdProducto = tp.ProIdProducto
             LEFT JOIN dbo.PreciosBase pb ON pb.ProIdProducto = tp.ProIdProducto
+            ${conDias ? 'LEFT JOIN dbo.ProductoVentaConfig vc ON vc.ProIdProducto = tp.ProIdProducto' : ''}
             WHERE tp.Publicado = 1
               AND ISNULL(a.borrar, 0) = 0
               AND ISNULL(a.Mostrar, 1) = 1
@@ -414,6 +418,8 @@ exports.getTiendaCatalogo = async (req, res) => {
                 categoria: p.CategoriaVitrina || null,
                 orden: p.Orden || 0,
                 pagoOnline: !!p.PagoOnline,
+                // Días hábiles de entrega (Configurar Productos); null = no se muestra
+                diasEntrega: p.DiasEntrega > 0 ? p.DiasEntrega : null,
                 precio: precioBase,
                 moneda: monedaBase,
                 fotos: fotosPorProd[p.ProIdProducto] || [],

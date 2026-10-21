@@ -1,4 +1,6 @@
 import { contours } from 'd3-contour';
+import cartaHilos from './cartaHilosBordado.json';
+import { apiClient } from '../../../api/apiClient';
 
 // [BORDADO] Carta de hilos y cálculo de puntadas.
 //
@@ -12,35 +14,34 @@ import { contours } from 'd3-contour';
 //
 // La carta de abajo es la carta INTERNA de USER, no la de una marca. Si en algún
 // momento se quiere trabajar con la carta real (Madeira Classic 40, Isacord 40),
-// se reemplaza este array por la importación de su archivo .TCH y el resto del
+// se reemplaza el JSON por la importación de su archivo .TCH y el resto del
 // código sigue igual: solo necesita {codigo, nombre, hex}.
+//
+// La carta de verdad es el nomenclador de Configurar Productos › Hilos (dbo.CatalogoHilos),
+// que también usa la matriz automática del servidor. Acá arranca con el JSON
+// (cartaHilosBordado.json, la carga inicial y el respaldo si la tabla no está) y
+// cargarCartaHilos() la reemplaza por la del nomenclador, en el MISMO arreglo: todo lo que
+// usa CARTA_HILOS (hiloMasCercano, el editor de hilos) ve la nueva sin cambiar nada.
+export const CARTA_HILOS = [...cartaHilos];
 
-export const CARTA_HILOS = [
-    { codigo: 'USR-1001', nombre: 'Blanco',            hex: '#FFFFFF' },
-    { codigo: 'USR-1002', nombre: 'Crudo',             hex: '#F2E8D5' },
-    { codigo: 'USR-1010', nombre: 'Gris Perla',        hex: '#C9CCD1' },
-    { codigo: 'USR-1015', nombre: 'Gris Acero',        hex: '#7A7F87' },
-    { codigo: 'USR-1020', nombre: 'Negro',             hex: '#111111' },
-    { codigo: 'USR-2001', nombre: 'Rojo Fuego',        hex: '#D81E28' },
-    { codigo: 'USR-2005', nombre: 'Bordó',             hex: '#7B1420' },
-    { codigo: 'USR-2010', nombre: 'Naranja',           hex: '#F26522' },
-    { codigo: 'USR-2015', nombre: 'Coral',             hex: '#F2726F' },
-    { codigo: 'USR-3001', nombre: 'Amarillo Oro',      hex: '#F2C200' },
-    { codigo: 'USR-3005', nombre: 'Mostaza',           hex: '#C79A18' },
-    { codigo: 'USR-4001', nombre: 'Verde Manzana',     hex: '#7AC143' },
-    { codigo: 'USR-4005', nombre: 'Verde Bandera',     hex: '#128A3E' },
-    { codigo: 'USR-4010', nombre: 'Verde Botella',     hex: '#0B4A2F' },
-    { codigo: 'USR-5001', nombre: 'Celeste',           hex: '#57C3E8' },
-    { codigo: 'USR-5005', nombre: 'Azul Francia',      hex: '#1B6ACB' },
-    { codigo: 'USR-5010', nombre: 'Azul Marino',       hex: '#12275B' },
-    { codigo: 'USR-5015', nombre: 'Turquesa',          hex: '#00A99D' },
-    { codigo: 'USR-6001', nombre: 'Violeta',           hex: '#6B3FA0' },
-    { codigo: 'USR-6005', nombre: 'Fucsia',            hex: '#D6248C' },
-    { codigo: 'USR-6010', nombre: 'Rosa',              hex: '#F4A6C0' },
-    { codigo: 'USR-7001', nombre: 'Beige',             hex: '#D8C3A5' },
-    { codigo: 'USR-7005', nombre: 'Marrón',            hex: '#6B4423' },
-    { codigo: 'USR-7010', nombre: 'Camel',             hex: '#A9762F' },
-];
+let cartaCargada = null;
+/** Trae los hilos activos del nomenclador, una vez por sesión. Devuelve una promesa (true si los trajo). */
+export function cargarCartaHilos() {
+    if (!cartaCargada) {
+        cartaCargada = apiClient.get('/web-orders/hilos-bordado')
+            .then((r) => {
+                const hilos = (r?.data || []).filter(h => h.codigo && h.nombre && /^#[0-9A-Fa-f]{6}$/.test(h.hex || ''));
+                if (hilos.length) CARTA_HILOS.splice(0, CARTA_HILOS.length, ...hilos);
+                return hilos.length > 0;
+            })
+            .catch((e) => {
+                console.warn('[BORDADO] Sin el nomenclador de hilos, queda la carta de respaldo:', e?.message);
+                cartaCargada = null;   // se reintenta la próxima vez
+                return false;
+            });
+    }
+    return cartaCargada;
+}
 
 // Las tres puntadas reales + dos casos que el taller igual necesita distinguir.
 // `densidad` = puntadas por pulgada² (rango de la industria, tomado al medio).
@@ -67,6 +68,12 @@ const CM2_POR_PULGADA2 = 6.4516;
 // cubre y corta la goma limpio. Un relleno tatami no la corta y queda sucio.
 export const FACTOR_RELIEVE = 1.5;
 export const PUNTADA_RELIEVE = 'SATEN';
+
+// [RELIEVE 3D] APAGADO (20/10, pedido del usuario: por ahora no se usa). En false
+// no se ofrece en ningún lado del pedido de bordado —ni la casilla de la tarjeta
+// del diseño ni la del editor de hilos— y el pedido sale sin relieve. Todo lo de
+// relieve sigue en el código: para volver a ofrecerlo alcanza con ponerlo en true.
+export const RELIEVE_3D_HABILITADO = false;
 
 /** Puntadas de UNA pieza: su parte del área, a la densidad de su tipo de puntada. */
 export function estimarPuntadas({ anchoCm, altoCm, cobertura, tipoPuntada, relieve = false }) {
@@ -170,22 +177,30 @@ export function detectarColores(ctx, ancho, alto, maxColores = 6) {
  *
  * Devuelve cuántos píxeles borró, para poder avisar si no encontró fondo.
  */
-export function quitarFondo(ctx, w, h, tolerancia = 42) {
-    const imgData = ctx.getImageData(0, 0, w, h);
-    const d = imgData.data;
-
-    // Color del fondo: el más repetido entre las cuatro esquinas.
-    const esquinas = [0, (w - 1), (h - 1) * w, (h - 1) * w + (w - 1)];
+/**
+ * Color del fondo: el más repetido entre las cuatro esquinas, como [r, g, b].
+ * null si las esquinas ya son transparentes.
+ */
+export function colorDelFondo(ctx, w, h) {
     const votos = new Map();
-    for (const n of esquinas) {
-        const i = n * 4;
-        if (d[i + 3] < 128) continue;         // ya es transparente
-        const k = `${d[i]},${d[i + 1]},${d[i + 2]}`;
+    for (const [x, y] of [[0, 0], [w - 1, 0], [0, h - 1], [w - 1, h - 1]]) {
+        const p = ctx.getImageData(x, y, 1, 1).data;
+        if (p[3] < 128) continue;             // ya es transparente
+        const k = `${p[0]},${p[1]},${p[2]}`;
         votos.set(k, (votos.get(k) || 0) + 1);
     }
-    if (!votos.size) return 0;                // las esquinas ya son transparentes
+    if (!votos.size) return null;
     const [mejorK] = [...votos.entries()].sort((a, b) => b[1] - a[1])[0];
-    const [fr, fg, fb] = mejorK.split(',').map(Number);
+    return mejorK.split(',').map(Number);
+}
+
+export function quitarFondo(ctx, w, h, tolerancia = 42) {
+    const fondo = colorDelFondo(ctx, w, h);
+    if (!fondo) return 0;                     // las esquinas ya son transparentes
+    const [fr, fg, fb] = fondo;
+
+    const imgData = ctx.getImageData(0, 0, w, h);
+    const d = imgData.data;
 
     const tol2 = tolerancia * tolerancia;
     const parecido = (i) =>
@@ -248,6 +263,153 @@ export function quitarFondo(ctx, w, h, tolerancia = 42) {
 }
 
 // =====================================================================
+// RECORTE AL DIBUJO
+// =====================================================================
+// El ancho y el largo que carga el cliente son los del LOGO, no los de la
+// imagen: un logo apaisado guardado en un PNG cuadrado con margen blanco tiene
+// que medir como apaisado. Por eso lo que mide el arte (la proporción que ata
+// ancho y largo, la vista a tamaño real y la resolución del editor) y el
+// análisis automático trabajan sobre el dibujo, sin el margen.
+
+/** Caja de los píxeles con dibujo (no transparentes) del lienzo, o null si quedó vacío. */
+export function cajaDelDibujo(ctx, w, h) {
+    const { data } = ctx.getImageData(0, 0, w, h);
+    let x0 = w, y0 = h, x1 = -1, y1 = -1;
+    for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+            if (data[(y * w + x) * 4 + 3] < 128) continue;
+            if (x < x0) x0 = x;
+            if (x > x1) x1 = x;
+            if (y < y0) y0 = y;
+            if (y > y1) y1 = y;
+        }
+    }
+    return x1 < 0 ? null : { x: x0, y: y0, w: x1 - x0 + 1, h: y1 - y0 + 1 };
+}
+
+// Blanco o casi: un JPG nunca trae el blanco puro.
+const esPapel = (rgb) => !!rgb && rgb.every(v => v >= 215);
+
+// Hay fondo de verdad cuando al menos 3 de las 4 esquinas son de ese color (o
+// transparentes). Con un logo recortado justo, dos esquinas pueden ser de un
+// color del dibujo, y "quitar el fondo" se comería parte del logo.
+function fondoParejo(ctx, w, h, fondo) {
+    const [r, g, b] = fondo;
+    let parejas = 0;
+    for (const [x, y] of [[0, 0], [w - 1, 0], [0, h - 1], [w - 1, h - 1]]) {
+        const p = ctx.getImageData(x, y, 1, 1).data;
+        if (p[3] < 128 || dist({ r: p[0], g: p[1], b: p[2] }, { r, g, b }) <= 42) parejas++;
+    }
+    return parejas >= 3;
+}
+
+/**
+ * Dibuja una zona de la imagen en un lienzo de hasta `maxLado` px de lado y le
+ * quita el fondo, salvo que no corresponda.
+ *
+ * Solo se quita si el fondo es parejo en las esquinas (ver fondoParejo). Y si
+ * quitarlo se come casi todo (más del 92%), en general el arte no tenía fondo
+ * liso —un logo a sangre, un parche de un color— y se deshace en vez de dejar el
+ * lienzo vacío. La excepción es el fondo blanco: un logo chico en una hoja
+ * blanca grande también pasa del 92%, y ahí lo que se borró es margen, no
+ * dibujo. Antes eso se deshacía y el blanco quedaba como un hilo más, con casi
+ * toda la cobertura.
+ */
+function lienzoSinFondo(img, zona, maxLado) {
+    const escala = Math.min(1, maxLado / Math.max(zona.w, zona.h));
+    const w = Math.max(1, Math.round(zona.w * escala));
+    const h = Math.max(1, Math.round(zona.h * escala));
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    const pintar = () => ctx.drawImage(img, zona.x, zona.y, zona.w, zona.h, 0, 0, w, h);
+    pintar();
+
+    const fondo = colorDelFondo(ctx, w, h);
+    if (fondo && !fondoParejo(ctx, w, h, fondo)) return { c, ctx, w, h, sinFondo: false };
+    const borrados = quitarFondo(ctx, w, h);
+    let sinFondo = borrados > 0;
+    if (borrados / (w * h) > 0.92 && !(esPapel(fondo) && cajaDelDibujo(ctx, w, h))) {
+        ctx.clearRect(0, 0, w, h);
+        pintar();
+        sinFondo = false;
+    }
+    return { c, ctx, w, h, sinFondo };
+}
+
+/**
+ * Deja el arte listo para medirlo y analizarlo: sin fondo y recortado al dibujo
+ * (con un poco de margen), en un lienzo de hasta `maxLado` px de lado.
+ *
+ * Va en dos pasadas. La primera, sobre la imagen entera, ubica el dibujo. La
+ * segunda vuelve a dibujar SOLO esa zona, para que el logo aproveche toda la
+ * resolución del lienzo y no solo la parte que ocupaba dentro de la imagen. A
+ * esa zona se le deja un poco de margen: así sus esquinas siguen siendo fondo y
+ * se puede quitar (recortado justo, un logo rectangular tiene sus esquinas en
+ * el dibujo y el fondo se lo comería a él).
+ *
+ * El análisis y el editor trabajan los dos sobre `lienzoZona`, así los contornos
+ * de las piezas y el prediseño quedan en las mismas coordenadas. El recorte
+ * justo (`caja`, `proporcion`) es solo para medir.
+ *
+ * Devuelve, o null si la imagen está vacía:
+ *   · proporcion  — ancho / largo del dibujo
+ *   · caja        — el dibujo, en píxeles de la imagen original
+ *   · zona        — el dibujo con su margen, en píxeles de la imagen original
+ *   · lienzoZona  — la zona en el lienzo, sin fondo si correspondía quitarlo
+ *   · sinFondo    — si se quitó el fondo
+ */
+export function prepararArte(img, maxLado = 420) {
+    const W = img.naturalWidth || img.width;
+    const H = img.naturalHeight || img.height;
+    if (!(W > 0 && H > 0)) return null;
+
+    // 1ª pasada: dónde está el dibujo dentro de la imagen.
+    const a = lienzoSinFondo(img, { x: 0, y: 0, w: W, h: H }, maxLado);
+    const ca = cajaDelDibujo(a.ctx, a.w, a.h);
+    if (!ca) return null;
+    const ex = W / a.w, ey = H / a.h;         // px de la imagen por px del lienzo
+    const margen = Math.max(2, Math.round(Math.max(ca.w, ca.h) * 0.03));
+    const x = Math.max(0, Math.floor((ca.x - margen) * ex));
+    const y = Math.max(0, Math.floor((ca.y - margen) * ey));
+    let zona = {
+        x, y,
+        w: Math.min(W, Math.ceil((ca.x + ca.w + margen) * ex)) - x,
+        h: Math.min(H, Math.ceil((ca.y + ca.h + margen) * ey)) - y,
+    };
+
+    // 2ª pasada: solo esa zona.
+    let b = lienzoSinFondo(img, zona, maxLado);
+    // Si ahí no se pudo quitar el fondo y en la imagen entera sí (el logo toca
+    // el borde y la zona se quedó sin margen de ese lado), vale la 1ª pasada.
+    if (a.sinFondo && !b.sinFondo) {
+        b = a;
+        zona = { x: 0, y: 0, w: W, h: H };
+    }
+    const cb = cajaDelDibujo(b.ctx, b.w, b.h) || { x: 0, y: 0, w: b.w, h: b.h };
+
+    const fx = zona.w / b.w, fy = zona.h / b.h;
+    return {
+        proporcion: cb.w / cb.h,
+        caja: { x: zona.x + cb.x * fx, y: zona.y + cb.y * fy, w: cb.w * fx, h: cb.h * fy },
+        zona,
+        lienzoZona: b.c,
+        sinFondo: b.sinFondo,
+    };
+}
+
+/** Abre un archivo de imagen. null si el navegador no puede. */
+export function cargarImagen(file) {
+    return new Promise((resolve) => {
+        const url = URL.createObjectURL(file);
+        const img = new Image();
+        img.onerror = () => { URL.revokeObjectURL(url); resolve(null); };
+        img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+        img.src = url;
+    });
+}
+
+// =====================================================================
 // ANÁLISIS AUTOMÁTICO (sin abrir el editor)
 // =====================================================================
 
@@ -263,7 +425,7 @@ export function puntadasDePaleta(paleta, anchoCm, altoCm) {
  * sube su logo y el sistema ya sabe con qué hilos y qué puntadas se borda.
  *
  * Hace exactamente los mismos pasos y en el mismo orden:
- *   1. quita el fondo (si lo tiene)
+ *   1. quita el fondo (si lo tiene) y recorta el margen (ver prepararArte)
  *   2. reduce el arte a sus colores dominantes
  *   3. vectoriza cada color en una pieza con su área real
  *   4. le asigna a cada una el hilo más parecido de la carta
@@ -273,75 +435,101 @@ export function puntadasDePaleta(paleta, anchoCm, altoCm) {
  * la pieza de MAYOR superficie se resuelve con tela aplicada en vez de hilo, que
  * es justamente lo que hace que ese artículo salga más barato.
  *
- * Devuelve null si el archivo no es una imagen que el navegador pueda abrir
- * (un ponchado en PDF, AI o DST no se puede analizar acá).
+ * Devuelve { paleta, canvas, proporcion, sinFondo }, o null si el archivo no es una
+ * imagen que el navegador pueda abrir (un ponchado en PDF, AI o DST no se puede
+ * analizar acá).
  */
-export function analizarArteAutomatico(file, { usaTafeta = false, maxLado = 420 } = {}) {
-    return new Promise((resolve) => {
-        if (!file || !/^image\//.test(file.type || '')) return resolve(null);
+export async function analizarArteAutomatico(file, { usaTafeta = false, maxLado = 420, coloresExactos = null } = {}) {
+    if (!file || !/^image\//.test(file.type || '')) return null;
+    const img = await cargarImagen(file);
+    if (!img) return null;
 
-        const url = URL.createObjectURL(file);
-        const img = new Image();
+    try {
+        // 1. Fondo y margen: queda el dibujo, con el mismo poco de margen que
+        //    usa el editor (ver prepararArte), así los contornos coinciden.
+        const arte = prepararArte(img, maxLado);
+        if (!arte) return null;
+        const { lienzoZona: c, proporcion, sinFondo } = arte;
+        const w = c.width, h = c.height;
+        const ctx = c.getContext('2d', { willReadFrequently: true });
 
-        img.onerror = () => { URL.revokeObjectURL(url); resolve(null); };
-        img.onload = () => {
-            URL.revokeObjectURL(url);
-            try {
-                const ratio = img.naturalWidth / img.naturalHeight;
-                const w = ratio >= 1 ? Math.min(maxLado, img.naturalWidth)
-                                     : Math.round(Math.min(maxLado, img.naturalHeight) * ratio);
-                const h = ratio >= 1 ? Math.round(w / ratio) : Math.min(maxLado, img.naturalHeight);
+        // 2, 3 y 4. Colores dominantes, juntados por hilo (una parada por
+        //          hilo), y sus piezas. Un logo en vector (ver bordadoVector)
+        //          trae sus colores EXACTOS: no hay nada que reducir.
+        const colores = coloresExactos?.length
+            ? coloresExactos.map(hex => ({ hex }))
+            : detectarColores(ctx, w, h, 6);
+        if (!colores.length) return null;
+        let grupos = agruparPorHilo(colores);
+        let vector = vectorizarPiezas(ctx, w, h, grupos.map(g => g.colores));
+        if (coloresExactos?.length) {
+            // Un color del archivo que quedó tapado entero por otras formas no
+            // se borda: no es una parada.
+            const vivos = vector.map((p, i) => i).filter(i => vector[i].areaPx > 0);
+            grupos = vivos.map(i => grupos[i]);
+            vector = vivos.map(i => vector[i]);
+            if (!grupos.length) return null;
+        }
 
-                const c = document.createElement('canvas');
-                c.width = w; c.height = h;
-                const ctx = c.getContext('2d', { willReadFrequently: true });
-                ctx.drawImage(img, 0, 0, w, h);
+        // La pieza más grande es la candidata a tafeta.
+        let idxMayor = 0;
+        vector.forEach((p, i) => { if (p.areaPx > vector[idxMayor].areaPx) idxMayor = i; });
 
-                // 1. Fondo. Si se come casi todo, el arte no tenía fondo plano:
-                //    se deshace en vez de dejar el lienzo vacío.
-                const borrados = quitarFondo(ctx, w, h);
-                if (borrados / (w * h) > 0.92) {
-                    ctx.clearRect(0, 0, w, h);
-                    ctx.drawImage(img, 0, 0, w, h);
-                }
+        const paleta = grupos.map((g, i) => {
+            const pieza = vector[i];
+            let puntada = pieza.proporcion > 0.35 ? 'TATAMI' : 'SATEN';
+            if (usaTafeta && i === idxMayor) puntada = 'TAFETA';
+            return {
+                id: `auto${i}_${g.colores[0].slice(1)}`,
+                colorOriginal: g.colores[0],
+                coloresOriginales: g.colores,
+                hilo: g.hilo,
+                cobertura: pieza.cobertura,
+                proporcion: pieza.proporcion,
+                anillos: pieza.anillos,
+                puntada,
+                relieve: false,
+            };
+        });
 
-                // 2 y 3. Colores dominantes y sus piezas.
-                const colores = detectarColores(ctx, w, h, 6);
-                if (!colores.length) return resolve(null);
-                const vector = vectorizarPiezas(ctx, w, h, colores.map(e => e.hex));
+        return { paleta, canvas: c, proporcion, sinFondo };
+    } catch (e) {
+        console.warn('[BORDADO] No se pudo analizar el arte automáticamente:', e?.message);
+        return null;
+    }
+}
 
-                // La pieza más grande es la candidata a tafeta.
-                let idxMayor = 0;
-                colores.forEach((e, i) => {
-                    const cob = vector[i] ? vector[i].cobertura : e.cobertura;
-                    const cobMayor = vector[idxMayor] ? vector[idxMayor].cobertura : colores[idxMayor].cobertura;
-                    if (cob > cobMayor) idxMayor = i;
-                });
+/**
+ * Proporción ancho / largo del arte. Con ella el ancho y el largo del bordado
+ * quedan atados al logo: si no, el cliente puede cargar 10 × 10 para un logo
+ * tres veces más ancho que alto y las puntadas (ancho × largo × cobertura)
+ * salen el triple. Es la del DIBUJO, sin el fondo ni el margen que lo rodea
+ * (ver prepararArte): lo mismo que miden el análisis y el editor.
+ *
+ * Devuelve null si el navegador no puede abrirlo (PDF, AI, DST) o si no trae
+ * medidas propias (un SVG sin viewBox): ahí el ancho y el largo siguen sueltos.
+ * El SVG se mide por su viewBox, con el margen que tenga.
+ */
+export async function leerProporcionArte(file) {
+    if (!file || !/^image\//.test(file.type || '')) return null;
 
-                const paleta = colores.map((e, i) => {
-                    const pieza = vector[i];
-                    const cobertura = pieza ? pieza.cobertura : e.cobertura;
-                    let puntada = cobertura > 0.35 ? 'TATAMI' : 'SATEN';
-                    if (usaTafeta && i === idxMayor) puntada = 'TAFETA';
-                    return {
-                        id: `auto${i}_${e.hex.slice(1)}`,
-                        colorOriginal: e.hex,
-                        hilo: hiloMasCercano(e.hex).codigo,
-                        cobertura,
-                        anillos: pieza ? pieza.anillos : [],
-                        puntada,
-                        relieve: false,
-                    };
-                });
+    // Un SVG sin width/height no tiene tamaño natural en el navegador: se lee
+    // del viewBox.
+    if (/svg/i.test(file.type)) {
+        try {
+            const vb = (await file.text()).match(
+                /viewBox\s*=\s*["']\s*[-\d.]+[\s,]+[-\d.]+[\s,]+([\d.]+)[\s,]+([\d.]+)/i
+            );
+            const w = vb ? parseFloat(vb[1]) : 0;
+            const h = vb ? parseFloat(vb[2]) : 0;
+            return w > 0 && h > 0 ? w / h : null;
+        } catch {
+            return null;
+        }
+    }
 
-                resolve({ paleta, canvas: c });
-            } catch (e) {
-                console.warn('[BORDADO] No se pudo analizar el arte automáticamente:', e?.message);
-                resolve(null);
-            }
-        };
-        img.src = url;
-    });
+    const img = await cargarImagen(file);
+    return (img && prepararArte(img)?.proporcion) || null;
 }
 
 // =====================================================================
@@ -448,40 +636,61 @@ const suavizarAnillo = (anillo, paso = 1.6) => {
 };
 
 /**
- * Convierte el mapa de píxeles en PIEZAS con contorno propio, una por color.
+ * Convierte el mapa de píxeles en PIEZAS con contorno propio, una por grupo de
+ * colores (ver agruparPorHilo: los tonos que caen en el mismo hilo son una sola
+ * pieza).
  *
- * Para cada color arma una máscara (1 donde ese color es el más parecido) y le
- * saca los contornos con d3-contour. Es lo que hace un programa de digitalizar
- * antes de generar puntadas: primero convierte el dibujo en objetos, después
- * decide cómo bordar cada objeto.
+ * Para cada grupo arma una máscara (1 donde el color más parecido es de ese
+ * grupo) y le saca los contornos con d3-contour. Es lo que hace un programa de
+ * digitalizar antes de generar puntadas: primero convierte el dibujo en
+ * objetos, después decide cómo bordar cada objeto.
  *
  * Gana dos cosas sobre contar píxeles sueltos:
  *   · El área sale de la geometría, no de un conteo con bordes difusos → la
  *     estimación de puntadas se apoya en algo firme.
  *   · Quedan los contornos para dibujarlos sobre el arte.
  *
- * Devuelve, por color: { hex, anillos, areaPx, cobertura }.
+ * Devuelve, por grupo: { hex, anillos, areaPx, cobertura, proporcion }.
+ *   · cobertura  — parte de la CAJA DEL DIBUJO que ocupa la pieza. Es lo que
+ *                  multiplica a ancho × largo para sacar las puntadas: el ancho
+ *                  y el largo son los de esa caja, y un logo redondo o un escudo
+ *                  no la llenan entera. (Antes era sobre el total pintado, que
+ *                  siempre suma 100%, y las puntadas salían como si el logo
+ *                  fuera un rectángulo lleno.)
+ *   · proporcion — parte del dibujo que es esta pieza (todas suman 1). Sirve
+ *                  para decidir relleno o satén.
  */
-export function vectorizarPiezas(ctx, w, h, coloresHex) {
-    if (!coloresHex.length) return [];
+export function vectorizarPiezas(ctx, w, h, grupos) {
+    if (!grupos.length) return [];
     const { data } = ctx.getImageData(0, 0, w, h);
-    const refs = coloresHex.map(hexARgb);
+    // Cada color de referencia apunta a la pieza (grupo) a la que pertenece.
+    const refs = [];
+    grupos.forEach((g, k) => (Array.isArray(g) ? g : [g]).forEach(hex => refs.push({ ...hexARgb(hex), k })));
 
-    // A qué color pertenece cada píxel (-1 = transparente).
+    // A qué pieza pertenece cada píxel (-1 = transparente), y la caja del
+    // dibujo con el mismo criterio que cajaDelDibujo.
     const pertenece = new Int16Array(w * h).fill(-1);
+    let x0 = w, y0 = h, x1 = -1, y1 = -1;
     for (let n = 0; n < w * h; n++) {
         const i = n * 4;
         if (data[i + 3] < 128) continue;
         let mejor = -1, mejorD = Infinity;
-        for (let k = 0; k < refs.length; k++) {
-            const dd = (data[i] - refs[k].r) ** 2 + (data[i + 1] - refs[k].g) ** 2 + (data[i + 2] - refs[k].b) ** 2;
-            if (dd < mejorD) { mejorD = dd; mejor = k; }
+        for (const r of refs) {
+            const dd = (data[i] - r.r) ** 2 + (data[i + 1] - r.g) ** 2 + (data[i + 2] - r.b) ** 2;
+            if (dd < mejorD) { mejorD = dd; mejor = r.k; }
         }
         pertenece[n] = mejor;
+        const x = n % w, y = (n / w) | 0;
+        if (x < x0) x0 = x;
+        if (x > x1) x1 = x;
+        if (y < y0) y0 = y;
+        if (y > y1) y1 = y;
     }
+    const areaCaja = x1 < 0 ? w * h : (x1 - x0 + 1) * (y1 - y0 + 1);
 
     const generador = contours().size([w, h]).thresholds([0.5]);
-    const piezas = coloresHex.map((hex, k) => {
+    const piezas = grupos.map((g, k) => {
+        const hex = Array.isArray(g) ? g[0] : g;
         const mascara = new Float64Array(w * h);
         for (let n = 0; n < w * h; n++) mascara[n] = pertenece[n] === k ? 1 : 0;
 
@@ -502,5 +711,140 @@ export function vectorizarPiezas(ctx, w, h, coloresHex) {
     });
 
     const total = piezas.reduce((s, p) => s + p.areaPx, 0) || 1;
-    return piezas.map(p => ({ ...p, cobertura: p.areaPx / total }));
+    return piezas.map(p => ({
+        ...p,
+        cobertura: Math.min(1, p.areaPx / areaCaja),
+        proporcion: p.areaPx / total,
+    }));
+}
+
+// =====================================================================
+// PARADAS: un hilo, una parada
+// =====================================================================
+
+/**
+ * Junta los colores detectados que caen en el MISMO hilo de la carta. Dos tonos
+ * de azul (la sombra de un parche fotografiado, el antialiasing) que terminan
+ * los dos en "Azul Marino" son una sola parada: si quedaban separadas, la
+ * máquina paraba para volver a poner el mismo hilo.
+ *
+ * `colores` viene de detectarColores, de mayor a menor superficie, así que el
+ * primer color de cada grupo es el dominante. Devuelve [{ hilo, colores }].
+ */
+export function agruparPorHilo(colores) {
+    const grupos = [];
+    for (const { hex } of colores) {
+        const hilo = hiloMasCercano(hex).codigo;
+        const g = grupos.find(x => x.hilo === hilo);
+        if (g) g.colores.push(hex);
+        else grupos.push({ hilo, colores: [hex] });
+    }
+    return grupos;
+}
+
+/** Los colores del arte que forman una pieza (las viejas solo traen uno). */
+export const coloresDe = (p) => (p.coloresOriginales?.length ? p.coloresOriginales : [p.colorOriginal]);
+
+// =====================================================================
+// SIMULACIÓN DE BORDADO
+// =====================================================================
+
+/**
+ * Repinta el arte que ya está en `ctx` como se vería bordado: cada píxel toma el
+ * hilo de su pieza y una textura según la puntada (y el volumen del relieve, si
+ * lo lleva). Es la vista «Simulación» del editor de hilos y la vista previa
+ * «Viendo tu diseño» del pedido: las dos salen de acá, así se ven iguales.
+ */
+export function pintarSimulacion(ctx, w, h, paleta) {
+    if (!paleta?.length) return;
+    const piezas = paleta.map(p => ({
+        dest: hexARgb((CARTA_HILOS.find(x => x.codigo === p.hilo) || {}).hex || p.colorOriginal),
+        // El relieve solo existe en satén: la puntada de arriba corta la goma.
+        puntada: p.relieve ? PUNTADA_RELIEVE : p.puntada,
+        relieve: !!p.relieve,
+    }));
+    // Cada color del arte apunta a su pieza: una pieza puede juntar varios
+    // tonos que van con el mismo hilo.
+    const refs = [];
+    paleta.forEach((p, k) => coloresDe(p).forEach(hex => refs.push({ ...hexARgb(hex), k })));
+
+    const imgData = ctx.getImageData(0, 0, w, h);
+    const d = imgData.data;
+    const total = w * h;
+
+    // Paso 1 — a qué pieza pertenece cada píxel. Se calcula aparte porque el
+    // relieve necesita mirar a los vecinos para sombrear los bordes.
+    const idx = new Int8Array(total).fill(-1);
+    for (let n = 0; n < total; n++) {
+        const i = n * 4;
+        if (d[i + 3] < 128) continue;
+        const r = d[i], g = d[i + 1], b = d[i + 2];
+        let mejor = -1, mejorD = Infinity;
+        for (const ref of refs) {
+            const dd = (r - ref.r) ** 2 + (g - ref.g) ** 2 + (b - ref.b) ** 2;
+            if (dd < mejorD) { mejorD = dd; mejor = ref.k; }
+        }
+        idx[n] = mejor;
+    }
+
+    // Paso 2 — color del hilo + textura de la puntada.
+    for (let n = 0; n < total; n++) {
+        const pi = idx[n];
+        if (pi < 0) continue;
+        const p = piezas[pi];
+        const i = n * 4;
+        const px = n % w, py = (n / w) | 0;
+
+        let nr = p.dest.r, ng = p.dest.g, nb = p.dest.b;
+
+        // La textura es lo que hace que se lea como bordado y no como dibujo
+        // plano. Se modula el brillo; el color del hilo no cambia.
+        let k = 0;
+        switch (p.puntada) {
+            case 'SATEN':    k = ((px + py) % 6 < 2) ? 26 : -10; break;   // brillo diagonal
+            case 'TATAMI':   k = (py % 3 === 0) ? -22 : ((px % 4 === 0) ? -10 : 6); break; // trama
+            case 'PESPUNTE': k = (px % 5 === 0 && py % 5 === 0) ? -55 : 10; break;  // línea punteada
+            case 'ZIGZAG':   k = (Math.abs((px % 8) - 4) + py) % 6 < 2 ? 22 : -14; break;
+            case 'TAFETA':   k = (px % 5 === 0 || py % 5 === 0) ? -18 : 4; break;   // trama de tela
+            default:         k = 0;
+        }
+
+        // [RELIEVE] Volumen: la pieza se ilumina del lado de la luz y se
+        // ensombrece del opuesto, mirando si el vecino es otra pieza o vacío.
+        // Con dos píxeles de borde alcanza para que se lea levantada.
+        if (p.relieve) {
+            const arriba = (px > 1 && py > 1) ? idx[n - w - 1] : -1;
+            const abajo  = (px < w - 2 && py < h - 2) ? idx[n + w + 1] : -1;
+            if (arriba !== pi) k += 55;        // canto iluminado
+            else if (abajo !== pi) k -= 60;    // sombra proyectada
+            else k += 12;                      // la cara de arriba, más clara
+        }
+
+        nr += k; ng += k; nb += k;
+        d[i]     = nr < 0 ? 0 : nr > 255 ? 255 : nr;
+        d[i + 1] = ng < 0 ? 0 : ng > 255 ? 255 : ng;
+        d[i + 2] = nb < 0 ? 0 : nb > 255 ? 255 : nb;
+    }
+    ctx.putImageData(imgData, 0, 0);
+}
+
+/** Copia de `canvas` con la simulación de bordado encima (ver pintarSimulacion). */
+export function canvasSimulado(canvas, paleta) {
+    const c = document.createElement('canvas');
+    c.width = canvas.width; c.height = canvas.height;
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(canvas, 0, 0);
+    pintarSimulacion(ctx, c.width, c.height, paleta);
+    return c;
+}
+
+/** Una sola pieza con lo de las dos: colores, contornos y superficie. Queda la configuración de `a`. */
+export function unirPiezas(a, b) {
+    return {
+        ...a,
+        coloresOriginales: [...coloresDe(a), ...coloresDe(b)],
+        anillos: [...(a.anillos || []), ...(b.anillos || [])],
+        cobertura: (a.cobertura || 0) + (b.cobertura || 0),
+        proporcion: (a.proporcion || 0) + (b.proporcion || 0),
+    };
 }

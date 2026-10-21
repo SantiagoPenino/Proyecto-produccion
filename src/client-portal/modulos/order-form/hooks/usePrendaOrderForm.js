@@ -61,6 +61,10 @@ const initialState = {
     costuraNote: '',
     bordadoMaterial: '',
     bordadoVariant: '',
+    // [BORDADO] Diseños del Bordado del panel general (prenda que se fabrica): mismo modelo que los
+    // de cada artículo (comboServicios[...].servicios.EMB.disenos). Uno por logo, con medidas, prendas y
+    // prediseño; cada uno sale como su orden de Bordado y trae la ficha para la matriz automática.
+    disenosBordado: [],
 
     // [PRENDAS] DTF como servicio complementario (un solo toggle: archivo a imprimir +
     // boceto de ubicación). Mismo patrón fetch-driven que Bordado, área DF.
@@ -131,6 +135,8 @@ const actionTypes = {
     UPLOAD_SUCCESS: 'UPLOAD_SUCCESS',
     UPLOAD_ERROR: 'UPLOAD_ERROR',
     PATCH_COMBO_SERVICIO: 'PATCH_COMBO_SERVICIO',
+    PATCH_COMBO_DISENOS: 'PATCH_COMBO_DISENOS',
+    PATCH_DISENOS_BORDADO: 'PATCH_DISENOS_BORDADO',
 };
 
 function orderFormReducer(state, action) {
@@ -162,6 +168,29 @@ function orderFormReducer(state, action) {
                 },
             };
         }
+
+        // [BORDADO] Diseños del Bordado de UN componente (uno por logo, mismo modelo que el
+        // portal). Se calculan contra el estado ACTUAL, igual que PATCH_COMBO_SERVICIO: el
+        // análisis del logo y la lectura de su proporción terminan solos, un rato después de
+        // subirlo, y pisarían lo que el vendedor cargó en el medio.
+        case actionTypes.PATCH_COMBO_DISENOS: {
+            const comp = state.comboServicios?.[action.comboItemId];
+            const emb = comp?.servicios?.EMB;
+            if (!emb) return state;
+            return {
+                ...state,
+                comboServicios: {
+                    ...state.comboServicios,
+                    [action.comboItemId]: {
+                        ...comp,
+                        servicios: { ...comp.servicios, EMB: { ...emb, disenos: action.cambiar(emb.disenos || []) } },
+                    },
+                },
+            };
+        }
+        // Los mismos diseños, del Bordado del panel general (mismo motivo: contra el estado actual)
+        case actionTypes.PATCH_DISENOS_BORDADO:
+            return { ...state, disenosBordado: action.cambiar(state.disenosBordado || []) };
 
         case actionTypes.RESET_FORM:
             return {
@@ -879,6 +908,32 @@ export const usePrendaOrderForm = (serviceId, overrides = {}) => {
         dispatch({ type: actionTypes.PATCH_COMBO_SERVICIO, comboItemId, areaId, patch, crearSiFalta: false });
     };
 
+    // [BORDADO] Diseños del Bordado de un componente. `prendas` es la cantidad del
+    // componente: cada diseño nace yendo en todas (se puede bajar), como "prendas por logo".
+    const disenoNuevo = (ds, prendas) => ({
+        id: `d${Date.now()}${ds.length}`,
+        file: null, boceto: null, ancho: '', alto: '', cantidad: prendas ? String(prendas) : '',
+        prendaClienteId: null, relieve3D: false, paleta: [], arteDisenado: null, proporcion: null,
+    });
+    // `cambios` puede ser una función del diseño actual (ver BordadoTechnicalUI.subirLogo).
+    const cambiarDiseno = (id, cambios) => (ds) => ds.map(d => (d.id !== id ? d : { ...d, ...(typeof cambios === 'function' ? cambios(d) : cambios) }));
+    const addComboDiseno = (comboItemId, prendas) => dispatch({
+        type: actionTypes.PATCH_COMBO_DISENOS, comboItemId,
+        cambiar: (ds) => [...ds, disenoNuevo(ds, prendas)],
+    });
+    const updateComboDiseno = (comboItemId, id, cambios) => dispatch({
+        type: actionTypes.PATCH_COMBO_DISENOS, comboItemId,
+        cambiar: cambiarDiseno(id, cambios),
+    });
+    const removeComboDiseno = (comboItemId, id) => dispatch({
+        type: actionTypes.PATCH_COMBO_DISENOS, comboItemId,
+        cambiar: (ds) => ds.filter(d => d.id !== id),
+    });
+    // [BORDADO] Los mismos, para el Bordado del panel general. `prendas` = las del pedido.
+    const addDisenoBordado = (prendas) => dispatch({ type: actionTypes.PATCH_DISENOS_BORDADO, cambiar: (ds) => [...ds, disenoNuevo(ds, prendas)] });
+    const updateDisenoBordado = (id, cambios) => dispatch({ type: actionTypes.PATCH_DISENOS_BORDADO, cambiar: cambiarDiseno(id, cambios) });
+    const removeDisenoBordado = (id) => dispatch({ type: actionTypes.PATCH_DISENOS_BORDADO, cambiar: (ds) => ds.filter(d => d.id !== id) });
+
     const addTizadaFiles = (files) => {
         const newFiles = Array.isArray(files) ? files : [files];
         dispatch({ type: actionTypes.SET_FIELD, field: 'tizadaFiles', value: [...state.tizadaFiles, ...newFiles] });
@@ -1061,6 +1116,12 @@ export const usePrendaOrderForm = (serviceId, overrides = {}) => {
             updateComboServicioArchivos,
             updateComboServicioBoceto,
             updateComboServicioCampo,
+            addComboDiseno,
+            updateComboDiseno,
+            removeComboDiseno,
+            addDisenoBordado,
+            updateDisenoBordado,
+            removeDisenoBordado,
             addTizadaFiles,
             removeTizadaFile,
             addPonchadoFiles,

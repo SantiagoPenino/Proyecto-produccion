@@ -75,6 +75,10 @@ router.put('/avios/:id', configuradorController.updateAvio);
 router.get('/medidas', configuradorController.getMedidas);                   // nomenclador de medidas (?all=1 incluye inactivas)
 router.post('/medidas', configuradorController.crearMedida);
 router.put('/medidas/:id', configuradorController.updateMedida);
+// Nomenclador de hilos (la carta de hilos: bordado del portal, matriz automática…)
+router.get('/hilos', configuradorController.getHilos);                       // ?all=1 incluye inactivos
+router.post('/hilos', configuradorController.crearHilo);
+router.put('/hilos/:id', configuradorController.updateHilo);
 router.post('/productos/:proId/ficha-diseno/dibujo', uploadFichaDiseno.single('dibujo'), webpEnSubida, configuradorController.subirDibujoFicha);
 router.post('/productos/:proId/ficha-diseno/medidas-imagen', uploadFichaDiseno.single('imagen'), webpEnSubida, configuradorController.subirMedidasImagen);
 

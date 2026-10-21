@@ -11,13 +11,19 @@ import React from 'react';
  * `yaComprometido` son las prendas que los OTROS diseños del mismo pedido ya
  * tomaron de esa línea — el saldo que se muestra las descuenta en vivo, para
  * que no elija 40 gorros dos veces y recién se entere al confirmar.
+ *
+ * `cantidadPropia` es lo que pide ESTE diseño: se descuenta de la línea que
+ * tiene elegida. Así "sin usar" es siempre lo que queda libre en todo el pedido,
+ * y no dice 20 en la tarjeta mientras abajo dice que quedan 10.
  */
 export default function PrendaClienteSelector({
     prendasDisponibles = [],
     selectedPrendaId = null,
     onSelect = () => {},
     yaComprometido = {},
+    cantidadPropia = 0,
 }) {
+    // Lo que puede tomar este diseño (sin contar lo que ya pidió).
     const disponibleReal = (p) =>
         (parseInt(p.CantidadDisponible) || 0) - (yaComprometido[p.PrendaClienteID] || 0);
 
@@ -33,12 +39,14 @@ export default function PrendaClienteSelector({
     return (
         <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
             {prendasDisponibles.map(p => {
-                const libre = disponibleReal(p);
                 const elegida = selectedPrendaId === p.PrendaClienteID;
+                // Lo que queda sin usar en todo el pedido: en la línea elegida también
+                // se descuenta lo que pide este diseño.
+                const libre = disponibleReal(p) - (elegida ? (parseInt(cantidadPropia) || 0) : 0);
                 // Sin saldo no se puede elegir, salvo que sea LA que este diseño ya tiene
                 // elegida (si no, al cargar la cantidad completa el botón se auto-deshabilita
                 // y el usuario no puede ni corregirla).
-                const agotada = libre <= 0 && !elegida;
+                const agotada = disponibleReal(p) <= 0 && !elegida;
 
                 return (
                     <button
@@ -96,12 +104,19 @@ export default function PrendaClienteSelector({
                         )}
 
                         <div className="mt-2 flex items-center gap-2 flex-wrap">
+                            {/* Elegida y justo en cero no es un error: el pedido usa todas. */}
                             <span className={`text-xs font-black px-2 py-1 rounded ${
                                 libre > 0
                                     ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
-                                    : 'bg-red-500/15 text-red-400 border border-red-500/30'
+                                    : (elegida && libre === 0)
+                                        ? 'bg-zinc-800 text-zinc-300 border border-zinc-700'
+                                        : 'bg-red-500/15 text-red-400 border border-red-500/30'
                             }`}>
-                                {libre > 0 ? `${libre} sin usar` : 'Sin saldo'}
+                                {libre > 0
+                                    ? `${libre} sin usar`
+                                    : elegida
+                                        ? (libre === 0 ? 'Usás todas' : `Faltan ${-libre}`)
+                                        : 'Sin saldo'}
                             </span>
                             {p.CantidadUsada > 0 && (
                                 <span className="text-[10px] font-bold text-zinc-500">

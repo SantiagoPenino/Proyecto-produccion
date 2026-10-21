@@ -1,14 +1,16 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import {
     X, Trash2, Check, Wand2, ChevronUp, ChevronDown, CalendarCheck, Layers3,
-    Mountain, ZoomIn, ZoomOut, Maximize2, Ruler, Scissors, Eraser, Spline, PaintBucket, Undo2,
+    Mountain, ZoomIn, ZoomOut, Maximize2, Ruler, Scissors, Eraser, Spline, PaintBucket, Undo2, Merge,
 } from 'lucide-react';
 import {
     CARTA_HILOS, TIPOS_PUNTADA, puntadaPorId,
-    detectarColores, hiloMasCercano, hexARgb,
-    estimarPuntadas, PUNTADA_RELIEVE,
-    quitarFondo, vectorizarPiezas, borrarPincel, pintarRegion,
+    detectarColores,
+    estimarPuntadas, PUNTADA_RELIEVE, RELIEVE_3D_HABILITADO,
+    quitarFondo, vectorizarPiezas, borrarPincel, pintarRegion, prepararArte,
+    agruparPorHilo, coloresDe, unirPiezas, pintarSimulacion,
 } from '../utils/bordadoHilos';
+import { conColoresExactos } from '../utils/bordadoVector';
 import { apiClient } from '../../../api/apiClient';
 import { fmtFechaCorta } from '../../../../utils/fechas';
 
@@ -37,6 +39,16 @@ import { fmtFechaCorta } from '../../../../utils/fechas';
 
 const MAX_LADO = 420;
 
+// Mismo color a ojo: menos de 24 de diferencia en cada canal.
+const colorParecido = (a, b) => [1, 3, 5].every(k =>
+    Math.abs(parseInt(a.slice(k, k + 2), 16) - parseInt(b.slice(k, k + 2), 16)) < 24);
+
+// Dos paradas con el mismo hilo, la misma puntada y el mismo relieve son la
+// misma parada: la máquina pararía para volver a poner el mismo hilo.
+const puntadaEfectiva = (p) => (p.relieve ? PUNTADA_RELIEVE : p.puntada);
+const mismaParada = (a, b) =>
+    a.hilo === b.hilo && puntadaEfectiva(a) === puntadaEfectiva(b) && !!a.relieve === !!b.relieve;
+
 // Fondo a cuadros (como Photoshop) para distinguir lo transparente del hilo
 // blanco cuando se quitó el fondo. Mismo criterio que usa DTF en FileUploadZone.
 const DAMERO = {
@@ -50,12 +62,23 @@ const DAMERO = {
 
 export default function PredisenoBordadoModal({
     file, paletaInicial = [], anchoCm = 0, altoCm = 0, cantidad = 0, onGuardar, onCerrar,
+    // Cómo dejó el fondo el cliente la última vez que guardó en este editor
+    // (true / false). Sin definir = nunca lo guardó: manda el análisis automático.
+    sinFondoInicial,
+    // Logo en vector (PDF / AI): sus colores de relleno exactos (ver bordadoVector).
+    coloresExactos = null,
 }) {
     const canvasRef = useRef(null);
+    // El original ya recortado al logo (con un poco de margen), a la escala del
+    // lienzo y con su fondo: para restaurar el fondo y para deshacer.
     const originalRef = useRef(null);
+    // Ancho del DIBUJO (sin margen): en px del archivo, para la resolución, y
+    // como parte del lienzo, para mostrarlo a tamaño real.
+    const dibujoRef = useRef({ anchoPx: 0, fraccion: 1 });
     // Lienzo de trabajo, fuera de pantalla: es la imagen sobre la que se calcula
-    // todo. Arranca igual al original y cambia cuando se quita el fondo. El
-    // original se guarda intacto para poder deshacer.
+    // todo. Arranca sin fondo si el análisis automático lo quitó —es lo que ya
+    // trae `paletaInicial`— y cambia con cada retoque. El original se guarda
+    // intacto para poder deshacer.
     const baseRef = useRef(null);
     const [paleta, setPaleta] = useState(paletaInicial);
     const [vista, setVista] = useState('BORDADO');  // BORDADO | ORIGINAL
@@ -135,7 +158,7 @@ export default function PredisenoBordadoModal({
     useEffect(() => {
         if (!file) return;
         if (!/^image\//.test(file.type || '')) {
-            setError('Solo se pueden diseñar imágenes (PNG o JPG). Un ponchado en PDF, AI o DST no se puede abrir acá.');
+            setError('Este archivo no se puede abrir acá. Se diseñan imágenes (PNG o JPG) y vectores en PDF o AI que pasen el control (sin fotos ni textos sin curvar); un ponchado DST tampoco se abre.');
             return;
         }
         let cancelado = false;
@@ -146,17 +169,45 @@ export default function PredisenoBordadoModal({
             if (cancelado) return;
             const c = canvasRef.current;
             if (!c) return;
-            const ratio = img.naturalWidth / img.naturalHeight;
-            const w = ratio >= 1 ? Math.min(MAX_LADO, img.naturalWidth) : Math.round(Math.min(MAX_LADO, img.naturalHeight) * ratio);
-            const h = ratio >= 1 ? Math.round(w / ratio) : Math.min(MAX_LADO, img.naturalHeight);
-            c.width = w; c.height = h;
-            originalRef.current = img;
 
-            // Lienzo de trabajo con la imagen ya escalada.
+            // Se trabaja sobre el logo y no sobre la imagen entera, igual que el
+            // análisis automático (ver prepararArte): sin el margen que lo rodea,
+            // pero dejando un poco para que «Quitar fondo» siga encontrando el
+            // fondo en las esquinas.
+            const arte = prepararArte(img, MAX_LADO);
+            const W = img.naturalWidth, H = img.naturalHeight;
+            const zona = arte ? arte.zona : { x: 0, y: 0, w: W, h: H };
+            const escala = Math.min(1, MAX_LADO / Math.max(zona.w, zona.h));
+            const w = arte ? arte.lienzoZona.width : Math.max(1, Math.round(zona.w * escala));
+            const h = arte ? arte.lienzoZona.height : Math.max(1, Math.round(zona.h * escala));
+            c.width = w; c.height = h;
+
+            const original = document.createElement('canvas');
+            original.width = w; original.height = h;
+            original.getContext('2d').drawImage(img, zona.x, zona.y, zona.w, zona.h, 0, 0, w, h);
+            originalRef.current = original;
+            dibujoRef.current = arte
+                ? { anchoPx: arte.caja.w, fraccion: arte.caja.w / zona.w }
+                : { anchoPx: W, fraccion: 1 };
+
+            // Lienzo de trabajo: el fondo arranca como lo dejó el cliente la
+            // última vez que guardó acá (pudo haberlo restaurado, o quitado a
+            // mano cuando el análisis no pudo); si nunca guardó, como lo dejó el
+            // análisis. Así la simulación coincide con la paleta que trae.
             const base = document.createElement('canvas');
             base.width = w; base.height = h;
-            base.getContext('2d', { willReadFrequently: true }).drawImage(img, 0, 0, w, h);
+            const ctxBase = base.getContext('2d', { willReadFrequently: true });
+            const quiereSinFondo = sinFondoInicial ?? !!arte?.sinFondo;
+            let fondoQuitado = false;
+            if (quiereSinFondo && arte?.sinFondo) {
+                ctxBase.drawImage(arte.lienzoZona, 0, 0);
+                fondoQuitado = true;
+            } else {
+                ctxBase.drawImage(original, 0, 0);
+                if (quiereSinFondo) fondoQuitado = quitarFondo(ctxBase, w, h) > 0;
+            }
             baseRef.current = base;
+            setSinFondo(fondoQuitado);
 
             setAvisoResolucionCerrado(false);
             setListo(true);
@@ -167,7 +218,7 @@ export default function PredisenoBordadoModal({
         };
         img.src = url;
         return () => { cancelado = true; };
-    }, [file]);
+    }, [file, sinFondoInicial]);
 
     // ── Quitar el fondo ───────────────────────────────────────────────────
     // Trabaja sobre el lienzo de trabajo, así el original queda entero y se
@@ -220,33 +271,45 @@ export default function PredisenoBordadoModal({
         if (silencioso && paleta.length) return;
         const ctx = base.getContext('2d', { willReadFrequently: true });
 
-        const encontrados = detectarColores(ctx, base.width, base.height, 6);
+        const detectados = detectarColores(ctx, base.width, base.height, 6);
+        // Logo en vector: manda la lista exacta del archivo; de lo detectado solo
+        // se suma lo que no se parece a ninguno (lo que se pintó con el balde).
+        const encontrados = coloresExactos?.length
+            ? conColoresExactos(coloresExactos, detectados)
+            : detectados;
         if (!encontrados.length) return;
 
-        const vector = vectorizarPiezas(ctx, base.width, base.height, encontrados.map(e => e.hex));
+        // Los tonos que caen en el mismo hilo van juntos: una parada por hilo.
+        let grupos = agruparPorHilo(encontrados);
+        let vector = vectorizarPiezas(ctx, base.width, base.height, grupos.map(g => g.colores));
+        if (coloresExactos?.length) {
+            // Un color del archivo que ya no aparece (borrado con la goma) no es una parada.
+            const vivos = vector.map((p, i) => i).filter(i => vector[i].areaPx > 0);
+            grupos = vivos.map(i => grupos[i]);
+            vector = vivos.map(i => vector[i]);
+        }
 
-        setPaleta(previa => encontrados.map((e, i) => {
+        setPaleta(previa => grupos.map((g, i) => {
             const pieza = vector[i];
-            const cobertura = pieza ? pieza.cobertura : e.cobertura;
 
             // Al volver a detectar (después de pintar, borrar o quitar el fondo)
             // se conserva lo que el cliente ya había elegido para ese color: hilo,
             // puntada y relieve. Si no, cada retoque le borraba las decisiones.
             const anterior = previa.find(p =>
-                Math.abs(parseInt(p.colorOriginal.slice(1, 3), 16) - parseInt(e.hex.slice(1, 3), 16)) < 24 &&
-                Math.abs(parseInt(p.colorOriginal.slice(3, 5), 16) - parseInt(e.hex.slice(3, 5), 16)) < 24 &&
-                Math.abs(parseInt(p.colorOriginal.slice(5, 7), 16) - parseInt(e.hex.slice(5, 7), 16)) < 24
+                coloresDe(p).some(a => g.colores.some(b => colorParecido(a, b)))
             );
 
             return {
-                id: `p${i}_${e.hex.slice(1)}`,
-                colorOriginal: e.hex,
-                hilo: anterior ? anterior.hilo : hiloMasCercano(e.hex).codigo,
-                cobertura,
-                anillos: pieza ? pieza.anillos : [],
+                id: `p${i}_${g.colores[0].slice(1)}`,
+                colorOriginal: g.colores[0],
+                coloresOriginales: g.colores,
+                hilo: anterior ? anterior.hilo : g.hilo,
+                cobertura: pieza.cobertura,
+                proporcion: pieza.proporcion,
+                anillos: pieza.anillos,
                 // El color que más superficie ocupa suele ser relleno; los que
                 // aparecen poco suelen ser contornos y letras (satén).
-                puntada: anterior ? anterior.puntada : (cobertura > 0.35 ? 'TATAMI' : 'SATEN'),
+                puntada: anterior ? anterior.puntada : (pieza.proporcion > 0.35 ? 'TATAMI' : 'SATEN'),
                 relieve: anterior ? !!anterior.relieve : false,
             };
         }));
@@ -270,74 +333,9 @@ export default function PredisenoBordadoModal({
 
         if (vista === 'ORIGINAL' || paleta.length === 0) return;
 
-        const piezas = paleta.map(p => ({
-            orig: hexARgb(p.colorOriginal),
-            dest: hexARgb((CARTA_HILOS.find(h => h.codigo === p.hilo) || {}).hex || p.colorOriginal),
-            // El relieve solo existe en satén: la puntada de arriba corta la goma.
-            puntada: p.relieve ? PUNTADA_RELIEVE : p.puntada,
-            relieve: !!p.relieve,
-        }));
-
-        const imgData = ctx.getImageData(0, 0, c.width, c.height);
-        const d = imgData.data;
-        const w = c.width, h = c.height;
-        const total = w * h;
-
-        // Paso 1 — a qué pieza pertenece cada píxel. Se calcula aparte porque el
-        // relieve necesita mirar a los vecinos para sombrear los bordes.
-        const idx = new Int8Array(total).fill(-1);
-        for (let n = 0; n < total; n++) {
-            const i = n * 4;
-            if (d[i + 3] < 128) continue;
-            const r = d[i], g = d[i + 1], b = d[i + 2];
-            let mejor = -1, mejorD = Infinity;
-            for (let k = 0; k < piezas.length; k++) {
-                const p = piezas[k];
-                const dd = (r - p.orig.r) ** 2 + (g - p.orig.g) ** 2 + (b - p.orig.b) ** 2;
-                if (dd < mejorD) { mejorD = dd; mejor = k; }
-            }
-            idx[n] = mejor;
-        }
-
-        // Paso 2 — color del hilo + textura de la puntada.
-        for (let n = 0; n < total; n++) {
-            const pi = idx[n];
-            if (pi < 0) continue;
-            const p = piezas[pi];
-            const i = n * 4;
-            const px = n % w, py = (n / w) | 0;
-
-            let nr = p.dest.r, ng = p.dest.g, nb = p.dest.b;
-
-            // La textura es lo que hace que se lea como bordado y no como dibujo
-            // plano. Se modula el brillo; el color del hilo no cambia.
-            let k = 0;
-            switch (p.puntada) {
-                case 'SATEN':    k = ((px + py) % 6 < 2) ? 26 : -10; break;   // brillo diagonal
-                case 'TATAMI':   k = (py % 3 === 0) ? -22 : ((px % 4 === 0) ? -10 : 6); break; // trama
-                case 'PESPUNTE': k = (px % 5 === 0 && py % 5 === 0) ? -55 : 10; break;  // línea punteada
-                case 'ZIGZAG':   k = (Math.abs((px % 8) - 4) + py) % 6 < 2 ? 22 : -14; break;
-                case 'TAFETA':   k = (px % 5 === 0 || py % 5 === 0) ? -18 : 4; break;   // trama de tela
-                default:         k = 0;
-            }
-
-            // [RELIEVE] Volumen: la pieza se ilumina del lado de la luz y se
-            // ensombrece del opuesto, mirando si el vecino es otra pieza o vacío.
-            // Con dos píxeles de borde alcanza para que se lea levantada.
-            if (p.relieve) {
-                const arriba = (px > 1 && py > 1) ? idx[n - w - 1] : -1;
-                const abajo  = (px < w - 2 && py < h - 2) ? idx[n + w + 1] : -1;
-                if (arriba !== pi) k += 55;        // canto iluminado
-                else if (abajo !== pi) k -= 60;    // sombra proyectada
-                else k += 12;                      // la cara de arriba, más clara
-            }
-
-            nr += k; ng += k; nb += k;
-            d[i]     = nr < 0 ? 0 : nr > 255 ? 255 : nr;
-            d[i + 1] = ng < 0 ? 0 : ng > 255 ? 255 : ng;
-            d[i + 2] = nb < 0 ? 0 : nb > 255 ? 255 : nb;
-        }
-        ctx.putImageData(imgData, 0, 0);
+        // Cada píxel al hilo de su pieza, con la textura de su puntada (ver
+        // pintarSimulacion: es la misma que usa la vista previa del pedido).
+        pintarSimulacion(ctx, c.width, c.height, paleta);
 
         // Contornos de las piezas vectorizadas, como los muestra un programa de
         // digitalizar. Van encima de la simulación, no la reemplazan.
@@ -373,6 +371,17 @@ export default function PredisenoBordadoModal({
         [copia[i], copia[j]] = [copia[j], copia[i]];
         return copia;
     });
+    // Junta una parada repetida con la de más arriba (queda en el lugar de esa).
+    // Va al deshacer: una vez juntas, separarlas a mano no se puede.
+    const unirCon = (idDestino, idOrigen) => {
+        guardarEstado();
+        setPaleta(p => {
+            const origen = p.find(x => x.id === idOrigen);
+            if (!origen) return p;
+            return p.filter(x => x.id !== idOrigen)
+                .map(x => (x.id === idDestino ? unirPiezas(x, origen) : x));
+        });
+    };
 
     // Coordenadas del click en píxeles del lienzo (no de pantalla: puede estar
     // con zoom o a tamaño real).
@@ -442,8 +451,9 @@ export default function PredisenoBordadoModal({
     // resolución, tanto la detección automática de colores/contornos como lo que ve a ojo el
     // diseñador pierden nitidez. No es DPI de impresión (esto no se imprime, es solo referencia).
     const UMBRAL_DPI_REFERENCIA = 75;
-    const dpiEfectivo = (hayMedidas && originalRef.current)
-        ? Math.round(originalRef.current.naturalWidth / (parseFloat(anchoCm) / 2.54))
+    // Sobre el ancho del dibujo, no de la imagen: el margen no aporta resolución.
+    const dpiEfectivo = (hayMedidas && dibujoRef.current.anchoPx)
+        ? Math.round(dibujoRef.current.anchoPx / (parseFloat(anchoCm) / 2.54))
         : null;
     const resolucionBaja = dpiEfectivo != null && dpiEfectivo < UMBRAL_DPI_REFERENCIA;
 
@@ -469,9 +479,11 @@ export default function PredisenoBordadoModal({
     //   AJUSTAR → lo maneja el CSS (null), solo se aplica el zoom sobre el tamaño natural.
     //   REAL    → los centímetros del bordado llevados a píxeles. 96 dpi es el
     //             estándar de CSS: 1 cm ≈ 37,8 px. Es aproximado y se avisa.
+    //             El ancho cargado es el del DIBUJO; el lienzo trae además un
+    //             poco de margen, que se suma para que el logo quede a su medida.
     const PX_POR_CM = 37.8;
     const anchoPx = modoTamano === 'REAL' && hayMedidas
-        ? parseFloat(anchoCm) * PX_POR_CM * zoom
+        ? parseFloat(anchoCm) * PX_POR_CM * zoom / dibujoRef.current.fraccion
         : (zoom !== 1 && canvasRef.current ? canvasRef.current.width * zoom : null);
 
     // Marcar TODO en relieve (o sacarlo) de una: para el caso "todo el logo
@@ -488,7 +500,9 @@ export default function PredisenoBordadoModal({
             // El cargo de relieve del pedido sale de acá: si alguna pieza va en
             // relieve, el diseño lo lleva. Así el tilde de la tarjeta deja de ser
             // una declaración suelta y pasa a reflejar lo que realmente se diseñó.
-            relieve3D: piezasRelieve > 0,
+            relieve3D: RELIEVE_3D_HABILITADO && piezasRelieve > 0,
+            // Para volver a abrir el editor con el fondo como lo dejó.
+            sinFondo,
         };
         if (!c) { onGuardar({ ...datos, arteDisenado: null }); return; }
         // Conserva el nombre con el que el cliente subió su logo y le suma
@@ -791,8 +805,9 @@ export default function PredisenoBordadoModal({
                                 </p>
 
                                 {/* Relieve para TODO el diseño de una. El caso pieza por pieza
-                                    se resuelve con el interruptor de cada parada. */}
-                                {paleta.length > 0 && (
+                                    se resuelve con el interruptor de cada parada. Apagado
+                                    mientras RELIEVE_3D_HABILITADO esté en false. */}
+                                {RELIEVE_3D_HABILITADO && paleta.length > 0 && (
                                     <div className="flex items-center gap-2">
                                         <button type="button" onClick={() => relieveTodo(true)}
                                             disabled={piezasRelieve === paleta.length}
@@ -820,15 +835,20 @@ export default function PredisenoBordadoModal({
                                     // renglones por pieza y con 6 hilos la lista no entraba en pantalla.
                                     const detalle = [
                                         `${hilo.nombre} (${hilo.codigo})`,
-                                        `Ocupa el ${(p.cobertura * 100).toFixed(0)}% del arte`,
+                                        `Ocupa el ${(p.cobertura * 100).toFixed(0)}% del recuadro del bordado`,
                                         hayMedidas ? `≈ ${p.puntadas.toLocaleString('es-UY')} puntadas` : null,
                                         p.relieve
                                             ? 'En relieve 3D sobre goma espuma: la puntada va un 50% más cerrada para cortarla, así que lleva más hilo y más tiempo.'
                                             : puntadaPorId(p.puntada).ayuda,
                                     ].filter(Boolean).join('\n');
 
+                                    // ¿Hay más arriba una parada igual (mismo hilo, puntada y
+                                    // relieve)? Entonces esta sobra: se ofrece unirlas.
+                                    const igual = conPuntadas.findIndex((q, j) => j < i && mismaParada(q, p));
+
                                     return (
-                                        <div key={p.id} title={detalle}
+                                        <React.Fragment key={p.id}>
+                                        <div title={detalle}
                                             className="rounded-xl bg-zinc-800/40 border border-zinc-700/60 p-2 flex items-center gap-1.5">
 
                                             <span className="w-4 h-4 shrink-0 rounded bg-zinc-900 border border-zinc-700 text-[9px] font-black text-zinc-400 flex items-center justify-center">
@@ -867,6 +887,7 @@ export default function PredisenoBordadoModal({
 
                                             {/* [RELIEVE] Por pieza: lo normal es una letra en relieve y el
                                                 resto plano. Marcarlo fuerza satén (la puntada que corta la goma). */}
+                                            {RELIEVE_3D_HABILITADO && (
                                             <label
                                                 title={p.relieve
                                                     ? 'En relieve 3D. Solo se puede bordar en satén: es la puntada que corta la goma espuma.'
@@ -888,6 +909,7 @@ export default function PredisenoBordadoModal({
                                                 />
                                                 <span className={`text-[10px] font-black ${p.relieve ? 'text-brand-gold' : 'text-zinc-400'}`}>3D</span>
                                             </label>
+                                            )}
 
                                             <div className="flex flex-col shrink-0">
                                                 <button type="button" onClick={() => mover(i, -1)} disabled={i === 0}
@@ -902,6 +924,14 @@ export default function PredisenoBordadoModal({
                                                 className="shrink-0 text-zinc-600 hover:text-red-500 transition-colors"
                                                 title="Sacar este hilo"><Trash2 size={12} /></button>
                                         </div>
+                                        {igual >= 0 && (
+                                            <button type="button" onClick={() => unirCon(conPuntadas[igual].id, p.id)}
+                                                className="-mt-2 w-full flex items-center justify-center gap-1.5 py-1.5 rounded-lg border border-amber-500/30 bg-amber-500/10 text-[10px] font-bold text-amber-400 hover:bg-amber-500/20 transition-colors"
+                                                title="Mismo hilo y misma puntada: la máquina pararía para volver a poner el mismo hilo">
+                                                <Merge size={12} /> Igual a la parada {igual + 1}: unirlas en una sola
+                                            </button>
+                                        )}
+                                        </React.Fragment>
                                     );
                                 })}
                             </div>
@@ -987,7 +1017,7 @@ export default function PredisenoBordadoModal({
                             <p className="text-[11px] text-zinc-400 mb-4 leading-relaxed">
                                 <span className="font-black text-zinc-200">Es una estimación.</span>{' '}
                                 Las puntadas se calculan por área y densidad — relleno ≈ 1.400 puntadas por pulgada²,
-                                satén ≈ 1.000, pespunte ≈ 300, tafeta ≈ 250, y el relieve suma 50%. El número
+                                satén ≈ 1.000, pespunte ≈ 300, tafeta ≈ 250{RELIEVE_3D_HABILITADO ? ', y el relieve suma 50%' : ''}. El número
                                 definitivo sale del ponchado que hace el diseñador. El estimado de entrega se recalcula
                                 con la carga real del taller al confirmar el pedido.
                             </p>

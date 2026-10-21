@@ -94,6 +94,21 @@ export const ordersService = {
         });
         return response.data;
     },
+    // [BORDADO] Matriz automática (borrador de Ink/Stitch, queda en Archivos de Referencia):
+    // generarla a mano y pasarla a matriz de la orden (misma subida que uploadProductionFile 'MATRIZ').
+    generarMatrizAutomatica: async (ordenId) => {
+        const response = await api.post(`/orders/${ordenId}/matriz-automatica`);
+        return response.data;
+    },
+    usarMatrizAutomatica: async (ordenId, refId) => {
+        const response = await api.post(`/orders/${ordenId}/matriz-automatica/${refId}/usar`);
+        return response.data;
+    },
+    // [BORDADO] Borrar una matriz subida por error (solo esa fila MATRIZ de esa orden).
+    borrarMatrizBordado: async (ordenId, archivoId) => {
+        const response = await api.delete(`/orders/${ordenId}/matriz/${archivoId}`);
+        return response.data;
+    },
     // TPU: enviar la orden a aprobación del cliente (retiene hasta que apruebe).
     enviarAprobacionTPU: async (ordenId) => {
         const response = await api.post(`/orders/${ordenId}/enviar-aprobacion`);

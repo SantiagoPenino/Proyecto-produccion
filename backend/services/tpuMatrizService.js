@@ -618,6 +618,8 @@ module.exports = {
     analizar,
     validarMatriz,
     encolarGeneracion,
+    // También lo usa la matriz automática de Bordado (bordadoMatrizService) para bajar su borrador.
+    descargarDrive,
     MAX_PDF_BYTES,
     _pendientes: () => pendientes,
     _textoColorArte: textoColorArte,

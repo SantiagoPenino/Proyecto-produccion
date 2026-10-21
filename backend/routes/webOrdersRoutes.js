@@ -43,6 +43,8 @@ router.get('/orden/:ordenId/tpu-matriz/fuente', verifyToken, impersonarCliente, 
 // TPU: catálogo de texturas (listado de assets/textures). Sin impersonarCliente: no hay nada
 // scopeado al cliente y lo consume también el detalle de orden interno (F5).
 router.get('/texturas-tpu', verifyToken, webOrdersController.getTexturasTpu);
+// Bordado: la carta de hilos (nomenclador de Configurar Productos › Hilos), solo los activos.
+router.get('/hilos-bordado', verifyToken, webOrdersController.getHilosBordado);
 
 // TPU: elección de textura por zona. El POST solo entra mientras el pedido espera aprobación.
 // SIN USO el POST (15/10): el portal ya no deja elegir texturas al aprobar un boceto (las define el
@@ -206,6 +208,12 @@ router.post('/orden/:ordenId/boceto-aprobado', verifyToken, impersonarCliente, u
 // TPU "Hago mi matriz": el cliente sube su PDF vectorial y recibe el análisis (trazados por color)
 // para armar las zonas de relieve en el form. El pedido viaja después con el token que devuelve.
 router.post('/tpu-matriz/analizar', verifyToken, impersonarCliente, upload.single('file'), webOrdersController.analizarMatrizTpu);
+
+// Bordado: el logo en PDF o AI vectorial pasa por el mismo control que TPU y devuelve colores exactos,
+// formas y medida real para armar la paleta de hilos. No guarda nada.
+router.post('/bordado/analizar-vector', verifyToken, impersonarCliente, upload.single('file'), webOrdersController.analizarVectorBordado);
+// Bordado: vista de puntadas (Ink/Stitch) para mostrar en «Viendo tu diseño» en lugar del prediseño.
+router.post('/bordado/vista-puntadas', verifyToken, impersonarCliente, webOrdersController.vistaPuntadasBordado);
 
 // ── TIENDA (e-commerce del portal — ver docs/ecommerce-portal-plan.md) ───────
 // Catálogo de la vitrina: solo productos publicados en TiendaProductos, precio base y stock

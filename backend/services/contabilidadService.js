@@ -332,7 +332,7 @@ async function crearDeudaDocumento(params, transaction = null) {
     const dupRes = await mkReq()
       .input('DocIdDocumento', sql.Int, DocIdDocumento)
       .query(`
-        SELECT TOP 1 DDeIdDocumento, DDeImporteOriginal, DDeImportePendiente
+        SELECT TOP 1 DDeIdDocumento, DDeImporteOriginal, DDeImportePendiente, CueIdCuenta
         FROM   dbo.DeudaDocumento WITH (UPDLOCK, ROWLOCK)
         WHERE  DocIdDocumento = @DocIdDocumento
           AND  DDeEstado IN ('PENDIENTE','PARCIAL','VENCIDO')
@@ -341,6 +341,14 @@ async function crearDeudaDocumento(params, transaction = null) {
       `);
     if (dupRes.recordset.length) {
       const yaExiste = dupRes.recordset[0];
+      // La deuda viva está en OTRA cuenta: el importe que llega es de esa otra cuenta (a
+      // veces de otra moneda) y pisarlo dejaba, p. ej., $ 600 escritos como US$ 600 en la
+      // cuenta en dólares (Fabiana Limpias ET-11919, oct-2026: editarFactura creaba una
+      // deuda por cuenta y la segunda pisaba a la primera). Se frena: un documento tiene
+      // UNA deuda, por su total, en la cuenta de su moneda (manda la factura).
+      if (Number(yaExiste.CueIdCuenta) !== Number(CueIdCuenta)) {
+        throw new Error(`El documento #${DocIdDocumento} ya tiene la deuda #${yaExiste.DDeIdDocumento} en la cuenta ${yaExiste.CueIdCuenta}; no se le carga otra deuda en la cuenta ${CueIdCuenta}. No se guardó nada.`);
+      }
       // Ya hubo cobros contra esta deuda: reescribir su importe pisaría la imputación.
       // Se deja como está y se avisa; el importe lo ajusta el flujo de edición, no este.
       const tuvoPagos = Number(yaExiste.DDeImportePendiente) < Number(yaExiste.DDeImporteOriginal) - 0.01;
@@ -812,8 +820,23 @@ async function hookPagoRegistrado(params) {
     // SinImputar: el llamador ya imputó este pago dentro de su transacción (caja, PASO 3.5)
     // y pasa cuánto (MontoYaImputado). Volver a correr el PEPS aplicaba el mismo pago dos
     // veces a la misma deuda, o a la más vieja del cliente (187 casos en sep-2026).
-    const { MontoExcedente } = SinImputar
-      ? { MontoExcedente: Math.max(0, Math.abs(MontoPago) - (Number(MontoYaImputado) || 0)) }
+    // Guarda aunque el llamador no lo diga: si el pago YA tiene imputaciones en esta cuenta,
+    // no se corre el PEPS otra vez (MONZON PARODI FA-2348: pagos Handy 72570 y 74313 de
+    // ventas contado, cada uno 2 veces en la cuota más vieja; US$ 114,60 "pagados" sin plata).
+    let yaImputadoEnCuenta = 0;
+    if (!SinImputar) {
+      const yaRes = await (await getPool()).request()
+        .input('PagIdPago',   sql.Int, PagIdPago)
+        .input('CueIdCuenta', sql.Int, CueIdCuenta)
+        .query(`SELECT ISNULL(SUM(ImpImporte), 0) AS Ya FROM dbo.ImputacionPago WITH(NOLOCK)
+                WHERE PagIdPago = @PagIdPago AND CueIdCuenta = @CueIdCuenta`);
+      yaImputadoEnCuenta = Number(yaRes.recordset[0]?.Ya) || 0;
+      if (yaImputadoEnCuenta > 0.001) {
+        logger.warn(`[CONTABILIDAD] Pago ${PagIdPago} ya tenía ${yaImputadoEnCuenta.toFixed(2)} imputado en la cuenta ${CueIdCuenta}: no se vuelve a correr el PEPS.`);
+      }
+    }
+    const { MontoExcedente } = (SinImputar || yaImputadoEnCuenta > 0.001)
+      ? { MontoExcedente: Math.max(0, Math.abs(MontoPago) - (SinImputar ? (Number(MontoYaImputado) || 0) : yaImputadoEnCuenta)) }
       : await imputarPago({
           PagIdPago,
           MontoDisponible: Math.abs(MontoPago),

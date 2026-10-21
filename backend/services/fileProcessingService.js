@@ -347,6 +347,7 @@ const processOrderListInternal = async (orderIds, io, targetFileIds = null, opts
                         // tiene metros, así que el recálculo daría 0 y le borraría la cantidad.
                         // [PRO] Producción (prendas) también: su Magnitud es la CANTIDAD DE PRENDAS,
                         // editable a mano en el detalle — medir un arte no debe pisarla.
+                        // [BORDADO] EMB también: su Magnitud son las prendas del diseño (la usa el precio).
                         // Va como condición del UPDATE y no como SELECT aparte para no agregar un viaje
                         // más a la base en un bucle que corre por cada archivo medido.
                         await pool.request()
@@ -362,7 +363,7 @@ const processOrderListInternal = async (orderIds, io, targetFileIds = null, opts
                                 IF ISNULL(@TotalProd, 0) = 0
                                     SELECT @TotalServ = SUM(ISNULL(Cantidad, 0)) FROM ServiciosExtraOrden WHERE OrdenID = @OID;
                                 UPDATE dbo.Ordenes SET Magnitud = CAST((ISNULL(@TotalProd, 0) + ISNULL(@TotalServ, 0)) AS NVARCHAR(50))
-                                WHERE OrdenID = @OID AND UPPER(LTRIM(RTRIM(ISNULL(AreaID, '')))) NOT IN ('TPU', 'PRO')
+                                WHERE OrdenID = @OID AND UPPER(LTRIM(RTRIM(ISNULL(AreaID, '')))) NOT IN ('TPU', 'PRO', 'EMB')
                             `);
 
                         if (io) {

@@ -1,10 +1,15 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { Scissors, Trash2, Plus, Layers, Palette, Lock } from 'lucide-react';
+import { Scissors, Trash2, Plus, Layers, Palette, Lock, Link2 } from 'lucide-react';
 import { FileUploadZone } from './FileUploadZone';
 import { CustomSelect } from '../../../pautas/CustomSelect';
 import PrendaClienteSelector from './PrendaClienteSelector';
 import PredisenoBordadoModal from './PredisenoBordadoModal';
-import { analizarArteAutomatico, puntadasDePaleta } from '../utils/bordadoHilos';
+import {
+    analizarArteAutomatico, puntadasDePaleta, leerProporcionArte, canvasSimulado, RELIEVE_3D_HABILITADO,
+    cargarCartaHilos,
+} from '../utils/bordadoHilos';
+import { esVectorBordado, analizarVectorBordado } from '../utils/bordadoVector';
+import { claveVista, pedirVistaPuntadas } from '../utils/vistaPuntadas';
 
 // [BORDADO] Form de ingreso.
 //
@@ -71,8 +76,12 @@ export const BordadoTechnicalUI = ({
 
     // El parche se fabrica de cero: no hay prendas del cliente que elegir.
     const esParche = /parche/i.test(currentVariant || '');
-    // El bloque de diseños solo vive en el form propio de bordado.
-    const usaDisenos = isStandalone && !!addDiseno;
+    // El bloque de diseños vive donde quien llama maneja los diseños (addDiseno): el form
+    // propio de bordado del portal y, en MODO COMPRA, el Bordado de un componente del pedido
+    // de prendas. En modo compra las prendas son las de la compra, no del cliente: no hay
+    // "¿sobre qué prendas va?" y cada diseño va, por defecto, en todas las del componente.
+    const usaDisenos = !!addDiseno;
+    const modoCompra = usaDisenos && !isStandalone;
 
     // Diseño con el editor de prediseño abierto
     const [disenandoId, setDisenandoId] = useState(null);
@@ -84,42 +93,58 @@ export const BordadoTechnicalUI = ({
     // con los datos para cotizar y para el taller aunque el cliente no toque el
     // diseñador — que es lo normal. Si después lo abre, arranca desde acá.
     const [analizando, setAnalizando] = useState([]);
-    const analizadosRef = useRef(new Set());
+    // Por ARCHIVO, no por nombre: volver a subir un "logo.png" (otro, o el mismo
+    // después de haber probado con otro) tiene que analizarse de nuevo.
+    const analizadosRef = useRef(new WeakSet());
     // "Con tafeta" sale del artículo elegido (107 / 109): la pieza más grande se
     // resuelve con tela aplicada en vez de hilo.
-    const usaTafeta = /tafeta/i.test(currentMaterial || '');
+    // Con la técnica fijada por el combo, el artículo viene en lockedSpec.
+    const usaTafeta = /tafeta/i.test(currentMaterial || lockedSpec || '');
 
     useEffect(() => {
         if (!usaDisenos) return;
         const pendientes = disenosBordado.filter(d =>
-            d.file && !analizadosRef.current.has(d.id + d.file.name)
+            d.file && !analizadosRef.current.has(d.file)
         );
         if (!pendientes.length) return;
 
         pendientes.forEach(async (d) => {
-            const clave = d.id + d.file.name;
-            analizadosRef.current.add(clave);
+            analizadosRef.current.add(d.file);
             setAnalizando(prev => [...prev, d.id]);
             try {
-                const r = await analizarArteAutomatico(d.file, { usaTafeta });
-                if (r) {
-                    // La imagen analizada se guarda como prediseño: es lo que va a
-                    // ver el taller y lo que el cliente puede retocar después.
+                // Los hilos salen del nomenclador (Configurar Productos › Hilos): se espera a
+                // tenerlo, así el logo no se analiza con la carta de respaldo. Una vez por sesión.
+                await cargarCartaHilos();
+                // PDF o AI: el control de vector de TPU, con colores y medida exactos.
+                const esVector = esVectorBordado(d.file);
+                const r = esVector
+                    ? await analizarVectorBordado(d.file, { usaTafeta })
+                    : await analizarArteAutomatico(d.file, { usaTafeta });
+                if (esVector ? r.vector : r) {
+                    // El prediseño es la SIMULACIÓN de bordado (hilos y puntadas),
+                    // igual que la que guarda el editor: es lo que el cliente ve en
+                    // «Viendo tu diseño» y lo que recibe el taller.
                     const base = d.file.name.replace(/\.[^.]+$/, '');
-                    r.canvas.toBlob((blob) => {
-                        updateDiseno(d.id, {
+                    canvasSimulado(r.canvas, r.paleta).toBlob((blob) => {
+                        // Si mientras tanto cambió el logo, este análisis ya no vale.
+                        updateDiseno(d.id, (actual) => actual.file !== d.file ? {} : {
                             paleta: r.paleta,
                             arteDisenado: blob
                                 ? new File([blob], `${base} PREDISENO.png`, { type: 'image/png' })
                                 : null,
                             analisisAutomatico: true,
+                            ...(esVector ? datosDelVector(actual, r) : {}),
                         });
                         setAnalizando(prev => prev.filter(x => x !== d.id));
                     }, 'image/png');
                 } else {
-                    // Formato que el navegador no puede abrir (PDF, AI, DST): queda
-                    // sin prediseño y se avisa, en vez de fallar en silencio.
-                    updateDiseno(d.id, { analisisImposible: true });
+                    // Formato que no se puede analizar (DST, EPS, un PDF con fotos o
+                    // textos sin curvar): queda sin prediseño y se avisa por qué, en
+                    // vez de fallar en silencio.
+                    updateDiseno(d.id, (actual) => actual.file !== d.file ? {} : {
+                        analisisImposible: true,
+                        motivoAnalisis: (esVector && r?.motivo) || null,
+                    });
                     setAnalizando(prev => prev.filter(x => x !== d.id));
                 }
             } catch {
@@ -128,6 +153,40 @@ export const BordadoTechnicalUI = ({
         });
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [disenosBordado, usaDisenos, usaTafeta]);
+
+    // ── Vista de puntadas ─────────────────────────────────────────────────
+    // En «Viendo tu diseño» va lo que se va a bordar: las puntadas que arma Ink/Stitch con la
+    // paleta y las medidas (ver utils/vistaPuntadas.js), las mismas del borrador de matriz que
+    // recibe el taller. Se pide cuando el diseño tiene paleta, ancho y largo, y otra vez si cambian
+    // (el cliente corrige la medida o guarda el editor de hilos), con un rato de espera para no pedir
+    // una por cada número que tipea. Mientras tanto, y si el servidor no puede, queda el prediseño.
+    const [generandoVista, setGenerandoVista] = useState([]);
+    const vistaPedidaRef = useRef({});   // id del diseño → clave de la última vista pedida
+    useEffect(() => {
+        if (!usaDisenos) return;
+        const timers = [];
+        disenosBordado.forEach(d => {
+            if (!d.file || !(d.paleta || []).length || !(parseFloat(d.ancho) > 0) || !(parseFloat(d.alto) > 0)) return;
+            const clave = claveVista(d);
+            if (d.vistaKey === clave || vistaPedidaRef.current[d.id] === clave) return;
+            timers.push(setTimeout(async () => {
+                vistaPedidaRef.current[d.id] = clave;
+                setGenerandoVista(prev => (prev.includes(d.id) ? prev : [...prev, d.id]));
+                const png = await pedirVistaPuntadas({
+                    paleta: d.paleta, anchoCm: d.ancho, altoCm: d.alto, nombre: d.file.name.replace(/\.[^.]+$/, ''),
+                });
+                setGenerandoVista(prev => prev.filter(x => x !== d.id));
+                if (!png) return;
+                // Sobre el diseño de AHORA: si mientras tanto cambió el logo, la paleta o la medida,
+                // esta vista ya no corresponde (la que sigue la pide ese cambio).
+                updateDiseno(d.id, (actual) => (actual.file !== d.file || claveVista(actual) !== clave)
+                    ? {}
+                    : { arteDisenado: png, vistaKey: clave });
+            }, 1200));
+        });
+        return () => timers.forEach(clearTimeout);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [disenosBordado, usaDisenos]);
 
     // Diseños donde el cliente pidió VER el arte original teniendo un prediseño
     // guardado. Es solo un cambio de vista: no borra nada.
@@ -150,10 +209,92 @@ export const BordadoTechnicalUI = ({
 
     const prendaDe = (id) => prendasDisponibles.find(p => p.PrendaClienteID === id) || null;
 
+    // Con UNA sola línea de prendas no hay nada que elegir: se elige sola en cada
+    // diseño. Si no, el cliente veía la tarjeta, cargaba la cantidad sin tocarla
+    // y el diseño no descontaba nada: el siguiente seguía viendo todas libres.
+    // Una vez por diseño, así si el cliente la destilda no vuelve a elegirse; y
+    // solo con saldo, así no se elige una línea que ya tomaron los otros.
+    const autoElegidasRef = useRef(new Set());
+    useEffect(() => {
+        if (!usaDisenos || esParche || prendasDisponibles.length !== 1) return;
+        const linea = prendasDisponibles[0];
+        disenosBordado.forEach(d => {
+            if (d.prendaClienteId || autoElegidasRef.current.has(d.id)) return;
+            const libre = (parseInt(linea.CantidadDisponible) || 0)
+                - (comprometidoPorLinea(d.id)[linea.PrendaClienteID] || 0);
+            if (libre <= 0) return;
+            autoElegidasRef.current.add(d.id);
+            updateDiseno(d.id, (actual) => actual.prendaClienteId ? {} : { prendaClienteId: linea.PrendaClienteID });
+        });
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [disenosBordado, prendasDisponibles, usaDisenos, esParche]);
+
     // Las puntadas NO se guardan en el diseño: se derivan de la paleta y las
     // medidas. Así se recalculan solas cuando el cliente corrige el tamaño, sin
     // quedar pegadas a un número viejo.
     const puntadasDelDiseno = (d) => puntadasDePaleta(d.paleta, d.ancho, d.alto);
+
+    // ── Ancho y largo atados al logo ──────────────────────────────────────
+    // Con el logo subido, el cliente carga UNA medida y la otra sale de la
+    // proporción del arte. Así no puede pedir 10 × 10 un logo apaisado, que
+    // inflaría las puntadas, el precio y la fecha de entrega.
+    const otroLado = (valor, factor) => {
+        const n = parseFloat(valor);
+        // A 0,1 cm, igual que el paso del input.
+        return n > 0 ? String(Math.round(n * factor * 10) / 10) : '';
+    };
+    const cambiarAncho = (d, ancho) => updateDiseno(d.id, d.proporcion
+        ? { ancho, alto: otroLado(ancho, 1 / d.proporcion) }
+        : { ancho });
+    const cambiarLargo = (d, alto) => updateDiseno(d.id, d.proporcion
+        ? { alto, ancho: otroLado(alto, d.proporcion) }
+        : { alto });
+
+    // Logo en vector: la medida REAL del dibujo (sin el fondo de la hoja) y la
+    // proporción atada a ella. Si el cliente ya cargó una medida manda esa, con
+    // la misma regla que subirLogo; si no cargó nada, se propone la real.
+    const datosDelVector = (actual, { proporcion, medidaMm, raster, coloresExactos, avisos }) => {
+        const datos = { proporcion, medidaVector: medidaMm, rasterVector: raster, coloresExactos, avisosVector: avisos };
+        if (parseFloat(actual.ancho) > 0) return { ...datos, alto: otroLado(actual.ancho, 1 / proporcion) };
+        if (parseFloat(actual.alto) > 0) return { ...datos, ancho: otroLado(actual.alto, proporcion) };
+        return { ...datos, ancho: otroLado(medidaMm.ancho, 0.1), alto: otroLado(medidaMm.alto, 0.1) };
+    };
+
+    const subirLogo = (d, f) => {
+        const file = Array.isArray(f) ? f[0] : f;
+        updateDiseno(d.id, {
+            file,
+            // Cambiar el arte invalida el prediseño anterior, su proporción y lo
+            // que dijo el análisis (si no, un PNG subido después de un PDF seguía
+            // diciendo "no se puede analizar este formato")
+            arteDisenado: null, paleta: [], proporcion: null,
+            analisisAutomatico: false, analisisImposible: false, motivoAnalisis: null,
+            // Cómo había dejado el fondo en el editor: era del logo anterior.
+            sinFondo: undefined,
+            // Lo que trajo el vector anterior (PDF / AI)
+            medidaVector: null, rasterVector: null, coloresExactos: null, avisosVector: null,
+            // La vista de puntadas era del logo anterior
+            vistaKey: null
+        });
+        setVerOriginal(prev => prev.filter(x => x !== d.id));
+
+        leerProporcionArte(file).then((proporcion) => {
+            if (!proporcion) return;
+            // Sobre el diseño de AHORA: el cliente pudo haber escrito una medida
+            // o cambiado otra vez el logo mientras se leía este.
+            updateDiseno(d.id, (actual) => {
+                if (actual.file !== file) return {};
+                // Manda el ancho si ya estaba; si solo había largo, manda ese.
+                if (parseFloat(actual.ancho) > 0) {
+                    return { proporcion, alto: otroLado(actual.ancho, 1 / proporcion) };
+                }
+                if (parseFloat(actual.alto) > 0) {
+                    return { proporcion, ancho: otroLado(actual.alto, proporcion) };
+                }
+                return { proporcion };
+            });
+        });
+    };
 
     const botonAgregar = (
         <button
@@ -240,8 +381,9 @@ export const BordadoTechnicalUI = ({
                             )}
 
                             {/* La cantidad total deja de ser un campo suelto: sale de la suma
-                                de lo que pide cada diseño. En modo complemento se mantiene. */}
-                            {!usaDisenos && (
+                                de lo que pide cada diseño. En modo complemento se mantiene, y en
+                                modo compra también: es el tope de prendas de cada diseño. */}
+                            {(!usaDisenos || modoCompra) && (
                                 <div className="md:col-span-2 lg:col-span-1">
                                     <label className="block text-[10px] uppercase font-black text-zinc-500 mb-2 tracking-widest">Cantidad Total *</label>
                                     {lockedQuantity ? (
@@ -303,6 +445,10 @@ export const BordadoTechnicalUI = ({
                                             const pedido = parseInt(d.cantidad) || 0;
                                             const sePasa = libre !== null && pedido > libre;
                                             const faltaPrenda = !esParche && !d.prendaClienteId;
+                                            // Modo compra: un diseño no puede ir en más prendas de las que tiene el
+                                            // componente. Dos diseños sí pueden ir en las mismas (pecho y espalda).
+                                            const topeCompra = modoCompra ? (parseInt(garmentQuantity) || 0) : 0;
+                                            const sePasaCompra = topeCompra > 0 && pedido > topeCompra;
 
                                             return (
                                                 <div key={d.id} className="p-5 rounded-2xl bg-zinc-900/50 border border-zinc-700/50 space-y-5">
@@ -321,7 +467,7 @@ export const BordadoTechnicalUI = ({
                                                     </div>
 
                                                     {/* 1 · SOBRE QUÉ PRENDAS VA — primero, porque condiciona todo lo demás */}
-                                                    {!esParche && (
+                                                    {!esParche && !modoCompra && (
                                                         <div>
                                                             <label className="block text-[10px] uppercase font-black text-zinc-500 mb-2 tracking-widest">
                                                                 ¿Sobre qué prendas va? *
@@ -330,26 +476,28 @@ export const BordadoTechnicalUI = ({
                                                                 prendasDisponibles={prendasDisponibles}
                                                                 selectedPrendaId={d.prendaClienteId}
                                                                 yaComprometido={comprometido}
+                                                                cantidadPropia={d.cantidad}
                                                                 onSelect={(p) => updateDiseno(d.id, {
                                                                     prendaClienteId: p ? p.PrendaClienteID : null
                                                                 })}
                                                             />
                                                             {faltaPrenda && prendasDisponibles.length > 0 && (
                                                                 <p className="mt-2 text-[10px] font-black text-amber-400">
-                                                                    Elegí las prendas antes de seguir: sin eso no se puede confirmar el pedido.
+                                                                    Tocá la línea de prendas que lleva este diseño: hasta que no la elijas no se descuenta del saldo y no se puede confirmar el pedido.
                                                                 </p>
                                                             )}
                                                         </div>
                                                     )}
 
-                                                    {/* 2 · MEDIDAS, CANTIDAD Y RELIEVE — todo en la misma línea */}
-                                                    <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 items-end">
+                                                    {/* 2 · MEDIDAS, CANTIDAD Y RELIEVE — todo en la misma línea
+                                                        (sin relieve mientras RELIEVE_3D_HABILITADO esté apagado) */}
+                                                    <div className={`grid grid-cols-2 ${RELIEVE_3D_HABILITADO ? 'lg:grid-cols-4' : 'lg:grid-cols-3'} gap-4 items-end`}>
                                                         <div>
                                                             <label className="block text-[10px] uppercase font-black text-zinc-500 mb-2 tracking-widest">Ancho (cm) *</label>
                                                             <input
                                                                 type="number" min="0" step="0.1" placeholder="Ancho"
                                                                 value={d.ancho}
-                                                                onChange={(e) => updateDiseno(d.id, { ancho: e.target.value })}
+                                                                onChange={(e) => cambiarAncho(d, e.target.value)}
                                                                 className="w-full h-[48px] px-4 bg-zinc-800/50 border border-zinc-700/50 rounded-xl font-black text-zinc-100 outline-none focus:border-brand-gold transition-all"
                                                             />
                                                         </div>
@@ -358,7 +506,7 @@ export const BordadoTechnicalUI = ({
                                                             <input
                                                                 type="number" min="0" step="0.1" placeholder="Largo"
                                                                 value={d.alto}
-                                                                onChange={(e) => updateDiseno(d.id, { alto: e.target.value })}
+                                                                onChange={(e) => cambiarLargo(d, e.target.value)}
                                                                 className="w-full h-[48px] px-4 bg-zinc-800/50 border border-zinc-700/50 rounded-xl font-black text-zinc-100 outline-none focus:border-brand-gold transition-all"
                                                             />
                                                         </div>
@@ -366,12 +514,13 @@ export const BordadoTechnicalUI = ({
                                                             <label className="block text-[10px] uppercase font-black text-zinc-500 mb-2 tracking-widest">
                                                                 {esParche ? 'Parches *' : 'Prendas *'}
                                                             </label>
+                                                            {/* Modo compra (pedido de prendas): no deja pasar las prendas que hay */}
                                                             <input
-                                                                type="number" min="1" placeholder="Cant."
+                                                                type="number" min="1" placeholder="Cant." max={topeCompra || undefined}
                                                                 value={d.cantidad}
-                                                                onChange={(e) => updateDiseno(d.id, { cantidad: e.target.value })}
+                                                                onChange={(e) => updateDiseno(d.id, { cantidad: topeCompra > 0 && parseInt(e.target.value, 10) > topeCompra ? String(topeCompra) : e.target.value })}
                                                                 className={`w-full h-[48px] px-4 bg-zinc-800/50 border rounded-xl font-black text-zinc-100 outline-none transition-all ${
-                                                                    sePasa ? 'border-red-500 focus:border-red-500' : 'border-zinc-700/50 focus:border-brand-gold'
+                                                                    (sePasa || sePasaCompra) ? 'border-red-500 focus:border-red-500' : 'border-zinc-700/50 focus:border-brand-gold'
                                                                 }`}
                                                             />
                                                         </div>
@@ -380,7 +529,7 @@ export const BordadoTechnicalUI = ({
                                                             relieve y el resto plano). Ahí el tilde deja de editarse
                                                             y solo refleja lo diseñado — si no, diría una cosa y el
                                                             diseño otra. Sin diseñador, se declara acá. */}
-                                                        {(d.paleta || []).length > 0 ? (
+                                                        {!RELIEVE_3D_HABILITADO ? null : (d.paleta || []).length > 0 ? (
                                                             <div
                                                                 className={`flex items-center gap-3 h-[48px] px-3 rounded-xl border ${
                                                                     d.relieve3D
@@ -411,9 +560,20 @@ export const BordadoTechnicalUI = ({
                                                         )}
                                                     </div>
 
+                                                    {d.proporcion && (
+                                                        <p className="-mt-3 flex items-center gap-1.5 text-[10px] font-bold text-zinc-500">
+                                                            <Link2 size={12} className="text-brand-gold shrink-0" />
+                                                            Ancho y largo siguen la proporción de tu logo: cargá uno y el otro se calcula solo.
+                                                        </p>
+                                                    )}
                                                     {sePasa && (
                                                         <p className="-mt-3 text-[10px] font-black text-red-400">
                                                             Te quedan {libre} prendas disponibles de esa línea y estás pidiendo {pedido}.
+                                                        </p>
+                                                    )}
+                                                    {sePasaCompra && (
+                                                        <p className="-mt-3 text-[10px] font-black text-red-400">
+                                                            Hay {topeCompra} prendas y el diseño pide {pedido}.
                                                         </p>
                                                     )}
                                                     {!sePasa && libre !== null && pedido > 0 && (
@@ -435,17 +595,16 @@ export const BordadoTechnicalUI = ({
                                                             <FileUploadZone
                                                                 id={`bordado-logo-${d.id}`}
                                                                 label={d.file ? 'CAMBIAR LOGO' : 'SUBIR LOGO'}
-                                                                onFileSelected={(f) => {
-                                                                    updateDiseno(d.id, {
-                                                                        file: Array.isArray(f) ? f[0] : f,
-                                                                        // Cambiar el arte invalida el prediseño anterior
-                                                                        arteDisenado: null, paleta: []
-                                                                    });
-                                                                    setVerOriginal(prev => prev.filter(x => x !== d.id));
-                                                                }}
+                                                                onFileSelected={(f) => subirLogo(d, f)}
                                                                 selectedFile={(d.arteDisenado && !mostrandoOriginal(d.id)) ? d.arteDisenado : d.file}
                                                                 color="emerald"
                                                             />
+                                                            {!d.file && (
+                                                                <p className="mt-2 text-[10px] text-zinc-500 text-center leading-relaxed">
+                                                                    PNG o JPG. Si lo tenés en vector (PDF o AI), mejor:
+                                                                    los colores y la medida salen exactos.
+                                                                </p>
+                                                            )}
 
                                                             {d.file && (
                                                                 <div className="mt-2 space-y-2">
@@ -468,6 +627,16 @@ export const BordadoTechnicalUI = ({
                                                                             </span>
                                                                         </button>
                                                                     )}
+                                                                    {/* Vista de puntadas: se está armando, o ya es lo que se ve arriba */}
+                                                                    {generandoVista.includes(d.id) ? (
+                                                                        <p className="text-[10px] font-bold text-brand-gold text-center animate-pulse">
+                                                                            Generando la vista de puntadas…
+                                                                        </p>
+                                                                    ) : (d.vistaKey && d.vistaKey === claveVista(d) && !mostrandoOriginal(d.id)) ? (
+                                                                        <p className="text-[10px] text-zinc-500 text-center">
+                                                                            Así se va a bordar: vista de las puntadas.
+                                                                        </p>
+                                                                    ) : null}
 
                                                                     <button
                                                                         type="button"
@@ -485,11 +654,30 @@ export const BordadoTechnicalUI = ({
                                                                         </p>
                                                                     ) : d.analisisImposible ? (
                                                                         <p className="text-[10px] font-bold text-amber-500/90 text-center leading-relaxed">
-                                                                            No se puede analizar este formato. El taller lo va a ver igual, pero sin
-                                                                            estimación de hilos ni puntadas. Subilo en PNG o JPG si querés el detalle.
+                                                                            {d.motivoAnalisis ? (
+                                                                                // El mismo control que TPU: el cliente ve qué le falta al vector.
+                                                                                <>
+                                                                                    {d.motivoAnalisis} Así no se pueden calcular los hilos ni las
+                                                                                    puntadas, pero el taller ve tu archivo igual.
+                                                                                </>
+                                                                            ) : (
+                                                                                <>
+                                                                                    No se puede analizar este formato. El taller lo va a ver igual, pero sin
+                                                                                    estimación de hilos ni puntadas. Subilo en PNG o JPG, o en PDF vectorial,
+                                                                                    si querés el detalle.
+                                                                                </>
+                                                                            )}
                                                                         </p>
                                                                     ) : puntadasDelDiseno(d) > 0 ? (
                                                                         <p className="text-[10px] text-zinc-400 text-center leading-relaxed">
+                                                                            {d.medidaVector && (
+                                                                                <>
+                                                                                    <span className="font-bold text-emerald-400">
+                                                                                        Vector verificado · medida real {d.medidaVector.ancho} × {d.medidaVector.alto} mm
+                                                                                    </span>
+                                                                                    <br />
+                                                                                </>
+                                                                            )}
                                                                             <span className="font-black text-white">
                                                                                 ≈ {puntadasDelDiseno(d).toLocaleString('es-UY')} puntadas
                                                                             </span>
@@ -498,6 +686,9 @@ export const BordadoTechnicalUI = ({
                                                                             <span className="text-zinc-600">
                                                                                 Estimado: el número real sale del ponchado.
                                                                             </span>
+                                                                            {(d.avisosVector || []).map(a => (
+                                                                                <span key={a} className="block mt-1 text-amber-500/90">{a}</span>
+                                                                            ))}
                                                                         </p>
                                                                     ) : (d.paleta || []).length > 0 ? (
                                                                         <p className="text-[10px] text-zinc-500 text-center leading-relaxed">
@@ -623,18 +814,24 @@ export const BordadoTechnicalUI = ({
             {/* Editor de prediseño (opcional) */}
             {disenando && (
                 <PredisenoBordadoModal
-                    file={disenando.file}
+                    // Un logo en vector (PDF / AI) se edita sobre el PNG con sus formas,
+                    // y «Volver a detectar» respeta sus colores exactos.
+                    file={disenando.rasterVector || disenando.file}
+                    coloresExactos={disenando.coloresExactos}
                     paletaInicial={disenando.paleta || []}
                     // Las medidas del bordado son las que permiten estimar puntadas
                     // (área × densidad): sin ellas el editor lo avisa y no inventa.
                     anchoCm={disenando.ancho}
                     altoCm={disenando.alto}
+                    // Si ya lo guardó una vez, el editor vuelve a abrir con el fondo
+                    // como lo dejó (quitado o restaurado), igual que su paleta.
+                    sinFondoInicial={disenando.sinFondo}
                     cantidad={parseInt(disenando.cantidad) || 0}
                     onCerrar={() => setDisenandoId(null)}
-                    onGuardar={({ paleta, arteDisenado, puntadasEstimadas, relieve3D }) => {
+                    onGuardar={({ paleta, arteDisenado, puntadasEstimadas, relieve3D, sinFondo }) => {
                         // El relieve del pedido pasa a salir del diseño (qué piezas se
                         // marcaron), no de un tilde suelto.
-                        updateDiseno(disenando.id, { paleta, arteDisenado, puntadasEstimadas, relieve3D });
+                        updateDiseno(disenando.id, { paleta, arteDisenado, puntadasEstimadas, relieve3D, sinFondo });
                         setVerOriginal(prev => prev.filter(x => x !== disenando.id));
                         setDisenandoId(null);
                     }}
