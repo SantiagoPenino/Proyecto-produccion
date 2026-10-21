@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useSearchParams, useNavigate, useLocation } from 'react-router-dom';
 import { toast } from 'sonner';
 import {
-    Wrench, Users, Loader2, ClipboardList, ListChecks, CalendarDays, Printer, Repeat, FolderKanban, Package, ChartColumn,
+    Wrench, Users, Loader2, ClipboardList, ListChecks, CalendarDays, Printer, Repeat, FolderKanban, Package, ChartColumn, Building2,
 } from 'lucide-react';
 import { servicioTecnicoService } from '../../services/api';
 import { socket } from '../../services/socketService';
@@ -19,6 +19,7 @@ import TrabajoDetalle from '../servicio-tecnico/TrabajoDetalle';
 import ProyectosVista, { ProyectoDetalle } from '../servicio-tecnico/Proyectos';
 import InsumosVista from '../servicio-tecnico/Insumos';
 import ReportesVista from '../servicio-tecnico/ReportesVista';
+import LocalesVista from '../servicio-tecnico/LocalesVista';
 import { mensajeError } from '../servicio-tecnico/constantes';
 import { useAuth } from '../../context/AuthContext';
 import { SECCIONES_ST } from './servicioTecnicoSecciones';
@@ -30,7 +31,7 @@ import { SECCIONES_ST } from './servicioTecnicoSecciones';
 // página la recibe en `seccion`: la ve quien la tenga en el menú de su rol, y se muestra sola, sin
 // pestañas. Lo que se hace adentro (tomar, programar, crear, editar) sigue siendo de los técnicos
 // (área SERVICIO) y Admin, como en el backend. Sin `seccion` (menú viejo, con /servicio-tecnico):
-// los técnicos y Admin ven las ocho con pestañas; el resto, solo sus solicitudes.
+// los técnicos y Admin ven todas con pestañas; el resto, solo sus solicitudes.
 // Desde el 08/10 cada máquina tiene su página: /servicio-tecnico/maquinas/:id (cae en la entrada de menú
 // "Máquinas" porque el router busca por prefijo). Antes era un panel lateral.
 
@@ -43,6 +44,7 @@ const SECCIONES_TECNICO = [
     { key: 'proyectos', label: 'Proyectos', Icono: FolderKanban },
     { key: 'insumos', label: 'Insumos', Icono: Package },
     { key: 'reportes', label: 'Reportes', Icono: ChartColumn },
+    { key: 'locales', label: 'Locales', Icono: Building2 },
 ];
 
 const iniciales = (n) => String(n || '').trim().split(/\s+/).filter(Boolean).slice(0, 2).map(p => p[0]).join('').toUpperCase() || '?';
@@ -325,6 +327,7 @@ const ServicioTecnicoPage = ({ seccion: seccionFija = null, rutasPermitidas = nu
                 : seccionActual === 'planes' ? <PlanesVista meta={meta} onAbrirTrabajo={setTrabajoAbierto} />
                 : seccionActual === 'proyectos' ? <ProyectosVista meta={meta} onAbrir={setProyectoAbierto} />
                 : seccionActual === 'insumos' ? <InsumosVista meta={meta} />
+                : seccionActual === 'locales' ? <LocalesVista meta={meta} onAbrirMaquina={abrirMaquina} />
                 : seccionActual === 'reportes' ? <ReportesVista semanaInicial={searchParams.get('semana') || undefined} onAbrirMaquina={abrirMaquina} />
                 : null}
             </>)}

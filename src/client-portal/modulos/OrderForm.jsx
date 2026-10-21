@@ -46,6 +46,7 @@ import BordadoTechnicalUI from './order-form/components/BordadoTechnicalUI';
 const Tpu3DViewer = React.lazy(() => import('./Tpu3DViewer'));
 import { puntadasDePaleta, estimarMinutos } from './order-form/utils/bordadoHilos';
 import { EstampadoTechnicalUI } from './order-form/components/EstampadoTechnicalUI';
+import { medidaMaximaTPU, CampoCm, aCm, fmtCm, errorMedidaCm } from './order-form/components/TpuTechnicalUI';
 import EcouvTerminacionesUI from './EcouvTerminacionesUI';
 
 const ServiceAccordion = ({ title, subtitle, isActive, onToggle, children, icon: Icon, main = false, optional = false }) => {
@@ -126,23 +127,11 @@ const resolveMaterialWidth = (matObj) => {
 };
 
 // TPU: el tope de medida viene en el NOMBRE del producto ("Parche (De hasta 10x8)", "Hasta 4x4",
-// "ETIQUETAS OFICIALES HASTA 4X4"). No hay campo aparte en el catálogo, así que se lee de ahí.
-// El primer número es el alto y el segundo el ancho. Sin medida en el nombre (ej. "TPU STANDARD")
-// devuelve null y los selectores no aparecen.
-const medidaMaximaTPU = (nombreMaterial) => {
-    const m = String(nombreMaterial || '').match(/(\d+(?:[.,]\d+)?)\s*[x×]\s*(\d+(?:[.,]\d+)?)/i);
-    if (!m) return null;
-    const alto = parseFloat(m[1].replace(',', '.'));
-    const ancho = parseFloat(m[2].replace(',', '.'));
-    if (!(alto > 0) || !(ancho > 0)) return null;
-    return { alto, ancho };
-};
-
-// Opciones de 1 cm hasta el tope, incluido.
-const opcionesCm = (max) => Array.from({ length: Math.floor(max) }, (_, i) => {
-    const v = String(i + 1);
-    return { value: v, label: `${v} cm` };
-});
+// "ETIQUETAS OFICIALES HASTA 4X4"): primer número alto, segundo ancho; sin medida en el nombre no hay
+// campos. La medida va en cm con UN decimal (21/10, antes cm enteros): ver TpuTechnicalUI.jsx.
+// La tolerancia es la diferencia entre lo que mide el arte y la medida pedida (en "Hago mi matriz")
+// a partir de la cual el cliente tiene que confirmar que lo agranda o lo achica.
+const TOLERANCIA_ESCALA_TPU = 0.02;
 
 const OrderForm = ({ serviceId: propServiceId }) => {
     const { serviceId: paramServiceId } = useParams();
@@ -649,10 +638,71 @@ const OrderForm = ({ serviceId: propServiceId }) => {
             setTpuMatrizAnalizando(false);
         }
     };
-    // Medida que viaja al generador (mm): la del producto si tiene tope (selectores alto/ancho en
-    // cm), si no la que el cliente fijó en el editor (default: el tamaño real del vector).
+    // ── Medida del parche vs. lo que mide el arte ("Hago mi matriz", 21/10) ──────────────────────
+    // TPU-34617: el escudo medía 9,2 × 5,8 cm, el cliente eligió 10 × 7 (los selectores eran de cm
+    // enteros) y el generador lo agrandó a 10 × 6,3 sin que nadie se diera cuenta. Ahora:
+    //  - la medida se propone igual a la del arte (achicada en proporción si no entra en el tope);
+    //  - alto y ancho quedan atados a la proporción del arte: al cambiar uno se ajusta el otro;
+    //  - se muestra con qué medida sale el parche y, si difiere del arte en más de
+    //    TOLERANCIA_ESCALA_TPU, el cliente lo tiene que confirmar;
+    //  - la nota lleva la medida REAL con la que sale (y la del arte si difiere).
+    const topeTpuActual = serviceId === 'tpu' ? medidaMaximaTPU(globalMaterial) : null;
+    const arteTpuCm = (tpuMode === 'propia' && Array.isArray(tpuMatriz?.analisis?.bbox_mm))
+        ? { ancho: tpuMatriz.analisis.bbox_mm[0] / 10, alto: tpuMatriz.analisis.bbox_mm[1] / 10 }
+        : null;
+    const [tpuMedidaConfirmada, setTpuMedidaConfirmada] = useState(false);
+    // Con qué medida sale el parche: el generador ENCAJA el arte en la caja pedida sin deformarlo.
+    const parcheTpuCm = (() => {
+        const a = aCm(tpuAlto), b = aCm(tpuAncho);
+        if (!arteTpuCm || !(a > 0) || !(b > 0) || !(arteTpuCm.alto > 0) || !(arteTpuCm.ancho > 0)) return null;
+        const escala = Math.min(a / arteTpuCm.alto, b / arteTpuCm.ancho);
+        return { alto: arteTpuCm.alto * escala, ancho: arteTpuCm.ancho * escala, escala };
+    })();
+    const tpuMedidaPideConfirmar = !!parcheTpuCm && Math.abs(parcheTpuCm.escala - 1) > TOLERANCIA_ESCALA_TPU;
+    // Medida propuesta: la del arte; si no entra en el tope, achicada en proporción hasta que entre.
+    const medidaPropuestaTpu = (arte, tope) => {
+        const s = Math.min(1, tope ? tope.alto / arte.alto : 1, tope ? tope.ancho / arte.ancho : 1);
+        const r = (v, max) => Math.min(max ?? Infinity, Math.round(v * s * 10) / 10);
+        return { alto: r(arte.alto, tope?.alto), ancho: r(arte.ancho, tope?.ancho) };
+    };
+    useEffect(() => {
+        if (!arteTpuCm || !topeTpuActual) return;
+        const p = medidaPropuestaTpu(arteTpuCm, topeTpuActual);
+        setTpuAlto(fmtCm(p.alto));
+        setTpuAncho(fmtCm(p.ancho));
+        setTpuMedidaConfirmada(false);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [tpuMatriz?.token, globalMaterial, tpuMode]);
+    // Proporción atada (al salir del campo, ya acotado al tope): se recalcula el otro lado; si ese
+    // pasa su tope, manda el tope y se recalcula el primero.
+    const fijarMedidaTpu = (campo, valor) => {
+        setTpuMedidaConfirmada(false);
+        if (!arteTpuCm || !topeTpuActual || !(valor > 0)) return;
+        const prop = arteTpuCm.alto / arteTpuCm.ancho;   // alto por cada cm de ancho
+        let alto = campo === 'alto' ? valor : valor * prop;
+        let ancho = campo === 'ancho' ? valor : valor / prop;
+        if (ancho > topeTpuActual.ancho) { ancho = topeTpuActual.ancho; alto = ancho * prop; }
+        if (alto > topeTpuActual.alto) { alto = topeTpuActual.alto; ancho = alto / prop; }
+        setTpuAlto(fmtCm(Math.min(topeTpuActual.alto, Math.round(alto * 10) / 10)));
+        setTpuAncho(fmtCm(Math.min(topeTpuActual.ancho, Math.round(ancho * 10) / 10)));
+    };
+    // "[Medida: alto x ancho cm]" para la nota. En "Hago mi matriz", la medida con la que SALE el
+    // parche y, si difiere de la del arte, también esa.
+    const textoMedidaTpu = () => {
+        if (serviceId !== 'tpu' || tpuMode === 'matriz') return '';
+        const a = aCm(tpuAlto), b = aCm(tpuAncho);
+        if (!(a > 0) || !(b > 0)) return '';
+        if (parcheTpuCm) {
+            const base = `[Medida: ${fmtCm(parcheTpuCm.alto)} x ${fmtCm(parcheTpuCm.ancho)} cm]`;
+            return tpuMedidaPideConfirmar ? `${base} (arte del cliente: ${fmtCm(arteTpuCm.alto)} x ${fmtCm(arteTpuCm.ancho)} cm)` : base;
+        }
+        return `[Medida: ${fmtCm(a)} x ${fmtCm(b)} cm]`;
+    };
+    // Medida que viaja al generador (mm): la del producto si tiene tope (alto/ancho en cm), si no la
+    // que el cliente fijó en el editor (default: el tamaño real del vector).
     const medidaMatrizMm = () => {
-        if (tpuAlto && tpuAncho) return { ancho: parseFloat(tpuAncho) * 10, alto: parseFloat(tpuAlto) * 10 };
+        const a = aCm(tpuAlto), b = aCm(tpuAncho);
+        if (a > 0 && b > 0) return { ancho: Math.round(b * 100) / 10, alto: Math.round(a * 100) / 10 };
         return tpuMatriz?.medida || null;
     };
     // Medida libre (producto sin tope): ancho y alto en mm, con la proporción del vector fija.
@@ -1288,18 +1338,15 @@ const OrderForm = ({ serviceId: propServiceId }) => {
             // El reuso tiene su propio mínimo (más bajo que un trabajo nuevo): la matriz ya existe.
             const minTpu = config.minCopiesReuso || config.minCopies || 15;
             if (cant < minTpu) return addToast(`El mínimo para reusar una matriz es de ${minTpu} unidades.`, 'error');
-            // La medida se exige igual que en trabajo nuevo: los selectores están a la vista y
-            // marcados con *, pero esta rama sale antes de la validación de abajo y los ignoraba.
-            if (medidaMaximaTPU(globalMaterial) && (!tpuAlto || !tpuAncho)) {
-                return addToast('Elegí el alto y el ancho del parche.', 'error');
-            }
+            // El reuso solo cambia la CANTIDAD (21/10, decisión de Santiago): la medida es la de la
+            // matriz y el backend la copia de ella. Antes se pedía alto y ancho, pero con la misma
+            // cantidad el arte viejo se copiaba tal cual y la medida nueva quedaba solo en la nota.
             actions.setLoading(true);
             try {
                 const resp = await apiClient.post('/web-orders/reuse-matriz', {
                     matrizOrdenId: matrizSel.OrdenID,
                     cantidad: cant,
                     nombreTrabajo: jobName.trim(),
-                    medida: (tpuAlto && tpuAncho) ? `${tpuAlto} x ${tpuAncho} cm` : null
                 });
                 const cod = resp?.codigoOrden || resp?.data?.codigoOrden || '';
                 // Cantidad distinta a la de la matriz: el arte se regenera con la nueva cantidad
@@ -1460,10 +1507,13 @@ const OrderForm = ({ serviceId: propServiceId }) => {
             if (config.bocetoMode && tpuMode !== 'propia' && !bocetoFile) {
                 return addToast('Subí el boceto de lo que querés (PNG, JPG o PDF).', 'error');
             }
-            // La medida es obligatoria cuando el producto tiene un tope (o sea, cuando los selectores
-            // están a la vista). Con un producto sin medida en el nombre no hay nada que elegir.
-            if (medidaMaximaTPU(globalMaterial) && (!tpuAlto || !tpuAncho)) {
-                return addToast('Elegí el alto y el ancho del parche.', 'error');
+            // La medida es obligatoria cuando el producto tiene un tope (o sea, cuando los campos
+            // están a la vista): cm con un decimal, dentro del tope. Sin medida en el nombre no hay nada.
+            const errMedidaTpu = topeTpuActual ? errorMedidaCm(tpuAlto, tpuAncho, topeTpuActual) : '';
+            if (errMedidaTpu) return addToast(errMedidaTpu, 'error');
+            // "Hago mi matriz": si el parche sale de otra medida que el arte, tiene que confirmarlo.
+            if (tpuMode === 'propia' && tpuMedidaPideConfirmar && !tpuMedidaConfirmada) {
+                return addToast(`Tu diseño mide ${fmtCm(arteTpuCm.alto)} × ${fmtCm(arteTpuCm.ancho)} cm y el parche va a salir de ${fmtCm(parcheTpuCm.alto)} × ${fmtCm(parcheTpuCm.ancho)} cm: elegí qué medida usar (debajo de alto y ancho).`, 'error');
             }
             const invalidCopies = items.length === 0 || items.some(it => (it.copies || 0) < minTpu);
             if (invalidCopies) {
@@ -1743,7 +1793,7 @@ const OrderForm = ({ serviceId: propServiceId }) => {
 
                 let extraNote = it.printSettings?.observation ? ` [${it.printSettings.observation}]` : '';
                 if (serviceId === 'tpu' && tpuForma) extraNote += ` [Forma: ${tpuForma}]`;
-                if (serviceId === 'tpu' && tpuAlto && tpuAncho) extraNote += ` [Medida: ${tpuAlto} x ${tpuAncho} cm]`;
+                if (serviceId === 'tpu' && textoMedidaTpu()) extraNote += ` ${textoMedidaTpu()}`;
 
                 const printNote = extraNote;
                 const isSpecialPrint = it.printSettings?.mode && it.printSettings.mode !== 'normal';
@@ -2224,8 +2274,8 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                 // la vea primero (el backend la guarda como "OBS: …" en Ordenes.Nota).
                 notasGenerales: [
                     esDtfUV && terminacionUV ? `TERMINACIÓN: ${terminacionUV === 'MATE' ? 'MATE (SIN BARNIZ)' : 'CON BARNIZ'}` : '',
-                    (serviceId === 'tpu' && tpuAlto && tpuAncho)
-                        ? `${generalNote || ''} [Medida: ${tpuAlto} x ${tpuAncho} cm]`.trim()
+                    (serviceId === 'tpu' && textoMedidaTpu())
+                        ? `${generalNote || ''} ${textoMedidaTpu()}`.trim()
                         : (generalNote || ''),
                 ].filter(Boolean).join(' | '),
 
@@ -2270,6 +2320,15 @@ const OrderForm = ({ serviceId: propServiceId }) => {
 
         } catch (error) {
             console.error(error);
+            // TPU «Hago mi matriz»: el PDF analizado se guarda 3 días. Si venció, la matriz se quita
+            // y se pide subirla de nuevo ahí mismo (antes fallaba igual a cada intento).
+            if (error?.data?.codigo === 'MATRIZ_VENCIDA') {
+                quitarMatrizTpu();
+                setTpuMatrizError(error.message);
+                addToast(error.message, 'error');
+                setTimeout(() => document.getElementById('zona-matriz-tpu')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
+                return;
+            }
             addToast(error.message || 'Error al enviar pedido', 'error');
         } finally {
             actions.setLoading(false);
@@ -2437,7 +2496,8 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                     // TPU: al lado del producto van la medida del parche. El tope sale del
                                     // nombre del producto elegido ("Parche (De hasta 10x8)"), así que los
                                     // selectores solo aparecen cuando ese nombre trae una medida.
-                                    const topeTPU = serviceId === 'tpu' ? medidaMaximaTPU(globalMaterial) : null;
+                                    // Reusar una matriz: solo cambia la cantidad, la medida es la de la matriz.
+                                    const topeTPU = (serviceId === 'tpu' && tpuMode !== 'matriz') ? medidaMaximaTPU(globalMaterial) : null;
                                     // md:col-span-2: el contenedor de arriba es un grid de 2 columnas, así que
                                     // sin esto los tres selectores se apretaban en la mitad izquierda. Con las dos
                                     // columnas tomadas, el producto se lleva la mitad del ancho REAL y cada medida
@@ -2464,34 +2524,79 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                         <>
                                             <div>
                                                 <p className="block text-xs font-bold uppercase text-zinc-400 mb-2">
-                                                    Alto <span className="text-red-400">*</span> <span className="text-zinc-600 normal-case font-normal">(máx. {topeTPU.alto} cm)</span>
+                                                    Alto <span className="text-red-400">*</span> <span className="text-zinc-600 normal-case font-normal">(máx. {fmtCm(topeTPU.alto)} cm)</span>
                                                 </p>
-                                                <CustomSelect
+                                                <CampoCm
                                                     name="tpuAlto"
-                                                    sinScroll
                                                     aria-label="Alto del parche"
                                                     value={tpuAlto}
-                                                    onChange={setTpuAlto}
-                                                    options={opcionesCm(topeTPU.alto)}
-                                                    placeholder="Alto..."
-                                                    variant="black"
+                                                    onChange={(v) => { setTpuAlto(v); setTpuMedidaConfirmada(false); }}
+                                                    onBlurValor={(v) => fijarMedidaTpu('alto', v)}
+                                                    max={topeTPU.alto}
+                                                    placeholder="Ej. 6,5"
                                                 />
                                             </div>
                                             <div>
                                                 <p className="block text-xs font-bold uppercase text-zinc-400 mb-2">
-                                                    Ancho <span className="text-red-400">*</span> <span className="text-zinc-600 normal-case font-normal">(máx. {topeTPU.ancho} cm)</span>
+                                                    Ancho <span className="text-red-400">*</span> <span className="text-zinc-600 normal-case font-normal">(máx. {fmtCm(topeTPU.ancho)} cm)</span>
                                                 </p>
-                                                <CustomSelect
+                                                <CampoCm
                                                     name="tpuAncho"
-                                                    sinScroll
                                                     aria-label="Ancho del parche"
                                                     value={tpuAncho}
-                                                    onChange={setTpuAncho}
-                                                    options={opcionesCm(topeTPU.ancho)}
-                                                    placeholder="Ancho..."
-                                                    variant="black"
+                                                    onChange={(v) => { setTpuAncho(v); setTpuMedidaConfirmada(false); }}
+                                                    onBlurValor={(v) => fijarMedidaTpu('ancho', v)}
+                                                    max={topeTPU.ancho}
+                                                    placeholder="Ej. 5,8"
                                                 />
                                             </div>
+                                            {/* "Hago mi matriz": con qué medida sale el parche, comparada con el arte.
+                                                Si difiere más de la tolerancia, se pide confirmar (ver parcheTpuCm). */}
+                                            {arteTpuCm && (
+                                                <div className="md:col-span-3 text-[12px] rounded-[10px] border border-zinc-700/60 bg-zinc-900/50 px-3 py-2.5 space-y-2">
+                                                    <p className="text-zinc-400">
+                                                        Tu diseño mide <b className="text-zinc-200">{fmtCm(arteTpuCm.alto)} × {fmtCm(arteTpuCm.ancho)} cm</b> (alto × ancho).
+                                                        {' '}El alto y el ancho mantienen esa proporción: al cambiar uno se ajusta el otro.
+                                                        {parcheTpuCm && (
+                                                            <> Tu parche sale de <b className="text-zinc-100">{fmtCm(parcheTpuCm.alto)} × {fmtCm(parcheTpuCm.ancho)} cm</b>.</>
+                                                        )}
+                                                    </p>
+                                                    {/* La medida difiere del arte: se avisa y el cliente ELIGE (pedido de
+                                                        Santiago: "avisarle y que elija"). A = la medida de su diseño (o la
+                                                        más grande que entra en el producto); B = seguir con la que puso. */}
+                                                    {tpuMedidaPideConfirmar && (() => {
+                                                        const prop = medidaPropuestaTpu(arteTpuCm, topeTpuActual);
+                                                        const entra = arteTpuCm.alto <= topeTpuActual.alto && arteTpuCm.ancho <= topeTpuActual.ancho;
+                                                        const yaEsPropuesta = aCm(tpuAlto) === prop.alto && aCm(tpuAncho) === prop.ancho;
+                                                        const pct = Math.round(Math.abs(parcheTpuCm.escala - 1) * 100);
+                                                        const verbo = parcheTpuCm.escala > 1 ? 'agranda' : 'achica';
+                                                        const boton = (activo) => `px-3 py-2 rounded-lg text-[12px] font-bold border transition-colors text-left ${activo
+                                                            ? 'border-[#00AEEF] bg-[#00AEEF]/15 text-zinc-100' : 'border-zinc-600 text-zinc-300 hover:border-zinc-400'}`;
+                                                        return (
+                                                            <div className="space-y-2">
+                                                                <p className="text-amber-200">
+                                                                    {entra
+                                                                        ? <>Elegiste otra medida que la de tu diseño: con {fmtCm(parcheTpuCm.alto)} × {fmtCm(parcheTpuCm.ancho)} cm se {verbo} un {pct} %. ¿Cuál querés?</>
+                                                                        : <>Tu diseño no entra en este producto (máx. {fmtCm(topeTpuActual.alto)} × {fmtCm(topeTpuActual.ancho)} cm): con {fmtCm(parcheTpuCm.alto)} × {fmtCm(parcheTpuCm.ancho)} cm se {verbo} un {pct} %.{!yaEsPropuesta && ' ¿Cuál querés?'}</>}
+                                                                </p>
+                                                                <div className="flex flex-wrap gap-2">
+                                                                    {!yaEsPropuesta && (
+                                                                        <button type="button" className={boton(false)}
+                                                                            onClick={() => { setTpuAlto(fmtCm(prop.alto)); setTpuAncho(fmtCm(prop.ancho)); setTpuMedidaConfirmada(!entra); }}>
+                                                                            {entra ? 'Usar la medida de mi diseño' : 'Usar la medida más grande que entra'} ({fmtCm(prop.alto)} × {fmtCm(prop.ancho)} cm)
+                                                                        </button>
+                                                                    )}
+                                                                    <button type="button" className={boton(tpuMedidaConfirmada)}
+                                                                        onClick={() => setTpuMedidaConfirmada(true)}>
+                                                                        {tpuMedidaConfirmada && <Check size={13} className="inline mr-1 -mt-0.5" />}
+                                                                        Seguir con {fmtCm(parcheTpuCm.alto)} × {fmtCm(parcheTpuCm.ancho)} cm
+                                                                    </button>
+                                                                </div>
+                                                            </div>
+                                                        );
+                                                    })()}
+                                                </div>
+                                            )}
                                         </>
                                     )}
                                     </div>
@@ -2700,7 +2805,7 @@ const OrderForm = ({ serviceId: propServiceId }) => {
                                                 {tpuMatriz && <span className="text-[10px] text-cyan-400 font-bold">Vector OK · {tpuMatriz.zonas.length} zona{tpuMatriz.zonas.length === 1 ? '' : 's'} de relieve</span>}
                                             </div>
                                             <div className="bg-brand-dark p-4 md:rounded-2xl rounded-none border-y border-x-0 md:border-x border-zinc-700/50 shadow-sm -mx-4 md:mx-0 space-y-5">
-                                                <div>
+                                                <div id="zona-matriz-tpu" className="scroll-mt-24">
                                                     <FileUploadZone
                                                         id="matriz-tpu"
                                                         label="TU DISEÑO EN PDF VECTORIAL"

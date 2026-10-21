@@ -13,7 +13,7 @@ Capacitor envuelve el mismo React del portal en una app nativa. No se reescriben
 
 - Sesión por token en `localStorage` (`auth_token`, `src/client-portal/auth/AuthContext.jsx`), no cookies → funciona en el WebView.
 - `VITE_API_URL` configurable (`src/client-portal/api/apiClient.js`) → la app apunta a `https://user.com.uy/api`.
-- CORS abierto: `app.use(cors())` en `backend/server.js:71` y socket.io con `origin: "*"` (línea 364). No hace falta tocar el backend por CORS.
+- CORS abierto: `app.use(cors())` en `backend/server.js:68` y socket.io con `origin: "*"` (línea 359). No hace falta tocar el backend por CORS.
 - Política de privacidad ya publicada (`/privacidad`), la piden ambas tiendas.
 
 ## Lo que hay que cambiar
@@ -70,7 +70,7 @@ El login usa Google Identity Services en el navegador (`LoginPage.jsx`, script `
 | Firebase (push) | gratis |
 | Codemagic | gratis dentro de 500 min/mes |
 
-Google Play, para cuentas personales nuevas, exige 20 testers durante 14 días antes de publicar. Con cuenta de empresa no.
+Google Play, para cuentas personales nuevas, exige 12 testers durante 14 días seguidos antes de publicar (eran 20 hasta dic. 2024). Con cuenta de empresa (D-U-N-S) no.
 
 ## Paquetes a instalar (pedir OK antes)
 
@@ -88,6 +88,6 @@ Back: `firebase-admin`.
 
 ## Pendiente de decidir
 
-- Cuentas a nombre de la empresa o personal (afecta D-U-N-S y los 20 testers de Google).
+- Cuentas a nombre de la empresa o personal (afecta D-U-N-S y los 12 testers de Google).
 - Login con Google en la app: agregar Apple, o dejar solo usuario/contraseña.
 - Nombre de la app en tiendas e ID de paquete (ej. `uy.com.user.portal`).

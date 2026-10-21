@@ -1016,6 +1016,13 @@ const postControlArchivo = async (req, res) => {
                     END
                 `);
 
+                // DTF: la -F reimprime el mismo arte → lleva la misma plancha de tinta blanca.
+                try {
+                    await require('../services/dtfBlancoService').copiarTintaBlanca(transaction, newOrderId, [archivoId]);
+                } catch (eTb) {
+                    logger.warn(`[falla] no se pudo copiar la tinta blanca del archivo ${archivoId}: ${eTb.message}`);
+                }
+
                 // Miniatura para planta: el clon de la -F apunta al MISMO archivo de Drive que el
                 // original — se copia su miniatura al ArchivoID nuevo (fs local, sin Drive), así
                 // Control y el modal de falla tienen vista previa cuando la -F se controla.
@@ -2335,6 +2342,15 @@ const createCustomerReplacementOrder = async (req, res) => {
             }
         }
 
+        // DTF: la plancha de tinta blanca de cada archivo repuesto (mismo arte que la original).
+        // Best-effort: sin ella el operario la hace como antes, pero la reposición no se frena.
+        try {
+            const tb = await require('../services/dtfBlancoService').copiarTintaBlanca(transaction, newOrderId, archivosClonados.map(a => a.origId));
+            if (tb) logger.info(`[Reposición] ${newCode}: ${tb} plancha(s) de tinta blanca copiadas de la original.`);
+        } catch (eTb) {
+            logger.warn(`[Reposición] ${newCode}: no se pudo copiar la tinta blanca: ${eTb.message}`);
+        }
+
         // Actualizar contador archivos orden nueva
         try {
             await new sql.Request(transaction)
@@ -2352,8 +2368,11 @@ const createCustomerReplacementOrder = async (req, res) => {
                 .query(`
                     DECLARE @UM NVARCHAR(20) = (SELECT LTRIM(RTRIM(ISNULL(UM,'u'))) FROM dbo.Ordenes WHERE OrdenID = @ID);
                     DECLARE @Total FLOAT = 0;
+                    -- Metros es POR COPIA (se valida contra los metros del archivo original, que también
+                    -- lo son): la magnitud es Metros × Copias, igual que recalculateOrderMagnitude. Antes
+                    -- sumaba solo Metros y una -R de 2 copias de 0,73 m quedaba en 0,73 (20/10/2026).
                     IF LEFT(LOWER(@UM),1) = 'm'
-                        SELECT @Total = ISNULL(SUM(CAST(ISNULL(Metros,0) AS FLOAT)),0) FROM dbo.ArchivosOrden WHERE OrdenID = @ID AND ISNULL(EstadoArchivo,'') <> 'CANCELADO';
+                        SELECT @Total = ISNULL(SUM(CAST(ISNULL(Metros,0) AS FLOAT) * CAST(ISNULL(Copias,1) AS FLOAT)),0) FROM dbo.ArchivosOrden WHERE OrdenID = @ID AND ISNULL(EstadoArchivo,'') <> 'CANCELADO';
                     ELSE
                         SELECT @Total = ISNULL(SUM(CAST(ISNULL(Copias,0) AS FLOAT)),0) FROM dbo.ArchivosOrden WHERE OrdenID = @ID AND ISNULL(EstadoArchivo,'') <> 'CANCELADO';
                     -- TPU afuera: con UM='u' cae en la rama de SUM(Copias) y contaría las CAPAS del

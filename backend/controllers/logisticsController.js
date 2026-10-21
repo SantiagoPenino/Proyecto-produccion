@@ -732,12 +732,30 @@ async function recibirRemitoAutomatico(req, { envioId, codigoRemito, areaDestino
     return { ok: true, status: respuesta.status };
 }
 
+/**
+ * Código de remito libre: REM- + 6 dígitos al azar que todavía no existan (mismo formato de siempre).
+ * Antes eran los últimos 6 dígitos de Date.now(): se repiten cada 1.000.000 ms (16,7 minutos), y con
+ * miles de remitos creados uno nuevo podía caer en un código ya usado → UNIQUE KEY en
+ * Logistica_Envios y el remito no se creaba (REM-376225, 20/10/2026). UPDLOCK + HOLDLOCK traba el
+ * código elegido hasta el commit, así dos remitos simultáneos no pueden tomar el mismo.
+ */
+async function codigoRemitoLibre(transaction) {
+    for (let intento = 0; intento < 20; intento++) {
+        const codigo = `REM-${String(require('crypto').randomInt(0, 1000000)).padStart(6, '0')}`;
+        const r = await new sql.Request(transaction)
+            .input('C', sql.VarChar(50), codigo)
+            .query('SELECT 1 AS Hay FROM Logistica_Envios WITH (UPDLOCK, HOLDLOCK) WHERE CodigoRemito = @C');
+        if (!r.recordset.length) return codigo;
+    }
+    throw new Error('No se encontró un código de remito libre después de 20 intentos.');
+}
+
 exports.createRemito = async (req, res) => {
     // lineasOrden (Spec 39, opcional): [{ ordenId, completaOrden, cantidad, motivoPendiente }] — una por orden madre.
     const { areaOrigen, areaDestino, usuarioId, bultosIds = [], newBultos = [], observations, lineasOrden = [] } = req.body;
 
-    // Generar codigo remito
-    const codigoRemito = `REM-${Date.now().toString().slice(-6)}`;
+    // El código se elige dentro de la transacción, justo antes del INSERT (ver codigoRemitoLibre).
+    let codigoRemito = null;
 
     try {
         const pool = await getPool();
@@ -1039,6 +1057,7 @@ exports.createRemito = async (req, res) => {
             }
 
             // 1. Crear Cabecera
+            codigoRemito = await codigoRemitoLibre(transaction);
             const headRes = await new sql.Request(transaction)
                 .input('Code', sql.VarChar, codigoRemito)
                 .input('Orig', sql.VarChar, areaOrigen)

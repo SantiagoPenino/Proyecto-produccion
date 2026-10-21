@@ -1,15 +1,16 @@
 // Servicio Técnico — etiquetas, colores y formatos compartidos (docs/servicio-tecnico-plan.md).
-import { Printer, Monitor, Wifi, AppWindow, Zap, CircleHelp } from 'lucide-react';
+import { Printer, Monitor, CircleHelp } from 'lucide-react';
 
 export const CATEGORIAS = [
     { value: 'MAQUINA', label: 'Máquina de producción', corto: 'Máquina', Icono: Printer },
-    { value: 'PC', label: 'PC / computadora', corto: 'PC', Icono: Monitor },
-    { value: 'RED', label: 'Internet / red', corto: 'Internet', Icono: Wifi },
-    { value: 'SOFTWARE', label: 'Software / sistema', corto: 'Software', Icono: AppWindow },
-    { value: 'INSTALACIONES', label: 'Instalaciones (luz, aire, agua)', corto: 'Instalaciones', Icono: Zap },
-    { value: 'OTRO', label: 'Otro', corto: 'Otro', Icono: CircleHelp },
+    { value: 'PC', label: 'PC, internet o programas', corto: 'PC e internet', Icono: Monitor },
+    { value: 'OTRO', label: 'Otro (instalaciones, luz, aire, agua…)', corto: 'Otro', Icono: CircleHelp },
 ];
-export const categoria = (v) => CATEGORIAS.find(c => c.value === v) || CATEGORIAS[CATEGORIAS.length - 1];
+// Tipos de antes del 21/10/2026: RED y SOFTWARE cuentan como «PC e internet»; INSTALACIONES, como Otro. (No se llama
+// «Sistemas»: los operarios lo confundirían con el área de Sistemas, y esto va a Servicio Técnico.)
+const CATEGORIA_VIEJA = { RED: 'PC', SOFTWARE: 'PC', INSTALACIONES: 'OTRO' };
+export const grupoCategoria = (v) => CATEGORIA_VIEJA[v] || v;
+export const categoria = (v) => CATEGORIAS.find(c => c.value === grupoCategoria(v)) || CATEGORIAS[CATEGORIAS.length - 1];
 
 export const PRIORIDADES = [
     { value: 'BAJA', label: 'Baja', chip: 'bg-emerald-50 text-emerald-700 border-emerald-200', boton: 'bg-emerald-500 text-white' },

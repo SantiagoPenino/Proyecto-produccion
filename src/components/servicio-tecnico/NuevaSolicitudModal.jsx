@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { toast } from 'sonner';
-import { Wrench, X, Paperclip, Loader2, Send, Trash2, History } from 'lucide-react';
+import { Wrench, X, Paperclip, Loader2, Send, Trash2, History, Printer } from 'lucide-react';
 import { servicioTecnicoService } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
 import { comprimirImagen } from '../../utils/comprimirImagen';
@@ -12,6 +12,10 @@ import Selector from '../ui/Selector';
 // Formulario para pedir Servicio Técnico. Lo usan la pantalla /servicio-tecnico y el botón
 // "Reportar falla" de cada área (con el área y "máquina" ya elegidos, y la pestaña de historial
 // del área). Plan: docs/servicio-tecnico-plan.md.
+// 21/10/2026, menos cosas para elegir: tres tipos (Máquina, PC e internet, Otro). Abierto desde una máquina
+// (`equipoInicial`: su página, el plano o el 3D del local) viene armado con ella. Para una máquina no se
+// pide ni el área ni el local (salen de la máquina y de su ficha); el área de lo demás y quién reporta
+// quedan detrás de «Cambiar».
 const VACIO = {
     categoria: null, equipoId: '', maquinaNoTrabaja: null, equipoTexto: '', areaId: '',
     titulo: '', descripcion: '', prioridad: 'MEDIA', reporta: 'yo', reportaTexto: '',
@@ -21,7 +25,7 @@ const VACIO = {
 const label = 'block mb-1.5 text-[11px] font-black text-zinc-500 uppercase tracking-wide';
 const input = 'w-full px-3 py-2.5 border border-zinc-200 rounded-xl text-sm text-zinc-800 bg-white outline-none focus:border-brand-cyan focus:ring-2 focus:ring-brand-cyan/10 transition-all placeholder:text-zinc-300';
 
-const NuevaSolicitudModal = ({ abierta, onCerrar, onCreada, areaInicial = '', categoriaInicial = null, conHistorialArea = false }) => {
+const NuevaSolicitudModal = ({ abierta, onCerrar, onCreada, areaInicial = '', categoriaInicial = null, conHistorialArea = false, equipoInicial = null }) => {
     const { user } = useAuth();
     const navigate = useNavigate();
     const location = useLocation();
@@ -34,6 +38,8 @@ const NuevaSolicitudModal = ({ abierta, onCerrar, onCreada, areaInicial = '', ca
     const [verSugerencias, setVerSugerencias] = useState(false);
     const [tab, setTab] = useState('nueva');
     const [historial, setHistorial] = useState(null);
+    const [elegirMaquina, setElegirMaquina] = useState(false); // con la máquina ya elegida: mostrar igual el tipo y la lista
+    const [verMas, setVerMas] = useState(false);               // área y quién reporta
     const inputArchivos = useRef(null);
     const cajaTitulo = useRef(null);
 
@@ -42,18 +48,26 @@ const NuevaSolicitudModal = ({ abierta, onCerrar, onCreada, areaInicial = '', ca
     // Al abrir: datos del formulario y valores iniciales.
     useEffect(() => {
         if (!abierta) return;
-        setF({ ...VACIO, categoria: categoriaInicial, areaId: String(areaInicial || user?.areaKey || '').trim().toUpperCase() });
+        setF({
+            ...VACIO, categoria: equipoInicial ? 'MAQUINA' : categoriaInicial, equipoId: equipoInicial ? String(equipoInicial) : '',
+            areaId: String(areaInicial || user?.areaKey || '').trim().toUpperCase(),
+        });
         setArchivos([]);
         setTab('nueva');
         setHistorial(null);
+        setElegirMaquina(false);
+        setVerMas(false);
         servicioTecnicoService.meta().then((m) => {
             setMeta(m);
+            // Desde una máquina: su área y el local de su ficha.
+            const maq = equipoInicial && (m?.equipos || []).find(x => String(x.EquipoID) === String(equipoInicial));
+            if (maq) { setF((prev) => ({ ...prev, areaId: maq.AreaID || prev.areaId, localId: maq.LocalId ? String(maq.LocalId) : '' })); return; }
             // Sin área del botón (navbar): la del usuario según la base, que es la de hoy (la de la
             // sesión es la del login). Define qué máquinas se listan.
             if (!areaInicial) setF((prev) => (prev.equipoId ? prev : { ...prev, areaId: String(m?.usuario?.area || '').trim().toUpperCase() }));
         }).catch((e) => toast.error(mensajeError(e, 'No se pudo cargar Servicio Técnico')));
         servicioTecnicoService.usuarios().then(setUsuarios).catch(() => setUsuarios([]));
-    }, [abierta, areaInicial, categoriaInicial, user?.areaKey]);
+    }, [abierta, areaInicial, categoriaInicial, equipoInicial, user?.areaKey]);
 
     // Sugerencias de título (las más usadas de la categoría).
     useEffect(() => {
@@ -185,7 +199,7 @@ const NuevaSolicitudModal = ({ abierta, onCerrar, onCreada, areaInicial = '', ca
                             <Wrench size={28} className="shrink-0 -ml-1 text-brand-cyan" />
                             <div className="min-w-0">
                                 <h2 className="text-lg font-black leading-tight">Pedir Servicio Técnico</h2>
-                                <p className="text-xs text-zinc-400 truncate">Máquinas, PC, internet, software o instalaciones</p>
+                                <p className="text-xs text-zinc-400 truncate">Máquinas, PC e internet u otra cosa</p>
                             </div>
                         </div>
                         <button onClick={onCerrar} className="w-9 h-9 rounded-xl flex items-center justify-center text-zinc-400 hover:bg-white/10 hover:text-white"><X size={20} /></button>
@@ -228,8 +242,23 @@ const NuevaSolicitudModal = ({ abierta, onCerrar, onCreada, areaInicial = '', ca
                 ) : (
                     <>
                         <div className="flex-1 overflow-y-auto p-5 flex flex-col gap-5">
+                            {/* Desde una máquina: ya viene elegida (el tipo y la lista, solo con «Cambiar») */}
+                            {equipoInicial && !elegirMaquina && f.categoria === 'MAQUINA' && maquinaElegida && (
+                                <div className="flex items-center gap-3 rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2.5">
+                                    <Printer size={22} className="shrink-0 text-brand-cyan" />
+                                    <div className="min-w-0 mr-auto">
+                                        <div className="font-black text-zinc-800 truncate">{maquinaElegida.Nombre}</div>
+                                        <div className="text-xs text-zinc-500 truncate">
+                                            {nombreArea(String(maquinaElegida.AreaID).toUpperCase())}
+                                            {maquinaElegida.LocalId && locales.length > 0 && <span className="capitalize"> · {locales.find(l => String(l.Id) === String(maquinaElegida.LocalId))?.Nombre}</span>}
+                                        </div>
+                                    </div>
+                                    <span className={`px-2 py-0.5 rounded-full border text-[11px] font-bold shrink-0 ${estadoEquipo(maquinaElegida.Estado).chip}`}>{estadoEquipo(maquinaElegida.Estado).label}</span>
+                                    <button type="button" onClick={() => setElegirMaquina(true)} className="text-xs font-bold text-brand-cyan hover:underline shrink-0">Cambiar</button>
+                                </div>
+                            )}
                             {/* 1. Tipo: en celular un desplegable; desde sm, botones */}
-                            <div>
+                            {!(equipoInicial && !elegirMaquina && f.categoria === 'MAQUINA' && maquinaElegida) && <div>
                                 <span className={label}>¿Qué tipo de problema es?</span>
                                 <div className="sm:hidden">
                                     <Selector value={f.categoria || ''} onChange={(e) => elegirCategoria(e.target.value)}>
@@ -247,18 +276,19 @@ const NuevaSolicitudModal = ({ abierta, onCerrar, onCreada, areaInicial = '', ca
                                         </button>
                                     ))}
                                 </div>
-                            </div>
+                            </div>}
 
                             {/* 2. Máquina o equipo/lugar */}
                             {f.categoria === 'MAQUINA' ? (
                                 <div className="flex flex-col gap-3">
-                                    <div>
+                                    {!(equipoInicial && !elegirMaquina && maquinaElegida) && <div>
                                         <span className={label}>
                                             Máquina{maquinas.delArea.length > 0 && <span className="normal-case font-bold text-zinc-400"> · {nombreArea(String(f.areaId).toUpperCase())}</span>}
                                         </span>
                                         <Selector value={f.equipoId} onChange={(e) => {
                                             const m = (meta?.equipos || []).find(x => String(x.EquipoID) === e.target.value);
-                                            set({ equipoId: e.target.value, areaId: m?.AreaID || f.areaId });
+                                            // El área y el local salen de la máquina (el local, de su ficha).
+                                            set({ equipoId: e.target.value, areaId: m?.AreaID || f.areaId, localId: m?.LocalId ? String(m.LocalId) : '', localOtro: '' });
                                         }}>
                                             <option value="">Elegir máquina…</option>
                                             {maquinas.delArea.length > 0
@@ -274,7 +304,7 @@ const NuevaSolicitudModal = ({ abierta, onCerrar, onCreada, areaInicial = '', ca
                                                 <span className={`px-2 py-0.5 rounded-full border text-[11px] font-bold ${estadoEquipo(maquinaElegida.Estado).chip}`}>{estadoEquipo(maquinaElegida.Estado).label}</span>
                                             </p>
                                         )}
-                                    </div>
+                                    </div>}
                                     <div>
                                         <span className={label}>¿La máquina puede seguir trabajando?</span>
                                         <div className="grid grid-cols-2 gap-2">
@@ -351,10 +381,9 @@ const NuevaSolicitudModal = ({ abierta, onCerrar, onCreada, areaInicial = '', ca
                                 )}
                             </div>
 
-                            {/* 5. Local, área y quién reporta */}
-                            <div className={`grid grid-cols-1 ${locales.length > 0 ? 'sm:grid-cols-3' : 'sm:grid-cols-2'} gap-3`}>
-                                {locales.length > 0 && (
-                                    <div>
+                            {/* 5. Local (para una máquina, el de su ficha: solo se pregunta si la ficha no lo tiene) */}
+                            {locales.length > 0 && !(f.categoria === 'MAQUINA' && maquinaElegida?.LocalId) && (
+                                <div className="sm:max-w-xs">
                                         <span className={label}>Local <span className="normal-case font-bold text-zinc-300">(opcional)</span></span>
                                         <Selector value={f.localId} onChange={(e) => set({ localId: e.target.value, localOtro: '' })}>
                                             <option value="">Elegir local…</option>
@@ -364,15 +393,25 @@ const NuevaSolicitudModal = ({ abierta, onCerrar, onCreada, areaInicial = '', ca
                                             <input className={`${input} mt-2`} value={f.localOtro} maxLength={150} autoFocus
                                                 onChange={(e) => set({ localOtro: e.target.value })} placeholder="Especifique" />
                                         )}
-                                    </div>
-                                )}
-                                <div>
+                                </div>
+                            )}
+
+                            {/* 6. Área (la de la máquina, o la tuya) y quién reporta (vos): se cambian con «Cambiar» */}
+                            {!verMas ? (
+                                <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-zinc-500">
+                                    <span>Lo reporta <b className="text-zinc-700">{meta?.usuario?.nombre || user?.nombre || 'vos'}</b></span>
+                                    {f.categoria !== 'MAQUINA' && <span>· Área <b className="text-zinc-700">{nombreArea(String(f.areaId).toUpperCase())}</b></span>}
+                                    <button type="button" onClick={() => setVerMas(true)} className="text-xs font-bold text-brand-cyan hover:underline">Cambiar</button>
+                                </div>
+                            ) : (
+                            <div className={`grid grid-cols-1 ${f.categoria !== 'MAQUINA' ? 'sm:grid-cols-2' : ''} gap-3`}>
+                                {f.categoria !== 'MAQUINA' && <div>
                                     <span className={label}>Área</span>
                                     <Selector value={f.areaId} onChange={(e) => cambiarArea(e.target.value)}>
                                         <option value="">Sin área</option>
                                         {(meta?.areas || []).map(a => <option key={a.AreaID} value={a.AreaID}>{a.Nombre}</option>)}
                                     </Selector>
-                                </div>
+                                </div>}
                                 <div>
                                     <span className={label}>¿Quién reporta?</span>
                                     <Selector value={f.reporta} onChange={(e) => set({ reporta: e.target.value })}>
@@ -393,8 +432,9 @@ const NuevaSolicitudModal = ({ abierta, onCerrar, onCreada, areaInicial = '', ca
                                     )}
                                 </div>
                             </div>
+                            )}
 
-                            {/* 6. Adjuntos */}
+                            {/* 7. Adjuntos */}
                             <div>
                                 <span className={label}>Fotos o capturas <span className="normal-case font-bold text-zinc-300">(opcional)</span></span>
                                 <input ref={inputArchivos} type="file" multiple accept="image/*,application/pdf,video/*" className="hidden"

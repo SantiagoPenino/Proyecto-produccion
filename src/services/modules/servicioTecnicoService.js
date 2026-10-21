@@ -43,6 +43,16 @@ export const servicioTecnicoService = {
     fichaEquipo: async (id) => (await api.get(`/servicio-tecnico/equipos/${id}`)).data,
     // Alta de una máquina (08/10): { nombre, areaId, tipo, esImpresora } → { EquipoID }
     crearEquipo: async (datos) => (await api.post('/servicio-tecnico/equipos', datos)).data,
+    // Locales (20/10): plantas, energía y ubicación de las máquinas
+    locales: async () => (await api.get('/servicio-tecnico/locales')).data.data,
+    guardarEnergiaLocal: async (localId, datos) => (await api.put(`/servicio-tecnico/locales/${localId}/energia`, datos)).data,
+    crearPlanta: async (localId, nombre) => (await api.post(`/servicio-tecnico/locales/${localId}/plantas`, { nombre })).data,
+    editarPlanta: async (plantaId, datos) => (await api.put(`/servicio-tecnico/plantas/${plantaId}`, datos)).data,
+    borrarPlanta: async (plantaId) => (await api.delete(`/servicio-tecnico/plantas/${plantaId}`)).data,
+    // version = `guardado` del plano que se abrió (si otro lo guardó después, 409)
+    guardarPlano: async (plantaId, plano, version) => (await api.put(`/servicio-tecnico/plantas/${plantaId}/plano`, { plano, version })).data,
+    guardarUbicacion: async (equipoId, localId, plantaId) =>
+        (await api.put(`/servicio-tecnico/equipos/${equipoId}/ubicacion`, { localId, plantaId })).data,
     // Ficha técnica (08/10): una sección { seccion, titulo, valores, resumen } o { copiarDe: equipoId }
     guardarFicha: async (id, cuerpo) => (await api.put(`/servicio-tecnico/equipos/${id}/ficha`, cuerpo)).data,
     copiarFicha: async (id, copiarDe) => (await api.put(`/servicio-tecnico/equipos/${id}/ficha`, { copiarDe })).data,

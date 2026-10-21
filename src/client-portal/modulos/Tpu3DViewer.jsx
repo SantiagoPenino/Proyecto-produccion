@@ -2268,8 +2268,11 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose, onAprobado, modo = 'clie
                         alto al canvas → saltaba el ResizeObserver → se recalculaba la cámara y el
                         parche cambiaba de tamaño en pantalla. Ahora el canvas mide siempre igual y
                         el ojo no toca el render en absoluto. */}
+                    {/* En desktop termina donde empieza el cajón de texturas (w-72, siempre a la vista):
+                        antes llegaba hasta el borde y el cajón tapaba el final de la barra de escala
+                        y el joystick (21/10). En mobile el cajón se abre encima y se cierra solo. */}
                     {estado === 'listo' && (
-                        <div className={`absolute inset-x-0 bottom-0 flex flex-col ${fade}`}>
+                        <div className={`absolute left-0 right-0 bottom-0 flex flex-col ${(zonas.length > 0 || esMatriz) && puedeElegir ? 'sm:right-72' : ''} ${fade}`}>
                             {/* self-end: el bloque del joystick se achica a su contenido, así el
                                 resto de la franja no se come los clicks de rotar el parche. */}
                             {puedeElegir && ajusteActivo && (

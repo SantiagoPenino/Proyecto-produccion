@@ -36,7 +36,9 @@ const logger = require('../utils/logger');
 const SCRIPT = path.join(__dirname, '..', 'python', 'tpu_matriz.py');
 const DIR_FUENTES = require('../utils/rutasUploads').rutaUploads('tpu-matriz'); // UPLOADS_PATH
 const DIR_SALIDA = path.join(os.tmpdir(), 'tpu-matriz-out');
-const TTL_FUENTE_MS = 24 * 60 * 60 * 1000;
+// 3 días desde el 21/10/2026 (antes 24 h): el cliente arma la matriz, deja la pestaña abierta y manda el
+// pedido al otro día. Caso real: PDF subido el 19/10 11:34, pedido el 21/10 02:25 → ya se había borrado.
+const TTL_FUENTE_MS = 3 * 24 * 60 * 60 * 1000;
 const MAX_PDF_BYTES = 50 * 1024 * 1024;
 
 // Imposición — los defaults del script de Illustrator + las decisiones del 04/09 (ver arriba).
@@ -188,24 +190,35 @@ const num = (v, def, min, max) => {
  * { token, medida: {ancho, alto} (mm, opcional), zonas: [{indice, nombre, seqnos[], textura,
  *   repeticiones, escala, dx, dy, doble, barniz}] }
  */
+// Error que es del pedido del cliente (no del servidor): createWebOrder lo devuelve como 400 con su
+// `codigo`, y el formulario lo usa (MATRIZ_VENCIDA → pide subir el PDF de nuevo).
+function errorCliente(mensaje, codigo = 'MATRIZ_INVALIDA') {
+    const e = new Error(mensaje);
+    e.status = 400;
+    e.codigo = codigo;
+    return e;
+}
+
 function validarMatriz(matriz, codCliente) {
-    if (!matriz || typeof matriz !== 'object') throw new Error('Falta la matriz del cliente.');
-    if (!rutaDeToken(matriz.token, codCliente)) throw new Error('El PDF de la matriz ya no está disponible: volvé a subirlo.');
+    if (!matriz || typeof matriz !== 'object') throw errorCliente('Falta la matriz del cliente.');
+    if (!rutaDeToken(matriz.token, codCliente)) {
+        throw errorCliente('El PDF de tu matriz ya no está disponible (se guarda 3 días desde que lo subís): volvé a subirlo.', 'MATRIZ_VENCIDA');
+    }
     const zonas = Array.isArray(matriz.zonas) ? matriz.zonas : [];
-    if (!zonas.length) throw new Error('La matriz no tiene ninguna zona de relieve.');
+    if (!zonas.length) throw errorCliente('La matriz no tiene ninguna zona de relieve.');
     const dir = carpetaTexturas();
     const catalogo = dir ? new Set(fs.readdirSync(dir)) : new Set();
     const vistos = new Set();
     const limpias = zonas.map((z, i) => {
         const seqnos = [...new Set((Array.isArray(z.seqnos) ? z.seqnos : []).map(s => parseInt(s, 10)).filter(Number.isInteger))];
-        if (!seqnos.length) throw new Error(`La zona ${i + 1} no tiene trazados.`);
+        if (!seqnos.length) throw errorCliente(`La zona ${i + 1} no tiene trazados.`);
         for (const s of seqnos) {
-            if (vistos.has(s)) throw new Error(`Un trazado está en dos zonas a la vez (zona ${i + 1}).`);
+            if (vistos.has(s)) throw errorCliente(`Un trazado está en dos zonas a la vez (zona ${i + 1}).`);
             vistos.add(s);
         }
         const textura = z.textura ? String(z.textura).substring(0, 255) : null;
-        if (textura && !catalogo.has(textura)) throw new Error(`La textura ${textura} no existe en el catálogo.`);
-        if (textura && !/\.svg$/i.test(textura)) throw new Error(`La textura ${textura} no es vectorial (SVG).`);
+        if (textura && !catalogo.has(textura)) throw errorCliente(`La textura ${textura} no existe en el catálogo.`);
+        if (textura && !/\.svg$/i.test(textura)) throw errorCliente(`La textura ${textura} no es vectorial (SVG).`);
         return {
             indice: Number.isInteger(parseInt(z.indice, 10)) ? parseInt(z.indice, 10) : i,
             nombre: String(z.nombre || `Zona ${i + 1}`).substring(0, 80),
@@ -231,6 +244,64 @@ function validarMatriz(matriz, codCliente) {
         if (!medida.ancho && !medida.alto) medida = null;
     }
     return { token: String(matriz.token), medida, zonas: limpias };
+}
+
+// ── Medida del parche (21/10) ────────────────────────────────────────────────
+// El tope sale del NOMBRE del producto ("Parche (De hasta 10x8)": 10 de alto, 8 de ancho), igual que
+// en el portal (medidaMaximaTPU). La medida pedida viaja como "[Medida: alto x ancho cm]" en la nota
+// (con un decimal desde el 21/10) y, en "Hago mi matriz", también en mm en metadata.matrizPropia.
+const RE_TOPE_TPU = /(\d+(?:[.,]\d+)?)\s*[x×]\s*(\d+(?:[.,]\d+)?)/i;
+const RE_MEDIDA_NOTA = /\[Medida:\s*(\d+(?:[.,]\d+)?)\s*x\s*(\d+(?:[.,]\d+)?)\s*cm\]/i;
+const aNum = (s) => parseFloat(String(s).replace(',', '.'));
+const fmtCm = (n) => String(Math.round(n * 10) / 10).replace('.', ',');
+
+function topeTpu(material) {
+    const m = RE_TOPE_TPU.exec(String(material || ''));
+    if (!m) return null;
+    const alto = aNum(m[1]), ancho = aNum(m[2]);
+    return (alto > 0 && ancho > 0) ? { alto, ancho } : null;
+}
+
+/** "[Medida: 9,2 x 5,8 cm]" de una nota → { alto, ancho, texto } (cm), o null. */
+function medidaDeNota(nota) {
+    const m = RE_MEDIDA_NOTA.exec(String(nota || ''));
+    return m ? { alto: aNum(m[1]), ancho: aNum(m[2]), texto: m[0] } : null;
+}
+
+/**
+ * Lo del navegador se puede saltear: la medida pedida (la de la nota y, en "Hago mi matriz", la que
+ * va al generador) no puede pasar el tope del producto. Lanza un error del cliente (400).
+ */
+function validarMedidaTpu(material, nota, matrizPropia) {
+    const tope = topeTpu(material);
+    if (!tope) return;
+    const medidas = [];
+    const deNota = medidaDeNota(nota);
+    if (deNota) medidas.push(deNota);
+    const mm = matrizPropia?.medida;
+    if (mm?.alto > 0 && mm?.ancho > 0) medidas.push({ alto: mm.alto / 10, ancho: mm.ancho / 10 });
+    for (const md of medidas) {
+        if (md.alto > tope.alto + 0.05 || md.ancho > tope.ancho + 0.05) {
+            throw errorCliente(`La medida máxima de este producto es ${fmtCm(tope.alto)} cm de alto por ${fmtCm(tope.ancho)} cm de ancho `
+                + `(pediste ${fmtCm(md.alto)} x ${fmtCm(md.ancho)} cm).`, 'MEDIDA_EXCEDIDA');
+        }
+    }
+}
+
+/**
+ * Después de generar: si el parche sale de otra medida que la pedida (el arte se ENCAJA en la caja
+ * pedida sin deformarse, así que con otra proporción un lado queda más corto), la línea para la
+ * nota del operario. El portal ya ata alto y ancho a la proporción del arte (21/10), así que esto
+ * solo salta con un formulario viejo o un pedido armado a mano. Tolerancia: 1 mm por lado.
+ */
+function textoMedidaGenerada(res, medidaPedidaMm) {
+    const p = res?.parche_mm;
+    if (!p || !(medidaPedidaMm?.alto > 0) || !(medidaPedidaMm?.ancho > 0)) return '';
+    const s = Number(p.sangrado) || 0;
+    const alto = Number(p.alto) - 2 * s, ancho = Number(p.ancho) - 2 * s;   // mm, sin el sangrado
+    if (Math.abs(alto - medidaPedidaMm.alto) <= 1 && Math.abs(ancho - medidaPedidaMm.ancho) <= 1) return '';
+    return `[MATRIZ PROPIA] El parche sale de ${fmtCm(alto / 10)} x ${fmtCm(ancho / 10)} cm (alto x ancho) y se pidió `
+        + `${fmtCm(medidaPedidaMm.alto / 10)} x ${fmtCm(medidaPedidaMm.ancho / 10)} cm: la proporción del arte no coincide con la medida pedida.`;
 }
 
 // ── Cola serial de generación ────────────────────────────────────────────────
@@ -356,15 +427,18 @@ async function procesarOrden({ ordenId, codCliente, matriz, cantidad, io }) {
         await guardarTexturasOrden(pool, ordenId, elecciones, 'CLIENTE');
 
         // 4. El cliente aprobó su propio diseño al enviarlo → la orden queda lista para fabricar.
-        //    Si el arte vino en RGB con negro, el aviso al operario va como línea propia de la nota.
+        //    Si el arte vino en RGB con negro, o el parche sale de otra medida que la pedida, el aviso
+        //    al operario va como línea propia de la nota (una por aviso).
         const notaColor = textoColorArte(res.color_arte);
+        const notaMedida = textoMedidaGenerada(res, matriz.medida);
+        const notaAdd = [notaMedida, notaColor].filter(Boolean).map(t => ` || ${t}`).join('');
         await pool.request()
             .input('OID', sql.Int, ordenId)
-            .input('NotaAdd', sql.NVarChar(sql.MAX), notaColor ? ` || ${notaColor}` : '')
+            .input('NotaAdd', sql.NVarChar(sql.MAX), notaAdd)
             .query(`UPDATE Ordenes SET FechaAprobacionCliente = GETDATE(), TexturasElige = 'CLIENTE',
                            Nota = CASE WHEN @NotaAdd = '' THEN Nota ELSE ISNULL(Nota, '') + @NotaAdd END
                     WHERE OrdenID = @OID`);
-        if (notaColor) logger.info(`[TPU-Matriz] ${cod}: ${notaColor}`);
+        for (const t of [notaMedida, notaColor]) if (t) logger.info(`[TPU-Matriz] ${cod}: ${t}`);
 
         const { changeOrderState } = require('./stateManagerService');
         const tx = new sql.Transaction(pool);
@@ -374,7 +448,7 @@ async function procesarOrden({ ordenId, codCliente, matriz, cantidad, io }) {
                 target: { type: 'ORDER', id: ordenId },
                 estado: 'Diseñado',
                 userObj: 'Sistema',
-                detalle: `Matriz propia del cliente: arte generado — ${textoPlancha}` + (notaColor ? `. ${notaColor}` : ''),
+                detalle: `Matriz propia del cliente: arte generado — ${textoPlancha}` + [notaMedida, notaColor].filter(Boolean).map(t => `. ${t}`).join(''),
                 io,
             });
             await tx.commit();
@@ -547,4 +621,7 @@ module.exports = {
     MAX_PDF_BYTES,
     _pendientes: () => pendientes,
     _textoColorArte: textoColorArte,
+    validarMedidaTpu,
+    medidaDeNota,
+    _textoMedidaGenerada: textoMedidaGenerada,
 };

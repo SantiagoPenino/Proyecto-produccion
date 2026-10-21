@@ -336,6 +336,17 @@ exports.uploadProductionFile = async (req, res) => {
             if (io) io.emit('server:order_updated', { orderId: orden.OrdenID });
         }
 
+        // [DTF] Capa de tinta blanca, igual que en la subida del portal (upload-stream): el arte que se
+        // sube desde el detalle de la orden (p. ej. el de reimpresión de una falla) no la generaba. El
+        // servicio filtra por área DF y copia el temporal antes del finally que lo borra.
+        if (!esMatriz && tmpPath) {
+            try {
+                require('../services/dtfBlancoService').encolarSiCorresponde({ archivoId, tmpPath, nombreArchivo: finalName, codigoOrden: orden.CodigoOrden });
+            } catch (eDtf) {
+                logger.warn('[uploadProductionFile] tinta blanca: ' + eDtf.message);
+            }
+        }
+
         logger.info(`[uploadProductionFile] Orden ${orden.CodigoOrden}: +archivo ${finalName} (ArchivoID ${archivoId}, tipo ${esMatriz ? 'MATRIZ' : 'Impresion'})`);
         res.json({ success: true, archivoId, nombre: finalName, url: driveUrl });
     } catch (err) {

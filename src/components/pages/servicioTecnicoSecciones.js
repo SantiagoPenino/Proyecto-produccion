@@ -11,6 +11,7 @@ export const SECCIONES_ST = [
     { id: 'proyectos',   ruta: '/servicio-tecnico/proyectos',   label: 'Proyectos' },
     { id: 'insumos',     ruta: '/servicio-tecnico/insumos',     label: 'Insumos' },
     { id: 'reportes',    ruta: '/servicio-tecnico/reportes',    label: 'Reportes' },
+    { id: 'locales',     ruta: '/servicio-tecnico/locales',     label: 'Locales' },
 ];
 
 // Adónde va un link viejo a /servicio-tecnico (los avisos de la campanita y los push lo usan:

@@ -158,7 +158,9 @@ RECUADRO_PASO_LINEA_MM = 0.05   # paso con que se busca la altura de la linea
 # lo que ya viene en CMYK o tinta plana no se tocan. Imagenes no hay: leer_vector rechaza el PDF que las trae.
 NEGRO_CMYK = (0.0, 0.0, 0.0, 1.0)
 NEGRO_MAX = 40 / 255
-NEGRO_TOL_NEUTRO = 8 / 255
+# 10 desde el 21/10 (antes 8): el negro del escudo de Penarol de Illustrator es 31,26,22 (9 de
+# diferencia) y quedaba afuera. Un marron oscuro como 40,30,25 (15) sigue sin contar como negro.
+NEGRO_TOL_NEUTRO = 10 / 255
 # Aviso al operario (16/10, pedido de Santiago): negros RGB CERCA del limite, para que los verifique.
 # Pasados a K: alguno de sus canales a NEGRO_AVISO_MARGEN o menos de NEGRO_MAX (31 a 40 de 255). No
 # pasados: casi negros que quedaron en RGB, a NEGRO_AVISO_MARGEN o menos por encima (hasta 50) o que
@@ -314,9 +316,27 @@ def leer_vector(ruta_pdf):
         avisos.append(f"Se ignoraron {n_fondo} forma(s) blancas de fondo que llegaban al borde de la hoja "
                       f"(no son parte del parche: el corte sigue el dibujo).")
 
+    # FUERA DE LA HOJA (21/10, escudo del Barcelona exportado de CorelDRAW 2020): Corel exporta tambien
+    # objetos que quedaron en la mesa de trabajo lejos de la pagina (3 manchitas negras a 14,8 m). No se
+    # ven, pero entraban en el bbox: el arte "media" 14.864 x 1.617 mm, el visor 3D encuadraba todo eso,
+    # el escudo le quedaba de 4 px y fallaba con "No se pudo trazar el contorno del parche"; el generador
+    # tambien lo habria escalado con ese tamanio. Se ignoran las formas ENTERAS fuera de la hoja; las que
+    # la cruzan quedan (el fondo negro del escudo pasa apenas el borde y es parte del parche).
+    fuera = 0
+    for f in formas:
+        if f.es_fondo or f.rect is None:
+            continue
+        r = f.rect
+        if r.x1 < pr.x0 - tol or r.x0 > pr.x1 + tol or r.y1 < pr.y0 - tol or r.y0 > pr.y1 + tol:
+            f.es_fondo = True
+            fuera += 1
+    if fuera:
+        avisos.append(f"Se ignoraron {fuera} forma(s) que estan fuera de la hoja del PDF (no se ven ni van al parche).")
+
     utiles = [f for f in formas if not f.es_fondo]
     if motivo is None and not utiles:
-        motivo = "No se encontraron trazados rellenos en el PDF."
+        motivo = ("El dibujo esta fuera de la hoja del PDF. Ponelo dentro de la pagina y volve a exportar."
+                  if fuera else "No se encontraron trazados rellenos en el PDF.")
     if motivo is None and len(utiles) > 5000:
         avisos.append(f"El arte tiene {len(utiles)} trazados: probablemente un autotrazado. Revisalo antes de seguir.")
 

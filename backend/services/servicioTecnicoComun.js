@@ -11,7 +11,21 @@ const { normalizarEstado } = require('../utils/estadoEquipo');
 const { nombreOriginal, carpetaEntidad, rutaAdjunto, limpiarTemporales } = require('../middleware/multerServicioTecnico');
 
 const MODULO = 'SERVICIO_TECNICO';
-const CATEGORIAS = ['MAQUINA', 'PC', 'RED', 'SOFTWARE', 'INSTALACIONES', 'OTRO'];
+// Tipos de problema (21/10/2026): Máquina, PC e internet (PC, internet o programas; se guarda como PC) y Otro
+// (instalaciones y lo demás). No «Sistemas»: los operarios lo confundirían con el área de Sistemas. Los tipos de antes
+// (RED, SOFTWARE, INSTALACIONES) siguen valiendo en las solicitudes viejas y cuentan dentro del grupo en filtros,
+// reportes y sugerencias.
+const GRUPOS_CATEGORIA = { MAQUINA: ['MAQUINA'], PC: ['PC', 'RED', 'SOFTWARE'], OTRO: ['OTRO', 'INSTALACIONES'] };
+const CATEGORIAS = ['MAQUINA', 'PC', 'OTRO', 'RED', 'SOFTWARE', 'INSTALACIONES'];
+// Condición SQL «es de este tipo» (con los tipos viejos del grupo); null si no es un tipo válido.
+const condicionCategoria = (r, col, categoria) => {
+    const lista = GRUPOS_CATEGORIA[categoria] || (CATEGORIAS.includes(categoria) ? [categoria] : null);
+    if (!lista) return null;
+    lista.forEach((c, i) => r.input(`Cat${i}`, sql.VarChar(20), c));
+    return `${col} IN (${lista.map((_, i) => `@Cat${i}`).join(', ')})`;
+};
+// El tipo nuevo de cada solicitud, para agrupar en SQL.
+const sqlGrupoCategoria = (col) => `CASE WHEN ${col} IN ('RED', 'SOFTWARE') THEN 'PC' WHEN ${col} = 'INSTALACIONES' THEN 'OTRO' ELSE ${col} END`;
 const PRIORIDADES = ['BAJA', 'MEDIA', 'ALTA', 'CRITICA'];
 const ESTADOS = ['PENDIENTE', 'EN_CURSO', 'EN_ESPERA', 'DERIVADA', 'FINALIZADA'];
 const RESULTADOS = ['RESUELTA', 'PARCIAL', 'NO_RESUELTA', 'CANCELADA'];
@@ -20,7 +34,9 @@ const ETIQUETA_PRIORIDAD = { BAJA: 'Baja', MEDIA: 'Media', ALTA: 'Alta', CRITICA
 
 const codigo = (solId) => `ST-${String(solId).padStart(5, '0')}`;
 const urlSolicitud = (solId) => `/servicio-tecnico?sol=${solId}`;
-const esTecnico = (req) => esAdminOServicioTecnico(req.user);
+// Técnico = Admin, área SERVICIO o el encargado (21/10/2026: el encargado actúa como técnico en todo el módulo
+// aunque no sea del área; lo marca `marcarEncargado` en las rutas, en req.stEncargado).
+const esTecnico = (req) => esAdminOServicioTecnico(req.user) || req.stEncargado === true;
 const esAdmin = (req) => String(req.user?.role || '').trim().toLowerCase() === 'admin' || Number(req.user?.idRol) === 1;
 const texto = (v, max) => {
     const s = v == null ? '' : String(v).trim();
@@ -48,7 +64,7 @@ const responderError = (res, err, donde) => {
     return res.status(500).json({ success: false, error: err.message });
 };
 
-// Solo técnicos (área SERVICIO) o Admin. Responde 403 y devuelve false si no.
+// Solo técnicos (área SERVICIO, Admin o el encargado). Responde 403 y devuelve false si no.
 const exigirTecnico = (req, res, que = 'hacer esto') => {
     if (esTecnico(req)) return true;
     res.status(403).json({ success: false, error: `Solo Servicio Técnico puede ${que}.` });
@@ -112,18 +128,30 @@ async function usuarioActual(pool, req) {
     return { id, nombre: await nombreUsuario(pool, id, req.user?.name || req.user?.username || 'Usuario') };
 }
 
-// Técnicos = usuarios activos del área SERVICIO.
+// Técnicos = usuarios activos del área SERVICIO, más el encargado si no es del área (se le puede asignar y derivar).
 async function tecnicos(pool) {
-    const r = await pool.request().query(`
-        SELECT IdUsuario AS id, LTRIM(RTRIM(ISNULL(NULLIF(Nombre, ''), Usuario))) AS nombre
-        FROM dbo.Usuarios WITH (NOLOCK)
-        WHERE ISNULL(Activo, 1) = 1 AND UPPER(LTRIM(RTRIM(ISNULL(AreaUsuario, '')))) = 'SERVICIO'
-        ORDER BY nombre`);
-    return r.recordset;
+    const [r, enc] = await Promise.all([
+        pool.request().query(`
+            SELECT IdUsuario AS id, LTRIM(RTRIM(ISNULL(NULLIF(Nombre, ''), Usuario))) AS nombre
+            FROM dbo.Usuarios WITH (NOLOCK)
+            WHERE ISNULL(Activo, 1) = 1 AND UPPER(LTRIM(RTRIM(ISNULL(AreaUsuario, '')))) = 'SERVICIO'
+            ORDER BY nombre`),
+        encargado(pool),
+    ]);
+    const lista = r.recordset;
+    if (enc && !lista.some(t => t.id === enc.id)) {
+        lista.push({ id: enc.id, nombre: enc.nombre });
+        lista.sort((a, b) => String(a.nombre).localeCompare(String(b.nombre), 'es'));
+    }
+    return lista;
 }
 
 // Encargado: el elegido en la pantalla (ConfiguracionGlobal) o, si no hay, la variable de entorno.
-async function encargado(pool) {
+// Se consulta en cada pedido del módulo (marcarEncargado): 30 s de caché, y se olvida al cambiarlo.
+let cacheEncargado = { hasta: 0, id: null, origen: null };
+const olvidarEncargado = () => { cacheEncargado = { hasta: 0, id: null, origen: null }; };
+async function encargadoId(pool) {
+    if (Date.now() < cacheEncargado.hasta) return cacheEncargado;
     let id = null;
     let origen = null;
     try {
@@ -141,8 +169,26 @@ async function encargado(pool) {
         }
         if (id) origen = 'variable de entorno';
     }
+    cacheEncargado = { hasta: Date.now() + 30000, id, origen };
+    return cacheEncargado;
+}
+async function encargado(pool) {
+    const { id, origen } = await encargadoId(pool);
     return id ? { id, nombre: await nombreUsuario(pool, id), origen } : null;
 }
+
+// Middleware de las rutas del módulo: marca si quien pide es el encargado (actúa como técnico).
+const marcarEncargado = (req, res, next) => {
+    if (esAdminOServicioTecnico(req.user)) return next();
+    const { getPool } = require('../config/db');
+    getPool().then(encargadoId).then(({ id }) => {
+        req.stEncargado = !!id && id === idNum(req.user?.id);
+        next();
+    }, (err) => {
+        logger.warn(`[ServicioTecnico] no se pudo leer el encargado: ${err.message}`);
+        next();
+    });
+};
 
 // A quién avisar algo "del sector": el encargado o, si no hay, todos los técnicos.
 async function destinatariosServicio(pool, excluirId = null) {
@@ -226,9 +272,9 @@ async function leerAdjuntos(pool, entidad, entidadId) {
 }
 
 module.exports = {
-    MODULO, CATEGORIAS, PRIORIDADES, ESTADOS, RESULTADOS, ETIQUETA_RESULTADO, ETIQUETA_PRIORIDAD,
+    MODULO, CATEGORIAS, GRUPOS_CATEGORIA, condicionCategoria, sqlGrupoCategoria, PRIORIDADES, ESTADOS, RESULTADOS, ETIQUETA_RESULTADO, ETIQUETA_PRIORIDAD,
     codigo, urlSolicitud, esTecnico, esAdmin, texto, bool, idNum, fechaISO, escaparLike, hoyUY, numero,
     responderError, exigirTecnico, rolVeRuta, exigirTecnicoOSeccion, emitirST, emitirCambio, avisarTableros,
-    nombreUsuario, usuarioActual, tecnicos, encargado, destinatariosServicio,
+    nombreUsuario, usuarioActual, tecnicos, encargado, olvidarEncargado, marcarEncargado, destinatariosServicio,
     historial, leerHistorial, cambiarEstadoEquipo, guardarAdjuntos, leerAdjuntos, limpiarTemporales,
 };

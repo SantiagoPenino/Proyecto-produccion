@@ -14,7 +14,52 @@ export const medidaMaximaTPU = (nombreMaterial) => {
     if (!(alto > 0) || !(ancho > 0)) return null;
     return { alto, ancho };
 };
-const opcionesCm = (max) => Array.from({ length: Math.floor(max) }, (_, i) => ({ value: String(i + 1), label: `${i + 1} cm` }));
+// MEDIDA CON DECIMALES (21/10, pedido de Santiago). Antes eran selectores de cm enteros: un escudo de
+// 9,2 cm de alto se pedía a 10 y el sistema lo agrandaba (TPU-34617, de 5,8 a 6,3 de ancho), y los
+// clientes escribían "EL TAMAÑO ES EL DEL ARCHIVO QUE ES 8 X 7,8" en la nota. Ahora alto y ancho son
+// campos de cm con UN decimal (coma o punto), de 1 al tope del producto.
+export const MEDIDA_MIN_CM = 1;
+// '6,3' / '6.3' / 6.3 → 6.3; vacío o basura → NaN
+export const aCm = (v) => { const n = parseFloat(String(v ?? '').trim().replace(',', '.')); return Number.isFinite(n) ? n : NaN; };
+// 6.3 → '6,3'; 6 → '6' (con coma, como se escribe acá)
+export const fmtCm = (n) => String(Math.round(n * 10) / 10).replace('.', ',');
+// ¿Medida válida para un tope? Devuelve el mensaje de error o '' si está bien.
+export const errorMedidaCm = (alto, ancho, max) => {
+    const a = aCm(alto), b = aCm(ancho);
+    if (!(a > 0) || !(b > 0)) return 'Indicá el alto y el ancho del parche.';
+    if (a < MEDIDA_MIN_CM || b < MEDIDA_MIN_CM) return `La medida mínima es ${MEDIDA_MIN_CM} cm.`;
+    if (max && (a > max.alto + 1e-9 || b > max.ancho + 1e-9)) return `La medida máxima de este producto es ${fmtCm(max.alto)} cm de alto por ${fmtCm(max.ancho)} cm de ancho.`;
+    return '';
+};
+
+// Campo de cm con un decimal. Mientras escribe acepta lo que sea un número a medio escribir ("6,");
+// al salir lo deja prolijo (6,3) y lo acota a [MEDIDA_MIN_CM, max].
+export const CampoCm = ({ value, onChange, onBlurValor, max, name, 'aria-label': ariaLabel, placeholder, className = '' }) => (
+    <div className="relative">
+        <input
+            type="text"
+            inputMode="decimal"
+            name={name}
+            aria-label={ariaLabel}
+            placeholder={placeholder}
+            value={value ?? ''}
+            onChange={(e) => {
+                const v = e.target.value.replace(/[^\d.,]/g, '');
+                if (/^\d{0,3}([.,]\d?)?$/.test(v)) onChange(v);
+            }}
+            onBlur={() => {
+                const n = aCm(value);
+                if (!Number.isFinite(n)) return;
+                const acotado = Math.min(max ?? Infinity, Math.max(MEDIDA_MIN_CM, Math.round(n * 10) / 10));
+                const txt = fmtCm(acotado);
+                if (txt !== value) onChange(txt);
+                if (onBlurValor) onBlurValor(acotado);
+            }}
+            className={`w-full p-3 pr-10 text-base rounded-[10px] border border-[#3f3f46] bg-[#111] hover:border-[#00AEEF] font-medium text-zinc-200 placeholder:text-zinc-500 outline-none focus:ring-2 focus:ring-[#00AEEF]/30 focus:border-[#00AEEF] transition-all duration-200 ${className}`}
+        />
+        <span className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-3 text-sm text-zinc-500">cm</span>
+    </div>
+);
 
 // [PRENDAS] TPU como servicio complementario — mismo criterio que DTF (DtfTechnicalUI.jsx):
 // un solo toggle con dos archivos, el arte a imprimir y el boceto de dónde va.
@@ -101,12 +146,12 @@ export const TpuTechnicalUI = ({
                                 return (
                                     <>
                                         <div>
-                                            <label className="block text-[10px] uppercase font-black text-zinc-500 mb-2 tracking-widest">Alto * <span className="normal-case font-bold text-zinc-600">(máx. {max.alto} cm)</span></label>
-                                            <CustomSelect value={tpuAlto} onChange={(v) => setTpuAlto(v)} options={opcionesCm(max.alto)} placeholder="Alto..." variant="black" className="h-[55px]" />
+                                            <label className="block text-[10px] uppercase font-black text-zinc-500 mb-2 tracking-widest">Alto * <span className="normal-case font-bold text-zinc-600">(máx. {fmtCm(max.alto)} cm)</span></label>
+                                            <CampoCm value={tpuAlto} onChange={setTpuAlto} max={max.alto} aria-label="Alto del parche" placeholder="Ej. 6,5" className="h-[55px]" />
                                         </div>
                                         <div>
-                                            <label className="block text-[10px] uppercase font-black text-zinc-500 mb-2 tracking-widest">Ancho * <span className="normal-case font-bold text-zinc-600">(máx. {max.ancho} cm)</span></label>
-                                            <CustomSelect value={tpuAncho} onChange={(v) => setTpuAncho(v)} options={opcionesCm(max.ancho)} placeholder="Ancho..." variant="black" className="h-[55px]" />
+                                            <label className="block text-[10px] uppercase font-black text-zinc-500 mb-2 tracking-widest">Ancho * <span className="normal-case font-bold text-zinc-600">(máx. {fmtCm(max.ancho)} cm)</span></label>
+                                            <CampoCm value={tpuAncho} onChange={setTpuAncho} max={max.ancho} aria-label="Ancho del parche" placeholder="Ej. 5,8" className="h-[55px]" />
                                         </div>
                                     </>
                                 );

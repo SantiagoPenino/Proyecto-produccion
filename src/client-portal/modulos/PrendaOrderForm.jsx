@@ -61,7 +61,7 @@ import CosturaTechnicalUI from './order-form/components/CosturaTechnicalUI';
 import BordadoTechnicalUI from './order-form/components/BordadoTechnicalUI';
 import { EstampadoTechnicalUI } from './order-form/components/EstampadoTechnicalUI';
 import DtfTechnicalUI from './order-form/components/DtfTechnicalUI';
-import TpuTechnicalUI from './order-form/components/TpuTechnicalUI';
+import TpuTechnicalUI, { medidaMaximaTPU, errorMedidaCm, aCm, fmtCm } from './order-form/components/TpuTechnicalUI';
 import EcouvTerminacionesUI from './EcouvTerminacionesUI';
 import PrendaClienteSelector from './order-form/components/PrendaClienteSelector';
 
@@ -1602,10 +1602,12 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
         if (selectedComplementary['TPU']?.active && tpuArchivos.length === 0) {
             return addToast('Subí el boceto del diseño de TPU antes de confirmar.', 'error');
         }
-        // [TPU COMO PORTAL] si el tipo de TPU tiene tope de medida en el nombre, alto y ancho son obligatorios
+        // [TPU COMO PORTAL] si el tipo de TPU tiene tope de medida en el nombre, alto y ancho son
+        // obligatorios, en cm con un decimal y dentro del tope (21/10: antes, selectores de cm enteros).
         if (selectedComplementary['TPU']?.active) {
-            const mt = String(tpuMaterial || '').match(/(\d+(?:[.,]\d+)?)\s*[x×]\s*(\d+(?:[.,]\d+)?)/i);
-            if (mt && !(tpuAlto && tpuAncho)) return addToast(`Indicá alto y ancho del TPU (máximo ${mt[1]} x ${mt[2]} cm).`, 'error');
+            const mt = medidaMaximaTPU(tpuMaterial);
+            const errMedida = mt ? errorMedidaCm(tpuAlto, tpuAncho, mt) : '';
+            if (errMedida) return addToast(`TPU: ${errMedida}`, 'error');
         }
         // [DTF COMO PORTAL] cada archivo de DTF tiene que estar medido y con copias ≥ 1
         if (selectedComplementary['DF']?.active && dtfArchivos.length > 0) {
@@ -1807,7 +1809,7 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                                 ? { prendas: estampadoQuantity, estampadosPorPrenda: estampadoPrints, origen: estampadoOrigin }
                                 // [TPU COMO PORTAL] misma info que un TPU del portal: prendas, bajadas, origen y medida del parche
                                 : id === 'TPU'
-                                    ? { prendas: garmentQuantity, estampadosPorPrenda: estampadoPrints, origen: estampadoOrigin, tipoTpu: tpuMaterial || null, medidaTpu: (tpuAlto && tpuAncho) ? `${tpuAlto} x ${tpuAncho} cm` : null }
+                                    ? { prendas: garmentQuantity, estampadosPorPrenda: estampadoPrints, origen: estampadoOrigin, tipoTpu: tpuMaterial || null, medidaTpu: (aCm(tpuAlto) > 0 && aCm(tpuAncho) > 0) ? `${fmtCm(aCm(tpuAlto))} x ${fmtCm(aCm(tpuAncho))} cm` : null }
                                     : (['EMB', 'BORDADO', 'DF'].includes(id) ? { prendas: garmentQuantity } : {})
                         };
                     }

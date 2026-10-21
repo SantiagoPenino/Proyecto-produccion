@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef, useCallback, Suspense, lazy } from 'react';
-import { LayoutDashboard, Warehouse, Printer, ClipboardList, Terminal, CircleUserRound, Tags, Headset, Calculator, Landmark, Shirt, Sun, Sparkles, Flame, Scissors, Pen, Shapes, PenLine, QrCode, ShieldBan, PrinterCheck, History, LayoutGrid, PackagePlus, PackageCheck, Truck, FileSearch, Boxes, Waypoints, Send, Package, Bus, ClipboardCheck, Menu, Users, Shield, Eye, Settings, Database, UserX, RefreshCw, BadgeDollarSign, Layers, BookOpen, Banknote, CreditCard, ShieldCheck, Calendar, CalendarCheck, MapPin, BadgePercent, Contact, Store, LifeBuoy, Ticket, ScanLine, FileText, Cpu, FileDown, Inbox, Receipt, ShoppingCart, Palette, Megaphone, ScanEye, FileSignature, TrendingUp, Wrench, Gift, Handshake, ClipboardPen, PenTool, ChartGantt, UserPen, ListChecks, Target, Zap, ReceiptText, CalendarDays, Repeat, FolderKanban, ListOrdered, FlaskConical, House, Library, Archive, LayoutTemplate, NotebookPen } from 'lucide-react';
+import { Building2, LayoutDashboard, Warehouse, Printer, ClipboardList, Terminal, CircleUserRound, Tags, Headset, Calculator, Landmark, Shirt, Sun, Sparkles, Flame, Scissors, Pen, Shapes, PenLine, QrCode, ShieldBan, PrinterCheck, History, LayoutGrid, PackagePlus, PackageCheck, Truck, FileSearch, Boxes, Waypoints, Send, Package, Bus, ClipboardCheck, Menu, Users, Shield, Eye, Settings, Database, UserX, RefreshCw, BadgeDollarSign, Layers, BookOpen, Banknote, CreditCard, ShieldCheck, Calendar, CalendarCheck, MapPin, BadgePercent, Contact, Store, LifeBuoy, Ticket, ScanLine, FileText, Cpu, FileDown, Inbox, Receipt, ShoppingCart, Palette, Megaphone, ScanEye, FileSignature, TrendingUp, Wrench, Gift, Handshake, ClipboardPen, PenTool, ChartGantt, UserPen, ListChecks, Target, Zap, ReceiptText, CalendarDays, Repeat, FolderKanban, ListOrdered, FlaskConical, House, Library, Archive, LayoutTemplate, NotebookPen } from 'lucide-react';
 import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
 import { SECCIONES_STOCK } from '../pages/stockSecciones';
 import { SECCIONES_ST, destinoServicioTecnico } from '../pages/servicioTecnicoSecciones';
@@ -322,6 +322,7 @@ const lucideIconMapRaw = {
     'maquinas': Printer,
     'planes y procedimientos': Repeat,
     'proyectos': FolderKanban,
+    'locales': Building2,
     // Desarrollos (docs/desarrollos/plan-integracion.md) y sus secciones. "Proyectos", "Planificación",
     // "Tareas" y "Reportes" ya tenían ícono por título.
     'desarrollos': FlaskConical,

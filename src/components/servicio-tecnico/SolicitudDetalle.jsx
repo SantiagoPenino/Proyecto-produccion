@@ -9,6 +9,7 @@ import { comprimirImagen } from '../../utils/comprimirImagen';
 import {
     categoria as categoriaInfo, prioridad as prioridadInfo, estado as estadoInfo, resultado as resultadoInfo,
     estadoEquipo, PRIORIDADES, RESULTADOS, CATEGORIAS, ACCIONES, fmtFecha, fmtDia, fmtDuracion, haceCuanto, hoyISO, mensajeError,
+    grupoCategoria,
 } from './constantes';
 import { chip, label, input, btn, MiniModal, ModalMotivo, ModalEstadoMaquina, Adjunto, Dato, PanelLateral } from './ui';
 import { InsumosUsados } from './Insumos';
@@ -145,14 +146,19 @@ const ModalFinalizar = ({ sol, estadosEquipo, onConfirmar, onCerrar }) => {
 // Editar datos.
 const ModalEditar = ({ sol, areas, onConfirmar, onCerrar }) => {
     const [d, setD] = useState({
-        titulo: sol.Titulo || '', descripcion: sol.Descripcion || '', prioridad: sol.Prioridad, categoria: sol.Categoria,
+        titulo: sol.Titulo || '', descripcion: sol.Descripcion || '', prioridad: sol.Prioridad, categoria: grupoCategoria(sol.Categoria),
         equipoTexto: sol.EquipoTexto || '', areaId: sol.AreaId || '', trabajoRealizado: sol.TrabajoRealizado || '',
         requiereSeguimiento: !!sol.RequiereSeguimiento, fechaSeguimiento: sol.FechaSeguimiento || '', seguimientoNota: sol.SeguimientoNota || '',
         necesitaRepuestos: !!sol.NecesitaRepuestos, repuestosDetalle: sol.RepuestosDetalle || '',
     });
     const [guardando, setGuardando] = useState(false);
     const set = (c) => setD(prev => ({ ...prev, ...c }));
-    const ok = async () => { setGuardando(true); try { await onConfirmar(d); } finally { setGuardando(false); } };
+    // Una solicitud con un tipo de antes (PC, Internet…) lo conserva si no se cambia el tipo.
+    const ok = async () => {
+        setGuardando(true);
+        try { await onConfirmar({ ...d, categoria: d.categoria === grupoCategoria(sol.Categoria) ? sol.Categoria : d.categoria }); }
+        finally { setGuardando(false); }
+    };
     return (
         <MiniModal titulo={`Editar ${sol.Codigo}`} onCerrar={onCerrar} pie={<>
             <button onClick={onCerrar} className={`${btn} text-zinc-500 hover:bg-zinc-200`}>Cancelar</button>

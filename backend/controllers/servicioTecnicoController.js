@@ -3,16 +3,16 @@
 //
 // Cualquier usuario interno carga solicitudes (fallas de máquinas de producción, PC, internet,
 // software, instalaciones) y ve el historial. Tomar, derivar, finalizar, editar y cambiar el
-// estado de una máquina: solo técnicos (área SERVICIO) o Admin — esAdminOServicioTecnico.
+// estado de una máquina: solo técnicos (área SERVICIO), Admin o el encargado — esTecnico.
 //
 // Estado de la máquina (ConfigEquipos.Estado, el de Configuración → Equipos): si la solicitud
 // dice que la máquina NO puede trabajar, pasa a MANTENIMIENTO (fuera de servicio: no suma
 // capacidad y no recibe lotes); al finalizar, el técnico elige cómo queda. Ya no se escribe
 // FALLA (ver utils/estadoEquipo.js).
 //
-// Avisos (services/notificacionesService.js): solicitud nueva → encargado (selector guardado en
-// ConfiguracionGlobal 'ST_EncargadoId'; si no hay, env ST_ENCARGADO_USUARIO = id o usuario; si
-// tampoco, todos los técnicos). Derivación → técnico que la recibe + encargado. Asignación →
+// Avisos (services/notificacionesService.js): solicitud nueva → encargado + todos los técnicos
+// (encargado = selector guardado en ConfiguracionGlobal 'ST_EncargadoId'; si no hay, env
+// ST_ENCARGADO_USUARIO = id o usuario). Derivación → técnico que la recibe + encargado. Asignación →
 // técnico que la recibe. Finalizada → quien la pidió. Nunca se le avisa a quien hizo la acción.
 //
 // Asignar (02/10): el encargado o un Admin le asigna la solicitud a un técnico (en el detalle, en
@@ -29,8 +29,8 @@ const { ESTADOS_EQUIPO, normalizarEstado } = require('../utils/estadoEquipo');
 const { notificar } = require('../services/notificacionesService');
 const { rutaAdjunto } = require('../middleware/multerServicioTecnico');
 const {
-    MODULO, CATEGORIAS, PRIORIDADES, ESTADOS, RESULTADOS, ETIQUETA_RESULTADO, ETIQUETA_PRIORIDAD,
-    codigo, urlSolicitud, esTecnico, esAdmin, texto, bool, idNum, fechaISO, escaparLike, hoyUY,
+    MODULO, CATEGORIAS, condicionCategoria, PRIORIDADES, ESTADOS, RESULTADOS, ETIQUETA_RESULTADO, ETIQUETA_PRIORIDAD,
+    codigo, urlSolicitud, esTecnico, esAdmin, texto, bool, idNum, fechaISO, escaparLike, hoyUY, olvidarEncargado,
     responderError, emitirCambio, avisarTableros, nombreUsuario, usuarioActual, tecnicos, encargado,
     historial, cambiarEstadoEquipo, guardarAdjuntos, limpiarTemporales,
 } = require('../services/servicioTecnicoComun');
@@ -80,6 +80,10 @@ exports.getMeta = async (req, res) => {
             pool.request().input('U', sql.Int, idNum(req.user?.id) || -1)
                 .query(`SELECT UPPER(LTRIM(RTRIM(ISNULL(AreaUsuario, '')))) AS Area FROM dbo.Usuarios WITH (NOLOCK) WHERE IdUsuario = @U`),
         ]);
+        // El local de cada máquina (su ficha técnica, 21/10): el pedido de una máquina lo toma de ahí. Aparte y sin
+        // romper: si la ficha no está, el formulario sigue como antes.
+        const localDe = await pool.request().query('SELECT EquipoId, LocalId FROM dbo.ST_FichaEquipo WITH (NOLOCK) WHERE LocalId IS NOT NULL')
+            .then(r => new Map(r.recordset.map(x => [x.EquipoId, x.LocalId]))).catch(() => new Map());
         // Locales para el formulario (30/09). Vacío si falta docs/servicio-tecnico/st-locales.sql (la
         // tabla o la columna de la solicitud): el formulario no muestra el campo y todo sigue igual.
         const locales = await pool.request()
@@ -91,10 +95,10 @@ exports.getMeta = async (req, res) => {
             data: {
                 usuario: { ...usuario, area: areaUsuario.recordset[0]?.Area || '' },
                 esTecnico: esTecnico(req), esAdmin: esAdmin(req),
-                // El encargado asigna las solicitudes y ve la bandeja aunque no sea del área SERVICIO.
+                // El encargado asigna las solicitudes y actúa como técnico aunque no sea del área SERVICIO.
                 esEncargado: !!enc && enc.id === usuario.id,
                 encargado: enc, tecnicos: tecs,
-                areas: areas.recordset, equipos: equipos.recordset,
+                areas: areas.recordset, equipos: equipos.recordset.map(e => ({ ...e, LocalId: localDe.get(e.EquipoID) ?? null })),
                 estadosEquipo: ESTADOS_EQUIPO, locales,
             },
         });
@@ -131,8 +135,8 @@ exports.listar = async (req, res) => {
         const resultado = String(req.query.resultado || '').toUpperCase();
         if (RESULTADOS.includes(resultado)) { where.push('s.Resultado = @Res'); r.input('Res', sql.VarChar(20), resultado); }
 
-        const categoria = String(req.query.categoria || '').toUpperCase();
-        if (CATEGORIAS.includes(categoria)) { where.push('s.Categoria = @Cat'); r.input('Cat', sql.VarChar(20), categoria); }
+        const condCat = condicionCategoria(r, 's.Categoria', String(req.query.categoria || '').toUpperCase());
+        if (condCat) where.push(condCat);
         const prioridad = String(req.query.prioridad || '').toUpperCase();
         if (PRIORIDADES.includes(prioridad)) { where.push('s.Prioridad = @Prio'); r.input('Prio', sql.VarChar(10), prioridad); }
         const area = texto(req.query.area, 20);
@@ -349,9 +353,9 @@ exports.crear = async (req, res) => {
             await historial(pool, { entidadId: solId, usuario, accion: 'ADJUNTO', detalle: adj.map(a => a.NombreOriginal).join(', ') });
         }
 
-        // Aviso: al encargado; si no hay encargado, a todos los técnicos. Nunca a quien la cargó.
+        // Aviso: al encargado y a todos los técnicos, haya encargado o no (21/10/2026). Nunca a quien la cargó.
         const enc = await encargado(pool);
-        const destinatarios = (enc ? [enc.id] : (await tecnicos(pool)).map(t => t.id)).filter(id => id !== usuario.id);
+        const destinatarios = [...new Set([...(enc ? [enc.id] : []), ...(await tecnicos(pool)).map(t => t.id)])].filter(id => id !== usuario.id);
         notificar({
             usuarioIds: destinatarios, modulo: MODULO, io: req.app.get('socketio'),
             titulo: `Nueva solicitud ${codigo(solId)} · ${ETIQUETA_PRIORIDAD[prioridad]}`,
@@ -807,8 +811,9 @@ exports.tiposFalla = async (req, res) => {
         const pool = await getPool();
         const r = pool.request();
         const where = ['Activo = 1'];
-        const categoria = String(req.query.categoria || '').toUpperCase();
-        if (CATEGORIAS.includes(categoria)) { where.push('Categoria = @Cat'); r.input('Cat', sql.VarChar(20), categoria); }
+        // Las sugerencias de «PC e internet» incluyen las de internet y software de antes (y las de Otro, las de instalaciones).
+        const condCat = condicionCategoria(r, 'Categoria', String(req.query.categoria || '').toUpperCase());
+        if (condCat) where.push(condCat);
         const q = texto(req.query.q, 100);
         if (q) { where.push('Titulo LIKE @Q'); r.input('Q', sql.NVarChar(120), `%${escaparLike(q)}%`); }
         const result = await r.query(`SELECT TOP 15 TipoId, Categoria, Titulo, Usos FROM dbo.ST_TiposFalla
@@ -837,6 +842,7 @@ exports.setEncargado = async (req, res) => {
         await pool.request().input('V', sql.NVarChar(sql.MAX), usuarioId ? String(usuarioId) : '').query(`
             UPDATE dbo.ConfiguracionGlobal SET Valor = @V WHERE Clave = 'ST_EncargadoId';
             IF @@ROWCOUNT = 0 INSERT INTO dbo.ConfiguracionGlobal (Clave, AreaID, Valor) VALUES ('ST_EncargadoId', 'SERVICIO', @V);`);
+        olvidarEncargado();
         const usuario = await usuarioActual(pool, req);
         logger.info(`[ServicioTecnico] Encargado → ${usuarioId || '(ninguno: queda la variable de entorno)'} por ${usuario.nombre}`);
         res.json({ success: true, data: await encargado(pool) });

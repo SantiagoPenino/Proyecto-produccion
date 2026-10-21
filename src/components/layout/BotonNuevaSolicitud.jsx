@@ -10,6 +10,8 @@ const BotonNuevaSolicitud = ({ className = '' }) => {
     const [abierta, setAbierta] = useState(false);
     const location = useLocation();
     const navigate = useNavigate();
+    // En la página de una máquina (/servicio-tecnico/maquinas/:id), el pedido viene armado con ella.
+    const equipoDeLaPagina = parseInt((location.pathname.match(/\/servicio-tecnico\/maquinas\/(\d+)/) || [])[1], 10) || null;
     return (
         <>
             <button type="button" onClick={() => setAbierta(true)} title="Reportar falla a Servicio Técnico"
@@ -18,7 +20,7 @@ const BotonNuevaSolicitud = ({ className = '' }) => {
             </button>
             {abierta && (
                 <Suspense fallback={null}>
-                    <NuevaSolicitudModal abierta onCerrar={() => setAbierta(false)}
+                    <NuevaSolicitudModal abierta onCerrar={() => setAbierta(false)} equipoInicial={equipoDeLaPagina}
                         // En la pantalla de Servicio Técnico se abre la solicitud recién creada, sobre la
                         // misma sección (cada sección es su propia ruta desde el 02/10).
                         onCreada={(sol) => { if (location.pathname.startsWith('/servicio-tecnico')) navigate(`${location.pathname}?sol=${sol.SolId}`); }} />

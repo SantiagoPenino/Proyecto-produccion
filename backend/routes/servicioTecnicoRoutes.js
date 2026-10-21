@@ -7,13 +7,15 @@ const mt = require('../controllers/stMantenimientoController');
 const pr = require('../controllers/stProyectosController');
 const ins = require('../controllers/stInsumosController');
 const rep = require('../controllers/stReportesController');
+const loc = require('../controllers/stLocalesController');
 const { verifyToken, soloInternoConRol } = require('../middleware/authMiddleware');
 const { subirAdjuntos } = require('../middleware/multerServicioTecnico');
 
 // Servicio Técnico (docs/servicio-tecnico-plan.md). Todo el módulo: usuario interno logueado.
 // Las acciones de técnico (tomar, derivar, finalizar, editar, estado de máquina) las controla
-// el controller: Admin o área SERVICIO.
-router.use(verifyToken, soloInternoConRol());
+// el controller: Admin, área SERVICIO o el encargado (marcarEncargado, 21/10/2026).
+const { marcarEncargado } = require('../services/servicioTecnicoComun');
+router.use(verifyToken, soloInternoConRol(), marcarEncargado);
 
 // Columnas del 30/09 (franja horaria de los trabajos; días, franja y tiempo de los planes): la primera vez
 // se agregan solas. Si falla, sigue igual y lo vuelve a intentar en el próximo pedido.
@@ -113,5 +115,14 @@ router.post('/insumos/usos', ins.registrarUso);                   // { varId, de
 // Reportes (etapa 5) — técnicos y Admin
 router.get('/reportes/resumen', rep.resumen);                     // ?desde=&hasta=
 router.get('/reportes/semanal', rep.semanal);                     // ?semana=AAAA-MM-DD
+
+// Locales (20/10): plantas, energía y ubicación de las máquinas (docs/servicio-tecnico/st-locales-energia.sql)
+router.get('/locales', loc.listar);
+router.put('/locales/:id/energia', loc.guardarEnergia);           // potencia contratada y tarifa — técnicos
+router.post('/locales/:id/plantas', loc.crearPlanta);             // { nombre } — técnicos
+router.put('/plantas/:id', loc.editarPlanta);                     // { nombre?, cargaMaxKgM2? } — técnicos
+router.put('/plantas/:id/plano', loc.guardarPlano);               // { plano, version } — técnicos
+router.delete('/plantas/:id', loc.borrarPlanta);                  // solo sin máquinas — técnicos
+router.put('/equipos/:id/ubicacion', loc.guardarUbicacion);       // { localId, plantaId } — técnicos
 
 module.exports = router;

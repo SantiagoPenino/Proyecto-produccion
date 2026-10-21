@@ -537,6 +537,12 @@ exports.createWebOrder = async (req, res) => {
                     techInfo: techInfo // Info técnica limpia para ServiciosExtraOrden
                 };
 
+                // TPU: la medida pedida (nota y, en "Hago mi matriz", la que va al generador) no puede
+                // pasar el tope del producto (21/10). El portal ya no deja, pero acá es donde manda.
+                if (serviceId === 'tpu' && srv.esPrincipal) {
+                    require('../services/tpuMatrizService').validarMedidaTpu(execBase.material, generalNote, execBase.matrizPropia);
+                }
+
                 // [BORDADO] UNA ORDEN POR DISEÑO.
                 // Cada logo es un trabajo distinto: va sobre SUS prendas (una línea de
                 // InventarioPrendasCliente), en SU cantidad, con SUS medidas y SU
@@ -2172,6 +2178,12 @@ exports.createWebOrder = async (req, res) => {
         }
 
     } catch (err) {
+        // Algo del pedido que el cliente tiene que corregir (ej. el PDF de la matriz TPU venció): 400
+        // con su código, para que el formulario actúe. No es un error del servidor.
+        if (err.status === 400) {
+            logger.warn(`[WebOrder] Pedido rechazado (${err.codigo || 'validación'}): ${err.message} — cliente ${req.user?.codCliente || '?'}`);
+            return res.status(400).json({ error: err.message, codigo: err.codigo || null });
+        }
         logger.error("❌ Error creando estructura de pedido:", err);
         res.status(500).json({ error: "Error iniciando pedido: " + err.message });
     }
@@ -3041,9 +3053,10 @@ exports.reuseMatrizTPU = async (req, res) => {
     const matrizOrdenId = parseInt(req.body?.matrizOrdenId);
     const cantidad = parseInt(req.body?.cantidad) || 0;
     const nombreTrabajo = (req.body?.nombreTrabajo || '').trim();
-    // Medida del parche elegida por el cliente. Igual que en un trabajo nuevo va DENTRO de la nota
-    // (`[Medida: alto x ancho cm]`): el alto/ancho de un TPU no tiene columna propia en Ordenes.
-    const medidaTpu = String(req.body?.medida || '').trim();
+    // El reuso solo cambia la CANTIDAD (21/10, decisión de Santiago): la medida es la de la matriz y
+    // se copia de su nota (`[Medida: alto x ancho cm]`; el TPU no tiene columna de medida). Antes la
+    // elegía el cliente, pero con la misma cantidad se copiaba el arte viejo tal cual y la medida nueva
+    // quedaba solo en la nota. Si el body trae `medida` (formulario viejo), se ignora.
     if (!codCliente) return res.status(401).json({ error: 'No autenticado.' });
     if (!matrizOrdenId || cantidad < 1) return res.status(400).json({ error: 'Faltan datos (matriz y cantidad).' });
     // Mínimo del REUSO: 5 unidades (el trabajo nuevo pide 15 — acá la matriz ya está hecha).
@@ -3062,7 +3075,7 @@ exports.reuseMatrizTPU = async (req, res) => {
             .input('cod', sql.Int, codCliente)
             .query(`
                 SELECT o.OrdenID, o.CodigoOrden, o.Material, o.Variante, o.CodArticulo, o.ProIdProducto,
-                       o.CliIdCliente, o.IdClienteReact, o.Cliente, o.UM, o.Magnitud AS MatMag,
+                       o.CliIdCliente, o.IdClienteReact, o.Cliente, o.UM, o.Magnitud AS MatMag, o.Nota AS MatNota,
                        (SELECT COUNT(*) FROM ArchivosOrden ao WHERE ao.OrdenID = o.OrdenID AND ISNULL(ao.EstadoArchivo,'')<>'Cancelado') AS nArch,
                        (SELECT COUNT(*) FROM ArchivosOrden ao WHERE ao.OrdenID = o.OrdenID AND ISNULL(ao.EstadoArchivo,'')<>'Cancelado'
                                                                 AND LOWER(ao.NombreArchivo) NOT LIKE '%boceto%') AS nCapas
@@ -3110,12 +3123,14 @@ exports.reuseMatrizTPU = async (req, res) => {
         // Sin las capas el motivo NO es la cantidad, y decir "regenerar ... (matriz: 100 u)" cuando el
         // cliente pidió 100 u le queda incoherente al operario. Se nombra el motivo real.
         const sinCapas = (mat.nCapas || 0) < CAPAS_ARTE_TPU_MIN;
+        // Medida de la matriz (de su nota): el reuso sale igual. Las migradas pueden no tenerla.
+        const medidaMatriz = require('../services/tpuMatrizService').medidaDeNota(mat.MatNota);
         const notaNueva = (regenerar
             ? `Reuso de matriz ${matCod} [REUSO-REGEN] · ` + (sinCapas
                 ? `la matriz no tiene el arte cargado (solo boceto) — hacer el arte (cmyk-spots + corte) para ${cantidad} u`
                 : `regenerar el arte para ${cantidad} u (matriz: ${matMag || '?'} u)`)
             : `Reuso de matriz ${matCod}`)
-            + (medidaTpu ? ` [Medida: ${medidaTpu}]` : '');
+            + (medidaMatriz ? ` ${medidaMatriz.texto}` : '');
         const insOrd = await new sql.Request(transaction)
             .input('Cliente', sql.NVarChar(200), mat.Cliente)
             .input('CodCli', sql.Int, codCliente)

@@ -19,7 +19,7 @@
 // Técnico es su propia entrada del menú y se reparte por rol).
 // ─────────────────────────────────────────────────────────────────────────────
 const { getPool, sql } = require('../config/db');
-const { codigo, fechaISO, hoyUY, responderError, exigirTecnicoOSeccion, tecnicos } = require('../services/servicioTecnicoComun');
+const { codigo, fechaISO, hoyUY, responderError, exigirTecnicoOSeccion, tecnicos, sqlGrupoCategoria } = require('../services/servicioTecnicoComun');
 
 const RUTA_MENU = '/servicio-tecnico/reportes';
 
@@ -99,7 +99,9 @@ async function datosPeriodo(pool, desde, hasta) {
                      WHERE ${EN_RANGO('s.FechaSolicitud')}
                      GROUP BY ISNULL(CAST(s.SolicitanteId AS VARCHAR(20)), 'txt:' + ISNULL(s.SolicitanteNombre, ''))
                      ORDER BY COUNT(*) DESC`),
-        req().query(`SELECT s.Categoria, COUNT(*) AS N FROM dbo.ST_Solicitudes s WHERE ${EN_RANGO('s.FechaSolicitud')} GROUP BY s.Categoria ORDER BY COUNT(*) DESC`),
+        // Por tipo, con los tipos viejos dentro del grupo nuevo (internet y software → PC e internet; instalaciones → Otro).
+        req().query(`SELECT ${sqlGrupoCategoria('s.Categoria')} AS Categoria, COUNT(*) AS N FROM dbo.ST_Solicitudes s WHERE ${EN_RANGO('s.FechaSolicitud')}
+                     GROUP BY ${sqlGrupoCategoria('s.Categoria')} ORDER BY COUNT(*) DESC`),
         req().query(`SELECT
                         (SELECT COUNT(*) FROM dbo.ST_Solicitudes s WHERE ${EN_RANGO('s.FechaSolicitud')}) AS Nuevas,
                         (SELECT COUNT(*) FROM dbo.ST_Solicitudes s WHERE s.Estado = 'FINALIZADA' AND ${EN_RANGO('s.FechaFin')}) AS Finalizadas,

@@ -285,7 +285,7 @@ const PESTANAS = [
     ['comercial', 'Comercial y documentos', 'Comercial'],
 ];
 
-const MaquinaFicha = ({ equipoId, meta, version = 0, onVolver, onAbrirMaquina, onAbrirSolicitud, onAbrirTrabajo, onCambio }) => {
+const MaquinaFicha = ({ equipoId, meta, version = 0, onVolver, onAbrirMaquina, onAbrirSolicitud, onAbrirTrabajo, onCambio, volverTexto = 'Máquinas' }) => {
     const [eq, setEq] = useState(null);
     const [tiposCambio, setTiposCambio] = useState([]);
     const [catalogos, setCatalogos] = useState(null);
@@ -447,7 +447,7 @@ const MaquinaFicha = ({ equipoId, meta, version = 0, onVolver, onAbrirMaquina, o
                 {/* Encabezado */}
                 <div>
                     <button type="button" onClick={onVolver} className="inline-flex items-center gap-1.5 py-1 text-sm font-bold text-zinc-500 hover:text-brand-cyan">
-                        <ArrowLeft size={16} /> Máquinas
+                        <ArrowLeft size={16} /> {volverTexto}
                     </button>
                     <div className="mt-2 flex flex-wrap items-start justify-between gap-3">
                         <div className="flex min-w-0 items-start gap-3">

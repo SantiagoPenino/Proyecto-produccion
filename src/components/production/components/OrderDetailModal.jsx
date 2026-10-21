@@ -440,10 +440,25 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
         ? (String(currentOrder?.Nota || currentOrder?.nota || order?.Nota || order?.nota || '').match(/\[TERMINACIONES DE ([^\]]+)\]/i)?.[1] || '').trim()
         : '';
 
+    // Reposición: su propio archivo + el de SU orden madre (el código sin el -R#/-F#). Antes pasaban
+    // TODOS los del pedido: en un multimaterial (SUB-28505 1/4…4/4) la -R de la parte 1/4 mostraba los
+    // artes de las cuatro partes y los de las otras reposiciones (20/10/2026).
+    const codigoMadreRepo = isRepoOrder ? String(currentOrder?.code || '').replace(/(-[RF]\d+)+$/i, '').trim() : '';
+    const esArchivoProduccion = (f) => f.Categoria === 'produccion' || (!f.Categoria && !servTypes.includes(normalizeType(f.tipo)));
+    const nombreArchivoNorm = (f) => String(f.nombre || f.NombreArchivo || '').trim().toLowerCase();
+    const esDeLaMadreRepo = (f) => !!codigoMadreRepo && String(f._codigoOrden || '').trim() === codigoMadreRepo;
+    // De la madre, solo el ORIGINAL de lo que se repone: la -R hereda el nombre del archivo que copia
+    // (SUB-32205-R1 repone el Arch 3 de 12 y listaba los 12 de la madre). Si ningún nombre coincide
+    // (archivo renombrado), se muestran todos los de la madre como antes.
+    const nombresPropiosRepo = new Set(isRepoOrder
+        ? files.filter(f => esArchivoProduccion(f) && String(f.OrdenID) === String(currentOrder?.id)).map(nombreArchivoNorm)
+        : []);
+    const madreRepoCoincide = isRepoOrder
+        && files.some(f => esArchivoProduccion(f) && esDeLaMadreRepo(f) && nombresPropiosRepo.has(nombreArchivoNorm(f)));
     const productionFiles = files.filter(f => {
-        const esProduccion = f.Categoria === 'produccion' || (!f.Categoria && !servTypes.includes(normalizeType(f.tipo)));
-        if (!esProduccion) return false;
-        if (isRepoOrder) return true;
+        if (!esArchivoProduccion(f)) return false;
+        if (isRepoOrder) return String(f.OrdenID) === String(currentOrder?.id)
+            || (esDeLaMadreRepo(f) && (!madreRepoCoincide || nombresPropiosRepo.has(nombreArchivoNorm(f))));
         // [PRO] La orden madre administra el pedido: se ven los archivos de TODAS las
         // hermanas (cada uno etiquetado con su área/orden en la lista).
         if (isPRO) return true;
@@ -488,9 +503,15 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
     const matrizFiles = productionFiles.filter(esMatrizBordado);
     const printFilesVista = productionFiles.filter(f => !esBocetoProduccion(f) && !esMatrizBordado(f));
     const bocetosProduccion = productionFiles.filter(esBocetoProduccion);
+    // Lo que se CUENTA (metros, magnitud, capas de arte, boceto cargado): en una reposición solo sus
+    // propios archivos. El de la madre se muestra como referencia; sumándolo, la -R daba el doble.
+    const archivosParaContar = isRepoOrder
+        ? productionFiles.filter(f => String(f.OrdenID) === String(currentOrder?.id))
+        : productionFiles;
     // Capas de arte cargadas (sin boceto, sin matriz de bordado, sin cancelados): decide si el
     // cartel de "boceto aprobado" sigue pidiendo el arte o ya avisa que está completo.
-    const capasArteCargadas = printFilesVista.filter(f => (f.Estado || f.estado || f.EstadoArchivo || '').toUpperCase() !== 'CANCELADO').length;
+    const capasArteCargadas = archivosParaContar.filter(f => !esBocetoProduccion(f) && !esMatrizBordado(f)
+        && (f.Estado || f.estado || f.EstadoArchivo || '').toUpperCase() !== 'CANCELADO').length;
     // TPU "Hago mi matriz": el arte lo generó el sistema a partir del vector del cliente (quedan las
     // referencias MATRIZ FUENTE / MATRIZ JOB y la marca en la Nota). Con el arte ya cargado no hay
     // nada que subir: el botón solo vuelve si la generación falló y hay que hacerlo a mano.
@@ -536,7 +557,7 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
         if (validos.length === 0) return toast.error('Solo se permiten archivos PDF o PLT.');
         if (validos.length !== todos.length) toast.error('Se ignoraron archivos que no son PDF/PLT.');
 
-        const activos = productionFiles.filter(f => (f.Estado || f.estado || f.EstadoArchivo || '').toUpperCase() !== 'CANCELADO');
+        const activos = archivosParaContar.filter(f => (f.Estado || f.estado || f.EstadoArchivo || '').toUpperCase() !== 'CANCELADO');
         const yaHay = activos.length;
         // Para el tope del arte NO cuenta el boceto: es lo que el cliente aprobó, no una capa, y
         // se muestra en la pestaña de referencias. Contándolo, el tope se comía una capa de arte.
@@ -878,7 +899,7 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
     const handleAprobarInterno = async () => {
         if (!currentOrder?.id) return;
         if (tpuEstado.aprobado) return toast.error('Este boceto ya está confirmado.');
-        const activos = productionFiles.filter(f => (f.Estado || f.estado || f.EstadoArchivo || '').toUpperCase() !== 'CANCELADO');
+        const activos = archivosParaContar.filter(f => (f.Estado || f.estado || f.EstadoArchivo || '').toUpperCase() !== 'CANCELADO');
         if (!activos.some(esBocetoProduccion)) return toast.error('Falta el boceto: subí un PDF con "boceto" en el nombre.');
         const r = await Swal.fire({
             title: '¿Confirmar el diseño?',
@@ -909,7 +930,7 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
     const handleEnviarAprobacion = async () => {
         if (!currentOrder?.id) return;
         if (tpuEstado.aprobado) return toast.error('El cliente ya aprobó este pedido.');
-        const activos = productionFiles.filter(f => (f.Estado || f.estado || f.EstadoArchivo || '').toUpperCase() !== 'CANCELADO');
+        const activos = archivosParaContar.filter(f => (f.Estado || f.estado || f.EstadoArchivo || '').toUpperCase() !== 'CANCELADO');
         if (esReusoRegen) {
             // El reuso no pasa por el cliente: va directo a fabricar, así que necesita el arte completo.
             const capasArte = activos.filter(f => !esBocetoProduccion(f)).length;
@@ -1455,9 +1476,12 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
     const renderFileActionsData = (f, idx) => {
         const fileId = f.id || f.ArchivoID || idx;
         const isEditing = editingFileId === fileId;
-        const rawStatus = f.Estado || f.estado || 'PENDIENTE';
-        const isCancelled = rawStatus.toUpperCase() === 'CANCELADO';
-        const isOrderCancelled = currentOrder.status === 'CANCELADO';
+        // Los archivos de impresión traen su estado en EstadoArchivo (los servicios, en Estado): sin
+        // leerlo, la etiqueta decía siempre PENDIENTE y un archivo cancelado seguía con editar/cancelar.
+        const rawStatus = String(f.Estado || f.estado || f.EstadoArchivo || 'PENDIENTE').toUpperCase();
+        const isCancelled = rawStatus === 'CANCELADO';
+        // La orden llega como 'Cancelado': la comparación exacta contra 'CANCELADO' nunca daba.
+        const isOrderCancelled = String(currentOrder.status || '').toUpperCase() === 'CANCELADO';
 
         let editContent = null;
 
@@ -1736,7 +1760,7 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                             <span className="text-xs font-bold text-brand-cyan bg-brand-cyan/10 px-2 py-0.5 rounded uppercase tracking-wider border border-brand-cyan/20">
                                 Detalle de Orden
                             </span>
-                            {currentOrder.status === 'CANCELADO' && (
+                            {String(currentOrder.status || '').toUpperCase() === 'CANCELADO' && (
                                 <span className="text-xs font-bold text-white bg-brand-magenta px-2 py-0.5 rounded uppercase tracking-wider">CANCELADA</span>
                             )}
                         </div>
@@ -1933,7 +1957,7 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                                     if (isTPU || isPRO) return currentOrder.magnitude || '0';
 
                                     // 1. Suma de Producción
-                                    const prodTotal = productionFiles.reduce((acc, f) => {
+                                    const prodTotal = archivosParaContar.reduce((acc, f) => {
                                         const fStatus = (f.Estado || f.estado || f.EstadoArchivo || '').toUpperCase();
                                         if (fStatus === 'CANCELADO') return acc;
                                         return acc + ((parseFloat(f.copias || f.Copias || 1)) * (parseFloat(f.metros || f.width || f.Metros || 0)));
@@ -2637,7 +2661,7 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                                         <div className="mt-4 pt-3 border-t border-zinc-100 flex justify-between items-center text-sm px-2">
                                             <span className="font-bold text-zinc-400 uppercase text-xs tracking-wider">Metraje Total Estimado</span>
                                             <span className="font-black text-brand-cyan text-xl font-mono">
-                                                {productionFiles.reduce((acc, f) => {
+                                                {archivosParaContar.reduce((acc, f) => {
                                                     const fStatus = (f.Estado || f.estado || f.EstadoArchivo || '').toUpperCase();
                                                     if (fStatus === 'CANCELADO') return acc;
                                                     return acc + ((f.copias || f.copies || f.Copias || 1) * (f.metros || f.width || f.Metros || 0));
