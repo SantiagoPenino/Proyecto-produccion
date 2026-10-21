@@ -188,13 +188,19 @@ export const TpuTechnicalUI = ({
                                         {tpuArchivos.map((f, idx) => (
                                             <div key={idx} className="flex items-center gap-2 bg-zinc-800/50 border border-emerald-500/30 px-4 py-2 rounded-xl">
                                                 <span className="text-[10px] font-bold text-zinc-300 max-w-[100px] truncate">{f.name}</span>
+                                                {/* Prendas que llevan este diseño: entre 1 y las del pedido / artículo (mismo rótulo que DTF) */}
                                                 {setPrendasArchivo && tpuArchivos.length > 1 && (
-                                                    <input
-                                                        type="number" min="1" title="Prendas que llevan este diseño"
-                                                        value={prendasDeArchivo ? prendasDeArchivo(f) : ''}
-                                                        onChange={(e) => setPrendasArchivo(f, e.target.value)}
-                                                        className="w-14 bg-zinc-900 border border-zinc-700 rounded px-1 py-0.5 text-[10px] font-mono text-zinc-200 text-right"
-                                                    />
+                                                    <label className="flex items-center gap-1 text-[10px] text-zinc-400 whitespace-nowrap" title="En cuántas prendas va este diseño">prendas
+                                                        <input
+                                                            type="number" min="1" max={parseInt(garmentQuantity, 10) || undefined}
+                                                            value={prendasDeArchivo ? prendasDeArchivo(f) : ''}
+                                                            onChange={(e) => {
+                                                                const tope = parseInt(garmentQuantity, 10) || 0;
+                                                                setPrendasArchivo(f, tope > 0 && parseInt(e.target.value, 10) > tope ? String(tope) : e.target.value);
+                                                            }}
+                                                            className="w-14 h-7 px-2 bg-zinc-900 border border-zinc-700 rounded-lg text-zinc-100 text-xs font-bold text-center"
+                                                        />
+                                                    </label>
                                                 )}
                                                 <button
                                                     type="button"

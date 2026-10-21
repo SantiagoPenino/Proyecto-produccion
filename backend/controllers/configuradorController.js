@@ -133,6 +133,15 @@ async function tieneGruposTalle(pool) {
     return _tieneGruposTalle;
 }
 
+// ¿Ya se corrió docs/migrations/configurador_dias_entrega.sql? (ProductoVentaConfig.DiasEntrega: días hábiles de entrega)
+let _tieneDiasEntrega = false;
+async function tieneDiasEntrega(pool) {
+    if (_tieneDiasEntrega) return true;
+    const r = await pool.request().query(`SELECT COL_LENGTH('dbo.ProductoVentaConfig', 'DiasEntrega') AS c`);
+    _tieneDiasEntrega = r.recordset[0].c != null;
+    return _tieneDiasEntrega;
+}
+
 // ¿Ya se corrió docs/migrations/configurador_tizadapro_mesas.sql? (ProductoVentaConfig.TizadaMesasModo: cómo arma TIZADA los archivos)
 const MESAS_MODOS = ['normal', 'una_por_fila', 'talles_separados'];   // talles_separados: TIZADA PRO 16/10 (prendas)
 // [MESAS 16/10] ¿Ya se corrió docs/migrations/tizadapro_mesas_novedades_16oct.sql? (separar diseños + largo máximo de mesa)
@@ -171,6 +180,16 @@ async function tieneAccesorios(pool) {
     return _tieneAccesorios;
 }
 const COBROS_ACCESORIO = ['INCLUIDO', 'APARTE'];
+// [ACCESORIOS SOLO STOCK] ¿Ya se corrió docs/migrations/configurador_accesorios_solo_stock.sql? Con él, un accesorio
+// puede ser solo una variante del stock del WMS, sin artículo en el catálogo (ItemProIdProducto NULL): va incluido
+// en el precio y con la variante fija. `cx` = pool o transacción.
+let _accesoriosSoloStock = false;
+async function accesoriosSoloStock(cx) {
+    if (_accesoriosSoloStock) return true;
+    const r = await new sql.Request(cx).query(`SELECT COLUMNPROPERTY(OBJECT_ID('dbo.ProductoAccesorios'), 'ItemProIdProducto', 'AllowsNull') AS n`);
+    _accesoriosSoloStock = r.recordset[0].n === 1;
+    return _accesoriosSoloStock;
+}
 
 // [PASO A PASO] ¿Ya se corrió docs/migrations/configurador_costuras_paso_a_paso.sql? (MaquinasCostura +
 // etapa/máquina/piezas/tiempo/observaciones/imagen en cada costura de la ficha). Sin el script, las
@@ -347,6 +366,7 @@ async function leerFicha(pool, proId) {
         const conMesas = await tieneMesasModo(pool);   // cómo arma TIZADA los archivos
         const conMesasExtra = conMesas && await tieneMesasExtra(pool);   // [MESAS 16/10] separar diseños + largo máximo
         const conGrupos = await tieneGruposTalle(pool);   // talles que se venden
+        const conDias = await tieneDiasEntrega(pool);   // días hábiles de entrega
         const conMed = await tieneMedidas(pool);   // [MEDIDAS]
         const rq = () => pool.request().input('PID', sql.Int, proId);
 
@@ -374,7 +394,7 @@ async function leerFicha(pool, proId) {
                                ValidarStock, Estado, EsCombo, FechaRegistro, FechaModif,
                                ${await variantesSvc.tieneVariantes(pool) ? 'PadreProIdProducto, ModeloClave,' : ''}
                                ${conTizada ? 'TizadaProMoldeRef' : 'CAST(NULL AS NVARCHAR(128)) AS TizadaProMoldeRef'}
-                               ${conF1 ? ', ' + F1_COLS : ''}${conAM ? ', AMedidaJson' : ''}${conMesas ? ', TizadaMesasModo' : ''}${conMesasExtra ? ', TizadaSepararDisenos, TizadaLargoMaxM' : ''}${conGrupos ? ', GruposTalle' : ''}
+                               ${conF1 ? ', ' + F1_COLS : ''}${conAM ? ', AMedidaJson' : ''}${conMesas ? ', TizadaMesasModo' : ''}${conMesasExtra ? ', TizadaSepararDisenos, TizadaLargoMaxM' : ''}${conGrupos ? ', GruposTalle' : ''}${conDias ? ', DiasEntrega' : ''}
                         FROM dbo.ProductoVentaConfig WHERE ProIdProducto = @PID`),
             rq().query(`SELECT AreaID, Obligatorio, Modo, Cobro
                         FROM dbo.ProductoTerminadoServicios WHERE ProIdProducto = @PID`),
@@ -423,11 +443,15 @@ async function leerFicha(pool, proId) {
             rq().query(`SELECT ID, UnionNombre, CodigoISO${conPaso ? ', Etapa, Descripcion, MaquinaCosturaID, TiempoMin, Observaciones, ImagenUrl' : ''}${conTalle ? ', AvioID' : ''}
                         FROM dbo.ProductoFichaDisenoCosturas
                         WHERE ProIdProducto = @PID ORDER BY ISNULL(Orden, 999), ID`),
+            // [ACCESORIOS SOLO STOCK] sin artículo, el nombre y la variante salen del WMS (y WmsPmaId dice de qué producto del WMS es)
             conAcc ? rq().query(`SELECT ac.ID, ac.ItemProIdProducto, ac.WmsVarianteId, ac.Cantidad, ac.Obligatorio, ac.Cobro, ac.Orden, ac.WmsDepositoId,
-                                        LTRIM(RTRIM(a.Descripcion)) AS ItemDescripcion, v.nombre_variante AS VarianteNombre
+                                        ISNULL(LTRIM(RTRIM(a.Descripcion)), wpm.Nombre) AS ItemDescripcion,
+                                        ISNULL(v.nombre_variante, wv.NombreVariante) AS VarianteNombre, wv.PmaId AS WmsPmaId
                                  FROM dbo.ProductoAccesorios ac
                                  LEFT JOIN dbo.Articulos a ON a.ProIdProducto = ac.ItemProIdProducto
                                  LEFT JOIN dbo.Articulos_WMS_Variantes v ON v.wms_variante_id = ac.WmsVarianteId
+                                 LEFT JOIN dbo.Wms_Variantes wv ON wv.VarId = ac.WmsVarianteId
+                                 LEFT JOIN dbo.Wms_ProductosMaestros wpm ON wpm.PmaId = wv.PmaId
                                  WHERE ac.ProIdProducto = @PID ORDER BY ISNULL(ac.Orden, 999), ac.ID`) : { recordset: [] },
             // [AVÍOS POR TALLE] valor de cada talle, por el Orden de la línea del avío
             conTalle ? rq().query(`SELECT AvioOrden, Talle, Valor, AvioID FROM dbo.ProductoAviosTalle
@@ -719,17 +743,23 @@ async function aplicarSetsHijos(transaction, proId, body, conTizada = false, con
     // [ACCESORIOS] artículos de stock que salen con el producto (se pisan enteros, como el resto de las listas)
     if (conAcc && body.accesorios !== undefined) {
         await new sql.Request(transaction).input('PID', sql.Int, proId).query(`DELETE FROM dbo.ProductoAccesorios WHERE ProIdProducto = @PID`);
+        const soloStock = await accesoriosSoloStock(transaction);
         let ordenAc = 1;
         for (const ac of (body.accesorios || [])) {
             const itemId = Number(ac.itemProIdProducto);
-            if (!Number.isInteger(itemId) || itemId <= 0) continue;
+            const conItem = Number.isInteger(itemId) && itemId > 0;
+            const varId = Number(ac.wmsVarianteId);
+            const conVar = Number.isInteger(varId) && varId > 0;
+            // [ACCESORIOS SOLO STOCK] sin artículo vale solo con la variante del WMS (y la tabla preparada para eso)
+            if (!conItem && !(conVar && soloStock)) continue;
             await new sql.Request(transaction)
                 .input('PID', sql.Int, proId)
-                .input('Item', sql.Int, itemId)
-                .input('Var', sql.Int, Number.isInteger(Number(ac.wmsVarianteId)) && Number(ac.wmsVarianteId) > 0 ? Number(ac.wmsVarianteId) : null)
+                .input('Item', sql.Int, conItem ? itemId : null)
+                .input('Var', sql.Int, conVar ? varId : null)
                 .input('Cnt', sql.Int, Number.isInteger(Number(ac.cantidad)) && Number(ac.cantidad) > 0 ? Number(ac.cantidad) : 1)
                 .input('Obl', sql.Bit, ac.obligatorio === false ? 0 : 1)
-                .input('Cob', sql.VarChar(10), COBROS_ACCESORIO.includes(ac.cobro) ? ac.cobro : 'INCLUIDO')
+                // sin artículo no hay precio de lista: va incluido en el precio del producto
+                .input('Cob', sql.VarChar(10), conItem && COBROS_ACCESORIO.includes(ac.cobro) ? ac.cobro : 'INCLUIDO')
                 .input('Ord', sql.Int, ordenAc++)
                 // depósito del WMS de donde sale (NULL = el de ventas)
                 .input('Dep', sql.Int, Number.isInteger(Number(ac.wmsDepositoId)) && Number(ac.wmsDepositoId) > 0 ? Number(ac.wmsDepositoId) : null)
@@ -975,6 +1005,12 @@ exports.guardarProductoConfig = async (req, res) => {
                 const lista = (Array.isArray(body.gruposTalle) ? body.gruposTalle : String(body.gruposTalle || '').split(',')).map(x => String(x).trim()).filter(x => GRUPOS_TALLE.includes(x));
                 await new sql.Request(transaction).input('PID', sql.Int, proId).input('G', sql.NVarChar(120), lista.length ? [...new Set(lista)].join(',') : null)
                     .query('UPDATE dbo.ProductoVentaConfig SET GruposTalle = @G WHERE ProIdProducto = @PID');
+            }
+            // Días hábiles de entrega (null = la fecha prometida sale del plan de cada área, como siempre)
+            if (body.diasEntrega !== undefined && await tieneDiasEntrega(pool)) {
+                const dias = parseInt(body.diasEntrega, 10);
+                await new sql.Request(transaction).input('PID', sql.Int, proId).input('D', sql.Int, dias > 0 ? Math.min(dias, 365) : null)
+                    .query('UPDATE dbo.ProductoVentaConfig SET DiasEntrega = @D WHERE ProIdProducto = @PID');
             }
             // Cómo arma TIZADA los archivos de este producto (null = automático, lo del .env)
             if (body.tizadaMesasModo !== undefined && await tieneMesasModo(pool)) {
@@ -1506,7 +1542,36 @@ exports.getProductosLocal = async (req, res) => {
                 stock
             });
         }
-        res.json({ success: true, stockDisponible: !!stockMap, data: Object.values(productos) });
+        // [ACCESORIOS SOLO STOCK] Para elegir accesorios (todos=1) también va lo que está en el stock del WMS propio
+        // (Stock › Inventario) sin artículo en el catálogo, agrupado por su producto del WMS: ProIdProducto null,
+        // PmaId y soloStock=true. Se elige por la variante, va incluido en el precio y con la variante fija.
+        const lista = Object.values(productos);
+        if (todos && String(process.env.WMS_INTERNO || '').toLowerCase() === 'true' && await accesoriosSoloStock(pool)) {
+            const rq2 = pool.request();
+            if (q) rq2.input('Q', sql.NVarChar, `%${q}%`);
+            const s = await rq2.query(`
+                SELECT p.PmaId, p.Nombre, v.VarId, v.NombreVariante
+                FROM dbo.Wms_ProductosMaestros p
+                JOIN dbo.Wms_Variantes v ON v.PmaId = p.PmaId AND v.Activa = 1
+                WHERE NOT EXISTS (SELECT 1 FROM dbo.Articulos_WMS_Variantes av
+                                  JOIN dbo.Articulos a ON a.ProIdProducto = av.Idproid AND ISNULL(a.borrar, 0) = 0
+                                  WHERE av.wms_variante_id = v.VarId)
+                  ${q ? 'AND p.Nombre LIKE @Q' : ''}
+                ORDER BY p.Nombre, v.NombreVariante`);
+            const delWms = {};
+            for (const row of s.recordset) {
+                const stock = stockMap ? (stockMap[row.VarId] || 0) : null;
+                const p = delWms[row.PmaId] = delWms[row.PmaId] || {
+                    ProIdProducto: null, PmaId: row.PmaId, soloStock: true, Descripcion: row.Nombre, CodStock: null, Imagen: null,
+                    ubicacion: {}, Precio: null, Moneda: null, totalStock: stockMap ? 0 : null, variantes: [],
+                };
+                if (stockMap) p.totalStock += stock;
+                p.variantes.push({ wmsVarianteId: row.VarId, sku: '', nombre: row.NombreVariante || 'Única', stock });
+            }
+            lista.push(...Object.values(delWms));
+            lista.sort((a, b) => String(a.Descripcion).localeCompare(String(b.Descripcion), 'es'));
+        }
+        res.json({ success: true, stockDisponible: !!stockMap, data: lista });
     } catch (e) {
         logger.error('[Configurador] getProductosLocal:', e);
         res.status(500).json({ error: e.message });

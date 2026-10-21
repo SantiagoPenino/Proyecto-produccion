@@ -420,6 +420,9 @@ const fichaToForm = (d) => ({
     politica: (d.config?.EsCombo || d.config?.CantidadFija) ? 'PAQUETE' : (d.config?.CantidadMinima ? 'MINIMA' : 'LIBRE'),
     cantidadMinima: d.config?.CantidadMinima || '',
     cantidadFija: d.config?.CantidadFija || '',
+    // Días hábiles de entrega ('' = la fecha prometida sale del plan de cada área, como siempre)
+    diasEntrega: d.config?.DiasEntrega || '',
+    diasEntregaDisponible: !d.config || d.config.DiasEntrega !== undefined,
     tecnicas: Object.fromEntries(AREAS.map(a => {
         const t = (d.tecnicas || []).find(x => x.AreaID === a.id);
         return [a.id, t
@@ -446,7 +449,8 @@ const fichaToForm = (d) => ({
     })),
     // [ACCESORIOS] artículos de stock que salen con el producto
     accesorios: (d.accesorios || []).map(a => ({
-        itemProIdProducto: a.ItemProIdProducto, itemNombre: a.ItemDescripcion || '',
+        // [ACCESORIOS SOLO STOCK] sin artículo (ItemProIdProducto null): se identifica por su producto del WMS (WmsPmaId)
+        itemProIdProducto: a.ItemProIdProducto || '', wmsPmaId: a.WmsPmaId || '', itemNombre: a.ItemDescripcion || '',
         wmsVarianteId: a.WmsVarianteId || '', varianteNombre: a.VarianteNombre || '',
         cantidad: a.Cantidad || 1, obligatorio: !(a.Obligatorio === false || a.Obligatorio === 0), cobro: a.Cobro || 'INCLUIDO',
         wmsDepositoId: a.WmsDepositoId || '',   // '' = depósito de ventas
@@ -499,6 +503,7 @@ const formToPayload = (f) => ({
     ...(f.esCombo || !f.mesasModoDisponible ? {} : { tizadaMesasModo: f.tizadaMesasModo || null }),
     ...(f.esCombo || !f.mesasExtraDisponible ? {} : { tizadaSepararDisenos: !!f.tizadaSepararDisenos, tizadaLargoMaxM: f.tizadaLargoMaxM === '' ? null : f.tizadaLargoMaxM }),
     ...(f.esCombo || !f.gruposTalleDisponible ? {} : { gruposTalle: f.gruposTalle || [] }),
+    ...(f.diasEntregaDisponible ? { diasEntrega: Number(f.diasEntrega) > 0 ? Number(f.diasEntrega) : null } : {}),
     ...(f.esCombo ? {} : { tecnicaPrincipal: f.tecnicaPrincipal || 'SB', molde: f.molde || 'OBLIGATORIO', um: f.um || 'u', anchoM: f.anchoM === '' ? null : Number(f.anchoM), altoM: f.altoM === '' ? null : Number(f.altoM), bordeCm: f.bordeCm === '' ? null : Number(f.bordeCm) }),
     visiblePortal: !!f.visiblePortal, visibleTienda: !!f.visibleTienda, visibleInterno: f.visibleInterno !== false,
     origenTipo: f.origenTipo,
@@ -536,9 +541,10 @@ const formToPayload = (f) => ({
         })),
     })),
     ...(f.esCombo ? {} : {
-        accesorios: (f.accesorios || []).filter(a => a.itemProIdProducto).map(a => ({
-            itemProIdProducto: Number(a.itemProIdProducto), wmsVarianteId: a.wmsVarianteId || null,
-            cantidad: Number(a.cantidad) || 1, obligatorio: a.obligatorio !== false, cobro: a.cobro === 'APARTE' ? 'APARTE' : 'INCLUIDO',
+        // [ACCESORIOS SOLO STOCK] sin artículo va con su variante del WMS y siempre incluido en el precio
+        accesorios: (f.accesorios || []).filter(a => a.itemProIdProducto || (a.wmsPmaId && a.wmsVarianteId)).map(a => ({
+            itemProIdProducto: Number(a.itemProIdProducto) || null, wmsVarianteId: a.wmsVarianteId || null,
+            cantidad: Number(a.cantidad) || 1, obligatorio: a.obligatorio !== false, cobro: a.itemProIdProducto && a.cobro === 'APARTE' ? 'APARTE' : 'INCLUIDO',
             wmsDepositoId: Number(a.wmsDepositoId) > 0 ? Number(a.wmsDepositoId) : null,
         })),
         fichaDiseno: {
@@ -1489,7 +1495,9 @@ export default function ConfigurarProductosPage() {
             const fd = form.fichaDiseno || {};
             completo('principal', conf);   // tiene valores por defecto: si no le falta nada, está completo
             completo('tecnicas', AREAS.some(a => form.tecnicas[a.id]?.on));
-            completo('accesorios', (form.accesorios || []).some(a => a.itemProIdProducto));
+            // [ACCESORIOS SOLO STOCK] uno sin artículo necesita su variante del WMS (no se elige al cargar el pedido)
+            if ((form.accesorios || []).some(a => !a.itemProIdProducto && a.wmsPmaId && !a.wmsVarianteId)) falta('accesorios', 'la variante de cada accesorio tomado del stock');
+            completo('accesorios', (form.accesorios || []).some(a => a.itemProIdProducto || a.wmsVarianteId));
             completo('molde', !!form.tizadaProMoldeRef);
             // Material y tallas se rellenan solos y la marca viene puesta: no cuentan
             completo('ficha', !!(fd.dibujoUrl || fd.ref || fd.marcacion || fd.colores || fd.proveedor || form.fichaDisenoAnotaciones.length
@@ -2869,13 +2877,30 @@ export default function ConfigurarProductosPage() {
                                                             )}
                                                         </div>
 
+                                                        {/* Tiempo de entrega: lo muestra el portal y fija la fecha prometida (fechaPrometidaService) */}
+                                                        {form.diasEntregaDisponible && (
+                                                            <div className="border border-slate-200 rounded-xl p-4">
+                                                                {tituloSeccion('Tiempo de entrega',
+                                                                    'Días hábiles desde que entra el pedido (sin fines de semana ni feriados). El portal lo muestra en el producto («Entrega a los N días hábiles») y la fecha prometida del pedido sale de acá. Vacío: la fecha sale como hasta ahora, del plan de cada área.')}
+                                                                <label className={`block ${claseEtiquetaCampo}`}>Días hábiles
+                                                                    <input type="number" min="1" max="365" value={form.diasEntrega} placeholder="—"
+                                                                        onChange={e => setF({ diasEntrega: e.target.value })}
+                                                                        className={`block w-28 mt-1 ${claseCampo}`} />
+                                                                </label>
+                                                            </div>
+                                                        )}
+
                                                         <div className="border border-slate-200 rounded-xl p-4">
                                                             {tituloSeccion('Artículos de stock que salen con el producto',
-                                                                'Mástil, base, funda… Al cargar un pedido, cada accesorio genera su línea de venta y se descuenta del WMS, del depósito que elijas acá (el de ventas, el Centro de stock general u otro). En producción, antes de pasar a depósito, se controla que la cantidad de accesorios coincida con las unidades del producto. Los artículos tienen que existir en Marketing › Productos y estar vinculados al WMS para aparecer acá.')}
+                                                                'Mástil, base, estructura… Se eligen del stock del WMS (lo mismo que ves en Stock › Inventario). Al cargar un pedido, cada accesorio genera su línea de venta y se descuenta del WMS, del depósito que elijas acá (el de ventas, el Centro de stock general u otro). En producción, antes de pasar a depósito, se controla que la cantidad de accesorios coincida con las unidades del producto. Lo que está en el stock pero no tiene artículo en Marketing › Productos («solo stock») va incluido en el precio y con la variante fija.')}
                                                             <div className="space-y-2">
                                                                 {lista.length === 0 && <p className="text-sm text-slate-400 py-1">Este producto no lleva accesorios de stock.</p>}
                                                                 {lista.map((it, i) => {
-                                                                    const loc = stockArts.find(l => l.ProIdProducto === Number(it.itemProIdProducto));
+                                                                    // [ACCESORIOS SOLO STOCK] la lista tiene artículos (por ProIdProducto) y productos del WMS sin artículo (wms:PmaId)
+                                                                    const claveDe = (l) => (l.ProIdProducto ? String(l.ProIdProducto) : `wms:${l.PmaId}`);
+                                                                    const valorFila = it.itemProIdProducto ? String(it.itemProIdProducto) : (it.wmsPmaId ? `wms:${it.wmsPmaId}` : '');
+                                                                    const soloStock = !it.itemProIdProducto && !!it.wmsPmaId;
+                                                                    const loc = stockArts.find(l => claveDe(l) === valorFila);
                                                                     const setItem = (patch) => { const next = [...lista]; next[i] = { ...it, ...patch }; setLista(next); };
                                                                     // stock a mostrar: el del depósito elegido (cargado aparte) o el de ventas que ya trae la variante
                                                                     const depSel = Number(it.wmsDepositoId) || 0;
@@ -2884,17 +2909,21 @@ export default function ConfigurarProductosPage() {
                                                                         <div key={i} className="border border-slate-200 rounded-xl bg-white px-3 py-2.5 flex flex-wrap items-center gap-x-3 gap-y-2">
                                                                             <span className="w-5 h-5 rounded-full bg-slate-200 text-slate-500 text-[10px] font-black flex items-center justify-center flex-shrink-0">{i + 1}</span>
                                                                             <Thumb src={loc?.Imagen} size={34} icon="fa-box" />
-                                                                            <Selector value={it.itemProIdProducto}
+                                                                            <Selector value={valorFila}
                                                                                 onChange={e => {
-                                                                                    const l2 = stockArts.find(x => x.ProIdProducto === Number(e.target.value));
+                                                                                    const l2 = stockArts.find(x => claveDe(x) === e.target.value);
                                                                                     // una sola variante: queda elegida sola (no hay talle/color que decidir)
                                                                                     const unica = (l2?.variantes || []).length === 1 ? l2.variantes[0] : null;
-                                                                                    setItem({ itemProIdProducto: Number(e.target.value), itemNombre: l2?.Descripcion || '', wmsVarianteId: unica ? unica.wmsVarianteId : '', varianteNombre: unica ? unica.nombre : '' });
+                                                                                    setItem({
+                                                                                        itemProIdProducto: l2?.ProIdProducto || '', wmsPmaId: l2?.soloStock ? l2.PmaId : '',
+                                                                                        itemNombre: l2?.Descripcion || '', wmsVarianteId: unica ? unica.wmsVarianteId : '', varianteNombre: unica ? unica.nombre : '',
+                                                                                        ...(l2?.soloStock ? { cobro: 'INCLUIDO' } : {}),
+                                                                                    });
                                                                                 }}
                                                                                 claseBoton={claseSel('flex-1 min-w-[180px] border border-slate-200 rounded-lg px-2.5 py-1.5 text-sm font-bold text-slate-800')} anchoLista={320}>
-                                                                                <option value="">Elegí el artículo de stock…</option>
-                                                                                {!loc && it.itemProIdProducto ? <option value={it.itemProIdProducto}>{it.itemNombre || `#${it.itemProIdProducto}`}</option> : null}
-                                                                                {stockArts.map(l => <option key={l.ProIdProducto} value={l.ProIdProducto}>{l.Descripcion}</option>)}
+                                                                                <option value="">Elegí del stock…</option>
+                                                                                {!loc && valorFila ? <option value={valorFila}>{it.itemNombre || `#${it.itemProIdProducto || it.wmsPmaId}`}</option> : null}
+                                                                                {stockArts.map(l => <option key={claveDe(l)} value={claveDe(l)}>{l.Descripcion}{l.soloStock ? ' · solo stock' : ''}</option>)}
                                                                             </Selector>
                                                                             <Selector value={it.wmsDepositoId || ''} title="De qué depósito del WMS se retira este accesorio"
                                                                                 onChange={e => { const d = e.target.value ? Number(e.target.value) : ''; setItem({ wmsDepositoId: d }); if (d) cargarStockDep(d); }}
@@ -2908,7 +2937,8 @@ export default function ConfigurarProductosPage() {
                                                                                     setItem({ wmsVarianteId: e.target.value ? Number(e.target.value) : '', varianteNombre: v2?.nombre || '' });
                                                                                 }}
                                                                                 claseBoton={claseSel('border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs w-[190px]')} title="Variante del WMS">
-                                                                                <option value="">Se elige al cargar el pedido</option>
+                                                                                {/* solo stock: la variante queda fija acá (no hay artículo con variantes para elegir en el pedido) */}
+                                                                                <option value="">{soloStock ? 'Elegí la variante…' : 'Se elige al cargar el pedido'}</option>
                                                                                 {(loc?.variantes || []).map(v => {
                                                                                     const st = stockDe(v);
                                                                                     return <option key={v.wmsVarianteId} value={v.wmsVarianteId}>{v.nombre}{st != null ? ` (${st} u)` : ''}</option>;
@@ -2926,8 +2956,14 @@ export default function ConfigurarProductosPage() {
                                                                                     si={['Siempre va', 'sale siempre con el producto']} no={['Opcional', 'lo decide quien carga el pedido']} />
                                                                             </div>
                                                                             <div className="min-w-[190px]">
-                                                                                <CheckUnico on={it.cobro !== 'APARTE'} onChange={v => setItem({ cobro: v ? 'INCLUIDO' : 'APARTE' })}
-                                                                                    si={['Incluido en el precio', 'va dentro del precio del producto']} no={['Se cobra aparte', 'a precio de lista']} />
+                                                                                {soloStock ? (
+                                                                                    <span className="text-xs text-slate-500" title="Sin artículo en el catálogo no hay precio de lista">
+                                                                                        <b className="text-slate-700">Incluido en el precio</b> · solo stock, sin precio de lista
+                                                                                    </span>
+                                                                                ) : (
+                                                                                    <CheckUnico on={it.cobro !== 'APARTE'} onChange={v => setItem({ cobro: v ? 'INCLUIDO' : 'APARTE' })}
+                                                                                        si={['Incluido en el precio', 'va dentro del precio del producto']} no={['Se cobra aparte', 'a precio de lista']} />
+                                                                                )}
                                                                             </div>
                                                                             <button type="button" onClick={() => setLista(lista.filter((_, j) => j !== i))}
                                                                                 className="ml-auto text-red-400 hover:text-red-600 font-black px-1.5" title="Quitar">×</button>
@@ -2935,13 +2971,13 @@ export default function ConfigurarProductosPage() {
                                                                     );
                                                                 })}
                                                                 <button type="button" disabled={!stockArts.length}
-                                                                    onClick={() => setLista([...lista, { itemProIdProducto: '', itemNombre: '', wmsVarianteId: '', varianteNombre: '', cantidad: 1, obligatorio: true, cobro: 'INCLUIDO', wmsDepositoId: '' }])}
+                                                                    onClick={() => setLista([...lista, { itemProIdProducto: '', wmsPmaId: '', itemNombre: '', wmsVarianteId: '', varianteNombre: '', cantidad: 1, obligatorio: true, cobro: 'INCLUIDO', wmsDepositoId: '' }])}
                                                                     className={claseAgregar}>
                                                                     + Agregar accesorio de stock
                                                                 </button>
                                                                 {!stockArts.length && (
                                                                     <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-                                                                        No hay artículos vinculados al WMS para elegir. Creá el artículo (ej. mástil) en Marketing › Productos y vinculalo al WMS.
+                                                                        No hay nada en el stock del WMS para elegir (o el WMS no contestó). Revisá Stock › Inventario.
                                                                     </p>
                                                                 )}
                                                             </div>
@@ -3341,6 +3377,9 @@ export default function ConfigurarProductosPage() {
                                                                     : form.politica === 'MINIMA' ? `mínimo ${form.cantidadMinima || '—'} u`
                                                                     : `paquete fijo de ${form.cantidadFija || '—'} u${form.surtido.size ? ` · surtido: ${form.surtido.size} variantes` : ' · surtido: todas'}`,
                                                                     form.esCombo && !itemsCombo.length)}
+                                                                {form.diasEntregaDisponible && fila('Entrega', Number(form.diasEntrega) > 0
+                                                                    ? `a los ${Number(form.diasEntrega)} día${Number(form.diasEntrega) === 1 ? '' : 's'} hábil${Number(form.diasEntrega) === 1 ? '' : 'es'} (se muestra en el portal y fija la fecha prometida)`
+                                                                    : 'sin días cargados: la fecha sale del plan de cada área')}
                                                                 {!form.esCombo && form.origenTipo === 'CONFECCIONADO' && fila('Producción principal',
                                                                     `${(() => { const a = areasPrincipales.find(x => x.AreaID === form.tecnicaPrincipal); return a ? capitalizar(a.Nombre) : form.tecnicaPrincipal; })()}${form.molde !== 'OBLIGATORIO' && form.anchoM && form.altoM ? ` · medida fija ${Number(form.anchoM).toFixed(2)} × ${Number(form.altoM).toFixed(2)} m` : ''} · por ${form.um === 'm2' ? 'm²' : form.um === 'm' ? 'metro' : 'unidad'}`)}
                                                                 {!form.esCombo && form.origenTipo === 'CONFECCIONADO' && fila('Molde (TizadaPro)',
@@ -3350,8 +3389,9 @@ export default function ConfigurarProductosPage() {
                                                                         : form.molde === 'OPCIONAL' ? `opcional, sin vincular · ${form.telas.size} materiales ofrecidos`
                                                                         : 'sin molde vinculado', faltaMolde)}
                                                                 {fila('Validar stock', form.validarStock ? 'Sí' : 'No (contingencia)')}
-                                                                {!form.esCombo && fila('Accesorios de stock', (form.accesorios || []).filter(a => a.itemProIdProducto).length
-                                                                    ? (form.accesorios || []).filter(a => a.itemProIdProducto).map(a => `${a.cantidad}× ${a.itemNombre || `#${a.itemProIdProducto}`}${a.varianteNombre && (stockArts.find(l => l.ProIdProducto === Number(a.itemProIdProducto))?.variantes || []).length > 1 ? ` (${a.varianteNombre})` : ''} · ${a.obligatorio ? 'siempre' : 'opcional'} · ${a.cobro === 'APARTE' ? 'aparte' : 'incluido'}${Number(a.wmsDepositoId) ? ` · sale de ${depositosWms.find(d => d.DepId === Number(a.wmsDepositoId))?.Nombre || `depósito ${a.wmsDepositoId}`}` : ''}`).join(' · ')
+                                                                {/* [ACCESORIOS SOLO STOCK] también los tomados del stock sin artículo (siempre con su variante) */}
+                                                                {!form.esCombo && fila('Accesorios de stock', (form.accesorios || []).filter(a => a.itemProIdProducto || a.wmsPmaId).length
+                                                                    ? (form.accesorios || []).filter(a => a.itemProIdProducto || a.wmsPmaId).map(a => `${a.cantidad}× ${a.itemNombre || `#${a.itemProIdProducto || a.wmsPmaId}`}${a.varianteNombre && (!a.itemProIdProducto || (stockArts.find(l => l.ProIdProducto === Number(a.itemProIdProducto))?.variantes || []).length > 1) ? ` (${a.varianteNombre})` : ''} · ${a.obligatorio ? 'siempre' : 'opcional'} · ${a.cobro === 'APARTE' ? 'aparte' : 'incluido'}${a.itemProIdProducto ? '' : ' · solo stock'}${Number(a.wmsDepositoId) ? ` · sale de ${depositosWms.find(d => d.DepId === Number(a.wmsDepositoId))?.Nombre || `depósito ${a.wmsDepositoId}`}` : ''}`).join(' · ')
                                                                     : 'No lleva')}
                                                             </div>
                                                         </div>

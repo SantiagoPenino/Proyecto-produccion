@@ -514,10 +514,11 @@ export const BordadoTechnicalUI = ({
                                                             <label className="block text-[10px] uppercase font-black text-zinc-500 mb-2 tracking-widest">
                                                                 {esParche ? 'Parches *' : 'Prendas *'}
                                                             </label>
+                                                            {/* Modo compra (pedido de prendas): no deja pasar las prendas que hay */}
                                                             <input
-                                                                type="number" min="1" placeholder="Cant."
+                                                                type="number" min="1" placeholder="Cant." max={topeCompra || undefined}
                                                                 value={d.cantidad}
-                                                                onChange={(e) => updateDiseno(d.id, { cantidad: e.target.value })}
+                                                                onChange={(e) => updateDiseno(d.id, { cantidad: topeCompra > 0 && parseInt(e.target.value, 10) > topeCompra ? String(topeCompra) : e.target.value })}
                                                                 className={`w-full h-[48px] px-4 bg-zinc-800/50 border rounded-xl font-black text-zinc-100 outline-none transition-all ${
                                                                     (sePasa || sePasaCompra) ? 'border-red-500 focus:border-red-500' : 'border-zinc-700/50 focus:border-brand-gold'
                                                                 }`}
@@ -572,7 +573,7 @@ export const BordadoTechnicalUI = ({
                                                     )}
                                                     {sePasaCompra && (
                                                         <p className="-mt-3 text-[10px] font-black text-red-400">
-                                                            Este componente tiene {topeCompra} prendas y el diseño pide {pedido}.
+                                                            Hay {topeCompra} prendas y el diseño pide {pedido}.
                                                         </p>
                                                     )}
                                                     {!sePasa && libre !== null && pedido > 0 && (

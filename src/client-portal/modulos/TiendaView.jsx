@@ -36,6 +36,9 @@ const SOLAPAS = [
 const fmt = (n, moneda) =>
     (moneda === 'USD' ? 'US$ ' : '$ ') + (Number(n) || 0).toLocaleString('es-UY', { maximumFractionDigits: 2 });
 
+// Días hábiles de entrega del producto (Configurar Productos). La fecha del pedido sale de ahí.
+const textoEntrega = (dias) => `Entrega a los ${dias} día${dias === 1 ? '' : 's'} hábil${dias === 1 ? '' : 'es'}`;
+
 // [PRECIO — estilo C 18/08] Tipográfico: símbolo chico gris + número grande blanco.
 // Se usa en la ficha (fila mobile junto al nombre y precio grande de desktop).
 const PrecioFicha = ({ precio, moneda, grande }) => (
@@ -658,6 +661,7 @@ export const TiendaView = () => {
                                 </div>
                                 <div className="px-1.5 pt-1.5 pb-0.5">
                                     <p className="text-[13px] font-semibold text-zinc-300 leading-snug line-clamp-2 uppercase">{p.titulo}</p>
+                                    {p.diasEntrega > 0 && <p className="mt-0.5 text-[11px] text-zinc-500">{textoEntrega(p.diasEntrega)}</p>}
                                 </div>
                             </button>
                         );
@@ -1209,6 +1213,11 @@ const FichaProducto = ({ producto, onCerrar, onAgregar, onIniciarPedido, armable
                             )}
                         </div>
                         {producto.descripcion && <p className="text-sm text-zinc-400 whitespace-pre-line">{producto.descripcion}</p>}
+                        {producto.diasEntrega > 0 && (
+                            <p className="flex items-center gap-2 text-sm font-semibold text-zinc-300">
+                                <Truck size={15} className="text-brand-cyan shrink-0" aria-hidden="true" />{textoEntrega(producto.diasEntrega)}
+                            </p>
+                        )}
 
                         {esTerminado ? (
                             <>
