@@ -1575,7 +1575,12 @@ exports.receiveDispatch = async (req, res) => {
                             -- Encomiendas: OrdenID = N° de OrdenesRetiro → sin el filtro, el
                             -- check-in tomaba Cliente/NoDocERP de una orden NUEVA ajena.
                             LEFT JOIN Ordenes o ON b.OrdenID = o.OrdenID AND ISNULL(b.Tipocontenido,'') <> 'ENCOMIENDA'
-                            LEFT JOIN Recepciones r ON b.CodigoEtiqueta = r.Codigo
+                            -- Una recepción de VARIOS bultos los etiqueta PRE-240-1, PRE-240-2…
+                            -- (receptionController); con un solo bulto, PRE-240. Comparando solo por
+                            -- igualdad, los de varios bultos quedaban sin recepción: no se cumplía
+                            -- "Prendas a Bordar" y un PAQUETE DE PRENDAS se daba de alta como bobina
+                            -- de 100 m. Misma unión que receptionController / webOrdersController.
+                            LEFT JOIN Recepciones r ON (b.CodigoEtiqueta = r.Codigo OR b.CodigoEtiqueta LIKE r.Codigo + '-%')
                             WHERE b.BultoID = @BID
                         `);
 
@@ -3501,10 +3506,17 @@ exports.getAreaStock = async (req, res) => {
             )
             -- Pedido completo en área: ocultar producto terminado de pedidos con órdenes
             -- hermanas (mismo NoDocERP, misma área) aún no prontas
+            -- El envío parcial solo vale cuando la orden sigue a OTRA área (SB → Corte, Corte → Costura).
+            -- Si va a DEPOSITO (o todavía no tiene destino) se oculta igual que en cualquier área: a
+            -- Depósito el pedido sale completo y el remito lo rechazaba (caso SUB-30825, 20/10: se
+            -- ofrecían (1/4) y (3/4) con (2/4) y (4/4) todavía en Control y Calidad).
             AND NOT (
                 b.Tipocontenido = 'PROD_TERMINADO'
                 AND o.OrdenID IS NOT NULL
-                AND UPPER(LTRIM(RTRIM(ISNULL(o.AreaID,'')))) NOT IN (${sqlAreasParcial})
+                AND (
+                    UPPER(LTRIM(RTRIM(ISNULL(o.AreaID,'')))) NOT IN (${sqlAreasParcial})
+                    OR UPPER(LTRIM(RTRIM(ISNULL(o.ProximoServicio,'')))) IN ('', 'DEPOSITO', 'LOGISTICA')
+                )
                 AND ${sqlExistsHermanaNoPronta('o')}
             )
             -- Fallas internas (-F): sus bultos circulan por planta con etiqueta, pero una -F NUNCA se
@@ -3515,6 +3527,16 @@ exports.getAreaStock = async (req, res) => {
             -- ya salió en envío parcial.
             AND (o.CodigoOrden IS NULL OR o.CodigoOrden NOT LIKE '%-F%'
                  OR (rep.ReposicionID IS NOT NULL AND (UPPER(LTRIM(RTRIM(rep.AreaReporta))) <> UPPER(LTRIM(RTRIM(rep.AreaProduce))) OR ISNULL(madre.EstadoEnvio,'') = 'PARCIAL')))
+            -- Ventas directas (VEN- de mostrador/tienda): la orden ancla vive en PRO solo para imprimir
+            -- la etiqueta. No viajan con remito desde PRO — al ingresar el pedido a Depósito el bulto se
+            -- mueve solo (logisticaWmsController.receivePreparedOrder), así que no se ofrecen acá.
+            -- Siguen apareciendo las que sí viajan desde PRO: reposición por falla y combo (destino = un
+            -- área) y los accesorios/artículos de un pedido real (ComboPedidoNoDocERP).
+            AND NOT (
+                ISNULL(o.EstadoDependencia,'') = 'VENTA_DIRECTA'
+                AND o.ComboPedidoNoDocERP IS NULL
+                AND (LTRIM(RTRIM(ISNULL(o.ProximoServicio,''))) = '' OR LTRIM(RTRIM(o.ProximoServicio)) LIKE 'DEPOSITO%')
+            )
         `;
 
         if (areaId && areaId !== 'TODOS') {

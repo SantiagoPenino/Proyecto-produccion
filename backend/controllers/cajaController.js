@@ -2857,7 +2857,8 @@ const generarNotaCredito = async (req, res) => {
     try {
       const docR = await new sql.Request(transaction)
         .input('DocId', sql.Int, parseInt(docIdOrigen))
-        .query(`SELECT DocTipo, DocSerie, DocNumero, DocTotal, MonIdMoneda, CueIdCuenta, DocSubtotal, DocImpuestos, DocTotalDescuentos, DocTotalRecargos, CliIdCliente, EmpIdEmpresa, TcaIdTransaccion
+        .query(`SELECT DocTipo, DocSerie, DocNumero, DocTotal, MonIdMoneda, CueIdCuenta, DocSubtotal, DocImpuestos, DocTotalDescuentos, DocTotalRecargos, CliIdCliente, EmpIdEmpresa, TcaIdTransaccion,
+                       DocCliNombre, DocCliDocumento, DocCliDireccion, DocCliCiudad, DocCliNombreFantasia
                 FROM dbo.DocumentosContables WHERE DocIdDocumento = @DocId`);
       if (!docR.recordset.length) throw new Error('Documento origen no encontrado');
       const docOrigen = docR.recordset[0];
@@ -2990,14 +2991,24 @@ const generarNotaCredito = async (req, res) => {
         .input('Total', sql.Decimal(18,2), totalVal)
         .input('Impuestos', sql.Decimal(18,2), impuestosVal)
         .input('EmpId', sql.Int, docOrigen.EmpIdEmpresa || null)
+        // Receptor DGI de la factura original: la NC va al MISMO comprador. Sin esto, una
+        // factura a un tercero daba una NC a nombre del titular de la cuenta, sin dirección
+        // ni ciudad y con su CI en vez del RUT (NC-24 de la FA-1408, NC-000056 de la A-29865).
+        .input('CliNombre', sql.NVarChar(255), docOrigen.DocCliNombre ?? null)
+        .input('CliDoc',    sql.NVarChar(50),  docOrigen.DocCliDocumento ?? null)
+        .input('CliDir',    sql.NVarChar(255), docOrigen.DocCliDireccion ?? null)
+        .input('CliCiu',    sql.NVarChar(100), docOrigen.DocCliCiudad ?? null)
+        .input('CliFant',   sql.NVarChar(200), docOrigen.DocCliNombreFantasia ?? null)
         .query(`INSERT INTO dbo.DocumentosContables
                   (CueIdCuenta,CliIdCliente,MonIdMoneda,DocTipo,DocNumero,DocSerie,
                    DocSubtotal,DocTotalDescuentos,DocTotalRecargos,DocTotal,DocImpuestos,
-                   DocEstado,CfeEstado,DocFechaEmision,DocUsuarioAlta,DocObservaciones,DocIdDocumentoRef,DocMotivoRef,DocPagado,EmpIdEmpresa)
+                   DocEstado,CfeEstado,DocFechaEmision,DocUsuarioAlta,DocObservaciones,DocIdDocumentoRef,DocMotivoRef,DocPagado,EmpIdEmpresa,
+                   DocCliNombre,DocCliDocumento,DocCliDireccion,DocCliCiudad,DocCliNombreFantasia)
                 OUTPUT INSERTED.DocIdDocumento
                 VALUES (@Cue,@Cli,@MonId,@Tipo,@Num,@Serie,
                         @Subtotal,@TotalDescuentos,@TotalRecargos,@Total,@Impuestos,
-                        'COBRADO','PENDIENTE',GETDATE(),@Usr,@Motivo,@DocRef,@Motivo,1,ISNULL(@EmpId, (SELECT TOP 1 EmpIdEmpresa FROM dbo.Empresas WHERE EmpPorDefecto=1)))`);
+                        'COBRADO','PENDIENTE',GETDATE(),@Usr,@Motivo,@DocRef,@Motivo,1,ISNULL(@EmpId, (SELECT TOP 1 EmpIdEmpresa FROM dbo.Empresas WHERE EmpPorDefecto=1)),
+                        @CliNombre,@CliDoc,@CliDir,@CliCiu,@CliFant)`);
       const ncId = ncR.recordset[0].DocIdDocumento;
 
       if (Array.isArray(Lineas) && Lineas.length > 0) {
@@ -3358,7 +3369,8 @@ const generarNotaDebito = async (req, res) => {
     try {
       const docR = await new sql.Request(transaction)
         .input('DocId', sql.Int, parseInt(docIdOrigen))
-        .query(`SELECT DocTipo, DocSerie, DocNumero, DocTotal, MonIdMoneda, CueIdCuenta, DocSubtotal, DocImpuestos, DocTotalDescuentos, DocTotalRecargos, CliIdCliente, EmpIdEmpresa
+        .query(`SELECT DocTipo, DocSerie, DocNumero, DocTotal, MonIdMoneda, CueIdCuenta, DocSubtotal, DocImpuestos, DocTotalDescuentos, DocTotalRecargos, CliIdCliente, EmpIdEmpresa,
+                       DocCliNombre, DocCliDocumento, DocCliDireccion, DocCliCiudad, DocCliNombreFantasia
                 FROM dbo.DocumentosContables WHERE DocIdDocumento = @DocId`);
       if (!docR.recordset.length) throw new Error('Documento origen no encontrado');
       const docOrigen = docR.recordset[0];
@@ -3439,14 +3451,22 @@ const generarNotaDebito = async (req, res) => {
         .input('Total', sql.Decimal(18,2), totalVal)
         .input('Impuestos', sql.Decimal(18,2), impuestosVal)
         .input('EmpId', sql.Int, docOrigen.EmpIdEmpresa || null)
+        // Mismo receptor DGI que la factura original (ver generarNotaCredito).
+        .input('CliNombre', sql.NVarChar(255), docOrigen.DocCliNombre ?? null)
+        .input('CliDoc',    sql.NVarChar(50),  docOrigen.DocCliDocumento ?? null)
+        .input('CliDir',    sql.NVarChar(255), docOrigen.DocCliDireccion ?? null)
+        .input('CliCiu',    sql.NVarChar(100), docOrigen.DocCliCiudad ?? null)
+        .input('CliFant',   sql.NVarChar(200), docOrigen.DocCliNombreFantasia ?? null)
         .query(`INSERT INTO dbo.DocumentosContables
                   (CueIdCuenta,CliIdCliente,MonIdMoneda,DocTipo,DocNumero,DocSerie,
                    DocSubtotal,DocTotalDescuentos,DocTotalRecargos,DocTotal,DocImpuestos,
-                   DocEstado,CfeEstado,DocFechaEmision,DocUsuarioAlta,DocObservaciones,DocIdDocumentoRef,DocMotivoRef,DocPagado,EmpIdEmpresa)
+                   DocEstado,CfeEstado,DocFechaEmision,DocUsuarioAlta,DocObservaciones,DocIdDocumentoRef,DocMotivoRef,DocPagado,EmpIdEmpresa,
+                   DocCliNombre,DocCliDocumento,DocCliDireccion,DocCliCiudad,DocCliNombreFantasia)
                 OUTPUT INSERTED.DocIdDocumento
                 VALUES (@Cue,@Cli,@MonId,@Tipo,@Num,@Serie,
                         @Subtotal,@TotalDescuentos,@TotalRecargos,@Total,@Impuestos,
-                        'PENDIENTE','PENDIENTE',GETDATE(),@Usr,@Motivo,@DocRef,@Motivo,0,ISNULL(@EmpId, (SELECT TOP 1 EmpIdEmpresa FROM dbo.Empresas WHERE EmpPorDefecto=1)))`);
+                        'PENDIENTE','PENDIENTE',GETDATE(),@Usr,@Motivo,@DocRef,@Motivo,0,ISNULL(@EmpId, (SELECT TOP 1 EmpIdEmpresa FROM dbo.Empresas WHERE EmpPorDefecto=1)),
+                        @CliNombre,@CliDoc,@CliDir,@CliCiu,@CliFant)`);
       const ndId = ndR.recordset[0].DocIdDocumento;
 
       if (Array.isArray(Lineas) && Lineas.length > 0) {

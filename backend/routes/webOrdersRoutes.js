@@ -207,6 +207,10 @@ router.post('/orden/:ordenId/boceto-aprobado', verifyToken, impersonarCliente, u
 // para armar las zonas de relieve en el form. El pedido viaja después con el token que devuelve.
 router.post('/tpu-matriz/analizar', verifyToken, impersonarCliente, upload.single('file'), webOrdersController.analizarMatrizTpu);
 
+// Bordado: el logo en PDF o AI vectorial pasa por el mismo control que TPU y devuelve colores exactos,
+// formas y medida real para armar la paleta de hilos. No guarda nada.
+router.post('/bordado/analizar-vector', verifyToken, impersonarCliente, upload.single('file'), webOrdersController.analizarVectorBordado);
+
 // ── TIENDA (e-commerce del portal — ver docs/ecommerce-portal-plan.md) ───────
 // Catálogo de la vitrina: solo productos publicados en TiendaProductos, precio base y stock
 // WMS informativo. Read-only con token del portal — el picking, el sync y la edición de

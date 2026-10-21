@@ -2430,6 +2430,8 @@ exports.getClientesActivos = async (req, res) => {
   try {
     const {
       q = '', tipo = '', todos = 'false', tipoCliente = '',
+      // Cartera de un vendedor (Clientes.VendedorID = su cédula). La usa el 360 de vendedores.
+      vendedorId = '',
       // Panel de filtros del 360 (checkboxes). Se combinan con Y: el cliente tiene que
       // cumplir TODAS las condiciones tildadas para aparecer en la lista.
       conDeuda = '', aFavorPrincipal = '', aFavorOtras = '',
@@ -2443,6 +2445,13 @@ exports.getClientesActivos = async (req, res) => {
     }
 
     const filtroTipoCliente = tipoCliente ? 'AND c.TClIdTipoCliente = @TipoCliente' : '';
+
+    // Se filtra acá y no en el navegador: la lista llega paginada, y filtrar una página
+    // de 50 dejaba afuera a los clientes de la cartera que no entraban en ella.
+    if (String(vendedorId).trim()) {
+      request.input('VendedorID', sql.NVarChar(50), String(vendedorId).trim());
+    }
+    const filtroVendedor = String(vendedorId).trim() ? 'AND LTRIM(RTRIM(c.VendedorID)) = @VendedorID' : '';
 
     // ── Panel de filtros del Panel 360 ────────────────────────────────────────
     // "Dinero" = cuentas monetarias (billetera principal y secundarias).
@@ -2523,6 +2532,7 @@ exports.getClientesActivos = async (req, res) => {
           AND cc.CueTipo NOT IN ('USD','UYU','ARS','EUR','PYG','BRL')
           ${filtroNombre}
           ${filtroTipoCliente}
+          ${filtroVendedor}
           ${filtrosPanel}
         GROUP BY c.CliIdCliente, c.Nombre, c.NombreFantasia, c.Email, c.CodCliente, c.IDCliente, c.TClIdTipoCliente, tc.TClDescripcion, c.CioRuc, c.DireccionTrabajo, c.DepartamentoID, c.TelefonoTrabajo
         ORDER BY RTRIM(LTRIM(c.Nombre))
@@ -2531,11 +2541,18 @@ exports.getClientesActivos = async (req, res) => {
     }
 
     // ── Modo TODOS: todos los clientes sin importar si tienen cuentas ───────
+    // Paginado de a 50: ?offset=N trae la página siguiente ("Cargar más" del 360).
+    // `total` es cuántos clientes cumplen la búsqueda/filtros, para saber si quedan más.
     if (tipo.toUpperCase() === 'TODOS') {
+      const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+      const limit  = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 200);
+      request.input('Offset', sql.Int, offset);
+      request.input('Limit',  sql.Int, limit);
       const result = await request.query(`
         DECLARE @TC DECIMAL(18,4) = ISNULL((SELECT TOP 1 CotDolar FROM dbo.Cotizaciones ORDER BY CotFecha DESC), 40.0);
 
-        SELECT TOP 50
+        SELECT
+          COUNT(*) OVER() AS TotalFilas,
           c.CliIdCliente,
           RTRIM(LTRIM(c.Nombre)) AS Nombre,
           RTRIM(LTRIM(c.NombreFantasia)) AS NombreFantasia,
@@ -2562,12 +2579,14 @@ exports.getClientesActivos = async (req, res) => {
         LEFT JOIN dbo.CiclosCredito  cic WITH(NOLOCK) ON cic.CueIdCuenta = cc.CueIdCuenta
                                                       AND cic.CicEstado  = 'ABIERTO'
         LEFT JOIN dbo.TiposClientes   tc WITH(NOLOCK) ON c.TClIdTipoCliente = tc.TClIdTipoCliente
-        WHERE 1=1 ${filtroNombre} ${filtroTipoCliente}
+        WHERE 1=1 ${filtroNombre} ${filtroTipoCliente} ${filtroVendedor}
           ${filtrosPanel}
         GROUP BY c.CliIdCliente, c.Nombre, c.NombreFantasia, c.Email, c.CodCliente, c.IDCliente, c.TClIdTipoCliente, tc.TClDescripcion, c.CioRuc, c.DireccionTrabajo, c.DepartamentoID, c.TelefonoTrabajo
-        ORDER BY ABS(SUM(ISNULL(cc.CueSaldoActual, 0))) DESC, RTRIM(LTRIM(c.Nombre))
+        ORDER BY ABS(SUM(ISNULL(cc.CueSaldoActual, 0))) DESC, RTRIM(LTRIM(c.Nombre)), c.CliIdCliente
+        OFFSET @Offset ROWS FETCH NEXT @Limit ROWS ONLY
       `);
-      return res.json({ success: true, data: result.recordset });
+      const total = result.recordset[0]?.TotalFilas ?? offset;
+      return res.json({ success: true, data: result.recordset, total });
     }
 
     // ── Modo normal: clientes con deuda / saldo / ciclo ─────────────────────
@@ -2610,6 +2629,7 @@ exports.getClientesActivos = async (req, res) => {
         )
         ${filtroNombre}
         ${filtroTipoCliente}
+        ${filtroVendedor}
         ${filtrosPanel}
       GROUP BY c.CliIdCliente, c.Nombre, c.NombreFantasia, c.Email, c.CodCliente, c.IDCliente, c.TClIdTipoCliente, tc.TClDescripcion, c.CioRuc, c.DireccionTrabajo, c.DepartamentoID, c.TelefonoTrabajo
       ORDER BY ABS(SUM(cc.CueSaldoActual)) DESC, RTRIM(LTRIM(c.Nombre))

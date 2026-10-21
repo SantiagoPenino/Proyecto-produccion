@@ -59,6 +59,7 @@ import CorteTechnicalUI from './order-form/components/CorteTechnicalUI';
 import BobinaSelector from './order-form/components/BobinaSelector';
 import CosturaTechnicalUI from './order-form/components/CosturaTechnicalUI';
 import BordadoTechnicalUI from './order-form/components/BordadoTechnicalUI';
+import { puntadasDePaleta, estimarMinutos } from './order-form/utils/bordadoHilos';
 import { EstampadoTechnicalUI } from './order-form/components/EstampadoTechnicalUI';
 import DtfTechnicalUI from './order-form/components/DtfTechnicalUI';
 import TpuTechnicalUI from './order-form/components/TpuTechnicalUI';
@@ -1645,6 +1646,31 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
         for (const [comboItemId, comp] of Object.entries(comboServicios)) {
             for (const [areaId, srv] of Object.entries(comp.servicios || {})) {
                 if (!srv.active || areaId === 'EST') continue; // EST hereda el arte de su DF/TPU
+                // [BORDADO] Diseños (mismo criterio y mensajes que el form de bordado del portal):
+                // cada uno con su logo, sus medidas y sus prendas, sin pasar las del componente.
+                if (areaId === 'EMB') {
+                    const disenos = srv.disenos || [];
+                    const prendasComp = (comp.esItemCarrito || comp.esPrendaCliente)
+                        ? (parseFloat(comp.cantidad) || 1)
+                        : (parseFloat(garmentQuantity) || 0) * (comp.cantidad || 1);
+                    if (disenos.length === 0) {
+                        return addToast(`Bordado de "${comp.descripcion}": agregá al menos un diseño a bordar antes de confirmar.`, 'error');
+                    }
+                    for (let i = 0; i < disenos.length; i++) {
+                        const d = disenos[i];
+                        const que = `Bordado de "${comp.descripcion}", diseño ${i + 1}`;
+                        if (!d.file) return addToast(`${que}: falta subir el logo a bordar.`, 'error');
+                        if (!(parseFloat(d.ancho) > 0) || !(parseFloat(d.alto) > 0)) {
+                            return addToast(`${que}: cargá el ancho y el largo del bordado en cm.`, 'error');
+                        }
+                        const prendasD = parseInt(d.cantidad) || 0;
+                        if (prendasD < 1) return addToast(`${que}: indicá cuántas prendas llevan este logo.`, 'error');
+                        if (prendasComp > 0 && prendasD > prendasComp) {
+                            return addToast(`${que}: el componente tiene ${prendasComp} prendas y el diseño pide ${prendasD}.`, 'error');
+                        }
+                    }
+                    continue;
+                }
                 const tieneArchivo = (srv.archivos || []).length > 0 || !!srv.boceto;
                 if (!tieneArchivo) {
                     const nombreServicio = { EMB: 'Bordado', DF: 'DTF', TPU: 'TPU' }[areaId] || areaId;
@@ -1708,6 +1734,8 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                 Object.values(comp.servicios || {}).forEach(srv => {
                     if (srv.boceto) addToMap(srv.boceto);
                     (srv.archivos || []).forEach(addToMap);
+                    // [BORDADO] Logo, boceto y prediseño de cada diseño
+                    (srv.disenos || []).forEach(d => [d.file, d.boceto, d.arteDisenado].forEach(f => { if (f) addToMap(f); }));
                 });
             });
 
@@ -2214,6 +2242,59 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                             const itemsProduccion = (areaId === 'DF' || areaId === 'TPU')
                                 ? (srv.archivos || []).map(f => ({ fileName: f.name, fileKey: keyOf(f), cantidad: cantidadComponente || 1 }))
                                 : [];
+
+                            const destinoOrden = comp.esPrendaCliente
+                                ? { grupoItemId: comboItemId, prendaClienteId: comp.prendaClienteId }
+                                : { comboItemId };
+                            const etiquetaComp = `[${comp.esPrendaCliente ? 'PRENDA CLIENTE' : (comp.esItemCarrito ? 'VENTA' : 'COMBO')}: ${comp.descripcion}]`;
+
+                            // [BORDADO] UNA ORDEN POR DISEÑO, como el form de bordado del portal
+                            // (webOrdersController): cada logo con sus prendas, sus medidas, su boceto y
+                            // su prediseño. La nota lleva los mismos datos técnicos que manda el portal, y
+                            // `disenoBordado` va para que el backend guarde la ficha del diseño.
+                            const disenos = areaId === 'EMB' ? (srv.disenos || []) : [];
+                            if (disenos.length) {
+                                disenos.forEach((d, i) => {
+                                    const prendasD = parseInt(d.cantidad) || 0;
+                                    const punt = puntadasDePaleta(d.paleta, d.ancho, d.alto);
+                                    const hilos = (d.paleta || []).length;
+                                    const datos = [`Diseño ${i + 1} de ${disenos.length}`, `Tamaño: ${d.ancho} x ${d.alto} cm`, `Prendas: ${prendasD}`];
+                                    if (punt) datos.push(`Puntadas estimadas: ${Number(punt).toLocaleString('es-UY')} c/u`);
+                                    if (hilos) datos.push(`Hilos: ${hilos}`);
+                                    const minutos = punt ? Math.round(estimarMinutos(punt, hilos) * (prendasD || 1)) : 0;
+                                    if (minutos) datos.push(`Tiempo de máquina estimado: ${minutos < 60 ? `${minutos} min` : `${Math.floor(minutos / 60)} h ${minutos % 60} min`}`);
+
+                                    const archivosD = [{ name: d.file.name, fileKey: keyOf(d.file), tipo: 'LOGO_BORDADO' }];
+                                    if (d.boceto) archivosD.push({ name: d.boceto.name, fileKey: keyOf(d.boceto), tipo: 'BOCETO_BORDADO' });
+                                    if (d.arteDisenado) archivosD.push({ name: d.arteDisenado.name, fileKey: keyOf(d.arteDisenado), tipo: 'PREDISENO_BORDADO' });
+
+                                    listaServicios.push({
+                                        esPrincipal: false,
+                                        areaId,
+                                        ...destinoOrden,
+                                        cabecera,
+                                        archivos: archivosD,
+                                        items: [],
+                                        notas: `${etiquetaComp} [BORDADO] ${datos.join(', ')}`,
+                                        metadata: {
+                                            prendas: prendasD,
+                                            disenoBordado: {
+                                                logo: d.file.name,
+                                                anchoCm: parseFloat(d.ancho) || null,
+                                                altoCm: parseFloat(d.alto) || null,
+                                                cantidad: prendasD,
+                                                paleta: d.paleta || [],
+                                                puntadasEstimadas: punt || null,
+                                                hilos,
+                                            },
+                                        },
+                                        chainedAfterAreaId: null,
+                                        chainKey: `EMB#${comboItemId}#${i + 1}`,
+                                        porArchivo: true,
+                                    });
+                                });
+                                return;
+                            }
 
                             listaServicios.push({
                                 esPrincipal: false,
@@ -4148,6 +4229,12 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                                     compMaterial={comp.servicios.EMB.material} setCompMaterial={(m) => actions.updateComboServicioCampo(comboItemId, 'EMB', { material: m })}
                                     compVariant={comp.servicios.EMB.variant} setCompVariant={(v) => handleComboVarianteChange(comboItemId, 'EMB', v)}
                                     compVariants={comp.servicios.EMB.variantOptions} compMaterials={comp.servicios.EMB.materialOptions}
+                                    // [BORDADO] Diseños como en el portal (modo compra): un diseño por logo,
+                                    // con su boceto, medidas y prendas. Cada uno sale como su orden de Bordado.
+                                    disenosBordado={comp.servicios.EMB.disenos || []}
+                                    addDiseno={() => actions.addComboDiseno(comboItemId, cantidadComponente)}
+                                    updateDiseno={(id, cambios) => actions.updateComboDiseno(comboItemId, id, cambios)}
+                                    removeDiseno={(id) => actions.removeComboDiseno(comboItemId, id)}
                                 />
                             )}
                             {areasDelComponente.includes('DF') && (

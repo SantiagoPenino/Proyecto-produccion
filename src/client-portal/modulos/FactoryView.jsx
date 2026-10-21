@@ -12,6 +12,7 @@ import Tpu3DCargando from './Tpu3DCargando';
 import ConsultaClienteModal from './ConsultaClienteModal';
 import { socket } from '../../services/socketService';
 import useRecargaConFreno from '../../hooks/useRecargaConFreno';
+import { unidadVisible } from '../../utils/unidadOrden';
 
 const STATUS_CONFIG = {
     zombie: {
@@ -438,7 +439,11 @@ export const FactoryView = () => {
             // Tomar el primer valor disponible de máquina/metros/archivo
             if (!projects[groupKey].maquina && order.NombreMaquina) projects[groupKey].maquina = order.NombreMaquina;
             if (!projects[groupKey].magnitud && order.Magnitud) projects[groupKey].magnitud = order.Magnitud;
-            if (!projects[groupKey].um && order.UM) projects[groupKey].um = order.UM;
+            if (!projects[groupKey].um && order.UM) {
+                projects[groupKey].um = order.UM;
+                // De qué es esa orden: decide "prendas" o "parches" cuando la UM es 'punt' (Bordado)
+                projects[groupKey].umTexto = `${order.Variante || ''} ${order.Material || ''}`;
+            }
             if (!projects[groupKey].driveFileId && order.DriveFileId) projects[groupKey].driveFileId = extractDriveId(order.DriveFileId);
             if (!projects[groupKey].primerArchivoId && order.PrimerArchivoID) {
                 projects[groupKey].primerArchivoId = order.PrimerArchivoID;
@@ -897,7 +902,7 @@ export const FactoryView = () => {
                                                             })()}</div>
                                                             {so.Magnitud != null && (
                                                                 <div className="text-[10px] text-zinc-500 font-medium">
-                                                                    {Number(so.Magnitud).toLocaleString('es-UY', { maximumFractionDigits: 2 })} {so.UM || 'm'}
+                                                                    {Number(so.Magnitud).toLocaleString('es-UY', { maximumFractionDigits: 2 })} {unidadVisible(so.UM || 'm', so.Magnitud, `${so.Variante || ''} ${so.Material || ''}`)}
                                                                 </div>
                                                             )}
                                                         </div>
@@ -957,7 +962,7 @@ export const FactoryView = () => {
                                                         <svg width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24" className="text-zinc-500">
                                                             <path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10M7 5v14M11 7v10M15 5v14M19 7v10" />
                                                         </svg>
-                                                        {Number(project.magnitud).toLocaleString('es-UY', { maximumFractionDigits: 2 })} {project.um || 'm'}
+                                                        {Number(project.magnitud).toLocaleString('es-UY', { maximumFractionDigits: 2 })} {unidadVisible(project.um || 'm', project.magnitud, project.umTexto)}
                                                     </span>
                                                 )}
 

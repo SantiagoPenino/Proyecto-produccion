@@ -279,6 +279,12 @@ def leer_vector(ruta_pdf):
     page = doc[0]
     texto = page.get_text("text").strip()
 
+    # Un .ai guardado SIN "Crear archivo compatible con PDF": Illustrator deja en la pagina solo un
+    # aviso escrito, y el motivo de abajo ("texto sin convertir a curvas") confundia al cliente.
+    t = texto.lower()
+    if motivo is None and "illustrator" in t and ("without pdf content" in t or "sin contenido pdf" in t):
+        motivo = ("El archivo de Illustrator se guardo sin contenido PDF. Volve a guardarlo con la opcion "
+                  "\"Crear archivo compatible con PDF\" activada, o exportalo como PDF.")
     if motivo is None and imagenes > 0:
         motivo = (f"El PDF contiene {imagenes} imagen(es) rasterizada(s). El arte tiene que ser "
                   f"100 % vectorial (trazados), sin fotos ni mapas de bits.")

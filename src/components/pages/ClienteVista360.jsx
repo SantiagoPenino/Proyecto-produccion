@@ -18,7 +18,7 @@
  * Fase 1 en modo solo-lectura.
  */
 
-import React, { useState, useCallback, useEffect, useMemo } from 'react';
+import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import {
   Search, RefreshCw, Users, CreditCard, DollarSign, FileText, Wallet,
   ShoppingCart, Tag, FilePlus, MoreHorizontal, Download, Printer,
@@ -1506,6 +1506,9 @@ export default function ClienteVista360() {
   const [busqueda, setBusqueda]                   = useState(() => seleccionGuardada?.busqueda || '');
   const [filtroTipoCliente, setFiltroTipoCliente] = useState(() => seleccionGuardada?.filtroTipoCliente || '');
   const [clientesActivos, setClientesActivos]     = useState([]);
+  const [totalClientes, setTotalClientes]         = useState(0);     // cuántos cumplen la búsqueda (la lista llega de a 50)
+  const [cargandoMas, setCargandoMas]             = useState(false);
+  const pedidoListaRef                            = useRef(0);       // descarta respuestas de una búsqueda que ya cambió
   const [clienteSel, setClienteSel]               = useState(null);
   const [cuentas, setCuentas]                     = useState([]);
   const [ordenesAnticipo, setOrdenesAnticipo]     = useState([]);
@@ -1682,8 +1685,11 @@ export default function ClienteVista360() {
   };
 
   /* ── Datos: mismos endpoints que la vista de cuentas ────────────────── */
-  const cargarClientesActivos = useCallback(async (q = '', tipo = '', filtros = null) => {
-    setLoadingLista(true);
+  // offset > 0 = "Cargar más": suma la página siguiente a la lista en vez de reemplazarla.
+  const cargarClientesActivos = useCallback(async (q = '', tipo = '', filtros = null, offset = 0) => {
+    const mas = offset > 0;
+    const pedido = mas ? pedidoListaRef.current : ++pedidoListaRef.current;
+    if (mas) setCargandoMas(true); else setLoadingLista(true);
     try {
       const qp = new URLSearchParams();
       if (q.trim()) qp.append('q', q.trim());
@@ -1693,11 +1699,27 @@ export default function ClienteVista360() {
       // Modo TODOS: trae cualquier cliente, tenga o no cuenta abierta (la cuenta se abre con la 1ª operación)
       qp.append('tipo', 'TODOS');
       qp.append('todos', 'true');
+      if (mas) qp.append('offset', String(offset));
       const data = await fetchAPI(`/api/contabilidad/clientes-activos?${qp.toString()}`);
-      setClientesActivos(data.data || []);
+      if (pedido !== pedidoListaRef.current) return; // se cambió la búsqueda mientras cargaba
+      const filas = data.data || [];
+      setClientesActivos(prev => {
+        if (!mas) return filas;
+        const ya = new Set(prev.map(c => c.CliIdCliente));
+        return [...prev, ...filas.filter(c => !ya.has(c.CliIdCliente))];
+      });
+      setTotalClientes(data.total ?? filas.length);
     } catch (e) { toast.error(e.message); }
-    finally { setLoadingLista(false); }
+    finally {
+      if (pedido === pedidoListaRef.current) { setLoadingLista(false); setCargandoMas(false); }
+    }
   }, []);
+
+  const hayMasClientes = !loadingLista && clientesActivos.length > 0 && clientesActivos.length < totalClientes;
+  const cargarMasClientes = () => {
+    if (!hayMasClientes || cargandoMas) return;
+    cargarClientesActivos(busqueda, filtroTipoCliente, filtrosLista, clientesActivos.length);
+  };
 
   useEffect(() => {
     const timer = setTimeout(() => cargarClientesActivos(busqueda, filtroTipoCliente, filtrosLista), 400);
@@ -2058,7 +2080,12 @@ export default function ClienteVista360() {
                 </select>
               </div>
             </div>
-            <div className="flex-1 overflow-y-auto max-h-[70vh]">
+            {/* Llega de a 50: al acercarse al final del scroll se pide la página siguiente sola */}
+            <div className="flex-1 overflow-y-auto max-h-[70vh]"
+              onScroll={e => {
+                const el = e.currentTarget;
+                if (el.scrollHeight - el.scrollTop - el.clientHeight < 150) cargarMasClientes();
+              }}>
               {loadingLista ? (
                 <div className="flex justify-center py-12"><div className="animate-spin h-6 w-6 border-2 border-cyan-500 border-t-transparent rounded-full" /></div>
               ) : clientesActivos.length === 0 ? (
@@ -2067,20 +2094,27 @@ export default function ClienteVista360() {
                   <p className="text-xs">{busqueda.trim() ? 'No se encontraron clientes' : 'Escribí para buscar cualquier cliente'}</p>
                 </div>
               ) : (
-                clientesActivos.map(c => (
-                  <FilaCliente key={c.CliIdCliente} c={c}
-                    seleccionado={clienteSel?.CliIdCliente === c.CliIdCliente}
-                    onClick={() => seleccionarCliente(c)} />
-                ))
+                <>
+                  {clientesActivos.map(c => (
+                    <FilaCliente key={c.CliIdCliente} c={c}
+                      seleccionado={clienteSel?.CliIdCliente === c.CliIdCliente}
+                      onClick={() => seleccionarCliente(c)} />
+                  ))}
+                  {hayMasClientes && (
+                    <button type="button" onClick={cargarMasClientes} disabled={cargandoMas}
+                      className="w-full py-3 text-[11px] font-bold text-cyan-700 hover:bg-cyan-50 disabled:opacity-60 flex items-center justify-center gap-2 transition-colors">
+                      {cargandoMas
+                        ? <><RefreshCw size={12} className="animate-spin" /> Cargando más clientes…</>
+                        : `Cargar más clientes (quedan ${totalClientes - clientesActivos.length})`}
+                    </button>
+                  )}
+                </>
               )}
             </div>
             <div className="px-4 py-2.5 border-t border-slate-200 text-[11px] text-slate-500 text-center">
-              {clientesActivos.length} clientes
-              {clientesActivos.length === 50 && (
-                <span className="block text-[10px] font-normal text-slate-400 normal-case mt-0.5">
-                  Es el tope de la lista: puede haber más. Afiná la búsqueda o los filtros.
-                </span>
-              )}
+              {clientesActivos.length < totalClientes
+                ? `${clientesActivos.length} de ${totalClientes} clientes`
+                : `${clientesActivos.length} clientes`}
             </div>
           </div>
 

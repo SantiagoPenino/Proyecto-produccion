@@ -2,6 +2,7 @@ const { getPool, sql } = require('../config/db');
 const logger = require('../utils/logger');
 const { changeOrderState } = require('../services/stateManagerService');
 const { fueraDeServicio, mensajeFueraDeServicio } = require('../utils/estadoEquipo');
+const { thumbnailExists } = require('../utils/thumbnailGenerator');
 
 // [BANDEJA GENÉRICA] Bandeja simple de órdenes (NO lotes) — reemplaza la Mesa de
 // Armado/Control por lotes que usan el resto de las áreas. Nace para Bordado (EMB) y se
@@ -192,11 +193,25 @@ async function getMagnitudEfectiva(pool, ordenId) {
 // el thumbnail local que ya genera el sistema al subir — thumbnailGenerator.js). Distingue
 // boceto de logo/matriz por TipoArchivo (BOCETO_BORDADO / LOGO_BORDADO, ver
 // PrendaOrderForm.jsx) para poder mostrar los dos por separado en el detalle.
+// Miniatura local que YA existe para una referencia, o null. El portal la guarda en la carpeta
+// del PEDIDO, REF-<NoDocERP>: la saca del nombre del archivo ("REF-31890-logo.png", ver
+// fileService.uploadStream). Esta bandeja la buscaba solo en la carpeta de la orden y no la
+// encontraba nunca; con Drive sin compartir, quedaba el recuadro con el nombre.
+function thumbLocalDeRef(f, row) {
+    const noDoc = String(row.NoDocERP || '').trim();
+    const carpetas = [f.CodigoOrdenRef || row.CodigoOrden, noDoc && `REF-${noDoc}`].filter(Boolean);
+    const carpeta = carpetas.find(c => thumbnailExists(c, f.RefID));
+    return carpeta ? `/thumbnails/${encodeURIComponent(carpeta)}/${f.RefID}.jpg` : null;
+}
+
 function enriquecerPreview(row) {
     let refs = [];
     try { refs = row.RefsJson ? JSON.parse(row.RefsJson) : []; } catch (e) { refs = []; }
     row.Referencias = refs.map(f => {
         const driveId = getDriveId(f.UbicacionStorage);
+        // La local va primero: la sirve el propio sistema; la de Drive solo carga si el
+        // archivo quedó compartido o el navegador tiene abierta una cuenta con acceso.
+        const thumbLocal = thumbLocalDeRef(f, row);
         const previewUrl = driveId
             ? `https://drive.google.com/thumbnail?id=${driveId}&sz=w300`
             : `/thumbnails/${encodeURIComponent(f.CodigoOrdenRef || row.CodigoOrden)}/${f.RefID}.jpg`;
@@ -212,10 +227,10 @@ function enriquecerPreview(row) {
         // "Referencia" suelta arriba (COR-26025 mostraba ahí la planilla y la tizada sin decir qué eran).
         const esPlanilla = /PLANILLA|INFO_CORTE|INFO_PEDIDO|TALLE|LISTA/.test(tipo);
         const esTizada = !esPlanilla && /ARCHIVO_CORTE|TIZADA/.test(tipo);
-        return { ...f, previewUrl, esBoceto, esLogo, esPrediseno, esPlanilla, esTizada };
+        return { ...f, thumbLocal, previewUrl, esBoceto, esLogo, esPrediseno, esPlanilla, esTizada };
     });
     // Compat con lo que ya pintaba la tarjeta chica de la bandeja (primer archivo, cualquiera).
-    row.PreviewUrl = row.Referencias[0]?.previewUrl || null;
+    row.PreviewUrl = row.Referencias[0]?.thumbLocal || row.Referencias[0]?.previewUrl || null;
     delete row.RefsJson;
 
     // [CORTE] Tizadas con su avance propio (trabajo/control por archivo).

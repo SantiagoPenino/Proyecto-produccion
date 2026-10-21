@@ -116,6 +116,7 @@ const actionTypes = {
     UPDATE_ITEM: 'UPDATE_ITEM',
     SET_ITEMS: 'SET_ITEMS',
     SET_DATA: 'SET_DATA', // Generic for loading lists
+    UPDATE_DISENO_BORDADO: 'UPDATE_DISENO_BORDADO',
     START_UPLOAD: 'START_UPLOAD',
     UPDATE_UPLOAD_PROGRESS: 'UPDATE_UPLOAD_PROGRESS',
     UPLOAD_SUCCESS: 'UPLOAD_SUCCESS',
@@ -159,6 +160,21 @@ function orderFormReducer(state, action) {
 
         case actionTypes.SET_DATA:
             return { ...state, ...action.data };
+
+        case actionTypes.UPDATE_DISENO_BORDADO:
+            // Se mezcla contra el estado ACTUAL, no contra el de cuando se armó la
+            // acción: el análisis del logo y la lectura de su proporción terminan
+            // solos, un rato después de subirlo, y pisaban lo que el cliente hubiera
+            // cargado en el medio (o el logo mismo). `cambios` puede ser una función
+            // del diseño actual, para calcular sobre lo último que hay.
+            return {
+                ...state,
+                disenosBordado: state.disenosBordado.map(d => {
+                    if (d.id !== action.id) return d;
+                    const cambios = typeof action.cambios === 'function' ? action.cambios(d) : action.cambios;
+                    return { ...d, ...cambios };
+                })
+            };
 
         case actionTypes.START_UPLOAD:
             return {
@@ -326,12 +342,13 @@ export const useOrderForm = (serviceId, overrides = {}) => {
         value: [...state.disenosBordado, {
             id: `d${Date.now()}${state.disenosBordado.length}`,
             file: null, boceto: null, ancho: '', alto: '', cantidad: '',
-            prendaClienteId: null, relieve3D: false, paleta: [], arteDisenado: null
+            prendaClienteId: null, relieve3D: false, paleta: [], arteDisenado: null,
+            // ancho / largo del logo, cuando se puede leer: ata las dos medidas
+            proporcion: null
         }]
     });
     const updateDisenoBordado = (id, cambios) => dispatch({
-        type: actionTypes.SET_FIELD, field: 'disenosBordado',
-        value: state.disenosBordado.map(d => (d.id === id ? { ...d, ...cambios } : d))
+        type: actionTypes.UPDATE_DISENO_BORDADO, id, cambios
     });
     const removeDisenoBordado = (id) => dispatch({
         type: actionTypes.SET_FIELD, field: 'disenosBordado',

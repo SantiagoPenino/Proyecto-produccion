@@ -9,6 +9,7 @@ import {
     flexRender
 } from '@tanstack/react-table';
 import { isTabletDevice } from '../../../utils/device';
+import { unidadVisible } from '../../../utils/unidadOrden';
 
 // Tablets de planta (1200x800): la tabla completa no entra → arrancar con las columnas
 // secundarias ocultas (el operario puede volver a mostrarlas desde "Columnas").
@@ -179,7 +180,9 @@ export default function ProductionTable({ rowData = [], onRowSelected, selectedR
             const unit = data?.unit ?? '';
             const numStr = String(mag).replace(/[^\d.]/g, '');
             const display = numStr || mag;
-            const unitDisplay = unit || (String(mag).replace(/[\d. ]/g, '') || '');
+            // Bordado: la orden guarda UM 'punt' pero su cantidad son prendas o parches.
+            const unitDisplay = unidadVisible(unit || (String(mag).replace(/[\d. ]/g, '') || ''), display,
+                `${data?.variantCode || ''} ${data?.material || ''}`);
             // OJO: devolver un string pelado hace que la celda herede los 16px del body (se veía gigante)
             return <span className="text-xs tablet:text-[11px] font-bold text-zinc-700">{`${display}${unitDisplay ? ' ' + unitDisplay : ''}`}</span>;
         }},
@@ -421,7 +424,10 @@ export default function ProductionTable({ rowData = [], onRowSelected, selectedR
         const partes = Object.keys(totales)
             .filter(k => totales[k] > 0)
             .sort((a, b) => peso(a) - peso(b) || a.localeCompare(b))
-            .map(k => `${k === 'u' ? Math.round(totales[k]) : totales[k].toFixed(2)} ${k}`);
+            // 'punt' (Bordado) cuenta piezas, prendas o parches mezclados: en el total, «piezas».
+            .map(k => k === 'punt'
+                ? `${Math.round(totales[k])} piezas`
+                : `${k === 'u' ? Math.round(totales[k]) : totales[k].toFixed(2)} ${k}`);
         return partes.join(' · ') || '0.00 m';
     };
 

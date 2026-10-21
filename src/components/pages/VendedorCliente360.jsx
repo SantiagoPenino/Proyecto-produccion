@@ -17,7 +17,7 @@
  * GET /api/vendedor-360/clientes/:id/deposito-pendiente (solo lectura).
  */
 
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   Search, RefreshCw, Users, Eye, Layers, Package,
   Truck, Tag, ChevronDown, ChevronRight, CheckCircle2, Clock,
@@ -1005,6 +1005,9 @@ export default function VendedorCliente360() {
   const [busqueda, setBusqueda]               = useState('');
   const [filtroTipoCliente, setFiltroTipo]    = useState('');
   const [clientes, setClientes]               = useState([]);
+  const [totalClientes, setTotalClientes]     = useState(0);     // cuántos cumplen la búsqueda (la lista llega de a 50)
+  const [cargandoMas, setCargandoMas]         = useState(false);
+  const pedidoListaRef                        = useRef(0);       // descarta respuestas de una búsqueda que ya cambió
   const [loadingLista, setLoadingLista]       = useState(false);
   const [clienteSel, setClienteSel]           = useState(null);
   const [tab, setTab]                         = useState('RECURSOS');
@@ -1016,7 +1019,6 @@ export default function VendedorCliente360() {
   // con SU cartera sin volver a elegirla.
   const [vendedores, setVendedores]     = useState([]);
   const [vendedorSel, setVendedorSel]   = useState(() => localStorage.getItem(LS_VENDEDOR) || '');
-  const [misClienteIds, setMisClienteIds] = useState(null); // Set de CliIdCliente | null = sin filtro
 
   useEffect(() => {
     fetchAPI('/api/vendedor-360/vendedores')
@@ -1032,16 +1034,6 @@ export default function VendedorCliente360() {
       .catch(() => setVendedores([]));
   }, []);
 
-  // Cartera del vendedor elegido → set de IDs para filtrar la lista
-  useEffect(() => {
-    if (!vendedorSel) { setMisClienteIds(null); return; }
-    let alive = true;
-    fetchAPI(`/api/vendedor-360/vendedores/${encodeURIComponent(vendedorSel)}/clientes`)
-      .then(r => { if (alive) setMisClienteIds(new Set(r.data || [])); })
-      .catch(e => { if (alive) { toast.error(e.message); setMisClienteIds(null); } });
-    return () => { alive = false; };
-  }, [vendedorSel]);
-
   const elegirVendedor = (id) => {
     setVendedorSel(id);
     setClienteSel(null);   // el cliente abierto puede no ser de esta cartera
@@ -1049,30 +1041,46 @@ export default function VendedorCliente360() {
     else localStorage.removeItem(LS_VENDEDOR);
   };
 
-  const cargarClientes = useCallback(async (q = '', tipo = '') => {
-    setLoadingLista(true);
+  // La cartera (vendedor) la filtra el servidor: la lista llega de a 50 y filtrar
+  // una página en el navegador dejaba afuera clientes del vendedor.
+  // offset > 0 = "Cargar más": suma la página siguiente en vez de reemplazar la lista.
+  const cargarClientes = useCallback(async (q = '', tipo = '', vendedor = '', offset = 0) => {
+    const mas = offset > 0;
+    const pedido = mas ? pedidoListaRef.current : ++pedidoListaRef.current;
+    if (mas) setCargandoMas(true); else setLoadingLista(true);
     try {
       const qp = new URLSearchParams();
       if (q.trim()) qp.append('q', q.trim());
       if (tipo) qp.append('tipoCliente', tipo);
+      if (vendedor) qp.append('vendedorId', vendedor);
       qp.append('tipo', 'TODOS');
       qp.append('todos', 'true');
+      if (mas) qp.append('offset', String(offset));
       const data = await fetchAPI(`/api/contabilidad/clientes-activos?${qp.toString()}`);
-      setClientes(data.data || []);
+      if (pedido !== pedidoListaRef.current) return; // se cambió la búsqueda o la cartera mientras cargaba
+      const filas = data.data || [];
+      setClientes(prev => {
+        if (!mas) return filas;
+        const ya = new Set(prev.map(c => c.CliIdCliente));
+        return [...prev, ...filas.filter(c => !ya.has(c.CliIdCliente))];
+      });
+      setTotalClientes(data.total ?? filas.length);
     } catch (e) { toast.error(e.message); }
-    finally { setLoadingLista(false); }
+    finally {
+      if (pedido === pedidoListaRef.current) { setLoadingLista(false); setCargandoMas(false); }
+    }
   }, []);
 
   useEffect(() => {
-    const t = setTimeout(() => cargarClientes(busqueda, filtroTipoCliente), 400);
+    const t = setTimeout(() => cargarClientes(busqueda, filtroTipoCliente, vendedorSel), 400);
     return () => clearTimeout(t);
-  }, [busqueda, filtroTipoCliente, cargarClientes]);
+  }, [busqueda, filtroTipoCliente, vendedorSel, cargarClientes]);
 
-  // Lista que se ve: si hay un vendedor elegido, solo sus clientes.
-  const clientesVisibles = useMemo(
-    () => (misClienteIds ? clientes.filter(c => misClienteIds.has(c.CliIdCliente)) : clientes),
-    [clientes, misClienteIds],
-  );
+  const hayMasClientes = !loadingLista && clientes.length > 0 && clientes.length < totalClientes;
+  const cargarMasClientes = () => {
+    if (!hayMasClientes || cargandoMas) return;
+    cargarClientes(busqueda, filtroTipoCliente, vendedorSel, clientes.length);
+  };
   const vendedorActual = vendedores.find(v => v.VendedorID === vendedorSel);
 
   const cuerpoTab = () => {
@@ -1116,7 +1124,7 @@ export default function VendedorCliente360() {
                 <h2 className="text-base font-bold text-slate-800 flex items-center gap-2">
                   <Users size={16} className="text-cyan-500" />Clientes
                 </h2>
-                <button onClick={() => cargarClientes(busqueda, filtroTipoCliente)} title="Actualizar la lista de clientes"
+                <button onClick={() => cargarClientes(busqueda, filtroTipoCliente, vendedorSel)} title="Actualizar la lista de clientes"
                   className="p-1.5 hover:bg-slate-200 rounded-lg transition-colors text-slate-500">
                   <RefreshCw size={13} className={loadingLista ? 'animate-spin' : ''} />
                 </button>
@@ -1161,10 +1169,15 @@ export default function VendedorCliente360() {
                 )}
               </div>
             </div>
-            <div className="flex-1 overflow-y-auto max-h-[70vh]">
+            {/* Llega de a 50: al acercarse al final del scroll se pide la página siguiente sola */}
+            <div className="flex-1 overflow-y-auto max-h-[70vh]"
+              onScroll={e => {
+                const el = e.currentTarget;
+                if (el.scrollHeight - el.scrollTop - el.clientHeight < 150) cargarMasClientes();
+              }}>
               {loadingLista ? (
                 <div className="flex justify-center py-12"><div className="animate-spin h-6 w-6 border-2 border-cyan-500 border-t-transparent rounded-full" /></div>
-              ) : clientesVisibles.length === 0 ? (
+              ) : clientes.length === 0 ? (
                 <div className="text-center py-12 text-slate-500">
                   <Users size={28} className="mx-auto mb-2 opacity-30" />
                   <p className="text-xs">
@@ -1174,15 +1187,28 @@ export default function VendedorCliente360() {
                   </p>
                 </div>
               ) : (
-                clientesVisibles.map(c => (
-                  <FilaCliente key={c.CliIdCliente} c={c}
-                    seleccionado={clienteSel?.CliIdCliente === c.CliIdCliente}
-                    onClick={() => setClienteSel(c)} />
-                ))
+                <>
+                  {clientes.map(c => (
+                    <FilaCliente key={c.CliIdCliente} c={c}
+                      seleccionado={clienteSel?.CliIdCliente === c.CliIdCliente}
+                      onClick={() => setClienteSel(c)} />
+                  ))}
+                  {hayMasClientes && (
+                    <button type="button" onClick={cargarMasClientes} disabled={cargandoMas}
+                      className="w-full py-3 text-[11px] font-bold text-cyan-700 hover:bg-cyan-50 disabled:opacity-60 flex items-center justify-center gap-2 transition-colors">
+                      {cargandoMas
+                        ? <><RefreshCw size={12} className="animate-spin" /> Cargando más clientes…</>
+                        : `Cargar más clientes (quedan ${totalClientes - clientes.length})`}
+                    </button>
+                  )}
+                </>
               )}
             </div>
             <div className="px-4 py-2.5 border-t border-slate-200 text-[11px] text-slate-500 text-center">
-              {clientesVisibles.length} clientes{vendedorSel ? ' en tu cartera' : ''}
+              {clientes.length < totalClientes
+                ? `${clientes.length} de ${totalClientes} clientes`
+                : `${clientes.length} clientes`}
+              {vendedorSel ? ' en tu cartera' : ''}
             </div>
           </div>
 

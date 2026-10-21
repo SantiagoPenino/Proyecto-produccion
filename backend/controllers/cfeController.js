@@ -28,6 +28,7 @@ const { resolverLineasDesdeMotor, generarAsientoCompleto, crearDocumentoContable
 const { validarDocumentoUY } = require('../utils/documentoUY');
 const sisnetService = require('../services/sisnetService');
 const contabilidadService = require('../services/contabilidadService');
+const { sincronizarPagosDeTransaccion } = require('../services/pagosTransaccionService');
 const envioEmailLog = require('../services/envioEmailLog');
 
 /**
@@ -1950,13 +1951,67 @@ exports.editarFactura = async (req, res) => {
             // 2c. Crear DeudaDocumento en la cuenta del cargo y por el importe del cargo
             //     (el de la cuenta, ya convertido): así la deuda dice lo mismo que el libro
             //     y la caja cobra en la moneda en la que el documento realmente pesa.
-            for (const p of patasDoc) {
-              await contabilidadService.crearDeudaDocumento({
-                CueIdCuenta:    p.CueIdCuenta,
-                DocIdDocumento: parseInt(id),
-                Importe:        Math.abs(p.Importe),
-              }, transaction);
+            //     Cargo repartido en VARIAS cuentas (venta contado de caja que juntó órdenes
+            //     en $ y en US$: un cargo en cada cuenta) → MANDA LA FACTURA: una sola deuda
+            //     por el DocTotal en la cuenta de la moneda del documento. Antes se creaba una
+            //     deuda por cuenta, pero el candado de crearDeudaDocumento (un documento, una
+            //     deuda) hacía que la segunda PISARA el importe de la primera: quedaba UNA
+            //     deuda en la cuenta de la primera moneda con el importe de la segunda
+            //     (Fabiana Limpias ET-11919, oct-2026: deuda de "600" en la cuenta US$ por los
+            //     $ 600 de las banderas; los US$ 65 de los parches, sin deuda). Los cargos de
+            //     las otras cuentas se anulan y pasan a la cuenta del documento por lo que le
+            //     falta para llegar al DocTotal (ET-11919: 79,71 − 65 = US$ 14,71 = $ 600 /
+            //     40,79), igual que el arreglo a mano de PROD_fix_fabiana_et11919_deuda_usd.sql.
+            let cuentaDeuda  = patasDoc[0].CueIdCuenta;
+            let importeDeuda = Math.abs(patasDoc[0].Importe);
+            if (patasDoc.length > 1) {
+              const enCtaDoc = patasDoc.filter(p => p.CueIdCuenta === ctaEditId)
+                .reduce((s, p) => s + Math.abs(p.Importe), 0);
+              const falta = Math.round((Number(DocTotal) - enCtaDoc) * 100) / 100;
+              if (falta < -0.005) {
+                throw new Error(`El documento tiene más cargo en su cuenta (${enCtaDoc.toFixed(2)}) que su total (${Number(DocTotal).toFixed(2)}). No se pasó a crédito: revisar los cargos del documento.`);
+              }
+              const ajenosRes = await transaction.request()
+                .input('docId', sql.Int, parseInt(id))
+                .input('cta',   sql.Int, ctaEditId)
+                .query(`
+                  SELECT m.MovIdMovimiento, m.CueIdCuenta, m.MovImporte, cc.MonIdMoneda
+                  FROM dbo.MovimientosCuenta m
+                  JOIN dbo.CuentasCliente cc ON cc.CueIdCuenta = m.CueIdCuenta
+                  WHERE m.DocIdDocumento = @docId AND m.CueIdCuenta <> @cta
+                    AND m.MovTipo IN ('VTA_CAJA','VENTA','CARGO','CIERRE_CICLO')
+                    AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)
+                    AND m.MovImporte < 0
+                `);
+              const ajenos = ajenosRes.recordset;
+              const monDocLbl = parseInt(MonIdMoneda) === 2 ? 'US$' : '$';
+              const detAjenos = ajenos.map(a => `#${a.MovIdMovimiento} ${Number(a.MonIdMoneda) === 2 ? 'US$' : '$'} ${Math.abs(Number(a.MovImporte)).toFixed(2)} (cuenta ${a.CueIdCuenta})`).join(', ');
+              for (const a of ajenos) {
+                await contabilidadService.anularMovimiento(a.MovIdMovimiento,
+                  `Pasado a crédito: el documento es en ${monDocLbl}; este cargo pasa a la cuenta ${ctaEditId}`, transaction);
+              }
+              if (falta > 0.005) {
+                await contabilidadService.registrarMovimiento({
+                  CueIdCuenta:      ctaEditId,
+                  MovTipo:          'VTA_CAJA',
+                  MovConcepto:      nuevoConcepto,
+                  MovImporte:       -falta,
+                  MovUsuarioAlta:   req.user.id,
+                  DocIdDocumento:   parseInt(id),
+                  CicIdCiclo:       cicId,
+                  MovFecha:         fechaEfectiva,
+                  MovObservaciones: `Reemplaza ${detAjenos || 'cargos de otras cuentas'} al pasar a crédito (${monDocLbl} ${Number(DocTotal).toFixed(2)} − ${enCtaDoc.toFixed(2)} ya cargados)`.substring(0, 500),
+                }, transaction);
+              }
+              logger.info(`[CFE-EDIT] Doc #${id}: pasado a crédito con el cargo en ${patasDoc.length} cuentas; cargos ${detAjenos} pasados a la cuenta ${ctaEditId} por ${monDocLbl} ${falta.toFixed(2)}. Deuda única por el total.`);
+              cuentaDeuda  = ctaEditId;
+              importeDeuda = Number(DocTotal);
             }
+            await contabilidadService.crearDeudaDocumento({
+              CueIdCuenta:    cuentaDeuda,
+              DocIdDocumento: parseInt(id),
+              Importe:        importeDeuda,
+            }, transaction);
 
           } else if (!oldPaid && newPaid) {
             // ── Crédito → Contado ──────────────────────────────────────────────
@@ -2155,83 +2210,40 @@ exports.editarFactura = async (req, res) => {
                             WHERE TcaIdTransaccion = @tcaId
                         `);
 
-                    // Eliminar pagos antiguos de esta transacción.
-                    // OrdenesRetiro/OrdenesDeposito pueden apuntar a estos PagIdPago:
-                    // se capturan antes de borrar para re-vincularlos al pago nuevo
-                    // (si no, el retiro queda con FK rota, parece impago y caja lo
-                    // vuelve a cobrar — origen de dobles cobros Handy).
-                    const pagosViejosRes = await transaction.request()
-                        .input('tcaId', sql.Int, currentTcaId)
-                        .query("SELECT PagIdPago FROM dbo.Pagos WHERE PagTcaIdTransaccion = @tcaId");
-                    const pagosViejosIds = pagosViejosRes.recordset.map(r => r.PagIdPago);
-                    await transaction.request()
-                        .input('tcaId', sql.Int, currentTcaId)
-                        .query("DELETE FROM dbo.Pagos WHERE PagTcaIdTransaccion = @tcaId");
-
-                    // Insertar nuevos pagos
-                    if (Array.isArray(Pagos) && Pagos.length > 0) {
-                        for (const pago of Pagos) {
+                    // Dejar los Pagos como pide la edición SIN borrar los que siguen siendo los mismos.
+                    // Antes: DELETE de todos los Pagos de la transacción + INSERT → el Pago nuevo nacía con
+                    // otro PagIdPago y ImputacionPago / MovimientosCuenta (el PAGO del libro) quedaban
+                    // apuntando al id borrado (3.694 documentos entre el 24/06 y el 07/10/2026: el Panel 360
+                    // no mostraba a qué se aplicó el cobro y anular el documento no liberaba la imputación),
+                    // y se perdían PagRutaComprobante / PagIdCheque / tipo original. Ahora los Pagos que
+                    // coinciden (mismo medio y moneda) se actualizan en el lugar; lo que se reemplaza
+                    // re-vincula las 4 tablas que guardan PagIdPago (ver pagosTransaccionService).
+                    const pagosNuevos = (Array.isArray(Pagos) && Pagos.length > 0)
+                        ? Pagos.map(pago => {
                             const pMonto = parseFloat(pago.monto) || 0;
                             const pMonedaId = parseInt(pago.monedaId) || MonIdMoneda;
                             const pCot = pMonedaId === 2 ? cotDolar : 1;
-                            const pConvertido = pMonedaId === 2 ? pMonto * pCot : pMonto;
-
-                            await transaction.request()
-                                .input('tcaId', sql.Int, currentTcaId)
-                                .input('metodo', sql.Int, pago.metodoPagoId || 1)
-                                .input('moneda', sql.Int, pMonedaId)
-                                .input('monto', sql.Decimal(18, 4), pMonto)
-                                .input('cot', sql.Decimal(18, 4), pCot)
-                                .input('convert', sql.Decimal(18, 4), pConvertido)
-                                .input('usuario', sql.Int, req.user.id)
-                                .input('pagFecha', sql.DateTime, fechaEfectiva)
-                                .query(`
-                                    INSERT INTO dbo.Pagos
-                                        (PagTcaIdTransaccion, MPaIdMetodoPago, PagIdMonedaPago,
-                                         PagMontoPago, PagFechaPago, PagUsuarioAlta, PagCotizacion,
-                                         PagMontoConvertido, PagTipoMovimiento)
-                                    VALUES
-                                        (@tcaId, @metodo, @moneda,
-                                         @monto, ISNULL(@pagFecha, GETDATE()), @usuario, @cot,
-                                         @convert, 'COBRO')
-                                `);
-                        }
-                    } else {
-                        await transaction.request()
-                            .input('tcaId', sql.Int, currentTcaId)
-                            .input('metodo', sql.Int, MetodoPagoId || 1)
-                            .input('moneda', sql.Int, MonIdMoneda)
-                            .input('monto', sql.Decimal(18, 4), DocTotal)
-                            .input('cot', sql.Decimal(18, 4), cotNum)
-                            .input('convert', sql.Decimal(18, 4), convertido)
-                            .input('usuario', sql.Int, req.user.id)
-                            .input('pagFecha', sql.DateTime, fechaEfectiva)
-                            .query(`
-                                INSERT INTO dbo.Pagos
-                                    (PagTcaIdTransaccion, MPaIdMetodoPago, PagIdMonedaPago,
-                                     PagMontoPago, PagFechaPago, PagUsuarioAlta, PagCotizacion,
-                                     PagMontoConvertido, PagTipoMovimiento)
-                                VALUES
-                                    (@tcaId, @metodo, @moneda,
-                                     @monto, ISNULL(@pagFecha, GETDATE()), @usuario, @cot,
-                                     @convert, 'COBRO')
-                            `);
-                    }
-
-                    if (pagosViejosIds.length > 0) {
-                        const nuevoRes = await transaction.request()
-                            .input('tcaId', sql.Int, currentTcaId)
-                            .query("SELECT MIN(PagIdPago) AS Nuevo FROM dbo.Pagos WHERE PagTcaIdTransaccion = @tcaId");
-                        const pagoNuevo = nuevoRes.recordset[0]?.Nuevo;
-                        if (pagoNuevo) {
-                            const idsCsv = pagosViejosIds.join(',');
-                            await transaction.request()
-                                .input('Nuevo', sql.Int, pagoNuevo)
-                                .query(`
-                                    UPDATE dbo.OrdenesRetiro   SET PagIdPago = @Nuevo WHERE PagIdPago IN (${idsCsv});
-                                    UPDATE dbo.OrdenesDeposito SET PagIdPago = @Nuevo WHERE PagIdPago IN (${idsCsv});
-                                `);
-                        }
+                            return {
+                                metodoPagoId: pago.metodoPagoId || 1,
+                                monedaId: pMonedaId,
+                                monto: pMonto,
+                                cotizacion: pCot,
+                                convertido: pMonedaId === 2 ? pMonto * pCot : pMonto,
+                            };
+                        })
+                        : [{
+                            metodoPagoId: MetodoPagoId || 1,
+                            monedaId: MonIdMoneda,
+                            monto: DocTotal,
+                            cotizacion: cotNum,
+                            convertido: convertido,
+                        }];
+                    const syncPagos = await sincronizarPagosDeTransaccion(transaction, currentTcaId, pagosNuevos, {
+                        fecha: fechaEfectiva,
+                        usuarioId: req.user.id,
+                    });
+                    if (syncPagos.reemplazados || syncPagos.insertados || syncPagos.absorbidos || syncPagos.actualizados) {
+                        logger.info(`[CFE-EDIT] Doc #${id} (Tca ${currentTcaId}): Pagos ${syncPagos.sinCambios} sin cambios, ${syncPagos.actualizados} con otro monto, ${syncPagos.reemplazados} reemplazados, ${syncPagos.insertados} nuevos, ${syncPagos.absorbidos} absorbidos${syncPagos.mapa.length ? ' · re-vinculados ' + syncPagos.mapa.map(m => m.viejo + '→' + m.nuevo).join(', ') : ''}.`);
                     }
                 }
             }

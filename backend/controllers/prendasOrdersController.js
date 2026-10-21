@@ -1189,6 +1189,9 @@ exports.createWebOrder = async (req, res) => {
             const filesToUpload = [];
             const generatedOrders = [];
             const generatedIDs = [];
+            // [BORDADO] Órdenes con ficha de diseño: después del commit se les genera la matriz
+            // automática (borrador de Ink/Stitch, ver services/bordadoMatrizService.js).
+            const ordenesMatrizAuto = [];
             const timestamp = Date.now();
             let telaDescontada = false; // TELA CLIENTE: garantiza UN solo descuento por pedido
             // [PRENDAS] OrdenID real de cada área ya insertada en ESTE loop — permite que una
@@ -2142,10 +2145,38 @@ exports.createWebOrder = async (req, res) => {
                             dbId: resRef.recordset[0].RefID,
                             type: 'REF',
                             originalName: ref.name,
+                            // Clave única del archivo (ver filesToUploadMap en el front): con dos
+                            // diseños de bordado con logos del mismo nombre, por nombre se pisaban.
+                            fileKey: ref.fileKey || null,
                             finalName: fName,
                             area: 'GENERAL'
                         });
                     }
+                }
+
+                // [BORDADO] Ficha del diseño (pedido de prendas, una orden por diseño): la misma fila
+                // 'BORDADO' de ArchivosOrden que guarda el form de bordado del portal
+                // (webOrdersController), con medidas, piezas, paleta y puntadas estimadas. La usan la
+                // bandeja de Bordado, el detalle de la orden y el precio: erpSyncService cotiza el
+                // bordado por estas puntadas (PuntadasBordado). Sin ellas la tarifa daba $0 y, en
+                // "Factura por área", la línea del bordado ni se guardaba (BOR-31891, 20/10).
+                const disenoBordado = String(exec.areaID || '').toUpperCase() === 'EMB' ? exec.metadata?.disenoBordado : null;
+                if (disenoBordado) {
+                    ordenesMatrizAuto.push(newOID);
+                    await new sql.Request(transaction)
+                        .input('OID', sql.Int, newOID)
+                        .input('Nom', sql.VarChar(200), String(disenoBordado.logo || 'Diseño').slice(0, 200))
+                        .input('Ancho', sql.Decimal(10, 2), parseFloat(disenoBordado.anchoCm) || null)
+                        .input('Alto', sql.Decimal(10, 2), parseFloat(disenoBordado.altoCm) || null)
+                        .input('Piezas', sql.Int, parseInt(disenoBordado.cantidad) || null)
+                        .input('Paleta', sql.NVarChar(sql.MAX),
+                            (Array.isArray(disenoBordado.paleta) && disenoBordado.paleta.length) ? JSON.stringify(disenoBordado.paleta) : null)
+                        .input('Punt', sql.Int, parseInt(disenoBordado.puntadasEstimadas) || null)
+                        .query(`
+                            INSERT INTO ArchivosOrden
+                                (OrdenID, NombreArchivo, Copias, Ancho, Alto, Piezas, PaletaBordado, PuntadasEstimadas, TipoArchivo, FechaSubida)
+                            VALUES (@OID, @Nom, 1, @Ancho, @Alto, @Piezas, @Paleta, @Punt, 'BORDADO', GETDATE())
+                        `);
                 }
 
                 // *** NUEVO: SOPORTE FACTURACIÓN (ServiciosExtraOrden) ***
@@ -2471,6 +2502,17 @@ exports.createWebOrder = async (req, res) => {
             }
 
             await transaction.commit();
+
+            // [BORDADO] Matriz automática (BORRADOR) en segundo plano, igual que el pedido del portal:
+            // queda en Archivos de Referencia; no cumple el requisito MATRIZ.
+            try {
+                const bordadoMatrizService = require('../services/bordadoMatrizService');
+                if (bordadoMatrizService.habilitado()) {
+                    ordenesMatrizAuto.forEach(ordenId => bordadoMatrizService.encolarGeneracion({ ordenId }));
+                }
+            } catch (bordadoErr) {
+                logger.error(`[Bordado-Matriz] no se pudo encolar la generación: ${bordadoErr.message}`);
+            }
 
             // [COMBOS] Trazabilidad + aviso a la Print Station por cada venta de retiro —
             // best-effort, fuera de la transacción: la venta ya quedó confirmada arriba.

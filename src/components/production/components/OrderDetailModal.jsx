@@ -25,6 +25,7 @@ import Swal from 'sweetalert2';
 // Lazy: carga three.js/pdfjs solo si se abre.
 const Tpu3DViewer = React.lazy(() => import('../../../client-portal/modulos/Tpu3DViewer'));
 import Tpu3DCargando from '../../../client-portal/modulos/Tpu3DCargando';
+import { unidadVisible } from '../../../utils/unidadOrden';
 
 // Capas del arte TPU (04/09/2026): HASTA 5, y con 2 alcanza (formato actual: cmyk-spots + corte;
 // el viejo: 5 archivos). Espeja CAPAS_ARTE_TPU / CAPAS_ARTE_TPU_MIN del backend
@@ -98,6 +99,10 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
     const [progresoTPU, setProgresoTPU] = useState(null); // { pct, actual, total } | null
     // [BORDADO] Matriz de bordado (DST/EMB de Wilcom) — mismo endpoint que TPU, tipo distinto.
     const [uploadingMatriz, setUploadingMatriz] = useState(false);
+    // [BORDADO] Matriz automática (borrador de Ink/Stitch): generándola a mano / RefID que se está
+    // pasando a matriz.
+    const [generandoMatrizAuto, setGenerandoMatrizAuto] = useState(false);
+    const [usandoMatrizAuto, setUsandoMatrizAuto] = useState(null);
     // [PRO] Referencias: catálogo de tipos + subida con tipo elegido.
     const [tiposReferencia, setTiposReferencia] = useState([]);
     const [refTipoSel, setRefTipoSel] = useState('REFERENCIA');
@@ -485,8 +490,23 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
     // se saca de la vista de "Archivos de Impresión" (rompería el visor de PDF) y se
     // muestra aparte, mismo criterio que el boceto de TPU.
     const esMatrizBordado = (f) => isEMB && (String(f.tipo || f.TipoArchivo || '').toUpperCase() === 'MATRIZ');
+    // [BORDADO] La fila 'BORDADO' es la ficha del diseño (medidas, piezas, paleta y
+    // puntadas, de donde sale el precio): no es un archivo para imprimir, y el logo
+    // ya se ve en Archivos de Referencia (LOGO_BORDADO). No se lista acá.
+    const esFichaDisenoBordado = (f) => isEMB && (String(f.tipo || f.TipoArchivo || '').toUpperCase() === 'BORDADO');
     const matrizFiles = productionFiles.filter(esMatrizBordado);
-    const printFilesVista = productionFiles.filter(f => !esBocetoProduccion(f) && !esMatrizBordado(f));
+    // [BORDADO] Matriz automática: el borrador de Ink/Stitch que se genera al entrar el pedido
+    // (backend/services/bordadoMatrizService.js). Va en Archivos de Referencia y NO es la matriz
+    // hasta que el diseñador lo revisa en Wilcom y lo pasa con «Usar como matriz».
+    const esBorradorMatriz = (f) => isEMB && String(f.TipoArchivo || f.tipo || '').trim().toUpperCase() === 'MATRIZ AUTOMATICA';
+    // El mismo borrador en PES, con los colores de hilo (el DST no los guarda). Solo para ver.
+    const esBorradorMatrizPes = (f) => isEMB && String(f.TipoArchivo || f.tipo || '').trim().toUpperCase() === 'MATRIZ AUTOMATICA PES';
+    // «Hilos por parada: 1) Negro (USR-1020) · relleno; 2) …» — la arma el servidor en la nota.
+    const hilosDelBorrador = (f) => (String(f.NotasAdicionales || f.notas || '').split('Hilos por parada: ')[1] || '')
+        .split('; ').map(s => s.trim()).filter(Boolean);
+    const borradorYaUsado = (f) => /Usado como matriz/i.test(String(f.NotasAdicionales || f.notas || ''));
+    const hayBorradorMatriz = referenceFiles.some(esBorradorMatriz);
+    const printFilesVista = productionFiles.filter(f => !esBocetoProduccion(f) && !esMatrizBordado(f) && !esFichaDisenoBordado(f));
     const bocetosProduccion = productionFiles.filter(esBocetoProduccion);
     // Capas de arte cargadas (sin boceto, sin matriz de bordado, sin cancelados): decide si el
     // cartel de "boceto aprobado" sigue pidiendo el arte o ya avisa que está completo.
@@ -608,6 +628,85 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
             toast.error('Error al subir la matriz: ' + (e?.response?.data?.error || e?.message || ''));
         } finally {
             setUploadingMatriz(false);
+        }
+    };
+
+    // [BORDADO] Borrar una matriz subida por error. Si la orden se queda sin matriz, el requisito
+    // «Matriz» vuelve a pendiente (lo resuelve el servidor).
+    const handleBorrarMatriz = async (f) => {
+        const archivoId = f.ArchivoID || f.id;
+        const ordenDeLaMatriz = f.OrdenID || currentOrder?.id;
+        if (!archivoId || !ordenDeLaMatriz) return;
+        const nombre = f.nombre || f.NombreArchivo || 'la matriz';
+        const otras = matrizFiles.filter(m => (m.ArchivoID || m.id) !== archivoId
+            && String(m.OrdenID || currentOrder?.id) === String(ordenDeLaMatriz)).length;
+        const r = await Swal.fire({
+            title: '¿Borrar la matriz?',
+            html: `Se borra <b>${nombre}</b> de la orden. <b>No se puede deshacer.</b>`
+                + (otras ? '' : '<br/>Como no queda otra matriz, el requisito «Matriz» vuelve a quedar <b>pendiente</b> hasta que se suba una nueva.'),
+            icon: 'warning',
+            showCancelButton: true,
+            confirmButtonText: 'Sí, borrar',
+            cancelButtonText: 'Cancelar',
+            confirmButtonColor: '#dc2626',
+            cancelButtonColor: '#71717a',
+            customClass: { container: '!z-[99999]' },
+        });
+        if (!r.isConfirmed) return;
+        toast.promise(
+            ordersService.borrarMatrizBordado(ordenDeLaMatriz, archivoId),
+            {
+                loading: 'Borrando la matriz...',
+                success: () => { loadData(currentOrder.id, currentOrder.area); onOrderUpdated?.(); return 'Matriz borrada'; },
+                error: (e) => e?.response?.data?.error || 'No se pudo borrar la matriz',
+            }
+        );
+    };
+
+    // [BORDADO] Matriz automática: generarla a mano (órdenes de antes, o si falló al entrar el
+    // pedido). Tarda unos segundos: Ink/Stitch arma las puntadas en el servidor.
+    const handleGenerarMatrizAutomatica = async () => {
+        if (!currentOrder?.id) return;
+        setGenerandoMatrizAuto(true);
+        try {
+            const r = await ordersService.generarMatrizAutomatica(currentOrder.id);
+            const d = r?.data || {};
+            toast.success(`Matriz automática generada: ${Number(d.puntadas || 0).toLocaleString('es-UY')} puntadas, ${d.colores || 0} colores. Está en Archivos de Referencia.`);
+            reloadFiles();
+        } catch (e) {
+            toast.error(e?.response?.data?.error || e?.message || 'No se pudo generar la matriz automática.');
+        } finally {
+            setGenerandoMatrizAuto(false);
+        }
+    };
+
+    // [BORDADO] El borrador revisado pasa a ser la matriz de la orden: el servidor lo sube por la
+    // misma vía que «Subir Matriz de Bordado», así que cumple el requisito «Matriz».
+    const handleUsarMatrizAutomatica = async (f) => {
+        const refId = f.RefID || f.id;
+        // La lista junta las referencias de todo el pedido: el borrador va a SU orden (un pedido
+        // puede traer dos diseños de bordado, BOR-… (1/2) y (2/2)).
+        const ordenDelBorrador = f.OrdenID || currentOrder?.id;
+        if (!ordenDelBorrador || !refId) return;
+        const r = await Swal.fire({
+            icon: 'question',
+            title: '¿Usar el borrador como matriz?',
+            html: 'Queda como la <b>matriz de bordado</b> de la orden y se cumple el requisito «Matriz».<br/>Hacelo solo si ya lo revisaste en Wilcom y está bien para bordar.',
+            showCancelButton: true,
+            confirmButtonText: 'Sí, usarlo como matriz',
+            cancelButtonText: 'Cancelar',
+        });
+        if (!r.isConfirmed) return;
+        setUsandoMatrizAuto(refId);
+        try {
+            await ordersService.usarMatrizAutomatica(ordenDelBorrador, refId);
+            toast.success('El borrador quedó como matriz de la orden.');
+            loadData(currentOrder.id, currentOrder.area);
+            onOrderUpdated?.();
+        } catch (e) {
+            toast.error('No se pudo usar el borrador como matriz: ' + (e?.response?.data?.error || e?.message || ''));
+        } finally {
+            setUsandoMatrizAuto(null);
         }
     };
 
@@ -1930,7 +2029,9 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                                     // con Cantidad 1 — sumar eso mostraba "1.00 U" en una orden de 15.
                                     // Mismo criterio que el backend (recalculateOrderMagnitude).
                                     // [PRO] ídem: la Magnitud es la cantidad de prendas del pedido.
-                                    if (isTPU || isPRO) return currentOrder.magnitude || '0';
+                                    // [BORDADO] ídem: son las prendas (o parches) del diseño. Sumar los
+                                    // archivos y el cargo de la matriz mostraba "1.00" en una orden de 3.
+                                    if (isTPU || isPRO || isEMB) return currentOrder.magnitude || '0';
 
                                     // 1. Suma de Producción
                                     const prodTotal = productionFiles.reduce((acc, f) => {
@@ -1952,7 +2053,8 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                                     // Si hay total calculado lo mostramos, si no mostramos la magnitud estática
                                     return totalMag > 0 ? totalMag.toFixed(2) : (currentOrder.magnitude || '0');
                                 })()}
-                                <span className="text-xs font-bold text-zinc-500 ml-1">{currentOrder.UM || currentOrder.unit || ''}</span>
+                                <span className="text-xs font-bold text-zinc-500 ml-1">{unidadVisible(currentOrder.UM || currentOrder.unit || '', currentOrder.magnitude,
+                                    `${currentOrder.variant || ''} ${currentOrder.material || ''}`)}</span>
                                 {isPRO && !readOnly && (
                                     <button
                                         onClick={() => { setMagnitudDraft(String(parseFloat(currentOrder.magnitude) || '')); setEditandoMagnitud(true); }}
@@ -2450,7 +2552,19 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                                             {matrizFiles.length > 0 && (
                                                 <div className="space-y-2 mb-4">
                                                     {matrizFiles.map((f, idx) => (
-                                                        <ReferenceItem key={`matriz-${idx}`} file={{ ...f, tipo: 'MATRIZ DE BORDADO (WILCOM)' }} />
+                                                        /* Se puede borrar (subida por error): tacho a la izquierda del de
+                                                           descargar, mismo patrón que las referencias de PRO. */
+                                                        <div key={`matriz-${idx}`} className="relative">
+                                                            <ReferenceItem file={{ ...f, tipo: 'MATRIZ DE BORDADO (WILCOM)' }} />
+                                                            {!readOnly && !f.readonly && (f.id || f.ArchivoID) && (
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => handleBorrarMatriz(f)}
+                                                                    className="absolute right-14 top-1/2 -translate-y-1/2 w-7 h-7 rounded-md bg-white border border-red-200 text-red-500 hover:bg-red-50 flex items-center justify-center shadow-sm"
+                                                                    title="Borrar esta matriz (por ejemplo, si se subió por error)"
+                                                                ><i className="fa-solid fa-trash-can text-xs"></i></button>
+                                                            )}
+                                                        </div>
                                                     ))}
                                                 </div>
                                             )}
@@ -2651,6 +2765,22 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                             {/* PESTAÑA: REFERENCIAS */}
                             {activeTab === 'refs' && (
                                 <div className="space-y-2">
+                                    {/* [BORDADO] Matriz automática: el borrador de Ink/Stitch se genera solo al
+                                        entrar el pedido. Para órdenes de antes, o si falló, se genera desde acá. */}
+                                    {isEMB && !readOnly && (
+                                        <button
+                                            type="button"
+                                            onClick={handleGenerarMatrizAutomatica}
+                                            disabled={generandoMatrizAuto}
+                                            className="w-full flex items-center justify-center gap-2 py-3 mb-1 rounded-xl border-2 border-dashed border-indigo-300 text-indigo-600 text-xs font-bold uppercase tracking-wide hover:bg-indigo-50 transition-colors disabled:opacity-60 disabled:cursor-wait"
+                                            title="Ink/Stitch arma un DST a partir de los hilos, puntadas y medidas del diseño. Es un borrador: revisalo en Wilcom antes de usarlo."
+                                        >
+                                            <i className={`fa-solid ${generandoMatrizAuto ? 'fa-spinner fa-spin' : 'fa-wand-magic-sparkles'}`}></i>
+                                            {generandoMatrizAuto
+                                                ? 'Generando la matriz automática… (puede tardar un minuto)'
+                                                : hayBorradorMatriz ? 'Volver a generar la matriz automática (borrador)' : 'Generar matriz automática (borrador)'}
+                                        </button>
+                                    )}
                                     {/* [PRO] Alta de referencias: abre el modal que pregunta a QUÉ
                                         orden/área va el archivo y con qué tipo (boceto, matriz de logos...) */}
                                     {isPRO && !readOnly && (
@@ -2722,7 +2852,52 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                                                 /* [PRO] Cada referencia se puede borrar (mismo patrón visual
                                                    que el boceto TPU: tacho a la izquierda del de descargar). */
                                                 <div key={idx} className="relative">
-                                                    <ReferenceItem file={f} />
+                                                    <ReferenceItem file={esBorradorMatriz(f)
+                                                        ? { ...f, tipo: 'MATRIZ AUTOMÁTICA (BORRADOR)', notas: f.notas || f.NotasAdicionales }
+                                                        : esBorradorMatrizPes(f)
+                                                            ? { ...f, tipo: 'MATRIZ AUTOMÁTICA · PES CON COLORES', notas: f.notas || f.NotasAdicionales }
+                                                            : f} />
+                                                    {/* [BORDADO] El borrador se revisa en Wilcom y, si sirve, pasa a matriz. */}
+                                                    {/* Si la matriz se borra (subida por error), el botón vuelve: lo que
+                                                        manda es si la orden TIENE matriz, no si el borrador se usó alguna vez. */}
+                                                    {esBorradorMatriz(f) && (() => {
+                                                        const tieneMatriz = matrizFiles.some(m => String(m.OrdenID || currentOrder?.id) === String(f.OrdenID || currentOrder?.id));
+                                                        return (
+                                                        <div className="mt-1 mb-2 flex items-center justify-between gap-3 px-3 py-2 rounded-lg bg-amber-50 border border-amber-200">
+                                                            <span className="text-[11px] text-amber-800 leading-snug">
+                                                                {tieneMatriz && borradorYaUsado(f)
+                                                                    ? 'Ya se usó como matriz de la orden.'
+                                                                    : borradorYaUsado(f)
+                                                                        ? 'Se había usado como matriz, pero esa matriz se borró. Si sirve, se puede volver a usar.'
+                                                                        : 'Borrador automático: descargalo, revisalo en Wilcom y, si sirve, pasalo a matriz.'}
+                                                                {/* El DST no guarda colores: la lista dice qué hilo va en cada parada. */}
+                                                                {hilosDelBorrador(f).length > 0 && (
+                                                                    <span className="block mt-1.5 text-[10px] text-amber-900">
+                                                                        <b>Hilos por parada</b> (el DST no los guarda; el PES sí):
+                                                                        {hilosDelBorrador(f).map((h, i) => (
+                                                                            <span key={i} className="block">{h}</span>
+                                                                        ))}
+                                                                    </span>
+                                                                )}
+                                                            </span>
+                                                            {!readOnly && !(tieneMatriz && borradorYaUsado(f)) && (
+                                                                tieneMatriz ? (
+                                                                    <span className="text-[10px] font-bold text-zinc-500 shrink-0">La orden ya tiene matriz</span>
+                                                                ) : (
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => handleUsarMatrizAutomatica(f)}
+                                                                        disabled={usandoMatrizAuto !== null}
+                                                                        className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-[11px] font-bold hover:bg-indigo-700 transition-colors disabled:opacity-60 disabled:cursor-wait"
+                                                                    >
+                                                                        <i className={`fa-solid ${usandoMatrizAuto === (f.RefID || f.id) ? 'fa-spinner fa-spin' : 'fa-check'}`}></i>
+                                                                        Usar como matriz
+                                                                    </button>
+                                                                )
+                                                            )}
+                                                        </div>
+                                                        );
+                                                    })()}
                                                     {isPRO && !readOnly && (f.id || f.RefID) && (
                                                         <button
                                                             type="button"
