@@ -285,7 +285,7 @@ exports.proponer = async (req, res) => {
 };
 
 // Creación de órdenes de falla: compartida con las solicitudes de insumo (cadenaReposicionService)
-const { codigoFalla, crearOrdenFalla } = require('../services/cadenaReposicionService');
+const { codigoFalla, crearOrdenFalla, copiarArchivoImpresion } = require('../services/cadenaReposicionService');
 
 /**
  * POST /:area/orders/:ordenId/falla
@@ -418,6 +418,10 @@ exports.reportar = async (req, res) => {
                 (areaE === 'TPU' ? ' Misma matriz ya aprobada: no se vuelve a pedir aprobación ni se cobra matriz.' : '') +
                 (!cuenta ? ' Sin metros hasta imprimir y medir. Subir el archivo de reimpresión desde el detalle de la orden.' : '');
             const nuevaId = await crearOrdenFalla(tx, { madre, codigo, magnitud, proximoServicio: destino, liberaCuandoOrdenId: null, estadoDependencia: null, nota: notaF });
+            // [23/10/2026] Si el archivo elegido es de este DTF, la -F nace con él (como la falla de Control)
+            if (archEsDeTransfer && Number(archOrdenId) === Number(madre.OrdenID)) {
+                await copiarArchivoImpresion(tx, { nuevaId, madreId: madre.OrdenID, archivoId: parseInt(archivoOrigenId, 10) });
+            }
             const repIns = await new sql.Request(tx)
                 .input('madre', sql.Int, madre.OrdenID).input('falla', sql.Int, nuevaId).input('rep', sql.Int, o.OrdenID)
                 .input('ap', sql.VarChar(20), areaE).input('ar', sql.VarChar(20), area)
@@ -503,6 +507,12 @@ exports.reportar = async (req, res) => {
                     liberaCuandoOrdenId: liberaCuando, estadoDependencia: liberaCuando ? 'ESPERANDO_REPOSICION' : null,
                     nota: notaF,
                 });
+                // [23/10/2026] El primer eslabón nace con el archivo de impresión elegido al reportar ("De qué
+                // archivo viene"), si es de su madre. Sin esto la -F de Sublimación iba a lote vacía y en Control
+                // se cancelaba de oficio (SUB-31896-F2623). Bordado / matriz / corte no se copian.
+                if (i === 0 && archivoOrigenId && !archEsDeTransfer) {
+                    await copiarArchivoImpresion(tx, { nuevaId, madreId: madre.OrdenID, archivoId: parseInt(archivoOrigenId, 10) });
+                }
                 const repIns = await new sql.Request(tx)
                     .input('madre', sql.Int, madre.OrdenID).input('falla', sql.Int, nuevaId).input('rep', sql.Int, o.OrdenID)
                     .input('ap', sql.VarChar(20), areaE).input('ar', sql.VarChar(20), area)

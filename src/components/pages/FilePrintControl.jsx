@@ -210,7 +210,7 @@ const FilePrintControl = ({ areaCode }) => {
           nextService: o.ProximoServicio,
           meters: parseFloat(o.Magnitud) || 0,
           priority: o.Prioridad || 'Normal',
-          modoRetiro: o.ModoRetiro || '', sinImprimir: o.SinImprimir === 1
+          modoRetiro: o.ModoRetiro || '', sinImprimir: o.SinImprimir === 1, fallaDeOtraArea: o.FallaDeOtraArea === 1
         }));
         setOrders(normalized);
         // Auto-select pending order after lote switch
@@ -298,7 +298,7 @@ const FilePrintControl = ({ areaCode }) => {
             nextService: o.ProximoServicio,
             meters: parseFloat(o.Magnitud) || 0,
           priority: o.Prioridad || 'Normal',
-          modoRetiro: o.ModoRetiro || '', sinImprimir: o.SinImprimir === 1
+          modoRetiro: o.ModoRetiro || '', sinImprimir: o.SinImprimir === 1, fallaDeOtraArea: o.FallaDeOtraArea === 1
           }));
           setOrders(normalized);
 
@@ -328,7 +328,8 @@ const FilePrintControl = ({ areaCode }) => {
               // Las -F se completan silenciosamente durante "CORREGIR FALLA" para navegar a la madre.
 
               // (-\d+)? contempla el sufijo de linaje (SUB-9960-F14604-3): también es una -F.
-              const isReposition = /\-F\d+(-\d+)?$/.test(fresh.code || '');
+              // [23/10/2026] La -F de otra área sí muestra el modal: se terminó como una orden más, con su etiqueta.
+              const isReposition = /\-F\d+(-\d+)?$/.test(fresh.code || '') && !fresh.fallaDeOtraArea;
 
               if (isCompleted && !wasCompleted && !isReposition) {
                 // Determinar si es la última orden válida del lote
@@ -507,7 +508,7 @@ const FilePrintControl = ({ areaCode }) => {
           nextService: o.ProximoServicio,
           meters: parseFloat(o.Magnitud) || 0,
           priority: o.Prioridad || 'Normal',
-          modoRetiro: o.ModoRetiro || '', sinImprimir: o.SinImprimir === 1
+          modoRetiro: o.ModoRetiro || '', sinImprimir: o.SinImprimir === 1, fallaDeOtraArea: o.FallaDeOtraArea === 1
         }));
         setOrders(normalized);
       }).catch(console.error);
@@ -637,7 +638,7 @@ const FilePrintControl = ({ areaCode }) => {
         nextService: found.ProximoServicio,
         meters: parseFloat(found.Magnitud) || 0,
         priority: found.Prioridad || 'Normal',
-        sinImprimir: found.SinImprimir === 1
+        sinImprimir: found.SinImprimir === 1, fallaDeOtraArea: found.FallaDeOtraArea === 1
       });
     } catch (e) {
       console.error(e);
@@ -648,7 +649,10 @@ const FilePrintControl = ({ areaCode }) => {
   // --- ACTIONS HANDLERS ---
   // --- FALLA ORDER DETECTION ---
   // (-\d+)? contempla el sufijo de linaje: SUB-9960-F14604-3 también es una reposición.
-  const isFallaOrder = /\-F\d+(-\d+)?$/.test(selectedOrder?.code || '');
+  // [23/10/2026] Una -F de una falla reportada desde OTRA área (fallaDeOtraArea) no se "corrige": la
+  // original ya se fue a esa área. Se cierra con FINALIZAR ORDEN como cualquier orden (Pronto, su
+  // etiqueta y viaja). Las fallas de Control siguen con CORREGIR FALLA, igual que siempre.
+  const isFallaOrder = /\-F\d+(-\d+)?$/.test(selectedOrder?.code || '') && !selectedOrder?.fallaDeOtraArea;
   const originalOrderCode = isFallaOrder ? selectedOrder.code.replace(/\-F\d+(-\d+)?$/, '') : null;
 
   const handleCorregirFalla = async () => {
@@ -727,7 +731,7 @@ const FilePrintControl = ({ areaCode }) => {
           rolloId: o.RolloID || null, nextService: o.ProximoServicio,
           meters: parseFloat(o.Magnitud) || 0,
           priority: o.Prioridad || 'Normal',
-          modoRetiro: o.ModoRetiro || '', sinImprimir: o.SinImprimir === 1
+          modoRetiro: o.ModoRetiro || '', sinImprimir: o.SinImprimir === 1, fallaDeOtraArea: o.FallaDeOtraArea === 1
         }));
         setOrders(normalized);
 
@@ -846,7 +850,7 @@ const FilePrintControl = ({ areaCode }) => {
             nextService: o.ProximoServicio,
             meters: parseFloat(o.Magnitud) || 0,
           priority: o.Prioridad || 'Normal',
-          modoRetiro: o.ModoRetiro || '', sinImprimir: o.SinImprimir === 1
+          modoRetiro: o.ModoRetiro || '', sinImprimir: o.SinImprimir === 1, fallaDeOtraArea: o.FallaDeOtraArea === 1
           }));
           setOrders(normalized);
         }).catch(console.error);
