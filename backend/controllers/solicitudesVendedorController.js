@@ -95,6 +95,10 @@ exports.correccionCancelar = accion('correccionCancelar', (pool, req) => svc.cor
 exports.correccionAplicar = accion('correccionAplicar', (pool, req) => svc.correccionAplicar(pool, req.user, id(req.params.id), id(req.params.productoSolId), req.app));   // "Pasar al pedido"
 exports.correccionPlan    = accion('correccionPlan',    (pool, req) => svc.correccionPlan(pool, req.user, id(req.params.id), id(req.params.productoSolId)));
 exports.disenosHechos     = accion('disenosHechos',     (pool, req) => svc.disenosHechos(pool, req.user, req.query || {}));   // [15/10] pestaña "Hechos" (?desde=&hasta=)
+// [23/10/2026] pestaña "Tiempos y puntos": plazos de cada diseño y fallas por diseño (?anio=&mes=)
+exports.puntosDiseno      = accion('puntosDiseno',      (pool, req) => svc.puntosDiseno(pool, req.user, req.query || {}));
+exports.marcarFallaDiseno = accion('marcarFallaDiseno', (pool, req) => svc.marcarFallaDiseno(pool, req.user, id(req.params.parteId), req.body || {}));
+exports.anularFallaDiseno = accion('anularFallaDiseno', (pool, req) => svc.anularFallaDiseno(pool, req.user, id(req.params.eventoId), req.body || {}));
 exports.tomarParte        = accion('tomarParte',        (pool, req) => svc.tomarParte(pool, req.user, id(req.params.parteId)));
 exports.aceptarCambio     = accion('aceptarCambio',     (pool, req) => svc.aceptarCambio(pool, req.user, id(req.params.parteId)));
 // [TIPO DEL EXTRA 14/10] cómo se hace cada bordado / DTF / TPU, desde la tabla del arte (la misma lista que la Tienda)

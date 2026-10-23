@@ -9,9 +9,10 @@ const sql = require('mssql');
  *    Las fallas internas (-F) no aportan bultos: por diseño no viajan a depósito.
  *  - No espera bultos que ya no van a llegar: PROCESADO (quedó en un área intermedia al
  *    transformarse la orden), CONSUMIDO (su contenido pasó a otro bulto), PERDIDO (declarado
- *    perdido al recibir), DESPACHADO (ya salió) y CANCELADO (su orden se canceló; ver
- *    bultosCancelacionService). Mismo criterio que la reimpresión de etiquetas
- *    (etiquetasController) para saber qué paquetes existen.
+ *    perdido al recibir), DESPACHADO (ya salió), ENTREGADO (lo tiene el cliente: lo marca la
+ *    entrega del retiro desde el 25/09) y CANCELADO (su orden se canceló; ver
+ *    bultosCancelacionService). Caso SUB-30117 (1/2)-R1 (19/10): la (2/2) ya se había
+ *    entregado y la reposición quedaba en "Esperando Bultos" esperando ese paquete.
  *  - Reposiciones (-R): si una orden tiene una reposición posterior del mismo trabajo en el
  *    pedido, sus bultos que no están en depósito dejan de esperarse — la reposición los
  *    reemplaza. Caso DTF-21969-R1 (22/09): el paquete de la original faltó en el remito y el
@@ -19,7 +20,7 @@ const sql = require('mssql');
  *  - Recibido = EN_STOCK en DEPOSITO.
  */
 
-const ESTADOS_QUE_NO_LLEGAN = ['PROCESADO', 'CONSUMIDO', 'PERDIDO', 'DESPACHADO', 'CANCELADO'];
+const ESTADOS_QUE_NO_LLEGAN = ['PROCESADO', 'CONSUMIDO', 'PERDIDO', 'DESPACHADO', 'ENTREGADO', 'CANCELADO'];
 const ES_REPOSICION = /-R\d+$/i;
 const ES_FALLA = /-F/i;
 

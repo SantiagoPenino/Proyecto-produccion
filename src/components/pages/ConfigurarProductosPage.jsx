@@ -3009,11 +3009,14 @@ export default function ConfigurarProductosPage() {
                                                                     className={`block w-full mt-1 ${claseCampo}`} />
                                                             </label>
                                                             {/* 15/10: el modelo de la ficha impresa ES la variante: no se elige, se muestra */}
-                                                            {(moldeSel?.modelos || []).length > 0 && (
+                                                            {/* 22/10: un producto a medida no vende modelos: no se muestra */}
+                                                            {form.modoMolde !== 'A_MEDIDA' && (moldeSel?.modelos || []).length > 0 && (
                                                                 <div className={`lg:col-span-2 ${claseEtiquetaCampo}`}>
                                                                     Modelo (sale en la ficha impresa)
                                                                     <div className={`mt-1 ${claseCampo} ${modeloFicha ? 'font-bold text-slate-800' : 'text-slate-400'}`}>
-                                                                        {modeloFicha ? modeloFicha.nombre : 'Cada variante lleva su modelo (este producto vende varios)'}
+                                                                        {modeloFicha ? modeloFicha.nombre
+                                                                            : (form.modelos?.size || 0) === 0 ? 'Todavía no se eligió qué modelo se vende (paso Molde)'
+                                                                            : 'Cada variante lleva su modelo (este producto vende varios)'}
                                                                     </div>
                                                                 </div>
                                                             )}

@@ -106,6 +106,7 @@ const VendedorVentasMensuales    = lazyWithRetry(() => import('../pages/Vendedor
 const PreciosPorCantidad         = lazyWithRetry(() => import('../pages/PreciosPorCantidad'));
 const VentasSalonPage            = lazyWithRetry(() => import('../pages/ventas/VentasSalonPage'));
 const VentasSalonComisiones      = lazyWithRetry(() => import('../pages/ventas/VentasSalonComisiones'));
+const VentasDashboard            = lazyWithRetry(() => import('../pages/ventas/VentasDashboard'));
 const PreFacturaPage            = lazyWithRetry(() => import('../pages/PreFacturaPage'));
 const ContabilidadAntiguedadView  = lazyWithRetry(() => import('../pages/ContabilidadAntiguedadView'));
 const CajaTransaccionView          = lazyWithRetry(() => import('../pages/CajaTransaccionView'));
@@ -1183,6 +1184,8 @@ const DynamicRouter = ({ menuItems }) => {
     if (menuItem.Ruta === '/vendedores/precios-cantidad')       return <PreciosPorCantidad />;
     if (menuItem.Ruta === '/vendedores/salon')                  return <VentasSalonPage />;
     if (menuItem.Ruta === '/vendedores/salon-comisiones')       return <VentasSalonComisiones />;
+    // 23/10/2026: Dashboard de ventas, también solo por menú (backend/scripts/menu_dashboard_ventas.sql)
+    if (menuItem.Ruta === '/vendedores/dashboard')              return <VentasDashboard />;
     if (menuItem.Ruta === '/contabilidad/antiguedad')            return <ContabilidadAntiguedadView />;
     if (menuItem.Ruta === '/contabilidad/recursos')              return <ClienteVista360 />; // ventana vieja → 360
     if (menuItem.Ruta === '/caja/transaccion')                   return <CajaTransaccionView />;

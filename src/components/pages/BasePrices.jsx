@@ -13,6 +13,31 @@ const getMetricUnit = (categoria) => {
     return 'u.';
 };
 
+// [23/10/2026] Las escalas dicen la unidad de medida del área del grupo (Areas.UM, llega
+// como AreaUM en /prices/base): "Min 100 m" en Sublimación, "Min 10 m²" en ECO UV. Si el
+// área no tiene unidad cargada, queda lo de antes (por la categoría del perfil).
+const UNIDADES_AREA = {
+    m: { corta: 'm', nombre: 'Metros' },
+    m2: { corta: 'm²', nombre: 'Metros cuadrados' },
+    punt: { corta: 'pts', nombre: 'Puntadas' },
+    baj: { corta: 'baj.', nombre: 'Bajadas' },
+    prend: { corta: 'prendas', nombre: 'Prendas' },
+    u: { corta: 'u.', nombre: 'Unidades' },
+};
+const NOMBRES_POR_CORTA = { 'pts': 'Puntadas', 'baj.': 'Bajadas', 'u.': 'Unidades' };
+
+// [23/10/2026] Productos de salón (los del local, CodStock 2.2.1.2): su propio grupo, con el perfil de
+// Categoria 'SALON' para ponerles escalas por cantidad (el motor les aplica ese perfil: pricingService,
+// CODSTOCK_PRODUCTOS_SALON). Antes iban mezclados en "2 - 2.1" sin escalas.
+const CODSTOCK_SALON = ['2.2.1.2'];
+const GRUPO_SALON = '2 - 2.1 (Productos de salón)';
+const unidadDelGrupo = (items, profile) => {
+    const um = (items.find(i => i.AreaUM)?.AreaUM || '').trim().toLowerCase();
+    if (UNIDADES_AREA[um]) return UNIDADES_AREA[um];
+    const corta = profile ? getMetricUnit(profile.Categoria) : 'u.';
+    return { corta, nombre: NOMBRES_POR_CORTA[corta] || 'Unidades' };
+};
+
 const calculateDiscountPct = (baseVal, fixedVal) => {
     const base = parseFloat(baseVal);
     const fixed = parseFloat(fixedVal);
@@ -175,7 +200,9 @@ const PriceRow = ({
     // [19/10/2026] Bordado y estampado: se cobran con la tarifa del recuadro de arriba. En bordado el motor no
     // mira este precio (reemplazaLista: la fila no deja cargarlo); en estampado es el que se cobra si la orden
     // no trae bajadas (sigue editable, con la aclaración debajo).
-    cobroTecnico = null
+    cobroTecnico = null,
+    // [23/10/2026] Desde qué cantidades tiene escalas propias (perfil global): la marca "PRECIO POR CANTIDAD"
+    escalasDelArticulo = null
 }) => {
     const isTotalRow = item._isVirtualTotal || item.CodArticulo === 'TOTAL';
     const displayVal = changes?.precio !== undefined ? changes.precio : (item.Precio || 0);
@@ -248,6 +275,12 @@ const PriceRow = ({
                 {item._isNew && <span className="inline-block mt-1 text-[9px] bg-green-100 text-green-700 px-1.5 py-0.5 rounded font-extrabold">NUEVO</span>}
                 {!isTotalRow && !(item.Mostrar === true || item.Mostrar === 1) && (
                     <span className="inline-block mt-1 ml-1 text-[9px] bg-red-100 text-red-600 px-1.5 py-0.5 rounded font-extrabold">INACTIVO</span>
+                )}
+                {!isTotalRow && escalasDelArticulo?.length > 0 && (
+                    <span className="inline-block mt-1 ml-1 text-[9px] bg-indigo-100 text-indigo-700 px-1.5 py-0.5 rounded font-extrabold"
+                        title={`Tiene precio por cantidad: cambia desde ${escalasDelArticulo.map(q => q.toLocaleString('es-UY')).join(', ')}. Se aplica solo al poner la cantidad (caja, pedidos).`}>
+                        PRECIO POR CANTIDAD
+                    </span>
                 )}
                 
                 {/* Tipo de regla selector (solo si pertenece a un perfil) */}
@@ -454,15 +487,26 @@ const TarifaPanel = ({ tarifa, onGuardada }) => {
     const textos = TEXTOS_TARIFA[tarifa.tipo];
     const guardados = () => Object.fromEntries(campos.map(c => [c.campo, String(tarifa[c.campo] ?? '')]));
     const [valores, setValores] = useState(guardados);
+    // [23/10/2026] Bordado: las franjas de puntadas ("hasta 4.000 puntadas, $ 70"), como texto mientras se escriben
+    const conFranjas = Array.isArray(tarifa.franjas);
+    const franjasGuardadas = () => (tarifa.franjas || []).map(f => ({ hasta: String(f.hasta), precio: String(f.precio) }));
+    const [franjas, setFranjas] = useState(franjasGuardadas);
     const [guardando, setGuardando] = useState(false);
-    const cambiado = campos.some(c => String(tarifa[c.campo] ?? '') !== valores[c.campo]);
-    const actual = { ...tarifa, ...Object.fromEntries(Object.entries(valores).map(([k, v]) => [k, String(v).replace(',', '.')])) };
+    const franjasCambiadas = conFranjas && JSON.stringify(franjas) !== JSON.stringify(franjasGuardadas());
+    const cambiado = franjasCambiadas || campos.some(c => String(tarifa[c.campo] ?? '') !== valores[c.campo]);
+    const actual = {
+        ...tarifa,
+        ...Object.fromEntries(Object.entries(valores).map(([k, v]) => [k, String(v).replace(',', '.')])),
+        ...(conFranjas ? { franjas } : {}),
+    };
+    const cambiarFranja = (i, campo, valor) => setFranjas(fs => fs.map((f, k) => (k === i ? { ...f, [campo]: valor } : f)));
+    const descartar = () => { setValores(guardados()); setFranjas(franjasGuardadas()); };
 
     const guardar = async () => {
         if (!window.confirm('La tarifa nueva se usa para todo lo que se cotice desde ahora (lo ya facturado no cambia). ¿Guardar?')) return;
         setGuardando(true);
         try {
-            const r = await api.put(`/prices/tarifa/${tarifa.tipo}`, valores);
+            const r = await api.put(`/prices/tarifa/${tarifa.tipo}`, conFranjas ? { ...valores, franjas } : valores);
             toast.success(`${textos.titulo} guardada`);
             onGuardada(r.data);
         } catch (e) {
@@ -481,7 +525,7 @@ const TarifaPanel = ({ tarifa, onGuardada }) => {
                 </div>
                 <div className="flex items-center gap-2">
                     {cambiado && (
-                        <button onClick={() => setValores(guardados())}
+                        <button onClick={descartar}
                             className="bg-white hover:bg-slate-50 text-slate-600 border border-slate-200 px-3 py-1.5 rounded-lg text-xs font-bold"
                             title="Volver a los valores guardados">
                             Descartar
@@ -494,6 +538,41 @@ const TarifaPanel = ({ tarifa, onGuardada }) => {
                     </button>
                 </div>
             </div>
+            {conFranjas && (
+                <div className="mb-3">
+                    <span className="block text-[10px] font-extrabold uppercase tracking-wider text-slate-500 mb-1">Franjas de puntadas (precio por bordado, en pesos)</span>
+                    <div className="flex flex-wrap gap-2">
+                        {franjas.map((f, i) => {
+                            const guardada = franjasGuardadas()[i];
+                            const marca = (campo) => (!guardada || guardada[campo] !== f[campo]
+                                ? 'border-amber-400 bg-amber-50 ring-2 ring-amber-100'
+                                : 'border-slate-200 bg-white focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100');
+                            return (
+                                <div key={i} className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2 py-1.5">
+                                    <span className="text-[11px] text-slate-500">Hasta</span>
+                                    <input type="number" min="1" step="1000" value={f.hasta} aria-label={`Franja ${i + 1}: hasta cuántas puntadas`}
+                                        onChange={(e) => cambiarFranja(i, 'hasta', e.target.value)}
+                                        className={`w-20 text-right border rounded-md px-1.5 py-1 outline-none font-mono font-bold text-xs ${marca('hasta')}`} />
+                                    <span className="text-[11px] text-slate-500">puntadas, $</span>
+                                    <input type="number" min="0" step="1" value={f.precio} aria-label={`Franja ${i + 1}: precio por bordado`}
+                                        onChange={(e) => cambiarFranja(i, 'precio', e.target.value)}
+                                        className={`w-16 text-right border rounded-md px-1.5 py-1 outline-none font-mono font-bold text-xs ${marca('precio')}`} />
+                                    <button onClick={() => setFranjas(fs => fs.filter((_, k) => k !== i))} disabled={franjas.length <= 1}
+                                        className="text-slate-400 hover:text-red-600 disabled:opacity-30 px-1" title="Quitar esta franja (se guarda con «Guardar tarifa»)">
+                                        <i className="fa-solid fa-trash-can text-[11px]"></i>
+                                    </button>
+                                </div>
+                            );
+                        })}
+                        <button onClick={() => setFranjas(fs => [...fs, { hasta: '', precio: '' }])}
+                            className="rounded-lg border border-dashed border-indigo-300 text-indigo-600 hover:bg-indigo-50 px-3 py-1.5 text-xs font-bold"
+                            title="Agregar una franja de puntadas (se guarda con «Guardar tarifa»)">
+                            <i className="fa-solid fa-plus mr-1"></i> Agregar franja
+                        </button>
+                    </div>
+                    <span className="block text-[10px] text-slate-400 mt-1">Cada bordado paga el precio de la primera franja que alcanza sus puntadas. Se ordenan solas de menor a mayor al guardar.</span>
+                </div>
+            )}
             <div className={`grid grid-cols-2 gap-3 ${campos.length === 3 ? 'lg:grid-cols-3' : 'lg:grid-cols-4'}`}>
                 {campos.map(c => (
                     <label key={c.campo} className="block">
@@ -510,7 +589,7 @@ const TarifaPanel = ({ tarifa, onGuardada }) => {
                 <TablaTarifa conTitulo={false} tabla={tablaDeTarifa(actual)} />
             </div>
             <p className="mt-2 text-[11px] text-slate-500">
-                {textos.nota}{cambiado ? ', con los valores sin guardar' : ''}. {textos.extra}
+                {textos.nota}{cambiado ? ', con los valores sin guardar' : ''}. {typeof textos.extra === 'function' ? textos.extra(actual) : textos.extra}
             </p>
         </div>
     );
@@ -870,7 +949,8 @@ const BasePrices = ({ hideGeneralRow = false, hideAddCurrency = false }) => {
     const getProfileForGroup = (groupLabel) => {
         const upper = groupLabel.toUpperCase();
         let matchedCat = null;
-        if (upper.includes('DTF')) matchedCat = 'DTF';
+        if (groupLabel === GRUPO_SALON) matchedCat = 'SALON';
+        else if (upper.includes('DTF')) matchedCat = 'DTF';
         else if (upper.includes('TPU')) matchedCat = 'TPU';
         else if (upper.includes('IMPRESION DIRECTA') || upper.includes('IMD')) matchedCat = 'IMD';
         else if (upper.includes('SUBLIMAC') || upper.includes('SB')) matchedCat = 'SB';
@@ -909,6 +989,19 @@ const BasePrices = ({ hideGeneralRow = false, hideAddCurrency = false }) => {
             .catch(e => toast.error("Error simulación: " + e.message));
     };
 
+    // [23/10/2026] Qué artículos tienen precio por cantidad: escalas propias (Min 10, Min 100…) con valor, en un perfil
+    // global activo. ProIdProducto → cantidades desde las que cambia. Se calcula solo: no hay que marcar el artículo.
+    const escalasPorArticulo = useMemo(() => {
+        const globales = new Set(profiles.filter(p => p.EsGlobal && p.Activo).map(p => p.ID));
+        const mapa = new Map();
+        tieredRules.forEach(r => {
+            if (!globales.has(r.PerfilID) || !(Number(r.ProIdProducto) > 0) || !(Number(r.CantidadMinima) > 1) || !(Number(r.Valor) > 0)) return;
+            const id = Number(r.ProIdProducto);
+            mapa.set(id, [...new Set([...(mapa.get(id) || []), Number(r.CantidadMinima)])].sort((a, b) => a - b));
+        });
+        return mapa;
+    }, [profiles, tieredRules]);
+
     // Lista según el switch Activos/Inactivos (Mostrar = 1 es activo en todo el sistema)
     const isArticleActive = (p) => p.Mostrar === true || p.Mostrar === 1;
     const visiblePrices = useMemo(() => {
@@ -928,6 +1021,7 @@ const BasePrices = ({ hideGeneralRow = false, hideAddCurrency = false }) => {
             if (cleanRef) {
                 key += ` (${cleanRef})`;
             }
+            if (CODSTOCK_SALON.includes((p.CodStock || '').trim())) key = GRUPO_SALON;
             
             if (!groups[key]) groups[key] = [];
             groups[key].push({
@@ -1165,7 +1259,8 @@ const BasePrices = ({ hideGeneralRow = false, hideAddCurrency = false }) => {
                             const items = isAllTab ? allFiltered : getFilteredGroupItems(selectedGroupKey);
                             const profile = isAllTab ? null : getProfileForGroup(selectedGroupKey);
                             const qtyColumns = profile ? getQtyColumnsForProfile(profile.ID) : [];
-                            const metricUnit = profile ? getMetricUnit(profile.Categoria) : 'u.';
+                            const unidad = unidadDelGrupo(items, profile);
+                            const metricUnit = unidad.corta;
 
                             // Prepend TOTAL virtual row: nunca si se pide ocultarla (vista Marketing),
                             // y en el resto de los casos solo si el usuario la abrió (colapsada por defecto)
@@ -1193,7 +1288,7 @@ const BasePrices = ({ hideGeneralRow = false, hideAddCurrency = false }) => {
                                             </h2>
                                             {profile && (
                                                 <p className="text-xs text-slate-500 mt-0.5">
-                                                    Perfil: <span className="font-bold text-indigo-600">{profile.Nombre}</span> • Métrica: <span className="font-bold text-indigo-600 uppercase">{metricUnit === 'pts' ? 'Puntadas' : metricUnit === 'baj.' ? 'Bajadas' : 'Unidades'}</span>
+                                                    Perfil: <span className="font-bold text-indigo-600">{profile.Nombre}</span> • Métrica: <span className="font-bold text-indigo-600 uppercase">{unidad.nombre}</span>
                                                 </p>
                                             )}
                                             {isAllTab && (
@@ -1288,6 +1383,7 @@ const BasePrices = ({ hideGeneralRow = false, hideAddCurrency = false }) => {
                                                             profile={profile}
                                                             hideAddCurrency={hideAddCurrency}
                                                             cobroTecnico={item._isVirtualTotal ? null : cobroDe(item)}
+                                                            escalasDelArticulo={escalasPorArticulo.get(Number(item.ProIdProducto)) || null}
                                                         />
                                                     ))}
                                                 </tbody>
@@ -1328,10 +1424,7 @@ const BasePrices = ({ hideGeneralRow = false, hideAddCurrency = false }) => {
                         <div className="p-5 space-y-4">
                             <div>
                                 <label className="block text-[10px] font-extrabold text-slate-450 uppercase tracking-wider mb-1.5">
-                                    Cantidad Mínima ({selectedGroupKey && (() => {
-                                        const profile = getProfileForGroup(selectedGroupKey);
-                                        return profile ? getMetricUnit(profile.Categoria) : 'u.';
-                                    })()})
+                                    Cantidad Mínima ({selectedGroupKey && unidadDelGrupo(getFilteredGroupItems(selectedGroupKey), getProfileForGroup(selectedGroupKey)).corta})
                                 </label>
                                 <input
                                     type="number"
@@ -1348,7 +1441,7 @@ const BasePrices = ({ hideGeneralRow = false, hideAddCurrency = false }) => {
                                 <p className="text-[11px] text-slate-400 mt-2 leading-relaxed">
                                     {scaleModal.type === 'add' 
                                         ? 'Ingrese el volumen a partir del cual se aplicará esta escala.' 
-                                        : `Cambiando el volumen mínimo anterior de ${scaleModal.oldQty} unidades.`}
+                                        : `Cambiando el volumen mínimo anterior de ${scaleModal.oldQty} ${selectedGroupKey ? unidadDelGrupo(getFilteredGroupItems(selectedGroupKey), getProfileForGroup(selectedGroupKey)).nombre.toLowerCase() : 'unidades'}.`}
                                 </p>
                             </div>
                         </div>

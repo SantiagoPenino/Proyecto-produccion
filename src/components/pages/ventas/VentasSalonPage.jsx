@@ -4,7 +4,7 @@ import { Ban, Pencil, Store, UserRound, X } from 'lucide-react';
 import api from '../../../services/apiClient';
 import { BuscadorCliente, Campo, INPUT, BTN_PRIMARIO, BTN_SECUNDARIO, BTN_PELIGRO, errorDe } from './solicitudesComunes';
 import {
-    MESES, SIMBOLO, ESTILOS, money, r2, comisionDe, textoFranja, escalaDe,
+    MESES, SIMBOLO, ESTILOS, money, r2, comisionDe, escalaDe,
     BarraFranjas, PastillaFranja, FaltaParaFranja, useCotizacionMes, CotizacionMes, SelectorMes,
 } from './comisionesComunes';
 
@@ -19,9 +19,10 @@ import {
      · Quien tiene «Comisiones de salón» en su menú (supervisor) ve las de
        todos, carga a nombre de otro, con cualquier fecha, y corrige o anula
        cualquiera.
-     · Arriba, lo vendido en el mes, el total unificado en US$ (misma
-       cotización que Ventas por vendedor) y, si se mira a un solo vendedor,
-       su franja y la comisión que lleva.
+     · Arriba, lo vendido en el mes, el total del mes en $ (lo vendido en
+       US$ pasado a pesos con la misma cotización que Ventas por vendedor)
+       y, si se mira a un solo vendedor, su franja y la comisión que lleva:
+       un monto fijo en pesos (23/10/2026; antes total en US$ y %).
    ══════════════════════════════════════════════════════════════════════ */
 
 const pad = (n) => String(n).padStart(2, '0');
@@ -82,7 +83,8 @@ export default function VentasSalonPage() {
     const [editando, setEditando] = useState(null);        // la venta que se está corrigiendo
     const [guardando, setGuardando] = useState(false);
     const [anulando, setAnulando] = useState(null);        // la venta que se va a anular
-    const { cotizacion, cotFecha, esMesActual, cargandoCot, refrescarCotizacion } = useCotizacionMes(anio, mes);
+    // [23/10/2026] La cotización del día en que se mira, para cualquier mes (como Comisiones de salón)
+    const { cotizacion, cotFecha, cargandoCot, refrescarCotizacion } = useCotizacionMes(hoy.getFullYear(), hoy.getMonth() + 1);
     const supervisor = !!perfil?.supervisor;
 
     useEffect(() => {
@@ -95,7 +97,7 @@ export default function VentasSalonPage() {
             })
             .catch(e => toast.error(errorDe(e)));
         api.get('/ventas-salon/franjas')
-            .then(r => setFranjas((r.data.data || []).map(f => ({ ...f, texto: textoFranja(f.pct) }))))
+            .then(r => setFranjas((r.data.data || []).map(f => ({ ...f, texto: `$ ${Number(f.monto).toLocaleString('es-UY', { maximumFractionDigits: 2 })}` }))))
             .catch(() => {});
     }, []);
 
@@ -128,7 +130,8 @@ export default function VentasSalonPage() {
         UYU: r2(activas.filter(v => v.moneda === 'UYU').reduce((s, v) => s + v.monto, 0)),
         USD: r2(activas.filter(v => v.moneda === 'USD').reduce((s, v) => s + v.monto, 0)),
     }), [activas]);
-    const unificado = cotizacion > 0 ? r2(totales.USD + totales.UYU / cotizacion) : null;
+    // [23/10/2026] El total del mes va en pesos (las franjas de comisión de salón son en pesos)
+    const unificado = cotizacion > 0 ? r2(totales.UYU + totales.USD * cotizacion) : null;
     const unSoloVendedor = !supervisor || !!filtroVendedor;
     const nombreVendedor = !supervisor ? 'Tu mes'
         : filtroVendedor ? `Mes de ${vendedores.find(v => String(v.idUsuario) === String(filtroVendedor))?.nombre || 'el vendedor'}` : 'Todos los vendedores';
@@ -207,7 +210,7 @@ export default function VentasSalonPage() {
                     </div>
                 </div>
                 <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-                    <CotizacionMes cotizacion={cotizacion} cotFecha={cotFecha} esMesActual={esMesActual} nombreMes={nombreMes}
+                    <CotizacionMes cotizacion={cotizacion} cotFecha={cotFecha} esMesActual nombreMes={nombreMes}
                         cargandoCot={cargandoCot} onRefrescar={refrescarCotizacion} />
                     <SelectorMes anio={anio} mes={mes} direccion={direccion} loading={loading}
                         puedeAtras={indiceMes > indiceHoy - MESES_ATRAS} puedeAdelante={indiceMes < indiceHoy}
@@ -294,7 +297,7 @@ export default function VentasSalonPage() {
                         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
                             <div><div className="text-[10px] font-black uppercase tracking-wide text-slate-400">$ vendido</div><div className="font-bold tabular-nums">{money(totales.UYU)}</div></div>
                             <div><div className="text-[10px] font-black uppercase tracking-wide text-slate-400">US$ vendido</div><div className="font-bold tabular-nums">{money(totales.USD)}</div></div>
-                            <div><div className="text-[10px] font-black uppercase tracking-wide text-slate-400">Total unificado US$</div><div className="font-black tabular-nums">{unificado != null ? money(unificado) : '—'}</div></div>
+                            <div><div className="text-[10px] font-black uppercase tracking-wide text-slate-400">Total del mes en $</div><div className="font-black tabular-nums">{unificado != null ? money(unificado) : '—'}</div></div>
                             <div><div className="text-[10px] font-black uppercase tracking-wide text-slate-400">Ventas</div><div className="font-bold tabular-nums">{activas.length}</div></div>
                         </div>
                         {unSoloVendedor && unificado != null && (
@@ -302,11 +305,11 @@ export default function VentasSalonPage() {
                                 <div className="flex items-center gap-2 text-xs">
                                     <PastillaFranja valor={unificado} franjas={franjas} />
                                     <span className={comisionDe(unificado, franjas) > 0 ? 'font-bold text-sky-700' : 'text-slate-400'}>
-                                        {comisionDe(unificado, franjas) > 0 ? `Comisión US$ ${money(comisionDe(unificado, franjas))}` : 'Sin comisión'}
+                                        {comisionDe(unificado, franjas) > 0 ? `Comisión $ ${money(comisionDe(unificado, franjas))}` : 'Sin comisión'}
                                     </span>
                                 </div>
                                 <BarraFranjas valor={unificado} escala={escalaDe(franjas, unificado)} franjas={franjas} />
-                                <div className="text-[11px] text-slate-400"><FaltaParaFranja total={unificado} franjas={franjas} /></div>
+                                <div className="text-[11px] text-slate-400"><FaltaParaFranja total={unificado} franjas={franjas} simbolo="$" /></div>
                             </div>
                         )}
                     </div>
@@ -374,10 +377,10 @@ export default function VentasSalonPage() {
 
             {/* Pie: qué se cuenta */}
             <div className="mt-4 text-[11px] text-slate-500 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
-                <b>Total unificado en US$</b>: lo vendido en dólares más lo vendido en pesos pasado a dólares con
-                {esMesActual ? ' la cotización del día' : ` la última cotización de ${nombreMes}`}.
-                {' '}<b>Comisión</b>: el % de la franja alcanzada sobre todo el total
-                {franjas.length > 0 ? ` (${franjas.map(f => `desde US$ ${f.desde.toLocaleString('es-UY')}, ${f.texto}`).join('; ')})` : ' (todavía no hay franjas cargadas)'}.
+                <b>Total del mes en $</b>: lo vendido en pesos más lo vendido en dólares pasado a pesos con
+                {' la cotización del día en que se mira, para cualquier mes'}.
+                {' '}<b>Comisión</b>: el monto fijo de la franja más alta que alcanza el total del mes (no se suman)
+                {franjas.length > 0 ? ` (${franjas.map(f => `desde $ ${f.desde.toLocaleString('es-UY')}, ${f.texto}`).join('; ')})` : ' (todavía no hay franjas cargadas)'}.
                 {' '}Las ventas anuladas no cuentan. {supervisor
                     ? 'Como tenés «Comisiones de salón», ves las ventas de todos y podés corregir o anular cualquiera.'
                     : 'Podés corregir o anular tus ventas mientras sean del mes en curso.'}

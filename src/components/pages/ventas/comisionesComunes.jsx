@@ -58,9 +58,14 @@ export const diaMes = (fecha) => { const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(Str
 // ── Franjas ──────────────────────────────────────────────────────────────────
 // Cada franja: { desde, pct, texto }. `textoFranja` arma el texto si no viene ('0,8 %').
 export const textoFranja = (pct) => `${Number(pct).toLocaleString('es-UY', { maximumFractionDigits: 4 })} %`;
-// La franja alcanzada (-1 = ninguna) y la comisión: el % de esa franja sobre todo el total, al centavo
+// La franja alcanzada (-1 = ninguna) y la comisión: el % de esa franja sobre todo el total, al centavo.
+// [23/10/2026] Si la franja trae `monto` (salón: monto fijo en pesos), la comisión es ese monto.
 export const franjaDe = (total, franjas) => franjas.reduce((i, f, k) => (r2(total) >= f.desde ? k : i), -1);
-export const comisionDe = (total, franjas) => { const i = franjaDe(total, franjas); return i < 0 ? 0 : Math.round(r2(total) * franjas[i].pct) / 100; };
+export const comisionDe = (total, franjas) => {
+    const i = franjaDe(total, franjas);
+    if (i < 0) return 0;
+    return franjas[i].monto != null ? r2(franjas[i].monto) : Math.round(r2(total) * franjas[i].pct) / 100;
+};
 // Hasta dónde llega la barra cuando las franjas vienen de la base (salón): un poco más allá de la última
 // franja o del total más alto, redondeado. En vendedores la escala es fija (ESCALA_MINIMA).
 export const escalaDe = (franjas, mayor) => {
@@ -128,7 +133,7 @@ export function PastillaRacha({ racha }) {
 // mismo vendedor van unidos en una franja dorada con la racha; el mes en curso va con borde punteado (es
 // provisorio). Muestra a lo sumo LIMITE_TIRA meses: las flechas llevan a los anteriores y de vuelta.
 // Tocar un mes lo abre en la tabla.
-export function TiraGanadores({ meses, anio, mes, onElegir }) {
+export function TiraGanadores({ meses, anio, mes, onElegir, simbolo = 'US$' }) {
     const anioActual = new Date().getFullYear();
     const ultimo = meses.length - 1;
     const [finPedido, setFinPedido] = useState(null);   // null = hasta el último mes
@@ -158,8 +163,8 @@ export function TiraGanadores({ meses, anio, mes, onElegir }) {
         const esElegido = m.anio === anio && m.mes === mes;
         const nombreMes = `${MESES[m.mes - 1]} ${m.anio}`;
         const titulo = !g ? `${nombreMes}: sin ventas`
-            : m.enCurso ? `${nombreMes}, en curso: va ganando ${g.nombre} (US$ ${money(g.total)})`
-                : `${nombreMes}: ganó ${g.nombre} con US$ ${money(g.total)}`;
+            : m.enCurso ? `${nombreMes}, en curso: va ganando ${g.nombre} (${simbolo} ${money(g.total)})`
+                : `${nombreMes}: ganó ${g.nombre} con ${simbolo} ${money(g.total)}`;
         return (
             <button key={`${m.anio}-${m.mes}`} onClick={() => onElegir(m.anio, m.mes)} title={titulo}
                 className={`flex flex-col items-center gap-0.5 px-1.5 py-1 rounded-lg ${esElegido ? 'bg-brand-cyan/10' : 'hover:bg-slate-100'}`}>
@@ -222,13 +227,17 @@ export function Monto({ valor, columna }) {
     return <div className={esCero(valor) ? 'font-normal text-slate-300' : COLOR[columna]}>{esCero(valor) ? '—' : money(valor)}</div>;
 }
 
-// `enDolares` = el importe pasado a dólares, que va debajo en letra chica (solo en el vendido en pesos)
-export function Celda({ valor, columna, primera, ultima, total = false, enDolares = null }) {
+// `enDolares` = el importe pasado a dólares, que va debajo en letra chica (solo en el vendido en pesos).
+// `enPesos` = lo mismo al revés (salón: el vendido en dólares pasado a pesos)
+export function Celda({ valor, columna, primera, ultima, total = false, enDolares = null, enPesos = null }) {
     return (
         <td className={claseCelda(primera, ultima, total)}>
             <Monto valor={valor} columna={columna} />
             {enDolares != null && !esCero(valor) && (
                 <div className="text-[11px] leading-4 font-normal text-slate-400">US$ {money(enDolares)}</div>
+            )}
+            {enPesos != null && !esCero(valor) && (
+                <div className="text-[11px] leading-4 font-normal text-slate-400">$ {money(enPesos)}</div>
             )}
         </td>
     );
@@ -246,14 +255,15 @@ export function CeldaCobro({ cobrado, pendiente, total = false }) {
     );
 }
 
-// Total unificado en US$ y, debajo, la comisión (en las filas de vendedores y en la de totales)
-export function CeldaTotal({ valor, comision, total = false }) {
+// Total unificado y, debajo, la comisión (en las filas de vendedores y en la de totales). `simbolo`: la
+// moneda del total y de la comisión (US$ en vendedores, $ en salón)
+export function CeldaTotal({ valor, comision, total = false, simbolo = 'US$' }) {
     return (
         <td className={claseCelda(true, true, total)}>
             <Monto valor={valor} columna="total" />
             {comision != null && (
                 <div className={`text-[11px] leading-4 ${comision > 0 ? 'font-bold text-sky-700' : 'font-normal text-slate-300'}`}>
-                    {comision > 0 ? `${total ? 'Comisiones' : 'Comisión'} US$ ${money(comision)}` : 'Sin comisión'}
+                    {comision > 0 ? `${total ? 'Comisiones' : 'Comisión'} ${simbolo} ${money(comision)}` : 'Sin comisión'}
                 </div>
             )}
         </td>
@@ -290,11 +300,11 @@ export function PastillaFranja({ valor, franjas }) {
     );
 }
 
-// Cuánto le falta para la próxima franja
-export function FaltaParaFranja({ total, franjas }) {
+// Cuánto le falta para la próxima franja. `simbolo`: la moneda del total (salón va en pesos)
+export function FaltaParaFranja({ total, franjas, simbolo = 'US$' }) {
     const proxima = franjas[franjaDe(total, franjas) + 1];
     if (!proxima) return <span>{franjas.length === 0 ? 'Sin franjas de comisión cargadas' : 'En la franja más alta'}</span>;
-    return <span>Faltan <b className="font-bold text-slate-600 tabular-nums">US$ {money(proxima.desde - r2(total))}</b> para la siguiente franja ({proxima.texto})</span>;
+    return <span>Faltan <b className="font-bold text-slate-600 tabular-nums">{simbolo} {money(proxima.desde - r2(total))}</b> para la siguiente franja ({proxima.texto})</span>;
 }
 
 // Encabezado de la columna del vendedor: el título sobre las fotos y cada franja centrada sobre su tramo de

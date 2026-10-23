@@ -5,7 +5,7 @@ import api from '../../../services/apiClient';
 import { errorDe, INPUT, BTN_PRIMARIO, BTN_SECUNDARIO } from './solicitudesComunes';
 import {
     MESES, SIMBOLO, ALTO_FILA, ESTILOS, entradaMes, rachaAntesDe, money, r2, diaMes,
-    textoFranja, comisionDe, escalaDe, FotoVendedor, PastillaGanador, PastillaRacha, TiraGanadores, Celda, CeldaTotal,
+    comisionDe, escalaDe, FotoVendedor, PastillaGanador, PastillaRacha, TiraGanadores, Celda, CeldaTotal,
     BarraFranjas, PastillaFranja, FaltaParaFranja, EncabezadoFranjas, useOrdenAnimado, useProgreso,
     useCotizacionMes, CotizacionMes, SelectorMes,
 } from './comisionesComunes';
@@ -17,11 +17,13 @@ import {
    vendedores de salón (/vendedores/salon, tabla VentasSalon):
      · VENDIDO    = la suma de sus ventas del mes (por la fecha de la venta),
                     sin las anuladas, en cada moneda.
-     · TOTAL UNIFICADO EN US$ = US$ vendido + $ vendido ÷ cotización: la del
-                    día en el mes en curso, la última del mes en uno cerrado.
-     · FRANJAS    = las de la tabla VentasSalonFranjas (las cambia un Admin
-                    acá mismo). El % de la franja alcanzada va sobre TODO el
-                    total, como en vendedores.
+     · TOTAL DEL MES EN $ = $ vendido + US$ vendido × cotización: la del
+                    día en que se mira el reporte, para cualquier mes (23/10).
+     · FRANJAS    = desde qué total del mes en pesos se paga cada comisión,
+                    un MONTO FIJO en pesos (23/10/2026; antes un % sobre el
+                    total en US$). Se cobra la franja más alta alcanzada, no
+                    se suman. Las cambia un Admin acá mismo (ConfiguracionGlobal
+                    SALON_FRANJAS_COMISION_UYU, ventasSalonService.franjas).
      · GANADORES  = el primero de cada mes, desde el primer mes con ventas.
      · Al tocar un vendedor se ven sus ventas del mes.
    ══════════════════════════════════════════════════════════════════════ */
@@ -29,16 +31,19 @@ import {
 const fechaCorta = (f) => { const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(f || '')); return m ? `${m[3]}/${m[2]}` : ''; };
 const claveFila = (v) => `U${v.idUsuario}`;
 const vendido = (v, moneda) => Number(v?.monedas?.[moneda]?.vendido) || 0;
-const totalDe = (v, cotizacion) => (cotizacion > 0 ? vendido(v, 'USD') + vendido(v, 'UYU') / cotizacion : null);
+// [23/10/2026] El total del mes va en pesos: lo vendido en dólares se pasa a pesos con la cotización del mes
+const totalDe = (v, cotizacion) => (cotizacion > 0 ? vendido(v, 'UYU') + vendido(v, 'USD') * cotizacion : null);
+// El texto de cada franja: la comisión que paga
+const textoMonto = (monto) => `$ ${Number(monto).toLocaleString('es-UY', { maximumFractionDigits: 2 })}`;
 
 // Editor de franjas (solo Admin): la lista completa se reemplaza al guardar
 function EditorFranjas({ franjas, onCerrar, onGuardado }) {
-    const [filas, setFilas] = useState(() => (franjas.length ? franjas : [{ desde: '', pct: '' }]).map(f => ({ desde: String(f.desde), pct: String(f.pct).replace('.', ',') })));
+    const [filas, setFilas] = useState(() => (franjas.length ? franjas : [{ desde: '', monto: '' }]).map(f => ({ desde: String(f.desde), monto: String(f.monto).replace('.', ',') })));
     const [guardando, setGuardando] = useState(false);
     const cambiar = (k, campo, valor) => setFilas(fs => fs.map((f, j) => (j === k ? { ...f, [campo]: valor } : f)));
     const guardar = async () => {
-        const lista = filas.filter(f => f.desde !== '' || f.pct !== '')
-            .map(f => ({ desde: Number(String(f.desde).replace(/\./g, '').replace(',', '.')), pct: Number(String(f.pct).replace(',', '.')) }));
+        const lista = filas.filter(f => f.desde !== '' || f.monto !== '')
+            .map(f => ({ desde: Number(String(f.desde).replace(/\./g, '').replace(',', '.')), monto: Number(String(f.monto).replace(/\./g, '').replace(',', '.')) }));
         if (!window.confirm('Las franjas nuevas cambian la comisión de TODOS los meses que se miren en esta pantalla, también los ya cerrados. ¿Guardar?')) return;
         setGuardando(true);
         try {
@@ -54,17 +59,17 @@ function EditorFranjas({ franjas, onCerrar, onGuardado }) {
             <div className="flex items-start justify-between gap-3 mb-2">
                 <div>
                     <h2 className="text-sm font-black text-slate-700">Franjas de comisión de salón</h2>
-                    <p className="text-xs text-slate-500">Desde qué total unificado en US$ del mes aplica cada %. El % va sobre todo el total, no por tramos.</p>
+                    <p className="text-xs text-slate-500">Desde qué total del mes, en pesos, se paga cada comisión (un monto fijo en pesos). Se cobra solo la franja más alta que alcanza el vendedor, no se suman.</p>
                 </div>
                 <button onClick={onCerrar} className="text-xs font-bold text-slate-500 hover:underline">Cerrar sin guardar</button>
             </div>
             <div className="space-y-2 max-w-md">
                 {filas.map((f, k) => (
                     <div key={k} className="flex items-center gap-2">
-                        <span className="text-xs text-slate-500 w-20">Desde US$</span>
-                        <input value={f.desde} onChange={e => cambiar(k, 'desde', e.target.value)} inputMode="decimal" className={`${INPUT} !w-32 tabular-nums`} placeholder="0" />
-                        <input value={f.pct} onChange={e => cambiar(k, 'pct', e.target.value)} inputMode="decimal" className={`${INPUT} !w-20 tabular-nums`} placeholder="1" />
-                        <span className="text-xs text-slate-500">%</span>
+                        <span className="text-xs text-slate-500 w-16">Desde $</span>
+                        <input value={f.desde} onChange={e => cambiar(k, 'desde', e.target.value)} inputMode="decimal" className={`${INPUT} !w-32 tabular-nums`} placeholder="200000" aria-label={`Franja ${k + 1}: total del mes desde, en pesos`} />
+                        <span className="text-xs text-slate-500">paga $</span>
+                        <input value={f.monto} onChange={e => cambiar(k, 'monto', e.target.value)} inputMode="decimal" className={`${INPUT} !w-28 tabular-nums`} placeholder="5000" aria-label={`Franja ${k + 1}: comisión en pesos`} />
                         <button onClick={() => setFilas(fs => fs.filter((_, j) => j !== k))} className="p-1.5 rounded-lg hover:bg-red-50 text-red-500" title="Quitar esta franja">
                             <Trash2 size={14} />
                         </button>
@@ -72,7 +77,7 @@ function EditorFranjas({ franjas, onCerrar, onGuardado }) {
                 ))}
             </div>
             <div className="mt-3 flex flex-wrap gap-2">
-                <button onClick={() => setFilas(fs => [...fs, { desde: '', pct: '' }])} className={BTN_SECUNDARIO}><Plus size={13} /> Agregar franja</button>
+                <button onClick={() => setFilas(fs => [...fs, { desde: '', monto: '' }])} className={BTN_SECUNDARIO}><Plus size={13} /> Agregar franja</button>
                 <button onClick={guardar} disabled={guardando} className={BTN_PRIMARIO}>Guardar franjas</button>
             </div>
         </div>
@@ -116,9 +121,12 @@ export default function VentasSalonComisiones() {
     const [perfil, setPerfil] = useState(null);
     const [editarFranjas, setEditarFranjas] = useState(false);
     const [abierto, setAbierto] = useState(null);       // idUsuario con sus ventas desplegadas
-    const { cotizacion, cotFecha, esMesActual, cargandoCot, refrescarCotizacion } = useCotizacionMes(anio, mes);
+    // [23/10/2026] Una sola cotización para cualquier mes: la del día en que se mira el reporte (pedido de la usuaria).
+    // Por eso se pide la del mes en curso; esMesActual sigue siendo el del mes elegido (ganador provisorio, racha…).
+    const { cotizacion, cotFecha, cargandoCot, refrescarCotizacion } = useCotizacionMes(hoy.getFullYear(), hoy.getMonth() + 1);
+    const esMesActual = anio === hoy.getFullYear() && mes === hoy.getMonth() + 1;
 
-    const aFranjas = (lista) => (lista || []).map(f => ({ ...f, texto: textoFranja(f.pct) }));
+    const aFranjas = (lista) => (lista || []).map(f => ({ ...f, texto: textoMonto(f.monto) }));
     useEffect(() => {
         api.get('/ventas-salon/mi-perfil').then(r => setPerfil(r.data.data)).catch(() => {});
         api.get('/ventas-salon/franjas').then(r => setFranjas(aFranjas(r.data.data))).catch(e => toast.error(errorDe(e)));
@@ -170,7 +178,7 @@ export default function VentasSalonComisiones() {
         USD: r2(data.reduce((s, v) => s + vendido(v, 'USD'), 0)),
         ventas: data.reduce((s, v) => s + v.ventas, 0),
     }), [data]);
-    const enDolares = (valor) => (cotizacion > 0 ? valor / cotizacion : null);
+    const enPesos = (valor) => (cotizacion > 0 ? valor * cotizacion : null);
 
     const escala = useMemo(() => escalaDe(franjas, data.reduce((m, v) => Math.max(m, totalDe(v, cotizacion) || 0), 0)), [franjas, data, cotizacion]);
     const totalComisiones = cotizacion > 0 ? r2(data.reduce((s, v) => s + comisionDe(totalDe(v, cotizacion), franjas), 0)) : null;
@@ -221,11 +229,11 @@ export default function VentasSalonComisiones() {
                 </div>
                 <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
                     {perfil?.editaFranjas && (
-                        <button onClick={() => setEditarFranjas(x => !x)} className={BTN_SECUNDARIO} title="Cambiar desde qué total aplica cada % de comisión">
+                        <button onClick={() => setEditarFranjas(x => !x)} className={BTN_SECUNDARIO} title="Cambiar desde qué total del mes, en pesos, se paga cada comisión">
                             <Settings2 size={13} /> Franjas de comisión
                         </button>
                     )}
-                    <CotizacionMes cotizacion={cotizacion} cotFecha={cotFecha} esMesActual={esMesActual} nombreMes={nombreMes}
+                    <CotizacionMes cotizacion={cotizacion} cotFecha={cotFecha} esMesActual nombreMes={nombreMes}
                         cargandoCot={cargandoCot} onRefrescar={refrescarCotizacion} />
                     <SelectorMes anio={anio} mes={mes} direccion={direccion} loading={loading}
                         puedeAtras={indiceMes > primerMes} puedeAdelante={indiceMes < indiceHoy} onMover={mover}
@@ -245,7 +253,7 @@ export default function VentasSalonComisiones() {
             )}
 
             <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
-                {ganadores.length > 0 && <TiraGanadores meses={ganadores} anio={anio} mes={mes} onElegir={irA} />}
+                {ganadores.length > 0 && <TiraGanadores meses={ganadores} anio={anio} mes={mes} onElegir={irA} simbolo="$" />}
                 <div key={vuelta} className="overflow-x-auto animado-mes" style={entradaMes(direccion, 40, '.4s')}>
                     <table className="w-full text-sm">
                         <thead>
@@ -255,8 +263,8 @@ export default function VentasSalonComisiones() {
                                 <th className="text-center font-bold px-3 py-3 border-l border-slate-200 whitespace-nowrap">{SIMBOLO.USD} vendido</th>
                                 <th className="text-center font-bold px-3 py-3 border-l border-slate-200 whitespace-nowrap">Ventas</th>
                                 <th className="text-center font-bold pl-3 pr-4 py-3 border-l border-slate-200 whitespace-nowrap text-slate-700"
-                                    title="US$ vendido + $ vendido ÷ cotización: la del día en el mes en curso, la última del mes en un mes cerrado">
-                                    Total unificado en US$
+                                    title="$ vendido + US$ vendido × cotización: la del día en el mes en curso, la última del mes en un mes cerrado">
+                                    Total del mes en $
                                 </th>
                             </tr>
                         </thead>
@@ -299,12 +307,12 @@ export default function VentasSalonComisiones() {
                                                         <>
                                                             <BarraFranjas valor={total * progreso} escala={escala} franjas={franjas} />
                                                             <div className="text-[11px] leading-4 text-slate-400 truncate">
-                                                                <FaltaParaFranja total={total} franjas={franjas} />
+                                                                <FaltaParaFranja total={total} franjas={franjas} simbolo="$" />
                                                                 {esLider && lider.segundo && (
-                                                                    <> · {esMesActual ? 'Le lleva' : 'Le sacó'} <b className="font-bold text-slate-600 tabular-nums">US$ {money(lider.ventaja)}</b> a {lider.segundo.nombre}</>
+                                                                    <> · {esMesActual ? 'Le lleva' : 'Le sacó'} <b className="font-bold text-slate-600 tabular-nums">$ {money(lider.ventaja)}</b> a {lider.segundo.nombre}</>
                                                                 )}
                                                                 {esSegundo && (
-                                                                    <> · A <b className="font-bold text-slate-600 tabular-nums">US$ {money(lider.ventaja)}</b> del primer lugar</>
+                                                                    <> · A <b className="font-bold text-slate-600 tabular-nums">$ {money(lider.ventaja)}</b> del primer lugar</>
                                                                 )}
                                                             </div>
                                                         </>
@@ -313,10 +321,10 @@ export default function VentasSalonComisiones() {
                                                     )}
                                                 </div>
                                             </td>
-                                            <Celda valor={vendido(v, 'UYU')} columna="vendido" primera enDolares={enDolares(vendido(v, 'UYU'))} />
-                                            <Celda valor={vendido(v, 'USD')} columna="vendido" primera />
+                                            <Celda valor={vendido(v, 'UYU')} columna="vendido" primera />
+                                            <Celda valor={vendido(v, 'USD')} columna="vendido" primera enPesos={enPesos(vendido(v, 'USD'))} />
                                             <td className="px-3 py-2 text-center tabular-nums border-l border-slate-100 text-slate-600">{v.ventas}</td>
-                                            <CeldaTotal valor={total} comision={total != null ? comisionDe(total, franjas) : null} />
+                                            <CeldaTotal valor={total} comision={total != null ? comisionDe(total, franjas) : null} simbolo="$" />
                                         </tr>
                                         {abiertoEste && <DetalleVentas idUsuario={v.idUsuario} anio={anio} mes={mes} columnas={COLUMNAS} />}
                                     </React.Fragment>
@@ -327,10 +335,10 @@ export default function VentasSalonComisiones() {
                             <tfoot>
                                 <tr className="bg-slate-50 border-t-2 border-slate-200 font-black">
                                     <td className="px-4 py-3 text-[11px] uppercase tracking-wider text-slate-500">Total</td>
-                                    <Celda valor={tot.UYU} columna="vendido" total primera enDolares={enDolares(tot.UYU)} />
-                                    <Celda valor={tot.USD} columna="vendido" total primera />
+                                    <Celda valor={tot.UYU} columna="vendido" total primera />
+                                    <Celda valor={tot.USD} columna="vendido" total primera enPesos={enPesos(tot.USD)} />
                                     <td className="px-3 py-3 text-center tabular-nums border-l border-slate-200 text-slate-600">{tot.ventas}</td>
-                                    <CeldaTotal valor={cotizacion > 0 ? r2(tot.USD + tot.UYU / cotizacion) : null} comision={totalComisiones} total />
+                                    <CeldaTotal valor={cotizacion > 0 ? r2(tot.UYU + tot.USD * cotizacion) : null} comision={totalComisiones} total simbolo="$" />
                                 </tr>
                             </tfoot>
                         )}
@@ -342,13 +350,13 @@ export default function VentasSalonComisiones() {
                 <Users size={13} className="mt-0.5 shrink-0" />
                 <span>
                     <b>Vendido</b> es la suma de las ventas de promos que cada vendedor cargó en «Ventas de salón» con fecha de este mes, sin las anuladas.
-                    {' '}Tocá un vendedor para ver sus ventas. <b>Total unificado en US$</b> suma lo vendido en dólares y lo vendido en pesos pasado a dólares
+                    {' '}Tocá un vendedor para ver sus ventas. <b>Total del mes en $</b> suma lo vendido en pesos y lo vendido en dólares pasado a pesos
                     {cotizacion
-                        ? <> con {esMesActual ? 'la cotización del día' : `la última cotización de ${nombreMes}`} ({cotFecha ? `${diaMes(cotFecha)}, ` : ''}<b>$ {money(cotizacion)}</b>).</>
+                        ? <> con la cotización del día en que se mira, para cualquier mes ({cotFecha ? `${diaMes(cotFecha)}, ` : ''}<b>$ {money(cotizacion)}</b>).</>
                         : <>; falta la cotización para calcularlo.</>}
-                    {' '}<b>Comisión:</b> el porcentaje de la franja alcanzada sobre todo el total unificado
-                    {franjas.length > 0 ? <> ({franjas.map(f => `desde US$ ${f.desde.toLocaleString('es-UY')}, ${f.texto}`).join('; ')}).</> : <> (sin franjas cargadas).</>}
-                    {' '}<b>Ganadores:</b> el primero de cada mes por total unificado; en el mes en curso es provisorio.
+                    {' '}<b>Comisión:</b> el monto fijo de la franja más alta que alcanza el total del mes (no se suman)
+                    {franjas.length > 0 ? <> ({franjas.map(f => `desde $ ${f.desde.toLocaleString('es-UY')}, ${f.texto}`).join('; ')}).</> : <> (sin franjas cargadas).</>}
+                    {' '}<b>Ganadores:</b> el primero de cada mes por total del mes en pesos; en el mes en curso es provisorio.
                     {' '}Estas ventas se cargan a mano y no se cruzan con las facturas: no cambian «Ventas por vendedor» ni Contabilidad.
                 </span>
             </div>

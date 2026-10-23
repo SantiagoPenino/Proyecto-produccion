@@ -20,6 +20,7 @@ import Selector from '../../ui/Selector';
 import SelectorFecha from '../../ui/SelectorFecha';
 import EstadoProduccionPanel from './EstadoProduccionPanel';
 import TizadaProBloque from './TizadaProBloque';
+import FallasDisenoBloque from './FallasDisenoBloque';   // [23/10/2026] falla del pedido por el diseño (puntos del diseñador)
 import { HojaMedidas } from '../ConfiguradorMedidas';   // [MEDIDAS]
 import { REFRESCAR_SI_MAS_DE_MS, cargarPerfil, perfilPrecargado, tomarPrecarga, verPrecarga } from './solicitudPrecarga';
 // La grilla con el panel "Estado para producción" al costado era lo último de fichaPedido.css (fp-det-grid /
@@ -671,6 +672,9 @@ export function ProductoTab({ s, p, n, id, user, perfil, busy, abierta, puedeVen
                         ? sinEnviar.filter(pa => ['BORDADO', 'DTF', 'TPU'].includes(pa.Tipo) && !archivosDe(a => a.ParteID === pa.ParteID && a.Rol === 'ARTE_CLIENTE').length).map(pa => pa.ParteID)
                         : [])} />
             )}
+
+            {/* [23/10/2026] Falla del pedido por culpa del diseño: resta 1 punto al diseñador (Bandeja de Diseño › Tiempos y puntos) */}
+            <FallasDisenoBloque s={s} p={p} user={user} perfil={perfil} busy={busy} hacer={hacer} />
 
         </div>
             <aside className="min-[1101px]:sticky min-[1101px]:top-4 min-[1101px]:max-h-[calc(100vh-2rem)] min-[1101px]:overflow-y-auto">

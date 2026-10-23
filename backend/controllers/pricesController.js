@@ -18,6 +18,11 @@ const getBasePrices = async (req, res) => {
                    -- [19/10] El área del grupo: Precios Estándar la usa para saber qué artículos se
                    -- cobran por puntadas (Bordado) y no por este precio
                    LTRIM(RTRIM(MAP.AreaID_Interno)) as AreaGrupo,
+                   -- [23/10] La unidad de medida del área (Areas.UM: m, m2, punt, baj, prend, u):
+                   -- Precios Estándar la muestra en las escalas ("Min 100 m" en vez de "Min 100 u.")
+                   LOWER(LTRIM(RTRIM(AR.UM))) as AreaUM,
+                   -- [23/10] Los productos de salón (CodStock 2.2.1.2) van en su propio grupo, con escalas
+                   LTRIM(RTRIM(A.CodStock)) as CodStock,
                    PB.ID, PB.Precio, CASE WHEN PB.MonIdMoneda = 1 THEN 'UYU' ELSE 'USD' END AS Moneda, PB.MonIdMoneda,
                    A.ProIdProducto, A.Mostrar,
                    -- [28/08] El portal descarta los borrados (ver /api/precios-publicos).
@@ -32,6 +37,7 @@ const getBasePrices = async (req, res) => {
             FROM Articulos A
             LEFT JOIN StockArt SA ON A.CodStock = SA.CodStock
             LEFT JOIN ConfigMapeoERP MAP ON MAP.CodigoERP = A.Grupo COLLATE Database_Default
+            LEFT JOIN Areas AR ON LTRIM(RTRIM(AR.AreaID)) = LTRIM(RTRIM(MAP.AreaID_Interno)) COLLATE Database_Default
             LEFT JOIN PreciosBase PB ON A.ProIdProducto = PB.ProIdProducto
             ORDER BY A.SupFlia, A.Grupo, A.CodArticulo, PB.MonIdMoneda
         `);
@@ -292,9 +298,8 @@ const saveTieredPricesBulk = async (req, res) => {
 // GET /prices/por-cantidad[?inactivos=1]             → { areas: [{ area, nombre, articulos }] } (las pestañas)
 // GET /prices/por-cantidad?area=DF[&inactivos=1]     → { area, nombre, franjas, aviso, articulos: [...] }
 // GET /prices/por-cantidad?area=TODAS[&inactivos=1]  → { secciones: [la de cada área, en el orden de las pestañas] }
-// Las puntadas de la tabla "Tarifa por puntadas" (Precios por cantidad y el recuadro de Precios Estándar):
-// de a mil hasta 10.000 y después saltos más grandes. Una sola lista para las dos pantallas.
-const PUNTADAS_REFERENCIA_BORDADO = [3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000, 12000, 15000, 20000, 25000, 30000];
+// La tabla "Tarifa por puntadas" (Precios por cantidad y el recuadro de Precios Estándar) muestra
+// una columna por franja desde el 23/10/2026: ya no usa puntadas de referencia.
 // Las bajadas EN TOTAL (bajadas por prenda × prendas) de la tabla de estampado
 const BAJADAS_REFERENCIA_ESTAMPADO = [1, 5, 9, 10, 15, 20, 30, 40, 50, 100, 200];
 
@@ -369,10 +374,12 @@ const matrizDeArea = async (pool, { area, nombre, grupo }, inactivos, globales, 
         conFranjas = false;
         tarifa = { tipo: 'bordado', ...TARIFAS.bordado.leer(cfg, globales) };
         const matriz = articulos.find(a => a.CodArticulo === tarifa.codMatriz && Number(a.Precio) > 0);
-        aviso = `${nombre} se cobra por puntadas, por bordado: $ ${tarifa.precioCada1000} cada ${miles(tarifa.intervalo)} puntadas (o fracción) hasta `
-            + `${miles(tarifa.tramo2Desde)} y $ ${tarifa.precioTramo2} cada ${miles(tarifa.intervalo)} de ahí en más. `
-            // El mínimo es regla del ingreso (guía de Emblemas): el motor no lo cobra
-            + 'Mínimo 5 bordados por diseño. '
+        const ultima = tarifa.franjas[tarifa.franjas.length - 1];
+        aviso = `${nombre} se cobra por puntadas, por bordado, por franjas: `
+            + tarifa.franjas.map(f => `hasta ${miles(f.hasta)} $ ${miles(f.precio)}`).join(', ')
+            + `; más de ${miles(ultima.hasta)}, $ ${miles(ultima.precio)} y $ ${miles(tarifa.precioExcedente)} cada ${miles(tarifa.intervalo)} puntadas (o fracción) de más. `
+            // [23/10/2026] El mínimo por diseño es configurable (BOR_MINIMO_BORDADOS, 0 = sin mínimo)
+            + (tarifa.minimoBordados > 0 ? `Mínimo ${tarifa.minimoBordados} bordados por diseño: con menos, se cobran ${tarifa.minimoBordados}. ` : 'Sin mínimo de bordados por diseño. ')
             + (matriz ? `Matriz $ ${miles(r2(matriz.Precio))} por diseño` : 'La matriz no tiene precio de lista cargado')
             + (tarifa.matrizGratisDesde > 0 ? `, sin cargo desde ${tarifa.matrizGratisDesde} bordados.` : '.');
     } else if (areasDe('AREAS_CALCULO_BAJADAS', 'EST').includes(area)) {
@@ -510,23 +517,25 @@ const getPreciosPorCantidad = async (req, res) => {
 const TARIFAS = {
     bordado: {
         nombre: 'Tarifa de bordado',
+        // [23/10/2026] Por franjas de puntadas (pricingService.tarifaBordado). Las claves del cobro cada
+        // 1.000 de antes (BOR_PRECIO_CADA_1000_UYU, BOR_PUNTADAS_TRAMO2_DESDE, BOR_PRECIO_CADA_1000_TRAMO2_UYU)
+        // quedan en la tabla sin uso.
         campos: {
-            precioCada1000:    { clave: 'BOR_PRECIO_CADA_1000_UYU',        texto: 'el precio cada 1.000 puntadas', descripcion: 'Bordado: $ por cada 1.000 puntadas (o fracción), por bordado, hasta BOR_PUNTADAS_TRAMO2_DESDE' },
-            tramo2Desde:       { clave: 'BOR_PUNTADAS_TRAMO2_DESDE',       texto: 'desde cuántas puntadas cambia', descripcion: 'Bordado: desde cuántas puntadas rige el precio del segundo tramo', entero: true },
-            precioTramo2:      { clave: 'BOR_PRECIO_CADA_1000_TRAMO2_UYU', texto: 'el precio cada 1.000 desde ahí', descripcion: 'Bordado: $ por cada 1.000 puntadas (o fracción) desde BOR_PUNTADAS_TRAMO2_DESDE' },
-            matrizGratisDesde: { clave: 'BOR_MATRIZ_GRATIS_DESDE',         texto: 'desde cuántos bordados la matriz va sin cargo', descripcion: 'Bordado: desde cuántos bordados la matriz va sin cargo (0 = nunca)', entero: true },
+            precioExcedente:   { clave: 'BOR_PRECIO_CADA_1000_EXCEDENTE_UYU', texto: 'el precio cada 1.000 de más', descripcion: 'Bordado: $ por cada 1.000 puntadas (o fracción) por encima de la última franja de BOR_FRANJAS_PUNTADAS' },
+            matrizGratisDesde: { clave: 'BOR_MATRIZ_GRATIS_DESDE',            texto: 'desde cuántos bordados la matriz va sin cargo', descripcion: 'Bordado: desde cuántos bordados la matriz va sin cargo (0 = nunca)', entero: true },
+            minimoBordados:    { clave: 'BOR_MINIMO_BORDADOS',                texto: 'el mínimo de bordados por diseño', descripcion: 'Bordado: mínimo de bordados por diseño (0 = sin mínimo)', entero: true },
         },
+        franjas: { clave: 'BOR_FRANJAS_PUNTADAS', descripcion: 'Bordado: franjas de puntadas, "hasta:precio" separados por coma (precio por bordado, en pesos)' },
         leer: (cfg, globales) => {
             const t = PricingService.tarifaBordado(cfg, 0);
             const cb = PricingService.configBordado(cfg);
             return {
-                precioCada1000: t.precio1, tramo2Desde: t.desde2, precioTramo2: t.precio2, intervalo: t.intervalo,
-                matrizGratisDesde: cb.matrizGratisDesde, codMatriz: cb.codMatriz, cargos: [...cb.cargos],
+                franjas: t.franjas, precioExcedente: t.precioExcedente, intervalo: t.intervalo,
+                matrizGratisDesde: cb.matrizGratisDesde, minimoBordados: cb.minimoBordados, codMatriz: cb.codMatriz, cargos: [...cb.cargos],
                 areas: String(globales.AREAS_BORDADO_PUNTADAS || 'BOR,EMB').split(',').map(s => s.trim().toUpperCase()).filter(Boolean),
-                referencia: PUNTADAS_REFERENCIA_BORDADO,
             };
         },
-        resumen: (x) => `$ ${x.precioCada1000} c/1000 hasta ${x.tramo2Desde}, $ ${x.precioTramo2} c/1000 después, matriz sin cargo desde ${x.matrizGratisDesde}`,
+        resumen: (x) => `franjas ${x.franjas.map(f => `hasta ${f.hasta} $ ${f.precio}`).join(', ')}; $ ${x.precioExcedente} c/1000 de más; matriz sin cargo desde ${x.matrizGratisDesde}; mínimo ${x.minimoBordados} bordados por diseño`,
     },
     estampado: {
         nombre: 'Tarifa de estampado',
@@ -579,15 +588,34 @@ const saveTarifa = async (req, res) => {
             if (c.entero && !Number.isInteger(n)) return res.status(400).json({ error: `Revisá ${c.texto}: tiene que ser un número entero.` });
             valores[campo] = Math.round(n * 100) / 100;
         }
+        const aGuardar = Object.entries(def.campos).map(([campo, c]) => ({ clave: c.clave, valor: String(valores[campo]), descripcion: c.descripcion }));
+        // [23/10/2026] Bordado: las franjas de puntadas, de menor a mayor, en una sola clave ("4000:70,8000:110")
+        if (def.franjas) {
+            const lista = Array.isArray(req.body?.franjas) ? req.body.franjas : [];
+            const franjas = [];
+            for (const [i, f] of lista.entries()) {
+                const hasta = Number(String(f?.hasta ?? '').replace(',', '.'));
+                const precio = Number(String(f?.precio ?? '').replace(',', '.'));
+                if (!Number.isInteger(hasta) || hasta <= 0) return res.status(400).json({ error: `Revisá la franja ${i + 1}: "hasta" tiene que ser un número entero de puntadas, mayor que cero.` });
+                if (!Number.isFinite(precio) || precio <= 0) return res.status(400).json({ error: `Revisá la franja ${i + 1}: el precio tiene que ser mayor que cero.` });
+                franjas.push({ hasta, precio: Math.round(precio * 100) / 100 });
+            }
+            if (franjas.length === 0) return res.status(400).json({ error: 'La tarifa tiene que tener al menos una franja.' });
+            franjas.sort((a, b) => a.hasta - b.hasta);
+            if (franjas.some((f, i) => i > 0 && f.hasta === franjas[i - 1].hasta)) return res.status(400).json({ error: 'Hay dos franjas con las mismas puntadas.' });
+            const valor = franjas.map(f => `${f.hasta}:${f.precio}`).join(',');
+            if (valor.length > 255) return res.status(400).json({ error: 'Son demasiadas franjas.' });
+            aGuardar.push({ clave: def.franjas.clave, valor, descripcion: def.franjas.descripcion });
+        }
         const pool = await getPool();
         const antes = await leerTarifa(pool, tipo);
         const tx = new sql.Transaction(pool);
         await tx.begin();
         try {
-            for (const [campo, c] of Object.entries(def.campos)) {
+            for (const c of aGuardar) {
                 await new sql.Request(tx)
                     .input('Clave', sql.VarChar(100), c.clave)
-                    .input('Valor', sql.VarChar(255), String(valores[campo]))
+                    .input('Valor', sql.VarChar(255), c.valor)
                     .input('Area', sql.VarChar(20), tipo === 'bordado' ? 'EMB' : 'EST')
                     .input('Desc', sql.NVarChar(500), c.descripcion)
                     .query(`MERGE dbo.ConfiguracionPrecios AS t

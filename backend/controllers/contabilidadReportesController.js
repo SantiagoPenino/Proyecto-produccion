@@ -390,6 +390,9 @@ const condAreasIn = (areas, expr, request) => {
     });
     return `${expr} IN (${names.join(', ')})`;
 };
+// [23/10/2026] El Dashboard de ventas (ventasDashboardController) filtra por el mismo VER POR
+exports.areasDeFiltro = areasDeFiltro;
+exports.condAreasIn = condAreasIn;
 
 // ─── GET /api/contabilidad/reportes/ventas-filtros ────────────────────────────
 exports.getFiltrosVentas = async (req, res) => {
@@ -993,16 +996,23 @@ exports.getTopClientes = async (req, res) => {
         r.input('limite', sql.Int, limite);
         // area = un área puntual; sector = todas las áreas de ese sector
         const condArea = condAreasIn(await areasDeFiltro(params), 'l.Area', r);
+        // [23/10/2026] ?vendedor=<cédula>: solo los clientes de esa cartera (Clientes.VendedorID). Lo manda el
+        // Dashboard de ventas; Administración no lo manda y el ranking queda igual que siempre. Con vendedor,
+        // el total y el % de participación son sobre su cartera; mostrador y receptores sin ficha no entran.
+        const vendedor = String(req.query.vendedor || '').trim();
+        if (vendedor) r.input('vendedor', sql.NVarChar(50), vendedor);
 
         const result = await r.query(`
             ${batchDocsClienteMonto(condArea)}
             ;WITH PorCliente AS (
-                SELECT CliId,
-                       SUM(Monto) AS Monto,
-                       COUNT(DISTINCT DocIdDocumento) AS CantidadDocumentos,
-                       COUNT(DISTINCT CASE WHEN Signo = -1 THEN DocIdDocumento END) AS CantidadNC
-                FROM #monto
-                GROUP BY CliId
+                SELECT m.CliId,
+                       SUM(m.Monto) AS Monto,
+                       COUNT(DISTINCT m.DocIdDocumento) AS CantidadDocumentos,
+                       COUNT(DISTINCT CASE WHEN m.Signo = -1 THEN m.DocIdDocumento END) AS CantidadNC
+                FROM #monto m
+                ${vendedor ? `JOIN dbo.Clientes cv WITH(NOLOCK) ON cv.CliIdCliente = TRY_CAST(m.CliId AS INT)
+                                AND LTRIM(RTRIM(cv.VendedorID)) = @vendedor` : ''}
+                GROUP BY m.CliId
             ),
             AreaPorCliente AS (
                 SELECT CliId, Area,
@@ -1017,6 +1027,8 @@ exports.getTopClientes = async (req, res) => {
                      ELSE RTRIM(ISNULL(c.Nombre, 'Cliente #' + pc.CliId)) END AS Nombre,
                 -- CAST previo: CodCliente es numérico y sin él ISNULL(NULL,'') devuelve 0
                 RTRIM(ISNULL(CAST(c.CodCliente AS VARCHAR(30)), '')) AS CodCliente,
+                -- [23/10/2026] El IDCliente (alias, ej. 'RodrigoFalero'): el primer dato con que se reconoce al cliente
+                NULLIF(LTRIM(RTRIM(c.IDCliente)), '') AS IDCliente,
                 CASE WHEN pc.CliId = 'M' OR pc.CliId IN (${CLIENTES_GENERICOS.map(x => `'${x}'`).join(', ')}) THEN 1 ELSE 0 END AS EsMostrador,
                 CASE WHEN pc.CliId LIKE 'R:%' THEN 1 ELSE 0 END AS EsSinFicha,
                 pc.Monto, pc.CantidadDocumentos, pc.CantidadNC,
@@ -1043,6 +1055,7 @@ exports.getTopClientes = async (req, res) => {
                 cliId: x.CliId, // clave de grupo: '<id>' | 'R:<RECEPTOR>' | 'M'
                 nombre: x.Nombre,
                 codCliente: x.CodCliente,
+                idCliente: x.IDCliente || null,
                 esMostrador: !!x.EsMostrador,
                 esSinFicha: !!x.EsSinFicha, // receptor real del CFE, sin ficha de cliente interno
                 monto: Number(x.Monto || 0),

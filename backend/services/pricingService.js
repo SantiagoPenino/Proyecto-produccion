@@ -16,6 +16,10 @@ const fmtPct = v => {
     return n.toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
 };
 
+// Franjas de bordado del pedido de la usuaria (23/10/2026), si ConfiguracionPrecios no tiene
+// BOR_FRANJAS_PUNTADAS: hasta 4.000 puntadas $ 70, hasta 8.000 $ 110, hasta 12.000 $ 160, hasta 18.000 $ 220
+const FRANJAS_BORDADO_DEFECTO = '4000:70,8000:110,12000:160,18000:220';
+
 class PricingService {
 
     static async getEtiquetasPerfiles(pool) {
@@ -158,24 +162,43 @@ class PricingService {
     }
 
     /**
-     * Tarifa de bordado por puntadas, POR BORDADO y en pesos (guía de Emblemas, 19/10/2026):
-     * $ 8 cada 1.000 puntadas o fracción hasta 10.000 y $ 6 cada 1.000 o fracción de ahí en más.
-     * La usan el motor (calculatePrice) y la tabla de Precios por cantidad. Claves de
-     * ConfiguracionPrecios; si faltan, los valores de la guía.
+     * Franjas de la tarifa de bordado (23/10/2026), de menor a mayor: [{ hasta, precio }].
+     * Clave BOR_FRANJAS_PUNTADAS de ConfiguracionPrecios, "hasta:precio" separados por coma
+     * ("4000:70,8000:110,12000:160,18000:220"); si falta o no se entiende, las del pedido de la usuaria.
+     */
+    static franjasBordado(priceConfigs) {
+        const leer = (texto) => String(texto || '').split(',')
+            .map(par => par.split(':').map(x => parseFloat(String(x).trim())))
+            .filter(([hasta, precio]) => Number.isFinite(hasta) && hasta > 0 && Number.isFinite(precio) && precio >= 0)
+            .map(([hasta, precio]) => ({ hasta, precio }))
+            .sort((a, b) => a.hasta - b.hasta);
+        const guardadas = leer(priceConfigs?.BOR_FRANJAS_PUNTADAS);
+        return guardadas.length > 0 ? guardadas : leer(FRANJAS_BORDADO_DEFECTO);
+    }
+
+    /**
+     * Tarifa de bordado por puntadas, POR BORDADO y en pesos. Desde el 23/10/2026, POR FRANJAS
+     * (franjasBordado): el bordado paga el precio de la primera franja que lo contiene ("hasta 4.000
+     * puntadas $ 70"). Por encima de la última franja: su precio + BOR_PRECIO_CADA_1000_EXCEDENTE_UYU
+     * cada BOR_PUNTADAS_INTERVALO puntadas o fracción de más — PROVISORIO hasta que la usuaria defina ese
+     * caso; si falta la clave, sigue la misma suba que la última franja (de 12.000 a 18.000 suben $ 60:
+     * $ 10 cada 1.000). Sin puntadas, $ 0 (como antes). Antes (19/10): $ 8 cada 1.000 hasta 10.000 y $ 6
+     * cada 1.000 de ahí en más (BOR_PRECIO_CADA_1000_UYU / _TRAMO2_UYU, ya no se usan). La usan el motor
+     * (calculatePrice), Precios por cantidad y Precios Estándar (tarifasCobro.js repite la cuenta).
      */
     static tarifaBordado(priceConfigs, puntadas) {
         const num = (clave, def) => { const v = parseFloat(priceConfigs?.[clave]); return Number.isFinite(v) && v >= 0 ? v : def; };
         const intervalo = num('BOR_PUNTADAS_INTERVALO', 1000) || 1000;
-        const precio1 = num('BOR_PRECIO_CADA_1000_UYU', 8);
-        const desde2 = num('BOR_PUNTADAS_TRAMO2_DESDE', 10000);
-        const precio2 = num('BOR_PRECIO_CADA_1000_TRAMO2_UYU', 6);
+        const franjas = PricingService.franjasBordado(priceConfigs);
+        const ultima = franjas[franjas.length - 1];
+        const anterior = franjas.length > 1 ? franjas[franjas.length - 2] : { hasta: 0, precio: 0 };
+        const subaUltima = r4((ultima.precio - anterior.precio) / (ultima.hasta - anterior.hasta) * intervalo);
+        const precioExcedente = num('BOR_PRECIO_CADA_1000_EXCEDENTE_UYU', Math.max(0, subaUltima));
         const p = Math.max(0, Number(puntadas) || 0);
-        const bloques1 = Math.ceil(Math.min(p, desde2) / intervalo);
-        const bloques2 = Math.ceil(Math.max(0, p - desde2) / intervalo);
-        return {
-            puntadas: p, intervalo, desde2, precio1, precio2, bloques1, bloques2,
-            precioUYU: r4(bloques1 * precio1 + bloques2 * precio2),
-        };
+        const franja = p > 0 ? franjas.find(f => p <= f.hasta) || null : null;
+        const bloquesExcedente = p > ultima.hasta ? Math.ceil((p - ultima.hasta) / intervalo) : 0;
+        const precioUYU = p <= 0 ? 0 : franja ? franja.precio : ultima.precio + bloquesExcedente * precioExcedente;
+        return { puntadas: p, intervalo, franjas, franja, precioExcedente, bloquesExcedente, precioUYU: r4(precioUYU) };
     }
 
     /**
@@ -200,10 +223,13 @@ class PricingService {
     static configBordado(priceConfigs) {
         const cargos = String(priceConfigs?.BOR_CARGOS_CON_LISTA ?? '1568,1631,1632').split(',').map(s => s.trim()).filter(Boolean);
         const gratis = parseFloat(priceConfigs?.BOR_MATRIZ_GRATIS_DESDE);
+        // [23/10/2026] Mínimo de bordados por diseño (guía de Emblemas: 5). 0 = sin mínimo.
+        const minimo = parseInt(priceConfigs?.BOR_MINIMO_BORDADOS, 10);
         return {
             cargos: new Set(cargos),
             codMatriz: String(priceConfigs?.BOR_COD_MATRIZ ?? '1568').trim(),
             matrizGratisDesde: Number.isFinite(gratis) ? gratis : 10,
+            minimoBordados: Number.isFinite(minimo) && minimo >= 0 ? minimo : 5,
         };
     }
 
@@ -274,6 +300,7 @@ class PricingService {
         // 1. Obtencion AreaID y Grupo si no vienen dados
         let resolvedAreaId = areaId ? areaId.toString().trim().toUpperCase() : null;
         let resolvedGrupo = null;
+        let resolvedCodStock = null;
         let resolvedProId = proIdProducto;
         
         if ((resolvedProId && resolvedProId > 0) || cleanCod) {
@@ -286,8 +313,8 @@ class PricingService {
                     queryArea = `
                         SELECT TOP 1 ProIdProducto,
                             (SELECT TOP 1 AreaID FROM Ordenes WHERE ProIdProducto = @ProId) as AreaID,
-                            Grupo
-                        FROM Articulos 
+                            Grupo, LTRIM(RTRIM(CodStock)) AS CodStock
+                        FROM Articulos
                         WHERE ProIdProducto = @ProId
                     `;
                 } else {
@@ -299,7 +326,7 @@ class PricingService {
                     queryArea = `
                         SELECT TOP 1 ProIdProducto,
                             (SELECT TOP 1 AreaID FROM Ordenes WHERE ProIdProducto = Articulos.ProIdProducto) as AreaID,
-                            Grupo,
+                            Grupo, LTRIM(RTRIM(CodStock)) AS CodStock,
                             (SELECT COUNT(*) FROM Articulos A2 WHERE LTRIM(RTRIM(A2.CodArticulo)) = @CodSearch) AS Candidatos
                         FROM Articulos
                         WHERE LTRIM(RTRIM(CodArticulo)) = @CodSearch
@@ -317,6 +344,7 @@ class PricingService {
                     if (!resolvedProId) resolvedProId = areaGrupoRes.recordset[0].ProIdProducto;
                     if (!resolvedAreaId) resolvedAreaId = areaGrupoRes.recordset[0].AreaID?.toString().trim().toUpperCase();
                     resolvedGrupo = areaGrupoRes.recordset[0].Grupo?.toString();
+                    resolvedCodStock = areaGrupoRes.recordset[0].CodStock || null;
                 }
             } catch (e) {
                 logger.warn("[PricingService] Error fetching AreaID/Grupo for " + (resolvedProId || cleanCod));
@@ -364,9 +392,9 @@ class PricingService {
         };
 
         // --- ESPECIAL: TARIFA BORDADO POR PUNTADAS ---
-        // Desde el 19/10/2026 es la de la guía de Emblemas (tarifaBordado): $ 8 cada 1.000 puntadas
-        // o fracción hasta 10.000 y $ 6 cada 1.000 de ahí en más. Antes: $ 50 hasta 5.000 y $ 10 cada
-        // 1.000 más. Los CARGOS del bordado (matriz, relieve 3D, aplicación: BOR_CARGOS_CON_LISTA) no
+        // Desde el 23/10/2026 por franjas de puntadas (tarifaBordado: hasta 4.000 $ 70, hasta 8.000 $ 110…).
+        // Del 19/10 al 23/10 fue la de la guía de Emblemas: $ 8 cada 1.000 puntadas o fracción hasta 10.000
+        // y $ 6 cada 1.000 de ahí en más. Antes: $ 50 hasta 5.000 y $ 10 cada 1.000 más. Los CARGOS del bordado (matriz, relieve 3D, aplicación: BOR_CARGOS_CON_LISTA) no
         // se cobran por puntadas sino por su precio de lista: antes caían acá y salían a la tarifa
         // mínima ($ 50 la matriz, sin puntadas).
         const isBordadoByDesc = variables._desc && variables._desc.toLowerCase().includes('bordado');
@@ -376,12 +404,24 @@ class PricingService {
         if ((areasBordado.includes(resolvedAreaId) || cleanCod === '109' || isBordadoByDesc) && !esCargoBordado) {
             // Usar el datoTecnicoValue si viene, sino fallback a variables.puntadas
             const totalPuntadas = parseFloat(datoTecnicoValue) || variables.puntadas || 0;
-            const priceBordadoUYU = PricingService.tarifaBordado(priceConfigs, totalPuntadas).precioUYU;
+            let priceBordadoUYU = PricingService.tarifaBordado(priceConfigs, totalPuntadas).precioUYU;
+
+            // [23/10/2026] MÍNIMO DE BORDADOS POR DISEÑO (configBordado.minimoBordados, 0 = sin mínimo). Cada orden
+            // de Bordado es un diseño y `cantidad` son sus bordados: con menos que el mínimo se cobra el mínimo
+            // (pedido de la usuaria: "cobra el mínimo", no frena el ingreso). Se reparte en el precio por bordado
+            // para que precio × cantidad dé lo mismo en todos los que cotizan (erpSyncService usa precioTotal; el
+            // modal de cotización, precio × cantidad): 3 bordados de $ 70 con mínimo 5 = 3 × $ 116,67 = $ 350.
+            let notaMinimo = '';
+            const bordadosLinea = Number(cantidad) || 0;
+            if (priceBordadoUYU > 0 && cfgBordado.minimoBordados > 0 && bordadosLinea > 0 && bordadosLinea < cfgBordado.minimoBordados) {
+                notaMinimo = ` · mínimo ${cfgBordado.minimoBordados} bordados por diseño: lleva ${bordadosLinea}, se cobran ${cfgBordado.minimoBordados} ($ ${priceBordadoUYU} c/u)`;
+                priceBordadoUYU = r4(priceBordadoUYU * cfgBordado.minimoBordados / bordadosLinea);
+            }
 
             precioBase = toTarget(priceBordadoUYU, 'UYU');
             monedaBaseOriginal = 'UYU';
-            breakdown.push({ tipo: 'OVERRIDE', valor: precioBase, desc: `Bordado por Puntadas (${totalPuntadas} p.)` });
-            overrideTecnico = { valor: precioBase, motivo: `Bordado por puntadas (${totalPuntadas} p.)` };
+            breakdown.push({ tipo: 'OVERRIDE', valor: precioBase, desc: `Bordado por Puntadas (${totalPuntadas} p.)${notaMinimo}` });
+            overrideTecnico = { valor: precioBase, motivo: `Bordado por puntadas (${totalPuntadas} p.)${notaMinimo}` };
         }
         else if (baseRes.recordset.length > 0) {
             monedaBaseOriginal = baseRes.recordset[0].Moneda || 'UYU';
@@ -546,6 +586,13 @@ class PricingService {
         let resolvedCategoria = resolvedAreaId;
         if (resolvedAreaId === 'DF') resolvedCategoria = 'DTF';
         if (resolvedAreaId === 'EST') resolvedCategoria = 'Estampados';
+        // [23/10/2026] Productos de salón (los del local: Articulos.CodStock 2.2.1.2, configurable en
+        // CODSTOCK_PRODUCTOS_SALON): no tienen área ni órdenes, así que se les da la categoría 'SALON' para
+        // que les aplique su perfil global de escalas (PerfilesPrecios.Categoria = 'SALON', "SALON
+        // ESCALONADOS"). Así un mismo producto puede tener precio por cantidad (x1, x10, x100) en vez de
+        // cargarlo como tres productos. Solo cambia a qué perfiles se mira, no el área.
+        const codStockSalon = String(globalConfigs['CODSTOCK_PRODUCTOS_SALON'] || '2.2.1.2').split(',').map(x => x.trim()).filter(Boolean);
+        if (!resolvedCategoria && resolvedCodStock && codStockSalon.includes(String(resolvedCodStock).trim())) resolvedCategoria = 'SALON';
 
         // Resolver AreaNombre del área actual para comparar contra perfiles que guardan nombre legible
         // (ej: Categoria = 'Sublimacion' en vez de 'SB')
