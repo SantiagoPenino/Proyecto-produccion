@@ -79,7 +79,8 @@ async function analizarArte(buffer) {
 }
 
 /**
- * Revisa los artes. artes: [{ nombre, buffer, campo }] · tipografias: GET /tipografias · piezas: las del molde.
+ * Revisa los artes. artes: [{ nombre, buffer, campo, piezas? }] · tipografias: GET /tipografias · piezas: las del molde.
+ * [PIEZAS DEL MODELO 26/10] a.piezas = las del modelo que imprime ese arte; sin eso, `piezas` (todo el molde, como antes).
  * Devuelve alarmas con el formato de las de TIZADA ({ codigo, frena, etapa, mensaje, donde }).
  */
 async function revisarArtes(artes, tipografias, piezas = []) {
@@ -96,14 +97,15 @@ async function revisarArtes(artes, tipografias, piezas = []) {
     // La base de TIZADA trae estas capas; sin "diseño" y "guias" el arte no está armado sobre la base
     const faltanCapas = ['diseño', 'guias'].filter(c => !r.capas.some(x => esCapa(x, c)));
     if (faltanCapas.length) { alarma(a, 'arte-sin-base', `El arte "${a.nombre}" no tiene las capas de la base de TIZADA (${faltanCapas.join(', ')}). Armalo sobre el archivo base que da TIZADA para esta prenda.`); continue; }
-    // Una mesa por pieza: cada pieza del molde tiene que aparecer en "guias"
+    // Una mesa por pieza: cada pieza del modelo tiene que aparecer en "guias"
+    const piezasArte = a.piezas || piezas || [];
     const enGuias = r.guias.map(g => clave(g.texto));
-    const sinMesa = (piezas || []).filter(pz => !enGuias.some(t => t === clave(pz) || t.includes(clave(pz))));
+    const sinMesa = piezasArte.filter(pz => !enGuias.some(t => t === clave(pz) || t.includes(clave(pz))));
     if (sinMesa.length) alarma(a, 'arte-pieza-sin-mesa', `El arte "${a.nombre}" no tiene mesa de trabajo para: ${sinMesa.join(', ')} (el nombre de la pieza va en la capa "guias", una mesa por pieza).`);
     // Una pieza por mesa: dos piezas en la misma mesa (ej. todo en una sola página) no es la base de TIZADA
     const mesaDe = (pz) => r.guias.find(g => { const t = clave(g.texto); return t === clave(pz) || t.includes(clave(pz)); })?.mesa;
     const porMesa = {};
-    (piezas || []).forEach(pz => { const m = mesaDe(pz); if (m) (porMesa[m] = porMesa[m] || []).push(pz); });
+    piezasArte.forEach(pz => { const m = mesaDe(pz); if (m) (porMesa[m] = porMesa[m] || []).push(pz); });
     const juntas = Object.entries(porMesa).filter(([, l]) => l.length > 1);
     if (juntas.length) alarma(a, 'arte-piezas-juntas', `El arte "${a.nombre}" tiene varias piezas en la misma mesa de trabajo (${juntas.map(([m, l]) => `mesa ${m}: ${l.join(', ')}`).join(' · ')}). TIZADA quiere una mesa por pieza, como en su archivo base.`);
     for (const l of r.letras) {

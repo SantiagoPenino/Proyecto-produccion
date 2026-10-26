@@ -6,7 +6,7 @@ import { solicitudesVendedorService as svc } from '../../../services/modules/sol
 import { fmtFechaHora } from '../../../utils/fechas';
 import { BTN_PRIMARIO, BTN_SECUNDARIO, INPUT, Miniatura, PiezaConArte, SEL_CAMPO, TarjetaPieza, avisarGuardado, claseSel, errorDe, piezaDelArte, useConfirmar, usePiezasArte } from './solicitudesComunes';
 import Selector from '../../ui/Selector';
-import ArteExtrasTabla from './ArteExtrasTabla';   // [EXTRAS EN LA TABLA 14/10] qué lleva cada diseño, en una sola tabla
+import ArteExtrasTabla, { claveObjeto, TIPO_DE } from './ArteExtrasTabla';   // [EXTRAS EN LA TABLA 14/10] qué lleva cada diseño, en una sola tabla
 import { MedidaDiseno, PlantillaAMedida } from './TizadaProAMedida';   // [A MEDIDA] pañuelos, toallas, banderas (13/10)
 
 /**
@@ -25,10 +25,14 @@ const ESTADO_ENVIO = {
     APLICANDO: { txt: 'Cargando en la solicitud', cls: 'bg-amber-100 text-amber-700 border-amber-200' },
     APLICADO: { txt: 'Tizada cargada', cls: 'bg-emerald-100 text-emerald-700 border-emerald-200' },
     RECHAZADO: { txt: 'Rechazado por TIZADA', cls: 'bg-rose-100 text-rose-700 border-rose-200' },
+    RECHAZADO_PROPIO: { txt: 'Frenado por nuestra revisión', cls: 'bg-rose-100 text-rose-700 border-rose-200' },
     ERROR: { txt: 'Error en TIZADA', cls: 'bg-rose-100 text-rose-700 border-rose-200' },
     ERROR_APLICAR: { txt: 'Volvió, pero no se pudo cargar', cls: 'bg-rose-100 text-rose-700 border-rose-200' },
     CANCELADO: { txt: 'Cancelado', cls: 'bg-slate-100 text-slate-600 border-slate-200' },
 };
+// [FRENO PROPIO 26/10] Un RECHAZADO puede ser de TIZADA o de nuestra revisión del arte, que frena antes de mandarle nada:
+// la Etapa de esos empieza con "El arte no pasa" (solicitudesVendedorTizadaPro.enviar).
+const frenoPropio = (etapa) => /^El arte no pasa/.test(etapa || '');
 const sinTilde = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
 // Achica la imagen de un editable a una miniatura (máx. 100 px) para guardarla con lo leído y verla al volver a entrar.
 const miniatura = (src, max = 100) => new Promise((ok) => {
@@ -162,17 +166,21 @@ function leerPegado(texto, columnas) {
 // modo 'carga' (solicitud, vendedor): diseños + lista + Revisar. modo 'diseno' (pantalla de Diseño): además la letra
 // de nombre y número y "Generar tizada" (puedeGenerar lo decide la pantalla: diseñador y ya enviado a Diseño).
 // medio: lo que va entre el arte y la lista ("2 · Piezas y telas"). archivosArte: los otros archivos de la producción
-// principal (bocetos, referencias) y el botón de subir. onQuitarArte(archivo): quitar un arte. onPlanillaArchivo(file): el
+// principal (bocetos, referencias) y el botón de subir. onQuitarArte(archivo): quitar un arte. artesPropios: los ArchivoID
+// que se pueden quitar (Diseño: los que subió él; null = todos). onPlanillaArchivo(file): el
 // Excel con el que se cargó la lista queda adjunto como planilla del cliente.
 // cliente: el pedido que arma el cliente en la Tienda del portal (sin el aviso de cómo se genera la tizada en Diseño)
 // porArte(diseño, { disenos, guardarDisenos, ocupado }): lo que el portal pone dentro de la pestaña de cada arte (sus extras).
 // mandar (pantalla de Diseño, 15/10): 'enviar' | 'rehacer' | null: el botón para mandar la tizada, junto a "Revisar en TIZADA"
-export default function TizadaProBloque({ id, p, puede, onCargado, numero = null, extra = null, modo = 'carga', puedeGenerar = false, motivoNoGenerar = null, mandar = null, medio = null, archivosArte = null, onQuitarArte = null, onPlanillaArchivo = null, cliente = false, porArte = null, subirArchivos = null, extrasPortal = null }) {
+export default function TizadaProBloque({ id, p, puede, onCargado, numero = null, extra = null, modo = 'carga', puedeGenerar = false, motivoNoGenerar = null, mandar = null, medio = null, archivosArte = null, onQuitarArte = null, artesPropios = null, onPlanillaArchivo = null, cliente = false, porArte = null, subirArchivos = null, extrasPortal = null }) {
     const enDiseno = modo === 'diseno';
     // [COMO LA TIENDA 14/10] La solicitud del vendedor se ve como el pedido de la Tienda: una pestaña por arte con su
     // vista y sus piezas y telas, la plantilla para bajar, la lista compacta y todo se guarda solo. Lo propio del
     // vendedor (de quién es cada arte, Pegar desde Excel, Revisar en TIZADA, lo que falta) sigue. Diseño no cambia.
     const tienda = cliente || !enDiseno;
+    // [LO HACE EL TALLER 26/10] "Quién aporta el diseño: Lo hace el taller": el vendedor sube lo que mandó el cliente y
+    // envía a Diseño sin arte (no se le pide); el arte para TIZADA lo sube el diseñador en la pantalla de Diseño.
+    const loHaceElTaller = !cliente && p.Datos?.diseno?.origen === 'TALLER';
     // Lo que la lista de solicitudes adelantó al pasar el mouse (solicitudPrecarga.js): si ya llegó, el bloque
     // se arma completo desde el primer cuadro, sin "Leyendo el molde…" (ni spinner) y sin aparecer después.
     // Acá solo se LEE (el render de montaje puede repetirse); se consume en el efecto.
@@ -531,11 +539,19 @@ export default function TizadaProBloque({ id, p, puede, onCargado, numero = null
     };
     // [TIPO POR OBJETO 15/10] El tipo de UN objeto del arte (DTF común en el frente, dorado en la espalda…): queda en el
     // diseño (formas, por "<objeto>|<pieza>"); al guardar, el servidor lo pasa al archivo de ese objeto, el DTF arma un
-    // pliego por film y al convertir cada orden toma el suyo. Portal y vendedor igual.
-    const cambiarForma = (d, clave, opcionId) => correr(() => guardarCon(conFilas(disenos).map(x => (x.nombre !== d.nombre ? x
-        : { ...x, formas: { ...(x.formas || {}), [clave]: opcionId } })), filas));
+    // pliego por film y al convertir cada orden toma el suyo. Portal, vendedor y (26/10) Diseño igual.
+    const cambiarForma = (d, clave, opcionId) => correr(async () => {
+        await guardarCon(conFilas(disenos).map(x => (x.nombre !== d.nombre ? x
+            : { ...x, formas: { ...(x.formas || {}), [clave]: opcionId } })), filas);
+        // [TIPO EN DISEÑO 26/10] el pliego de DTF se arma al mandar a TIZADA: si ya estaba hecho, salió con el tipo de antes
+        const o = (d.editablesDetalle || []).find(x => claveObjeto(x) === clave);
+        const T = o ? TIPO_DE[(d.editables || {})[o.objeto] || o.sugerido] : null;
+        if (enDiseno && T === 'DTF' && (p.Partes || []).some(x => x.Tipo === 'DTF' && x.Estado === 'DISENADO')) {
+            toast.info('El pliego de DTF ya estaba armado con el tipo anterior: tocá «Rehacer la tizada» para que salga con este.');
+        }
+    });
     const procesoTabla = (arteId, objeto, valor) => correr(async () => {
-        const T = { dtf: 'DTF', tpu: 'TPU', bordado: 'BORDADO' }[valor];
+        const T = TIPO_DE[valor];
         if (T) await parteDeExtra(T);   // portal y vendedor: si el extra no está, se agrega
         const v = await guardarCon(conFilas(disenos).map(x => (x.arteArchivoId !== arteId ? x : { ...x, editables: { ...(x.editables || {}), [objeto]: valor } })), filas);
         await quitarSinUso(v?.datos?.disenos || []);
@@ -591,7 +607,7 @@ export default function TizadaProBloque({ id, p, puede, onCargado, numero = null
         setOcupado(soloRevisar ? 'revisar' : 'enviar');
         try {
             const r = await svc.tizadaProEnviar(id, p.ProductoSolID, soloRevisar);
-            if (r.Estado === 'RECHAZADO') toast.error(`TIZADA no lo acepta: ${r.mensaje || 'mirá las alarmas abajo'}`);
+            if (r.Estado === 'RECHAZADO') toast.error(`${r.PorNuestraRevision ? 'El arte no pasa nuestra revisión' : 'TIZADA no lo acepta'}: ${r.mensaje || 'mirá las alarmas abajo'}`);
             else toast.success(soloRevisar ? 'TIZADA PRO lo aceptaría. Todavía no se mandó.' : `Mandado a TIZADA PRO (${r.Referencia}). La tizada vuelve sola cuando termine.`);
             await cargar();
             if (!soloRevisar) onCargado?.();   // la pantalla de Diseño recarga el estado de la producción principal
@@ -636,7 +652,8 @@ export default function TizadaProBloque({ id, p, puede, onCargado, numero = null
         } catch (e) { toast.error(`No se pudo leer "${file.name}": ${e.message}`); }
     };
 
-    const errores = info.errores || [];
+    // Lo del arte (marcado `arte` por el servidor) no se le pide al vendedor si lo hace el taller: lo pide Diseño
+    const errores = (info.errores || []).filter(e => !(loHaceElTaller && !enDiseno && e.arte));
     const puedeMandar = puede && info.apiActiva && info.tabla && !sucio && !errores.length && !envioActivo;
 
     const conexion = (
@@ -723,7 +740,8 @@ export default function TizadaProBloque({ id, p, puede, onCargado, numero = null
                 <div className="text-[10px] font-black uppercase tracking-wide text-slate-400 mb-1.5 flex items-center gap-2">1 · Arte del cliente
                     <span className="normal-case font-normal">un archivo .ai o .pdf por diseño, con todas las piezas</span>
                     {sincronizando && <span className="normal-case font-bold text-brand-cyan inline-flex items-center gap-1"><Loader2 size={11} className="animate-spin" /> guardando…</span>}
-                    {tienda && !am && p.ProIdProducto && (
+                    {/* [LO HACE EL TALLER 26/10] también en Diseño: el diseñador arma el arte sobre la plantilla */}
+                    {(tienda || puede) && !am && p.ProIdProducto && (
                         <button type="button" onClick={bajarPlantillaProducto} disabled={bajandoPlantilla} title={`La base del molde para armar ${cliente ? 'tu' : 'el'} arte en Illustrator: una mesa por pieza, a tamaño real`}
                             className={`${BTN_SECUNDARIO} ml-auto normal-case tracking-normal`}>
                             {bajandoPlantilla ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />} {bajandoPlantilla ? 'Preparando la plantilla…' : cliente ? 'Bajar la plantilla para tu arte' : 'Bajar la plantilla para el arte'}
@@ -773,7 +791,7 @@ export default function TizadaProBloque({ id, p, puede, onCargado, numero = null
                                     <span className="ml-auto flex items-center gap-2">
                                         {lee && <span className="text-[11px] font-bold text-brand-cyan inline-flex items-center gap-1"><Loader2 size={12} className="animate-spin" /> Leyendo los editables…</span>}
                                         {puede && d && !lee && <button type="button" disabled={sincronizando} onClick={() => volverALeer(a.ArchivoID)} className="text-[11px] font-bold text-slate-400 hover:text-brand-cyan" title="Volver a leer los editables de este arte"><RefreshCw size={12} /></button>}
-                                        {puede && onQuitarArte && <button type="button" disabled={sincronizando} title="Quitar este arte" className="text-slate-400 hover:text-rose-600"
+                                        {puede && onQuitarArte && (!artesPropios || artesPropios.includes(a.ArchivoID)) && <button type="button" disabled={sincronizando} title="Quitar este arte" className="text-slate-400 hover:text-rose-600"
                                             onClick={async () => { if (await preguntar({ Icono: Trash2, titulo: 'Quitar el arte', texto: `Se quita "${a.nombre}"${d ? ` (el arte de ${d.nombre})` : ''} de la solicitud.`, boton: 'Quitar', peligro: true })) onQuitarArte(a); }}><Trash2 size={14} /></button>}
                                     </span>
                                 </div>
@@ -790,7 +808,7 @@ export default function TizadaProBloque({ id, p, puede, onCargado, numero = null
                                         onAgregar={subirArchivos ? (T, file) => agregarExtra(d, T, file) : null}
                                         onCambiarFila={(aid, cambio) => cambiarFilaExtra(d, aid, cambio)}
                                         onQuitarFila={(aid) => quitarFilaExtra(d, aid)}
-                                        onForma={enDiseno ? null : (clave, id) => cambiarForma(d, clave, id)} />
+                                        onForma={(clave, id) => cambiarForma(d, clave, id)} />
                                 )}
                                 {d && !lee && d.editablesLeidoDe === a.ArchivoID && (d.editablesVacios || []).length > 0 && <div className="px-3 py-2 text-[11px] text-amber-800 bg-amber-50 flex items-start gap-1.5"><AlertTriangle size={12} className="mt-0.5 shrink-0" /><span>{avisoEditablesVacios(d.editablesVacios, !objetos.length)}</span></div>}
                                 {d && !lee && d.editablesLeidoDe === a.ArchivoID && !objetos.length && !(d.editablesVacios || []).length && <div className="px-3 py-1.5 text-[11px] text-slate-400">Sin editables: todo va sublimado.</div>}
@@ -809,7 +827,11 @@ export default function TizadaProBloque({ id, p, puede, onCargado, numero = null
                             </div>
                         );
                     })}
-                    {!artesCards.length && <div className="text-slate-400">{am ? 'Todavía no hay arte. Subí un .ai o .pdf por diseño (cada uno con su medida), armado sobre la plantilla de TIZADA de ESA medida.' : 'Todavía no hay arte. Subí un .ai o .pdf por diseño (jugador, golero…) armado sobre la base de TIZADA.'}</div>}
+                    {!artesCards.length && <div className="text-slate-400">{loHaceElTaller && !enDiseno
+                        ? 'El diseño lo hace el taller: no hace falta el arte para enviar a Diseño. Subí abajo lo que mandó el cliente (logos, fotos, ideas) como referencia y cargá la lista; el arte para TIZADA lo arma Diseño.'
+                        : loHaceElTaller && enDiseno
+                            ? 'El diseño lo hace el taller: bajá la plantilla, armá el arte (un .ai o .pdf por diseño: jugador, golero…) y subilo acá abajo.'
+                            : am ? 'Todavía no hay arte. Subí un .ai o .pdf por diseño (cada uno con su medida), armado sobre la plantilla de TIZADA de ESA medida.' : 'Todavía no hay arte. Subí un .ai o .pdf por diseño (jugador, golero…) armado sobre la base de TIZADA.'}</div>}
                 </div>
                 {archivosArte}
             </div>
@@ -911,7 +933,7 @@ export default function TizadaProBloque({ id, p, puede, onCargado, numero = null
             {/* Portal: lo que falta se valida al final, en "Confirmar pedido" */}
             {errores.length > 0 && !sucio && !cliente && (
                 <div className="border border-rose-200 bg-rose-50 rounded-lg p-2 text-[11px] text-rose-800">
-                    <div className="font-black mb-0.5">Para mandar a TIZADA falta:</div>
+                    <div className="font-black mb-0.5">{loHaceElTaller && !enDiseno ? 'Para enviar a Diseño falta:' : 'Para mandar a TIZADA falta:'}</div>
                     <ul className="list-disc pl-4 space-y-0.5">{errores.slice(0, 15).map((e, k) => <li key={k}>{e.mensaje}</li>)}</ul>
                     {errores.length > 15 && <div>… y {errores.length - 15} más.</div>}
                 </div>
@@ -944,7 +966,7 @@ export default function TizadaProBloque({ id, p, puede, onCargado, numero = null
                     <div className="text-[10px] font-black uppercase tracking-wide text-slate-400">Pedidos a TIZADA PRO ({info.envios.length})</div>
                     {/* Arriba el último; los anteriores se ven con "Ver los anteriores". Cada uno abre y cierra su detalle. */}
                     {(verAnteriores ? info.envios : info.envios.slice(0, 1)).map(e => {
-                        const est = ESTADO_ENVIO[e.Estado] || { txt: e.Estado, cls: 'bg-slate-100 text-slate-600 border-slate-200' };
+                        const est = ESTADO_ENVIO[e.Estado === 'RECHAZADO' && frenoPropio(e.Etapa) ? 'RECHAZADO_PROPIO' : e.Estado] || { txt: e.Estado, cls: 'bg-slate-100 text-slate-600 border-slate-200' };
                         const frenan = (e.Alarmas || []).filter(a => a.frena).length;
                         const avisos = (e.Alarmas || []).length - frenan;
                         const hayDetalle = !!e.ErrorTexto || (e.Alarmas || []).length > 0 || (e.Archivos || []).length > 0;

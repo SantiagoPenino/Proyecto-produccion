@@ -905,7 +905,10 @@ async function subirArchivo(pool, user, solicitudId, b, file) {
       if (soyElDisenador && !corrigiendo && !['DISENO_INICIADO', 'DISENADO'].includes(pa.Estado)) throw fallo(409, 'Primero tomá el trabajo de la bandeja.');
       const f = FORMATOS_DISENO[pa.Tipo];
       if (f && !f.ext.includes(ext)) throw fallo(400, `Formato inválido para ${NOMBRE_PARTE[pa.Tipo]}. Solo se permite ${f.txt}.`);
-    } else if (!esVendedor(user) && !(pa && pa.DisenadorID === user.id) && !(eventoId && await esDisenador(pool, user))) {
+    } else if (!esVendedor(user) && !(pa && pa.DisenadorID === user.id) && !(eventoId && await esDisenador(pool, user))
+      // [LO HACE EL TALLER 26/10] el arte de la producción principal lo arma Diseño: un diseñador lo sube con el trabajo ya
+      // en Diseño (con molde de TIZADA PRO la principal no se "toma": se manda a TIZADA, así que todavía no tiene dueño)
+      && !(rol === 'ARTE_CLIENTE' && pa?.Tipo === 'PRINCIPAL' && ['ENVIADO_DISENO', 'DISENO_INICIADO', 'DISENADO'].includes(pa.Estado) && await esDisenador(pool, user))) {
       throw fallo(403, 'No tenés permiso para adjuntar archivos a esta solicitud.');
     }
 
@@ -1037,7 +1040,8 @@ async function quitarArchivo(pool, user, solicitudId, archivoId) {
         await transaction.commit();
         return { ok: true };
       }
-    } else {
+    } else if (!(a.Rol === 'ARTE_CLIENTE' && a.UsuarioSube === user.id && await esDisenador(pool, user))) {
+      // [LO HACE EL TALLER 26/10] el diseñador quita el arte que subió él (el del cliente, solo el vendedor)
       exigirVendedor(user);
     }
     await new sql.Request(transaction).input('A', sql.Int, archivoId).query('UPDATE dbo.SolicitudesVendedorArchivos SET Vigente = 0 WHERE ArchivoID = @A');

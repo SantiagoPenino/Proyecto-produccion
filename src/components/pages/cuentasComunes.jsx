@@ -738,6 +738,60 @@ export const SwitchCuenta = ({ checked, onChange, titulo, on, off }) => (
   </label>
 );
 
+// ── Servicio entero (billetera restringida): un clic agrega TODOS los artículos de un servicio
+// (Sublimación, ECOUV…) en vez de buscarlos tela a tela; otro clic los quita. Los servicios son
+// los grupos de ConfigMapeoERP. Un artículo que se cree después NO entra solo: el botón muestra
+// "14/75" cuando falta alguno y tocarlo agrega los que faltan.
+const ServiciosEnteros = ({ articulos, setArticulos }) => {
+  const [servicios, setServicios] = useState([]); // [{ codigo, nombre, arts: [{ IDArticulo, NombreArticulo }] }]
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const gr = await fetchAPI('/api/contabilidad/grupos-erp');
+        const lista = await Promise.all((gr.data || []).map(async g => {
+          const codigo = String(g.CodigoERP || '').trim();
+          const r = await fetchAPI(`/api/contabilidad/articulos?grupo=${encodeURIComponent(codigo)}`).catch(() => ({ data: [] }));
+          return { codigo, nombre: g.NombreReferencia || codigo, arts: (r.data || []).map(a => ({ IDArticulo: a.IDArticulo, NombreArticulo: a.NombreArticulo })) };
+        }));
+        if (alive) setServicios(lista.filter(s => s.arts.length > 0));
+      } catch { if (alive) setServicios([]); }
+    })();
+    return () => { alive = false; };
+  }, []);
+
+  if (!servicios.length) return null;
+  const elegidos = new Set(articulos.map(a => a.IDArticulo));
+  const tocar = (s, tiene) => {
+    if (tiene === s.arts.length) {
+      const ids = new Set(s.arts.map(a => a.IDArticulo));
+      setArticulos(prev => prev.filter(a => !ids.has(a.IDArticulo)));
+      toast.info(`Se quitaron los ${s.arts.length} artículos de ${s.nombre}.`);
+    } else {
+      setArticulos(prev => [...prev, ...s.arts.filter(a => !prev.some(p => p.IDArticulo === a.IDArticulo))]);
+      toast.success(`Se agregaron ${s.arts.length - tiene} artículos de ${s.nombre}${tiene ? ` (ya tenía ${tiene})` : ''}.`);
+    }
+  };
+  return (
+    <div className="space-y-1">
+      <p className="text-[11px] text-violet-700">Servicio entero — un clic agrega todos sus artículos, otro clic los quita:</p>
+      <div className="flex flex-wrap gap-1.5">
+        {servicios.map(s => {
+          const tiene = s.arts.filter(a => elegidos.has(a.IDArticulo)).length;
+          const completo = tiene === s.arts.length;
+          return (
+            <button type="button" key={s.codigo} onClick={() => tocar(s, tiene)}
+              title={completo ? `Quitar los ${s.arts.length} artículos de ${s.nombre}` : `Agregar los ${s.arts.length - tiene} artículos de ${s.nombre} que faltan`}
+              className={`text-[11px] font-semibold rounded-full px-2.5 py-1 border transition-colors ${completo ? 'bg-violet-600 text-white border-violet-600 hover:bg-violet-700' : tiene ? 'bg-violet-100 text-violet-700 border-violet-300 hover:bg-violet-200' : 'bg-white text-slate-600 border-violet-200 hover:bg-violet-50'}`}>
+              {completo ? '✓ ' : '+ '}{s.nombre} <span className="opacity-75">{tiene > 0 && !completo ? `${tiene}/${s.arts.length}` : s.arts.length}</span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+};
+
 // ── Modal Configurar Cuenta (billetera: nombre, interruptores y artículos de una cuenta secundaria) ──
 export const ModalConfigCuenta = ({ cuenta, onClose, onSuccess }) => {
   const esUSD = cuenta?.CueTipo === 'DINERO_USD';
@@ -827,7 +881,8 @@ export const ModalConfigCuenta = ({ cuenta, onClose, onSuccess }) => {
           {restringida && (
             <div className="border border-violet-200 rounded-xl p-3 bg-violet-50/40 space-y-2">
               <label className="block text-xs font-semibold text-violet-700">Artículos que esta cuenta puede pagar ({articulos.length}) — mínimo 1</label>
-              <div className="flex flex-wrap gap-1.5">
+              <ServiciosEnteros articulos={articulos} setArticulos={setArticulos} />
+              <div className="flex flex-wrap gap-1.5 max-h-36 overflow-y-auto">
                 {articulos.map(a => (
                   <span key={a.IDArticulo} className="inline-flex items-center gap-1 text-[11px] font-semibold bg-white border border-violet-200 text-violet-700 rounded-full px-2 py-0.5">
                     {a.NombreArticulo}
@@ -2090,8 +2145,9 @@ export const ModalNuevaCuenta = ({ cliente, onClose, onSuccess }) => {
           {form.CueRestringida && (
             <div className="border border-violet-200 rounded-xl p-3 bg-violet-50/40 space-y-2">
               <label className="block text-xs font-semibold text-violet-700">Artículos permitidos ({articulos.length})</label>
+              <ServiciosEnteros articulos={articulos} setArticulos={setArticulos} />
               {articulos.length > 0 && (
-                <div className="flex flex-wrap gap-1.5">
+                <div className="flex flex-wrap gap-1.5 max-h-36 overflow-y-auto">
                   {articulos.map(a => (
                     <span key={a.IDArticulo} className="inline-flex items-center gap-1 text-[11px] font-semibold bg-white border border-violet-200 text-violet-700 rounded-full px-2 py-0.5">
                       {a.NombreArticulo}

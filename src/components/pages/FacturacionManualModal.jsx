@@ -462,8 +462,21 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
     if (tiposDocs.some(t => String(t.value) === String(formData.DocTipo))) return; // ya es código
     const lbl = String(formData.DocTipo).trim().toUpperCase();
     const porEtiqueta = tiposDocs.find(t => String(t.label || '').trim().toUpperCase() === lbl);
-    if (porEtiqueta) setFormData(prev => ({ ...prev, DocTipo: porEtiqueta.value }));
-  }, [tiposDocs, formData.DocTipo]);
+    if (!porEtiqueta) return;
+    setFormData(prev => ({ ...prev, DocTipo: porEtiqueta.value }));
+    // COPIA (no edición): el efecto de arriba corre en el mismo render con los valores por
+    // defecto (consumidor final + CONTADO) y deja DocPagado en true; esta traducción pisaba solo
+    // el tipo, así que una "E-Factura Credito" copiada salía crédito Y cobrada (FA-2918,
+    // 26-10-2026). Se alinean tipoCliente y formaPago con el tipo copiado: el efecto de arriba
+    // vuelve a correr y deja tipo y DocPagado coherentes (crédito → sin pago).
+    if (mode !== 'editar' && !editDocId && !lbl.includes('NOTA')) {
+      if (lbl.includes('PEDIDO')) setTipoCliente('PEDIDO_CAJA');
+      else if (lbl.includes('FACTURA')) setTipoCliente('RUT');
+      else if (lbl.includes('TICKET')) setTipoCliente('CONSUMIDOR_FINAL');
+      if (/CR[EÉ]DITO/.test(lbl)) setFormaPago('CREDITO');
+      else if (lbl.includes('CONTADO')) setFormaPago('CONTADO');
+    }
+  }, [tiposDocs, formData.DocTipo, mode, editDocId]);
 
   // NOTA: un Pedido Caja puede ir a CRÉDITO (no se fuerza CONTADO).
   // El default a CONTADO para un Pedido Caja recién elegido ya lo aplica el handler
@@ -1148,7 +1161,13 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
         { duration: 12000 }
       );
     }
-    
+    // Un documento a CRÉDITO nuevo no nace cobrado: si se cobra ahora es CONTADO (si no, a DGI
+    // va como contado y en el sistema queda "crédito", como el FA-2918). Al editar sí puede estar
+    // pago: una factura a crédito cobrada después por Registrar pago.
+    if (!esEditar && !refacturar && formData.DocPagado && /CR[EÉ]DITO/.test(docTipoLabelV) && !docTipoLabelV.includes('NOTA')) {
+      return toast.error('Este documento es a CRÉDITO pero tiene un pago cargado. Si el cliente paga ahora, cambiá la condición a Contado. Si paga después, dejalo a crédito sin pago y cobralo con "Registrar pago".', { duration: 10000 });
+    }
+
     const lineasValidas = formData.Lineas.filter(l => l.concepto.trim() !== '' && parseFloat(l.precioUnitario) >= 0);
     if (lineasValidas.length === 0) {
       return toast.error('Debe agregar al menos una línea con concepto y precio.');

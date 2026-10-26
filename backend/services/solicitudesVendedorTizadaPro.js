@@ -242,12 +242,15 @@ function conPiezas(datos, subl) {
 // ─────────────────────────────────────────────────────────────────────
 // Validación de diseños + lista de talles (la misma que muestra la pantalla)
 // ─────────────────────────────────────────────────────────────────────
-function revisar(est, datos, archivos, aMedida = null) {
+// [LO HACE EL TALLER 26/10] opts.sinArte: no se pide el arte (ni que cada variante de la lista tenga el suyo): el diseño lo
+// hace el taller y lo arma Diseño. Lo que es del arte va marcado `arte: true` (la pantalla del vendedor lo esconde en ese caso).
+function revisar(est, datos, archivos, aMedida = null, opts = {}) {
   const errores = [];
   const disenos = datos?.disenos || [];
   const filas = datos?.planilla || [];
   const nombres = disenos.map(d => sinTilde(d.nombre));
-  if (!disenos.length) errores.push({ donde: 'disenos', mensaje: 'Cargá al menos un diseño (por ejemplo JUGADOR).' });
+  const sinArte = !!opts.sinArte;
+  if (!disenos.length && !sinArte) errores.push({ donde: 'disenos', arte: true, mensaje: 'Cargá al menos un diseño (por ejemplo JUGADOR).' });
   disenos.forEach((d, i) => {
     const n = `Diseño ${i + 1}${d.nombre ? ` (${d.nombre})` : ''}`;
     if (!txt(d.nombre)) errores.push({ donde: `disenos[${i}].nombre`, mensaje: `${n}: falta el nombre.` });
@@ -262,8 +265,9 @@ function revisar(est, datos, archivos, aMedida = null) {
     if (!txt(d.variable)) errores.push({ donde: `disenos[${i}].variable`, mensaje: `${n}: falta el modelo (elegilo y guardalo en "2 · Piezas y telas").` });
     if (!txt(d.tela)) errores.push({ donde: `disenos[${i}].tela`, mensaje: `${n}: falta la tela (elegila y guardala en "2 · Piezas y telas").` });
     }
-    if (!d.arteArchivoId) errores.push({ donde: `disenos[${i}].arte`, mensaje: `${n}: falta el arte para TIZADA (.ai o .pdf).` });
-    else if (archivos && !archivos.some(a => a.ArchivoID === Number(d.arteArchivoId) && a.Vigente)) errores.push({ donde: `disenos[${i}].arte`, mensaje: `${n}: el arte elegido ya no está en la solicitud.` });
+    if (sinArte) return;
+    if (!d.arteArchivoId) errores.push({ donde: `disenos[${i}].arte`, arte: true, mensaje: `${n}: falta el arte para TIZADA (.ai o .pdf).` });
+    else if (archivos && !archivos.some(a => a.ArchivoID === Number(d.arteArchivoId) && a.Vigente)) errores.push({ donde: `disenos[${i}].arte`, arte: true, mensaje: `${n}: el arte elegido ya no está en la solicitud.` });
   });
   if (!filas.length && !aMedida) errores.push({ donde: 'planilla', mensaje: 'La lista de talles está vacía.' });
   filas.forEach((f, i) => {
@@ -277,7 +281,7 @@ function revisar(est, datos, archivos, aMedida = null) {
       if (v && c.tipo === 'numero' && !(Number(v) > 0)) errores.push({ donde: `planilla[${i}].${c.id}`, fila, mensaje: `Fila ${fila}: ${c.label.toLowerCase()} tiene que ser un número mayor a 0.` });
     });
     // La lista manda: cada variante de la lista necesita su arte (arriba, en "1 · Arte del cliente")
-    if (txt(f.diseno) && !nombres.includes(sinTilde(f.diseno))) errores.push({ donde: `planilla[${i}].diseno`, fila, mensaje: `Fila ${fila}: la variante ${txt(f.diseno).toUpperCase()} no tiene arte. Subilo arriba y poné "De ${txt(f.diseno).toUpperCase()}".` });
+    if (txt(f.diseno) && !nombres.includes(sinTilde(f.diseno))) { if (!sinArte) errores.push({ donde: `planilla[${i}].diseno`, fila, arte: true, mensaje: `Fila ${fila}: la variante ${txt(f.diseno).toUpperCase()} no tiene arte. Subilo arriba y poné "De ${txt(f.diseno).toUpperCase()}".` }); }
     else if (!txt(f.diseno) && disenos.length > 1) errores.push({ donde: `planilla[${i}].diseno`, fila, mensaje: `Fila ${fila}: elegí la variante (qué diseño la imprime).` });
   });
   return errores;
@@ -976,6 +980,29 @@ async function arteAMedidaArmado(buffer, d, p, est) {
   return { buffer: pdf, nombre: `${d.nombre}__arte ${Math.round(c.total_cm.ancho)}x${Math.round(c.total_cm.alto)} cm.pdf` };
 }
 
+// [PIEZAS DEL MODELO 26/10] El arte se revisa con las piezas del MODELO que imprime, no con las de todo el molde: PR-001
+// tiene 48 modelos y ningún arte trae Cartera, Puño y Costadillo a la vez. Si la clave guardada ya no está en el molde
+// (en TIZADA borraron el modelo o lo volvieron a crear con otra clave), se frena acá con un mensaje claro: TIZADA no lo
+// encontraría. Sin modelos en el molde, a medida o sin poder leerlo, quedan las piezas de todo el molde, como antes.
+// Devuelve variable → piezas (nombre genérico, el mismo que trae est.piezas).
+async function piezasPorModelo(pool, p, datos, est) {
+  const todas = est?.piezas || [];
+  if (p.AMedida) return () => todas;
+  let molde = null;
+  try { [molde] = await require('./tizadaProService').moldes(pool, { ref: p.MoldeRef, soloActivos: false }); }
+  catch (e) { logger.warn(`[TIZADAPRO] molde ${p.MoldeRef} para las piezas del modelo: ${e.message} — se revisa con todas las del molde`); }
+  if (!molde?.modelos?.length) return () => todas;
+  const perdidos = [...new Map(datos.disenos.filter(d => txt(d.variable) && !molde.modelos.some(m => m.clave === d.variable)).map(d => [d.variable, d])).values()];
+  if (perdidos.length) {
+    throw fallo(409, perdidos.map(d => `El modelo «${d.variableNombre || d.variable}» elegido en "2 · Piezas y telas" ya no está en el molde de TIZADA PRO (en TIZADA lo borraron o lo volvieron a crear con otra clave; la guardada es ${d.variable}). Tocá «Cambiar», elegí el modelo de nuevo y guardá. Si no aparece en la lista, el producto también quedó con la clave vieja: avisale a Sistemas.`).join('\n'));
+  }
+  return (variable) => {
+    const ids = new Set(molde.modelos.find(m => m.clave === variable)?.piezasIds || []);
+    const l = [...new Set((molde.piezasDetalle || []).filter(d => ids.has(d.idEnMolde)).map(d => d.generico))];
+    return l.length ? l : todas;
+  };
+}
+
 async function enviar(pool, user, base, solicitudId, productoSolId, b = {}, interno = false) {
   // Revisar: vendedor o diseñador. Generar: diseñador (o el envío automático), y solo después de "Enviar a Diseño".
   if (b.soloRevisar) await exigirVendedorODisenador(pool, user, base);
@@ -1009,6 +1036,7 @@ async function enviar(pool, user, base, solicitudId, productoSolId, b = {}, inte
   const datos = datosDe(p, p.Datos.tizadaPro);
   const errores = revisar(est, datos, sol.Archivos, p.AMedida);
   if (errores.length) throw fallo(400, `Antes de mandar a TIZADA PRO falta:\n• ${errores.slice(0, 12).map(e => e.mensaje).join('\n• ')}`, { errores });
+  const piezasDe = await piezasPorModelo(pool, p, datos, est);
 
   // Artes: se bajan de nuestro Drive y van en artes/ del .zip
   const rutasArte = {}; const artes = [];
@@ -1028,6 +1056,8 @@ async function enviar(pool, user, base, solicitudId, productoSolId, b = {}, inte
     artes.push({ ruta, buffer, nombre: nombreArte, campo: `disenos[${i}].arte` });
     rutasArte[d.arteArchivoId] = ruta;
   }
+  // Cada arte, con las piezas del modelo de los diseños que lo usan
+  artes.forEach(a => { a.piezas = [...new Set(datos.disenos.filter(d => rutasArte[d.arteArchivoId] === a.ruta).flatMap(d => piezasDe(d.variable)))]; });
 
   const intento = ((await pool.request().input('P', sql.Int, productoSolId).query("SELECT ISNULL(MAX(Intento), 0) AS N FROM dbo.TizadaProEnvios WHERE Origen = 'SOLICITUD' AND OrigenItemID = @P")).recordset[0].N) + 1;
   const referencia = `${PREFIJO()}-${solicitudId}-P${productoSolId}-${intento}`;
@@ -1044,8 +1074,10 @@ async function enviar(pool, user, base, solicitudId, productoSolId, b = {}, inte
   catch (e) { throw fallo(e.status || 502, `No se pudo leer la lista de letras de TIZADA PRO: ${e.message}`); }
   const alarmasArte = await require('./tizadaProArte').revisarArtes(artes, tipografias, est?.piezas || []);
   if (alarmasArte.length) {
-    const id = await guardarEnvio(pool, { ...reg, Estado: 'RECHAZADO', Etapa: 'El arte no pasa la revisión (letras)', Alarmas: alarmasArte, ErrorTexto: alarmasArte.map(a => a.mensaje).join(' · ') });
-    return { EnvioID: id, Referencia: referencia, Estado: 'RECHAZADO', Alarmas: alarmasArte, mensaje: alarmasArte[0].mensaje };
+    // [FRENO PROPIO 26/10] lo frena nuestra revisión, no TIZADA (no se le mandó nada): las pantallas no dicen "TIZADA no lo
+    // acepta". La Etapa empieza con "El arte no pasa" (las viejas: "…la revisión (letras)"); con eso la reconoce la lista de envíos.
+    const id = await guardarEnvio(pool, { ...reg, Estado: 'RECHAZADO', Etapa: 'El arte no pasa nuestra revisión (no se mandó a TIZADA)', Alarmas: alarmasArte, ErrorTexto: alarmasArte.map(a => a.mensaje).join(' · ') });
+    return { EnvioID: id, Referencia: referencia, Estado: 'RECHAZADO', Alarmas: alarmasArte, mensaje: alarmasArte[0].mensaje, PorNuestraRevision: true };
   }
 
   let envioId = null;
@@ -1367,6 +1399,16 @@ async function validarParaDiseno(pool, user, base, parteId) {
   const p = await productoConMolde(pool, pa.SolicitudID, pa.ProductoSolID);
   if (!p.MoldeRef || p.TipoFabricacion !== 'PRODUCTO_TERMINADO') return null;
   if (process.env.TIZADAPRO_API_ACTIVA === '0') return null;
+  // [LO HACE EL TALLER 26/10] Si el diseño lo hace el taller, sale a Diseño SIN arte: el diseñador lo arma sobre la plantilla
+  // y recién al mandar a TIZADA PRO se revisa (enviar). Acá va solo lo nuestro: la lista de jugadores (el modelo y las telas
+  // los frena faltaSublimacion). Si lo entrega el cliente, el arte es obligatorio y se revisa ahora, como siempre.
+  if (p.Datos?.diseno?.origen === 'TALLER') {
+    const est = conTallesDelProducto(await estructura(pool, p.MoldeRef, p.AMedida), p);
+    if (!est?.columnas?.length) throw fallo(503, 'No se puede enviar a Diseño todavía: no se pudo leer la planilla del molde (columnas).');
+    const errores = revisar(est, datosDe(p, p.Datos.tizadaPro), null, p.AMedida, { sinArte: true });
+    if (errores.length) throw fallo(409, `No se puede enviar a Diseño todavía. Falta:\n• ${errores.slice(0, 12).map(e => e.mensaje).join('\n• ')}`);
+    return null;
+  }
   const conf = api.estadoConfig();
   if (!conf.ok) throw fallo(503, `No se puede enviar a Diseño: antes TIZADA PRO tiene que aceptar el pedido y la conexión no está lista (${conf.motivo}).`);
   let r;
@@ -1374,7 +1416,8 @@ async function validarParaDiseno(pool, user, base, parteId) {
   catch (e) { throw fallo(e.status || 502, `No se puede enviar a Diseño todavía. ${e.message}`); }
   if (r.Estado === 'RECHAZADO') {
     const lista = (r.Alarmas || []).filter(a => a.frena !== false).map(a => a.mensaje || a.codigo);
-    throw fallo(409, `TIZADA PRO no lo acepta, así que no se envía a Diseño:\n• ${(lista.length ? lista : [r.mensaje || 'mirá las alarmas en el bloque de TIZADA PRO']).slice(0, 12).join('\n• ')}`);
+    const titulo = r.PorNuestraRevision ? 'El arte no pasa nuestra revisión (no se llegó a mandar a TIZADA PRO), así que no se envía a Diseño' : 'TIZADA PRO no lo acepta, así que no se envía a Diseño';
+    throw fallo(409, `${titulo}:\n• ${(lista.length ? lista : [r.mensaje || 'mirá las alarmas en el bloque de TIZADA PRO']).slice(0, 12).join('\n• ')}`);
   }
   return r;
 }
@@ -1493,5 +1536,7 @@ module.exports = { calcularMedida, vistaArte, pedirPlantilla, estadoPlantilla, b
   // Para la tienda del portal (services/tiendaConfeccionService.js): revisa un pedido de confección antes de que exista la solicitud
   conPiezas, bajarDeDrive, zipEnMemoria,
   // [TIPO POR OBJETO 15/10] el tipo de cada objeto → su archivo (lo usa guardar; exportado para probarlo en seco)
-  sincronizarFormas };
+  sincronizarFormas,
+  // [PIEZAS DEL MODELO 26/10] las piezas que tiene que traer el arte (lo usa enviar; exportado para probarlo en seco)
+  piezasPorModelo };
 // Configuración actualizada: TIZADAPRO_SI_PIEZAS_EN_BLANCO=seguir

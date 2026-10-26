@@ -38,6 +38,33 @@ function errorMedidaDtf(nombre, ancho, alto, mat) {
   return null;
 }
 
+// Medida de un archivo de impresión contra su tela: las mismas reglas de ancho que validar() aplica a la
+// producción principal (PrendaOrderForm.jsx:1107-1135). La usa la reposición con archivo nuevo o con otra tela
+// (productionFileController.createCustomerReplacementOrder). mat = fila del catálogo; bobina = la tela del
+// cliente, cuyo ancho manda sobre el del material (o null).
+function errorMedidaContraTela(nombre, ancho, alto, mat, bobina = null) {
+  if (!(ancho > 0) || !(alto > 0)) return { codigo: 'ARCHIVO_SIN_MEDIDA', mensaje: `"${nombre}": no tiene medida (ancho y alto en metros). Volvé a subirlo para que se mida.` };
+  const anchoBobina = bobina ? parseFloat(bobina.AnchoReal ?? bobina.Ancho) : NaN;
+  const usaBobina = Number.isFinite(anchoBobina) && anchoBobina > 0;
+  const maxWidth = usaBobina ? anchoBobina : anchoDeMaterial(mat);
+  const largoFijo = usaBobina ? 0 : (parseFloat(mat?.Largo) || 0);
+  const nomMat = String(mat?.Material || '').trim();
+  const etiquetaAncho = usaBobina ? `la bobina "${String(bobina.DescripcionTela || bobina.CodigoEtiqueta || '').trim()}"` : `"${nomMat}"`;
+  if (largoFijo > 0) {
+    const cm = (v) => Math.round(Number((v * 100).toFixed(6)));
+    if (cm(ancho) !== cm(maxWidth) || cm(alto) !== cm(largoFijo)) {
+      return { codigo: 'MEDIDA_FIJA', mensaje: `"${nomMat}" se imprime a MEDIDA FIJA: "${nombre}" debe medir exactamente ${maxWidth.toFixed(2)}m de ancho x ${largoFijo.toFixed(2)}m de largo, y mide ${ancho.toFixed(2)}m x ${alto.toFixed(2)}m.` };
+    }
+    return null;
+  }
+  const anchoRedondeado = Math.ceil(Number(((ancho - TOLERANCIA_ANCHO_M) * 100).toFixed(6))) / 100;
+  const maxImprimible = Math.round((maxWidth - 0.03) * 100) / 100;
+  if (anchoRedondeado > maxImprimible + 1e-9) {
+    return { codigo: 'ANCHO_EXCEDE_MATERIAL', mensaje: `"${nombre}" mide ${anchoRedondeado.toFixed(2)}m de ancho y excede el ancho imprimible de ${etiquetaAncho} (${maxImprimible.toFixed(2)}m). Ajustá el archivo o elegí otra tela.` };
+  }
+  return null;
+}
+
 async function validar(pool, pedido) {
   const errores = [];
   const err = (codigo, campo, mensaje) => errores.push({ codigo, campo, mensaje });
@@ -235,4 +262,4 @@ async function validar(pool, pedido) {
   return { errores, cliente };
 }
 
-module.exports = { validar, errorMedidaDtf, VARIANTE_SUBLIMACION, VARIANTE_DTF };
+module.exports = { validar, errorMedidaDtf, errorMedidaContraTela, VARIANTE_SUBLIMACION, VARIANTE_DTF };

@@ -701,8 +701,11 @@ function EnviarADisenoModal({ p, partes, faltaSubl, sinArte = new Set(), hacer, 
     const conTizada = p.TipoFabricacion === 'PRODUCTO_TERMINADO' && !!p.Config?.TizadaProMoldeRef;
     const faltaDe = (pa) => (pa.Tipo === 'PRINCIPAL' ? faltaSubl
         : sinArte.has(pa.ParteID) ? `falta el arte. Subí el arte del producto y elegí qué objetos van en ${(NOMBRE_PARTE[pa.Tipo] || pa.Tipo).toLowerCase()} (o subí su archivo aparte en la tabla del arte).` : null);
+    // [LO HACE EL TALLER 26/10] la principal toma "Quién aporta el diseño" del producto: lo entrega el cliente → revisar su
+    // arte; lo hace el taller → diseñar desde cero
+    const delCliente = (pa) => (pa.Tipo === 'PRINCIPAL' && p.Datos?.diseno?.origen ? p.Datos.diseno.origen === 'CLIENTE' : pa.ArteOrigen === 'CLIENTE');
     const [sel, setSel] = useState(() => Object.fromEntries(partes.map(pa => [pa.ParteID, {
-        on: !faltaDe(pa), tipo: pa.ArteOrigen === 'CLIENTE' ? 'REVISAR' : 'DESDE_CERO',
+        on: !faltaDe(pa), tipo: delCliente(pa) ? 'REVISAR' : 'DESDE_CERO',
     }])));
     const [enviando, setEnviando] = useState(false);
     const [resultado, setResultado] = useState(null);   // [{ nombre, ok, texto }]
@@ -1032,7 +1035,15 @@ function DisenoProducto({ s, p, i, id, user, perfil, busy, abierta, telas, archi
                                             <section className={ZONA}>
                                                 <TizadaProBloque id={id} p={p} modo="diseno" puede={esDis && !bloqueada} puedeGenerar={esDis && !bloqueada && enviada} mandar={mandarTizada}
                                                     motivoNoGenerar={!esDis ? 'La tizada la genera un diseñador.' : !enviada ? 'El vendedor todavía no tocó "Enviar a Diseño" en la solicitud.' : bloqueada ? 'La solicitud está cerrada o ya es pedido.' : null}
-                                                    onCargado={() => hacer(async () => { })} />
+                                                    onCargado={() => hacer(async () => { })}
+                                                    // [LO HACE EL TALLER 26/10] el diseñador sube el arte que armó sobre la plantilla (y quita solo los suyos)
+                                                    onQuitarArte={(a) => hacer(() => svc.quitarArchivo(id, a.ArchivoID), 'Arte quitado.')}
+                                                    artesPropios={artes.filter(a => a.UsuarioSube === user?.id).map(a => a.ArchivoID)}
+                                                    archivosArte={esDis && !bloqueada && enviada && pa ? (
+                                                        <div className="mt-2">
+                                                            <BotonArchivo busy={busy} multiple etiqueta="Subir el arte (.ai o .pdf)" onFiles={(files) => subir(files, { Rol: 'ARTE_CLIENTE', ParteID: pa.ParteID }, pa.Tipo)} />
+                                                        </div>
+                                                    ) : null} />
                                             </section>
                                         );
                                     })()}
@@ -2021,7 +2032,7 @@ function Conversion({ s, p, pedido, faltantes, avisos = [], checklist, puedeVend
                                 <div className="text-[11px] text-slate-600">1) Rehacé el archivo{p.Config?.TizadaProMoldeRef ? ' (la tizada en TIZADA PRO)' : ' (subí el diseño pronto corregido en la pantalla de Diseño)'} y esperá que quede cargado. 2) Pasalo al pedido: se pone en las órdenes que lo esperaban, un archivo por mesa, y si la limpieza automática había cancelado alguna, se reactiva.</div>
                                 <div className="flex flex-wrap gap-2">
                                     {p.Config?.TizadaProMoldeRef && (
-                                        <button disabled={busy} className={BTN_SECUNDARIO} onClick={async () => { if (await preguntar({ Icono: Send, titulo: 'Rehacer la tizada', texto: 'Se manda de nuevo a TIZADA PRO con los diseños, el arte y la lista guardados.', nota: 'Cuando vuelva, la tizada nueva reemplaza a los diseños prontos de la solicitud. Todavía no toca el pedido.', boton: 'Mandarla' })) hacer(async () => { const r = await svc.tizadaProEnviar(id, p.ProductoSolID, false); if (r.Estado === 'RECHAZADO') toast.error(`TIZADA no lo acepta: ${r.mensaje || 'mirá las alarmas en el bloque de TIZADA PRO'}.`); else toast.success(`Mandado a TIZADA PRO (${r.Referencia}). Cuando diga "Tizada cargada", pasala al pedido.`); }); }}>
+                                        <button disabled={busy} className={BTN_SECUNDARIO} onClick={async () => { if (await preguntar({ Icono: Send, titulo: 'Rehacer la tizada', texto: 'Se manda de nuevo a TIZADA PRO con los diseños, el arte y la lista guardados.', nota: 'Cuando vuelva, la tizada nueva reemplaza a los diseños prontos de la solicitud. Todavía no toca el pedido.', boton: 'Mandarla' })) hacer(async () => { const r = await svc.tizadaProEnviar(id, p.ProductoSolID, false); if (r.Estado === 'RECHAZADO') toast.error(`${r.PorNuestraRevision ? 'El arte no pasa nuestra revisión' : 'TIZADA no lo acepta'}: ${r.mensaje || 'mirá las alarmas en el bloque de TIZADA PRO'}.`); else toast.success(`Mandado a TIZADA PRO (${r.Referencia}). Cuando diga "Tizada cargada", pasala al pedido.`); }); }}>
                                             <Send size={12} /> 1. Rehacer la tizada en TIZADA PRO
                                         </button>
                                     )}
@@ -2155,6 +2166,25 @@ function PrecioSena({ s, puede, busy, hacer, autoGuardar }) {
         if (!(await autoGuardar(() => svc.guardarPrecio(s.SolicitudID, x)))) setF(desdeS());
     };
     const MONTO = `${INPUT} max-w-[180px]`;
+    // [PRECIO DE CATÁLOGO 26/10] La referencia: cantidad × precio de catálogo de cada producto, contra el precio pactado
+    // (el descuento o el recargo, en plata y en %). Con un solo producto el precio también se cambia por prenda.
+    const r2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+    const prods = (s.Productos || []).filter(p => Number(p.Cantidad) > 0);
+    const monCat = (p) => ((p.Catalogo?.moneda || '').toUpperCase() === 'USD' ? 2 : 1);   // como "Volver al precio de catálogo" del formulario
+    const conCatalogo = prods.length > 0 && prods.every(p => Number(p.Catalogo?.precio) > 0) && new Set(prods.map(monCat)).size === 1;
+    const monedaCat = conCatalogo ? monCat(prods[0]) : null;
+    const totalCat = conCatalogo ? r2(prods.reduce((t, p) => t + Number(p.Catalogo.precio) * Number(p.Cantidad), 0)) : null;
+    const pactado = Number(f.PrecioPactado) || 0;
+    const mismaMoneda = conCatalogo && Number(f.MonIdMoneda) === monedaCat;
+    const dif = mismaMoneda && pactado > 0 ? r2(totalCat - pactado) : null;   // > 0 descuento · < 0 recargo
+    const unico = prods.length === 1 ? prods[0] : null;
+    const porPrendaDe = (x) => (unico && Number(x) > 0 ? String(r2(Number(x) / Number(unico.Cantidad))) : '');
+    const [porPrenda, setPorPrenda] = useState(() => porPrendaDe(f.PrecioPactado));
+    useEffect(() => { setPorPrenda(porPrendaDe(f.PrecioPactado)); }, [f.PrecioPactado, unico?.Cantidad]);   // eslint-disable-line react-hooks/exhaustive-deps
+    const guardarPorPrenda = () => {
+        if (porPrenda === porPrendaDe(f.PrecioPactado)) return;   // sin tocar: no se recalcula (el redondeo cambiaría el total)
+        if (Number(porPrenda) > 0) guardar({ PrecioPactado: String(r2(Number(porPrenda) * Number(unico.Cantidad))) });
+    };
 
     return (
         <section className="bg-white border border-slate-200 rounded-2xl p-4 space-y-3">
@@ -2164,6 +2194,7 @@ function PrecioSena({ s, puede, busy, hacer, autoGuardar }) {
                 <div className="grid grid-cols-2 gap-3 text-xs">
                     <Info l="Cómo se cobra" v={!s.ModoCobro ? <span className="text-rose-600 font-bold">Sin pactar</span> : s.ModoCobro === 'POR_AREA' ? 'Se factura por cada área' : 'Precio establecido (todo incluido)'} />
                     <Info l="Precio de la solicitud" v={s.ModoCobro === 'PRECIO_ESTABLECIDO' ? <b>{plata(s.PrecioPactado, s.MonIdMoneda)}</b> : '—'} />
+                    {s.ModoCobro === 'PRECIO_ESTABLECIDO' && conCatalogo ? <Info l="Precio de catálogo" v={<>{prods.map(p => `${p.Cantidad} × ${plata(p.Catalogo.precio, monedaCat)}`).join(' + ')} = <b>{plata(totalCat, monedaCat)}</b>{dif > 0 ? ` · descuento ${r2(dif / totalCat * 100)} %` : dif < 0 ? ` · recargo ${r2(-dif / totalCat * 100)} %` : ''}</>} /> : null}
                     <Info l="Seña" v={!s.RequiereSena ? 'No requiere' : <>Requiere <b>{plata(s.SenaMontoRequerido, s.MonIdMoneda)}</b></>} />
                     {s.RequiereSena ? <Info l="Estado de la seña" v={s.SenaConfirmada ? <span className="text-emerald-700 font-bold">Confirmada</span> : <span className="text-rose-600 font-bold">Sin confirmar — frena la conversión a pedido</span>} /> : null}
                 </div>
@@ -2179,11 +2210,56 @@ function PrecioSena({ s, puede, busy, hacer, autoGuardar }) {
                         </Campo>
                         <Campo label="Moneda"><Selector value={String(f.MonIdMoneda)} onChange={e => guardar({ MonIdMoneda: Number(e.target.value) })} claseBoton={claseSel(SEL_CAMPO)}>{Object.entries(MONEDA).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</Selector></Campo>
                     </div>
-                    {f.ModoCobro === 'PRECIO_ESTABLECIDO' && (
-                        <Campo label="Precio de la solicitud entera">
-                            <input type="number" min="0" step="0.01" value={f.PrecioPactado} onChange={e => setF(x => ({ ...x, PrecioPactado: e.target.value }))} onBlur={() => guardar()} onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }} className={MONTO} />
-                        </Campo>
-                    )}
+                    {f.ModoCobro === 'PRECIO_ESTABLECIDO' && (<>
+                        {prods.length > 0 && (
+                            <div className="rounded-lg border border-slate-200 overflow-x-auto">
+                                <table className="w-full text-xs">
+                                    <thead className="bg-slate-50 text-[10px] font-black uppercase tracking-wide text-slate-500">
+                                        <tr><th className="px-2 py-1.5 text-left">Producto</th><th className="px-2 py-1.5 text-right">Cantidad</th><th className="px-2 py-1.5 text-right">Precio de catálogo c/u</th><th className="px-2 py-1.5 text-right">Subtotal de catálogo</th></tr>
+                                    </thead>
+                                    <tbody>
+                                        {prods.map((p, i) => {
+                                            const pc = Number(p.Catalogo?.precio) > 0 ? Number(p.Catalogo.precio) : null;
+                                            return (
+                                                <tr key={p.ProductoSolID} className="border-t border-slate-100">
+                                                    <td className="px-2 py-1.5 text-slate-800">{p.ProductoNombre || `Producto ${i + 1}`}</td>
+                                                    <td className="px-2 py-1.5 text-right">{p.Cantidad}</td>
+                                                    <td className="px-2 py-1.5 text-right">{pc != null ? plata(pc, monCat(p)) : <span className="text-slate-400">sin precio de catálogo</span>}</td>
+                                                    <td className="px-2 py-1.5 text-right">{pc != null ? plata(r2(pc * Number(p.Cantidad)), monCat(p)) : '—'}</td>
+                                                </tr>
+                                            );
+                                        })}
+                                    </tbody>
+                                    {conCatalogo && prods.length > 1 && (
+                                        <tfoot><tr className="border-t border-slate-200 font-black text-slate-800"><td colSpan={3} className="px-2 py-1.5 text-right">Total de catálogo</td><td className="px-2 py-1.5 text-right">{plata(totalCat, monedaCat)}</td></tr></tfoot>
+                                    )}
+                                </table>
+                            </div>
+                        )}
+                        <div className="flex flex-wrap items-end gap-3">
+                            {unico && (
+                                <Campo label={`Precio por prenda (${unico.Cantidad} prendas)`}>
+                                    <input type="number" min="0" step="0.01" value={porPrenda} onChange={e => setPorPrenda(e.target.value)} onBlur={guardarPorPrenda} onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }} className={MONTO} />
+                                </Campo>
+                            )}
+                            <Campo label="Precio de la solicitud entera">
+                                <input type="number" min="0" step="0.01" value={f.PrecioPactado} onChange={e => setF(x => ({ ...x, PrecioPactado: e.target.value }))} onBlur={() => guardar()} onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }} className={MONTO} />
+                            </Campo>
+                        </div>
+                        {conCatalogo && (
+                            <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                                {dif == null ? (pactado > 0 && !mismaMoneda ? <span className="text-slate-500">El precio de catálogo está en {MONEDA[monedaCat]}: no se compara con el pactado.</span> : null)
+                                    : dif > 0 ? <span className="font-bold text-amber-700">Descuento de {plata(dif, monedaCat)} ({r2(dif / totalCat * 100)} %) sobre el precio de catálogo</span>
+                                    : dif < 0 ? <span className="font-bold text-sky-700">Recargo de {plata(-dif, monedaCat)} ({r2(-dif / totalCat * 100)} %) sobre el precio de catálogo</span>
+                                    : <span className="font-bold text-emerald-700">Es el precio de catálogo.</span>}
+                                {(!mismaMoneda || pactado !== totalCat) && (
+                                    <button type="button" disabled={busy} onClick={() => guardar({ PrecioPactado: String(totalCat), MonIdMoneda: monedaCat })} className="font-bold text-brand-cyan hover:underline">
+                                        Usar el precio de catálogo: {plata(totalCat, monedaCat)}
+                                    </button>
+                                )}
+                            </div>
+                        )}
+                    </>)}
                     <label className="flex items-center gap-2 text-xs font-bold text-slate-700">
                         <input type="checkbox" checked={f.RequiereSena} disabled={!f.ModoCobro || (f.RequiereSena && !!s.SenaConfirmada)} onChange={e => guardar({ RequiereSena: e.target.checked })} />
                         Requiere seña inicial{f.RequiereSena && s.SenaConfirmada ? <span className="font-normal text-slate-400">(ya está confirmada: no se puede sacar)</span> : null}

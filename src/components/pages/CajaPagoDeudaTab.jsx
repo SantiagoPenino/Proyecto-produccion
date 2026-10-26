@@ -456,7 +456,11 @@ export default function CajaPagoDeudaTab({ sesion, metodosPago = [], cotizacion 
     const conExtras = extras.length > 0;
     const forzarParcial   = opts === true || opts?.forzarParcial === true || conExtras;
     const forzarExcedente = opts?.forzarExcedente === true || conExtras;
-    const selDeudas = [...deudasSeleccionadas, ...extras];
+    // Orden de imputación: primero las elegidas y, entre ellas, de la más vieja a la más
+    // nueva (la más vieja se liquida primero; si no alcanza, la parcial es la más nueva).
+    // `deudas` viene de la más nueva a la más vieja, así que sin esto se pagaba al revés.
+    const elegidasPorAntiguedad = [...deudasSeleccionadas].sort(porFechaDesc(d => d.DDeFechaEmision)).reverse();
+    const selDeudas = [...elegidasPorAntiguedad, ...extras];
     const totalSel  = selDeudas.reduce((s, d) => s + Number(d.DDeImportePendiente), 0);
     // El cajero resolvió la diferencia como fluctuación del TC: la deuda se cancela
     // entera y la diferencia va a resultado en vez de al cliente.
