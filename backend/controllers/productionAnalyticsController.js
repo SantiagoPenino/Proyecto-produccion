@@ -328,6 +328,10 @@ exports.getAnalytics = async (req, res) => {
             return r;
         };
 
+        // Demora por prioridad: desde el 26/10 sale del ciclo en planta de cada orden (horas laborales del área, sin
+        // feriados ni espera del cliente; services/cicloPlantaService.js). Sin la tabla, la cuenta vieja.
+        const conCiclo = await require('../services/cicloPlantaService').tieneTabla(pool).catch(() => false);
+
         const [
             resInsertadas,
             resCompletadas,
@@ -508,7 +512,29 @@ exports.getAnalytics = async (req, res) => {
                 ${areaF} ${materialF} ${clienteF} ${turnoFo}
             `), { recordset: [{ ordenes: 0, metros: 0 }] }, 'fallaRep'),
 
-            // 12. Demora promedio por prioridad (FechaIngreso → primer Pronto/Finalizado)
+            // 12. Demora promedio por prioridad. Con la tabla del ciclo en planta: minutos laborales del ingreso al
+            //     último Pronto, sin la espera del cliente, de las órdenes que quedaron prontas en el período.
+            conCiclo ? safe(() => base().query(`
+                SELECT
+                    prio                        AS prioridad,
+                    COUNT(*)                    AS totalOrdenes,
+                    AVG(minutos)  / 60.0        AS promedioHoras,
+                    MAX(mediana)  / 60.0        AS medianaHoras,
+                    MIN(minutos)  / 60.0        AS minHoras,
+                    MAX(minutos)  / 60.0        AS maxHoras
+                FROM (
+                    SELECT cp.Prioridad AS prio, CAST(cp.MinutosCiclo AS FLOAT) AS minutos,
+                        PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY cp.MinutosCiclo)
+                            OVER (PARTITION BY cp.Prioridad) AS mediana
+                    FROM dbo.OrdenesCicloPlanta cp WITH(NOLOCK)
+                    JOIN dbo.Ordenes o WITH(NOLOCK) ON o.OrdenID = cp.OrdenID
+                    WHERE cp.Fin >= @desde AND cp.Fin <= @hasta
+                    ${areaF} ${materialF} ${turnoFo}
+                ) sub
+                GROUP BY prio
+                ORDER BY promedioHoras ASC
+            `), { recordset: [] }, 'demora') :
+            // Cuenta vieja (FechaIngreso → primer Pronto/Finalizado, menos 12 h por día), mientras no exista la tabla
             safe(() => base().query(`
                 SELECT
                     prio                        AS prioridad,

@@ -10,6 +10,7 @@ import {
 } from '@tanstack/react-table';
 import { isTabletDevice } from '../../../utils/device';
 import { unidadVisible } from '../../../utils/unidadOrden';
+import { fmtDuracion, tituloCiclo } from '../../../utils/cicloPlanta';
 
 // Tablets de planta (1200x800): la tabla completa no entra → arrancar con las columnas
 // secundarias ocultas (el operario puede volver a mostrarlas desde "Columnas").
@@ -236,6 +237,10 @@ export default function ProductionTable({ rowData = [], onRowSelected, selectedR
             }
             return value;
         } },
+        // Ciclo en planta (solo en finalizadas; en el tablero activo viene vacía y la columna se oculta sola)
+        { field: 'ciclo', headerName: 'Ciclo', width: 95, cellRenderer: ({ value }) => (value ? (
+            <span className="text-xs tablet:text-[11px] font-bold text-zinc-700 whitespace-nowrap" title={tituloCiclo(value)}>{fmtDuracion(value.minutos)}</span>
+        ) : null) },
         { field: 'filesCount', headerName: 'Archivos', width: 80, cellRenderer: FilesRenderer },
         { field: 'rollId', headerName: 'Lote', width: 100, cellRenderer: BatchRenderer },
         { field: 'printer', headerName: 'Máquina', width: 120 },
@@ -262,6 +267,7 @@ export default function ProductionTable({ rowData = [], onRowSelected, selectedR
                         let strVal = typeof val === 'string' ? val.trim() : String(val);
                         // Mockear longitud para columnas con UI especial para no romper el cálculo
                         if (col.field === 'entryDate') strVal = '10/10/26'; // 8 caracteres
+                        if (col.field === 'ciclo') strVal = '10 h 30 min';
                         
                         const len = strVal.length;
                         if (len > maxChars) maxChars = len;

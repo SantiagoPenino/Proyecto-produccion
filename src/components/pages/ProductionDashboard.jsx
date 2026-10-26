@@ -1241,7 +1241,7 @@ export default function ProductionDashboard() {
                                 <h3 className={`${TITULO} mb-1`}>
                                     Demora Promedio por Prioridad
                                 </h3>
-                                <p className="text-xs text-zinc-400 mb-4">Tiempo efectivo — descuenta 12h no trabajadas por día</p>
+                                <p className="text-xs text-zinc-400 mb-4">Horas laborales del área, del ingreso a Pronto — sin feriados ni espera del cliente</p>
                                 {(() => {
                                     const rows = an.demoraPorPrioridad || [];
                                     const maxH = rows.reduce((m, r) => Math.max(m, parseFloat(r.promedioHoras) || 0), 0) || 1;

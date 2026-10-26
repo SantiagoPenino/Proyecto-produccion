@@ -31,3 +31,4 @@ export { consultasService } from './modules/consultasService';
 export { servicioTecnicoService } from './modules/servicioTecnicoService';
 export { desarrollosService } from './modules/desarrollosService';
 export { notificacionesService } from './modules/notificacionesService';
+export { cicloPlantaService } from './modules/cicloPlantaService';

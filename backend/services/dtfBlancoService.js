@@ -11,8 +11,8 @@
  *    simultáneas no pueden duplicar ese pico en el VPS.
  *  - BEST-EFFORT: nada de esto puede tirar abajo una subida. Si falla, queda el log y el
  *    operario hace la acción de Photoshop como siempre (peor caso = status quo).
- *  - El temporal de la subida se COPIA acá (sincrónico) porque uploadOrderFile lo borra en
- *    su finally; la cola trabaja sobre la copia y la limpia al terminar.
+ *  - El temporal de la subida se COPIA acá (un enlace duro en uploads/tmp/trabajo, desde el 26/10)
+ *    porque uploadOrderFile lo borra en su finally; la cola trabaja sobre la copia y la limpia al terminar.
  *
  * Config (env):
  *  - DTF_BLANCO_ENABLED: '0' lo apaga (default: prendido).
@@ -22,13 +22,12 @@
  */
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
 const { execFile } = require('child_process');
 const { sql, getPool } = require('../config/db');
 const logger = require('../utils/logger');
+const { copiaDeTrabajo, borrarCopia } = require('../utils/copiaDeTrabajo');
 
 const SCRIPT = path.join(__dirname, '..', 'python', 'dtf_blanco.py');
-const WORKDIR = path.join(os.tmpdir(), 'dtf-blanco');
 
 const habilitado = () => process.env.DTF_BLANCO_ENABLED !== '0';
 
@@ -134,21 +133,35 @@ async function avisarSinBlanco(pool, ordenId, cod, nombreArchivo, motivo) {
 let cola = Promise.resolve();
 let pendientes = 0;
 
+/** ¿El archivo es de una orden del área DF? Mismo criterio que el paso 1 de procesar. */
+async function esArteDf(archivoId) {
+    const pool = await getPool();
+    const q = await pool.request()
+        .input('AID', sql.Int, archivoId)
+        .query(`SELECT LTRIM(RTRIM(o.AreaID)) AS AreaID
+                FROM ArchivosOrden ao JOIN Ordenes o ON o.OrdenID = ao.OrdenID
+                WHERE ao.ArchivoID = @AID`);
+    return String(q.recordset[0]?.AreaID || '').toUpperCase() === 'DF';
+}
+
 /**
- * Punto de entrada desde uploadOrderFile. COPIA el tmp de la subida (sincrónico, antes de
- * que el finally lo borre) y encola el procesamiento. Nunca lanza.
+ * Punto de entrada desde uploadOrderFile y uploadProductionFile: hay que esperarla (await) antes del finally
+ * que borra el tmp. Se queda con su propia copia del archivo y encola el procesamiento. Nunca lanza.
+ *
+ * 26/10: primero mira el área y la copia es un enlace duro (utils/copiaDeTrabajo). Antes copiaba con
+ * fs.copyFileSync el archivo de TODA subida (SUB, ECOUV…) y recién en la cola descartaba lo que no era DF:
+ * mientras copiaba, el backend entero quedaba trabado (con un banner de 2,7 GB, varios segundos para todos).
  */
-function encolarSiCorresponde({ archivoId, tmpPath, nombreArchivo, codigoOrden }) {
+async function encolarSiCorresponde({ archivoId, tmpPath, nombreArchivo, codigoOrden }) {
     try {
         if (!habilitado()) return;
         if (!archivoId || !tmpPath || !fs.existsSync(tmpPath)) return;
         const ext = String(nombreArchivo || tmpPath).toLowerCase();
         if (!ext.endsWith('.pdf') && !ext.endsWith('.png')) return;
+        if (!(await esArteDf(archivoId))) return;
 
         // Copia propia del archivo, ya: el tmp de multer muere con la respuesta HTTP.
-        fs.mkdirSync(WORKDIR, { recursive: true });
-        const copia = path.join(WORKDIR, `${archivoId}-${Date.now()}${ext.endsWith('.png') ? '.png' : '.pdf'}`);
-        fs.copyFileSync(tmpPath, copia);
+        const copia = await copiaDeTrabajo(tmpPath, `dtf-blanco-${archivoId}`, ext.endsWith('.png') ? '.png' : '.pdf');
 
         pendientes++;
         const monitor = require('./colaProcesos');   // cola de procesos pesados del monitor
@@ -162,7 +175,7 @@ function encolarSiCorresponde({ archivoId, tmpPath, nombreArchivo, codigoOrden }
             .catch(e => logger.error(`[DTF-Blanco] ${codigoOrden || archivoId}: ${e.message}`))
             .finally(() => {
                 pendientes--;
-                try { fs.unlinkSync(copia); } catch (_) { }
+                borrarCopia(copia);
             });
     } catch (e) {
         logger.warn('[DTF-Blanco] no se pudo encolar: ' + e.message);

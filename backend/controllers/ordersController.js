@@ -341,10 +341,10 @@ exports.uploadProductionFile = async (req, res) => {
 
         // [DTF] Capa de tinta blanca, igual que en la subida del portal (upload-stream): el arte que se
         // sube desde el detalle de la orden (p. ej. el de reimpresión de una falla) no la generaba. El
-        // servicio filtra por área DF y copia el temporal antes del finally que lo borra.
+        // servicio filtra por área DF y copia el temporal antes del finally que lo borra (por eso el await).
         if (!esMatriz && tmpPath) {
             try {
-                require('../services/dtfBlancoService').encolarSiCorresponde({ archivoId, tmpPath, nombreArchivo: finalName, codigoOrden: orden.CodigoOrden });
+                await require('../services/dtfBlancoService').encolarSiCorresponde({ archivoId, tmpPath, nombreArchivo: finalName, codigoOrden: orden.CodigoOrden });
             } catch (eDtf) {
                 logger.warn('[uploadProductionFile] tinta blanca: ' + eDtf.message);
             }
@@ -938,9 +938,16 @@ exports.enviarAprobacionTPU = async (req, res) => {
         // marca roja del tablero se apaga (vuelve a estar en manos del cliente).
         // TexturasElige = NULL: la decisión es DEL CLIENTE y se resuelve al aprobar (aprobarPedido):
         // si guardó texturas en el visor son suyas; si aprobó pelado, las define el diseñador.
+        // Historial 'Esperando' (26/10): marca desde cuándo se espera al cliente. El ciclo en planta de la orden
+        // descuenta cada vuelta (enviado → aprobado o rechazado), ver services/cicloPlantaService.js.
+        let usuarioHist = 'Sistema';
+        try { usuarioHist = require('../services/stateManagerService').extractUser(req.user).userName; } catch (_) { /* sin usuario: 'Sistema' */ }
         await pool.request()
             .input('OID', sql.Int, ordenId)
-            .query(`UPDATE Ordenes SET AprobacionPendiente = 1, Estado = 'Pendiente', EstadoenArea = 'Esperando', FechaRechazoCliente = NULL, TexturasElige = NULL WHERE OrdenID = @OID`);
+            .input('Usr', sql.VarChar(100), usuarioHist)
+            .query(`UPDATE Ordenes SET AprobacionPendiente = 1, Estado = 'Pendiente', EstadoenArea = 'Esperando', FechaRechazoCliente = NULL, TexturasElige = NULL WHERE OrdenID = @OID;
+                    INSERT INTO dbo.HistorialOrdenes (OrdenID, Estado, FechaInicio, FechaFin, Usuario, Detalle)
+                    VALUES (@OID, 'Esperando', GETDATE(), GETDATE(), @Usr, N'Boceto enviado a aprobación del cliente');`);
 
         try {
             const io = req.app.get('socketio');
@@ -1430,6 +1437,14 @@ exports.getOrdersByArea = async (req, res) => {
             }
         }
 
+        // [CICLO EN PLANTA 26/10] En las finalizadas, cuánto tardó cada orden en horas laborales (lo calcula el job
+        // «Ciclo en planta»). Sin la tabla (script sin correr) la planilla sigue igual, sin la columna.
+        let conCiclo = false;
+        if (mode === 'pronto' || mode === 'history') {
+            try { conCiclo = await require('../services/cicloPlantaService').tieneTabla(pool); }
+            catch (e) { logger.warn(`[CICLO-PLANTA] planilla: ${e.message}`); }
+        }
+
         let query = `
             SELECT
                 o.OrdenID,
@@ -1499,11 +1514,18 @@ exports.getOrdersByArea = async (req, res) => {
                 cc.ConFechaAlta  AS ConsultaDesde,
                 cc.ConFechaVence AS ConsultaVence,
                 cc.UsuarioNombre AS ConsultaUsuario` : ''}
+                ${conCiclo ? `,
+                cp.MinutosCiclo         AS CicloMinutos,
+                cp.MinutosCorridos      AS CicloCorridos,
+                cp.MinutosEsperaCliente AS CicloEspera,
+                cp.Inicio               AS CicloInicio,
+                cp.OrigenInicio         AS CicloOrigen` : ''}
 
             FROM dbo.Ordenes o WITH(NOLOCK)
             LEFT JOIN dbo.ConfigEquipos m WITH(NOLOCK) ON o.MaquinaID = m.EquipoID
             LEFT JOIN dbo.Clientes c WITH(NOLOCK) ON o.IdClienteReact = c.IDReact
             LEFT JOIN dbo.InventarioBobinas ibt WITH(NOLOCK) ON ibt.BobinaID = o.BobinaTelaID
+            ${conCiclo ? 'LEFT JOIN dbo.OrdenesCicloPlanta cp WITH(NOLOCK) ON cp.OrdenID = o.OrdenID' : ''}
             ${consultasOk ? `
             OUTER APPLY (
                 SELECT TOP 1 m2.MotConTitulo AS Motivo, cs.ConFechaAlta, cs.ConFechaVence,
@@ -1645,6 +1667,15 @@ exports.getOrdersByArea = async (req, res) => {
                 desde  : o.ConsultaDesde,
                 vence  : o.ConsultaVence,
                 usuario: o.ConsultaUsuario || null,
+            } : null,
+
+            // [CICLO EN PLANTA] Solo en finalizadas: minutos laborales del ingreso al Pronto, sin la espera del cliente.
+            ciclo: o.CicloMinutos != null ? {
+                minutos : o.CicloMinutos,
+                corridos: o.CicloCorridos,
+                espera  : o.CicloEspera,
+                inicio  : o.CicloInicio,
+                origen  : o.CicloOrigen,
             } : null,
 
             deliveryDate: o.FechaEstimadaEntrega,

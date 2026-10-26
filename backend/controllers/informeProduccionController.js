@@ -60,7 +60,7 @@ FALLA Y REPOSICIÓN:
 - Metros de falla/reposición: ${fmtM(fallaReposicion.metros)} (${pctFalla}% del total)
 - Órdenes afectadas: ${fmt(fallaReposicion.ordenes)}
 
-DEMORA PROMEDIO (tiempo efectivo, descontando 12h no laborables/día):
+DEMORA PROMEDIO (horas laborales del área, del ingreso a Pronto, sin feriados ni espera del cliente):
 ${demora}
 
 TOP OPERADORES:
@@ -264,7 +264,7 @@ function buildHTML(datos, analisis) {
   <div class="analysis">${seccionesHTML}</div>
 
   <!-- DEMORAS -->
-  <div class="section-title-main">Demora Promedio por Prioridad <span style="font-weight:400;font-size:10px;color:#94a3b8">(tiempo efectivo — descuenta 12h no laborables/día)</span></div>
+  <div class="section-title-main">Demora Promedio por Prioridad <span style="font-weight:400;font-size:10px;color:#94a3b8">(horas laborales del área, del ingreso a Pronto — sin feriados ni espera del cliente)</span></div>
   <table>
     <thead><tr>
       <th>Prioridad</th><th style="text-align:right">Órdenes</th>

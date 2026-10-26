@@ -10,6 +10,7 @@ import { printLabelsHelper } from '../../utils/printHelper';
 import { socket } from '../../services/socketService';
 import { DragDropContext, Droppable, Draggable } from '@hello-pangea/dnd';
 import Swal from 'sweetalert2';
+import { unidadesLote, AREAS_MARCADO_LIBRE } from '../../utils/ordenLote';
 
 // --- SUB-COMPONENT: MODAL DE SELECCIÓN DE BOBINA ---
 const BobinaAssignmentModal = ({ isOpen, onClose, onSelect, currentMetros, areaCode = 'ECOUV' }) => {
@@ -360,7 +361,6 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
     // Marcado LIBRE — se puede marcar/desmarcar impresa CUALQUIER orden, sin exigir que las
     // anteriores estén impresas (no aplica el invariante impresos-prefijo ni el bloque FUERA DE
     // ORDEN ni el rechazo de drags por secuencia). Son las áreas que no imprimen en cola.
-    const AREAS_MARCADO_LIBRE = ['DF', 'ECOUV'];
     const marcadoLibre = AREAS_MARCADO_LIBRE.includes((currentAreaCode || '').toUpperCase());
 
     // Metros editables de órdenes de falla (-F): por orden (Magnitud) y total del grupo (independiente).
@@ -851,101 +851,16 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
         setOrdenAsc(asc);
     };
 
-    // Unidades de render: grupo manual, grupo auto (material con 1 sola orden) u orden suelta.
-    // En áreas que NO son SB no se agrupa por tela (todo suelto), como antes.
-    //
-    // La lista tiene DOS mitades con reglas distintas (07/09/2026):
-    //  · IMPRESAS = historia. Van por FechaImpreso — lo que la máquina hizo, en ese orden — y se
-    //    agrupan por tela consecutiva. Su Secuencia NO cuenta: una orden que entró tarde al lote
-    //    (Secuencia = MAX+1) pero se imprimió con su tela queda donde se imprimió. Antes se ubicaba
-    //    por Secuencia y el bloque de tela "se cerraba" al tildar otra tela: la orden impresa
-    //    saltaba al final de la lista y, como "la última impresa" quedaba al final, arrastraba a
-    //    TODO lo pendiente a "fuera de orden" (lote sb-08 del 07/09: 18 órdenes de golpe).
-    //  · PENDIENTES = plan. Por Secuencia, agrupadas por tela. Las de la tela que está en máquina
-    //    continúan el último bloque impreso (se imprimen a continuación, sin cambiar tela). Las de
-    //    una tela que ya se imprimió y quedó atrás van al final con FUERA DE ORDEN: hay que volver
-    //    a cargar esa tela, así que se imprimen último. Las NUEVAS (lote en armado), último.
-    // Se usa SIEMPRE 'printed' + 'fechaImpreso' (no el campo de la 2ª estación): el agrupado
-    // representa el orden de IMPRESIÓN y la calandra lo muestra invertido.
-    // Sin fecha (impresa antes de que existiera la columna) = antes que cualquiera con fecha.
-    // En áreas de marcado libre (DF/ECOUV) no hay cola: se muestra por Secuencia, sin mover nada.
-    const renderUnits = (() => {
-        const manualIdxOf = {};
-        manualGroups.forEach((g, gi) => g.forEach(id => { manualIdxOf[id] = gi; }));
-        const unidad = (key, kind, o) => ({ key, kind, material: matDisplay(o) || '—', orders: [] });
-        // Firma estable por unidad (ids ordenados) — la usan el drag y la marca de bloqueo — y el
-        // inverso EXACTO para la calandra (lote en calandra, o vista Calandra del Historial): se
-        // invierten los grupos Y las órdenes dentro de cada grupo, igual que el botón "invertir".
-        const cerrar = (units) => {
-            units.forEach(u => { u.sig = u.orders.map(o => o.id).slice().sort((a, b) => a - b).join(','); });
-            if (lockReorder || calandraView) {
-                units.reverse();
-                units.forEach(u => { u.orders = [...u.orders].reverse(); });
-            }
-            return units;
-        };
-
-        if (marcadoLibre) {
-            return cerrar(orders.map(o => { const u = unidad('l:' + o.id, 'loose', o); u.orders.push(o); return u; }));
-        }
-
-        const tsDe = (o) => { const t = o?.fechaImpreso ? new Date(o.fechaImpreso).getTime() : NaN; return Number.isFinite(t) ? t : -Infinity; };
-        const seqDe = (o) => (o.sequence ?? o.Secuencia ?? 999999);
-        const porImpresion = (a, b) => {
-            const ta = tsDe(a), tb = tsDe(b);
-            if (ta !== tb) return ta < tb ? -1 : 1;
-            return (seqDe(a) - seqDe(b)) || ((a.id || 0) - (b.id || 0));
-        };
-
-        // ── Impresas: por hora de impresión, tela consecutiva = un bloque ──────────────────
-        const list = [];
-        let ult = null;
-        orders.filter(o => o.printed).sort(porImpresion).forEach(o => {
-            const mat = isSB ? matKey(o) : ('l:' + o.id);
-            if (!ult || ult.mat !== mat) { ult = unidad('p:' + list.length, 'loose', o); ult.mat = mat; list.push(ult); }
-            ult.orders.push(o);
-        });
-        const telaEnCurso = ult ? ult.mat : null;
-        const telasImpresas = new Set(list.map(u => u.mat));
-
-        // ── Pendientes: por Secuencia ──────────────────────────────────────────────────────
-        const pendientes = orders.filter(o => !o.printed);
-        // En Historial y calandra no se mueve nada al final: se listan donde están.
-        const conCola = !readOnly && !lockReorder && !calandraView;
-        // matCount (auto vs bloque suelto) cuenta las sueltas, NUEVAS incluidas: una nueva que se
-        // suma a su tela hace bloque igual que cualquier otra. Solo quedan afuera las ya agrupadas.
-        const matCount = {};
-        pendientes.forEach(o => { if (manualIdxOf[o.id] === undefined) { const m = matKey(o); matCount[m] = (matCount[m] || 0) + 1; } });
-        const byKey = {};
-        const cola = [];
-        pendientes.forEach(o => {
-            // Una orden NUEVA (asignada al lote con el modal abierto) NO se saca del circuito: se
-            // ubica por su tela como cualquier otra (pedido de planta 10/09/2026). Antes se iba
-            // derecho al final en un bloque propio sin siquiera mirar la tela, así que una orden
-            // de una tela que estaba ahí mismo sin imprimir aparecía último. Queda el cartel NUEVA
-            // en la fila para que el operario la note. Las tres ramas de abajo dan justo la regla
-            // pedida: se suma a su grupo si le queda algo sin imprimir, o si su tela es la que está
-            // en máquina (el grupo siguiente todavía no arrancó); si su tela ya pasó, FUERA DE ORDEN.
-            if (!isSB) { const u = unidad('l:' + o.id, 'loose', o); u.orders.push(o); list.push(u); return; }
-            const mat = matKey(o);
-            // La tela que está en máquina sigue: la orden entra al bloque impreso, a continuación.
-            if (ult && mat === telaEnCurso && manualIdxOf[o.id] === undefined) { ult.orders.push(o); return; }
-            // Su tela ya se imprimió y la máquina siguió con otra → al final (habrá que recargarla).
-            const fuera = conCola && telasImpresas.has(mat) && mat !== telaEnCurso;
-            let key, kind;
-            if (manualIdxOf[o.id] !== undefined) { key = 'm' + manualIdxOf[o.id]; kind = 'manual'; }
-            else if (matCount[mat] === 1) { key = 'a:' + mat; kind = 'auto'; }
-            else { key = 'lm:' + mat; kind = 'loose'; }
-            if (fuera) { key = 'seq:' + key; kind = 'outseq'; }
-            let u = byKey[key];
-            if (!u) { u = unidad(key, kind, o); byKey[key] = u; (fuera ? cola : list).push(u); }
-            u.orders.push(o);
-        });
-        // Bloques impresos en SB: 1 orden = 'auto' (encabezado con la tela), más de una = bloque.
-        if (isSB) list.forEach(u => { if (u.mat !== undefined) u.kind = u.orders.length > 1 ? 'loose' : 'auto'; });
-
-        return cerrar(list.concat(cola));
-    })();
+    // Unidades de render: grupo manual, grupo auto (material con 1 sola orden) u orden suelta, en el
+    // orden en que se muestran. La regla vive en utils/ordenLote (26/10/2026) porque el Control la usa
+    // igual: así el detalle y el Control muestran siempre el mismo orden. Ahí está explicada.
+    // conCola (FUERA DE ORDEN al final) solo con el lote en la impresora; en Historial y calandra se
+    // listan donde están. La calandra (lote en calandra, o vista Calandra del Historial) lo invierte.
+    const renderUnits = unidadesLote(orders, {
+        isSB, marcadoLibre, manualGroups, matKey, matDisplay,
+        invertir: lockReorder || calandraView,
+        conCola: !readOnly && !lockReorder && !calandraView,
+    });
 
     // Impresión EN ORDEN: solo se puede marcar la siguiente (todas las anteriores impresas) y solo
     // desmarcar la última impresa (ninguna posterior impresa). Evita marcar salteado / dejar huecos.

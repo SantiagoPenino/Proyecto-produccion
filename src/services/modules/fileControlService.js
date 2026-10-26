@@ -28,6 +28,14 @@ export const fileControlService = {
     },
 
     /**
+     * Datos de orden de TODAS las órdenes del lote (utils/ordenLote): { area, ordenes }
+     */
+    getOrdenLote: async (rolloId) => {
+        const response = await api.get(`/production-file-control/lote/${rolloId}/orden`);
+        return response.data;
+    },
+
+    /**
      * Obtiene los archivos específicos de una orden
      */
     getArchivosPorOrden: async (ordenId) => {

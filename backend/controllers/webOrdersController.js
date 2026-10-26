@@ -10,6 +10,7 @@ const path = require('path');
 const contabilidadService = require('../services/contabilidadService');
 const ERPSyncService = require('../services/erpSyncService');
 const { generateThumbnail } = require('../utils/thumbnailGenerator');
+const { copiaDeTrabajo, borrarCopia } = require('../utils/copiaDeTrabajo');
 const { construirNombreArchivo, materialParaNombre, usaNombreNuevo } = require('../utils/nombreArchivoOrden');
 const { marcarRequisitoNoAplica } = require('../utils/requisitosAutoCumplimiento');
 
@@ -2372,47 +2373,51 @@ exports.uploadOrderFile = async (req, res) => {
 
         const driveUrl = await driveService.uploadToDrive(fileInput, finalName, area || 'GENERAL');
 
-        // Con diskStorage NO hay file.buffer (solo file.path). Leemos el archivo del tmp a un buffer
-        // para el thumbnail + perfil ICC. El buffer queda en memoria, independiente del tmp (que se
-        // borra en el finally), así que las tareas en background funcionan aunque el tmp ya no exista.
-        let procBuffer = file.buffer || null;
-        const wantThumb   = !!(codigoOrden && dbId);
-        const wantProfile = !!(type === 'ORDEN' && dbId);
-        if (!procBuffer && file.path && (wantThumb || wantProfile)) {
+        // Miniatura, perfil ICC y preflight trabajan en segundo plano sobre una copia de trabajo del tmp (que
+        // el finally borra). 26/10: antes se leía el archivo entero a memoria ACÁ, antes de contestar: con el
+        // banner de 2,7 GB de EUV-38376 eran segundos más de espera y otra copia completa en RAM. Ahora la
+        // copia es un enlace duro (utils/copiaDeTrabajo, instantáneo) y la lectura arranca sin esperarla.
+        const wantThumb     = !!(codigoOrden && dbId);
+        const wantProfile   = !!(type === 'ORDEN' && dbId);
+        const wantPreflight = process.env.PREFLIGHT_ENABLED === '1' && type === 'ORDEN' && !!dbId;
+        let copiaFondo = null;
+        if (!file.buffer && file.path && (wantThumb || wantProfile || wantPreflight)) {
             try {
-                procBuffer = await require('fs').promises.readFile(file.path);
+                copiaFondo = await copiaDeTrabajo(file.path, `subida-${dbId}`, path.extname(finalName || ''));
             } catch (e) {
-                logger.warn('[UploadStream] No se pudo leer el tmp para thumbnail/perfil: ' + e.message);
+                logger.warn('[UploadStream] No se pudo preparar la copia para miniatura/perfil: ' + e.message);
             }
         }
+        const leerProc = file.buffer ? Promise.resolve(file.buffer)
+            : copiaFondo ? fs.promises.readFile(copiaFondo).catch(e => { logger.warn('[UploadStream] No se pudo leer la copia para miniatura/perfil: ' + e.message); return null; })
+            : Promise.resolve(null);
+        const tareasFondo = [];
 
-        // Generar thumbnail en background si tenemos el buffer. Quién puede tener miniatura lo
-        // decide el generador mirando los primeros bytes: filtrar acá por nombre dejaba sin
-        // miniatura a los archivos cuya extensión no delata el tipo (o no la tienen).
-        if (procBuffer && wantThumb) {
-            generateThumbnail(procBuffer, codigoOrden, dbId, finalName).catch(e =>
-                logger.warn('[Thumbnail] Error async generando thumbnail:', e.message)
-            );
+        // Thumbnail en background. Quién puede tener miniatura lo decide el generador mirando los
+        // primeros bytes: filtrar acá por nombre dejaba sin miniatura a los archivos cuya extensión
+        // no delata el tipo (o no la tienen).
+        if (wantThumb) {
+            tareasFondo.push(leerProc.then(procBuffer => procBuffer && generateThumbnail(procBuffer, codigoOrden, dbId, finalName))
+                .catch(e => logger.warn('[Thumbnail] Error async generando thumbnail:', e.message)));
         }
 
-        // [DTF] Capa de tinta blanca automática (solo arte del área DF — el filtro fino lo hace
-        // el propio servicio mirando la orden). Se llama ACÁ, antes del finally que borra el
-        // temporal: el servicio copia el archivo de forma sincrónica y procesa en su cola de a
-        // uno, sin bloquear la respuesta. Best-effort: jamás afecta la subida.
+        // [DTF] Capa de tinta blanca automática (solo arte del área DF: el servicio mira la orden antes de
+        // copiar). Se espera ACÁ, antes del finally que borra el temporal: deja su propia copia (un enlace,
+        // instantáneo) y procesa en su cola de a uno, sin bloquear la respuesta. Best-effort: jamás afecta la subida.
         if (type === 'ORDEN' && tmpPath) {
             try {
                 const { encolarSiCorresponde } = require('../services/dtfBlancoService');
-                encolarSiCorresponde({ archivoId: parseInt(dbId, 10), tmpPath, nombreArchivo: finalName, codigoOrden });
+                await encolarSiCorresponde({ archivoId: parseInt(dbId, 10), tmpPath, nombreArchivo: finalName, codigoOrden });
             } catch (eDtf) {
                 logger.warn('[DTF-Blanco] no se pudo encolar: ' + eDtf.message);
             }
         }
 
         // Leer y guardar el perfil de color ICC incrustado (solo archivos de producción).
-        // Fire-and-forget como el thumbnail: no bloquea la respuesta de subida.
-        if (procBuffer && wantProfile) {
+        // En background como el thumbnail: no bloquea la respuesta de subida.
+        if (wantProfile) {
             const { extractColorProfile } = require('../utils/colorProfile');
-            extractColorProfile(procBuffer, finalName)
+            tareasFondo.push(leerProc.then(procBuffer => procBuffer && extractColorProfile(procBuffer, finalName))
                 .then(async (perfil) => {
                     if (!perfil) return;
                     const p = await getPool();
@@ -2422,19 +2427,21 @@ exports.uploadOrderFile = async (req, res) => {
                         .query('UPDATE ArchivosOrden SET PerfilColor = @Perfil WHERE ArchivoID = @ID');
                     logger.info(`🎨 [ColorProfile] ArchivoID=${dbId}: ${perfil}`);
                 })
-                .catch(e => logger.warn('[ColorProfile] Error guardando perfil:', e.message));
+                .catch(e => logger.warn('[ColorProfile] Error guardando perfil:', e.message)));
         }
 
         // Preflight de arte (motor Python con las reglas de las guías USER): medidas vs
         // material, DPI efectivo, fuentes no embebidas, transparencias, espacios de color.
         // Guarda veredicto + reporte en ArchivosOrden. Fire-and-forget: nunca bloquea la subida.
         // DESACTIVADO por defecto — se enciende con PREFLIGHT_ENABLED=1 en el .env cuando se decida usarlo.
-        if (process.env.PREFLIGHT_ENABLED === '1' && procBuffer && type === 'ORDEN' && dbId) {
+        if (wantPreflight) {
             const { runPreflight, servicioPorArea, anchoCmDesdeMaterial } = require('../utils/preflight');
             const servicioPre = servicioPorArea(area);
             if (servicioPre) {
-                (async () => {
+                tareasFondo.push((async () => {
                     try {
+                        const procBuffer = await leerProc;
+                        if (!procBuffer) return;
                         const p = await getPool();
                         const matRes = await p.request()
                             .input('ID', sql.Int, dbId)
@@ -2451,9 +2458,11 @@ exports.uploadOrderFile = async (req, res) => {
                     } catch (e) {
                         logger.warn('[Preflight] Error guardando resultado:', e.message);
                     }
-                })();
+                })());
             }
         }
+        // La copia de trabajo se borra cuando terminan las tareas de fondo (cada una ya anota sus errores)
+        if (copiaFondo) Promise.allSettled(tareasFondo).then(() => borrarCopia(copiaFondo));
 
         const pool = await getPool();
         let orderID = null;

@@ -15,6 +15,7 @@ import { toast } from 'react-toastify';
 import ProductionTable from "../../production/components/ProductionTable"; // Restored
 // import OrderCard from "../../production/components/OrderCard"; // Grid components commented out
 import OrderDetailModal from "../../production/components/OrderDetailModal";
+import IndicadorCicloArea from "../../production/components/IndicadorCicloArea";
 import FilePrintControl from "../../pages/FilePrintControl";
 import EcoUvFinishing from "../../pages/EcoUvFinishing";
 import LogisticsDashboard from "../../logistics/LogisticsDashboard";
@@ -1227,8 +1228,10 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
                             <div className="h-8 w-px bg-zinc-200 mx-1 shrink-0"></div>
                         </div>
 
-                        {/* BLOQUE 2: Asignar Lote (Movido al toolbar) */}
-                        <div className="flex-1 flex justify-center min-w-0"></div>
+                        {/* BLOQUE 2: tiempo de respuesta del área (plan INF-SIS-2026-04). Asignar Lote está en el toolbar. */}
+                        <div className="flex-1 flex justify-center min-w-0">
+                            <IndicadorCicloArea area={areaDatos} nombre={areaConfig.name} onAbrirOrden={setSelectedOrder} />
+                        </div>
                     </div>
 
                     {/* LADO DERECHO (Mitad de la pantalla menos el margen protector) */}
