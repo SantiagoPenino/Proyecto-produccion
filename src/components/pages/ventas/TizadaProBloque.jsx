@@ -61,6 +61,13 @@ const duenoSugerido = (nombreArchivo, usados, deLista) => {
     return usados.length ? null : 'JUGADOR';
 };
 const filaVacia = (columnas, diseno) => ({ diseno: diseno || '', ...Object.fromEntries(columnas.map(c => [c.id, ''])) });
+// [26/10] Capas "Editable …" del arte sin nada dibujado: la plantilla de TIZADA las trae, y el objeto pudo quedar en otra
+// capa (caso "camiseta naranja agus.ai": el escudo y el logo en "diseño"). No frena nada: puede que ese diseño no lo lleve.
+const avisoEditablesVacios = (vacios, sinObjetos) => {
+    const capas = vacios.map(v => `«Editable ${v}»`);
+    const cuales = capas.length > 1 ? `Las capas ${capas.slice(0, -1).join(', ')} y ${capas[capas.length - 1]} están vacías` : `La capa ${capas[0]} está vacía`;
+    return `${cuales}. Lo que va en bordado, DTF o TPU tiene que estar dibujado en su capa «Editable …»: pasalo en Illustrator y volvé a subir el arte.${sinObjetos ? ' Así como está, todo va sublimado.' : ''}`;
+};
 
 // Portal: piezas y telas de UN arte (su pestaña). La tela de cada pieza es la de "Piezas y telas" salvo que este arte
 // tenga la suya (telasPropias); tocar la pieza deja elegirla ahí mismo y se guarda sola (onCambiar).
@@ -395,6 +402,7 @@ export default function TizadaProBloque({ id, p, puede, onCargado, numero = null
             const minis = await Promise.all(r.objetos.map(o => (o.vista ? miniatura(o.vista) : null)));
             return { ...d, editablesLeidoDe: d.arteArchivoId,
                 editablesDetalle: r.objetos.map(({ vista, ...o }, k) => ({ ...o, vista: minis[k] })),
+                editablesVacios: r.editablesVacios || [],
                 editables: Object.fromEntries(r.objetos.map(o => [o.objeto, (d.editables || {})[o.objeto] || o.sugerido])) };
         } finally { setLeyendo(x => { const n = new Set(x); n.delete(d.arteArchivoId); return n; }); }
     };
@@ -406,7 +414,7 @@ export default function TizadaProBloque({ id, p, puede, onCargado, numero = null
             // [A MEDIDA · PORTAL] ningún diseño se crea ni se borra por los artes: el que perdió su arte queda sin arte
             // (y con su medida); el arte de cada diseño lo asigna la pantalla al subirlo. Solo se leen sus editables.
             let ds = base.map(d => (d.archivoCliente && !vigentes.has(d.archivoCliente) ? { ...d, archivoCliente: null } : d))
-                .map(d => (d.arteArchivoId && !vigentes.has(d.arteArchivoId) ? { ...d, arteArchivoId: null, arteAuto: null, editablesLeidoDe: null, editablesDetalle: [], editables: {} } : d));
+                .map(d => (d.arteArchivoId && !vigentes.has(d.arteArchivoId) ? { ...d, arteArchivoId: null, arteAuto: null, editablesLeidoDe: null, editablesDetalle: [], editablesVacios: [], editables: {} } : d));
             let cambio = forzar || ds.some((d, i) => d !== base[i]);
             for (const d of ds.filter(x => x.arteArchivoId && x.editablesLeidoDe !== x.arteArchivoId && !fallidos.current.has(x.arteArchivoId))) {
                 try { const leido = await leerDe(d); ds = ds.map(x => (x === d ? leido : x)); cambio = true; }
@@ -784,7 +792,8 @@ export default function TizadaProBloque({ id, p, puede, onCargado, numero = null
                                         onQuitarFila={(aid) => quitarFilaExtra(d, aid)}
                                         onForma={enDiseno ? null : (clave, id) => cambiarForma(d, clave, id)} />
                                 )}
-                                {d && !lee && d.editablesLeidoDe === a.ArchivoID && !objetos.length && <div className="px-3 py-1.5 text-[11px] text-slate-400">Sin editables: todo va sublimado.</div>}
+                                {d && !lee && d.editablesLeidoDe === a.ArchivoID && (d.editablesVacios || []).length > 0 && <div className="px-3 py-2 text-[11px] text-amber-800 bg-amber-50 flex items-start gap-1.5"><AlertTriangle size={12} className="mt-0.5 shrink-0" /><span>{avisoEditablesVacios(d.editablesVacios, !objetos.length)}</span></div>}
+                                {d && !lee && d.editablesLeidoDe === a.ArchivoID && !objetos.length && !(d.editablesVacios || []).length && <div className="px-3 py-1.5 text-[11px] text-slate-400">Sin editables: todo va sublimado.</div>}
                                 {errorArte[a.ArchivoID] && !lee && <div className="px-3 py-2 text-[11px] text-rose-800 bg-rose-50 flex items-start gap-1.5"><AlertTriangle size={12} className="mt-0.5 shrink-0" /><span>{errorArte[a.ArchivoID]}</span></div>}
                                 {/* [A MEDIDA] forma → punta → medida → terminación → tela → tiras, con las cuentas de TIZADA en vivo */}
                                 {am && d && <MedidaDiseno id={id} p={p} d={d} am={am} arteId={a.ArchivoID} sucio={sucio} puede={puede && !sincronizando} onCambiar={patch => cambiarDiseno(a.ArchivoID, patch)} />}

@@ -53,6 +53,8 @@ window.analizar = async () => {
     const v = pg.view; out.push({ pagina: i, capas: [...capas], pieza: guia.replace(/\\s+/g, ' ').trim(), anchoCm: (v[2] - v[0]) / 28.3465 }); }
   return out;
 };
+// [26/10] Los nombres de TODAS las capas del arte (las "Editable …" vacías no salen en analizar: no tienen nada dibujado)
+window.capas = async () => { const oc = await doc.getOptionalContentConfig(); return [...oc].map(([, g]) => g.name); };
 const recorte = (c) => { const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data; let x0 = c.width, y0 = c.height, x1 = -1, y1 = -1;
   for (let y = 0; y < c.height; y++) for (let x = 0; x < c.width; x++) if (d[(y * c.width + x) * 4 + 3] > 8) { if (x < x0) x0 = x; if (y < y0) y0 = y; if (x > x1) x1 = x; if (y > y1) y1 = y; }
   return x1 < 0 ? null : { x0, y0, x1, y1 }; };
@@ -145,8 +147,15 @@ async function enNavegador(artes, fn) {
 }
 
 async function extraer(artes) {
+  return (await extraerConVacias(artes)).objetos;
+}
+
+// Igual que extraer, y además las capas "Editable …" del arte sin nada dibujado (26/10): la plantilla de TIZADA las trae
+// y el objeto pudo quedar en otra capa (ej. el escudo en "diseño"). → { objetos: { [clave]: [...] }, vacias: { [clave]: ['Editable logo', …] } }
+async function extraerConVacias(artes) {
   return enNavegador(artes, async (pg) => {
     const out = {};
+    const vacias = {};
     for (const [i, a] of artes.entries()) {
       out[a.clave] = [];
       await pg.evaluate(n => window.abrir(n), i);
@@ -161,8 +170,10 @@ async function extraer(artes) {
           png: Buffer.from(r.png.split(',')[1], 'base64'),
         });
       }
+      const conAlgo = new Set(out[a.clave].map(o => o.capa));
+      vacias[a.clave] = [...new Set((await pg.evaluate(() => window.capas())).filter(c => /^editable\s/i.test(c) && !conAlgo.has(c)))];
     }
-    return out;
+    return { objetos: out, vacias };
   });
 }
 
@@ -226,4 +237,4 @@ async function analizarArte(buffer, ancho = 600) {
   });
 }
 
-module.exports = { extraer, armarPliego, procesoDe, vistasPiezas, analizarArte };
+module.exports = { extraer, extraerConVacias, armarPliego, procesoDe, vistasPiezas, analizarArte };

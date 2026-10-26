@@ -418,6 +418,8 @@ async function guardar(pool, user, base, solicitudId, productoSolId, b) {
     editablesDetalle: (Array.isArray(d.editablesDetalle) ? d.editablesDetalle : []).slice(0, 20).map(o => ({ objeto: txt(o.objeto, 60), pieza: txt(o.pieza, 60) || null,
       anchoCm: Number(o.anchoCm) || null, altoCm: Number(o.altoCm) || null, posicion: txt(o.posicion, 120) || null, sugerido: txt(o.sugerido, 20) || null,
       vista: esMiniatura(o.vista) ? o.vista : null })).filter(o => o.objeto),
+    // [26/10] objetos de las capas "Editable …" que el arte trae vacías (la pantalla lo avisa)
+    editablesVacios: (Array.isArray(d.editablesVacios) ? d.editablesVacios : []).slice(0, 20).map(x => txt(x, 60)).filter(Boolean),
     // [A MEDIDA] la medida y la cantidad de ESTE diseño (se guarda aunque esté incompleta: revisar() frena el envío)
     ...(p.AMedida ? { medida: aMedidaSvc.normalizarMedida(medidaDelCliente(user, d.medida), p.AMedida, null).medida, cantidad: Math.min(Math.max(parseInt(d.cantidad, 10) || 0, 0), 100000) || null,
       // [PORTAL] el .ai / .pdf del cliente con el que el arte para TIZADA se arma solo al confirmar, cómo va (llenar / entera)
@@ -902,11 +904,13 @@ async function leerEditables(pool, user, base, solicitudId, productoSolId, arteA
   const tipos = (await pool.request().input('P', sql.Int, productoSolId).query(
     "SELECT Tipo FROM dbo.SolicitudesVendedorPartes WHERE ProductoSolID = @P AND Activo = 1 AND Tipo IN ('DTF', 'TPU', 'BORDADO')")).recordset.map(x => x.Tipo);
   const ed = require('./tizadaProEditables');
-  let lista;
-  try { lista = (await ed.extraer([{ clave: 'a', buffer }])).a || []; }
+  let lista, vacias;
+  try { const r = await ed.extraerConVacias([{ clave: 'a', buffer }]); lista = r.objetos.a || []; vacias = r.vacias.a || []; }
   catch (e) { throw fallo(422, `No se pudieron leer las capas del arte "${a.NombreOriginal}": ${e.message}`); }
   return {
     arte: a.NombreOriginal, servicios: tipos,
+    // [26/10] los objetos de las capas "Editable …" vacías (ej. 'escudo'): la pantalla avisa en vez de "todo va sublimado"
+    editablesVacios: vacias.map(c => c.replace(/^editable\s+/i, '').trim()).filter(Boolean),
     objetos: lista.map(o => ({ objeto: o.objeto, pieza: o.pieza, anchoCm: o.anchoCm, altoCm: o.altoCm, posicion: o.posicion,
       sugerido: ed.procesoDe(o.objeto, tipos), vista: 'data:image/png;base64,' + o.png.toString('base64') })),
   };

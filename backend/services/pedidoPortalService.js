@@ -479,7 +479,7 @@ async function armarArtesAMedida(pool, s, sol, tz) {
       const sub = await svc.subirArchivo(pool, s.user, s.SolicitudID, { Rol: 'ARTE_CLIENTE', ParteID: principal.ParteID }, { buffer: pdf, size: pdf.length, originalname: nombre });
       if (d.arteAuto && d.arteArchivoId) await svc.quitarArchivo(pool, s.user, s.SolicitudID, d.arteArchivoId).catch(() => { });   // el armado antes, de otra medida
       // el armado no tiene editables propios (se marca leído para que la pantalla no lo lea)
-      disenos.push({ ...d, arteArchivoId: sub.ArchivoID, arteAuto: firma, editablesLeidoDe: sub.ArchivoID, editablesDetalle: [], editables: {} });
+      disenos.push({ ...d, arteArchivoId: sub.ArchivoID, arteAuto: firma, editablesLeidoDe: sub.ArchivoID, editablesDetalle: [], editablesVacios: [], editables: {} });
       cambio = true;
     } catch (e) {
       logger.warn(`[PORTAL-PEDIDO] arte a medida SOL-${s.SolicitudID} ${d.nombre}: ${e.message}`);
