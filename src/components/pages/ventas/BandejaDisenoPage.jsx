@@ -95,13 +95,13 @@ export default function BandejaDisenoPage() {
         const ok = await preguntar({
             Icono: Send, titulo: 'Reenviar a TIZADA PRO', boton: 'Reenviar a TIZADA PRO',
             texto: `Pedido del portal de ${x.ClienteNombre} (#${x.SolicitudID}). Se vuelven a revisar el arte y los datos; si TIZADA lo acepta, la tizada vuelve sola y el pedido se arma solo.`,
-            nota: x.Detalle ? `La última vez TIZADA dijo: ${x.Detalle}` : null,
+            nota: x.Detalle ? `La última vez ${frenoPropio(x.TizadaEtapa) ? 'nuestra revisión del arte' : 'TIZADA'} dijo: ${x.Detalle}` : null,
         });
         if (!ok) return;
         setBusy(true);
         try {
             const r = await svc.tizadaProEnviar(x.SolicitudID, x.ProductoSolID, false);
-            if (r.Estado === 'RECHAZADO') toast.error(`TIZADA no lo acepta: ${r.mensaje || 'mirá las alarmas en la solicitud'}.`);
+            if (r.Estado === 'RECHAZADO') toast.error(`${r.PorNuestraRevision ? 'El arte no pasa nuestra revisión' : 'TIZADA no lo acepta'}: ${r.mensaje || 'mirá las alarmas en la solicitud'}.`);
             else toast.success(`Mandado a TIZADA PRO (${r.Referencia}). La tizada vuelve sola cuando termine.`);
         } catch (e) { toast.error(errorDe(e)); }
         finally { setBusy(false); await cargar(); }
@@ -552,8 +552,12 @@ function Tabla({ vacio, rows, accion, mias }) {
 // ── [DEL PORTAL 20/10] Lo de la tienda del portal que todavía no es pedido ──
 // En qué está cada uno (lo decide el servidor: portalDiseno) y qué se puede hacer: ver la solicitud, reenviar a TIZADA (si
 // la rechazó) y cancelar con motivo (el cliente lo ve en su portal). Primero lo que necesita una persona.
+// [FRENO PROPIO 26/10] Un rechazo puede ser de TIZADA o de nuestra revisión del arte, que frena antes de mandarle nada:
+// la Etapa de esos empieza con "El arte no pasa" (solicitudesVendedorTizadaPro.enviar).
+const frenoPropio = (etapa) => /^El arte no pasa/.test(etapa || '');
 const SITUACION_PORTAL = {
     TIZADA_RECHAZO: { txt: 'TIZADA lo rechazó', cls: 'bg-rose-50 text-rose-700', hacer: 'Corregir lo que dice TIZADA y reenviar, o cancelar' },
+    FRENO_PROPIO: { txt: 'Lo frenó nuestra revisión del arte', cls: 'bg-rose-50 text-rose-700', hacer: 'Corregir el arte y reenviar, o cancelar' },
     ERROR_CONVERSION: { txt: 'No se pudo armar el pedido', cls: 'bg-rose-50 text-rose-700', hacer: 'Mirar el error y convertir desde la solicitud, o cancelar' },
     EN_DISENO: { txt: 'En Diseño', cls: 'bg-sky-50 text-sky-700', hacer: 'Lo tiene Diseño (Para tomar o Mis trabajos)' },
     EN_TIZADA: { txt: 'En TIZADA PRO', cls: 'bg-sky-50 text-sky-700', hacer: 'TIZADA está armando la tizada: vuelve sola' },
@@ -562,7 +566,7 @@ const SITUACION_PORTAL = {
 };
 function DelPortal({ rows, vacio, busy, abriendo, onVerSolicitud, onReenviar, onCancelar }) {
     const fila = (x) => {
-        const si = SITUACION_PORTAL[x.Situacion] || { txt: x.Situacion, cls: 'bg-slate-100 text-slate-600', hacer: '' };
+        const si = SITUACION_PORTAL[x.Situacion === 'TIZADA_RECHAZO' && frenoPropio(x.TizadaEtapa) ? 'FRENO_PROPIO' : x.Situacion] || { txt: x.Situacion, cls: 'bg-slate-100 text-slate-600', hacer: '' };
         return {
             key: x.ProductoSolID,
             estado: <PastillaEstado txt={si.txt} cls={si.cls} />,

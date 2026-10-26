@@ -256,14 +256,19 @@ async function revisar(pool, codCliente, confeccionId) {
     const f = await delCliente(pool, codCliente, confeccionId);
     exigirEditable(f);
     const p = await productoTienda(pool, f.ProIdProducto);
-    const { est } = await opcionesDeProducto(pool, p);
+    const { molde, est } = await opcionesDeProducto(pool, p);
     const datos = leer(f.DatosJson, {});
     const archivos = leer(f.ArchivosJson, []);
     const { datosSol, sublimacion, archivosSol } = comoSolicitud(datos, archivos);
+    // [PIEZAS DEL MODELO 26/10] el arte se revisa con las piezas del modelo elegido, no con las de todo el molde
+    const modeloElegido = sublimacion ? molde.modelos.find(m => m.clave === sublimacion.modeloClave) : null;
+    const piezasModelo = [...new Set((modeloElegido?.piezas || []).map(z => z.generico || z.pieza))];
 
     // 1. Nuestras reglas: modelo y telas completos + las de la solicitud (diseños, arte y lista de talles)
     const errores = [];
     if (!sublimacion) errores.push({ donde: 'modelo', mensaje: 'Elegí el modelo de la prenda.' });
+    // la clave guardada ya no está en el molde (en TIZADA borraron el modelo o lo volvieron a crear con otra clave)
+    else if (!modeloElegido) errores.push({ donde: 'modelo', mensaje: 'El modelo que elegiste ya no está disponible. Elegilo de nuevo; si no aparece ninguno, escribinos.' });
     else (sublimacion.piezas || []).filter(z => !z.telaProIdProducto).forEach(z => errores.push({ donde: `piezas.${z.pieza}`, mensaje: `Elegí la tela de ${z.generico || z.pieza}.` }));
     // Los textos de la solicitud hablan de la pantalla interna: se adaptan a lo que ve el cliente
     const paraCliente = (m) => m.replace(' (elegilo y guardalo en "2 · Piezas y telas")', '').replace(' (elegila y guardala en "2 · Piezas y telas")', '')
@@ -281,7 +286,7 @@ async function revisar(pool, codCliente, confeccionId) {
                 const a = archivos.find(x => x.id === Number(d.arteArchivoId));
                 const ext = (a.nombre.split('.').pop() || 'pdf').toLowerCase();
                 const ruta = `artes/${String(d.nombre).replace(/[^A-Za-z0-9]+/g, '_')}_${a.id}.${ext}`;
-                artes.push({ ruta, buffer: await tz.bajarDeDrive(a.url), nombre: a.nombre, campo: `disenos[${i}].arte` });
+                artes.push({ ruta, buffer: await tz.bajarDeDrive(a.url), nombre: a.nombre, campo: `disenos[${i}].arte`, piezas: piezasModelo.length ? piezasModelo : undefined });
                 rutasArte[d.arteArchivoId] = ruta;
             }
             const t = await api.tipografias();

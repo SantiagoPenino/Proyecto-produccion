@@ -770,6 +770,11 @@ exports.crearFacturaManual = async (req, res) => {
 
         // 1.5 Registrar Transacción de Caja y Pago si es Contado
         const isPaid = !conSaldoAFavor && (DocPagado === true || DocPagado === 1 || DocPagado === 'true');
+        // Un documento a CRÉDITO no nace cobrado: quedaba "E-Factura Credito" en el sistema y
+        // contado en DGI (FA-2918, 26-10-2026). Si se cobra en el acto, es contado.
+        if (isPaid && /CR[EÉ]DITO/i.test(config.Detalle || '') && !/NOTA/i.test(config.Detalle || '')) {
+            throw new Error(`"${String(config.Detalle).trim()}" no se puede emitir cobrada: si el cliente paga ahora, emitila como Contado; si paga después, emitila sin pago y cobrala con "Registrar pago".`);
+        }
         let tcaId = null;
 
         if (isPaid) {

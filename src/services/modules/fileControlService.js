@@ -122,8 +122,25 @@ export const fileControlService = {
         return response.data;
     },
 
-    createReplacement: async (payload) => {
-        const response = await api.post('/production-file-control/ordenes/reposicion', payload);
+    // Con archivos nuevos (26/10/2026) va multipart: los datos en «datos» (JSON) y los archivos en «archivosNuevos»,
+    // con sus copias y observación en payload.nuevos, en el mismo orden. Sin archivos nuevos, JSON como siempre.
+    createReplacement: async (payload, archivosNuevos = []) => {
+        if (!archivosNuevos.length) {
+            const response = await api.post('/production-file-control/ordenes/reposicion', payload);
+            return response.data;
+        }
+        const fd = new FormData();
+        fd.append('datos', JSON.stringify(payload));
+        archivosNuevos.forEach(f => fd.append('archivosNuevos', f));
+        const response = await api.post('/production-file-control/ordenes/reposicion', fd, {
+            headers: { 'Content-Type': 'multipart/form-data' },
+        });
+        return response.data;
+    },
+
+    // Telas que se pueden elegir para la reposición y si admite archivo nuevo
+    getOpcionesReposicion: async (ordenId) => {
+        const response = await api.get(`/production-file-control/orden/${ordenId}/reposicion-opciones`);
         return response.data;
     },
 

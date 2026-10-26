@@ -2137,18 +2137,123 @@ const getCompletedOrdersForReplacement = async (req, res) => {
     }
 };
 
+// ── Reposición en otra tela o con un archivo nuevo (26/10/2026) ─────────────────────────────────────────────
+// Pedido de Atención al Cliente: a veces de una tizada se echó a perder solo una parte y se repone con un archivo
+// NUEVO hecho con lo que falta (no con uno de la orden), y a veces se autoriza hacerla en otra tela porque la del
+// pedido se agotó. Las telas que se ofrecen son las del MISMO catálogo que la orden (área + variante: la misma
+// consulta de /ventas/pedido-prenda, GET /api/nomenclators/materials/:areaId/:variante) y el archivo nuevo se mide
+// y se valida contra la tela con las reglas del ingreso de pedidos (validador.errorMedidaContraTela / DTF).
+// Solo en las áreas que imprimen un archivo (AREAS_IMPRIMEN_POR_LOTE); en el resto la pantalla no lo ofrece.
+const limpioRepo = (s) => String(s ?? '').trim();
+
+async function telasDeReposicion(pool, orden) {
+    const area = limpioRepo(orden.AreaID).toUpperCase();
+    const { AREAS_IMPRIMEN_POR_LOTE } = require('../services/cadenaReposicionService');
+    if (!AREAS_IMPRIMEN_POR_LOTE.includes(area)) return { admite: false, telas: [], actual: null, bobina: null };
+    const { materialesDe } = require('../services/pedidosExternos/catalogo');
+    const telas = await materialesDe(pool, area, limpioRepo(orden.Variante));
+    const actual = telas.find(t => limpioRepo(t.CodArticulo) === limpioRepo(orden.CodArticulo))
+        || telas.find(t => limpioRepo(t.Material).toLowerCase() === limpioRepo(orden.Material).toLowerCase())
+        || null;
+    // Tela del cliente: el ancho lo da su bobina, como en el ingreso del pedido
+    let bobina = null;
+    if (orden.BobinaTelaID) {
+        const b = await pool.request().input('BID', sql.Int, orden.BobinaTelaID)
+            .query('SELECT BobinaID, CodigoEtiqueta, Ancho, AnchoReal, DescripcionTela, Referencia FROM InventarioBobinas WHERE BobinaID = @BID');
+        bobina = b.recordset[0] || null;
+    }
+    return { admite: true, telas, actual, bobina };
+}
+
+// Nombre del archivo nuevo de la reposición, como en el ingreso del pedido (webOrdersController): en las áreas con el
+// formato nuevo (nombreArchivoOrden.js) {MATERIAL}-{ORDEN}_{CLIENTE}_Arch i de n (xC); en el resto, el de siempre.
+// La pantalla lo muestra antes de generar con la plantilla de getOpcionesReposicion, armada con esta misma función.
+function nombreArchivoNuevoRepo({ nombreNuevo, material, codigo, cliente, trabajo, idx, total, copias, ext }) {
+    const { construirNombreArchivo } = require('../utils/nombreArchivoOrden');
+    const sanitize = (str) => (str || '').replace(/[<>:"/\\|?*]/g, '_').trim();
+    return nombreNuevo
+        ? construirNombreArchivo({ material, codigoOrden: codigo, cliente, idx, total, copias, ext })
+        : `${codigo.replace(/\//g, '-')}_${sanitize(cliente)}_${sanitize(trabajo)}_Archivo ${idx} de ${total} (x${copias})${ext}`;
+}
+
+// Código que va a tener la próxima reposición de la orden: sobre la RAÍZ, sin -R/-F (ver createCustomerReplacementOrder)
+async function proximoCodigoReposicion(conn, codigoOrden) {
+    const rootCode = String(codigoOrden || '').replace(/(-[RF]\d+)+$/i, '');
+    const r = await conn.request().input('BaseCode', sql.NVarChar, rootCode)
+        .query(`SELECT COUNT(*) as total FROM Ordenes WHERE CodigoOrden LIKE @BaseCode + '-R%'`);
+    return { rootCode, nextRepNum: (r.recordset[0].total || 0) + 1 };
+}
+
+/**
+ * 8a. Opciones de la reposición de una orden: si admite archivo nuevo, las telas que se pueden elegir y la actual.
+ */
+const getOpcionesReposicion = async (req, res) => {
+    try {
+        const pool = await getPool();
+        const r = await pool.request().input('ID', sql.Int, parseInt(req.params.ordenId, 10))
+            .query(`SELECT O.OrdenID, O.CodigoOrden, O.AreaID, O.Variante, O.Material, O.CodArticulo, O.BobinaTelaID, O.UM,
+                           O.Cliente, O.DescripcionTrabajo, CL.IDCliente AS IDClienteFicha
+                    FROM Ordenes O LEFT JOIN Clientes CL ON CL.CliIdCliente = O.CliIdCliente
+                    WHERE O.OrdenID = @ID`);
+        if (!r.recordset.length) return res.status(404).json({ error: 'Orden no encontrada' });
+        const orden = r.recordset[0];
+        const { admite, telas, actual, bobina } = await telasDeReposicion(pool, orden);
+        const { anchoDeMaterial } = require('../services/pedidosExternos/catalogo');
+        const { materialParaNombre, usaNombreNuevo } = require('../utils/nombreArchivoOrden');
+        // materialNombre: cómo empieza el nombre del archivo con esa tela (la del pedido lleva el PRE de la tela del cliente)
+        const fila = (t, pre = null) => ({
+            codArticulo: limpioRepo(t.CodArticulo), nombre: limpioRepo(t.Material), anchoM: anchoDeMaterial(t), largoM: parseFloat(t.Largo) || 0,
+            materialNombre: materialParaNombre(limpioRepo(t.Material), pre),
+        });
+        const anchoBobina = bobina ? parseFloat(bobina.AnchoReal ?? bobina.Ancho) : NaN;
+        // Plantilla del nombre del archivo nuevo, armada con la misma función que lo nombra al crear la reposición:
+        // la pantalla reemplaza {MATERIAL}, {I}, {N}, {C} y {EXT}.
+        let plantillaNombre = null;
+        if (admite) {
+            const { rootCode, nextRepNum } = await proximoCodigoReposicion(pool, orden.CodigoOrden);
+            plantillaNombre = nombreArchivoNuevoRepo({
+                nombreNuevo: await usaNombreNuevo(limpioRepo(orden.AreaID).toUpperCase()), material: '{MATERIAL}',
+                codigo: `${rootCode}-R${nextRepNum}`, cliente: limpioRepo(orden.IDClienteFicha) || limpioRepo(orden.Cliente) || 'Cliente',
+                trabajo: orden.DescripcionTrabajo, idx: '{I}', total: '{N}', copias: '{C}', ext: '{EXT}',
+            });
+        }
+        res.json({
+            admiteArchivoNuevo: admite,
+            area: limpioRepo(orden.AreaID).toUpperCase(),
+            telas: telas.map(t => fila(t)),
+            telaActual: actual
+                ? fila(actual, bobina?.Referencia || null)
+                : { ...fila({ CodArticulo: orden.CodArticulo, Material: orden.Material }, bobina?.Referencia || null), largoM: 0 },
+            bobina: Number.isFinite(anchoBobina) && anchoBobina > 0
+                ? { nombre: limpioRepo(bobina.DescripcionTela || bobina.CodigoEtiqueta), anchoM: anchoBobina }
+                : null,
+            plantillaNombre,
+        });
+    } catch (error) {
+        logger.error('Error getOpcionesReposicion:', error);
+        res.status(500).json({ error: error.message });
+    }
+};
+
 /**
  * 8. Crear Orden de Reposición (Batch)
  * Recibe lista de archivos a reponer de una orden ya terminada.
+ * Con archivos nuevos llega como multipart (ruta con multer): los datos en el campo «datos» (JSON) y los archivos
+ * en «archivosNuevos», con sus copias y observación en datos.nuevos (mismo orden). Sin archivos nuevos, JSON.
  */
 const createCustomerReplacementOrder = async (req, res) => {
-    const { originalOrderId, files, globalObservation, razonId } = req.body;
+    const body = req.body?.datos ? JSON.parse(req.body.datos) : (req.body || {});
+    const { originalOrderId, globalObservation, razonId, telaCodArticulo } = body;
+    const files = Array.isArray(body.files) ? body.files : [];
+    const subidos = Array.isArray(req.files) ? req.files : [];
+    const nuevosInfo = Array.isArray(body.nuevos) ? body.nuevos : [];
     // Quién la crea sale del token (verifyToken en la ruta), nunca del body.
     const userId = req.user?.id;
     let transaction;
+    const fs = require('fs');
 
     try {
-        if (!originalOrderId || !files || files.length === 0) {
+        if (!originalOrderId || (files.length === 0 && subidos.length === 0)) {
             return res.status(400).json({ error: "Datos incompletos" });
         }
 
@@ -2163,10 +2268,12 @@ const createCustomerReplacementOrder = async (req, res) => {
                 SELECT O.*,
                        R.Nombre as NombreRollo,
                        CE.Nombre as NombreMaquina,
-                       CE.EquipoID as EquipoID
+                       CE.EquipoID as EquipoID,
+                       CL.IDCliente as IDClienteFicha
                 FROM Ordenes O
                 LEFT JOIN Rollos R ON O.RolloID = R.RolloID
                 LEFT JOIN ConfigEquipos CE ON ISNULL(O.MaquinaID, R.MaquinaID) = CE.EquipoID
+                LEFT JOIN Clientes CL ON CL.CliIdCliente = O.CliIdCliente
                 WHERE O.OrdenID = @ID
             `);
 
@@ -2193,14 +2300,16 @@ const createCustomerReplacementOrder = async (req, res) => {
 
         // 1b. Obtener datos originales de los archivos para validar límites (metros y copias)
         const fileIds = files.map(f => parseInt(f.id)).filter(id => !isNaN(id));
-        const placeholders = fileIds.map((_, i) => `@FID${i}`).join(',');
-        const origFilesReq = new sql.Request(transaction);
-        fileIds.forEach((id, i) => origFilesReq.input(`FID${i}`, sql.Int, id));
-        const origFilesRes = await origFilesReq.query(
-            `SELECT ArchivoID, Metros as MetrosOrig, Copias as CopiasOrig FROM dbo.ArchivosOrden WHERE ArchivoID IN (${placeholders})`
-        );
         const origFilesMap = {};
-        origFilesRes.recordset.forEach(r => { origFilesMap[r.ArchivoID] = r; });
+        if (fileIds.length > 0) {   // solo con archivos nuevos no se repite ninguno de la orden
+            const placeholders = fileIds.map((_, i) => `@FID${i}`).join(',');
+            const origFilesReq = new sql.Request(transaction);
+            fileIds.forEach((id, i) => origFilesReq.input(`FID${i}`, sql.Int, id));
+            const origFilesRes = await origFilesReq.query(
+                `SELECT ArchivoID, NombreArchivo, Ancho, Alto, Metros as MetrosOrig, Copias as CopiasOrig FROM dbo.ArchivosOrden WHERE ArchivoID IN (${placeholders})`
+            );
+            origFilesRes.recordset.forEach(r => { origFilesMap[r.ArchivoID] = r; });
+        }
 
         // 1c. Validar límites antes de proceder
         for (const file of files) {
@@ -2226,6 +2335,76 @@ const createCustomerReplacementOrder = async (req, res) => {
             }
         }
 
+        // 1d. Tela de la reposición y archivos nuevos (26/10/2026, ver telasDeReposicion). Todo se valida ANTES de
+        // escribir nada: el archivo nuevo se mide en el servidor y tiene que entrar en la tela con que se hace la -R.
+        const areaOrig = limpioRepo(originalOrder.AreaID).toUpperCase();
+        const quiereOtraTela = !!limpioRepo(telaCodArticulo) && limpioRepo(telaCodArticulo) !== limpioRepo(originalOrder.CodArticulo);
+        let telaCambiada = null;      // { antes, ahora, codArticulo, proIdProducto, idProdReact, productoEsLaTela }
+        let telaRepo = null;          // fila del catálogo de la tela con que se hace la -R
+        let bobinaRepo = null;        // tela del cliente (solo si no se cambia la tela)
+        const nuevosMedidos = [];
+        if (quiereOtraTela || subidos.length > 0) {
+            const opciones = await telasDeReposicion(pool, originalOrder);
+            if (!opciones.admite) throw new Error(`En el área ${areaOrig} la reposición no admite otra tela ni archivos nuevos.`);
+            if (quiereOtraTela) {
+                const nueva = opciones.telas.find(t => limpioRepo(t.CodArticulo) === limpioRepo(telaCodArticulo));
+                if (!nueva) throw new Error('La tela elegida no está en el catálogo de esta orden. Volvé a elegirla.');
+                const artRes = await new sql.Request(transaction)
+                    .input('Cod', sql.VarChar(50), limpioRepo(nueva.CodArticulo))
+                    .input('ProOrig', sql.Int, originalOrder.ProIdProducto ?? null)
+                    .query(`SELECT TOP 1 ProIdProducto, IDProdReact FROM dbo.Articulos WHERE LTRIM(RTRIM(CodArticulo)) = @Cod;
+                            SELECT TOP 1 Descripcion FROM dbo.Articulos WHERE ProIdProducto = @ProOrig;`);
+                const art = artRes.recordsets[0][0] || {};
+                // ¿El producto de la orden ES la tela (Sublimación: «Jacquard …») o algo hecho con ella (un roll up de
+                // banner)? En el primer caso cambia también el artículo; en el segundo, solo el material.
+                const productoEsLaTela = limpioRepo(artRes.recordsets[1][0]?.Descripcion).toLowerCase() === limpioRepo(originalOrder.Material).toLowerCase();
+                telaCambiada = {
+                    antes: limpioRepo(originalOrder.Material), ahora: limpioRepo(nueva.Material), codArticulo: limpioRepo(nueva.CodArticulo),
+                    proIdProducto: art.ProIdProducto ?? null, idProdReact: art.IDProdReact ?? null, productoEsLaTela,
+                };
+                telaRepo = nueva;
+            } else {
+                telaRepo = opciones.actual || { Material: originalOrder.Material };
+                bobinaRepo = opciones.bobina;
+            }
+
+            const { errorMedidaContraTela, errorMedidaDtf } = require('../services/pedidosExternos/validador');
+            const errorMedida = (nombre, ancho, alto) => (areaOrig === 'DF'
+                ? errorMedidaDtf(nombre, ancho, alto, telaRepo)
+                : errorMedidaContraTela(nombre, ancho, alto, telaRepo, bobinaRepo));
+
+            // Los archivos de la orden que se repiten tienen que entrar en la tela nueva
+            if (telaCambiada) {
+                for (const file of files) {
+                    const o = origFilesMap[parseInt(file.id)];
+                    const ancho = parseFloat(o?.Ancho), alto = parseFloat(o?.Alto);
+                    if (!(ancho > 0) || !(alto > 0)) continue;   // archivo viejo sin medida: no hay contra qué validar
+                    const e = errorMedida(limpioRepo(o.NombreArchivo), ancho, alto);
+                    if (e) throw new Error(e.mensaje);
+                }
+            }
+
+            // Archivos nuevos: se miden en el servidor (medicion.js, mismas reglas que el ingreso de pedidos)
+            const { medirArchivo } = require('../services/pedidosExternos/medicion');
+            for (let i = 0; i < subidos.length; i++) {
+                const f = subidos[i];
+                const nombre = Buffer.from(f.originalname || '', 'latin1').toString('utf8') || `archivo ${i + 1}`;
+                const info = nuevosInfo[i] || {};
+                const copias = parseInt(info.copias, 10);
+                if (!(copias >= 1)) throw new Error(`"${nombre}": las copias deben ser 1 o más.`);
+                // JPEG solo en Sublimación (fileService.validateFile del portal: el resto va en PNG o PDF)
+                if (areaOrig !== 'SB' && /\.jpe?g$/i.test(nombre)) throw new Error(`"${nombre}": no se permiten archivos JPEG. Subí el arte en PNG o PDF.`);
+                let medida;
+                try { medida = await medirArchivo(f.path, nombre, f.mimetype); }
+                catch (eMed) { throw new Error(`No pudimos medir "${nombre}": ${eMed.message}`); }
+                const anchoM = Math.round(medida.anchoM * 1000) / 1000;
+                const altoM = Math.round(medida.altoM * 1000) / 1000;
+                const e = errorMedida(nombre, anchoM, altoM);
+                if (e) throw new Error(e.mensaje);
+                nuevosMedidos.push({ path: f.path, nombre, anchoM, altoM, copias, obs: limpioRepo(info.obs) });
+            }
+        }
+
         // 2. Crear Nueva Orden de Reposición
         // El código se construye sobre la RAÍZ (sin sufijos -R ni -F previos): la reposición de
         // una reposición debe incrementar (-R2), no apilar (-R1-R1); y la registrada parado en
@@ -2247,12 +2426,35 @@ const createCustomerReplacementOrder = async (req, res) => {
         const loteInfo    = originalOrder.NombreRollo   ? `Lote: ${originalOrder.NombreRollo}`     : '';
         const contextInfo = [maquinaInfo, loteInfo].filter(Boolean).join(' | ');
         const globalObsBase = (globalObservation || '').trim(); // obs general de la falla ingresada por el usuario
-        // Ordenes.Nota = "Razón: R | [texto del usuario] | Máquina: X | Lote: Y"
-        const partesNota = [razonTexto, globalObsBase, contextInfo].filter(Boolean);
+        const telaTexto = telaCambiada ? `Tela cambiada: ${telaCambiada.antes} → ${telaCambiada.ahora}` : '';
+        // Ordenes.Nota = "Razón: R | [texto del usuario] | Tela cambiada: A → B | Máquina: X | Lote: Y"
+        const partesNota = [razonTexto, globalObsBase, telaTexto, contextInfo].filter(Boolean);
         const ordenNota = partesNota.length ? partesNota.join(' | ') : 'Reposición Cliente';
 
         // EquipoID de la máquina original (para FallasProduccion)
         const equipoIdOriginal = originalOrder.EquipoID || null;
+
+        // 1e. Archivos nuevos: nombre como en el ingreso del pedido (webOrdersController) con el código de la -R y la
+        // tela con que se hace, y subida a Drive. Va ANTES de escribir en la base: la transacción todavía no tiene nada
+        // bloqueado mientras sube, y si Drive falla no queda una orden con un archivo sin subir.
+        const totalArchivosRepo = files.length + nuevosMedidos.length;
+        if (nuevosMedidos.length > 0) {
+            const { materialParaNombre, usaNombreNuevo } = require('../utils/nombreArchivoOrden');
+            const nombreNuevo = await usaNombreNuevo(areaOrig);
+            const clienteNombre = limpioRepo(originalOrder.IDClienteFicha) || limpioRepo(originalOrder.Cliente) || 'Cliente';
+            const materialNombre = materialParaNombre(telaCambiada ? telaCambiada.ahora : limpioRepo(originalOrder.Material), bobinaRepo?.Referencia || null);
+            for (let k = 0; k < nuevosMedidos.length; k++) {
+                const n = nuevosMedidos[k];
+                const idx = files.length + k + 1;   // después de los archivos de la orden que se repiten
+                const ext = n.nombre.lastIndexOf('.') > 0 ? n.nombre.substring(n.nombre.lastIndexOf('.')) : '';
+                n.finalName = nombreArchivoNuevoRepo({
+                    nombreNuevo, material: materialNombre, codigo: newCode, cliente: clienteNombre,
+                    trabajo: originalOrder.DescripcionTrabajo, idx, total: totalArchivosRepo, copias: n.copias, ext,
+                });
+                n.url = await driveService.uploadToDrive(fs.createReadStream(n.path), n.finalName, areaOrig || 'GENERAL');
+                logger.info(`[Reposición] ${newCode}: archivo nuevo "${n.nombre}" (${n.anchoM}×${n.altoM} m, x${n.copias}) subido como "${n.finalName}".`);
+            }
+        }
 
         const insertOrderResult = await new sql.Request(transaction)
             .input('NewCode',  sql.NVarChar,       newCode)
@@ -2283,6 +2485,23 @@ const createCustomerReplacementOrder = async (req, res) => {
              `);
 
         const newOrderId = insertOrderResult.recordset[0].NewID;
+
+        // Otra tela (1d): la -R se hace con la tela elegida. Si el producto de la orden es la tela misma, cambia también
+        // el artículo (como el SQL a mano que se usaba: Material, ProIdProducto, CodArticulo, IdProductoReact).
+        if (telaCambiada) {
+            await new sql.Request(transaction)
+                .input('ID', sql.Int, newOrderId)
+                .input('Mat', sql.VarChar(255), telaCambiada.ahora)
+                .input('Cod', sql.VarChar(50), telaCambiada.codArticulo)
+                .input('Pro', sql.Int, telaCambiada.proIdProducto)
+                .input('React', sql.Int, telaCambiada.idProdReact)
+                .input('CambiaArt', sql.Bit, telaCambiada.productoEsLaTela && telaCambiada.proIdProducto ? 1 : 0)
+                .query(`UPDATE dbo.Ordenes SET Material = @Mat,
+                               CodArticulo     = CASE WHEN @CambiaArt = 1 THEN @Cod   ELSE CodArticulo END,
+                               ProIdProducto   = CASE WHEN @CambiaArt = 1 THEN @Pro   ELSE ProIdProducto END,
+                               IdProductoReact = CASE WHEN @CambiaArt = 1 THEN @React ELSE IdProductoReact END
+                        WHERE OrdenID = @ID`);
+        }
 
         // [REQUISITOS] La -R es la misma orden vuelta a hacer: hereda los requisitos que la madre
         // ya tiene CUMPLIDOS (TELA asignada / "material propio" en SB, matriz, aprobación, etc.).
@@ -2320,6 +2539,17 @@ const createCustomerReplacementOrder = async (req, res) => {
             const obsParaFalla = globalObsBase || `Reposición cliente - Orden ${originalOrder.CodigoOrden}`;
             // ──────────────────────────────────────────────────
 
+            // Con otra tela, el nombre que empieza con el material (formato de Sublimación, nombreArchivoOrden.js)
+            // pasa a decir la tela nueva: es lo que mira el operario para cargarlo en la tela correcta.
+            let nombreConTela = null;
+            if (telaCambiada && orig?.NombreArchivo) {
+                const { materialParaNombre } = require('../utils/nombreArchivoOrden');
+                const prefijoViejo = `${materialParaNombre(telaCambiada.antes)}-`;
+                if (orig.NombreArchivo.startsWith(prefijoViejo)) {
+                    nombreConTela = `${materialParaNombre(telaCambiada.ahora)}-${orig.NombreArchivo.substring(prefijoViejo.length)}`;
+                }
+            }
+
             // Insertar archivo en la nueva orden
             const insFileRes = await new sql.Request(transaction)
                 .input('NewOrderID', sql.Int,             newOrderId)
@@ -2327,6 +2557,7 @@ const createCustomerReplacementOrder = async (req, res) => {
                 .input('Metros',     sql.Decimal(10,2),   metersToReprint)
                 .input('Copias',     sql.Int,             copiesToReprint)
                 .input('Obs',        sql.NVarChar,        notaOrden)
+                .input('Nom',        sql.VarChar(200),    nombreConTela)
                 .query(`
                     INSERT INTO dbo.ArchivosOrden(
                         OrdenID, NombreArchivo, RutaAlmacenamiento, Metros, Copias, Ancho, Alto, Observaciones,
@@ -2334,7 +2565,7 @@ const createCustomerReplacementOrder = async (req, res) => {
                     )
                     OUTPUT INSERTED.ArchivoID
                     SELECT
-                        @NewOrderID, NombreArchivo, RutaAlmacenamiento, @Metros, @Copias, Ancho, Alto, @Obs,
+                        @NewOrderID, ISNULL(@Nom, NombreArchivo), RutaAlmacenamiento, @Metros, @Copias, Ancho, Alto, @Obs,
                         GETDATE(), 'Pendiente', TipoArchivo
                     FROM dbo.ArchivosOrden WHERE ArchivoID = @OldFileID
                 `);
@@ -2369,6 +2600,54 @@ const createCustomerReplacementOrder = async (req, res) => {
                 `);
             } catch (e) {
                 logger.warn(`FallasProduccion insert failed (metros=${metersToReprint}, equipo=${equipoIdOriginal}):`, e.message);
+            }
+        }
+
+        // 3a. Archivos nuevos (1e, ya en Drive): Metros por copia según la unidad del área, como el ingreso del pedido
+        // (m: el alto; m2: ancho × alto; por unidad: 0). Sin tope de copias: no repiten uno de la orden.
+        const umRepo = limpioRepo(originalOrder.UM).toLowerCase();
+        const archivosNuevosCreados = [];
+        for (const n of nuevosMedidos) {
+            const metros = umRepo === 'm2' ? Math.round(n.anchoM * n.altoM * 1000) / 1000 : umRepo === 'm' ? n.altoM : 0;
+            const obsArchivo = [n.obs || 'Archivo nuevo de la reposición', contextInfo].filter(Boolean).join(' | ');
+            const ins = await new sql.Request(transaction)
+                .input('OID',    sql.Int,               newOrderId)
+                .input('Nom',    sql.VarChar(200),      n.finalName)
+                .input('Url',    sql.VarChar(500),      n.url)
+                .input('Cop',    sql.Int,               n.copias)
+                .input('Met',    sql.Decimal(10, 3),    metros)
+                .input('Ancho',  sql.Decimal(10, 2),    n.anchoM)
+                .input('Alto',   sql.Decimal(10, 2),    n.altoM)
+                .input('Obs',    sql.NVarChar(sql.MAX), obsArchivo)
+                .input('CodArt', sql.VarChar(50),       limpioRepo(telaCambiada ? telaCambiada.codArticulo : originalOrder.CodArticulo) || null)
+                .query(`
+                    INSERT INTO dbo.ArchivosOrden (
+                        OrdenID, NombreArchivo, RutaAlmacenamiento, TipoArchivo, Copias, Metros, EstadoArchivo, FechaSubida,
+                        Ancho, Alto, Observaciones, CodigoArticulo
+                    )
+                    OUTPUT INSERTED.ArchivoID
+                    VALUES (@OID, @Nom, @Url, 'Impresion', @Cop, @Met, 'Pendiente', GETDATE(), @Ancho, @Alto, @Obs, @CodArt)
+                `);
+            archivosNuevosCreados.push({ ...n, archivoId: ins.recordset[0].ArchivoID });
+            totalFiles++;
+
+            // La falla queda registrada contra la orden original, sin archivo: el nuevo no es uno de los suyos
+            try {
+                await new sql.Request(transaction)
+                    .input('OldID',     sql.Int,           originalOrderId)
+                    .input('AreaID',    sql.VarChar,       originalOrder.AreaID || 'General')
+                    .input('Metros',    sql.Decimal(10,2), metros)
+                    .input('ObsFalla',  sql.NVarChar,      globalObsBase || `Reposición cliente - Orden ${originalOrder.CodigoOrden} (archivo nuevo)`)
+                    .input('EquipoID',  sql.Int,           equipoIdOriginal)
+                    .input('TipoFalla', sql.Int,           tipoFallaReposicion)
+                    .query(`
+                        INSERT INTO FallasProduccion
+                            (OrdenID, ArchivoID, AreaID, FechaFalla, TipoFalla, CantidadFalla, EquipoID, Observaciones)
+                        VALUES
+                            (@OldID, NULL, @AreaID, GETDATE(), @TipoFalla, @Metros, @EquipoID, @ObsFalla)
+                    `);
+            } catch (e) {
+                logger.warn(`FallasProduccion insert failed (archivo nuevo, metros=${metros}):`, e.message);
             }
         }
 
@@ -2477,7 +2756,7 @@ const createCustomerReplacementOrder = async (req, res) => {
         }
 
         // 4. Clonar Órdenes de Servicios Relacionados (Si existen)
-        const relatedOrderIds = req.body.relatedOrderIds || [];
+        const relatedOrderIds = Array.isArray(body.relatedOrderIds) ? body.relatedOrderIds : [];
         if (relatedOrderIds.length > 0) {
             for (const relId of relatedOrderIds) {
                 // Obtener datos orden relacionada
@@ -2555,12 +2834,39 @@ const createCustomerReplacementOrder = async (req, res) => {
             } catch (e) { logger.warn('[Reposición] copia de miniaturas: ' + e.message); }
         }
 
-        res.json({ success: true, newOrderId, newCode, hermanaTerminaciones: hermanaRepo?.codigo || null });
+        // Archivos nuevos: miniatura, tinta blanca de DTF y perfil de color, como después de subir el arte de un pedido
+        // (webOrdersController, upload-stream). Best-effort y antes del finally, que borra los temporales.
+        for (const n of archivosNuevosCreados) {
+            try {
+                const buffer = await fs.promises.readFile(n.path);
+                const { generateThumbnail } = require('../utils/thumbnailGenerator');
+                generateThumbnail(buffer, newCode, n.archivoId, n.finalName).catch(e => logger.warn('[Reposición] miniatura del archivo nuevo: ' + e.message));
+                require('../services/dtfBlancoService').encolarSiCorresponde({ archivoId: n.archivoId, tmpPath: n.path, nombreArchivo: n.finalName, codigoOrden: newCode });
+                const { extractColorProfile } = require('../utils/colorProfile');
+                extractColorProfile(buffer, n.finalName)
+                    .then(async (perfil) => {
+                        if (!perfil) return;
+                        await (await getPool()).request()
+                            .input('ID', sql.Int, n.archivoId)
+                            .input('Perfil', sql.NVarChar(200), perfil)
+                            .query('UPDATE ArchivosOrden SET PerfilColor = @Perfil WHERE ArchivoID = @ID');
+                    })
+                    .catch(e => logger.warn('[Reposición] perfil de color del archivo nuevo: ' + e.message));
+            } catch (e) { logger.warn(`[Reposición] ${newCode}: después de subir "${n.finalName}": ${e.message}`); }
+        }
+
+        res.json({
+            success: true, newOrderId, newCode, hermanaTerminaciones: hermanaRepo?.codigo || null,
+            telaCambiada: telaCambiada ? { antes: telaCambiada.antes, ahora: telaCambiada.ahora } : null,
+            archivosNuevos: archivosNuevosCreados.map(n => n.finalName),
+        });
 
     } catch (error) {
         if (transaction) await transaction.rollback();
         logger.error("Error createCustomerReplacementOrder:", error);
         res.status(500).json({ error: error.message });
+    } finally {
+        for (const f of subidos) if (f.path) fs.promises.unlink(f.path).catch(() => {});
     }
 };
 
@@ -3108,6 +3414,7 @@ module.exports = {
     updateFileCopyCount,
     getCompletedOrdersForReplacement,
     createCustomerReplacementOrder,
+    getOpcionesReposicion,
     getRelatedOrders,
     completarOrden,
     getMotivosCancelacion,

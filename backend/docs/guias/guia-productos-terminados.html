@@ -1,0 +1,588 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Guía · Crear un producto terminado</title>
+<!-- Mismo estilo que las guías de Solicitudes (public/guias/guias.css). La arma en PDF
+     backend/scripts/generar_guia_productos.js → public/guias/guia-productos-terminados.pdf.
+     Las capturas están en img-productos/ (sacadas de la app local con productos "DEMO GUIA", ya borrados). -->
+<link rel="stylesheet" href="../../../public/guias/guias.css">
+<style>
+  .fig { margin: 2.5mm 0 4.5mm; break-inside: avoid; }
+  .fig img { display: block; max-width: 100%; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 6px; }
+  .fig.w85 img { width: 100%; } .fig.w70 img { width: 70%; } .fig.w60 img { width: 60%; } .fig.w50 img { width: 50%; } .fig.w42 img { width: 42%; }
+  .fig figcaption { font-size: 8.5pt; color: #64748b; margin-top: 1.2mm; }
+  .fig figcaption b { color: #334155; }
+  .nm { display: inline-flex; width: 4.6mm; height: 4.6mm; border-radius: 99px; background: #e11d48; color: #fff; font-weight: 900; font-size: 7.5pt; align-items: center; justify-content: center; vertical-align: 0.3mm; margin-right: 1mm; }
+  ul.marcas { list-style: none; padding-left: 0; margin: 0 0 3mm; }
+  ul.marcas li { margin: 0.9mm 0; padding-left: 6.5mm; position: relative; }
+  ul.marcas li > .nm:first-child { position: absolute; left: 0; top: 0.9mm; }
+  /* índice más compacto (entra en una página) */
+  .indice > ol > li { margin: 0 0 1.1mm; }
+  .indice > ol > li > a { padding: 1.1mm 3mm; font-size: 10.5pt; }
+  .indice ul { padding-top: 0.5mm; }
+  .indice ul li { font-size: 9pt; margin: 0.15mm 0; }
+  .lado { display: flex; gap: 5mm; align-items: flex-start; break-inside: avoid; }
+  .lado > .fig { flex: 0 0 auto; margin-top: 0; }
+  .lado > div:last-child { flex: 1; }
+  .etapa { background: #0f172a; color: #fff; border-radius: 10px; padding: 3mm 5mm; margin: 0 0 4mm; }
+  .etapa b { color: #67e8f9; letter-spacing: .08em; font-size: 8.5pt; display: block; }
+  .etapa span { font-size: 13pt; font-weight: 900; }
+  .salto { break-before: page; }
+  code { font-family: Consolas, monospace; font-size: 9pt; background: #f1f5f9; padding: 0 1mm; border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<!-- ───────────── Portada ───────────── -->
+<section class="portada">
+  <div>
+    <div class="eyebrow">USER · GESTIÓN DE PRODUCCIÓN</div>
+    <h1>Crear un producto terminado<br>Configurar Productos</h1>
+    <div class="sub">Paso a paso, en dos etapas: primero los productos simples a medida (toallas, banderines) y después las prendas con talles (camisetas, shorts, remeras).</div>
+    <div class="franja"></div>
+  </div>
+  <div class="como-usar">
+    <b>Cómo usar esta guía.</b> El <b>índice</b> de la página siguiente es clickeable: tocá un tema y vas directo.
+    En cada capítulo, <b>"↑ Índice"</b> te vuelve. El panel de <b>marcadores</b> del visor de PDF también tiene todos los temas.
+    En las capturas, los <span class="nm">1</span> números rojos señalan lo que se explica abajo de cada una.
+  </div>
+  <table class="meta">
+    <tr><td>Para quién</td><td>Administración y ventas: quien da de alta y configura los productos que se venden</td></tr>
+    <tr><td>Pantalla</td><td>Configurar Productos (dirección <code>/configurar-productos</code>) · pestaña Confeccionados</td></tr>
+    <tr><td>Ejemplos</td><td>Etapa 1: "DEMO GUIA Banderín" (Geometricos › Triangulares) · Etapa 2: "DEMO GUIA Camiseta" (Camisetas › Básquet). Son productos de prueba: ya no existen.</td></tr>
+    <tr><td>Versión</td><td>1.0 · 22/10/2026</td></tr>
+    <tr><td>Preparado por</td><td>Área de Sistemas</td></tr>
+  </table>
+</section>
+
+<!-- ───────────── Índice ───────────── -->
+<section class="indice" id="indice">
+  <h2>Índice</h2>
+  <ol>
+    <li><a href="#c1">Antes de empezar</a>
+      <ul><li><a href="#c1-donde">Dónde está la pantalla</a></li><li><a href="#c1-pantalla">Las partes de la pantalla</a></li><li><a href="#c1-lista">La lista: familia › etiqueta › producto</a></li><li><a href="#c1-pasos">Los pasos y sus marcas</a></li><li><a href="#c1-guardar">Qué se guarda solo y qué con Guardar</a></li><li><a href="#c1-tipos">A medida o con talles</a></li></ul></li>
+    <li><a href="#c2">Etapa 1 · Crear el producto y su encabezado</a>
+      <ul><li><a href="#c2-alta">Alta: nombre, familia, etiqueta</a></li><li><a href="#c2-encabezado">El encabezado del editor</a></li></ul></li>
+    <li><a href="#c3">Etapa 1 · Producción, técnicas y cantidad</a>
+      <ul><li><a href="#c3-principal">Producción principal</a></li><li><a href="#c3-tecnicas">Técnicas</a></li><li><a href="#c3-cantidad">Cantidad y accesorios</a></li></ul></li>
+    <li><a href="#c4">Etapa 1 · Molde a medida (TIZADA PRO)</a>
+      <ul><li><a href="#c4-tipo">Tipo de molde y variable</a></li><li><a href="#c4-formas">Formas y puntas</a></li><li><a href="#c4-terminacion">Terminación del borde</a></li><li><a href="#c4-medidas">Medidas</a></li><li><a href="#c4-telas">Telas</a></li><li><a href="#c4-tiras">Tiras</a></li><li><a href="#c4-archivos">Archivos de impresión</a></li><li><a href="#c4-apliques">Apliques y Guardar</a></li></ul></li>
+    <li><a href="#c5">Etapa 1 · Ficha, precio y publicar</a>
+      <ul><li><a href="#c5-ficha">Ficha de diseño</a></li><li><a href="#c5-precio">Precio</a></li><li><a href="#c5-publicar">Revisar y publicar</a></li></ul></li>
+    <li><a href="#c6">Etapa 2 · Prenda con talles: alta, técnicas y cantidad</a>
+      <ul><li><a href="#c6-alta">Alta y producción principal</a></li><li><a href="#c6-tecnicas">Técnicas de decoración</a></li><li><a href="#c6-cantidad">Cantidad mínima y accesorios</a></li></ul></li>
+    <li><a href="#c7">Etapa 2 · Molde con talles, telas y apliques</a>
+      <ul><li><a href="#c7-molde">Molde y modelos que se venden</a></li><li><a href="#c7-piezas">Piezas y talles</a></li><li><a href="#c7-talles">Talles que se venden</a></li><li><a href="#c7-telas">Telas que se ofrecen</a></li><li><a href="#c7-archivos">Archivos de impresión</a></li><li><a href="#c7-apliques">Apliques</a></li></ul></li>
+    <li><a href="#c8">Etapa 2 · Ficha de diseño</a>
+      <ul><li><a href="#c8-dibujo">Encabezado y dibujo</a></li><li><a href="#c8-medidas">Medidas de la prenda</a></li><li><a href="#c8-avios">Avíos por talle</a></li><li><a href="#c8-costura">Costura paso a paso</a></li><li><a href="#c8-vista">Notas y ficha técnica</a></li></ul></li>
+    <li><a href="#c9">Etapa 2 · Variantes, precio y publicar</a>
+      <ul><li><a href="#c9-variantes">Variantes por modelo</a></li><li><a href="#c9-publicar">Precio y publicar</a></li></ul></li>
+    <li><a href="#c10">Copiar y borrar un producto</a></li>
+    <li><a href="#c11">Si algo no anda</a></li>
+  </ol>
+</section>
+
+<!-- ───────────── 1 ───────────── -->
+<section class="cap" id="c1">
+  <h2><span class="num">1</span>Antes de empezar</h2>
+  <p class="bajada">Qué hay en la pantalla y cómo se lee, antes de crear el primer producto.</p>
+
+  <h3 id="c1-donde">Dónde está la pantalla</h3>
+  <p>En el menú, la opción <b>Configurar Productos</b> (está en el grupo de administración y la ven los usuarios <b>Admin</b>).
+     También podés entrar escribiendo <code>/configurar-productos</code> después de la dirección del sistema.</p>
+  <div class="regla"><span class="t">Regla</span>Esta pantalla <b>solo lee</b> de TIZADA PRO: los moldes, las variables a medida, las piezas, los talles y las telas permitidas se cargan en TIZADA PRO. Acá se elige cuál usa cada producto.</div>
+
+  <h3 id="c1-pantalla">Las partes de la pantalla</h3>
+  <figure class="fig"><img src="img-productos/01-pantalla.jpg" alt=""><figcaption><b>Figura 1.</b> Configurar Productos, pestaña Confeccionados.</figcaption></figure>
+  <ul class="marcas">
+    <li><span class="nm">1</span><b>Lo que se vende</b>: <span class="tab">Confeccionados</span> (los productos de esta guía), <span class="tab">Combos y Promos</span> y <span class="tab">EcoUV</span>. El número es cuántos hay.</li>
+    <li><span class="nm">2</span><b>Catálogos</b> que usan los productos: <span class="tab">Técnicas</span>, <span class="tab">Medidas</span>, <span class="tab">Avíos</span>, <span class="tab">Costuras</span>, <span class="tab">Hilos</span>.</li>
+    <li><span class="nm">3</span><b>Filtro por estado</b>: <span class="pill gris">Todos</span> <span class="pill verde">Publicados</span> <span class="pill gris">Borradores</span> <span class="pill ambar">Sin configurar</span>. Al lado, <span class="campo">Todas las áreas</span> filtra por producción principal.</li>
+    <li><span class="nm">4</span><b>La lista</b> de productos, agrupada por familia, con el buscador <span class="campo">Buscar producto…</span> arriba.</li>
+    <li><span class="nm">5</span>El botón <span class="btn p">+</span> (Nuevo producto): abre el alta.</li>
+  </ul>
+
+  <h3 id="c1-lista">La lista: familia › etiqueta › producto</h3>
+  <div class="lado">
+    <figure class="fig w42" style="width:62mm"><img src="img-productos/02-lista-geometricos.jpg" alt="" style="width:100%"><figcaption><b>Figura 2.</b> Geometricos y sus etiquetas.</figcaption></figure>
+    <div>
+      <p>Cada <b>familia</b> (Banderas, Camisetas, Geometricos, Shorts…) se abre con un clic. Adentro, los productos se agrupan por <b>etiqueta</b>, que dice para qué es el producto: en Geometricos hay <span class="pill rosa">Cuadrados</span>, <span class="pill rosa">Redondos</span> y <span class="pill rosa">Triangulares</span>.</p>
+      <p>Cada producto muestra:</p>
+      <ul>
+        <li>el <b>nombre</b> y el estado: <span class="pill verde">Publicado</span>, <span class="pill gris">Borrador</span> o <span class="pill ambar">Sin configurar</span>;</li>
+        <li>el <b>código</b> (ej. <code>GEO-TRI-01</code>) y el <b>precio</b> (o "sin precio");</li>
+        <li>los <b>íconos de sus técnicas</b> (sublimación, corte, costura, bordado…);</li>
+        <li>si tiene variantes, una pastilla <span class="pill celeste">2 var.</span> y las variantes colgando debajo.</li>
+      </ul>
+      <p>Hoy en Geometricos están <b>Toalla cuadrada</b>, <b>Toalla redonda</b> y <b>Banderín triangular</b>: sirven de modelo.</p>
+    </div>
+  </div>
+
+  <h3 id="c1-pasos">Los pasos y sus marcas</h3>
+  <p>Al abrir un producto, a la derecha aparece el <b>editor</b>: arriba el encabezado y abajo los <b>pasos</b>. Cada paso tiene una marca:</p>
+  <table class="t">
+    <tr><th style="width:45mm">Marca en el paso</th><th>Qué quiere decir</th></tr>
+    <tr><td><span class="pill verde">✓</span> tilde verde</td><td>Completo: tiene lo suyo. En "Revisar y publicar", el tilde quiere decir <b>Publicado</b>.</td></tr>
+    <tr><td><span class="pill ambar">● punto ámbar</span></td><td>Le falta algo para guardar o publicar. Pasá el mouse por el paso: el globito dice "Falta: …".</td></tr>
+    <tr><td><span class="pill gris">3</span> el número</td><td>Sin cargar todavía.</td></tr>
+  </table>
+
+  <h3 id="c1-guardar">Qué se guarda solo y qué con Guardar</h3>
+  <ul>
+    <li><b>Se aplica al instante</b> (no espera a Guardar): la <b>foto</b>, el <b>nombre y el código</b> (lápiz ✎), la <b>familia</b>, la <b>etiqueta</b>, el <b>dibujo</b> de la ficha y el <b>dibujo de las medidas</b>.</li>
+    <li><b>Todo lo demás</b> (origen, precio y lo de cada paso) se guarda con el botón de arriba a la derecha. Si no hay cambios dice <span class="btn s">Guardar</span>; si hay cambios sin guardar se pinta y dice <span class="btn p">Guardar cambios</span>.</li>
+  </ul>
+  <div class="ojo"><span class="t">Ojo</span>Si abrís otro producto sin guardar, los cambios se pierden. Mirá que el botón diga <b>Guardar</b> (sin "cambios") antes de irte.</div>
+
+  <h3 id="c1-tipos">A medida o con talles</h3>
+  <p>Lo que más cambia de un producto a otro es el <b>tipo de molde</b> (se elige en el paso "Molde, telas y apliques"):</p>
+  <table class="t">
+    <tr><th style="width:30mm">Tipo de molde</th><th>Para qué</th><th style="width:55mm">En esta guía</th></tr>
+    <tr><td><b>A medida</b></td><td>"Pañuelo, toalla, bandera, banderín…": una sola pieza <b>sin talles</b>. La medida la dice cada pedido y TIZADA PRO arma el molde con esa medida.</td><td>Etapa 1 (capítulos 2 a 5). No tiene paso Variantes.</td></tr>
+    <tr><td><b>Con talles</b></td><td>"Prendas: camiseta, short, buzo…": varias piezas, talles y modelos cargados en TIZADA PRO.</td><td>Etapa 2 (capítulos 6 a 9). Tiene paso Variantes.</td></tr>
+  </table>
+  <div class="volver"><a href="#indice">↑ Índice</a></div>
+</section>
+
+<!-- ───────────── 2 ───────────── -->
+<section class="cap" id="c2">
+  <div class="etapa"><b>ETAPA 1</b><span>Productos simples a medida · familia Geometricos</span></div>
+  <h2><span class="num">2</span>Crear el producto y su encabezado</h2>
+  <p class="bajada">Ejemplo: un banderín triangular nuevo, "DEMO GUIA Banderín", en Geometricos › Triangulares.</p>
+
+  <h3 id="c2-alta">Alta: nombre, familia, etiqueta</h3>
+  <div class="lado">
+    <figure class="fig" style="width:85mm"><img src="img-productos/03-alta-banderin.jpg" alt="" style="width:100%"><figcaption><b>Figura 3.</b> El alta, arriba de la lista.</figcaption></figure>
+    <div>
+      <p>En la pestaña <span class="tab">Confeccionados</span> tocá <span class="btn p">+</span> y:</p>
+      <ul class="marcas">
+        <li><span class="nm">1</span> Escribí el <b>nombre</b> (el campo dice "Nombre (ej. Gorro de lana con TPU)").</li>
+        <li><span class="nm">2</span> Elegí la <b>familia</b>: <b>Geometricos</b>.</li>
+        <li><span class="nm">3</span> Elegí la <b>etiqueta</b>: <b>Triangulares</b> (o "Sin etiqueta").</li>
+        <li><span class="nm">4</span> Mirá el <b>código</b>: se arma solo, "(familia - etiqueta - número)". Acá: <code>GEO-TRI-02</code>.</li>
+        <li><span class="nm">5</span> Tocá <span class="btn p">Crear</span>. Sale "✅ Creado con código GEO-TRI-02" y se abre el editor.</li>
+      </ul>
+    </div>
+  </div>
+  <div class="consejo"><span class="t">Consejo</span>Si la familia o la etiqueta no existen, en la misma lista están <b>+ Nueva familia</b> y <b>+ Nueva etiqueta</b>: se crean y quedan elegidas. Sin familia no deja crear: "Elegí la familia (Camisetas, Shorts…): el código sale de la familia y la etiqueta."</div>
+
+  <h3 id="c2-encabezado">El encabezado del editor</h3>
+  <figure class="fig"><img src="img-productos/04-encabezado.jpg" alt=""><figcaption><b>Figura 4.</b> El producto recién creado: encabezado y pasos.</figcaption></figure>
+  <ul class="marcas">
+    <li><span class="nm">1</span><b>Foto del producto</b>: pasá el mouse y tocá "Subir foto". Es la que ve el cliente en el pedido web y en la solicitud. Se aplica al instante.</li>
+    <li><span class="nm">2</span><b>Nombre</b> y el lápiz ✎ para cambiar el nombre o el código ("El código solo se puede cambiar si el producto todavía no tiene pedidos").</li>
+    <li><span class="nm">3</span>La línea de datos: <b>código</b> · <b>familia</b> › <b>etiqueta</b> · <b>origen</b> · <b>precio</b>. Cada uno es un desplegable. El origen queda en <b>Confeccionado por USER</b> (las otras opciones son Producto del local, Prenda del cliente y Local o del cliente).</li>
+    <li><span class="nm">4</span>El estado: <span class="pill gris">○ BORRADOR</span> o <span class="pill verde">● PUBLICADO</span>.</li>
+    <li><span class="nm">5</span><span class="btn s">Copiar</span>, <span class="btn s">Borrar</span> (capítulo 10) y <span class="btn s">Guardar</span>.</li>
+    <li><span class="nm">6</span>Los <b>pasos</b>. En un producto a medida son: Producción principal · Técnicas · Cantidad y accesorios · Molde, telas y apliques · Ficha de diseño · Revisar y publicar.</li>
+  </ul>
+  <div class="volver"><a href="#indice">↑ Índice</a></div>
+</section>
+
+<!-- ───────────── 3 ───────────── -->
+<section class="cap" id="c3">
+  <h2><span class="num">3</span>Producción, técnicas y cantidad</h2>
+  <p class="bajada">Los tres primeros pasos. En un banderín o una toalla casi todo viene bien de entrada.</p>
+
+  <h3 id="c3-principal">Paso 1 · Producción principal</h3>
+  <figure class="fig w85"><img src="img-productos/10-produccion-principal.jpg" alt=""><figcaption><b>Figura 5.</b> Área que lo produce y molde.</figcaption></figure>
+  <ul class="marcas">
+    <li><span class="nm">1</span><b>Área que lo produce</b>: "la producción principal: la que imprime la tela o el material". Para toallas y banderines sublimados: <b>Sublimacion</b> (área SB, órdenes SUB-). Las otras son Impresion Directa y Ecouv.</li>
+    <li><span class="nm">2</span><b>Molde de TizadaPro</b>: dejá <b>Obligatorio</b>. ("Opcional" y "No lleva" son para windflags, cuadros, roll ups: ahí aparece la medida fija del producto.)</li>
+  </ul>
+
+  <h3 id="c3-tecnicas">Paso 2 · Técnicas</h3>
+  <figure class="fig w85"><img src="img-productos/11-tecnicas.jpg" alt=""><figcaption><b>Figura 6.</b> Construcción (arriba) y Decoración (abajo).</figcaption></figure>
+  <p>Un producto nuevo trae prendidas <b>Sublimación</b>, <b>Corte</b> y <b>Costura</b>, obligatorias e incluidas. En cada técnica:</p>
+  <ul class="marcas">
+    <li><span class="nm">1</span>Tildada: <b>Obligatoria</b> "el producto siempre la lleva". Sin tilde: <b>Opcional</b> "el cliente decide si la agrega".</li>
+    <li><span class="nm">2</span>Tildada: <b>Incluida en el precio del producto</b> "no suma nada al pedido". Sin tilde: <b>Se cobra como servicio independiente</b> "según lista de precios".</li>
+    <li><span class="nm">3</span>El interruptor prende o apaga la técnica.</li>
+  </ul>
+  <p>Un banderín liso no lleva decoración: <b>Bordado</b>, <b>Estampado TPU</b> y <b>Estampado DTF</b> quedan apagadas. (Cómo se configuran está en el <a href="#c6-tecnicas">capítulo 6</a>.)</p>
+
+  <h3 id="c3-cantidad">Paso 3 · Cantidad y accesorios</h3>
+  <figure class="fig w85"><img src="img-productos/12-cantidad-accesorios.jpg" alt=""><figcaption><b>Figura 7.</b> Política de cantidad, tiempo de entrega y artículos de stock.</figcaption></figure>
+  <ul class="marcas">
+    <li><span class="nm">1</span><b>Política de cantidad</b>: <b>Libre</b> ("El cliente pide la cantidad que quiera"), <b>Cantidad mínima</b> o <b>Paquete fijo</b>. Para el banderín: Libre.</li>
+    <li><span class="nm">2</span><b>Tiempo de entrega · Días hábiles</b>: desde que entra el pedido, sin fines de semana ni feriados. El portal muestra "Entrega a los N días hábiles" y la fecha prometida sale de acá. Vacío: la fecha sale del plan de cada área. Acá pusimos <b>7</b>.</li>
+    <li><span class="nm">3</span><span class="btn s">+ Agregar accesorio de stock</span>: mástil, base, estructura que salen con el producto (ver <a href="#c6-cantidad">capítulo 6</a>). El banderín no lleva.</li>
+  </ul>
+  <div class="volver"><a href="#indice">↑ Índice</a></div>
+</section>
+
+<!-- ───────────── 4 ───────────── -->
+<section class="cap" id="c4">
+  <h2><span class="num">4</span>Molde a medida (TIZADA PRO)</h2>
+  <p class="bajada">Paso 4 · Molde, telas y apliques. Es el paso más importante de un producto a medida.</p>
+
+  <h3 id="c4-tipo">Tipo de molde y variable a medida</h3>
+  <figure class="fig w85"><img src="img-productos/13-tipo-de-molde.jpg" alt=""><figcaption><b>Figura 8.</b> Tipo de molde: A medida.</figcaption></figure>
+  <ul class="marcas">
+    <li><span class="nm">1</span>En <b>Tipo de molde</b> tocá <b>A medida</b> ("Pañuelo, toalla, bandera, banderín…").</li>
+    <li><span class="nm">2</span>En <b>Variable a medida de TIZADA PRO</b> abrí el desplegable "Elegí la variable a medida" y elegí la del producto. En el ejemplo: <b>Bandera simple · Bandera simple</b>.</li>
+  </ul>
+  <figure class="fig w85"><img src="img-productos/14-variable-a-medida.jpg" alt=""><figcaption><b>Figura 9.</b> La variable elegida y lo que permite TIZADA.</figcaption></figure>
+  <ul class="marcas">
+    <li><span class="nm">1</span>La variable elegida. Cada variable trae su molde de TIZADA PRO: al guardar, el molde del producto pasa a ser ese.</li>
+    <li><span class="nm">2</span><b>Actualizar</b>: vuelve a leer las variables de TIZADA PRO (por si cargaron una nueva).</li>
+    <li><span class="nm">3</span>Lo que permite TIZADA: la pieza, las medidas mínima y máxima y el <b>margen para coser</b> ("TIZADA lo suma solo").</li>
+  </ul>
+  <div class="ojo"><span class="t">Si no aparece ninguna</span>"TIZADA PRO todavía no tiene ninguna variable a medida: hay que cargarla allá." Si dice "No se puede leer TIZADA PRO: …", avisá a Sistemas.</div>
+
+  <h3 id="c4-formas">Formas que se ofrecen y puntas del triángulo</h3>
+  <figure class="fig w85"><img src="img-productos/15-formas-y-puntas.jpg" alt=""><figcaption><b>Figura 10.</b> Solo triángulo, con sus puntas.</figcaption></figure>
+  <ul class="marcas">
+    <li><span class="nm">1</span><b>Formas</b>: Rectángulo, Círculo, Triángulo. Vienen todas marcadas; tocá para sacar las que no van (tiene que quedar al menos una). Si quedan varias, aparece "Viene puesta:" para elegir cuál viene de entrada.</li>
+    <li><span class="nm">2</span><b>Triángulo: puntas que se pueden pedir</b>: Punta abajo, arriba, a la izquierda, a la derecha. Tildá las que se aceptan. <b>La punta la elige el arte de cada diseño</b> (en la tienda se propone sola mirando el arte).</li>
+    <li><span class="nm">3</span>"Viene puesta" marca la punta de entrada; en las otras, "Que venga puesta" la cambia.</li>
+    <li><span class="nm">4</span>La medida del triángulo se carga como <b>base × altura</b>. Con la punta a un costado, el sistema da vuelta las medidas solo.</li>
+  </ul>
+
+  <h3 id="c4-terminacion">Terminación del borde</h3>
+  <figure class="fig w85"><img src="img-productos/16-terminacion.jpg" alt=""><figcaption><b>Figura 11.</b> Dobladillo (viene puesta) y Overlock.</figcaption></figure>
+  <p>"Cómo se termina el borde. Cambia cuánta tela lleva." Tildá las que se ofrecen y elegí con "Que venga puesta" la de entrada:</p>
+  <ul>
+    <li><b>Dobladillo</b>: se dobla el margen y se cose (esquinas recortadas). Usa el margen del molde.</li>
+    <li><b>Overlock</b>: costura sobre el borde: la forma tal cual con un margen chico.</li>
+    <li><b>Sin terminación</b>: no se cose el borde; la pieza es el diseño. Las tiras van solo en la ficha.</li>
+  </ul>
+
+  <h3 id="c4-medidas">Medidas</h3>
+  <p>"La medida es la del DISEÑO, en metros (lo que se ve). TIZADA le suma el margen para coser: nunca lo sumes vos." Hay dos formas:</p>
+  <figure class="fig w85"><img src="img-productos/17-medidas-libre.jpg" alt=""><figcaption><b>Figura 12.</b> La escribe el vendedor: mínimo y máximo.</figcaption></figure>
+  <ul class="marcas">
+    <li><span class="nm">1</span><b>La escribe el vendedor</b>: cualquier medida entre un mínimo y un máximo.</li>
+    <li><span class="nm">2</span><b>Mínimo</b> y <b>Máximo</b> en metros (ej. 0,2 y 1,5). TIZADA acepta lo que dice su variable: lo que se salga se recorta al guardar.</li>
+  </ul>
+  <figure class="fig w85"><img src="img-productos/18-medidas-fijas.jpg" alt=""><figcaption><b>Figura 13.</b> Medidas fijas: una lista para elegir.</figcaption></figure>
+  <ul class="marcas">
+    <li><span class="nm">1</span><b>Medidas fijas</b>: el vendedor elige de una lista.</li>
+    <li><span class="nm">2</span>Cada medida: un <b>nombre</b> (ej. "Banderín 30 × 45 cm") y los metros. En el triángulo: <b>Base</b> y <b>Altura</b> (de la base a la punta); en el rectángulo, Ancho y Alto; en el círculo, Diámetro. El tacho la quita.</li>
+    <li><span class="nm">3</span><b>Agregar medida</b> suma otra. Sin ninguna en la lista, al guardar queda como "La escribe el vendedor".</li>
+  </ul>
+  <div class="ojo"><span class="t">Ojo al escribir</span>Si la medida empieza con cero (ej. 0,3), al tipearla el cero de adelante desaparece y queda <b>.3</b>. Es el mismo valor: 0,3 m.</div>
+
+  <h3 id="c4-telas">Telas que se ofrecen</h3>
+  <figure class="fig w85"><img src="img-productos/19-telas-a-medida.jpg" alt=""><figcaption><b>Figura 14.</b> Las telas de la variable (siguen más abajo). Marcadas: Bandera (1,60) y Bandera mesh (1,60).</figcaption></figure>
+  <p>Son las telas de la variable en TIZADA. Tocá las que se pueden usar <span class="nm">1</span>; <b>sin ninguna marcada se ofrecen todas</b>. "entra hasta … cm" es el ancho útil de cada tela: en la solicitud, TIZADA avisa si la medida más el margen no entra.</p>
+
+  <h3 id="c4-tiras">Tiras</h3>
+  <figure class="fig w85"><img src="img-productos/20-tiras.jpg" alt=""><figcaption><b>Figura 15.</b> Dos tiras en la base del triángulo.</figcaption></figure>
+  <ul class="marcas">
+    <li><span class="nm">1</span><b>Lleva tiras</b>: las cintas que se cosen para atar.</li>
+    <li><span class="nm">2</span><b>Marcarlas en la tizada</b>: TIZADA imprime una marca donde va cada una. Sin tilde, van solo en la ficha técnica.</li>
+    <li><span class="nm">3</span><b>El vendedor no las cambia</b>: deja fijas las cantidades.</li>
+    <li><span class="nm">4</span>Cuántas por lado, contando las 2 puntas: 5 = una en cada esquina y 3 en el medio · 1 = una en el medio · 0 = sin tiras. En el triángulo: <b>Base</b> y <b>Cada lateral</b>.</li>
+  </ul>
+
+  <h3 id="c4-archivos">Archivos de impresión</h3>
+  <figure class="fig w85"><img src="img-productos/21-archivos-a-medida.jpg" alt=""><figcaption><b>Figura 16.</b> Cómo arma TIZADA PRO los archivos que van a producción.</figcaption></figure>
+  <ul class="marcas">
+    <li><span class="nm">1</span><b>Copias de una mesa llena</b>: TIZADA llena una mesa con todas las que entran y la manda a imprimir varias veces; lo que sobra va junto en otra mesa, una vez. Para lo que se repite igual.</li>
+    <li><span class="nm">2</span><b>TIZADA acomoda todo</b>: todas juntas, mezcladas, para gastar la menor tela. Cada archivo se imprime una vez.</li>
+    <li><span class="nm">3</span><b>Automático</b>: lo que diga la configuración general para productos a medida.</li>
+    <li><span class="nm">4</span><b>Cada diseño en sus propias mesas</b>: tildalo si producción corta o entrega cada diseño por separado.</li>
+    <li><span class="nm">5</span><b>Largo máximo de cada mesa</b>: de 0,10 a 50 m. Vacío = el que tiene el molde en TIZADA.</li>
+  </ul>
+
+  <h3 id="c4-apliques">Apliques y Guardar</h3>
+  <figure class="fig w85"><img src="img-productos/22-apliques-a-medida.jpg" alt=""><figcaption><b>Figura 17.</b> Apliques: el banderín no lleva.</figcaption></figure>
+  <p>Los apliques (escudos, números, etiquetas) solo se pueden cargar con las <b>técnicas de decoración prendidas</b> en el paso Técnicas (y siempre con Etiqueta). En un producto a medida la pieza es la única que tiene. Se explican en el <a href="#c7-apliques">capítulo 7</a>.</p>
+  <p>Tocá <span class="btn p">Guardar cambios</span>. Sale "✅ Guardado — DEMO GUIA Banderín (borrador)" y los pasos completos se marcan con ✓.</p>
+  <div class="regla"><span class="t">Regla</span>Un producto a medida <b>no tiene paso Variantes</b>: la forma, la punta, la medida y la tela las elige cada pedido.</div>
+  <div class="volver"><a href="#indice">↑ Índice</a></div>
+</section>
+
+<!-- ───────────── 5 ───────────── -->
+<section class="cap" id="c5">
+  <h2><span class="num">5</span>Ficha, precio y publicar</h2>
+  <p class="bajada">Los últimos pasos del producto a medida.</p>
+
+  <h3 id="c5-ficha">Paso 5 · Ficha de diseño</h3>
+  <figure class="fig w85"><img src="img-productos/23-ficha-banderin.jpg" alt=""><figcaption><b>Figura 18.</b> Referencia, dibujo y una anotación.</figcaption></figure>
+  <ul class="marcas">
+    <li><span class="nm">1</span><b>Referencia (REF)</b>: si la dejás vacía, la ficha usa el código. <b>Marca</b> viene en USER.</li>
+    <li><span class="nm">2</span><span class="btn s">Subir dibujo o imagen</span> (después dice "Cambiar dibujo"). Se sube al instante. Si el producto no tiene foto, el dibujo queda también como su foto.</li>
+    <li><span class="nm">3</span>Hacé <b>clic sobre el dibujo</b> para agregar una anotación con flecha. Se puede arrastrar.</li>
+    <li><span class="nm">4</span>Abajo cambiás el texto de cada anotación (viene "Detalle"); la × la quita.</li>
+  </ul>
+  <p>En el banderín alcanza con esto. Las medidas por talle, los avíos y la costura paso a paso se explican en la <a href="#c8">Etapa 2</a>.</p>
+
+  <h3 id="c5-precio">Precio</h3>
+  <figure class="fig"><img src="img-productos/24-precio.jpg" alt=""><figcaption><b>Figura 19.</b> El precio, en la línea de datos del encabezado.</figcaption></figure>
+  <p><span class="nm">1</span> Donde dice "sin precio", escribí el precio (ej. 280). Al lado aparece la moneda: <b>UYU</b> o <b>USD</b>. Es el <b>precio base sin servicios</b>: bordado, TPU y DTF se suman al cotizar según el catálogo. <span class="nm">2</span> Se guarda con <span class="btn p">Guardar cambios</span>.</p>
+
+  <h3 id="c5-publicar">Paso 6 · Revisar y publicar</h3>
+  <figure class="fig w70"><img src="img-productos/25-revisar-banderin.jpg" alt=""><figcaption><b>Figura 20.</b> Vista previa, resumen, canales y publicar.</figcaption></figure>
+  <ul class="marcas">
+    <li><span class="nm">1</span><b>Así lo ve el cliente en el pedido web</b>: foto, nombre, precio "/u · servicios aparte" y las técnicas.</li>
+    <li><span class="nm">2</span><b>Resumen</b>: familia, origen, técnicas, precio, cantidad, entrega, producción principal, molde ("A medida: Bandera simple · 1 forma(s) · medida fija (2) · 2 telas · con tiras"), validar stock y accesorios. Lo que falta sale en <b>ámbar</b>.</li>
+    <li><span class="nm">3</span><b>Dónde se ve (cuando está publicado)</b>: <b>Interno</b> (fabricar a medida, combos, solicitudes de vendedor), <b>Tienda</b> (e-commerce del portal) y <b>Portal</b> (todavía no lo lee).</li>
+    <li><span class="nm">4</span>Prendé el interruptor: dice <b>Publicado</b> "Se ve en los canales marcados". Tocá <span class="btn p">Guardar cambios</span>.</li>
+  </ul>
+  <div class="lado">
+    <figure class="fig" style="width:70mm"><img src="img-productos/26-en-lista-banderin.jpg" alt="" style="width:100%"><figcaption><b>Figura 21.</b> Ya está en la lista.</figcaption></figure>
+    <div>
+      <p>Sale "✅ Guardado — DEMO GUIA Banderín (publicado)", el encabezado dice <span class="pill verde">● PUBLICADO</span> y en la lista aparece en Geometricos › Triangulares como <span class="pill verde">Publicado</span>.</p>
+      <div class="ojo"><span class="t">No deja publicar</span>Si falta algo, al guardar sale un aviso y el paso queda con el punto ámbar. Ver <a href="#c11">capítulo 11</a>.</div>
+    </div>
+  </div>
+  <div class="volver"><a href="#indice">↑ Índice</a></div>
+</section>
+
+<!-- ───────────── 6 ───────────── -->
+<section class="cap salto" id="c6">
+  <div class="etapa"><b>ETAPA 2</b><span>Prendas con talles · Camisetas, Shorts, Remeras…</span></div>
+  <h2><span class="num">6</span>Prenda con talles: alta, técnicas y cantidad</h2>
+  <p class="bajada">Ejemplo: "DEMO GUIA Camiseta", una camiseta de básquet en Camisetas › Básquet.</p>
+
+  <h3 id="c6-alta">Alta y producción principal</h3>
+  <div class="lado">
+    <figure class="fig" style="width:85mm"><img src="img-productos/30-alta-camiseta.jpg" alt="" style="width:100%"><figcaption><b>Figura 22.</b> Camisetas › Básquet → <code>CAM-BAS-02</code>.</figcaption></figure>
+    <div>
+      <p>Igual que en la <a href="#c2-alta">Etapa 1</a>: <span class="btn p">+</span>, <span class="nm">1</span> nombre, <span class="nm">2</span> familia <b>Camisetas</b>, <span class="nm">3</span> etiqueta <b>Básquet</b>, <span class="nm">4</span> el código sale solo, y <span class="btn p">Crear</span>.</p>
+      <p>En <b>Producción principal</b>: <b>Sublimacion</b> y molde <b>Obligatorio</b> ("Prendas: no se publica sin molde de TizadaPro; en la solicitud se eligen modelo y tela por pieza").</p>
+      <p>Una prenda tiene un paso más: <b>Variantes</b>, entre Ficha de diseño y Revisar y publicar.</p>
+    </div>
+  </div>
+
+  <h3 id="c6-tecnicas">Paso 2 · Técnicas de decoración</h3>
+  <figure class="fig w85"><img src="img-productos/31-tecnicas-decoracion.jpg" alt=""><figcaption><b>Figura 23.</b> Bordado opcional, cobrado aparte y con opciones marcadas; DTF opcional.</figcaption></figure>
+  <ul class="marcas">
+    <li><span class="nm">1</span><b>Opcional</b> (sin tilde en Obligatoria): el cliente decide si lo agrega.</li>
+    <li><span class="nm">2</span><b>Se cobra como servicio independiente</b> (sin tilde en Incluida): se suma al pedido según la lista de precios.</li>
+    <li><span class="nm">3</span><b>Opción</b>: <b>Cualquiera del catálogo</b>, <b>Solo las marcadas</b> o <b>Una fija</b>.</li>
+    <li><span class="nm">4</span>Con "Solo las marcadas" o "Una fija" aparecen las opciones del catálogo, con su precio: "Marcá las opciones que puede elegir el cliente".</li>
+    <li><span class="nm">5</span>En Bordado y TPU: "La matriz se cobra solo la primera vez."</li>
+    <li><span class="nm">6</span>Estampado TPU queda apagado: este producto no lo ofrece.</li>
+  </ul>
+  <div class="consejo"><span class="t">Consejo</span>Las opciones (y sus precios) se cargan una sola vez en la pestaña de catálogo <span class="tab">Técnicas</span>: cambiar ahí el precio de una opción lo cambia para todos los productos que la usan.</div>
+
+  <h3 id="c6-cantidad">Paso 3 · Cantidad mínima y accesorios</h3>
+  <figure class="fig w85"><img src="img-productos/32-cantidad-minima.jpg" alt=""><figcaption><b>Figura 24.</b> Mínimo 10 por pedido, entrega a los 15 días hábiles.</figcaption></figure>
+  <ul class="marcas">
+    <li><span class="nm">1</span><b>Cantidad mínima</b>: "El cliente pide desde un mínimo por pedido".</li>
+    <li><span class="nm">2</span><b>Mínimo por pedido</b>: 10. (Con <b>Paquete fijo</b> se pide "Unidades por paquete": el pedido queda fijo en esa cantidad. Para mezclar productos distintos se usa Combos y Promos.)</li>
+    <li><span class="nm">3</span><b>Días hábiles</b> de entrega: 15.</li>
+  </ul>
+  <p><b>Artículos de stock que salen con el producto</b> (mástil, base, estructura…): con <span class="btn s">+ Agregar accesorio de stock</span> se agrega un renglón: el artículo ("Elegí del stock…"), el depósito ("Depósito de ventas" u otro), la variante si tiene varias ("Se elige al cargar el pedido"), cuántos <b>por unidad</b>, <b>Siempre va</b> u <b>Opcional</b>, e <b>Incluido en el precio</b> o <b>Se cobra aparte</b>. Al cargar un pedido, cada accesorio genera su línea de venta y se descuenta del stock del WMS. Lo que está marcado "· solo stock" va siempre incluido y con la variante fija.</p>
+  <div class="volver"><a href="#indice">↑ Índice</a></div>
+</section>
+
+<!-- ───────────── 7 ───────────── -->
+<section class="cap" id="c7">
+  <h2><span class="num">7</span>Molde con talles, telas y apliques</h2>
+  <p class="bajada">Paso 4 · Molde, telas y apliques. El tipo de molde queda en <b>Con talles</b> (viene así).</p>
+
+  <h3 id="c7-molde">Molde de TizadaPro y modelos que se venden</h3>
+  <figure class="fig w85"><img src="img-productos/33-molde-y-modelos.jpg" alt=""><figcaption><b>Figura 25.</b> Molde "Camiseta Basket" y dos modelos que se venden.</figcaption></figure>
+  <ul class="marcas">
+    <li><span class="nm">1</span><b>Molde de TizadaPro</b>: abrí "Sin molde vinculado" y elegí el molde. Los que dicen "(sin piezas o talles)" están incompletos en TIZADA PRO. "Cambiar el molde borra los modelos y las telas elegidos."</li>
+    <li><span class="nm">2</span><b>Actualizar</b> vuelve a leer los moldes de TIZADA PRO.</li>
+    <li><span class="nm">3</span><b>Modelos que se venden</b>: un clic lo vende (✓ verde), el <b>segundo clic lo pone primero</b> (estrella ★) y el tercero lo quita. Acá: Cuello Redondo Sin Costadillo, primero.</li>
+    <li><span class="nm">4</span>Cuello V Comun Sin Costadillo: se vende.</li>
+  </ul>
+
+  <h3 id="c7-piezas">Piezas y talles (solo mirar)</h3>
+  <figure class="fig w85"><img src="img-productos/34-piezas-y-talles.jpg" alt=""><figcaption><b>Figura 26.</b> "Así está cargado el molde en TizadaPro: acá se ve, allá se cambia."</figcaption></figure>
+  <ul class="marcas">
+    <li><span class="nm">1</span><b>Ver las piezas de</b>: todo el molde o un modelo.</li>
+    <li><span class="nm">2</span>Cada pieza con el espacio que ocupa en el talle guía. "tela del pedido" = la elige el cliente; con candado = tela fija del molde.</li>
+    <li><span class="nm">3</span><b>Talles</b>, agrupados en Niño, Adulto y Femenino.</li>
+  </ul>
+  <p>El botón "Leer PDFs de la carpeta de moldes" arma las siluetas de las piezas desde la carpeta de moldes del servidor; no hace falta para configurar el producto.</p>
+
+  <h3 id="c7-talles">Talles que se venden</h3>
+  <figure class="fig w85"><img src="img-productos/35-talles-que-se-venden.jpg" alt=""><figcaption><b>Figura 27.</b> Se venden Adulto y Femenino.</figcaption></figure>
+  <p>Aparece solo si el molde trae más de un grupo. <span class="nm">1</span> Marcá los grupos que vende este producto: <b>los avíos por talle y la ficha muestran solo esos</b>. Sin ninguno marcado se usan todos ("Ninguno marcado: se usan los 30 talles del molde").</p>
+
+  <h3 id="c7-telas">Telas que se ofrecen</h3>
+  <figure class="fig w85"><img src="img-productos/36-telas-camiseta.jpg" alt=""><figcaption><b>Figura 28.</b> Las primeras telas del molde (la lista sigue).</figcaption></figure>
+  <ul class="marcas">
+    <li><span class="nm">1</span>El interruptor ofrece la tela. Solo aparecen las que el molde admite en TIZADA PRO.</li>
+    <li><span class="nm">2</span>"hacer primera" la pone primera (★ primera): es la que se ofrece de entrada.</li>
+  </ul>
+  <p>Al lado, el ancho y el <b>precio de la lista de precios</b> de la tela ("Se cambia desde Precios, no acá"). Si una tela dice "Está oculta en nuestro catálogo…", hay que mostrarla en Artículos y sincronizar TizadaPro para poder ofrecerla.</p>
+
+  <h3 id="c7-archivos">Archivos de impresión</h3>
+  <figure class="fig w85"><img src="img-productos/37-archivos-camiseta.jpg" alt=""><figcaption><b>Figura 29.</b> En prendas hay una opción más.</figcaption></figure>
+  <p>Las mismas opciones que en la <a href="#c4-archivos">Etapa 1</a>, y además <span class="nm">2</span> <b>Talles separados en la misma mesa</b>: cada talle acomodado aparte, con una línea punteada entre talles, para cortar y entregar por talle. Acá elegimos <span class="nm">1</span> <b>TIZADA acomoda todo</b>.</p>
+
+  <h3 id="c7-apliques">Apliques</h3>
+  <figure class="fig w85"><img src="img-productos/38-apliques.jpg" alt=""><figcaption><b>Figura 30.</b> Escudo bordado en el frente y DTF en la espalda.</figcaption></figure>
+  <p>Con <span class="btn s">+ Agregar aplique</span> se suma un renglón:</p>
+  <ul class="marcas">
+    <li><span class="nm">1</span><b>Técnica</b>: solo las de decoración prendidas en Técnicas, más <b>Etiqueta (grifa)</b>.</li>
+    <li><span class="nm">2</span><b>Pieza</b> del molde donde va (obligatoria): las de los modelos que se venden.</li>
+    <li><span class="nm">3</span><b>Opción</b> del catálogo de esa técnica, u "Opción libre".</li>
+    <li><span class="nm">4</span><b>Observaciones</b> (ej. "Escudo, pecho izquierdo").</li>
+    <li><span class="nm">5</span><b>Incluido en el precio</b> o <b>Se cobra aparte</b> (a precio de lista). La × quita el aplique.</li>
+  </ul>
+  <p>Tocá <span class="btn p">Guardar cambios</span> antes de seguir: las variantes se arman con los modelos <b>guardados</b>.</p>
+  <div class="volver"><a href="#indice">↑ Índice</a></div>
+</section>
+
+<!-- ───────────── 8 ───────────── -->
+<section class="cap" id="c8">
+  <h2><span class="num">8</span>Ficha de diseño</h2>
+  <p class="bajada">Paso 5. Todo lo que producción necesita para hacer la prenda; sale en la ficha técnica impresa.</p>
+
+  <h3 id="c8-dibujo">Encabezado y dibujo</h3>
+  <figure class="fig w85"><img src="img-productos/39-ficha-dibujo.jpg" alt=""><figcaption><b>Figura 31.</b> Encabezado y dibujo con dos anotaciones.</figcaption></figure>
+  <ul class="marcas">
+    <li><span class="nm">1</span><b>Referencia (REF)</b> y <b>Marca</b>.</li>
+    <li><span class="nm">2</span><b>Modelo (sale en la ficha impresa)</b>: no se elige. Si el producto vende varios modelos dice "Cada variante lleva su modelo"; cada variante muestra el suyo.</li>
+    <li><span class="nm">3</span><span class="btn s">Cambiar dibujo</span> (o "Subir dibujo o imagen"): se sube al instante.</li>
+    <li><span class="nm">4</span>Clic sobre el dibujo: una anotación con flecha (se arrastra).</li>
+    <li><span class="nm">5</span>El texto de cada anotación (ej. "Escudo bordado", "Ruedo 2,5 cm").</li>
+  </ul>
+  <p>El <b>material</b> y las <b>tallas</b> de la ficha no se escriben: salen solos de las telas marcadas y de los talles que se venden.</p>
+
+  <h3 id="c8-medidas">Medidas de la prenda</h3>
+  <figure class="fig"><img src="img-productos/41-medidas.jpg" alt=""><figcaption><b>Figura 32.</b> Dibujo con letras, tabla en cm por talle y "cómo medir".</figcaption></figure>
+  <ul class="marcas">
+    <li><span class="nm">1</span>El <b>dibujo con las letras</b> (A, B, C…): "Subir dibujo" / "Cambiar dibujo"; se guarda al subirlo. "Quitar" lo saca.</li>
+    <li><span class="nm">2</span>Las pestañas de talles: solo los grupos que se venden (acá Adulto y Femenino). "Valores en cm".</li>
+    <li><span class="nm">3</span><b>Ref.</b>: la letra de la medida en el dibujo (la próxima libre; se puede cambiar).</li>
+    <li><span class="nm">4</span><b>Medida</b>: sale del nomenclador (Catálogos › Medidas), con su referencia debajo (ej. "HPS a ruedo").</li>
+    <li><span class="nm">5</span><b>Principal</b>: "★ Sí" sale grande arriba de la ficha impresa.</li>
+    <li><span class="nm">6</span>Los <b>centímetros de cada talle</b>.</li>
+    <li><span class="nm">7</span><b>Leyenda — Cómo medir</b>: sale del nomenclador; escribí encima para cambiarlo solo en este producto.</li>
+  </ul>
+  <p><span class="btn s">+ Agregar medida</span> suma una fila. <span class="btn s">Exportar plantilla .CSV</span> e <span class="btn s">Importar .CSV</span> sirven para cargar la tabla desde una planilla.</p>
+  <div class="ojo"><span class="t">Pantalla chica</span>Con muchos talles (ej. 10 de adulto) y una pantalla de 1440 px de ancho, las celdas quedan muy angostas y los números no se leen. Agrandá la ventana, achicá el zoom del navegador (Ctrl y −) o cargá la tabla con la plantilla .CSV.</div>
+
+  <h3 id="c8-avios">Avíos por talle</h3>
+  <figure class="fig"><img src="img-productos/42-avios.jpg" alt=""><figcaption><b>Figura 33.</b> Etiqueta de marca (Única) e hilo (Por talle).</figcaption></figure>
+  <p>"Todo lo que lleva la prenda y no es tela; el tipo sale del Catálogo de avíos." Con <span class="btn s">+ Agregar avío</span>:</p>
+  <ul class="marcas">
+    <li><span class="nm">1</span>El <b>avío</b> del catálogo (abajo dice la unidad: unidades, metros…).</li>
+    <li><span class="nm">2</span><b>Carga</b>: <b>Única</b> (lo mismo en todos los talles), <b>Por talle</b> (la medida o cantidad de cada talle) o <b>Artículo por talle</b> (ej. cierre de 15 cm o de 18 cm).</li>
+    <li><span class="nm">3</span>Con Única: la cantidad "en todos los talles" y, si tiene, la medida.</li>
+    <li><span class="nm">4</span>Con Por talle: un valor por talle (acá, los metros de hilo de XS a 2XL).</li>
+    <li><span class="nm">5</span><b>→ todos</b> copia el primer valor a todos los talles del grupo.</li>
+    <li><span class="nm">6</span>La <b>nota</b>: dónde va y cómo se pone.</li>
+    <li><span class="nm">7</span>Plantilla <b>.CSV</b> para cargar desde una planilla.</li>
+  </ul>
+
+  <h3 id="c8-costura">Costura paso a paso</h3>
+  <figure class="fig w85"><img src="img-productos/43-costura.jpg" alt=""><figcaption><b>Figura 34.</b> Los dos primeros pasos del ejemplo "Camiseta de básquet".</figcaption></figure>
+  <ul class="marcas">
+    <li><span class="nm">1</span><b>Cargar pasos de ejemplo…</b>: Remera / camiseta cuello redondo, Camiseta de básquet (musculosa con costadillos), Short deportivo con elástico o Windflag. <b>Reemplaza la lista actual</b>.</li>
+    <li><span class="nm">2</span><b>Etapa</b> (texto libre: Armado, Terminación…). Los pasos seguidos con la misma etapa se agrupan.</li>
+    <li><span class="nm">3</span><b>Operación</b> (ej. "Unir hombros").</li>
+    <li><span class="nm">4</span><b>Costura (ISO 4915)</b>, o "Sin costura (operación manual)".</li>
+    <li><span class="nm">5</span><b>Máquina</b> (se propone la típica de la costura).</li>
+    <li><span class="nm">6</span><b>Tiempo (min)</b> por prenda. Arriba se suma el total.</li>
+    <li><span class="nm">7</span><b>Imagen</b>: el esquema de la costura, o "Subir foto del paso".</li>
+  </ul>
+  <p>También: <b>Qué piezas une</b> (con botones de las piezas del molde), <b>Avío que usa</b> y <b>Observaciones</b>. Las flechas ↑ ↓ cambian el orden y la × quita el paso. <span class="btn s">+ Agregar paso</span> suma uno al final.</p>
+
+  <h3 id="c8-vista">Notas sueltas y ficha técnica</h3>
+  <figure class="fig w85"><img src="img-productos/44-notas-y-ver-ficha.jpg" alt=""><figcaption><b>Figura 35.</b> Notas sueltas y "Ver ficha técnica".</figcaption></figure>
+  <p><b>Notas sueltas</b>: "Lo que no entra en nada de lo de arriba, como etiqueta y valor" (ej. Lavado · Agua fría, no usar secadora). Con <span class="nm">1</span> <span class="btn s">Ver ficha técnica</span> se abre la hoja imprimible:</p>
+  <div class="lado">
+    <figure class="fig" style="width:84mm"><img src="img-productos/45-ficha-vista-arriba.jpg" alt="" style="width:100%"><figcaption><b>Figura 36.</b> Arriba: encabezado, dibujo y costura.</figcaption></figure>
+    <figure class="fig" style="width:84mm"><img src="img-productos/46-ficha-vista-abajo.jpg" alt="" style="width:100%"><figcaption><b>Figura 37.</b> Abajo: medidas y avíos por talle.</figcaption></figure>
+  </div>
+  <p>Abajo de la hoja: <span class="btn p">Imprimir / PDF</span> y <span class="btn s">Cerrar</span>. Después, <span class="btn p">Guardar cambios</span>.</p>
+  <div class="volver"><a href="#indice">↑ Índice</a></div>
+</section>
+
+<!-- ───────────── 9 ───────────── -->
+<section class="cap" id="c9">
+  <h2><span class="num">9</span>Variantes, precio y publicar</h2>
+  <p class="bajada">Paso 6 · Variantes y paso 7 · Revisar y publicar.</p>
+
+  <h3 id="c9-variantes">Variantes por modelo</h3>
+  <figure class="fig w85"><img src="img-productos/47-variantes-antes.jpg" alt=""><figcaption><b>Figura 38.</b> Dos modelos que se venden, todavía sin variante.</figcaption></figure>
+  <p><span class="nm">1</span> "Cada modelo del molde que se vende puede ser una variante: un artículo más, con su código, su nombre, su foto y su estado. Es lo que se elige en la solicitud y sale en el pedido y la factura." <span class="nm">2</span> En "Modelos que se venden sin variante" tocá <span class="btn p">Crear las 2 variantes</span> (o <span class="btn s">Crear variante</span> en uno).</p>
+  <figure class="fig w85"><img src="img-productos/48-variantes.jpg" alt=""><figcaption><b>Figura 39.</b> "✅ 2 variantes creadas: CAM-BAS-02-01, CAM-BAS-02-02".</figcaption></figure>
+  <ul class="marcas">
+    <li><span class="nm">1</span>Cada variante tiene el código del padre más un número.</li>
+    <li><span class="nm">2</span><span class="btn p">Editar</span> la abre en el editor.</li>
+    <li><span class="nm">3</span><span class="btn s">Borrar</span> la borra (con la misma ventana del <a href="#c10">capítulo 10</a>).</li>
+  </ul>
+  <div class="ojo"><span class="t">Ojo con el precio</span>La variante nace <b>igual al padre</b> en ese momento: técnicas, telas, apliques, accesorios, ficha, avíos, costuras <b>y precio</b>. Si el padre todavía no tenía precio, la variante queda "sin precio": cargáselo a cada una (o poné el precio del padre antes de crearlas).</div>
+  <figure class="fig w85"><img src="img-productos/49-variante-editor.jpg" alt=""><figcaption><b>Figura 40.</b> Una variante abierta en el editor.</figcaption></figure>
+  <ul class="marcas">
+    <li><span class="nm">1</span>"Variante de DEMO GUIA Camiseta · modelo …": el molde, el modelo y la producción principal son los del padre. Tocá el nombre del padre para volver a él.</li>
+    <li><span class="nm">2</span><span class="btn s">Copiar de nuevo todo del padre</span>: la variante vuelve a quedar igual al padre (se pierde lo que le cambiaste).</li>
+    <li><span class="nm">3</span>La variante no tiene los pasos Producción principal ni Variantes. Técnicas, telas y accesorios: solo de los que tiene el padre.</li>
+  </ul>
+
+  <h3 id="c9-publicar">Precio y publicar</h3>
+  <p>Escribí el precio en el encabezado (como en la <a href="#c5-precio">Etapa 1</a>) y andá a <b>Revisar y publicar</b>:</p>
+  <figure class="fig w70"><img src="img-productos/50-revisar-camiseta.jpg" alt=""><figcaption><b>Figura 41.</b> Vista previa, resumen, canales y publicar.</figcaption></figure>
+  <ul class="marcas">
+    <li><span class="nm">1</span>La vista previa: las técnicas opcionales salen con "+" (ej. "+ Bordado …") y las que se cobran aparte, sin "· incluido".</li>
+    <li><span class="nm">2</span>El resumen: cantidad "mínimo 10 u", entrega "a los 15 días hábiles", molde "Camiseta Basket · 2 modelos · 2 telas · 2 apliques".</li>
+    <li><span class="nm">3</span>Dónde se ve: Interno y Tienda.</li>
+    <li><span class="nm">4</span>Publicado y <span class="btn p">Guardar cambios</span>.</li>
+  </ul>
+  <div class="lado">
+    <figure class="fig" style="width:70mm"><img src="img-productos/51-en-lista-camiseta.jpg" alt="" style="width:100%"><figcaption><b>Figura 42.</b> El padre con sus variantes.</figcaption></figure>
+    <div>
+      <p>En la lista, la camiseta aparece en Camisetas › Básquet con la pastilla <span class="pill celeste">2 var.</span> y sus variantes colgando debajo. Al tocar una variante se abre en el editor.</p>
+      <p>Cada variante se publica aparte (en su propio paso Revisar y publicar), cuando tenga su precio.</p>
+    </div>
+  </div>
+  <div class="volver"><a href="#indice">↑ Índice</a></div>
+</section>
+
+<!-- ───────────── 10 ───────────── -->
+<section class="cap" id="c10">
+  <h2><span class="num">10</span>Copiar y borrar un producto</h2>
+  <p class="bajada">Para hacer uno parecido, copiá. Para sacar uno que nunca se usó, borralo.</p>
+  <div class="lado">
+    <figure class="fig" style="width:88mm"><img src="img-productos/60-copiar.jpg" alt="" style="width:100%"><figcaption><b>Figura 43.</b> Copiar producto.</figcaption></figure>
+    <div>
+      <h3 style="margin-top:0">Copiar</h3>
+      <p>En el encabezado, <span class="btn s">Copiar</span>. <span class="nm">1</span> Poné el <b>nombre de la copia</b> y <span class="nm">2</span> revisá el <b>código</b> ("El siguiente libre. Si lo dejás vacío, se asigna solo").</p>
+      <p><span class="nm">3</span> "Se copia igual": producción principal, molde y medidas, técnicas, cantidad y accesorios, molde, telas, avíos y apliques, ficha de diseño y pasos de costura, la foto, la familia y la etiqueta.</p>
+      <p>"Queda <b>sin precio</b> y en <b>borrador</b>: cargale el precio y publicala cuando esté lista." Tocá <span class="btn p">Crear copia</span>.</p>
+      <div class="consejo"><span class="t">Ejemplo</span>Para una toalla rectangular, copiá la Toalla cuadrada y cambiá las medidas.</div>
+    </div>
+  </div>
+  <h3>Borrar</h3>
+  <div class="lado">
+    <figure class="fig" style="width:88mm"><img src="img-productos/61-borrar.jpg" alt="" style="width:100%"><figcaption><b>Figura 44.</b> Borrar producto.</figcaption></figure>
+    <div>
+      <p>En el encabezado, <span class="btn s">Borrar</span>. Primero se revisa si el producto se usó en algún lado.</p>
+      <ul class="marcas">
+        <li><span class="nm">1</span>"No se usó en ninguna orden, pedido, factura, solicitud, plan, precio de cliente, combo ni stock."</li>
+        <li><span class="nm">2</span>"Se borra el artículo y, con él:" la lista de lo que cuelga del producto. Queda un respaldo en el servidor.</li>
+        <li><span class="nm">3</span>Para confirmar, escribí el <b>código</b>.</li>
+        <li><span class="nm">4</span><span class="btn r">Borrar producto definitivamente</span>.</li>
+      </ul>
+    </div>
+  </div>
+  <div class="no"><span class="t">Cuándo no se puede</span>Si ya se usó, dice "No se puede borrar: ya se usó en …" y dónde. Si ya no se vende, <b>dejalo en borrador</b>. Si está publicado en la tienda, primero apagá Tienda y Publicado y guardá. Un padre con variantes: primero se borran las variantes.</div>
+  <div class="volver"><a href="#indice">↑ Índice</a></div>
+</section>
+
+<!-- ───────────── 11 ───────────── -->
+<section class="cap" id="c11">
+  <h2><span class="num">11</span>Si algo no anda</h2>
+  <p class="bajada">Los avisos más comunes, tal cual salen en pantalla, y qué hacer.</p>
+  <table class="t">
+    <tr><th style="width:80mm">Aviso</th><th>Qué hacer</th></tr>
+    <tr><td>Un paso con <b>punto ámbar</b></td><td>Pasá el mouse por el paso: dice "Falta: …" (ej. "elegir la variable a medida de TIZADA PRO", "la pieza del molde de cada aplique").</td></tr>
+    <tr><td>"Para publicar, primero vinculá el molde de TizadaPro (paso "Molde, telas y apliques"), o marcá en "Producción principal" que el molde es opcional o que no lleva."</td><td>Elegí el molde (con talles) o la variable (a medida) en el paso 4.</td></tr>
+    <tr><td>"Cada aplique necesita una pieza del molde. Elegila en "Molde, telas y apliques"."</td><td>En cada renglón de Apliques, elegí la pieza.</td></tr>
+    <tr><td>"Para publicar, los apliques tienen que ser de técnicas activas. Activá … en "Técnicas" o quitá esos apliques."</td><td>Prendé la técnica en el paso 2 o sacá el aplique.</td></tr>
+    <tr><td>"Poné la cantidad mínima (entero mayor a 0)." · "Poné la cantidad fija del paquete (entero mayor a 0)."</td><td>Completá el número en Cantidad y accesorios.</td></tr>
+    <tr><td>"No se puede leer TIZADA PRO: …" · "No se pudo leer TizadaPro: …"</td><td>La pantalla no llega a TIZADA PRO. Avisá a Sistemas; mientras tanto no cambies el molde.</td></tr>
+    <tr><td>"TIZADA PRO todavía no tiene ninguna variable a medida: hay que cargarla allá."</td><td>La variable se carga en TIZADA PRO. Después tocá Actualizar.</td></tr>
+    <tr><td>"El molde no tiene telas permitidas cargadas en TizadaPro. Cargalas allá y tocá Actualizar."</td><td>Las telas del molde se cargan en TIZADA PRO.</td></tr>
+    <tr><td>"Este molde no tiene modelos cargados en TizadaPro: el producto se vende con su única forma."</td><td>Normal si el molde tiene una sola forma. Si debería tener modelos, se cargan en TIZADA PRO.</td></tr>
+    <tr><td>"No se puede borrar: ya se usó en …"</td><td>Dejalo en borrador.</td></tr>
+  </table>
+  <div class="regla"><span class="t">Qué no se hace desde acá</span>Moldes, variables a medida, piezas, talles, modelos y telas permitidas: en <b>TIZADA PRO</b>. Precio de las telas: en <b>Precios</b>. Opciones de técnicas, medidas, avíos, costuras e hilos: en las pestañas de <b>catálogos</b> de esta misma pantalla.</div>
+  <div class="volver"><a href="#indice">↑ Índice</a></div>
+</section>
+
+</body>
+</html>

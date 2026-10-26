@@ -1,10 +1,11 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import {
-    RotateCcw, Search, Loader2, Inbox, X, ExternalLink, ClipboardCheck, CheckCircle2, Check, Layers,
+    RotateCcw, Search, Loader2, Inbox, X, ExternalLink, ClipboardCheck, CheckCircle2, Check, Layers, Upload, Trash2, AlertTriangle,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { fileControlService } from '../../../services/modules/fileControlService';
+import { fileService } from '../../../client-portal/api/fileService';
 import { useAuth } from '../../../context/AuthContext';
 import useConfirmar from '../../ui/useConfirmar';
 import Selector from '../../ui/Selector';
@@ -15,6 +16,10 @@ import Selector from '../../ui/Selector';
 // Los avisos pasan del Toast propio a sonner y el confirm() del navegador a useConfirmar. Lógica sin cambios.
 // Razón principal (23/10): una por reposición, de los tipos de falla marcados «para reposiciones» del área de la
 // orden o General (se administran en /admin/tipos-falla). Obligatoria si hay alguna cargada; el backend la valida.
+// Otra tela y archivo nuevo (26/10): la reposición se puede hacer en otra tela del mismo catálogo que la orden (la
+// del pedido se agotó) y llevar archivos NUEVOS (de una tizada se echó a perder una parte y se arma un archivo con
+// lo que falta). El archivo nuevo se mide al elegirlo y se valida contra la tela como en el ingreso de un pedido; el
+// servidor lo vuelve a medir, lo renombra con el código de la reposición y lo sube. Solo en las áreas que imprimen.
 const CARD = 'bg-white rounded-2xl border border-zinc-200';
 const CHIP = 'text-[11px] font-bold px-2.5 py-1 rounded-full border';
 const ROTULO = 'block text-[10px] font-black uppercase tracking-wide text-zinc-400 mb-1';
@@ -77,6 +82,46 @@ const borrarBorrador = (uid) => {
     try { localStorage.removeItem(claveBorrador(uid)); } catch { /* idem */ }
 };
 
+// ── Archivo nuevo y otra tela (26/10/2026) ───────────────────────────────────
+// Medida en el navegador: copia de medirDisenoPronto (ventas/SolicitudVendedorDetalle.jsx), con el mismo
+// fileService del portal. JPEG solo en Sublimación, como en el ingreso de pedidos.
+async function medirArchivoNuevo(file, area) {
+    const m = await fileService.uploadFile(file, { allowJpeg: area === 'SB' });
+    try { if (m.preview) URL.revokeObjectURL(m.preview); } catch { /* nada */ }
+    if (m.hasDPI === false) throw new Error(`No pudimos medir "${file.name}": el archivo no trae DPI. Exportalo con resolución (DPI) y volvé a subirlo.`);
+    if (m.measurementError || !m.width || !m.height) throw new Error(`No pudimos medir "${file.name}": ${m.measurementError || 'sin dimensiones'}.`);
+    if (m.pageCount > 1) throw new Error(`"${file.name}" tiene ${m.pageCount} páginas. Solo se permite 1 página por archivo.`);
+    return { anchoM: m.width, altoM: m.height };
+}
+
+// Regla de medida contra la tela del ingreso de pedidos (PrendaOrderForm.jsx:1107-1135; en el servidor,
+// validador.errorMedidaContraTela y, para DTF, errorMedidaDtf con su alto de 0,10 a 2,50 m). Devuelve el error o null.
+const TOLERANCIA_ANCHO_M = 0.002;
+function errorDeMedida(nombre, ancho, alto, tela, bobina, area) {
+    if (!(ancho > 0) || !(alto > 0)) return `"${nombre}" no tiene medida (ancho y alto).`;
+    if (area === 'DF') {
+        if (alto > 2.5) return `"${nombre}" mide ${alto.toFixed(2)} m de alto: el máximo para DTF es 2,50 m.`;
+        if (alto < 0.1) return `"${nombre}" mide ${alto.toFixed(2)} m de alto: el mínimo para DTF es 0,10 m.`;
+    }
+    const anchoBobina = area !== 'DF' && bobina ? Number(bobina.anchoM) : NaN;
+    const usaBobina = anchoBobina > 0;   // tela del cliente: manda el ancho de su bobina
+    const maxWidth = usaBobina ? anchoBobina : (Number(tela?.anchoM) || 1.83);
+    const largoFijo = usaBobina || area === 'DF' ? 0 : (Number(tela?.largoM) || 0);
+    if (largoFijo > 0) {
+        const cm = (v) => Math.round(Number((v * 100).toFixed(6)));
+        if (cm(ancho) !== cm(maxWidth) || cm(alto) !== cm(largoFijo)) {
+            return `"${tela?.nombre}" se imprime a MEDIDA FIJA: "${nombre}" debe medir exactamente ${maxWidth.toFixed(2)} × ${largoFijo.toFixed(2)} m, y mide ${ancho.toFixed(2)} × ${alto.toFixed(2)} m.`;
+        }
+        return null;
+    }
+    const anchoRedondeado = Math.ceil(Number(((ancho - TOLERANCIA_ANCHO_M) * 100).toFixed(6))) / 100;
+    const maxImprimible = Math.round((maxWidth - 0.03) * 100) / 100;
+    if (anchoRedondeado > maxImprimible + 1e-9) {
+        return `"${nombre}" mide ${anchoRedondeado.toFixed(2)} m de ancho y excede el ancho imprimible de ${usaBobina ? `la bobina "${bobina.nombre}"` : `"${tela?.nombre}"`} (${maxImprimible.toFixed(2)} m).`;
+    }
+    return null;
+}
+
 const CustomerReplacementPage = () => {
     const { user } = useAuth();
     const uid = user?.id;
@@ -108,6 +153,12 @@ const CustomerReplacementPage = () => {
     const [cargandoRazones, setCargandoRazones] = useState(false);
     const [faltaRazon, setFaltaRazon] = useState(false);
     const [submitting, setSubmitting] = useState(false);
+    // Otra tela y archivos nuevos. Los archivos no van al borrador: un File no se puede guardar en el navegador.
+    const [opciones, setOpciones] = useState(null);           // { admiteArchivoNuevo, area, telas, telaActual, bobina }
+    const [telaCod, setTelaCod] = useState(() => bi?.telaCod || '');   // '' = la tela del pedido
+    const [nuevos, setNuevos] = useState([]);                 // [{ key, file, nombre, anchoM, altoM, copias, obs }]
+    const [midiendo, setMidiendo] = useState(false);
+    const claveNuevo = useRef(0);
 
     // UI
     const [successData, setSuccessData] = useState(null);
@@ -172,6 +223,8 @@ const CustomerReplacementPage = () => {
         setReplacementDetails({});
         setRazonId('');
         setFaltaRazon(false);
+        setTelaCod('');
+        setNuevos([]);
         await cargarDetalleOrden(order);
     };
 
@@ -184,6 +237,8 @@ const CustomerReplacementPage = () => {
         setGlobalObs('');
         setRazonId('');
         setFaltaRazon(false);
+        setTelaCod('');
+        setNuevos([]);
     };
 
     // Razones de reposición del área de la orden (más las generales). Si la elegida ya no está (se desactivó),
@@ -206,6 +261,70 @@ const CustomerReplacementPage = () => {
         return () => { vivo = false; };
     }, [ordenElegidaId, areaOrden]);
 
+    // Telas que se pueden elegir (las del mismo catálogo que la orden) y si admite archivo nuevo. Si la tela del
+    // borrador ya no está en la lista, vuelve a la del pedido.
+    useEffect(() => {
+        if (!ordenElegidaId) { setOpciones(null); return undefined; }
+        let vivo = true;
+        setOpciones(null);
+        fileControlService.getOpcionesReposicion(ordenElegidaId)
+            .then((o) => {
+                if (!vivo) return;
+                setOpciones(o);
+                setTelaCod(prev => (prev && (o?.telas || []).some(t => t.codArticulo === prev) ? prev : ''));
+            })
+            .catch((e) => { console.error(e); if (vivo) setOpciones({ admiteArchivoNuevo: false, telas: [] }); });
+        return () => { vivo = false; };
+    }, [ordenElegidaId]);
+
+    const areaRepo = opciones?.area || String(areaOrden).trim().toUpperCase();
+    const telaElegida = (telaCod && opciones?.telas?.find(t => t.codArticulo === telaCod)) || opciones?.telaActual || null;
+    const cambiaTela = !!telaCod && telaCod !== opciones?.telaActual?.codArticulo;
+    const bobinaVigente = cambiaTela ? null : (opciones?.bobina || null);
+    const errorNuevo = (n) => errorDeMedida(n.nombre, n.anchoM, n.altoM, telaElegida, bobinaVigente, areaRepo);
+    // Con otra tela, los archivos de la orden que se repiten también tienen que entrar en ella
+    const errorRepetido = (f) => (cambiaTela && Number(f?.Ancho) > 0 && Number(f?.Alto) > 0
+        ? errorDeMedida(f.NombreArchivo, Number(f.Ancho), Number(f.Alto), telaElegida, null, areaRepo)
+        : null);
+
+    const agregarNuevos = async (lista) => {
+        const archivos = Array.from(lista || []);
+        if (!archivos.length) return;
+        setMidiendo(true);
+        try {
+            for (const f of archivos) {
+                try {
+                    const { anchoM, altoM } = await medirArchivoNuevo(f, areaRepo);
+                    claveNuevo.current += 1;
+                    const key = claveNuevo.current;
+                    setNuevos(prev => [...prev, { key, file: f, nombre: f.name, anchoM, altoM, copias: 1, obs: '' }]);
+                } catch (e) { avisar(e.message, 'error'); }
+            }
+        } finally { setMidiendo(false); }
+    };
+    // Nombre con que se va a guardar el archivo nuevo: la plantilla la arma el servidor con la misma función que lo
+    // renombra al crear la reposición; acá solo se completan la tela, el número de archivo, las copias y la extensión.
+    const nombreFinalNuevo = (n, k) => {
+        const p = opciones?.plantillaNombre;
+        if (!p) return null;
+        const punto = n.nombre.lastIndexOf('.');
+        const ext = punto > 0 ? n.nombre.substring(punto) : '';
+        const mat = telaElegida?.materialNombre || '';
+        return p.replace('{MATERIAL}-', mat ? `${mat}-` : '').replace('{MATERIAL}', mat)
+            .replace('{I}', String(selectedFileIds.length + k + 1))
+            .replace('{N}', String(selectedFileIds.length + nuevos.length))
+            .replace('{C}', String(parseInt(n.copias, 10) || 1))
+            .replace('{EXT}', ext);
+    };
+    // Con otra tela, el archivo repetido cuyo nombre empieza con la tela del pedido pasa a empezar con la nueva
+    const nombreRepetidoConTela = (f) => {
+        const viejo = opciones?.telaActual?.materialNombre;
+        if (!cambiaTela || !viejo || !telaElegida?.materialNombre || !String(f?.NombreArchivo || '').startsWith(`${viejo}-`)) return null;
+        return `${telaElegida.materialNombre}-${f.NombreArchivo.substring(viejo.length + 1)}`;
+    };
+    const cambiarNuevo = (key, campo, valor) => setNuevos(prev => prev.map(n => (n.key === key ? { ...n, [campo]: valor } : n)));
+    const quitarNuevo = (key) => setNuevos(prev => prev.filter(n => n.key !== key));
+
     // Al volver con un borrador: recargar la orden del servidor y quedarse solo con lo marcado
     // que sigue existiendo (un archivo o servicio pudo cambiar mientras tanto).
     useEffect(() => {
@@ -227,8 +346,8 @@ const CustomerReplacementPage = () => {
     // Guardar el borrador con cada cambio. Sin nada cargado, no queda borrador.
     useEffect(() => {
         if (!selectedOrder && orders.length === 0 && !query) { borrarBorrador(uid); return; }
-        guardarBorrador(uid, { query, orders, selectedOrder, selectedFileIds, selectedRelatedOrderIds, replacementDetails, globalObs, razonId });
-    }, [uid, query, orders, selectedOrder, selectedFileIds, selectedRelatedOrderIds, replacementDetails, globalObs, razonId]);
+        guardarBorrador(uid, { query, orders, selectedOrder, selectedFileIds, selectedRelatedOrderIds, replacementDetails, globalObs, razonId, telaCod });
+    }, [uid, query, orders, selectedOrder, selectedFileIds, selectedRelatedOrderIds, replacementDetails, globalObs, razonId, telaCod]);
 
     // --- Handle Form Inputs ---
     const toggleRelatedOrderSelection = (orderId) => {
@@ -291,7 +410,7 @@ const CustomerReplacementPage = () => {
 
     // --- Submit Replacement ---
     const handleSubmit = async () => {
-        if (selectedFileIds.length === 0 && selectedRelatedOrderIds.length === 0) {
+        if (selectedFileIds.length === 0 && selectedRelatedOrderIds.length === 0 && nuevos.length === 0) {
             avisar('Seleccione al menos un archivo o servicio', 'warning');
             return;
         }
@@ -300,6 +419,12 @@ const CustomerReplacementPage = () => {
             avisar('Elegí la razón principal de la reposición', 'warning');
             return;
         }
+        // Archivos nuevos y repetidos tienen que entrar en la tela (el servidor lo vuelve a controlar)
+        const nuevoMal = nuevos.find(n => errorNuevo(n));
+        if (nuevoMal) { avisar(errorNuevo(nuevoMal), 'error'); return; }
+        const repetidoMal = selectedFileIds.map(id => files.find(f => f.ArchivoID === id)).find(f => errorRepetido(f));
+        if (repetidoMal) { avisar(errorRepetido(repetidoMal), 'error'); return; }
+        if (nuevos.some(n => !(parseInt(n.copias, 10) >= 1))) { avisar('Las copias de cada archivo nuevo deben ser 1 o más', 'warning'); return; }
 
         // Validate details and enforce limits client-side
         const items = selectedFileIds.map(fid => {
@@ -347,10 +472,12 @@ const CustomerReplacementPage = () => {
                 relatedOrderIds: selectedRelatedOrderIds,
                 globalObservation: globalObs,
                 razonId: razonId ? Number(razonId) : null,
-                userId: user?.id
+                userId: user?.id,
+                telaCodArticulo: cambiaTela ? telaCod : null,
+                nuevos: nuevos.map(n => ({ copias: parseInt(n.copias, 10), obs: n.obs || '' })), // mismo orden que los archivos
             };
 
-            const res = await fileControlService.createReplacement(payload);
+            const res = await fileControlService.createReplacement(payload, nuevos.map(n => n.file));
 
             if (res.success) {
                 setSuccessData(res);
@@ -362,6 +489,8 @@ const CustomerReplacementPage = () => {
                 setSelectedRelatedOrderIds([]);
                 setReplacementDetails({});
                 setRazonId('');
+                setTelaCod('');
+                setNuevos([]);
                 setGlobalObs(''); // con todo vacío, el efecto de guardado borra el borrador
             } else {
                 avisar('Error al crear reposición', 'error');
@@ -384,7 +513,7 @@ const CustomerReplacementPage = () => {
         return err.message || 'Error desconocido';
     };
 
-    const cantidadElegida = selectedFileIds.length + selectedRelatedOrderIds.length;
+    const cantidadElegida = selectedFileIds.length + selectedRelatedOrderIds.length + nuevos.length;
     const nadaElegido = cantidadElegida === 0;
 
     // --- RENDER ---
@@ -512,6 +641,34 @@ const CustomerReplacementPage = () => {
                             {/* Files List */}
                             <div className="flex-1 min-h-0 md:overflow-y-auto p-4 md:p-6 space-y-6 bg-zinc-50/60">
 
+                                {/* Tela de la reposición (26/10): solo si el catálogo de la orden tiene más de una */}
+                                {opciones?.telas?.length > 1 && (
+                                    <div className={`${CARD} p-3.5 md:p-4`}>
+                                        <label className={ROTULO}>Tela de la reposición</label>
+                                        <Selector
+                                            value={telaCod || opciones.telaActual?.codArticulo || ''}
+                                            onChange={e => setTelaCod(e.target.value === (opciones.telaActual?.codArticulo || '') ? '' : e.target.value)}
+                                            aria-label="Tela de la reposición"
+                                            className="w-full"
+                                            altoMax={460}
+                                        >
+                                            {!opciones.telas.some(t => t.codArticulo === opciones.telaActual?.codArticulo) && (
+                                                <option value={opciones.telaActual?.codArticulo || ''}>{opciones.telaActual?.nombre} (la del pedido)</option>
+                                            )}
+                                            {opciones.telas.map(t => (
+                                                <option key={t.codArticulo} value={t.codArticulo} descripcion={`${Number(t.anchoM).toFixed(2)} m de ancho`}>
+                                                    {t.nombre}{t.codArticulo === opciones.telaActual?.codArticulo ? ' (la del pedido)' : ''}
+                                                </option>
+                                            ))}
+                                        </Selector>
+                                        <p className={`text-[11px] mt-1 ${cambiaTela ? 'text-amber-700 font-bold' : 'text-zinc-400'}`}>
+                                            {cambiaTela
+                                                ? `Se hace en otra tela (la del pedido es «${opciones.telaActual?.nombre}»). Queda anotado en la orden.`
+                                                : 'La del pedido. Cambiala solo si se autorizó hacerla en otra (por ejemplo, porque se agotó).'}
+                                        </p>
+                                    </div>
+                                )}
+
                                 {/* SECTION 1: ARCHIVOS */}
                                 <div>
                                     {loadingFiles ? (
@@ -578,6 +735,16 @@ const CustomerReplacementPage = () => {
                                                                         Original: {parseFloat(file.Metros || 0).toFixed(2)} m · {file.Copias} un.
                                                                     </span>
                                                                 </div>
+                                                                {isSelected && nombreRepetidoConTela(file) && (
+                                                                    <p className="text-[11px] text-amber-700 font-bold break-all mt-2">
+                                                                        Se guarda como: {nombreRepetidoConTela(file)}
+                                                                    </p>
+                                                                )}
+                                                                {isSelected && errorRepetido(file) && (
+                                                                    <p className="text-xs font-bold text-rose-600 mt-2 flex items-start gap-1">
+                                                                        <AlertTriangle size={13} className="shrink-0 mt-px" /> {errorRepetido(file)}
+                                                                    </p>
+                                                                )}
                                                             </div>
                                                         </div>
                                                         {isSelected && (
@@ -632,6 +799,100 @@ const CustomerReplacementPage = () => {
                                         </div>
                                     )}
                                 </div>
+
+                                {/* SECTION 1b: ARCHIVO NUEVO (26/10) — solo en las áreas que imprimen un archivo */}
+                                {opciones?.admiteArchivoNuevo && (
+                                    <div className="pt-5 border-t border-zinc-200">
+                                        <div className="flex items-start justify-between gap-3 mb-3">
+                                            <div className="min-w-0">
+                                                <h3 className="text-[11px] font-black uppercase tracking-wide text-zinc-400 flex items-center gap-1.5">
+                                                    <Upload size={13} className="text-brand-cyan" /> Archivo nuevo
+                                                </h3>
+                                                <p className="text-xs text-zinc-400 mt-0.5">Para reponer solo una parte (por ejemplo, de una tizada): subí un archivo con lo que falta. Se mide contra la tela y se renombra con el código de la reposición.</p>
+                                            </div>
+                                            <label className={`inline-flex items-center gap-1.5 shrink-0 px-3 py-2 rounded-xl border border-brand-cyan/30 bg-brand-cyan/5 text-brand-cyan text-xs font-bold hover:bg-brand-cyan/10 transition-colors ${midiendo ? 'opacity-40 pointer-events-none' : 'cursor-pointer'}`}>
+                                                {midiendo ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
+                                                {midiendo ? 'Midiendo…' : 'Subir archivo'}
+                                                <input
+                                                    type="file"
+                                                    multiple
+                                                    accept=".pdf,.png,.jpg,.jpeg,.tif,.tiff"
+                                                    className="hidden"
+                                                    disabled={midiendo}
+                                                    onChange={e => { agregarNuevos(e.target.files); e.target.value = ''; }}
+                                                />
+                                            </label>
+                                        </div>
+                                        {nuevos.length > 0 && (
+                                            <div className="space-y-3">
+                                                {nuevos.map((n, k) => {
+                                                    const err = errorNuevo(n);
+                                                    const nombreFinal = nombreFinalNuevo(n, k);
+                                                    return (
+                                                        <div key={n.key} className={`bg-white rounded-xl border ${err ? 'border-rose-300 ring-2 ring-rose-100' : 'border-brand-cyan ring-2 ring-brand-cyan/15'}`}>
+                                                            <div className="flex items-start justify-between gap-3 p-3.5 md:p-4">
+                                                                <div className="min-w-0">
+                                                                    {/* El nombre con que se guarda (el número de reposición se confirma al generarla) */}
+                                                                    <p className="font-bold text-sm text-zinc-800 break-all">{nombreFinal || n.nombre}</p>
+                                                                    {nombreFinal && (
+                                                                        <p className="text-[11px] text-zinc-400 break-all mt-0.5">Subido como: {n.nombre}</p>
+                                                                    )}
+                                                                    <div className="flex flex-wrap items-center gap-1.5 mt-2">
+                                                                        <span className={`${CHIP} bg-zinc-100 text-zinc-600 border-zinc-200 tabular-nums`}>
+                                                                            {Number(n.anchoM).toFixed(2)}×{Number(n.altoM).toFixed(2)} m
+                                                                        </span>
+                                                                        {telaElegida?.nombre && (
+                                                                            <span className={`${CHIP} bg-zinc-100 text-zinc-600 border-zinc-200`}>{telaElegida.nombre}</span>
+                                                                        )}
+                                                                    </div>
+                                                                    {err && (
+                                                                        <p className="text-xs font-bold text-rose-600 mt-2 flex items-start gap-1">
+                                                                            <AlertTriangle size={13} className="shrink-0 mt-px" /> {err}
+                                                                        </p>
+                                                                    )}
+                                                                </div>
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => quitarNuevo(n.key)}
+                                                                    className="w-8 h-8 shrink-0 rounded-xl border border-zinc-200 bg-white text-zinc-400 hover:text-rose-600 hover:bg-rose-50 flex items-center justify-center transition-colors"
+                                                                    title="Quitar archivo"
+                                                                    aria-label={`Quitar ${n.nombre}`}
+                                                                >
+                                                                    <Trash2 size={15} />
+                                                                </button>
+                                                            </div>
+                                                            <div className="px-3.5 md:px-4 pb-4 pt-3 border-t border-zinc-100 grid grid-cols-[110px_minmax(0,1fr)] gap-3">
+                                                                <div>
+                                                                    <label className={ROTULO} htmlFor={`nuevo-copias-${n.key}`}>Copias</label>
+                                                                    <input
+                                                                        id={`nuevo-copias-${n.key}`}
+                                                                        type="number"
+                                                                        step="1"
+                                                                        min="1"
+                                                                        className={`${CAMPO} tabular-nums`}
+                                                                        value={n.copias}
+                                                                        onChange={e => cambiarNuevo(n.key, 'copias', e.target.value)}
+                                                                    />
+                                                                </div>
+                                                                <div className="min-w-0">
+                                                                    <label className={ROTULO} htmlFor={`nuevo-obs-${n.key}`}>Motivo / observación</label>
+                                                                    <input
+                                                                        id={`nuevo-obs-${n.key}`}
+                                                                        type="text"
+                                                                        className={`${CAMPO} font-medium`}
+                                                                        placeholder="Qué parte se repone (la máquina y el lote se agregan solos)"
+                                                                        value={n.obs}
+                                                                        onChange={e => cambiarNuevo(n.key, 'obs', e.target.value)}
+                                                                    />
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
 
                                 {/* SECTION 2: RELATED SERVICES */}
                                 {relatedOrders.length > 0 && (
@@ -755,6 +1016,16 @@ const CustomerReplacementPage = () => {
                             {successData.hermanaTerminaciones && (
                                 <div className="text-xs font-bold text-zinc-500 mt-1.5">
                                     + {successData.hermanaTerminaciones} para Terminaciones
+                                </div>
+                            )}
+                            {successData.telaCambiada && (
+                                <div className="text-xs font-bold text-amber-700 mt-1.5">
+                                    En {successData.telaCambiada.ahora} (el pedido era en {successData.telaCambiada.antes})
+                                </div>
+                            )}
+                            {successData.archivosNuevos?.length > 0 && (
+                                <div className="text-xs font-bold text-zinc-500 mt-1.5">
+                                    Con {successData.archivosNuevos.length} {successData.archivosNuevos.length === 1 ? 'archivo nuevo' : 'archivos nuevos'}
                                 </div>
                             )}
                         </div>

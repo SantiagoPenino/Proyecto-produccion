@@ -262,6 +262,18 @@ const fmtFechaCorta = (str) => {
   const p = String(str).slice(0, 10).split('-');
   return p.length === 3 ? `${p[2]}/${p[1]}/${p[0]}` : str;
 };
+// El backend manda un medio por cada pago del cobro: un cobro con 24 cheques llegaba como
+// "Cheque + Cheque + …" (24 veces). Se agrupan los repetidos: "Cheque ×24 + Transferencia".
+const mediosLegibles = (medios) => {
+  const veces = new Map();
+  String(medios || '').split(' + ').map(s => s.trim()).filter(Boolean).forEach(m => veces.set(m, (veces.get(m) || 0) + 1));
+  return [...veces].map(([m, n]) => (n > 1 ? `${m} ×${n}` : m)).join(' + ');
+};
+// Números de cheque en la fila: los 3 primeros y "y N más" (la lista entera va en el title).
+const chequesCortos = (cheques) => {
+  const nums = String(cheques || '').split(',').map(s => s.trim()).filter(Boolean);
+  return nums.length > 3 ? `${nums.slice(0, 3).join(', ')} y ${nums.length - 3} más` : nums.join(', ');
+};
 
 const EstadoChip = ({ estado }) => (
   <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold border ${CHIP[estado] || CHIP.PENDIENTE}`}>
@@ -941,8 +953,8 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
                               <span className="text-[11px] font-bold text-slate-500">{m.recibo}</span>
                             )}
                             {!esDoc && m.medioPago && (
-                              <span className="text-[11px] font-semibold text-slate-500">
-                                · {m.medioPago}{m.cheques ? ` · Cheque N° ${m.cheques}` : ''}
+                              <span className="text-[11px] font-semibold text-slate-500" title={m.cheques ? `Cheques N° ${m.cheques}` : undefined}>
+                                · {mediosLegibles(m.medioPago)}{m.cheques ? ` · Cheque N° ${chequesCortos(m.cheques)}` : ''}
                               </span>
                             )}
                             {/* Moneda REAL del pago cuando difiere de la moneda de la cuenta:
@@ -1255,7 +1267,7 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
                 <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-500">
                   <span>{fmtFechaCorta(detallePago.fecha)}</span>
                   {detallePago.recibo && <span className="font-bold text-slate-700">{detallePago.recibo}</span>}
-                  {detallePago.medioPago && <span>· {detallePago.medioPago}{detallePago.cheques ? ` · Cheque N° ${detallePago.cheques}` : ''}</span>}
+                  {detallePago.medioPago && <span>· {mediosLegibles(detallePago.medioPago)}{detallePago.cheques ? ` · Cheque N° ${detallePago.cheques}` : ''}</span>}
                 </div>
                 <div className="p-3 rounded-xl bg-slate-50 border border-slate-200">
                   <p className="text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1">

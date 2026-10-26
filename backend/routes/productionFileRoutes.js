@@ -43,7 +43,22 @@ router.post('/orden/:id/next-service', etiquetasController.updateOrderNextServic
 // --- REPOSICIONES (Atención al Cliente) ---
 router.get('/ordenes/entregadas', verifyToken, productionFileController.getCompletedOrdersForReplacement);
 router.get('/orden/:ordenId/relacionadas', verifyToken, productionFileController.getRelatedOrders);
-router.post('/ordenes/reposicion', verifyToken, productionFileController.createCustomerReplacementOrder);
+// Telas que se pueden elegir y si admite archivo nuevo (26/10/2026)
+router.get('/orden/:ordenId/reposicion-opciones', verifyToken, productionFileController.getOpcionesReposicion);
+// Con archivos nuevos llega multipart (mismo multer que la subida de archivos de producción de ordersRoutes);
+// sin ellos, JSON como siempre: multer deja pasar lo que no es multipart.
+const multerRepo = require('multer');
+const fsRepo = require('fs');
+const tmpDirRepo = require('../utils/rutasUploads').rutaUploads('tmp'); // UPLOADS_PATH
+if (!fsRepo.existsSync(tmpDirRepo)) fsRepo.mkdirSync(tmpDirRepo, { recursive: true });
+const uploadRepo = multerRepo({
+    storage: multerRepo.diskStorage({
+        destination: (req, file, cb) => cb(null, tmpDirRepo),
+        filename: (req, file, cb) => cb(null, Date.now() + '-' + file.originalname)
+    }),
+    limits: { fileSize: 200 * 1024 * 1024 } // 200MB
+});
+router.post('/ordenes/reposicion', verifyToken, uploadRepo.array('archivosNuevos', 20), productionFileController.createCustomerReplacementOrder);
 
 // --- CANASTO FALLA (Confirmación y Liberación) ---
 router.post('/canasto-falla/confirmar', productionFileController.confirmarFalla);
