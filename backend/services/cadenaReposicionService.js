@@ -5,6 +5,7 @@
  * (usa el stock / trae más → la orden de falla nace recién con la decisión del cliente).
  */
 const { getPool, sql } = require('../config/db');
+const logger = require('../utils/logger');
 
 /** Código nuevo de una orden de falla: {raíz de la madre}-F{FallaID}, con sufijo -n si colisiona. */
 async function codigoFalla(tx, codigoMadre, fallaId) {
@@ -134,6 +135,8 @@ async function materializarCadena(tx, primeraReposicionId, { bobinaId = null, pr
                 liberaCuandoOrdenId: anteriorOrdenFallaId, estadoDependencia: anteriorOrdenFallaId ? 'ESPERANDO_REPOSICION' : null,
                 nota, bobinaId: i === 0 ? bobinaId : null, prendaId: i === 0 ? prendaId : null,
             });
+            // [23/10/2026] El archivo de impresión que se eligió al reportar (si es de esta madre)
+            if (rep.ArchivoOrigenID) await copiarArchivoImpresion(tx, { nuevaId, madreId: madre.OrdenID, archivoId: rep.ArchivoOrigenID });
             await new sql.Request(tx).input('id', sql.Int, repId).input('f', sql.Int, nuevaId)
                 .input('e', sql.VarChar(20), anteriorOrdenFallaId ? 'BLOQUEADA' : 'PENDIENTE')
                 .input('bob', sql.Int, i === 0 ? bobinaId : null)
@@ -149,4 +152,90 @@ async function materializarCadena(tx, primeraReposicionId, { bobinaId = null, pr
     return creadas;
 }
 
-module.exports = { codigoFalla, crearOrdenFalla, materializarCadena, getOrdenBasica };
+// ─── FALLAS REPORTADAS DESDE OTRA ÁREA: el archivo de impresión (23/10/2026) ───────────────────
+// Caso SUB-31896-F2623: Corte reportó una falla de la tela, la -F de Sublimación nació SIN archivo
+// ("subir el archivo de reimpresión desde el detalle"), igual pasó por lote e impresión y en Control
+// se canceló de oficio por no tener archivos: no hubo etiqueta. Esto vale SOLO para las -F que
+// nacieron de una reposición (fila en Reposiciones con OrdenFallaID): las fallas que se reportan en
+// el propio Control (productionFileController.postControlArchivo) no escriben en Reposiciones y ya
+// nacen con su archivo copiado. Solo archivos de IMPRESIÓN y solo áreas que imprimen por lote: los
+// archivos de bordado / matriz no se copian, y TPU (arte en capas) sigue como hoy.
+const AREAS_IMPRIMEN_POR_LOTE = ['SB', 'SUB', 'DF', 'DTF', 'ECOUV', 'DIRECTA', 'DIRECTA-ALGODON'];
+const SQL_AREAS_IMPRIMEN = AREAS_IMPRIMEN_POR_LOTE.map(a => `'${a}'`).join(', ');
+
+/**
+ * Copia a la orden de falla el archivo de impresión que se eligió al reportar ("De qué archivo
+ * viene"), si es de la madre de ese eslabón, es de impresión y el área imprime por lote. Lo mismo que
+ * hace el control de impresión con su -F: mismas copias, en Sublimación con 0 m (los metros salen al
+ * imprimir y medir), la nota de reposición anexada, la miniatura y, en DTF, la plancha de tinta
+ * blanca. Devuelve el nombre del archivo copiado, o null si no correspondía copiar nada.
+ */
+async function copiarArchivoImpresion(tx, { nuevaId, madreId, archivoId }) {
+    if (!nuevaId || !madreId || !archivoId) return null;
+    const r = await new sql.Request(tx).input('A', sql.Int, archivoId).input('M', sql.Int, madreId).query(`
+        SELECT a.ArchivoID, a.NombreArchivo, UPPER(LTRIM(RTRIM(o.AreaID))) AS Area, LTRIM(RTRIM(o.CodigoOrden)) AS CodMadre
+        FROM dbo.ArchivosOrden a JOIN dbo.Ordenes o ON o.OrdenID = a.OrdenID
+        WHERE a.ArchivoID = @A AND a.OrdenID = @M
+          AND ISNULL(a.EstadoArchivo, '') <> 'CANCELADO'
+          AND UPPER(LTRIM(RTRIM(ISNULL(a.TipoArchivo, '')))) = 'IMPRESION'`);
+    const f = r.recordset[0];
+    if (!f || !AREAS_IMPRIMEN_POR_LOTE.includes(f.Area)) return null;
+    const esSB = f.Area === 'SB' || f.Area === 'SUB';
+    const ins = await new sql.Request(tx).input('N', sql.Int, nuevaId).input('A', sql.Int, archivoId).query(`
+        INSERT INTO dbo.ArchivosOrden (OrdenID, NombreArchivo, RutaAlmacenamiento, Metros, Copias, Ancho, Alto, Observaciones, TipoArchivo, FechaSubida, EstadoArchivo)
+        OUTPUT INSERTED.ArchivoID
+        SELECT @N, NombreArchivo, RutaAlmacenamiento, ${esSB ? '0' : 'Metros'}, Copias, Ancho, Alto,
+               CASE WHEN ISNULL(Observaciones, '') LIKE '%Reposición por Falla%' THEN Observaciones
+                    ELSE LTRIM(RTRIM(ISNULL(Observaciones, ''))) + ' [Reposición por Falla]' END,
+               TipoArchivo, GETDATE(), 'Pendiente'
+        FROM dbo.ArchivosOrden WHERE ArchivoID = @A;
+        UPDATE dbo.Ordenes SET ArchivosCount = (SELECT COUNT(*) FROM dbo.ArchivosOrden WHERE OrdenID = @N) WHERE OrdenID = @N;`);
+    const nuevoArchivoId = ins.recordset[0]?.ArchivoID;
+    // La nota de la -F decía que había que subir el archivo: ahora ya lo tiene
+    await new sql.Request(tx).input('N', sql.Int, nuevaId).input('Nom', sql.NVarChar(400), String(f.NombreArchivo || '').trim()).query(`
+        UPDATE dbo.Ordenes
+        SET Nota = REPLACE(ISNULL(Nota, ''), ' Subir el archivo de reimpresión desde el detalle de la orden.',
+                   ' Se reimprime con el archivo elegido al reportar (' + @Nom + '): si hay que cambiarlo o reimprimir menos copias, desde el detalle de la orden.')
+        WHERE OrdenID = @N`);
+    if (f.Area === 'DF' || f.Area === 'DTF') {
+        try { await require('./dtfBlancoService').copiarTintaBlanca(tx, nuevaId, [archivoId]); }
+        catch (e) { logger.warn(`[cadenaReposicion] No se pudo copiar la tinta blanca del archivo ${archivoId}: ${e.message}`); }
+    }
+    if (nuevoArchivoId) {
+        try {
+            const cod = await new sql.Request(tx).input('N', sql.Int, nuevaId).query('SELECT LTRIM(RTRIM(CodigoOrden)) AS C FROM dbo.Ordenes WHERE OrdenID = @N');
+            require('../utils/thumbnailGenerator').copyThumbnail(f.CodMadre, archivoId, cod.recordset[0]?.C, nuevoArchivoId);
+        } catch (e) { logger.warn(`[cadenaReposicion] No se pudo copiar la miniatura a la orden de falla: ${e.message}`); }
+    }
+    return String(f.NombreArchivo || '').trim();
+}
+
+/**
+ * De estas órdenes, las de falla de una reposición (otra área) en un área que imprime por lote que
+ * NO tienen ningún archivo de impresión vivo: no pueden ir a un lote (se imprimiría "nada") ni
+ * cerrarse en Control. [{ OrdenID, CodigoOrden }]
+ */
+async function fallasSinArchivoDeImpresion(conn, ordenIds) {
+    const ids = (ordenIds || []).map(Number).filter(Number.isInteger);
+    if (!ids.length) return [];
+    const r = await new sql.Request(conn).query(`
+        SELECT o.OrdenID, LTRIM(RTRIM(o.CodigoOrden)) AS CodigoOrden
+        FROM dbo.Ordenes o
+        WHERE o.OrdenID IN (${ids.join(',')})
+          AND UPPER(LTRIM(RTRIM(o.AreaID))) IN (${SQL_AREAS_IMPRIMEN})
+          AND EXISTS (SELECT 1 FROM dbo.Reposiciones r WHERE r.OrdenFallaID = o.OrdenID)
+          AND NOT EXISTS (SELECT 1 FROM dbo.ArchivosOrden a
+                          WHERE a.OrdenID = o.OrdenID AND ISNULL(a.EstadoArchivo, '') <> 'CANCELADO'
+                            AND UPPER(LTRIM(RTRIM(ISNULL(a.TipoArchivo, '')))) = 'IMPRESION')`);
+    return r.recordset;
+}
+
+/** Texto del aviso para las -F sin archivo de impresión (lote y Control dicen lo mismo). */
+const avisoFallaSinArchivo = (codigos) =>
+    `${codigos.length === 1 ? 'La orden de falla' : 'Las órdenes de falla'} ${codigos.join(', ')} no ${codigos.length === 1 ? 'tiene' : 'tienen'} archivo de impresión: ` +
+    'subí el archivo de reimpresión desde el detalle de la orden y después volvé a intentar.';
+
+module.exports = {
+    codigoFalla, crearOrdenFalla, materializarCadena, getOrdenBasica,
+    AREAS_IMPRIMEN_POR_LOTE, copiarArchivoImpresion, fallasSinArchivoDeImpresion, avisoFallaSinArchivo,
+};

@@ -93,6 +93,10 @@ export const solicitudesVendedorService = {
     calendario: (desde, hasta) => dato(api.get(`${BASE}/calendario`, { params: { desde, hasta } })),
     bandeja: () => dato(api.get(`${BASE}/bandeja-diseno`)),
     disenosHechos: (desde, hasta) => dato(api.get(`${BASE}/bandeja-diseno/hechos`, { params: { desde, hasta } })),
+    // [23/10/2026] pestaña "Tiempos y puntos": plazo de cada diseño y fallas por diseño (marcar y anular: Admin)
+    puntosDiseno: (anio, mes) => dato(api.get(`${BASE}/bandeja-diseno/puntos`, { params: { anio, mes } })),
+    marcarFallaDiseno: (parteId, motivo) => dato(api.post(`${BASE}/partes/${parteId}/falla-diseno`, { motivo })),
+    anularFallaDiseno: (eventoId, motivo) => dato(api.post(`${BASE}/fallas-diseno/${eventoId}/anular`, { motivo })),
     // [20/10] pestaña "Del portal", cancelar con motivo (el cliente lo ve) y buscar en todo Diseño
     bandejaPortal: () => dato(api.get(`${BASE}/bandeja-diseno/portal`)),
     cancelarDelPortal: (id, Motivo) => dato(api.post(`${BASE}/bandeja-diseno/portal/${id}/cancelar`, { Motivo })),

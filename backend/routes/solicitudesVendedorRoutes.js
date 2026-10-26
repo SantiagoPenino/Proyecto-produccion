@@ -27,6 +27,9 @@ router.get('/bandeja-diseno/portal', ctrl.bandejaPortal);                 // [20
 router.get('/bandeja-diseno/buscar', ctrl.buscarDiseno);                  // [20/10] ?q= — busca en todo Diseño (todos los diseñadores)
 router.post('/bandeja-diseno/portal/:id/cancelar', ctrl.cancelarDelPortal); // [20/10] { Motivo } — el cliente lo ve en su portal   // [15/10] lo que Diseño ya terminó (?desde=AAAA-MM-DD&hasta=…; sin fechas, hoy)
 router.get('/disenos-en-produccion', ctrl.disenosEnProduccion);   // Bordado / TPU ya en planta que esperan su diseño (solo lectura)
+router.get('/bandeja-diseno/puntos', ctrl.puntosDiseno);                  // [23/10] ?anio=&mes= — tiempos de cada diseño y fallas (puntos de la bonificación)
+router.post('/partes/:parteId/falla-diseno', ctrl.marcarFallaDiseno);     // [23/10] { motivo } — falla del pedido por el diseño (Admin)
+router.post('/fallas-diseno/:eventoId/anular', ctrl.anularFallaDiseno);   // [23/10] { motivo } — anula una falla marcada por error (Admin)
 router.post('/partes/:parteId/enviar-diseno', ctrl.enviarADiseno);
 router.post('/partes/:parteId/tomar', ctrl.tomarParte);
 router.post('/partes/:parteId/aceptar-cambio', ctrl.aceptarCambio);

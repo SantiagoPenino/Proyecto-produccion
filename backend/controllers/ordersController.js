@@ -1944,6 +1944,17 @@ exports.assignRoll = async (req, res) => {
         }
 
         // ----------------------------------------------------
+        // [23/10/2026] ORDEN DE FALLA DE OTRA ÁREA SIN ARCHIVO DE IMPRESIÓN: no entra a un lote (se
+        // imprimiría vacía y en Control se cancelaba de oficio, SUB-31896-F2623). Las fallas que se
+        // reportan en Control nacen con su archivo y no tienen reposición: nunca caen acá.
+        // ----------------------------------------------------
+        if (rollId || isNew) {
+            const { fallasSinArchivoDeImpresion, avisoFallaSinArchivo } = require('../services/cadenaReposicionService');
+            const sinArchivo = await fallasSinArchivoDeImpresion(pool, targetOrderIds);
+            if (sinArchivo.length > 0) return res.status(409).json({ error: `⛔ ${avisoFallaSinArchivo(sinArchivo.map(x => x.CodigoOrden))}` });
+        }
+
+        // ----------------------------------------------------
         // REGLA DE NEGOCIO PARA SUBLIMACIÓN (SB)
         // No permitir mezclar papel con otros materiales en el mismo lote
         // ----------------------------------------------------

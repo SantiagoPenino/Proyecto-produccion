@@ -349,7 +349,9 @@ const colorArea = (a) => AREA_COLOR_MAP[a] || '#94a3b8';
 // Sector y área no son lo mismo: el sector agrupa varias áreas (CENCO = Corte +
 // Costura). Un solo control con los dos niveles evita que se elijan a la vez.
 // Valor: 'Todas' | 'S:<sectorId>' | 'A:<nombreArea>'
-const paramsAmbito = (ambito) => {
+// [23/10/2026] Los filtros (FilaFecha, FilaVerPor, Chip, KpiCard…) se exportan: el Dashboard de ventas
+// (ventas/VentasDashboard.jsx) usa los mismos.
+export const paramsAmbito = (ambito) => {
     if (!ambito || ambito === 'Todas') return {};
     if (ambito.startsWith('S:')) return { sector: ambito.slice(2) };
     return { area: ambito.slice(2) };
@@ -369,7 +371,7 @@ const etiquetaAmbito = (ambito, opciones) => {
  * los chips de ese nivel. Un solo control decide por qué se filtra y —donde
  * corresponda— cómo se agrupa el resultado. Se usa en todos los reportes.
  */
-const FilaVerPor = ({ verPor, onVerPor, ambito, onAmbito, opciones, extra = null }) => {
+export const FilaVerPor = ({ verPor, onVerPor, ambito, onAmbito, opciones, extra = null }) => {
     const haySectores = (opciones.sectores || []).length > 0;
     const porSector = verPor === 'sector' && haySectores;
     return (
@@ -411,7 +413,7 @@ const FilaVerPor = ({ verPor, onVerPor, ambito, onAmbito, opciones, extra = null
     );
 };
 
-const Chip = ({ active, onClick, children }) => (
+export const Chip = ({ active, onClick, children }) => (
     <button onClick={onClick}
         className={`px-3 py-1 rounded-full text-xs font-medium transition-all ${
             active ? 'bg-brand-cyan text-white shadow-sm' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>
@@ -419,7 +421,7 @@ const Chip = ({ active, onClick, children }) => (
     </button>
 );
 
-const KpiCard = ({ label, value, sub, color }) => (
+export const KpiCard = ({ label, value, sub, color }) => (
     <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-4 relative overflow-hidden">
         <span className="absolute left-0 top-0 bottom-0 w-1" style={{ background: color }} />
         <p className="text-[11px] text-slate-400 font-semibold">{label}</p>
@@ -467,7 +469,7 @@ function DrillModal({ drill, onClose, children }) {
     );
 }
 
-const descargarCSV = (nombre, header, filas) => {
+export const descargarCSV = (nombre, header, filas) => {
     const csv = [header.join(','), ...filas.map(f => f.map(v => {
         const s = String(v ?? '').replace(/"/g, '""');
         return /[",\n]/.test(s) ? `"${s}"` : s;
@@ -480,7 +482,7 @@ const descargarCSV = (nombre, header, filas) => {
 };
 
 // Rango de fechas de una sección autónoma (presets compartidos con la página)
-const rangoDeFiltros = (f) => {
+export const rangoDeFiltros = (f) => {
     if (f.preset !== 'custom') {
         const r = getDateRange(f.preset);
         return { desde: toISO(r.desde), hasta: toISO(r.hasta) };
@@ -488,7 +490,7 @@ const rangoDeFiltros = (f) => {
     return { desde: f.desde || '', hasta: f.hasta || '' };
 };
 
-const FilaFecha = ({ f, setF }) => (
+export const FilaFecha = ({ f, setF }) => (
     <div className="flex items-center gap-2 flex-wrap">
         <span className="text-[11px] font-bold text-slate-500 w-14 shrink-0 tracking-wide">FECHA</span>
         {FECHA_PRESETS.map(p => (
@@ -509,7 +511,10 @@ const FilaFecha = ({ f, setF }) => (
 // ─── Top 50 Clientes ──────────────────────────────────────────────────────────
 // Ranking por CLIENTE INTERNO (dueño de la orden), no por el receptor del CFE en
 // DGI. Lo irresoluble cae en "Mostrador / sin identificar". NC restan.
-function TopClientesSection({ opciones }) {
+// [23/10/2026] Exportado: el Dashboard de ventas (ventas/VentasDashboard.jsx) muestra este mismo reporte, con
+// `filtroExtra` (la fila VENDEDOR) y `paramsExtra` ({ vendedor }: solo su cartera). Administración no los pasa.
+export function TopClientesSection({ opciones, filtroExtra = null, paramsExtra = null }) {
+    const extraClave = JSON.stringify(paramsExtra || {});
     const [f, setFRaw] = useState({ preset: '30d', desde: '', hasta: '', ambito: 'Todas', verPor: 'sector', moneda: 'UYU', tc: '', comparar: false, top: 25 });
     const setF = patch => setFRaw(x => ({ ...x, ...patch }));
     const topN = Math.min(Math.max(parseInt(f.top) || 25, 1), 200);
@@ -547,6 +552,7 @@ function TopClientesSection({ opciones }) {
                 ...paramsMoneda,
                 limite: Math.min(Math.max(parseInt(f.top) || 25, 1), 200),
                 ...paramsAmbito(f.ambito),
+                ...JSON.parse(extraClave),
             };
             if (desde) params.fechaDesde = desde;
             if (hasta) params.fechaHasta = hasta;
@@ -572,12 +578,12 @@ function TopClientesSection({ opciones }) {
             setError(e.response?.data?.error || e.message);
             setRows([]); setPrevMap(null);
         } finally { setLoading(false); }
-    }, [f]);
+    }, [f, extraClave]);
     useEffect(() => { cargar(); }, [cargar]);
 
     const abrirDrill = async (row) => {
         setDrill({
-            titulo: row.nombre,
+            titulo: row.idCliente ? `${row.idCliente} · ${row.nombre}` : row.nombre,
             sub: `${row.codCliente ? row.codCliente + ' · ' : ''}Comprobantes que componen el total (${etiquetaMoneda(f.moneda)}). ` +
                 (f.ambito !== 'Todas'
                     ? `El Importe es SOLO la porción de ${etiquetaAmbito(f.ambito, opciones)} de cada comprobante (si tiene líneas de otras áreas, esa parte no se cuenta acá). `
@@ -600,8 +606,8 @@ function TopClientesSection({ opciones }) {
 
     const exportar = () => descargarCSV(
         `top_clientes_${f.moneda}_${new Date().toISOString().slice(0, 10)}.csv`,
-        ['#', 'Cliente', 'Código', 'Área dominante', `Monto (${etiquetaMoneda(f.moneda)})`, '% participación', 'Documentos', 'NC'],
-        rows.map((r, i) => [i + 1, r.nombre, r.codCliente, r.areaDominante, r.monto.toFixed(2), r.participacion, r.cantidadDocumentos, r.cantidadNC]));
+        ['#', 'IDCliente', 'Cliente', 'Código', 'Área dominante', `Monto (${etiquetaMoneda(f.moneda)})`, '% participación', 'Documentos', 'NC'],
+        rows.map((r, i) => [i + 1, r.idCliente || '', r.nombre, r.codCliente, r.areaDominante, r.monto.toFixed(2), r.participacion, r.cantidadDocumentos, r.cantidadNC]));
 
     const maxMonto = rows.length ? Math.max(...rows.map(r => r.monto)) : 1;
     const drillTotal = drill?.rows?.reduce((s, d) => s + Number(d.Importe || 0), 0) || 0;
@@ -612,6 +618,7 @@ function TopClientesSection({ opciones }) {
                 <FilaFecha f={f} setF={setF} />
                 <FilaVerPor verPor={f.verPor} onVerPor={v => setF({ verPor: v })}
                     ambito={f.ambito} onAmbito={v => setF({ ambito: v })} opciones={opciones} />
+                {filtroExtra}
                 <div className="flex items-center gap-3 flex-wrap">
                     <div className="flex items-center gap-2">
                         <span className="text-[11px] font-bold text-slate-500 w-14 shrink-0 tracking-wide">MONEDA</span>
@@ -651,7 +658,7 @@ function TopClientesSection({ opciones }) {
                 <KpiCard label="Facturación del período (neta de NC)" value={`${sym} ${fmtMoney(totalUniverso)}`}
                     sub={etiquetaAmbito(f.ambito, opciones)} color={f.moneda === 'UYU' ? '#0d9488' : '#0891b2'} />
                 <KpiCard label="Clientes con compras" value={fmtInt(cantidadClientes)} sub={`mostrando los ${rows.length} mayores`} color="#8b5cf6" />
-                <KpiCard label="Cliente #1" value={rows.length ? rows[0].nombre : '—'}
+                <KpiCard label="Cliente #1" value={rows.length ? (rows[0].idCliente || rows[0].nombre) : '—'}
                     sub={rows.length ? `${sym} ${fmtMoney(rows[0].monto)}` : ''} color="#f59e0b" />
             </div>
 
@@ -686,11 +693,13 @@ function TopClientesSection({ opciones }) {
                                         <tr key={r.cliId} className="hover:bg-cyan-50/40 cursor-pointer transition-colors" onClick={() => abrirDrill(r)}>
                                             <td className="px-3 py-2"><RankBadge n={i + 1} /></td>
                                             <td className="px-3 py-2">
-                                                <div className="font-semibold text-teal-700">{r.nombre}
+                                                {/* [23/10/2026] El IDCliente primero (con qué se reconoce al cliente), después el nombre */}
+                                                <div className="font-semibold text-teal-700">{r.idCliente || r.nombre}
                                                     {r.esMostrador && <span className="ml-2 px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-700">MOSTRADOR</span>}
                                                     {r.esSinFicha && <span className="ml-2 px-1.5 py-0.5 rounded text-[10px] font-bold bg-sky-100 text-sky-700"
                                                         title="Facturado con una ficha genérica: este nombre es el receptor real del CFE en DGI. No tiene ficha de cliente propia.">SIN FICHA</span>}
                                                 </div>
+                                                {r.idCliente && <div className="text-[11px] text-slate-600">{r.nombre}</div>}
                                                 <div className="text-[10px] text-slate-400 font-mono">
                                                     {r.codCliente || (r.esSinFicha ? 'receptor del CFE en DGI' : `#${r.cliId}`)}
                                                     {r.cantidadNC > 0 ? ` · ${r.cantidadNC} NC restada${r.cantidadNC > 1 ? 's' : ''}` : ''}

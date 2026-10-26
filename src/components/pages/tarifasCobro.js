@@ -12,19 +12,26 @@
    ══════════════════════════════════════════════════════════════════════ */
 
 // Si el servidor no las manda (las mismas de pricesController)
-export const PUNTADAS_REFERENCIA = [3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000, 12000, 15000, 20000, 25000, 30000];
 export const BAJADAS_REFERENCIA = [1, 5, 9, 10, 15, 20, 30, 40, 50, 100, 200];
 
 const num = (v) => Number(String(v ?? '').replace(',', '.')) || 0;
 const miles = (n) => Number(n).toLocaleString('es-UY');
+const pesos = (n) => `$ ${(Number(n) || 0).toLocaleString('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
-// Los campos que se editan en Precios Estándar, por tarifa
+// [23/10/2026] Las franjas de bordado que se pueden usar, de menor a mayor (las que se están escribiendo
+// pueden venir como texto o incompletas)
+export const franjasValidas = (franjas) => (franjas || [])
+    .map(f => ({ hasta: num(f.hasta), precio: num(f.precio) }))
+    .filter(f => f.hasta > 0)
+    .sort((a, b) => a.hasta - b.hasta);
+
+// Los campos que se editan en Precios Estándar, por tarifa. Bordado además tiene sus franjas
+// (tarifa.franjas: [{ hasta, precio }]), que el recuadro edita aparte.
 export const CAMPOS_TARIFA = {
     bordado: [
-        { campo: 'precioCada1000', etiqueta: '$ cada 1.000 puntadas', ayuda: 'O fracción. Por bordado, en pesos.', paso: '0.5' },
-        { campo: 'tramo2Desde', etiqueta: 'Desde (puntadas)', ayuda: 'Desde acá rige el precio de al lado.', paso: '1000' },
-        { campo: 'precioTramo2', etiqueta: '$ cada 1.000 desde ahí', ayuda: 'O fracción, de esas puntadas en más.', paso: '0.5' },
+        { campo: 'precioExcedente', etiqueta: '$ cada 1.000 de más', ayuda: 'Por encima de la última franja. O fracción.', paso: '0.5' },
         { campo: 'matrizGratisDesde', etiqueta: 'Matriz sin cargo desde', ayuda: 'Bordados por diseño. 0 = siempre se cobra.', paso: '1' },
+        { campo: 'minimoBordados', etiqueta: 'Mínimo de bordados', ayuda: 'Por diseño: con menos, se cobra el mínimo. 0 = sin mínimo.', paso: '1' },
     ],
     estampado: [
         { campo: 'cargoFijo', etiqueta: 'Cargo fijo ($)', ayuda: 'Por trabajo, si tiene menos bajadas en total que el número de al lado.', paso: '10' },
@@ -39,9 +46,10 @@ export const TEXTOS_TARIFA = {
         cobro: 'Por puntadas',
         // El motor no usa el precio de lista de estos artículos: Precios Estándar no deja cargarlo
         reemplazaLista: true,
-        descripcion: 'El bordado se cobra con esta tarifa, no con el precio de cada artículo. La matriz, el relieve 3D y la aplicación de parche sí usan su precio de la tabla.',
+        descripcion: 'El bordado se cobra con esta tarifa, no con el precio de cada artículo: cada bordado paga el precio de la franja de sus puntadas. La matriz, el relieve 3D y la aplicación de parche sí usan su precio de la tabla.',
         nota: 'Precio de cada bordado según sus puntadas',
-        extra: 'Mínimo 5 bordados por diseño.',
+        // [23/10/2026] el mínimo es configurable (minimoBordados, 0 = sin mínimo)
+        extra: (t) => (num(t?.minimoBordados) > 0 ? `Mínimo ${num(t.minimoBordados)} bordados por diseño: con menos, se cobran ${num(t.minimoBordados)}.` : 'Sin mínimo de bordados por diseño.'),
     },
     estampado: {
         titulo: 'Tarifa por bajadas',
@@ -59,22 +67,28 @@ export const TEXTOS_TARIFA = {
 export function tablaDeTarifa(t) {
     if (!t) return null;
     if (t.tipo === 'bordado') {
+        // [23/10/2026] Una columna por franja y una más para lo que pasa la última (pricingService.tarifaBordado)
+        const franjas = franjasValidas(t.franjas);
+        if (franjas.length === 0) return null;
         const intervalo = num(t.intervalo) || 1000;
-        const desde = num(t.tramo2Desde);
-        const p1 = num(t.precioCada1000);
-        const p2 = num(t.precioTramo2);
-        const valores = t.referencia || PUNTADAS_REFERENCIA;
+        const excedente = num(t.precioExcedente);
+        const ultima = franjas[franjas.length - 1];
         return {
             titulo: TEXTOS_TARIFA.bordado.titulo,
             subtitulo: 'precio de cada bordado, en pesos',
-            encabezado: { etiqueta: 'Puntadas', valores },
+            encabezado: {
+                etiqueta: 'Puntadas',
+                valores: [
+                    ...franjas.map((f, i) => i === 0 ? `hasta ${miles(f.hasta)}` : `${miles(franjas[i - 1].hasta + 1)} a ${miles(f.hasta)}`),
+                    `más de ${miles(ultima.hasta)}`,
+                ],
+            },
             filas: [{
                 etiqueta: 'Precio por bordado', destacada: true,
-                celdas: valores.map(p => {
-                    const b1 = Math.ceil(Math.min(p, desde) / intervalo);
-                    const b2 = Math.ceil(Math.max(0, p - desde) / intervalo);
-                    return { precio: b1 * p1 + b2 * p2, detalle: `${b1} × $ ${p1}${b2 ? ` + ${b2} × $ ${p2}` : ''}` };
-                }),
+                celdas: [
+                    ...franjas.map(f => ({ precio: f.precio, detalle: '' })),
+                    { precio: ultima.precio + excedente, texto: `desde ${pesos(ultima.precio + excedente)}`, detalle: `$ ${miles(ultima.precio)} + $ ${miles(excedente)} c/${miles(intervalo)} de más` },
+                ],
             }],
         };
     }
@@ -103,7 +117,11 @@ export function tablaDeTarifa(t) {
 // El precio básico de la tarifa, para la columna de lista de los artículos que se cobran por ella
 export function cobroBasico(t) {
     if (!t) return null;
-    if (t.tipo === 'bordado') return { precio: num(t.precioCada1000), texto: `cada ${miles(num(t.intervalo) || 1000)} puntadas`, titulo: 'Se cobra según las puntadas del diseño: ver la tabla de la tarifa' };
+    if (t.tipo === 'bordado') {
+        const primera = franjasValidas(t.franjas)[0];
+        if (!primera) return null;
+        return { precio: primera.precio, texto: `hasta ${miles(primera.hasta)} puntadas`, titulo: 'Se cobra por franjas de puntadas del diseño: ver la tabla de la tarifa' };
+    }
     if (t.tipo === 'estampado') return { precio: num(t.precioBajada), texto: 'por bajada', titulo: `Se cobra por bajadas: $ ${miles(num(t.cargoFijo))} fijo el trabajo con menos de ${num(t.umbral)} bajadas en total` };
     return null;
 }

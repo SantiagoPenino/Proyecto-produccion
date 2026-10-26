@@ -5,7 +5,8 @@
 //
 // Los vendedores de salón cargan a mano las ventas de promos que hacen: fecha, vendedor (usuario
 // del sistema), cliente o consumidor final, moneda, monto y observaciones. Con eso se arma la
-// pantalla de comisiones, como Ventas por vendedor: total unificado en US$ del mes y franjas.
+// pantalla de comisiones, como Ventas por vendedor: total del mes y franjas. Desde el 23/10/2026 el total
+// va en PESOS y cada franja paga un monto fijo en pesos (ver «Comisiones», más abajo).
 //
 // Quién puede qué (por las entradas del menú del rol, Admin siempre):
 //   · '/vendedores/salon'             → carga y ve SUS ventas. Las corrige o anula mientras la venta
@@ -268,10 +269,25 @@ async function anular(pool, user, id, body) {
 }
 
 // ── Comisiones ───────────────────────────────────────────────────────────────
+// [23/10/2026] Franjas EN PESOS y con MONTO FIJO (pedido de la usuaria): "desde $ X del total del mes en
+// pesos (las ventas en US$ pasadas a pesos con la cotización del mes), se pagan $ Y". Se cobra la franja
+// más alta alcanzada, no se suman. Viven en ConfiguracionGlobal (SALON_FRANJAS_COMISION_UYU, AreaID ADMIN,
+// JSON [{ desde, monto }]); si falta la clave, las del pedido. Antes (19/10): tabla VentasSalonFranjas,
+// "desde US$ X, el % sobre todo el total unificado en dólares" — esa tabla queda sin uso.
+const CLAVE_FRANJAS = 'SALON_FRANJAS_COMISION_UYU';
+const FRANJAS_DEFECTO = [{ desde: 200000, monto: 5000 }, { desde: 250000, monto: 7000 }, { desde: 300000, monto: 10000 }];
+
 async function franjas(pool, user) {
   await contexto(pool, user);
-  const r = await pool.request().query('SELECT VsfDesde, VsfPct FROM dbo.VentasSalonFranjas ORDER BY VsfDesde');
-  return r.recordset.map(f => ({ desde: Number(f.VsfDesde), pct: Number(f.VsfPct) }));
+  const r = await pool.request().input('K', sql.VarChar(50), CLAVE_FRANJAS)
+    .query("SELECT Valor FROM dbo.ConfiguracionGlobal WHERE Clave = @K AND LTRIM(RTRIM(AreaID)) = 'ADMIN'");
+  if (r.recordset.length === 0) return FRANJAS_DEFECTO;
+  let lista = [];
+  try { lista = JSON.parse(r.recordset[0].Valor || '[]'); } catch (e) { lista = []; }
+  return (Array.isArray(lista) ? lista : [])
+    .map(f => ({ desde: r2(f.desde), monto: r2(f.monto) }))
+    .filter(f => f.desde >= 0 && f.monto > 0)
+    .sort((a, b) => a.desde - b.desde);
 }
 
 // Reemplaza todas las franjas (la pantalla manda la lista completa). Solo Admin.
@@ -280,30 +296,19 @@ async function guardarFranjas(pool, user, body) {
   if (!ctx.editaFranjas) throw conStatus(403, 'Solo un administrador puede cambiar las franjas de comisión.');
   const lista = Array.isArray(body.franjas) ? body.franjas : null;
   if (!lista) throw conStatus(400, 'Falta la lista de franjas.');
-  const limpias = lista.map(f => ({ desde: r2(f.desde), pct: Math.round(Number(f.pct) * 10000) / 10000 }));
+  const limpias = lista.map(f => ({ desde: r2(f.desde), monto: r2(f.monto) }));
   limpias.forEach(f => {
-    if (!(f.desde >= 0)) throw conStatus(400, 'Cada franja necesita el monto «desde» (cero o más).');
-    if (!(f.pct > 0 && f.pct <= 100)) throw conStatus(400, 'El % de cada franja tiene que estar entre 0 y 100.');
+    if (!(f.desde >= 0) || f.desde > MONTO_MAXIMO) throw conStatus(400, 'Cada franja necesita el total del mes «desde», en pesos (cero o más).');
+    if (!(f.monto > 0) || f.monto > MONTO_MAXIMO) throw conStatus(400, 'La comisión de cada franja tiene que ser un monto en pesos mayor que cero.');
   });
-  if (new Set(limpias.map(f => f.desde)).size !== limpias.length) throw conStatus(400, 'Hay dos franjas con el mismo monto «desde».');
+  if (new Set(limpias.map(f => f.desde)).size !== limpias.length) throw conStatus(400, 'Hay dos franjas con el mismo total «desde».');
   limpias.sort((a, b) => a.desde - b.desde);
 
-  const tx = new sql.Transaction(pool);
-  await tx.begin();
-  try {
-    await new sql.Request(tx).query('DELETE FROM dbo.VentasSalonFranjas');
-    for (const f of limpias) {
-      await new sql.Request(tx)
-        .input('Desde', sql.Decimal(18, 2), f.desde)
-        .input('Pct', sql.Decimal(9, 4), f.pct)
-        .input('UID', sql.Int, ctx.idUsuario)
-        .query('INSERT INTO dbo.VentasSalonFranjas (VsfDesde, VsfPct, VsfUsuarioAlta) VALUES (@Desde, @Pct, @UID)');
-    }
-    await tx.commit();
-  } catch (e) {
-    await tx.rollback();
-    throw e;
-  }
+  await pool.request()
+    .input('K', sql.VarChar(50), CLAVE_FRANJAS)
+    .input('V', sql.NVarChar(sql.MAX), JSON.stringify(limpias))
+    .query(`UPDATE dbo.ConfiguracionGlobal SET Valor = @V WHERE Clave = @K AND LTRIM(RTRIM(AreaID)) = 'ADMIN';
+            IF @@ROWCOUNT = 0 INSERT INTO dbo.ConfiguracionGlobal (Clave, AreaID, Valor) VALUES (@K, 'ADMIN', @V);`);
   return franjas(pool, user);
 }
 
@@ -333,9 +338,8 @@ async function resumen(pool, user, q) {
   return [...porVendedor.values()].sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'));
 }
 
-// El primero y el segundo de cada mes por total unificado, desde el primer mes con ventas de salón
-// hasta el mes en curso. La cotización de cada mes es la última cargada hasta su último día (en el
-// mes en curso, la del día): la misma regla que vendedorVistaController.getGanadores.
+// El primero y el segundo de cada mes por total del mes en pesos, desde el primer mes con ventas de salón
+// hasta el mes en curso. Las ventas en US$ se pasan a pesos con la cotización del día en que se mira (23/10/2026).
 async function ganadores(pool, user) {
   const ctx = await contexto(pool, user);
   exigirSupervisor(ctx);
@@ -363,23 +367,19 @@ async function ganadores(pool, user) {
       WHERE v.VsaAnulada = 0 AND v.VsaFecha BETWEEN @Desde AND @Hasta
       GROUP BY YEAR(v.VsaFecha) * 100 + MONTH(v.VsaFecha), v.VsaIdUsuario, v.MonIdMoneda`)).recordset;
 
-  // Los valores de la lista salen de los meses armados acá, no de nada que mande el usuario
-  const lista = meses.map(x => `(${x.anio * 100 + x.mes}, '${finDeMes(x.anio, x.mes)}')`).join(', ');
+  // [23/10/2026] Una sola cotización para todos los meses: la del día en que se mira el reporte (la última cargada),
+  // pedido de la usuaria. Antes, la última de cada mes.
   const cotRes = await pool.request().query(`
-    SELECT v.Mes, c.CotDolar, CONVERT(VARCHAR(10), c.CotFecha, 23) AS CotFecha
-    FROM (VALUES ${lista}) v(Mes, Hasta)
-    OUTER APPLY (
-      SELECT TOP 1 CotDolar, CotFecha
-      FROM dbo.Cotizaciones WITH(NOLOCK)
-      WHERE CotDolar > 0 AND CotFecha < DATEADD(DAY, 1, CAST(v.Hasta AS date))
-      ORDER BY CotFecha DESC
-    ) c`);
-  const cotizacionDe = new Map(cotRes.recordset.map(c => [Number(c.Mes),
-    Number(c.CotDolar) > 0 ? { valor: Number(c.CotDolar), fecha: c.CotFecha } : null]));
+    SELECT TOP 1 CotDolar, CONVERT(VARCHAR(10), CotFecha, 23) AS CotFecha
+    FROM dbo.Cotizaciones WITH(NOLOCK)
+    WHERE CotDolar > 0
+    ORDER BY CotFecha DESC`);
+  const c = cotRes.recordset[0];
+  const cotizacionHoy = c && Number(c.CotDolar) > 0 ? { valor: Number(c.CotDolar), fecha: c.CotFecha } : null;
 
   return meses.map(({ anio, mes }) => {
     const clave = anio * 100 + mes;
-    const cotizacion = cotizacionDe.get(clave) || null;
+    const cotizacion = cotizacionHoy;
     const enCurso = anio === hoy.getFullYear() && mes === hoy.getMonth() + 1;
     const base = { anio, mes, enCurso, cotizacion, ganador: null, segundo: null };
     if (!cotizacion) return base;
@@ -392,7 +392,8 @@ async function ganadores(pool, user) {
     const ranking = [...porVendedor.entries()]
       // clave: con qué compara la pantalla para unir los meses seguidos (en vendedores es la cédula;
       // acá muchos usuarios no la tienen cargada)
-      .map(([idUsuario, p]) => ({ idUsuario, clave: `U${idUsuario}`, cedula: p.cedula, nombre: p.nombre || `Usuario ${idUsuario}`, total: r2(r2(p.USD) + r2(p.UYU) / cotizacion.valor) }))
+      // [23/10/2026] Total del mes EN PESOS: $ vendido + US$ vendido × cotización (antes, en dólares)
+      .map(([idUsuario, p]) => ({ idUsuario, clave: `U${idUsuario}`, cedula: p.cedula, nombre: p.nombre || `Usuario ${idUsuario}`, total: r2(r2(p.UYU) + r2(p.USD) * cotizacion.valor) }))
       .filter(x => x.total > 0)
       .sort((x, y) => y.total - x.total);
     return { ...base, ganador: ranking[0] || null, segundo: ranking[1] || null };

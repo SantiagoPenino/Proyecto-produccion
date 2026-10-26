@@ -10,6 +10,9 @@ import React from 'react';
    ══════════════════════════════════════════════════════════════════════ */
 
 const money = (n) => (Number(n) || 0).toLocaleString('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+// Arriba van números (bajadas) o textos (las franjas de bordado: "hasta 4.000"); cada celda puede traer
+// su `texto` en vez del precio ("desde $ 230,00")
+const etiquetaDe = (v) => (typeof v === 'number' ? v.toLocaleString('es-UY') : v);
 
 // `conTitulo`: la franja con el nombre de la tarifa arriba (en Precios por cantidad; el recuadro de
 // Precios Estándar ya tiene su título)
@@ -31,7 +34,7 @@ export default function TablaTarifa({ tabla, conTitulo = true }) {
                             <th className="text-left text-[11px] font-bold uppercase tracking-wider text-slate-500 px-4 py-2 whitespace-nowrap w-40">{tabla.encabezado.etiqueta}</th>
                             {valores.map(v => (
                                 <td key={v} className="px-3 py-2 text-center tabular-nums whitespace-nowrap border-l border-slate-100 text-slate-600 font-bold">
-                                    {Number(v).toLocaleString('es-UY')}
+                                    {etiquetaDe(v)}
                                 </td>
                             ))}
                         </tr>
@@ -40,8 +43,8 @@ export default function TablaTarifa({ tabla, conTitulo = true }) {
                                 <th className="text-left text-[11px] font-bold uppercase tracking-wider text-slate-500 px-4 py-2 whitespace-nowrap">{f.etiqueta}</th>
                                 {f.celdas.map((c, i) => (
                                     <td key={valores[i]} className="px-3 py-2 text-center tabular-nums whitespace-nowrap border-l border-slate-100"
-                                        title={c.detalle ? `${Number(valores[i]).toLocaleString('es-UY')}: ${c.detalle}` : undefined}>
-                                        <div className={f.destacada ? 'font-black text-slate-800' : 'text-slate-500'}>$ {money(c.precio)}</div>
+                                        title={c.detalle ? `${etiquetaDe(valores[i])}: ${c.detalle}` : undefined}>
+                                        <div className={f.destacada ? 'font-black text-slate-800' : 'text-slate-500'}>{c.texto ?? `$ ${money(c.precio)}`}</div>
                                         {c.detalle && <div className="text-[10px] leading-4 text-slate-400">{c.detalle}</div>}
                                     </td>
                                 ))}

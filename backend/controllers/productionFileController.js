@@ -317,7 +317,14 @@ const getOrdenes = async (req, res) => {
                                 LTRIM(RTRIM(ISNULL(O.ModoRetiro, ''))) AS ModoRetiro,
                                 -- ECOUV: se ve en el lote pero no se controla hasta tildarla como
                                 -- impresa (utils/controlSoloImpresas). En el resto de las áreas, siempre 0.
-                                ${sqlSinImprimir('O')} AS SinImprimir
+                                ${sqlSinImprimir('O')} AS SinImprimir,
+                                -- [23/10/2026] Orden de falla de una reposición reportada desde OTRA área: en Control
+                                -- se cierra con FINALIZAR ORDEN (Pronto + etiqueta + viaja), no con "CORREGIR FALLA"
+                                -- (que la manda al canasto y lleva a la original). Las fallas de Control dan 0.
+                                CASE WHEN EXISTS (SELECT 1 FROM dbo.Reposiciones RP WITH(NOLOCK)
+                                                  WHERE RP.OrdenFallaID = O.OrdenID
+                                                    AND UPPER(LTRIM(RTRIM(RP.AreaReporta))) <> UPPER(LTRIM(RTRIM(RP.AreaProduce))))
+                                     THEN 1 ELSE 0 END AS FallaDeOtraArea
             FROM Ordenes O WITH(NOLOCK)
             LEFT JOIN dbo.Clientes c WITH(NOLOCK) ON O.CliIdCliente = c.CliIdCliente
         WHERE
@@ -2626,8 +2633,10 @@ async function completarOrden(req, res) {
         await ensureFallaColumn(pool); // el chequeo de fallas de abajo lee CopiasFalladas
 
         // ── GUARD: no re-procesar órdenes que ya están prontas o finalizadas ──
-        // Se considera "ya lista" si: EstadoenArea IN ('Pronto', 'En Transito')
+        // Se considera "ya lista" si: EstadoenArea IN ('Pronto', 'En Transito', 'Recibido en Destino')
         //                           O Estado = 'Finalizado'
+        // [23/10/2026] 'Recibido en Destino': la orden ya salió y la recibió otra área. Volver a cerrarla
+        // la regresaba a 'Pronto' en su área (SUB-31896, después de "CORREGIR FALLA" de su -F).
         const guardCheck = await pool.request()
             .input('OID', sql.Int, ordenId)
             .query(`
@@ -2635,7 +2644,7 @@ async function completarOrden(req, res) {
                 FROM Ordenes
                 WHERE OrdenID = @OID
                   AND (
-                      UPPER(LTRIM(RTRIM(EstadoenArea))) IN ('PRONTO', 'EN TRANSITO')
+                      UPPER(LTRIM(RTRIM(EstadoenArea))) IN ('PRONTO', 'EN TRANSITO', 'RECIBIDO EN DESTINO')
                       OR UPPER(LTRIM(RTRIM(Estado)))    = 'FINALIZADO'
                   )
             `);
@@ -2678,6 +2687,19 @@ async function completarOrden(req, res) {
         
         // Si todos los archivos están cancelados (Total de válidos = 0), cancelar la orden entera
         if (Total === 0) {
+            // [23/10/2026] Una orden de falla reportada desde otra área que nunca tuvo archivo de impresión
+            // NO se cancela de oficio: se avisa que falta el archivo (SUB-31896-F2623 se canceló así y no
+            // hubo etiqueta). Las fallas de Control no tienen reposición y siguen como siempre.
+            const { fallasSinArchivoDeImpresion, avisoFallaSinArchivo } = require('../services/cadenaReposicionService');
+            const sinArchivo = await fallasSinArchivoDeImpresion(transaction, [ordenId]);
+            if (sinArchivo.length > 0) {
+                const yaTuvo = await new sql.Request(transaction).input('OID', sql.Int, ordenId)
+                    .query("SELECT COUNT(*) AS n FROM ArchivosOrden WHERE OrdenID = @OID AND UPPER(LTRIM(RTRIM(ISNULL(TipoArchivo, '')))) = 'IMPRESION'");
+                if ((yaTuvo.recordset[0]?.n || 0) === 0) {
+                    await transaction.rollback();
+                    return res.status(409).json({ success: false, error: avisoFallaSinArchivo(sinArchivo.map(x => x.CodigoOrden)) });
+                }
+            }
             await new sql.Request(transaction)
                 .input('OID', sql.Int, ordenId)
                 .query("UPDATE Ordenes SET EstadoLogistica='Cancelado', Observaciones = CONCAT(ISNULL(Observaciones,''), ' [Cancelada de oficio: Todos archivos cancelados]') WHERE OrdenID = @OID");
@@ -2939,7 +2961,10 @@ async function completarOrden(req, res) {
 
                 // Trabajo interno de un pedido con PRO: sin cotización propia a propósito.
                 const sinCotizacionPropia = (magVal > 0 || esReposicion) ? false : await esTrabajoInternoDePedidoConPro(pool, ordenId);
-                if (magVal > 0 || esReposicion || sinCotizacionPropia) {
+                // [23/10/2026] Una orden de falla que VIAJA a otra área (reposición de otra área, ver
+                // reposicionesService.alTerminarOrdenFalla) nace sin costo y no se cotiza: igual necesita su
+                // etiqueta para el remito. Antes solo salía si el pedido tenía PRO.
+                if (magVal > 0 || esReposicion || sinCotizacionPropia || fallaViajaComoComplemento) {
                     const labelResult = await LabelGenerationService.regenerateLabelsForOrder(
                         ordenId, (req.user?.id || 1), (req.user?.usuario || 'Sistema')
                     );

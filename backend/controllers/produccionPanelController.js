@@ -117,6 +117,8 @@ const turnoWhere = (turno, col) => {
 // sin pasar por "Pronto", por eso "con falla" se cuenta desde FallasProduccion y no desde acá.
 const REPO_SQL = `(UPPER(LTRIM(RTRIM(ISNULL(o.Prioridad,'')))) IN ('FALLA','REPOSICION','REPOSICIÓN')
                    OR o.CodigoOrden LIKE '%-R[0-9]%' OR o.CodigoOrden LIKE '%-F[0-9]%')`;
+// [23/10/2026] El Dashboard de ventas (ventasDashboardController) saca las fallas y reposiciones con la misma regla
+exports.REPO_SQL = REPO_SQL;
 
 const round1 = n => Math.round(n * 10) / 10;
 const pad2   = n => String(n).padStart(2, '0');

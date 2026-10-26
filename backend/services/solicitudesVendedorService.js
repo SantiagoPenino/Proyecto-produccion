@@ -1487,6 +1487,11 @@ const correccionAbrir = (pool, user, solicitudId, productoSolId, b) => require('
 const correccionCancelar = (pool, user, solicitudId, productoSolId) => require('./solicitudesVendedorCorreccion').cancelar(pool, user, baseCorreccion(), solicitudId, productoSolId);
 const correccionPlan = (pool, user, solicitudId, productoSolId) => require('./solicitudesVendedorCorreccion').plan(pool, user, baseCorreccion(), solicitudId, productoSolId);
 const correccionAplicar = (pool, user, solicitudId, productoSolId, app) => require('./solicitudesVendedorCorreccion').aplicar(pool, user, baseCorreccion(), solicitudId, productoSolId, app);
+// [23/10/2026] Tiempos de Diseño y fallas por diseño: los puntos de la bonificación (services/solicitudesVendedorPuntosDiseno.js)
+const basePuntos = () => ({ esDisenador, registrarEvento, esAdmin, esVendedor });
+const puntosDiseno = (pool, user, q) => require('./solicitudesVendedorPuntosDiseno').puntos(pool, user, basePuntos(), q);
+const marcarFallaDiseno = (pool, user, parteId, b) => require('./solicitudesVendedorPuntosDiseno').marcarFalla(pool, user, basePuntos(), parteId, b);
+const anularFallaDiseno = (pool, user, eventoId, b) => require('./solicitudesVendedorPuntosDiseno').anularFalla(pool, user, basePuntos(), eventoId, b);
 async function tizadaProActualizar(pool, user, solicitudId, envioId, b) {
   if (!esVendedor(user) && !(await esDisenador(pool, user))) throw fallo(403, 'Esto lo hace el vendedor o un diseñador habilitado.');
   const r = await pool.request().input('E', sql.Int, envioId).input('S', sql.Int, solicitudId).query("SELECT EnvioID FROM dbo.TizadaProEnvios WHERE EnvioID = @E AND Origen = 'SOLICITUD' AND OrigenID = @S");
@@ -1699,6 +1704,7 @@ async function cambiarExtra(pool, user, solicitudId, productoSolId, tipo, b) {
 
 module.exports = {
   formasDeExtras, cambiarExtra, guardarDatos, disenosHechos, correccionAbrir, correccionCancelar, correccionPlan, correccionAplicar,
+  puntosDiseno, marcarFallaDiseno, anularFallaDiseno,
   tizadaProVer, tizadaProEditables, piezasDelArte, tizadaProGuardar, tizadaProCalcular, tizadaProArteVista, tizadaProPlantillaPedir, tizadaProPlantillaEstado, tizadaProPlantillaBajar, tizadaProEnviar, tizadaProActualizar, _baseTizadaPro: () => baseTizadaPro(),
   materialesPrincipal, definirProduccionArchivo, tizadasTizadaPro, vincularTizada, moldeDelProducto, guardarSublimacion, guardarTalles, convertir, reintentarArchivos, recuperarArchivos, bobinasDelCliente, disenosEnProduccion, estimarPlazo, calendario,
   crear, actualizar, listar, obtener, guardarPrecio, confirmarSena, agregarInteraccion,

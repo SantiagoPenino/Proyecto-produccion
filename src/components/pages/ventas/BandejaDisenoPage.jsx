@@ -8,6 +8,7 @@ import OrderDetailModal from '../../production/components/OrderDetailModal';
 import Selector from '../../ui/Selector';
 import SelectorFecha from '../../ui/SelectorFecha';
 import { BTN_SECUNDARIO, BotonAyuda, ESTADO_PARTE, NOMBRE_PARTE, TIPO_TRABAJO, Ventana, VisorPdf, errorDe, useConfirmar } from './solicitudesComunes';
+import TiemposDiseno from './TiemposDiseno';
 
 // Botón principal de esta pantalla (06/10): brand-cyan, como el resto del sistema. El BTN_PRIMARIO de
 // solicitudesComunes es índigo y lo usan las pantallas oscuras de Solicitudes, que lo pasan a amarillo.
@@ -146,7 +147,7 @@ export default function BandejaDisenoPage() {
     // [15/10] "Mis trabajos" suma las órdenes en producción de servicios que tomé en la solicitud y todavía esperan
     // su diseño (misProduccion): tomé el trabajo, entonces lo sigo viendo aunque ya sea pedido. También siguen en "En producción".
     const misProduccion = enProduccion.filter(o => o.EsMia);
-    const listas = { produccion: enProduccion, mias: data.mias, misProduccion, disponibles: data.disponibles, hechos: hechos || [], portal };
+    const listas = { produccion: enProduccion, mias: data.mias, misProduccion, disponibles: data.disponibles, hechos: hechos || [], portal, puntos: [] };
     const deProduccion = (k) => k === 'produccion' || k === 'misProduccion';
     // [HECHOS 15/10] además del texto y el servicio: quién lo hizo, el pedido y "Solo los míos" (el estado no aplica)
     const propiosHechos = (x) => (!fh.quien || x.Quien === fh.quien) && (!fh.pedido || estadoPedidoDe(x) === fh.pedido) && (!fh.mios || x.EsMia);
@@ -203,7 +204,9 @@ export default function BandejaDisenoPage() {
                         ['produccion', 'En producción', contador('produccion')],
                         ['hechos', 'Hechos', contador('hechos')],   // [HECHOS 15/10] lo ya diseñado (por defecto, hoy)
                         ['portal', 'Del portal', contador('portal')],   // [20/10] lo de la tienda que todavía no es pedido
+                        ['puntos', 'Tiempos y puntos', null],           // [23/10] plazo de cada diseño y fallas por diseño (bonificación)
                     ]} />
+                    {vista === 'puntos' ? <TiemposDiseno /> : (<>
                     <Filtros filtro={filtro} onCambiar={c => setFiltro(f => ({ ...f, ...c }))} servicios={servicios} estados={estados} hayFiltro={hayFiltro}
                         onLimpiar={() => { setFiltro({ q: '', servicio: '', estado: '' }); setFh({ quien: '', pedido: '', mios: false }); }}>
                         {vista === 'hechos' && <FiltrosHechos periodo={periodo} onPeriodo={setPeriodo} fh={fh} onFh={c => setFh(f => ({ ...f, ...c }))} />}
@@ -246,6 +249,7 @@ export default function BandejaDisenoPage() {
                         <DelPortal rows={visibles} vacio={vacioCon('No hay pedidos del portal sin convertir.')} busy={busy} abriendo={abriendo}
                             onVerSolicitud={verSolicitud} onReenviar={reenviarTizada} onCancelar={setCancelando} />
                     )}
+                    </>)}
                     </>)}
                 </>
             )}
@@ -786,7 +790,7 @@ function Pestanas({ pestanas, actual, onCambiar }) {
         <>
             <div className="sm:hidden">
                 <Selector value={actual} onChange={e => onCambiar(e.target.value)} aria-label="Lista" anchoLista={260}>
-                    {pestanas.map(([id, label, n]) => <option key={id} value={id}>{label} · {n}</option>)}
+                    {pestanas.map(([id, label, n]) => <option key={id} value={id}>{label}{n == null ? '' : ` · ${n}`}</option>)}
                 </Selector>
             </div>
             <div className="hidden sm:flex items-center overflow-x-auto no-scrollbar shadow-[inset_0_-1px_0_0_#e2e8f0]">

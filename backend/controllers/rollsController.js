@@ -3,6 +3,7 @@ const logger = require('../utils/logger');
 const { limpiarMarcasDeLote, resolverLoteVacio } = require('../utils/salidaDeLote');
 const { ESTADOS_AREA_FUERA_DE_LOTE } = require('../services/stateManagerService');
 const { controlSoloImpresas } = require('../utils/controlSoloImpresas');
+const { fallasSinArchivoDeImpresion, avisoFallaSinArchivo } = require('../services/cadenaReposicionService');
 
 // Asegura columnas para impreso (todas las áreas) y agrupado manual (SB) de órdenes en el lote.
 // Se ejecuta una sola vez por proceso (el flag evita el chequeo en cada request).
@@ -340,6 +341,14 @@ exports.moveOrder = async (req, res) => {
                     });
                 }
             }
+        }
+
+        // [23/10/2026] Una orden de falla reportada desde otra área sin archivo de impresión no entra a un
+        // lote: se imprimiría vacía y en Control se cancelaba de oficio (SUB-31896-F2623). Sacarla de un
+        // lote (targetRollId vacío) sí se puede. Las fallas de Control nunca caen acá (nacen con su archivo).
+        if (targetRollId && idsToMove.length > 0) {
+            const sinArchivo = await fallasSinArchivoDeImpresion(pool, idsToMove);
+            if (sinArchivo.length > 0) return res.status(409).json({ error: `⛔ ${avisoFallaSinArchivo(sinArchivo.map(x => x.CodigoOrden))}` });
         }
 
         // 2. VALIDACION DTF (DF)
@@ -2187,7 +2196,11 @@ exports.magicRollAssignment = async (req, res) => {
                 AND (EstadoDependencia IS NULL OR EstadoDependencia = 'OK')
             `);
 
-            const orders = pendingRes.recordset;
+            // [23/10/2026] Las órdenes de falla de otra área sin archivo de impresión se quedan afuera
+            // (se imprimirían vacías): primero hay que subirles el archivo desde el detalle.
+            const sinArchivo = new Set((await fallasSinArchivoDeImpresion(transaction, pendingRes.recordset.map(o => o.OrdenID))).map(x => Number(x.OrdenID)));
+            const orders = pendingRes.recordset.filter(o => !sinArchivo.has(Number(o.OrdenID)));
+            if (sinArchivo.size > 0) logger.info(`[MagicAssignment] ${sinArchivo.size} orden(es) de falla sin archivo de impresión quedan fuera del armado.`);
             if (orders.length === 0) {
                 await transaction.rollback();
                 return res.json({ success: true, message: "No hay órdenes pendientes para agrupar." });
